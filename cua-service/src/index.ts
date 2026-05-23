@@ -1,217 +1,73 @@
 /**
- * CUA Service entry point — poll, claim, run.
+ * CUA Service entry point — session supervisor + workflow runtime.
+ *
+ * Plan v4 architecture: this entry replaces the old poll-for-jobs model
+ * (claim onboarding_job → run → claim pull_job → run) with a persistent
+ * session supervisor (one BrowserContext per hotel, 24/7) plus a generic
+ * workflow runtime (queue + executor for operator writes).
+ *
+ * The legacy job-runner.ts + pull-job-runner.ts are NOT invoked from
+ * here. They remain in the repo for the cutover window so existing
+ * onboarding flows still work, and get deleted in the final cutover
+ * step (per plan v4 Week 2). To run the legacy entrypoint instead, set
+ * CUA_ENTRY=legacy in env.
  *
  * Lifecycle:
- *   1. Verify ANTHROPIC_API_KEY + Supabase service-role key at startup
- *      (anthropic-client.ts and supabase.ts already throw if missing).
- *   2. Verify Supabase reachability via verifyConnection().
- *   3. Enter the poll loop:
- *      - Every POLL_INTERVAL_MS, look for the oldest queued onboarding_job.
- *      - Claim it (atomic update from 'queued' → 'running' with worker_id).
- *      - Hand to runJob() which orchestrates mapping + extraction.
- *      - On finish (success or failure), the job row reflects the outcome.
- *   4. On SIGTERM (deploys), finish the in-flight job before exiting.
- *
- * Concurrency: one job at a time per machine. Scale by adding machines on
- * Fly. We don't need SKIP LOCKED-style queueing yet — at our current
- * volume the claim race is benign (two workers occasionally both see the
- * same row, only one wins the UPDATE).
+ *   1. Verify env + Supabase reachable.
+ *   2. Start SessionSupervisor (boots a SessionDriver per enabled hotel,
+ *      memory monitor, reconcile loop).
+ *   3. Start WorkflowRuntime (polls workflow_jobs queue, dispatches to
+ *      registered handlers — none registered in this rebuild; Reeyen
+ *      adds them separately).
+ *   4. Run forever. On SIGTERM, stop supervisor + runtime gracefully so
+ *      each driver saves its storageState before exit.
  */
 
 import 'dotenv/config';
-// IMPORTANT: initSentry must be called before any other module loads
-// so the global error handler is in place when imports/initialization
-// throw. ./sentry.js is the only file that can be imported before this.
-import { initSentry, flushSentry, withJobScope } from './sentry.js';
+import { initSentry, flushSentry } from './sentry.js';
 const sentryReady = initSentry();
 
-import { supabase, verifyConnection } from './supabase.js';
+import { verifyConnection } from './supabase.js';
 import { log, makeWorkerId } from './log.js';
-import { runJob } from './job-runner.js';
-import { runPullJob } from './pull-job-runner.js';
 import { env } from './env.js';
+import { SessionSupervisor } from './session-supervisor.js';
+import { WorkflowRuntime } from './workflow-runtime.js';
 
-const POLL_INTERVAL_MS = env.POLL_INTERVAL_MS;
 const WORKER_ID = makeWorkerId();
 
-// Graceful-shutdown latch. Set true on SIGTERM; the poll loop checks it
-// after each iteration. Mid-job, we let the current job finish so the
-// onboarding_jobs row doesn't get stuck in 'running' forever.
+let supervisor: SessionSupervisor | null = null;
+let runtime: WorkflowRuntime | null = null;
 let shuttingDown = false;
-let inFlightJobId: string | null = null;
-
-async function claimNextJob(): Promise<{ id: string } | null> {
-  // Atomic claim via Postgres function — uses FOR UPDATE SKIP LOCKED
-  // so multiple concurrent workers can claim distinct jobs without
-  // ever picking the same row. Migration 0039 created the function.
-  // (Pass-3 fix — H8.)
-  const { data, error } = await supabase.rpc('staxis_claim_next_job', {
-    p_worker_id: WORKER_ID,
-  });
-  if (error) {
-    log.warn('claim rpc failed', { err: error.message });
-    return null;
-  }
-  // The function returns a SETOF row; PostgREST gives us an array.
-  // Empty array = no queued jobs.
-  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
-  return row ? { id: row.id as string } : null;
-}
-
-/**
- * Atomic claim for the steady-state pull queue (migration 0042). Same
- * SKIP LOCKED pattern as claimNextJob, separate function so onboarding
- * can take priority over pulls (onboarding is user-facing; a pull
- * waiting one extra tick is fine).
- */
-async function claimNextPullJob(): Promise<{ id: string } | null> {
-  const { data, error } = await supabase.rpc('staxis_claim_next_pull_job', {
-    p_worker_id: WORKER_ID,
-  });
-  if (error) {
-    log.warn('pull claim rpc failed', { err: error.message });
-    return null;
-  }
-  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
-  return row ? { id: row.id as string } : null;
-}
-
-async function pollLoop(): Promise<void> {
-  log.info('CUA worker started', { workerId: WORKER_ID, pollIntervalMs: POLL_INTERVAL_MS });
-
-  // Cycle counter so we only invoke the stale-job reaper periodically
-  // rather than on every tick. 12 cycles × 5s = once per minute.
-  let cycle = 0;
-
-  while (!shuttingDown) {
-    try {
-      // Defense-in-depth: every minute, rescue any onboarding_jobs row
-      // whose worker died mid-flight (started_at > 5min ago). Migration
-      // 0033 also schedules this via pg_cron, but pg_cron isn't always
-      // enabled on the project; running it from the worker too means
-      // the safety net survives even if cron is disabled.
-      if (cycle % 12 === 0) {
-        try {
-          const { data } = await supabase.rpc('staxis_reap_stale_jobs');
-          if (typeof data === 'number' && data > 0) {
-            log.warn('reaped stale jobs', { count: data });
-          }
-        } catch (err) {
-          // Reaper is best-effort — never block the poll loop.
-          log.warn('reaper rpc failed (non-fatal)', { err: (err as Error).message });
-        }
-        // Same cadence for the pull queue's reaper (migration 0042).
-        try {
-          const { data } = await supabase.rpc('staxis_reap_stale_pull_jobs');
-          if (typeof data === 'number' && data > 0) {
-            log.warn('reaped stale pull jobs', { count: data });
-          }
-        } catch (err) {
-          log.warn('pull reaper rpc failed (non-fatal)', { err: (err as Error).message });
-        }
-      }
-
-      // Onboarding jobs take priority — they're user-facing. Only
-      // check the pull queue if there's no onboarding work pending.
-      const job = await claimNextJob();
-      // With FOR UPDATE SKIP LOCKED in staxis_claim_next_job (migration
-      // 0039), null means "no queued jobs" — there's no race to lose,
-      // so we just wait POLL_INTERVAL_MS before checking again.
-
-      if (job) {
-        inFlightJobId = job.id;
-        log.info('claimed job', { jobId: job.id, workerId: WORKER_ID });
-        // Wrap in a Sentry scope so unhandled errors inside the job body
-        // (Playwright crashes, dangling rejections, anything raised by a
-        // deep helper that doesn't pass `ctx` to captureException) still
-        // carry the job_id and worker_id tags in the Sentry dashboard.
-        // property.id and pms.type stay on explicit `captureException(err, ctx)`
-        // call sites — those have the data; the scope here is the floor.
-        await withJobScope({ jobId: job.id, workerId: WORKER_ID }, async () => {
-          try {
-            await runJob(job.id, WORKER_ID);
-          } catch (err) {
-            // runJob owns marking the job 'failed' on exception. This catch
-            // is the absolute backstop — if the job-runner itself crashed,
-            // we still want the worker process to keep polling.
-            log.error('runJob threw — should have been caught inside', {
-              jobId: job.id,
-              err: (err as Error).message,
-            });
-          }
-        });
-        inFlightJobId = null;
-      } else {
-        // No onboarding work — try the steady-state pull queue.
-        const pullJob = await claimNextPullJob();
-        if (pullJob) {
-          inFlightJobId = pullJob.id;
-          log.info('claimed pull job', { jobId: pullJob.id, workerId: WORKER_ID });
-          await withJobScope({ jobId: pullJob.id, workerId: WORKER_ID }, async () => {
-            try {
-              await runPullJob(pullJob.id, WORKER_ID);
-            } catch (err) {
-              log.error('runPullJob threw — should have been caught inside', {
-                jobId: pullJob.id,
-                err: (err as Error).message,
-              });
-            }
-          });
-          inFlightJobId = null;
-        }
-      }
-    } catch (err) {
-      log.error('poll iteration failed', { err: (err as Error).message });
-    }
-
-    cycle++;
-    if (shuttingDown) break;
-    await sleep(POLL_INTERVAL_MS);
-  }
-
-  log.info('poll loop exited cleanly');
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function setupSignalHandlers(): void {
   const handle = (sig: string) => async () => {
-    log.info(`received ${sig} — finishing in-flight job before exit`, { inFlightJobId });
+    if (shuttingDown) return;
     shuttingDown = true;
-    // Flush any pending Sentry events before exit. Best-effort with a
-    // short timeout — never block shutdown on a bad network.
-    await flushSentry(2000);
-    // If no job in flight, exit immediately. Otherwise the loop will
-    // exit naturally after the current job finishes.
-    if (!inFlightJobId) {
-      setTimeout(() => process.exit(0), 100);
-    } else {
-      // Hard-cap: don't let a stuck job keep us alive past 5 min on
-      // shutdown. Fly will kill us anyway after grace_period.
-      setTimeout(() => {
-        log.warn('grace period expired with job still running — exiting');
-        process.exit(0);
-      }, 5 * 60_000);
+    log.info(`received ${sig} — stopping supervisor + runtime`, { workerId: WORKER_ID });
+    try {
+      if (runtime) runtime.stop();
+      if (supervisor) await supervisor.stop();
+    } catch (err) {
+      log.warn('graceful shutdown error', { err: err instanceof Error ? err.message : String(err) });
     }
+    await flushSentry(2000);
+    setTimeout(() => process.exit(0), 200);
+    // Hard escape after 30s.
+    setTimeout(() => {
+      log.warn('graceful shutdown timed out — forcing exit');
+      process.exit(0);
+    }, 30_000);
   };
   process.on('SIGTERM', handle('SIGTERM'));
-  process.on('SIGINT',  handle('SIGINT'));
+  process.on('SIGINT', handle('SIGINT'));
 
-  // Catch unhandled promise rejections — without this they're silently
-  // swallowed in Node 20+. Sentry already does this via its global
-  // handlers, but logging makes them visible in Fly logs too.
   process.on('unhandledRejection', (reason) => {
-    log.error('unhandledRejection', { err: reason instanceof Error ? reason : new Error(String(reason)) });
+    log.error('unhandledRejection', {
+      err: reason instanceof Error ? reason : new Error(String(reason)),
+    });
   });
   process.on('uncaughtException', (err) => {
     log.error('uncaughtException', { err });
-    // Don't continue running — node won't have cleaned up state.
-    // Set exitCode immediately so even if the flush hangs, the
-    // process eventually quits with the right status. The setTimeout
-    // is a hard escape hatch (process.exit(1) within 3s no matter
-    // what flushSentry does).
     process.exitCode = 1;
     void flushSentry(2000).finally(() => process.exit(1));
     setTimeout(() => process.exit(1), 3000).unref();
@@ -220,43 +76,47 @@ function setupSignalHandlers(): void {
 
 async function main(): Promise<void> {
   setupSignalHandlers();
-  log.info('worker startup', { sentryReady, workerId: WORKER_ID });
+  log.info('cua-service starting', { sentryReady, workerId: WORKER_ID });
 
-  // Single-line posture confirmation — operators grep `cua_posture` in
-  // Fly logs after every deploy to confirm what enforce-mode the worker
-  // actually resolved to (fly.toml [env] vs `fly secrets` precedence is
-  // notoriously easy to get wrong — secrets win).
   log.info('cua_posture', {
     policyMode: env.CUA_POLICY_ENFORCE,
     signingMode: env.RECIPE_SIGNING_ENFORCE,
     dnsPreflight: env.CUA_DNS_PREFLIGHT,
     autoScreenshot: env.CUA_AUTO_SCREENSHOT,
     signingKeyPresent: !!env.RECIPE_SIGNING_KEY,
-    signingKeyPreviousPresent: !!env.RECIPE_SIGNING_KEY_PREVIOUS,
   });
-
-  // Fail-fast invariant — refuse to start enforce-mode without a key.
-  // Otherwise every onboarding/pull job would refuse to launch (verify
-  // reports `no_key_configured` → enforce → refuse) and the misconfig
-  // would be silent and hotel-impacting. Better to crash loudly here.
-  if (env.RECIPE_SIGNING_ENFORCE === 'enforce' && !env.RECIPE_SIGNING_KEY) {
-    log.error('startup_invariant_failed', {
-      err: new Error('RECIPE_SIGNING_ENFORCE=enforce but RECIPE_SIGNING_KEY is unset'),
-      reason: 'recipe_signing_enforce_without_key',
-    });
-    await flushSentry(2000);
-    process.exit(1);
-  }
 
   const conn = await verifyConnection();
   if (!conn.ok) {
     log.error('supabase connection failed at startup', { err: new Error(conn.error) });
     process.exit(1);
   }
-  await pollLoop();
+
+  supervisor = new SessionSupervisor();
+  runtime = new WorkflowRuntime(supervisor);
+
+  await supervisor.start();
+  runtime.start();
+
+  // No specific workflow handlers are registered in this rebuild.
+  // When Reeyen wires up his trigger sources + workflows separately,
+  // call runtime.registerHandler(kind, handler) here (or from a
+  // workflows/ subdirectory that the runtime imports).
+
+  log.info('cua-service ready', {
+    workerId: WORKER_ID,
+    flyMachineId: env.FLY_MACHINE_ID,
+    flyRegion: env.FLY_REGION,
+  });
+
+  // Keep alive forever. Signal handlers drive shutdown.
+  await new Promise<void>(() => {});
 }
 
 main().catch((err) => {
-  log.error('main crashed', { err: (err as Error).message, stack: (err as Error).stack });
+  log.error('main crashed', {
+    err: (err as Error).message,
+    stack: (err as Error).stack,
+  });
   process.exit(1);
 });

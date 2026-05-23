@@ -1,0 +1,785 @@
+/**
+ * Per-hotel session driver — owns one persistent Playwright BrowserContext.
+ *
+ * The session-driver is the workhorse of plan v4: it stays logged into
+ * one hotel's PMS 24/7, polls the active feeds every ~30 sec, and
+ * writes the results into the new 15-table schema. The session-supervisor
+ * boots one of these per enabled hotel and watches their heartbeats.
+ *
+ * Composition (the building blocks):
+ *   - knowledge-file.ts: tells us where data lives in this PMS
+ *   - cost-cap.ts: pauses Claude calls when $5/day reached
+ *   - single-flight.ts: prevents overlapping reads
+ *   - memory-monitor.ts: signals when to restart
+ *   - mfa-handler.ts: trust device + paused-auth state
+ *   - extractors/*: per-mode data extraction (csv/dom_table/fetch/inline)
+ *   - persistence/new-schema-writer.ts: writes the 5 active feeds
+ *
+ * What this file ISN'T responsible for:
+ *   - Spawning multiple drivers (session-supervisor.ts does that)
+ *   - Workflow execution (workflow-runtime.ts does that, but acquires
+ *     the browser-lock from here)
+ *   - Mapping new PMSes (mapper.ts kept for that, not invoked from here
+ *     in Phase 1)
+ */
+
+import { chromium } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
+import { supabase } from './supabase.js';
+import { log } from './log.js';
+import { env } from './env.js';
+import { loadActive, type LoadedKnowledgeFile, type FeedSpec } from './knowledge-file.js';
+import { checkBudget, markResumed } from './cost-cap.js';
+import { schedule as singleFlight, getMetrics as getSingleFlightMetrics } from './single-flight.js';
+import { shouldRestart } from './memory-monitor.js';
+import {
+  clickTrustDeviceIfPresent,
+  detectMfaPrompt,
+  pauseForMfa,
+} from './mfa-handler.js';
+import { extractDomTable } from './extractors/dom-table.js';
+import { extractFetchApi } from './extractors/fetch-api.js';
+import { extractDomInline } from './extractors/dom-inline.js';
+import { extractCsvDownload } from './extractors/csv-download.js';
+import {
+  normalizeCaCsv,
+  normalizeCaHkCenter,
+  normalizeCaWorkOrders,
+  normalizeCaDashboardCounts,
+  type CaDashboardPage,
+} from './extractors/choice-advantage.js';
+import {
+  saveReservations,
+  saveRoomStatuses,
+  saveHousekeepingAssignments,
+  saveWorkOrders,
+  saveInHouseSnapshot,
+} from './persistence/new-schema-writer.js';
+import { safeGoto } from './browser-utils/navigate.js';
+import type { ScraperCredentialsRow } from './types.js';
+
+const VIEWPORT = { width: 1280, height: 800 };
+const POLL_INTERVAL_MS = 30_000;
+const POLL_JITTER_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 60_000;
+const READ_TIMEOUT_MS = 120_000;
+
+interface ScraperSessionRow {
+  property_id: string;
+  state: Record<string, unknown> | null;
+  updated_at: string | null;
+}
+
+export interface SessionDriverOptions {
+  propertyId: string;
+  pmsFamily: string;
+  workerMachineId: string;
+}
+
+interface FeedRunResult {
+  feed: string;
+  ok: boolean;
+  reason?: string;
+  rowsWritten?: number;
+}
+
+/**
+ * Per-hotel session driver. Construct, call start(), it runs forever
+ * until stop() is called or memory-monitor signals restart.
+ */
+export class SessionDriver {
+  private readonly propertyId: string;
+  private readonly pmsFamily: string;
+  private readonly workerMachineId: string;
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+  private page: Page | null = null;
+  private knowledgeFile: LoadedKnowledgeFile | null = null;
+  private credentials: { username: string; password: string; loginUrl: string } | null = null;
+  private allowedHost: string | null = null;
+  private pollHandle: NodeJS.Timeout | null = null;
+  private heartbeatHandle: NodeJS.Timeout | null = null;
+  private running = false;
+  private stopping = false;
+  /** When > 0, browser is locked by workflow-runtime; reads pause. */
+  private browserLockDepth = 0;
+
+  constructor(opts: SessionDriverOptions) {
+    this.propertyId = opts.propertyId;
+    this.pmsFamily = opts.pmsFamily;
+    this.workerMachineId = opts.workerMachineId;
+  }
+
+  /** Start the session — boots browser, restores state, kicks off polling + heartbeat. */
+  async start(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    log.info('session-driver: starting', {
+      propertyId: this.propertyId,
+      pmsFamily: this.pmsFamily,
+      workerMachineId: this.workerMachineId,
+    });
+
+    await this.updateStatus({ status: 'starting' });
+
+    // 1. Load knowledge file for this hotel's PMS family.
+    this.knowledgeFile = await loadActive(this.pmsFamily);
+    if (!this.knowledgeFile) {
+      log.error('session-driver: no active knowledge file for pms_family', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+      });
+      await this.updateStatus({
+        status: 'failed_restart',
+        paused_reason: `No active knowledge file for ${this.pmsFamily}. Run the mapper before starting this hotel.`,
+      });
+      this.running = false;
+      return;
+    }
+
+    this.allowedHost = new URL(this.knowledgeFile.knowledge.login.startUrl).host;
+
+    // 2. Load credentials.
+    this.credentials = await this.loadCredentials();
+    if (!this.credentials) {
+      log.error('session-driver: no credentials for property', { propertyId: this.propertyId });
+      await this.updateStatus({
+        status: 'failed_restart',
+        paused_reason: 'No active scraper_credentials row.',
+      });
+      this.running = false;
+      return;
+    }
+
+    // 3. Launch Playwright with saved storageState (if any).
+    try {
+      await this.bootBrowser();
+    } catch (err) {
+      log.error('session-driver: boot browser failed', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      await this.updateStatus({
+        status: 'failed_restart',
+        paused_reason: `Browser boot failed: ${(err as Error).message}`,
+      });
+      this.running = false;
+      return;
+    }
+
+    // 4. Verify session — log in if needed.
+    const loggedIn = await this.ensureLoggedIn();
+    if (!loggedIn) {
+      // ensureLoggedIn handled status update (paused_mfa or failed_restart).
+      this.running = false;
+      return;
+    }
+
+    // 5. Kick off polling + heartbeat.
+    await this.updateStatus({ status: 'alive', last_alive_at: new Date().toISOString() });
+    this.scheduleNextPoll();
+    this.heartbeatHandle = setInterval(() => {
+      void this.publishHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
+
+    log.info('session-driver: started', { propertyId: this.propertyId });
+  }
+
+  /** Graceful stop — save state, close browser, exit. */
+  async stop(): Promise<void> {
+    if (this.stopping) return;
+    this.stopping = true;
+    log.info('session-driver: stopping', { propertyId: this.propertyId });
+
+    if (this.pollHandle) clearTimeout(this.pollHandle);
+    if (this.heartbeatHandle) clearInterval(this.heartbeatHandle);
+
+    // Save final storage state.
+    if (this.context) {
+      try {
+        const state = await this.context.storageState();
+        await this.saveStorageState(state as unknown as Record<string, unknown>);
+      } catch (err) {
+        log.warn('session-driver: final storageState save failed', {
+          propertyId: this.propertyId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    await this.closeBrowser();
+    this.running = false;
+    await this.updateStatus({ status: 'stopped' });
+  }
+
+  /**
+   * Acquire the browser lock for a workflow run. Returns a release
+   * function. While the lock is held (depth > 0), the polling loop
+   * skips its tick (the next scheduled tick will retry).
+   */
+  acquireBrowserLock(): () => void {
+    this.browserLockDepth++;
+    log.info('session-driver: browser lock acquired', {
+      propertyId: this.propertyId,
+      depth: this.browserLockDepth,
+    });
+    return () => {
+      this.browserLockDepth--;
+      log.info('session-driver: browser lock released', {
+        propertyId: this.propertyId,
+        depth: this.browserLockDepth,
+      });
+    };
+  }
+
+  /** Expose the page for workflow-runtime to drive writes. */
+  getPageForWorkflow(): Page | null {
+    return this.page;
+  }
+
+  // ─── Internals: boot + login ─────────────────────────────────────────
+
+  private async bootBrowser(): Promise<void> {
+    if (!this.knowledgeFile || !this.credentials) {
+      throw new Error('precondition failed');
+    }
+    const stored = await this.loadStorageState();
+
+    this.browser = await chromium.launch({ headless: true });
+    this.context = await this.browser.newContext({
+      viewport: VIEWPORT,
+      acceptDownloads: true,
+      // storageState comes back as opaque jsonb from Supabase. Cast to
+      // Playwright's expected shape. Malformed stored data will throw
+      // from newContext and we fall back to fresh login in ensureLoggedIn.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      storageState: (stored ?? undefined) as any,
+    });
+    this.page = await this.context.newPage();
+  }
+
+  private async ensureLoggedIn(): Promise<boolean> {
+    if (!this.page || !this.knowledgeFile || !this.credentials || !this.allowedHost) {
+      throw new Error('ensureLoggedIn precondition failed');
+    }
+    const { login } = this.knowledgeFile.knowledge;
+
+    // Probe: navigate to start URL. If we land on a login form, we're not logged in.
+    try {
+      await safeGoto(this.page, login.startUrl, {
+        allowedHost: null,
+        context: 'session-driver:probe',
+      });
+    } catch (err) {
+      log.warn('session-driver: probe goto failed', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+
+    const successSelector = login.successSelectors[0];
+    const onSuccessPage = successSelector
+      ? await this.page.locator(successSelector).first().isVisible({ timeout: 3_000 }).catch(() => false)
+      : false;
+
+    if (onSuccessPage) {
+      log.info('session-driver: existing session valid (no login needed)', {
+        propertyId: this.propertyId,
+      });
+      return true;
+    }
+
+    log.info('session-driver: session expired — logging in', { propertyId: this.propertyId });
+
+    // MFA detection: if the probe landed us on an MFA prompt directly,
+    // pause before attempting any login steps (the stored session was
+    // valid until trust expired).
+    const earlyMfa = await detectMfaPrompt(this.page);
+    if (earlyMfa.mfa) {
+      await pauseForMfa({
+        propertyId: this.propertyId,
+        detectedSelector: earlyMfa.selector,
+        loginUrl: login.startUrl,
+      });
+      return false;
+    }
+
+    // Execute login steps.
+    try {
+      for (const stepRaw of login.steps) {
+        const step = stepRaw as Record<string, unknown>;
+        await this.runLoginStep(step);
+      }
+    } catch (err) {
+      log.error('session-driver: login step failed', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      await this.updateStatus({
+        status: 'failed_restart',
+        paused_reason: `Login failed: ${(err as Error).message}`,
+      });
+      return false;
+    }
+
+    // Click trust-device BEFORE submitting MFA (in case the next step is the MFA submit).
+    if (login.trustDeviceSelectors && login.trustDeviceSelectors.length > 0) {
+      await clickTrustDeviceIfPresent(this.page, login.trustDeviceSelectors);
+    } else {
+      await clickTrustDeviceIfPresent(this.page);
+    }
+
+    // Now check for MFA prompt after steps.
+    const mfa = await detectMfaPrompt(this.page);
+    if (mfa.mfa) {
+      await pauseForMfa({
+        propertyId: this.propertyId,
+        detectedSelector: mfa.selector,
+        loginUrl: login.startUrl,
+      });
+      return false;
+    }
+
+    // Wait for success selector.
+    const selectors = login.successSelectors.length > 0 ? login.successSelectors : ['body'];
+    try {
+      await Promise.race(
+        selectors.map((sel) => this.page!.waitForSelector(sel, { timeout: login.timeoutMs ?? 15_000 })),
+      );
+    } catch (err) {
+      log.error('session-driver: login success selector did not appear', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return false;
+    }
+
+    // Save fresh storage state.
+    if (this.context) {
+      try {
+        const state = await this.context.storageState();
+        await this.saveStorageState(state as unknown as Record<string, unknown>);
+      } catch (err) {
+        log.warn('session-driver: post-login storageState save failed', {
+          propertyId: this.propertyId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    log.info('session-driver: login complete', { propertyId: this.propertyId });
+    return true;
+  }
+
+  private async runLoginStep(step: Record<string, unknown>): Promise<void> {
+    if (!this.page || !this.credentials || !this.allowedHost) {
+      throw new Error('runLoginStep precondition failed');
+    }
+    const kind = step.kind as string;
+    const resolve = (value: string): string => {
+      if (value === '$username') return this.credentials!.username;
+      if (value === '$password') return this.credentials!.password;
+      return value;
+    };
+    switch (kind) {
+      case 'goto':
+        await safeGoto(this.page, step.url as string, {
+          allowedHost: this.allowedHost,
+          context: 'session-driver:login:goto',
+        });
+        return;
+      case 'fill':
+        await this.page.fill(step.selector as string, resolve(step.value as string), { timeout: 10_000 });
+        return;
+      case 'click':
+        await this.page.click(step.selector as string, { timeout: 10_000 });
+        return;
+      case 'wait_for':
+        await this.page.waitForSelector(step.selector as string, {
+          timeout: (step.timeoutMs as number | undefined) ?? 15_000,
+        });
+        return;
+      case 'wait_ms':
+        await new Promise((r) => setTimeout(r, step.ms as number));
+        return;
+      case 'select':
+        await this.page.selectOption(step.selector as string, resolve(step.value as string));
+        return;
+      case 'press_key':
+        await this.page.keyboard.press(step.key as string);
+        return;
+      case 'type_text':
+        await this.page.keyboard.type(resolve(step.value as string));
+        return;
+      default:
+        throw new Error(`unsupported login step kind: ${kind}`);
+    }
+  }
+
+  // ─── Internals: polling loop ─────────────────────────────────────────
+
+  private scheduleNextPoll(): void {
+    if (this.stopping) return;
+    const jitter = Math.floor((Math.random() - 0.5) * 2 * POLL_JITTER_MS);
+    const delay = Math.max(5_000, POLL_INTERVAL_MS + jitter);
+    this.pollHandle = setTimeout(() => {
+      void this.pollOnce().finally(() => this.scheduleNextPoll());
+    }, delay);
+  }
+
+  private async pollOnce(): Promise<void> {
+    if (this.stopping) return;
+    // Skip if browser-locked by a workflow.
+    if (this.browserLockDepth > 0) {
+      log.info('session-driver: poll skipped — browser locked by workflow', {
+        propertyId: this.propertyId,
+      });
+      return;
+    }
+
+    // Check for restart signal from memory-monitor.
+    const restart = shouldRestart();
+    if (restart.restart) {
+      log.warn('session-driver: restart requested — stopping', {
+        propertyId: this.propertyId,
+        reason: restart.reason,
+      });
+      await this.stop();
+      process.exit(0);
+      return;
+    }
+
+    // Check cost-cap: paused → skip poll (auto-resume happens at midnight reset).
+    const budget = await checkBudget(this.propertyId);
+    if (!budget.ok) {
+      log.info('session-driver: poll skipped — paused', {
+        propertyId: this.propertyId,
+        reason: budget.reason,
+        spentMicros: budget.spentMicros,
+      });
+      return;
+    }
+    // If we were paused for cost and tally is reset, flip back to alive.
+    const wasPausedCost = await this.isStatus('paused_cost_cap');
+    if (wasPausedCost) {
+      await markResumed(this.propertyId);
+    }
+
+    // Run via single-flight mutex.
+    await singleFlight(this.propertyId, READ_TIMEOUT_MS, async (signal) => {
+      await this.runAllFeeds(signal);
+    }).catch((err) => {
+      log.warn('session-driver: poll failed', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  private async runAllFeeds(signal: AbortSignal): Promise<void> {
+    if (!this.knowledgeFile || !this.page) return;
+    const feeds = this.knowledgeFile.knowledge.feeds;
+    const results: FeedRunResult[] = [];
+    const today = todayInTimezone('America/Chicago');
+
+    // CA-specific dispatch for Phase 1. When more PMS families come,
+    // dispatch on this.pmsFamily and call the right normalizer.
+    const isCa = this.pmsFamily === 'choice_advantage';
+
+    // Process feeds in a stable order so dashboard updates feel monotonic.
+    const order: string[] = [
+      'dashboard_counts',
+      'arrivals_departures',
+      'room_status',
+      'housekeeping',
+      'work_orders',
+    ];
+
+    for (const feedName of order) {
+      if (signal.aborted) break;
+      const feed = feeds[feedName];
+      if (!feed) continue;
+      try {
+        const r = await this.runFeed(feedName, feed, today, isCa, signal);
+        results.push(r);
+      } catch (err) {
+        log.warn('session-driver: feed run threw', {
+          propertyId: this.propertyId,
+          feed: feedName,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        results.push({ feed: feedName, ok: false, reason: (err as Error).message });
+      }
+    }
+
+    log.info('session-driver: poll complete', {
+      propertyId: this.propertyId,
+      results,
+    });
+  }
+
+  private async runFeed(
+    feedName: string,
+    feed: FeedSpec,
+    today: string,
+    isCa: boolean,
+    signal: AbortSignal,
+  ): Promise<FeedRunResult> {
+    if (!this.page || !this.allowedHost) {
+      return { feed: feedName, ok: false, reason: 'no page or allowedHost' };
+    }
+    switch (feed.mode) {
+      case 'csv_download': {
+        const result = await extractCsvDownload({
+          page: this.page,
+          feedSpec: feed,
+          allowedHost: this.allowedHost,
+          signal,
+        });
+        if (!result.ok) return { feed: feedName, ok: false, reason: result.reason };
+        if (!isCa) return { feed: feedName, ok: true };
+        const normalized = normalizeCaCsv(result.rows, { today });
+        const r = await saveReservations(this.propertyId, normalized.reservations);
+        const h = await saveHousekeepingAssignments(this.propertyId, normalized.housekeeping);
+        const s = await saveRoomStatuses(this.propertyId, normalized.roomStatuses);
+        return {
+          feed: feedName,
+          ok: r.ok && h.ok && s.ok,
+          rowsWritten: r.inserted + h.upserted + s.statusChanges,
+        };
+      }
+      case 'dom_table': {
+        const result = await extractDomTable({
+          page: this.page,
+          feedSpec: feed,
+          allowedHost: this.allowedHost,
+          signal,
+        });
+        if (!result.ok) return { feed: feedName, ok: false, reason: result.reason };
+        if (!isCa) return { feed: feedName, ok: true };
+        if (feedName === 'room_status' || feedName === 'housekeeping') {
+          // dom-table returns Record<string,string>[]; normalizeCaHkCenter
+          // declares the `number` field required but tolerates absence at
+          // runtime — accept the type cast.
+          const normalized = normalizeCaHkCenter(
+            result.rows as unknown as Parameters<typeof normalizeCaHkCenter>[0],
+            { today },
+          );
+          const s = await saveRoomStatuses(this.propertyId, normalized.roomStatuses);
+          const h = await saveHousekeepingAssignments(this.propertyId, normalized.housekeeping);
+          return {
+            feed: feedName,
+            ok: s.ok && h.ok,
+            rowsWritten: s.statusChanges + h.upserted,
+          };
+        }
+        return { feed: feedName, ok: true };
+      }
+      case 'fetch_api': {
+        const result = await extractFetchApi({ page: this.page, feedSpec: feed, signal });
+        if (!result.ok) return { feed: feedName, ok: false, reason: result.reason };
+        if (!isCa) return { feed: feedName, ok: true };
+        if (feedName === 'work_orders') {
+          const normalized = normalizeCaWorkOrders(result.data, { oooOnly: true });
+          const w = await saveWorkOrders(this.propertyId, normalized);
+          return {
+            feed: feedName,
+            ok: w.ok,
+            rowsWritten: w.inserted + w.updated + w.reopened,
+          };
+        }
+        return { feed: feedName, ok: true };
+      }
+      case 'dom_inline': {
+        // Dashboard counts: special-cased CA flow with 3 URLs.
+        if (isCa && feedName === 'dashboard_counts') {
+          return this.runCaDashboardCounts(feed, signal);
+        }
+        const result = await extractDomInline({
+          page: this.page,
+          feedSpec: feed,
+          allowedHost: this.allowedHost,
+          signal,
+        });
+        return { feed: feedName, ok: result.ok, reason: result.reason };
+      }
+    }
+  }
+
+  private async runCaDashboardCounts(
+    feed: FeedSpec,
+    signal: AbortSignal,
+  ): Promise<FeedRunResult> {
+    if (!this.page || !this.allowedHost) {
+      return { feed: 'dashboard_counts', ok: false, reason: 'no page' };
+    }
+    // Feed spec for CA dashboard has extra.pages = { inHouse: url, arrivals: url, departures: url }.
+    const pages = (feed.extra?.pages as Record<string, string> | undefined) ?? {};
+    if (!pages.inHouse || !pages.arrivals || !pages.departures) {
+      return {
+        feed: 'dashboard_counts',
+        ok: false,
+        reason: 'feedSpec.extra.pages missing inHouse/arrivals/departures URLs',
+      };
+    }
+    const fields = feed.columns ?? { roomCount: 'label:has-text("Room Count:") + * .CHI_Data' };
+    const fetchPage = async (url: string): Promise<CaDashboardPage> => {
+      const r = await extractDomInline({
+        page: this.page!,
+        feedSpec: { mode: 'dom_inline', url, columns: fields },
+        allowedHost: this.allowedHost!,
+        signal,
+      });
+      if (!r.ok) return { roomCount: null };
+      return {
+        roomCount: r.data.roomCount ?? null,
+        guestCount: r.data.guestCount ?? null,
+      };
+    };
+
+    const [inHouse, arrivals, departures] = await Promise.all([
+      fetchPage(pages.inHouse),
+      fetchPage(pages.arrivals),
+      fetchPage(pages.departures),
+    ]);
+
+    if (signal.aborted) return { feed: 'dashboard_counts', ok: false, reason: 'aborted' };
+
+    const snapshot = normalizeCaDashboardCounts({ inHouse, arrivals, departures });
+    const result = await saveInHouseSnapshot(this.propertyId, snapshot);
+    return { feed: 'dashboard_counts', ok: result.ok, reason: result.message };
+  }
+
+  // ─── Internals: heartbeat + status ───────────────────────────────────
+
+  private async publishHeartbeat(): Promise<void> {
+    const metrics = getSingleFlightMetrics(this.propertyId);
+    const { error } = await supabase
+      .from('property_sessions')
+      .update({
+        last_alive_at: new Date().toISOString(),
+        worker_machine_id: this.workerMachineId,
+        current_browser_url: this.page ? safeUrl(this.page) : null,
+        notes: `polling: completed=${metrics.completed} skipped=${metrics.skipped} timedOut=${metrics.timedOut}`,
+      })
+      .eq('property_id', this.propertyId);
+    if (error) {
+      log.warn('session-driver: heartbeat update failed', {
+        propertyId: this.propertyId,
+        err: error.message,
+      });
+    }
+  }
+
+  private async updateStatus(patch: Record<string, unknown>): Promise<void> {
+    // Upsert pattern: insert if not exists, update if exists.
+    const { error } = await supabase
+      .from('property_sessions')
+      .upsert(
+        {
+          property_id: this.propertyId,
+          pms_family: this.pmsFamily,
+          worker_machine_id: this.workerMachineId,
+          ...patch,
+        },
+        { onConflict: 'property_id' },
+      );
+    if (error) {
+      log.warn('session-driver: status update failed', {
+        propertyId: this.propertyId,
+        patch,
+        err: error.message,
+      });
+    }
+  }
+
+  private async isStatus(status: string): Promise<boolean> {
+    const { data } = await supabase
+      .from('property_sessions')
+      .select('status')
+      .eq('property_id', this.propertyId)
+      .maybeSingle();
+    return data?.status === status;
+  }
+
+  // ─── Internals: credentials + session storage ────────────────────────
+
+  private async loadCredentials(): Promise<{
+    username: string;
+    password: string;
+    loginUrl: string;
+  } | null> {
+    const { data, error } = await supabase
+      .from('scraper_credentials')
+      .select('*')
+      .eq('property_id', this.propertyId)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as ScraperCredentialsRow;
+    return {
+      username: row.ca_username,
+      password: row.ca_password,
+      loginUrl: row.ca_login_url,
+    };
+  }
+
+  private async loadStorageState(): Promise<Record<string, unknown> | null> {
+    const { data, error } = await supabase
+      .from('scraper_session')
+      .select('state, updated_at')
+      .eq('property_id', this.propertyId)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as ScraperSessionRow;
+    return row.state;
+  }
+
+  private async saveStorageState(state: Record<string, unknown>): Promise<void> {
+    const { error } = await supabase
+      .from('scraper_session')
+      .upsert(
+        {
+          property_id: this.propertyId,
+          state,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'property_id' },
+      );
+    if (error) {
+      log.warn('session-driver: saveStorageState failed', {
+        propertyId: this.propertyId,
+        err: error.message,
+      });
+    }
+  }
+
+  private async closeBrowser(): Promise<void> {
+    try {
+      if (this.page) await this.page.close().catch(() => {});
+      if (this.context) await this.context.close().catch(() => {});
+      if (this.browser) await this.browser.close().catch(() => {});
+    } catch {
+      // best-effort
+    }
+    this.page = null;
+    this.context = null;
+    this.browser = null;
+  }
+}
+
+function todayInTimezone(tz: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+}
+
+function safeUrl(page: Page): string | null {
+  try {
+    return page.url();
+  } catch {
+    return null;
+  }
+}
+
+// Reference env to satisfy linters about the import being used.
+void env;
