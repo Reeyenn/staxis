@@ -69,6 +69,11 @@ const MAX_INPUT_TOKENS_PER_RUN = 800_000;
 // before the JSON.)
 const MAX_OUTPUT_TOKENS_PER_TURN = 4096;
 const PHASE_WALLCLOCK_BUDGET_MS = 5 * 60_000;
+// Plan v8 review P1-B — vision is 3-5× slower per target (more turns, image
+// generation time per screenshot). 5min wallclock would constantly trip
+// before vision even gets a chance to find anything. 15min matches the
+// vision-mode per-target step cap headroom.
+const PHASE_WALLCLOCK_BUDGET_MS_VISION = 15 * 60_000;
 const HISTORY_KEEP_RECENT = 1;
 // Plan v8 P0-1 — vision mode keeps last 3 screenshots in history (vs DOM's 1).
 // Vision conversations balloon with image tokens; truncating aggressively
@@ -84,6 +89,15 @@ const HISTORY_KEEP_RECENT_VISION = 3;
  */
 function historyKeepFor(mode: 'dom' | 'vision'): number {
   return mode === 'vision' ? HISTORY_KEEP_RECENT_VISION : HISTORY_KEEP_RECENT;
+}
+
+/**
+ * Plan v8 review P1-B — wallclock budget per phase, mode-aware. Vision needs
+ * more headroom because each turn is slower (screenshot + image-token input)
+ * and the model often takes 3-5× more turns to find an element via vision.
+ */
+function phaseWallclockFor(mode: 'dom' | 'vision'): number {
+  return mode === 'vision' ? PHASE_WALLCLOCK_BUDGET_MS_VISION : PHASE_WALLCLOCK_BUDGET_MS;
 }
 // Truncate any single read_page or get_page_text result over this size.
 // 20K chars ≈ 5-6K tokens. Most pages have a few hundred interactive
@@ -141,6 +155,13 @@ interface MapperOptions {
   propertyId?: string | null;
   jobId?: string | null;
   /**
+   * Plan v8 review P0-A — per-job cost cap override. When set, replaces
+   * env.CUA_JOB_COST_CAP_MICROS for cap-check inside isJobOverBudget +
+   * checkBudget. Vision-mode jobs set this to $50 during canary; flip to
+   * $25 once paper-cost is measured. DOM-mode jobs keep the $5 env default.
+   */
+  jobCostCapMicros?: number;
+  /**
    * Optional abort signal — passed to every anthropic.beta.messages.create()
    * call so the runJob timeout can actually cancel in-flight Claude requests
    * instead of letting them run to completion past the deadline. Added
@@ -177,11 +198,14 @@ interface MapperOptions {
  */
 async function isJobOverBudget(
   jobId: string | null,
+  /** Plan v8 review P0-A — per-job cap override (falls back to env default). */
+  capMicrosOverride?: number,
 ): Promise<{ over: false } | { over: true; spentMicros: number; capMicros: number }> {
   if (!jobId) return { over: false };
+  const capMicros = capMicrosOverride ?? JOB_COST_CAP_MICROS;
   const spentMicros = await getJobCostMicros(jobId);
-  if (spentMicros >= JOB_COST_CAP_MICROS) {
-    return { over: true, spentMicros, capMicros: JOB_COST_CAP_MICROS };
+  if (spentMicros >= capMicros) {
+    return { over: true, spentMicros, capMicros };
   }
   return { over: false };
 }
@@ -212,6 +236,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       signal: opts.signal,
       mode,
       model,
+      jobCostCapMicros: opts.jobCostCapMicros,
     });
     if (!loginResult.ok) {
       return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
@@ -224,14 +249,18 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     // checkBudget queries claude_usage_log for spend so far on this job;
     // returns null when under budget, an over-budget failure result when over.
     // Skipped when jobId is null (one-off dev runs).
+    // Plan v8 review P0-A — uses opts.jobCostCapMicros if set (vision $50
+    // canary cap), else env default ($5). Without this fix, vision runs hit
+    // the DOM $5 cap and die mid-map.
+    const effectiveCapMicros = opts.jobCostCapMicros ?? JOB_COST_CAP_MICROS;
     const checkBudget = async (): Promise<MapperResult | null> => {
       if (!opts.jobId) return null;
       const spentMicros = await getJobCostMicros(opts.jobId);
-      if (spentMicros >= JOB_COST_CAP_MICROS) {
+      if (spentMicros >= effectiveCapMicros) {
         log.warn('cua mapper aborting — cumulative cost cap hit', {
           jobId: opts.jobId,
           spentMicros,
-          capMicros: JOB_COST_CAP_MICROS,
+          capMicros: effectiveCapMicros,
         });
         return {
           ok: false,
@@ -242,7 +271,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             phase: 'mapper',
             reason: 'cost_cap_exceeded',
             spent_micros: spentMicros,
-            cap_micros: JOB_COST_CAP_MICROS,
+            cap_micros: effectiveCapMicros,
           },
         };
       }
@@ -296,6 +325,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             signal: opts.signal,
             mode,
             model,
+            jobCostCapMicros: opts.jobCostCapMicros,
           })
         : await mapAction({
             page,
@@ -310,6 +340,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             signal: opts.signal,
             mode,
             model,
+            jobCostCapMicros: opts.jobCostCapMicros,
           });
       if (result.ok) {
         actions[target.key] = result.action;
@@ -380,6 +411,8 @@ async function mapLogin(
     /** Plan v8 — picked at mapPMS entry; same mode used for login + targets. */
     mode: 'dom' | 'vision';
     model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+    /** Plan v8 review P0-A — per-job cap override. */
+    jobCostCapMicros?: number;
   },
 ): Promise<LoginMapResult | LoginMapFailure> {
   // Plan v8: resolve tool + system prompt + beta header + model by mode.
@@ -406,26 +439,15 @@ async function mapLogin(
   // password never enter the Claude conversation (and so don't end up
   // in Anthropic API logs, message history files, or any future model-
   // training capture).
-  const goal =
+  const credentialIntro =
     `Log into this hotel PMS. The username and password are NOT shown ` +
     `to you for security; pass these literal placeholder strings as the ` +
-    `value when calling form_input or type, and the browser tool will ` +
-    `substitute the real credentials before typing them into the page:\n` +
+    `value when typing into the credential fields, and the tool will ` +
+    `substitute the real credentials before sending them to the page:\n` +
     `  username placeholder: "$username"\n` +
-    `  password placeholder: "$password"\n\n` +
+    `  password placeholder: "$password"\n\n`;
 
-    `STEP-BY-STEP:\n` +
-    `1. Call read_page with text="interactive" to see the form fields and ` +
-    `their refs.\n` +
-    `2. Call form_input with the username field's ref and value="$username".\n` +
-    `3. Call form_input with the password field's ref and value="$password".\n` +
-    `4. Click the submit button (form_input or left_click with the submit ref).\n` +
-    `5. Wait for the next page (use wait if it's slow), then read_page again.\n` +
-    `6. If you land on a property picker, click the FIRST property. If you ` +
-    `land on a "Welcome" splash (Choice Advantage), click "Continue" or ` +
-    `"Enter PMS".\n` +
-    `7. Repeat read_page + click as needed to reach the dashboard.\n\n` +
-
+  const successCriteria =
     `WHEN YOU'RE LOGGED IN (you see a dashboard with hotel-specific data: ` +
     `room counts, today's date, guest names, navigation menu with ` +
     `reports/front-desk/etc.), reply with JSON ONLY (no commentary):\n` +
@@ -435,6 +457,35 @@ async function mapLogin(
 
     `IF login fails permanently (wrong creds, account locked, PMS down), ` +
     `reply with {"error": "<short reason>"} and stop.`;
+
+  const goal = credentialIntro +
+    (ctx.mode === 'vision'
+      ? `STEP-BY-STEP (vision mode):\n` +
+        `1. Take a SCREENSHOT to see the login form.\n` +
+        `2. left_click on the username input field's coordinate.\n` +
+        `3. Send {action: "type", text: "$username"}. The tool substitutes ` +
+        `the real username before it hits the page.\n` +
+        `4. left_click on the password field's coordinate.\n` +
+        `5. Send {action: "type", text: "$password"}.\n` +
+        `6. Click the submit / log-in button.\n` +
+        `7. Wait for the next page (use {action: "wait", duration: 2} if slow), ` +
+        `then take a fresh screenshot.\n` +
+        `8. If you land on a property picker, click the FIRST property. If ` +
+        `you land on a "Welcome" splash (Choice Advantage), click "Continue" ` +
+        `or "Enter PMS" or the property name.\n` +
+        `9. Repeat screenshot + click as needed to reach the dashboard.\n\n`
+      : `STEP-BY-STEP:\n` +
+        `1. Call read_page with text="interactive" to see the form fields and ` +
+        `their refs.\n` +
+        `2. Call form_input with the username field's ref and value="$username".\n` +
+        `3. Call form_input with the password field's ref and value="$password".\n` +
+        `4. Click the submit button (form_input or left_click with the submit ref).\n` +
+        `5. Wait for the next page (use wait if it's slow), then read_page again.\n` +
+        `6. If you land on a property picker, click the FIRST property. If you ` +
+        `land on a "Welcome" splash (Choice Advantage), click "Continue" or ` +
+        `"Enter PMS".\n` +
+        `7. Repeat read_page + click as needed to reach the dashboard.\n\n`) +
+    successCriteria;
 
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: goal }] },
@@ -451,7 +502,7 @@ async function mapLogin(
         detail: { phase: 'login_mapping', reason: 'token_budget_exceeded', totalInputTokens },
       };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt > phaseWallclockFor(ctx.mode)) {
       log.warn('mapper exceeded wall-clock budget', { stepIdx });
       return {
         ok: false,
@@ -461,7 +512,7 @@ async function mapLogin(
     }
     // Per-turn budget check — see isJobOverBudget() comment.
     {
-      const budget = await isJobOverBudget(ctx.jobId);
+      const budget = await isJobOverBudget(ctx.jobId, ctx.jobCostCapMicros);
       if (budget.over) {
         log.warn('login mapper aborting — cumulative cost cap hit', { jobId: ctx.jobId ?? undefined, ...budget });
         return {
@@ -638,6 +689,8 @@ async function mapAction(args: {
   /** Plan v8 Phase A — picked at mapPMS entry; same mode used for all targets. */
   mode: 'dom' | 'vision';
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
+  jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   // Plan v8: resolve config once at the top of the per-target loop.
   const cfg = getModeConfig(args.mode, args.model);
@@ -679,27 +732,49 @@ async function mapAction(args: {
 
   const fullGoal =
     args.goal +
-    `\n\nWORKFLOW (do these in order, don't skip):\n` +
-    `1. Call \`read_page\` with text="interactive" — this gives you ALL ` +
-    `clickable links/buttons on the dashboard with their refs.\n` +
-    `2. SCAN the read_page output for any item whose name or aria-label ` +
-    `matches the target page (e.g. for housekeeping look for "Housekeeping", ` +
-    `"Rooms", "Status", "Maid"; for staff look for "Users", "Staff", "Setup", ` +
-    `"Admin", "Employees"). The match doesn't have to be exact — partial is fine.\n` +
-    `3. If a single obvious match exists, click that ref and read_page again.\n` +
-    `4. If NO single match, click the most likely menu item (e.g. "Reports", ` +
-    `"Setup", or a hamburger icon). Then read_page on the resulting submenu — ` +
-    `submenus often hold the target.\n` +
-    `5. If you've clicked through 2 menu levels and STILL don't see the target, ` +
-    `try the \`find\` tool with the keyword (e.g. find("housekeeping")). It ` +
-    `searches the whole DOM tree, not just visible items.\n` +
-    `6. Once on the target page, look for a TABLE with one row per record. ` +
-    `Identify a stable rowSelector. For each required field, find a column ` +
-    `selector relative to one row.\n` +
-    `7. If the page DOES NOT have the data we need (e.g. no Housekeeping ` +
-    `report exists in this PMS, or it's behind a paid module), reply with ` +
-    `{"unavailable": true, "reason": "<why>"} so we can mark this action ` +
-    `as unsupported and continue.\n\n` +
+    (args.mode === 'vision'
+      ? `\n\nWORKFLOW (vision mode — use the computer tool):\n` +
+        `1. Take a SCREENSHOT to see the dashboard.\n` +
+        `2. SCAN the screenshot for any menu item / link / tab whose visible ` +
+        `text matches the target (e.g. for housekeeping look for "Housekeeping", ` +
+        `"Rooms", "Status", "Maid"; for revenue look for "Reports", "Audit", ` +
+        `"Revenue", "Daily Summary"). Partial matches are fine.\n` +
+        `3. left_click the most-likely target's coordinate. Look at the screenshot ` +
+        `carefully — small misalignments will miss the element.\n` +
+        `4. Take another screenshot to see the new page.\n` +
+        `5. If you're not on the target page yet, repeat: scan, click, screenshot. ` +
+        `Most data lives 1-3 levels under Reports / Front Desk / Setup menus.\n` +
+        `6. Once on the target page (you see a table with one row per record), ` +
+        `take a final screenshot and identify the table visually. Make your best ` +
+        `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
+        `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
+        `your selectors on the first extraction; if wrong, a self-heal job will ` +
+        `re-engage you.\n` +
+        `7. If the page DOES NOT have the data we need (no equivalent report ` +
+        `exists in this PMS, or it's behind a paid module), reply with ` +
+        `{"unavailable": true, "reason": "<why>"} so we can mark this target ` +
+        `as unsupported and continue.\n\n`
+      : `\n\nWORKFLOW (do these in order, don't skip):\n` +
+        `1. Call \`read_page\` with text="interactive" — this gives you ALL ` +
+        `clickable links/buttons on the dashboard with their refs.\n` +
+        `2. SCAN the read_page output for any item whose name or aria-label ` +
+        `matches the target page (e.g. for housekeeping look for "Housekeeping", ` +
+        `"Rooms", "Status", "Maid"; for staff look for "Users", "Staff", "Setup", ` +
+        `"Admin", "Employees"). The match doesn't have to be exact — partial is fine.\n` +
+        `3. If a single obvious match exists, click that ref and read_page again.\n` +
+        `4. If NO single match, click the most likely menu item (e.g. "Reports", ` +
+        `"Setup", or a hamburger icon). Then read_page on the resulting submenu — ` +
+        `submenus often hold the target.\n` +
+        `5. If you've clicked through 2 menu levels and STILL don't see the target, ` +
+        `try the \`find\` tool with the keyword (e.g. find("housekeeping")). It ` +
+        `searches the whole DOM tree, not just visible items.\n` +
+        `6. Once on the target page, look for a TABLE with one row per record. ` +
+        `Identify a stable rowSelector. For each required field, find a column ` +
+        `selector relative to one row.\n` +
+        `7. If the page DOES NOT have the data we need (e.g. no Housekeeping ` +
+        `report exists in this PMS, or it's behind a paid module), reply with ` +
+        `{"unavailable": true, "reason": "<why>"} so we can mark this action ` +
+        `as unsupported and continue.\n\n`) +
 
     `WHEN DONE WITH A REAL PAGE — your reply MUST start with the JSON ` +
     `object on the first line. No preamble like "I found the page" or ` +
@@ -729,12 +804,12 @@ async function mapAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt > phaseWallclockFor(args.mode)) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
     // Per-turn budget check — global job cap.
     {
-      const budget = await isJobOverBudget(args.jobId);
+      const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
       if (budget.over) {
         log.warn('action mapper aborting — cumulative job cost cap hit', {
           jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
@@ -961,6 +1036,8 @@ async function mapDrillDownAction(args: {
   /** Plan v8 Phase A — same mode for all targets across the mapping run. */
   mode: 'dom' | 'vision';
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
+  jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   // Plan v8: resolve config once at top.
   const cfg = getModeConfig(args.mode, args.model);
@@ -986,11 +1063,19 @@ async function mapDrillDownAction(args: {
 
   const fullGoal =
     args.goal +
-    `\n\nDRILL-DOWN WORKFLOW (do these in order):\n` +
-    `1. read_page to see the dashboard menus.\n` +
-    `2. Navigate to the LIST page (e.g. reservations list, lost-items list).\n` +
-    `3. Capture the list page selectors: a stable rowSelector + columns ` +
-    `for the fields visible IN THE ROW.\n` +
+    (args.mode === 'vision'
+      ? `\n\nDRILL-DOWN WORKFLOW (vision mode):\n` +
+        `1. Take a SCREENSHOT to see the dashboard menus.\n` +
+        `2. Navigate to the LIST page by clicking visible menus (e.g. ` +
+        `reservations list, lost-items list).\n` +
+        `3. Look at the list visually. Make your best-guess CSS selectors for ` +
+        `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
+        `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n`
+      : `\n\nDRILL-DOWN WORKFLOW (do these in order):\n` +
+        `1. read_page to see the dashboard menus.\n` +
+        `2. Navigate to the LIST page (e.g. reservations list, lost-items list).\n` +
+        `3. Capture the list page selectors: a stable rowSelector + columns ` +
+        `for the fields visible IN THE ROW.\n`) +
     `4. Pick ${SAMPLE_COUNT} sample rows. For each one:\n` +
     `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
     `   - Click into the row to open the detail page\n` +
@@ -1037,10 +1122,10 @@ async function mapDrillDownAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt > phaseWallclockFor(args.mode)) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
-    const budget = await isJobOverBudget(args.jobId);
+    const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
     if (budget.over) {
       log.warn('drilldown mapper aborting — cumulative job cost cap hit', {
         jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,

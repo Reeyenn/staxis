@@ -134,6 +134,8 @@ export async function runMappingJob(
   log.info('mapping-driver: pre-flight passed', { jobId });
 
   // 2. Run mapPMS. The mapper opens its own browser via chromium.launch.
+  // Plan v8 review P0-A: thread per-job cost cap through. Without this
+  // vision-mode jobs would hit the DOM mode's $5 env default and abort.
   const result = await mapPMS({
     credentials,
     pmsType: input.pms_family as PMSType,
@@ -142,6 +144,7 @@ export async function runMappingJob(
     signal,
     mode,
     model: input.model,
+    jobCostCapMicros: input.cost_cap_micros,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
     },

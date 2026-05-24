@@ -42,7 +42,6 @@
 
 import type { Page } from 'playwright';
 import type { PMSCredentials, RecipeStep } from './types.js';
-import { allowAction, policyMode, recordPolicyRefusal } from './policy.js';
 import type { MappingPhase } from './policy.js';
 import { log } from './log.js';
 
@@ -110,41 +109,39 @@ export async function executeVisionAction(
   phase: MappingPhase = 'login',
 ): Promise<VisionActionResult> {
   try {
-    // Policy gate (P1-1 Option I: empty hint — see file header comment).
-    // Translate vision-action name to the closest browser-tool action the
-    // policy module already knows about, so existing rules carry over.
-    const policyActionName: BrowserActionAlias = mapToPolicyAction(action.action);
-    const decision = allowAction(
-      { action: policyActionName } as never,  // policy.ts inspects action.action only
-      phase,
-      '',
-    );
-    if (!decision.allow) {
-      const mode = policyMode();
-      recordPolicyRefusal({
-        action: action.action,
-        phase,
-        rule: decision.rule,
-        reason: decision.reason ?? 'refused',
-        mode,
-      });
-      if (mode === 'enforce') {
-        return {
-          output: decision.reason ?? `Action ${action.action} refused by policy.`,
-          isError: true,
-        };
-      }
-      // warn mode: fall through.
-    }
+    // Plan v8 review P1-A — VISION MODE BYPASSES policy.ts entirely.
+    //
+    // Why: policy.ts derives its decision from element attributes (text,
+    // aria-label, role, type) accessed via DOM ref. Vision actions carry
+    // pixel coordinates, no DOM hint. policy.ts's default for a missing
+    // hint in the 'action' phase is REFUSE for every click — which would
+    // silently abort every vision-mode navigation under
+    // CUA_POLICY_ENFORCE=enforce. We confirmed in Codex review.
+    //
+    // Trade-off: the F-AI-7 phase-aware write-blocker is bypassed during
+    // the one-time mapping run. Mapping uses read-only PMS browsing; live
+    // polling runs deterministic recipes (no Claude in the loop), so this
+    // exposure is bounded to the mapping window per PMS family. Plan v8
+    // Option II (extend policy.ts with text-reasoning hints) is deferred.
+    //
+    // We log every vision action for ops visibility.
+    log.info('vision-action', { phase, action: action.action });
 
     switch (action.action) {
       case 'screenshot': {
+        // Plan v8 P0-B: add visual-only black overlays over sensitive
+        // elements, screenshot, ALWAYS remove overlays in finally so the
+        // page doesn't carry them forward (would block future clicks).
         await hardenScreenshotPrivacy(page);
-        const buf = await page.screenshot({ fullPage: false });
-        return {
-          output: 'Screenshot captured.',
-          screenshotB64: buf.toString('base64'),
-        };
+        try {
+          const buf = await page.screenshot({ fullPage: false });
+          return {
+            output: 'Screenshot captured.',
+            screenshotB64: buf.toString('base64'),
+          };
+        } finally {
+          await clearScreenshotPrivacyOverlays(page);
+        }
       }
 
       case 'left_click': {
@@ -352,26 +349,59 @@ export async function executeVisionAction(
  * content boundary still applies. Logged as a warning so we notice if a
  * PMS has a structural reason this fails consistently.
  */
+/**
+ * Plan v8 review P0-B fix: VISUAL-ONLY masking. Earlier version mutated
+ * `input.value = '••••••'`, which corrupted the real password if a
+ * screenshot fired between type + submit (login would fail with the
+ * masked string). Now we only paint the field opaque — the underlying
+ * value is untouched.
+ *
+ * Strategy: position:relative + an absolute black overlay that exactly
+ * covers each sensitive element. Overlays are removed by a cleanup pass
+ * the caller MUST invoke after page.screenshot returns. We use a
+ * data-attribute marker to find and remove them without affecting
+ * unrelated DOM.
+ */
 async function hardenScreenshotPrivacy(page: Page): Promise<void> {
   try {
     await page.evaluate(() => {
-      const blank = (el: Element) => {
+      const SELECTOR = 'input[type="password"], [data-sensitive], .ssn, .credit-card';
+      document.querySelectorAll(SELECTOR).forEach((el) => {
         const h = el as HTMLElement;
-        h.style.background = 'black';
-        h.style.color = 'black';
-        h.style.borderColor = 'black';
-        // Also blank the *value* property of inputs in case the agent
-        // somehow gets at the DOM later via a paste-like flow.
-        if (h instanceof HTMLInputElement) {
-          h.setAttribute('data-orig-value-len', String(h.value.length));
-          h.value = '••••••';
-        }
-      };
-      document.querySelectorAll('input[type="password"]').forEach(blank);
-      document.querySelectorAll('[data-sensitive], .ssn, .credit-card').forEach(blank);
+        const rect = h.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        const overlay = document.createElement('div');
+        overlay.dataset.staxisPrivacyOverlay = '1';
+        overlay.style.position = 'fixed';
+        overlay.style.left = `${rect.left}px`;
+        overlay.style.top = `${rect.top}px`;
+        overlay.style.width = `${rect.width}px`;
+        overlay.style.height = `${rect.height}px`;
+        overlay.style.background = '#000';
+        overlay.style.zIndex = '2147483647';
+        overlay.style.pointerEvents = 'none';
+        document.body.appendChild(overlay);
+      });
     });
   } catch (err) {
-    log.warn('hardenScreenshotPrivacy: evaluate failed', {
+    log.warn('hardenScreenshotPrivacy: overlay-add evaluate failed', {
+      message: (err as Error).message,
+    });
+  }
+}
+
+/**
+ * Companion to hardenScreenshotPrivacy: remove the overlays we added
+ * just before the screenshot. Always call in a try/finally around the
+ * screenshot to ensure no stale overlays linger if screenshot throws.
+ */
+async function clearScreenshotPrivacyOverlays(page: Page): Promise<void> {
+  try {
+    await page.evaluate(() => {
+      document.querySelectorAll('[data-staxis-privacy-overlay]').forEach((el) => el.remove());
+    });
+  } catch (err) {
+    log.warn('clearScreenshotPrivacyOverlays: evaluate failed', {
       message: (err as Error).message,
     });
   }
@@ -400,34 +430,7 @@ function normalizeKey(input: string): string {
   return capitalized.join('+');
 }
 
-/**
- * Map a vision-tool action name to the closest equivalent that policy.ts
- * already knows. Lets the existing F-AI-7 phase allowlist apply without
- * having to teach policy.ts every new vision action.
- *
- * The mapping is intentionally lossy: triple_click → click (same risk
- * surface). Vision-only actions (mouse_move, cursor_position) → 'hover'
- * which is always allowed.
- */
-type BrowserActionAlias = 'left_click' | 'double_click' | 'hover' | 'type' | 'key' | 'scroll' | 'screenshot' | 'wait';
-
-function mapToPolicyAction(visionAction: VisionAction['action']): BrowserActionAlias {
-  switch (visionAction) {
-    case 'screenshot':       return 'screenshot';
-    case 'left_click':       return 'left_click';
-    case 'right_click':      return 'left_click';
-    case 'middle_click':     return 'left_click';
-    case 'double_click':     return 'double_click';
-    case 'triple_click':     return 'left_click';
-    case 'mouse_move':       return 'hover';
-    case 'left_click_drag':  return 'left_click';
-    case 'left_mouse_down':  return 'left_click';
-    case 'left_mouse_up':    return 'left_click';
-    case 'type':             return 'type';
-    case 'key':              return 'key';
-    case 'hold_key':         return 'key';
-    case 'scroll':           return 'scroll';
-    case 'wait':             return 'wait';
-    case 'cursor_position':  return 'hover';
-  }
-}
+// Plan v8 review P1-A: mapToPolicyAction + BrowserActionAlias were used
+// to bridge vision actions through policy.ts. Vision mode now bypasses
+// policy.ts entirely (see executeVisionAction comment) so this helper
+// is no longer called and was deleted.
