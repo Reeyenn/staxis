@@ -53,7 +53,9 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Daily — most live in ml-cron.yml's multi-cron list
   { heartbeatName: 'ml-run-inference',      source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 10 * * *' },
   { heartbeatName: 'ml-predict-inventory',  source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 11 * * *' },
-  { heartbeatName: 'ml-aggregate-priors',   source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 12 * * *' },
+  // 2026-05-24: removed `ml-aggregate-priors` — cross-fleet cohort
+  // aggregation is a no-op at N<5 hotels per cohort. Cron still fires
+  // (ml-cron.yml schedule) but its heartbeat isn't tracked.
   { heartbeatName: 'ml-shadow-evaluate',    source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' }, cronExpr: '30 11 * * *' },
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
   // schedule-auto-fill fires from two cron slots in the same workflow.

@@ -2748,7 +2748,9 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
   { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },
-  { name: 'ml-aggregate-priors',           cadenceHours: 24,    description: 'daily cross-fleet cohort prior aggregation' },
+  // 2026-05-24: removed `ml-aggregate-priors` — cross-fleet cohort
+  // aggregation is a no-op at N<5 hotels per cohort. Re-add when scale
+  // makes the cron meaningful. (See route.ts for the matching log demote.)
   { name: 'ml-shadow-evaluate',            cadenceHours: 24,    description: 'daily shadow-model promote/reject pass' },
   { name: 'ml-retention-purge',            cadenceHours: 24,    description: 'daily prediction_log/app_events retention purge (Phase 3.6)' },
   { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },

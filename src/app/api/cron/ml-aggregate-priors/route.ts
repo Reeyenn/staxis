@@ -105,7 +105,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         notes: { aggregated: results.map((r) => r.endpoint) },
       });
     } else {
-      log.error('ml-aggregate-priors: at least one aggregator failed — heartbeat NOT written', {
+      // Demoted from log.error → log.warn on 2026-05-24: cross-fleet
+      // cohort aggregation only produces meaningful output at scale
+      // (10+ hotels per cohort, currently N=1). The /train/* endpoints
+      // on the ML service skip the upsert when n_hotels < 5, so failures
+      // today have no product impact — they're just noise in Sentry.
+      // When n_hotels > 5 in any cohort, re-add 'ml-aggregate-priors'
+      // to EXPECTED_CRONS in doctor/route.ts + cron-schedule-registry.ts,
+      // and re-promote this back to log.error.
+      log.warn('ml-aggregate-priors: at least one aggregator failed — heartbeat NOT written (no-op at N<5 cohort)', {
         requestId,
         failed: failed.map((f) => ({ endpoint: f.endpoint, status: f.status, json: f.json })),
       });
@@ -116,7 +124,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       { status: allSucceeded ? 200 : 502 },
     );
   } catch (e) {
-    log.error('ml-aggregate-priors: orchestration failed', { requestId, err: e as Error });
+    // Same demote rationale as above — no point alerting on cohort
+    // aggregation failures at N=1.
+    log.warn('ml-aggregate-priors: orchestration failed (no-op at N<5 cohort)', { requestId, err: e as Error });
     return NextResponse.json({ ok: false, error: errToString(e), requestId }, { status: 502 });
   }
 }
