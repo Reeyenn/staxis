@@ -83,4 +83,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'vercel-watchdog',       source: { kind: 'vercel', cronPath: '/api/cron/vercel-watchdog' },                  cronExpr: '*/5 * * * *' },
   // 2026-05-24: cua-parity-diff retired — shadow gate removed; new
   // generic-table-writer is the only write path now.
+  // Migration 0210: cleaning-rules engine. Reads pms_* → writes
+  // cleaning_tasks every 5 min. Idempotent.
+  { heartbeatName: 'run-rules-engine',      source: { kind: 'vercel', cronPath: '/api/cron/run-rules-engine' },                 cronExpr: '*/5 * * * *' },
 ];
