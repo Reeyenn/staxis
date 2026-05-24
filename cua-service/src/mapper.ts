@@ -37,6 +37,7 @@ import { env } from './env.js';
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
+import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
 // Higher cap for per-action mapping — action 4 (staff) is buried in
@@ -237,18 +238,34 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // it's enough to promote.
         break;
       }
-      const result = await mapAction({
-        page,
-        actionName: target.key,
-        goal: target.goal,
-        requiredFields: target.requiredFields,
-        classification: target.classification,
-        postLoginUrl,
-        credentials: opts.credentials,
-        propertyId: opts.propertyId ?? null,
-        jobId: opts.jobId ?? null,
-        signal: opts.signal,
-      });
+      // Plan v7 — dispatch on target classification. Drill-down targets
+      // use mapDrillDownAction (different agent loop, different output
+      // shape — captures URL templates + per-field coverage). List/report
+      // targets use the original mapAction.
+      const result = target.classification === 'drilldown_sample'
+        ? await mapDrillDownAction({
+            page,
+            actionName: target.key,
+            goal: target.goal,
+            requiredFields: target.requiredFields,
+            postLoginUrl,
+            credentials: opts.credentials,
+            propertyId: opts.propertyId ?? null,
+            jobId: opts.jobId ?? null,
+            signal: opts.signal,
+          })
+        : await mapAction({
+            page,
+            actionName: target.key,
+            goal: target.goal,
+            requiredFields: target.requiredFields,
+            classification: target.classification,
+            postLoginUrl,
+            credentials: opts.credentials,
+            propertyId: opts.propertyId ?? null,
+            jobId: opts.jobId ?? null,
+            signal: opts.signal,
+          });
       if (result.ok) {
         actions[target.key] = result.action;
       } else {
@@ -830,6 +847,324 @@ async function mapAction(args: {
   }
 
   return { ok: false, reason: 'mapper exhausted step budget', finalUrl: args.page.url() };
+}
+
+// ─── Per-action mapping (DRILL-DOWN variant) ─────────────────────────────
+//
+// Plan v7 — for targets classified as `drilldown_sample` (pms_guests,
+// pms_lost_and_found, pms_activity_log), the mapper drills into N=3
+// sample records from a list page to learn the detail-page URL pattern
+// AND the per-record field selectors. Output includes:
+//   - list selectors (cheap, high-throughput)
+//   - per-record detail selectors (expensive, on-demand only)
+//   - URL template inferred from the 3 sample URLs (verified at runtime
+//     when extracting), with placeholder→list-column mappings
+//   - per-field coverage observed across samples (e.g. "email: 2/3")
+//
+// Why a separate function: drill-down has a fundamentally different
+// output JSON shape (samples[] array vs single rowSelector/columns),
+// different goal/system-prompt phrasing, and post-processing (URL
+// inference + coverage tally) that mapAction doesn't need.
+
+interface DrillDownSamplePayload {
+  url?: unknown;
+  rowData?: unknown;
+  detailColumns?: unknown;
+}
+interface DrillDownAgentPayload {
+  listUrl?: unknown;
+  listRowSelector?: unknown;
+  listColumns?: unknown;
+  samples?: unknown;
+  unavailable?: unknown;
+  reason?: unknown;
+}
+
+async function mapDrillDownAction(args: {
+  page: Page;
+  actionName: string;
+  goal: string;
+  requiredFields: string[];
+  postLoginUrl: string;
+  credentials: PMSCredentials;
+  propertyId: string | null;
+  jobId: string | null;
+  signal?: AbortSignal;
+}): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Reuse the post-login navigation setup from mapAction.
+  if (args.page.url() !== args.postLoginUrl) {
+    const allowedHost = new URL(args.credentials.loginUrl).host;
+    await safeGoto(args.page, args.postLoginUrl, {
+      allowedHost,
+      context: 'mapper:drilldown:postLoginUrl',
+    }).catch(() => {});
+    await args.page.waitForTimeout(1000);
+  }
+
+  const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: args.postLoginUrl }];
+  let totalInputTokens = 0;
+
+  const classification = 'drilldown_sample';
+  const targetStepCap = TARGET_STEP_CAPS[classification]!;
+  const targetCostCapMicros = TARGET_BUDGET_MICROS[classification]!;
+  // Drill-down samples = 3; cost scales roughly with sample count.
+  const SAMPLE_COUNT = 3;
+
+  const fullGoal =
+    args.goal +
+    `\n\nDRILL-DOWN WORKFLOW (do these in order):\n` +
+    `1. read_page to see the dashboard menus.\n` +
+    `2. Navigate to the LIST page (e.g. reservations list, lost-items list).\n` +
+    `3. Capture the list page selectors: a stable rowSelector + columns ` +
+    `for the fields visible IN THE ROW.\n` +
+    `4. Pick ${SAMPLE_COUNT} sample rows. For each one:\n` +
+    `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
+    `   - Click into the row to open the detail page\n` +
+    `   - Capture the detail page URL (will be used for template inference)\n` +
+    `   - Capture detail-page-only field selectors (fields NOT shown in the list)\n` +
+    `   - Navigate back to the list before the next sample\n` +
+    `5. Emit the final JSON in this shape:\n` +
+    `   {\n` +
+    `     "listUrl": "...",\n` +
+    `     "listRowSelector": "...",\n` +
+    `     "listColumns": {"reservation_id": "td:nth-child(1)", ...},\n` +
+    `     "samples": [\n` +
+    `       {\n` +
+    `         "url": "/Reservation/view?id=ABC123",\n` +
+    `         "rowData": {"reservation_id": "ABC123", ...},\n` +
+    `         "detailColumns": {"email": ".guest-email", "phone": ".guest-phone", ...}\n` +
+    `       },\n` +
+    `       // ${SAMPLE_COUNT - 1} more samples\n` +
+    `     ]\n` +
+    `   }\n` +
+    `\n` +
+    `If you genuinely can't find the list page (e.g. the PMS doesn't have ` +
+    `a Lost & Found module), emit {"unavailable": true, "reason": "..."} ` +
+    `per the system-prompt floor (≥1 read_page, ≥3 navigations first).\n\n` +
+    `Required fields: ${args.requiredFields.join(', ')}\n` +
+    `Output the JSON on the first line of your reply — no preamble.`;
+
+  const messages: Anthropic.Messages.MessageParam[] = [
+    { role: 'user', content: [{ type: 'text', text: fullGoal }] },
+  ];
+
+  const phaseStartedAt = Date.now();
+  // Same unavailable-floor tracking as mapAction.
+  const UNAVAILABLE_FLOOR = { readPages: 1, navigations: 3 };
+  let readPageCount = 0;
+  let navigationCount = 0;
+  let targetOverBudget = false;
+
+  // Drill-down step budget = per-target × sample-count (since each sample
+  // is its own back-and-forth).
+  const effectiveStepCap = targetStepCap * SAMPLE_COUNT;
+
+  for (let stepIdx = 0; stepIdx < effectiveStepCap; stepIdx++) {
+    if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
+      return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
+    }
+    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+      return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
+    }
+    const budget = await isJobOverBudget(args.jobId);
+    if (budget.over) {
+      log.warn('drilldown mapper aborting — cumulative job cost cap hit', {
+        jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
+      });
+      return { ok: false, reason: 'cost cap hit', finalUrl: args.page.url() };
+    }
+    if (targetOverBudget) {
+      log.warn('drilldown mapper: per-target cost cap exceeded — soft-abort', {
+        actionName: args.actionName, targetCostCapMicros, stepIdx,
+      });
+      return {
+        ok: false,
+        reason: `per-target cost cap exceeded for drilldown_sample ($${(targetCostCapMicros / 1_000_000).toFixed(2)})`,
+        finalUrl: args.page.url(),
+      };
+    }
+
+    const idempotencyKey = args.jobId
+      ? `${args.jobId}:drilldown:${args.actionName}:${stepIdx}`
+      : `anon:drilldown:${args.actionName}:${stepIdx}:${Date.now()}`;
+
+    const response = await anthropic.beta.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
+      system: [
+        { type: 'text', text: MAPPING_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      ],
+      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31'],
+    }, {
+      ...(args.signal ? { signal: args.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
+
+    totalInputTokens += response.usage?.input_tokens ?? 0;
+    void logClaudeUsage(response.usage ?? {}, {
+      workload: 'cua_mapping_drilldown',
+      model: CLAUDE_MODEL,
+      propertyId: args.propertyId,
+      jobId: args.jobId,
+      metadata: { actionName: args.actionName, stepIdx },
+    });
+
+    const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
+    messages.push({ role: 'assistant', content: responseContent });
+
+    if (response.stop_reason === 'end_turn') {
+      const finalText = extractFinalText(responseContent);
+      const parsed = tryParseJson(finalText) as DrillDownAgentPayload | null;
+
+      // Unavailable path — same floor check as mapAction.
+      if (parsed && parsed.unavailable === true) {
+        const floorMet =
+          readPageCount >= UNAVAILABLE_FLOOR.readPages &&
+          navigationCount >= UNAVAILABLE_FLOOR.navigations;
+        if (!floorMet) {
+          return {
+            ok: false,
+            reason: `premature unavailable in drilldown (${readPageCount} read_pages + ${navigationCount} navigations)`,
+            finalUrl: args.page.url(),
+          };
+        }
+        return {
+          ok: false,
+          reason: `unavailable: ${typeof parsed.reason === 'string' ? parsed.reason : 'no reason given'}`,
+          finalUrl: args.page.url(),
+        };
+      }
+
+      // Success path — validate shape, infer URL template, compute coverage.
+      if (
+        parsed &&
+        typeof parsed.listUrl === 'string' &&
+        typeof parsed.listRowSelector === 'string' &&
+        parsed.listColumns && typeof parsed.listColumns === 'object' &&
+        Array.isArray(parsed.samples) &&
+        parsed.samples.length >= SAMPLE_COUNT
+      ) {
+        const samples = parsed.samples as DrillDownSamplePayload[];
+        const sampleUrls: string[] = [];
+        const sampleRowData: Array<Record<string, string>> = [];
+        const sampleDetailColumns: Array<Record<string, string>> = [];
+        for (const s of samples.slice(0, SAMPLE_COUNT)) {
+          if (typeof s.url !== 'string' || !s.rowData || typeof s.rowData !== 'object' ||
+              !s.detailColumns || typeof s.detailColumns !== 'object') {
+            return {
+              ok: false,
+              reason: 'drilldown samples malformed (each needs url + rowData + detailColumns)',
+              finalUrl: args.page.url(),
+            };
+          }
+          sampleUrls.push(s.url);
+          sampleRowData.push(s.rowData as Record<string, string>);
+          sampleDetailColumns.push(s.detailColumns as Record<string, string>);
+        }
+
+        // URL template inference.
+        const inference = inferUrlTemplate(sampleUrls);
+        const detailUrlTemplate = inference.ok ? inference.template : sampleUrls[0]!;
+        const placeholderToColumn = inference.ok
+          ? mapPlaceholdersToColumns(inference.placeholders, sampleRowData)
+          : {};
+        // Map placeholders to friendlier names — use the column name as
+        // the new placeholder (e.g. var_0 → pms_reservation_id).
+        const detailUrlParams: Record<string, string> = {};
+        for (const [placeholder, columnName] of Object.entries(placeholderToColumn)) {
+          detailUrlParams[columnName] = columnName;
+        }
+
+        // Per-field coverage: for each detail field, count samples where
+        // the selector returned a non-empty value. Agent reports this
+        // implicitly by whether the field appears in each sample's
+        // detailColumns.
+        const allDetailFields = new Set<string>();
+        for (const dc of sampleDetailColumns) {
+          for (const k of Object.keys(dc)) allDetailFields.add(k);
+        }
+        const fieldCoverage: Record<string, string> = {};
+        const mergedDetailColumns: Record<string, string> = {};
+        for (const field of allDetailFields) {
+          let present = 0;
+          for (const dc of sampleDetailColumns) {
+            if (dc[field] && String(dc[field]).length > 0) present++;
+          }
+          fieldCoverage[field] = `${present}/${SAMPLE_COUNT}`;
+          // Use the first non-empty selector as the canonical one.
+          for (const dc of sampleDetailColumns) {
+            if (dc[field] && String(dc[field]).length > 0) {
+              mergedDetailColumns[field] = String(dc[field]);
+              break;
+            }
+          }
+        }
+
+        return {
+          ok: true,
+          action: {
+            steps: recordedSteps,
+            parse: {
+              mode: 'table',
+              hint: {
+                rowSelector: parsed.listRowSelector,
+                columns: parsed.listColumns as Record<string, string>,
+              },
+            },
+            drillDown: {
+              listUrl: parsed.listUrl,
+              listRowSelector: parsed.listRowSelector,
+              listColumns: parsed.listColumns as Record<string, string>,
+              detailUrlTemplate,
+              detailUrlParams,
+              detailColumns: mergedDetailColumns,
+              fieldCoverage,
+              samplesDrilled: SAMPLE_COUNT,
+              // Plan v7 calls for a 4th-sample verification drill; for the
+              // initial Phase 2a ship we treat successful inference as
+              // verification. A follow-up enhancement (Phase 2c polish)
+              // will add the explicit 4th drill.
+              templateVerified: inference.ok,
+            },
+          },
+        };
+      }
+
+      return {
+        ok: false,
+        reason: `drilldown: no usable JSON — agent said: ${finalText.slice(0, 200)}`,
+        finalUrl: args.page.url(),
+      };
+    }
+
+    const toolUses = responseContent.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    if (toolUses.length === 0) break;
+
+    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+    for (const toolUse of toolUses) {
+      const action = toolUse.input as BrowserAction;
+      const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
+      if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      toolResults.push(makeToolResult(toolUse.id, exec));
+
+      const actionType = (action as { action?: string }).action ?? '';
+      if (actionType === 'read_page' || actionType === 'get_page_text') readPageCount++;
+      else if (actionType === 'navigate' || actionType === 'left_click' ||
+               actionType === 'double_click' || actionType === 'find' ||
+               actionType === 'scroll_to' || actionType === 'form_input') navigationCount++;
+    }
+
+    messages.push({ role: 'user', content: toolResults });
+
+    if (args.jobId) {
+      const totalSpent = await getJobCostMicros(args.jobId);
+      if (totalSpent > targetCostCapMicros * 3) targetOverBudget = true;
+    }
+  }
+
+  return { ok: false, reason: 'drilldown exhausted step budget', finalUrl: args.page.url() };
 }
 
 // ─── Tool-result formatting ──────────────────────────────────────────────

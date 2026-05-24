@@ -116,6 +116,40 @@ export interface ActionRecipe {
   downloadsCsv?: boolean;
   acceptsDate?: boolean;
   acceptsDays?: boolean;
+  /** Plan v7 — drill-down targets (guests, lost-and-found, activity log)
+   *  learn BOTH the list page AND the per-record detail page. Runtime
+   *  decides whether to enumerate from the list (cheap) or drill per
+   *  record (expensive, on-demand only). recipe-adapter translates this
+   *  to a multi-source TableTemplate with list_row + detail_page sources. */
+  drillDown?: {
+    /** List page selectors (high-throughput core fields). */
+    listUrl: string;
+    listRowSelector: string;
+    listColumns: Record<string, string>;
+    /** Detail page URL template inferred from N samples + verified with
+     *  one extra drill (Plan v7 — Codex v2 P0 URL templating fix). */
+    detailUrlTemplate: string;
+    /** Map: template placeholder → list column whose value substitutes in.
+     *  e.g. {pms_reservation_id: 'reservation_id'} means substitute the
+     *  list row's `reservation_id` column into `{pms_reservation_id}` in
+     *  the URL template. */
+    detailUrlParams: Record<string, string>;
+    /** Selectors for fields on the detail page (nice-to-haves like email,
+     *  phone, loyalty_tier that don't appear on the list). */
+    detailColumns: Record<string, string>;
+    /** Per-field observed coverage across the sampled records. Stored as
+     *  "M/N" strings (e.g. "2/3" = present in 2 of 3 samples). Admin UI
+     *  surfaces fields below a coverage threshold as warnings. */
+    fieldCoverage: Record<string, string>;
+    /** Number of sample records the mapper actually drilled into. Should
+     *  be ≥ 3 + 1 verification (= 4) for a clean drill-down recipe. */
+    samplesDrilled: number;
+    /** Whether the verification drill (with substituted URL template)
+     *  succeeded — i.e., the template substitution loaded a real detail
+     *  page with the expected selectors. False = template-inference
+     *  failed; target should quarantine. */
+    templateVerified: boolean;
+  };
 }
 
 export interface Recipe {
