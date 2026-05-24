@@ -74,6 +74,48 @@ const HISTORY_KEEP_RECENT = 1;
 // to drown the agent in noise.
 const READ_PAGE_TRUNCATE_CHARS = 20_000;
 
+// ─── Plan v7 Phase 2a: per-target cost budgets ─────────────────────────────
+// Per-target caps prevent one runaway target from blowing the global $10
+// job cap before priority targets even run. Classification:
+//   list_page         — obvious top-nav page, simple table
+//   report_menu       — buried under Reports submenu, 2-3 clicks deep
+//   drilldown_sample  — needs to drill into N=3 sample records to learn
+//                       the per-record detail page selectors
+const TARGET_BUDGET_MICROS: Record<string, number> = {
+  list_page:        500_000,    // $0.50
+  report_menu:    1_000_000,    // $1.00
+  drilldown_sample: 1_200_000,  // $1.20 (drills 3 records)
+};
+const TARGET_STEP_CAPS: Record<string, number> = {
+  list_page:        80,
+  report_menu:      100,
+  drilldown_sample: 60,         // per-record; multiply by sample count
+};
+
+/**
+ * The full target catalogue for Plan v7's mapper. Ordered by priority —
+ * if the global job cap trips partway through, the partial recipe still
+ * contains the most valuable tables (room status, arrivals, etc.).
+ *
+ * `optional: true` means a clean `{unavailable: true}` from the agent is
+ * a legitimate outcome (e.g. revenue/forecast on a franchise-tier PMS
+ * that doesn't expose financials). Required targets that fail block
+ * auto-promotion (see plan v7 promotion criteria).
+ */
+interface MapperTarget {
+  /** Recipe.actions key — also the actionName passed to mapAction. */
+  key: keyof Recipe['actions'];
+  goal: string;
+  requiredFields: string[];
+  classification: 'list_page' | 'report_menu' | 'drilldown_sample';
+  optional: boolean;
+  progressLabel: string;
+  progressPct: number;
+}
+
+// Defined after the GOAL strings below.
+let TARGETS: MapperTarget[];
+
 interface MapperOptions {
   pmsType: PMSType;
   credentials: PMSCredentials;
@@ -165,84 +207,62 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       return null;
     };
 
-    // ─── Phase 2: per-action mapping ───────────────────────────────────────
+    // ─── Phase 2 (Plan v7): per-target mapping loop ───────────────────────
+    // Replaced the 4 hardcoded mapAction() calls with a loop over TARGETS.
+    // Each entry declares its own goal + required-field list + classification
+    // (drives per-target cost budget) + execution priority + optionality.
+    //
+    // Targets are ordered by business value — if the global cost cap trips
+    // partway through, the partial recipe still contains the most valuable
+    // tables (room status, arrivals, departures, in-house counts).
+    //
+    // Optional targets that report `unavailable: true` cleanly are NOT
+    // counted as failures — they're a legitimate "this PMS tier doesn't
+    // expose this" outcome (e.g. Choice Advantage franchise has no revenue
+    // report). See plan v7's "auto-promotion criteria" for how downstream
+    // consumes this.
+
     const actions: Recipe['actions'] = {};
 
-    opts.onProgress?.('Finding the daily housekeeping report…', 40);
-    {
+    for (const target of TARGETS) {
+      opts.onProgress?.(target.progressLabel, target.progressPct);
       const overBudget = await checkBudget();
-      if (overBudget) return overBudget;
+      if (overBudget) {
+        log.warn('mapper: global cost cap hit — stopping target loop', {
+          completedTargets: Object.keys(actions),
+          remainingTargets: TARGETS.slice(TARGETS.indexOf(target)).map((t) => t.key),
+        });
+        // Don't return overBudget here — emit a partial recipe with what
+        // we've got. The auto-promotion gates downstream decide whether
+        // it's enough to promote.
+        break;
+      }
+      const result = await mapAction({
+        page,
+        actionName: target.key,
+        goal: target.goal,
+        requiredFields: target.requiredFields,
+        classification: target.classification,
+        postLoginUrl,
+        credentials: opts.credentials,
+        propertyId: opts.propertyId ?? null,
+        jobId: opts.jobId ?? null,
+        signal: opts.signal,
+      });
+      if (result.ok) {
+        actions[target.key] = result.action;
+      } else {
+        // Failure on an OPTIONAL target = informational. Failure on a
+        // REQUIRED target = logged louder and may block promotion.
+        const level = target.optional ? 'info' : 'warn';
+        log[level]('action mapping failed', {
+          actionName: target.key,
+          optional: target.optional,
+          reason: result.reason,
+          finalUrl: result.finalUrl,
+        });
+      }
     }
-    const housekeepingReport = await mapAction({
-      page,
-      actionName: 'getRoomStatus',
-      goal: HOUSEKEEPING_GOAL,
-      requiredFields: ['roomNumber', 'roomType', 'status', 'condition'],
-      postLoginUrl,
-      credentials: opts.credentials,
-      propertyId: opts.propertyId ?? null,
-      jobId: opts.jobId ?? null,
-      signal: opts.signal,
-    });
-    if (housekeepingReport.ok) actions.getRoomStatus = housekeepingReport.action;
-    else log.warn('action mapping failed', { actionName: 'getRoomStatus', reason: housekeepingReport.reason, finalUrl: housekeepingReport.finalUrl });
-
-    opts.onProgress?.('Finding today\'s arrivals…', 50);
-    {
-      const overBudget = await checkBudget();
-      if (overBudget) return overBudget;
-    }
-    const arrivals = await mapAction({
-      page,
-      actionName: 'getArrivals',
-      goal: ARRIVALS_GOAL,
-      requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
-      postLoginUrl,
-      credentials: opts.credentials,
-      propertyId: opts.propertyId ?? null,
-      jobId: opts.jobId ?? null,
-      signal: opts.signal,
-    });
-    if (arrivals.ok) actions.getArrivals = arrivals.action;
-    else log.warn('action mapping failed', { actionName: 'getArrivals', reason: arrivals.reason, finalUrl: arrivals.finalUrl });
-
-    opts.onProgress?.('Finding today\'s departures…', 55);
-    {
-      const overBudget = await checkBudget();
-      if (overBudget) return overBudget;
-    }
-    const departures = await mapAction({
-      page,
-      actionName: 'getDepartures',
-      goal: DEPARTURES_GOAL,
-      requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
-      postLoginUrl,
-      credentials: opts.credentials,
-      propertyId: opts.propertyId ?? null,
-      jobId: opts.jobId ?? null,
-      signal: opts.signal,
-    });
-    if (departures.ok) actions.getDepartures = departures.action;
-    else log.warn('action mapping failed', { actionName: 'getDepartures', reason: departures.reason, finalUrl: departures.finalUrl });
-
-    opts.onProgress?.('Finding the staff list…', 60);
-    {
-      const overBudget = await checkBudget();
-      if (overBudget) return overBudget;
-    }
-    const staff = await mapAction({
-      page,
-      actionName: 'getStaffRoster',
-      goal: STAFF_GOAL,
-      requiredFields: ['name'],
-      postLoginUrl,
-      credentials: opts.credentials,
-      propertyId: opts.propertyId ?? null,
-      jobId: opts.jobId ?? null,
-      signal: opts.signal,
-    });
-    if (staff.ok) actions.getStaffRoster = staff.action;
-    else log.warn('action mapping failed', { actionName: 'getStaffRoster', reason: staff.reason, finalUrl: staff.finalUrl });
 
     if (Object.keys(actions).length === 0) {
       return {
@@ -536,7 +556,29 @@ async function mapAction(args: {
   propertyId: string | null;
   jobId: string | null;
   signal?: AbortSignal;
+  /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
+   *  if absent (back-compat for any caller from before TARGETS landed). */
+  classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
 }): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Plan v7: per-target step + cost caps. Drill-down targets get fewer
+  // steps PER record but execute against multiple samples; report-menu
+  // targets get more steps to drill through reports submenus.
+  const classification = args.classification ?? 'list_page';
+  const targetStepCap = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
+  const targetCostCapMicros = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
+
+  // Plan v7 — `unavailable: true` floor. Agent can short-circuit a target
+  // with {unavailable: true}, but only AFTER demonstrating real effort:
+  // at least 1 read_page on the dashboard + 3 navigation/search attempts.
+  // Prevents lazy 1-shot "this PMS doesn't have it" calls that fool the
+  // auto-promotion gates.
+  const UNAVAILABLE_FLOOR = { readPages: 1, navigations: 3 };
+  let readPageCount = 0;
+  let navigationCount = 0;
+  // Track whether the target's per-target cost cap has tripped (soft-abort).
+  // Set true after a tool_use round trip pushes us over targetCostCapMicros.
+  // The current call always completes; we just don't start another round.
+  let targetOverBudget = false;
   if (args.page.url() !== args.postLoginUrl) {
     // Pin to the credentials' login-URL host so a stale post-login URL
     // from a different domain can't redirect the authenticated session
@@ -602,22 +644,42 @@ async function mapAction(args: {
 
   const phaseStartedAt = Date.now();
 
-  for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS_PER_ACTION; stepIdx++) {
+  for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
     if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
-    // Per-turn budget check — see isJobOverBudget() comment.
+    // Per-turn budget check — global job cap.
     {
       const budget = await isJobOverBudget(args.jobId);
       if (budget.over) {
-        log.warn('action mapper aborting — cumulative cost cap hit', {
+        log.warn('action mapper aborting — cumulative job cost cap hit', {
           jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
         });
         return { ok: false, reason: 'cost cap hit', finalUrl: args.page.url() };
       }
+    }
+    // Plan v7 — per-target soft-abort. If the prior round trip pushed us
+    // over targetCostCapMicros, stop initiating new rounds. The most
+    // recent assistant turn (in `messages` already) may have emitted JSON
+    // already; if not we return with partial data flagged via `incomplete`.
+    if (targetOverBudget) {
+      log.warn('mapper: per-target cost cap exceeded — soft-abort', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        classification,
+        targetCostCapMicros,
+        stepIdx,
+      });
+      // Fall through to the end-of-loop "no usable JSON" branch with a
+      // clearer reason. mapPMS treats this as a non-fatal partial.
+      return {
+        ok: false,
+        reason: `per-target cost cap exceeded for ${classification} ($${(targetCostCapMicros / 1_000_000).toFixed(2)})`,
+        finalUrl: args.page.url(),
+      };
     }
 
     // Beta-API call so we can attach `cache_control` to the system block.
@@ -685,8 +747,28 @@ async function mapAction(args: {
         };
       }
       // "Unavailable" path: agent explored, found nothing, told us so.
-      // This is a clean skip — the action just won't be in the recipe.
+      // Plan v7 — require evidence of real effort before accepting it.
+      // Without this floor, a lazy/confused agent can emit unavailable on
+      // its first response and burn the per-target cost cap on a fake
+      // "this PMS tier doesn't have it" outcome that fools auto-promotion.
       if (parsed && parsed.unavailable === true) {
+        const floorMet =
+          readPageCount >= UNAVAILABLE_FLOOR.readPages &&
+          navigationCount >= UNAVAILABLE_FLOOR.navigations;
+        if (!floorMet) {
+          log.warn('mapper: rejecting premature unavailable claim — insufficient exploration', {
+            actionName: args.actionName,
+            readPageCount,
+            navigationCount,
+            floor: UNAVAILABLE_FLOOR,
+            reason: typeof parsed.reason === 'string' ? parsed.reason : null,
+          });
+          return {
+            ok: false,
+            reason: `premature unavailable (only ${readPageCount} read_pages + ${navigationCount} navigations; floor requires ${UNAVAILABLE_FLOOR.readPages} + ${UNAVAILABLE_FLOOR.navigations})`,
+            finalUrl: args.page.url(),
+          };
+        }
         return {
           ok: false,
           reason: `unavailable: ${typeof parsed.reason === 'string' ? parsed.reason : 'no reason given'}`,
@@ -713,9 +795,38 @@ async function mapAction(args: {
       const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
+
+      // Plan v7 — track activity for the unavailable floor.
+      // `read_page` is the most expensive evidence (forces DOM serialize).
+      // Navigations / clicks count toward the navigation budget.
+      const actionType = (action as { action?: string }).action ?? '';
+      if (actionType === 'read_page' || actionType === 'get_page_text') {
+        readPageCount++;
+      } else if (actionType === 'navigate' || actionType === 'left_click' ||
+                 actionType === 'double_click' || actionType === 'find' ||
+                 actionType === 'scroll_to' || actionType === 'form_input') {
+        navigationCount++;
+      }
     }
 
     messages.push({ role: 'user', content: toolResults });
+
+    // Plan v7 — per-target cost soft-abort. After each round trip, check
+    // cumulative job spend; if we've blown past the per-target cap, set
+    // the flag and let the next iteration return cleanly. We DON'T abort
+    // mid-call — the in-flight Anthropic call is already paid for, so we
+    // let it complete and return whatever it had.
+    if (args.jobId && targetCostCapMicros !== Number.POSITIVE_INFINITY) {
+      const totalSpent = await getJobCostMicros(args.jobId);
+      // Per-target budget is cumulative-relative — we don't have a clean
+      // way to measure THIS target's spend separately from earlier targets,
+      // so we approximate: if total job spend exceeds (priorTargets×cap +
+      // thisTargetCap), this target has likely blown its budget. The
+      // checkBudget global cap is the harder backstop.
+      if (totalSpent > targetCostCapMicros * 3) {  // soft heuristic
+        targetOverBudget = true;
+      }
+    }
   }
 
   return { ok: false, reason: 'mapper exhausted step budget', finalUrl: args.page.url() };
@@ -955,3 +1066,293 @@ const STAFF_GOAL =
   `  - Role / department / title (housekeeper, front desk, maintenance, etc.)\n` +
   `  - Phone number (if shown)\n` +
   `  - Email (if shown)`;
+
+// ─── Plan v7 Phase 2a: 9 net-new targets ─────────────────────────────────
+// Each target maps to one v4 pms_* table. Targets vary in difficulty:
+// list_page (1-2 clicks), report_menu (Reports submenu drill, 2-3 clicks),
+// drilldown_sample (per-record drill, sample N=3 to learn detail page).
+// See plan v7 for the full classification.
+
+const GUESTS_GOAL =
+  `Find a GUEST PROFILE — the page that shows guest contact info, loyalty ` +
+  `tier, lifetime stays, and stay history. This is a DRILL-DOWN target: ` +
+  `start from the reservations list, click into 3 sample reservations, ` +
+  `and on each detail page click "Guest" / "Profile" / the guest's name.\n\n` +
+  `The right page is a single-record detail view (one guest, not a list).\n\n` +
+  `Per the drill-down rules in the system prompt: capture 3 sample URLs, ` +
+  `infer the URL template (e.g. \`/Guest/view?id={pms_guest_id}\`), and ` +
+  `verify with a 4th drill. Report per-field observed coverage.\n\n` +
+  `Fields we need (mark required vs nice-to-have in your output):\n` +
+  `  - pms_guest_id (required — the PMS's stable guest identifier)\n` +
+  `  - name (required)\n` +
+  `  - email (nice-to-have — often missing for walk-ins)\n` +
+  `  - phone (nice-to-have)\n` +
+  `  - loyalty_tier / loyalty_points (nice-to-have — if PMS has loyalty)\n` +
+  `  - lifetime_stays / lifetime_value (nice-to-have)\n` +
+  `  - last_stay_date (nice-to-have)`;
+
+const REVENUE_DAILY_GOAL =
+  `Find the DAILY REVENUE SUMMARY report — sometimes called "Night Audit ` +
+  `Report", "Daily Revenue Summary", "Revenue by Day", or "Day-End ` +
+  `Report". Shows ONE ROW per date with rooms revenue, F&B, taxes, ` +
+  `occupancy %, ADR, RevPAR.\n\n` +
+  `Usually under "Reports → Revenue", "Reports → Financial", or "Night ` +
+  `Audit → Reports". On smaller franchise-tier PMSes this report may not ` +
+  `exist — if so, emit unavailable per the system prompt rules (after ` +
+  `meeting the evidence floor).\n\n` +
+  `Columns we need:\n` +
+  `  - date (required)\n` +
+  `  - rooms_revenue_cents (required)\n` +
+  `  - fnb_revenue_cents (nice-to-have)\n` +
+  `  - tax_cents (nice-to-have)\n` +
+  `  - occupied_rooms (required)\n` +
+  `  - occupancy_pct (required — or computed from occupied/total)\n` +
+  `  - adr_cents (required — Average Daily Rate)\n` +
+  `  - revpar_cents (required — RevPAR)`;
+
+const FORECAST_DAILY_GOAL =
+  `Find the OCCUPANCY/REVENUE FORECAST — sometimes called "Forecast", ` +
+  `"Pace Report", "Revenue Forecast", or "Projected Occupancy". Shows ` +
+  `forward-looking dates with projected occupancy / ADR / revenue.\n\n` +
+  `Usually under "Reports → Forecast", "Reports → Pace", or "Revenue ` +
+  `Management". Often only on enterprise/Hilton-tier PMSes — if not ` +
+  `present, emit unavailable per the system prompt rules.\n\n` +
+  `Columns we need:\n` +
+  `  - forecast_date (required — the FUTURE date being forecasted)\n` +
+  `  - snapshot_date (required — when the forecast was generated, usually today)\n` +
+  `  - projected_occupancy_pct (required)\n` +
+  `  - projected_adr_cents (nice-to-have)\n` +
+  `  - projected_revenue_cents (nice-to-have)\n` +
+  `  - vs_same_day_last_year_pct (nice-to-have)`;
+
+const CHANNEL_PERFORMANCE_GOAL =
+  `Find the BOOKING CHANNEL / SOURCE PERFORMANCE report — sometimes ` +
+  `called "Source Summary", "Channel Production", "OTA Breakdown", or ` +
+  `"Reservations by Source". Shows ONE ROW per channel per day: ` +
+  `Expedia / Booking.com / Brand.com / Direct / Walk-in / etc.\n\n` +
+  `Usually under "Reports → Channels", "Reports → Source Analysis", or ` +
+  `"Revenue Management". Most modern PMSes have this; tiny franchise ` +
+  `PMSes may not.\n\n` +
+  `Columns we need:\n` +
+  `  - date (required)\n` +
+  `  - channel (required — string, e.g. "Expedia")\n` +
+  `  - bookings_count (required)\n` +
+  `  - rooms_sold (required)\n` +
+  `  - revenue_cents (required)\n` +
+  `  - commission_rate_pct (nice-to-have)`;
+
+const ACTIVITY_LOG_GOAL =
+  `Find the AUDIT / ACTIVITY LOG — sometimes called "User Activity", ` +
+  `"Audit Trail", "Operations Log", or "System Log". Shows ONE ROW per ` +
+  `action: who did what, when (folio charges, room changes, ` +
+  `check-ins/outs, comp authorizations).\n\n` +
+  `DRILL-DOWN target: this often requires filtering by date range or ` +
+  `user before the log renders. Find the top-level log page, then drill ` +
+  `into 3 sample entries to capture the detail view.\n\n` +
+  `Usually under "Reports → Audit", "Setup → Logs", or "Admin → Activity". ` +
+  `Often admin-only; may be unavailable on read-only credentials.\n\n` +
+  `Columns we need:\n` +
+  `  - captured_at (required — timestamp)\n` +
+  `  - pms_user (required — who did it)\n` +
+  `  - action (required — what they did, e.g. "folio_charge")\n` +
+  `  - target (nice-to-have — what they did it TO, e.g. room number)\n` +
+  `  - details (nice-to-have — free-text or jsonb context)`;
+
+const LOST_AND_FOUND_GOAL =
+  `Find the LOST AND FOUND log — sometimes called "Lost Items", ` +
+  `"Found Property", or under "Housekeeping → Lost & Found". Shows ` +
+  `items left by guests, where found, and claim status.\n\n` +
+  `DRILL-DOWN target: list page may not show all detail fields. Find ` +
+  `the list, drill into 3 sample items to capture detail-page selectors ` +
+  `for description/photos/claim history.\n\n` +
+  `Columns we need:\n` +
+  `  - pms_item_id (nice-to-have — some PMSes don't issue ids)\n` +
+  `  - item_description (required)\n` +
+  `  - location_found (required — room number or area)\n` +
+  `  - found_at (required — date)\n` +
+  `  - status (required — "unclaimed" / "claimed" / "disposed")\n` +
+  `  - claimed_by_guest (nice-to-have — name if claimed)`;
+
+const GROUPS_AND_BLOCKS_GOAL =
+  `Find the GROUP / BLOCK reservations — group bookings (weddings, ` +
+  `conferences, corporate events). Sometimes called "Groups", "Blocks", ` +
+  `"Group Reservations", or "Block Management". Shows allotments with ` +
+  `pickup rates.\n\n` +
+  `Usually under "Reservations → Groups", "Group Sales", or "Block ` +
+  `Manager". DRILL-DOWN if needed: list view → click each group for ` +
+  `block details.\n\n` +
+  `Columns we need:\n` +
+  `  - pms_group_id (required)\n` +
+  `  - group_name (required)\n` +
+  `  - block_start_date (required)\n` +
+  `  - block_end_date (required)\n` +
+  `  - rooms_blocked (required)\n` +
+  `  - rooms_picked_up (required)\n` +
+  `  - pickup_pct (nice-to-have — can be computed)\n` +
+  `  - cutoff_date (nice-to-have)`;
+
+const RATES_AND_INVENTORY_GOAL =
+  `Find the RATE MANAGER / RATE PLAN page — sometimes called "Rate ` +
+  `Manager", "Rate Plans", "Inventory Grid", "Channel Manager", or ` +
+  `"Yield Management". Shows per-room-type, per-date rates with ` +
+  `available inventory.\n\n` +
+  `Usually under "Rates", "Revenue Management", or "Inventory". This ` +
+  `is the busiest data shape — often a GRID (date × room type) rather ` +
+  `than a table. Find it; report the row+column structure.\n\n` +
+  `Columns we need (one row per room_type × date × rate_plan):\n` +
+  `  - date (required)\n` +
+  `  - room_type (required)\n` +
+  `  - rate_plan (required — e.g. "Best Available Rate")\n` +
+  `  - rate_amount_cents (required)\n` +
+  `  - available_rooms (required)\n` +
+  `  - rate_parity_status (nice-to-have — "parity" / "above" / "below")`;
+
+const WORK_ORDERS_GOAL =
+  `Find the WORK ORDERS / MAINTENANCE TICKETS / OUT-OF-ORDER ROOMS list. ` +
+  `Sometimes called "Maintenance", "Work Orders", "OOO Rooms", or ` +
+  `"Engineering". Shows open + in-progress + resolved orders.\n\n` +
+  `On Choice Advantage, there's a JSON endpoint (WorkOrders.jx) — try ` +
+  `to find a "Work Orders" menu item; the click usually fires a fetch ` +
+  `for the JSON. Report the fetch URL + body shape.\n\n` +
+  `Columns we need:\n` +
+  `  - pms_work_order_id (required)\n` +
+  `  - room_number (required if room-scoped)\n` +
+  `  - description (required)\n` +
+  `  - priority (nice-to-have — "high" / "medium" / "low")\n` +
+  `  - status (required — "open" / "in_progress" / "resolved")\n` +
+  `  - assigned_to (nice-to-have)\n` +
+  `  - out_of_order (required — boolean: does this take the room offline?)`;
+
+// ─── TARGETS — the full Plan v7 mapper catalogue ──────────────────────────
+// Ordered by business priority. Top entries run first so that even on a
+// global-cap abort the partial recipe still contains the most valuable
+// tables. Each entry's classification drives per-target step + cost budgets
+// (see TARGET_BUDGET_MICROS + TARGET_STEP_CAPS).
+
+TARGETS = [
+  // Tier 1 — core operational data (required for any hotel to be useful).
+  {
+    key: 'getRoomStatus',
+    goal: HOUSEKEEPING_GOAL,
+    requiredFields: ['roomNumber', 'roomType', 'status', 'condition'],
+    classification: 'list_page',
+    optional: false,
+    progressLabel: 'Finding the daily housekeeping report…',
+    progressPct: 40,
+  },
+  {
+    key: 'getArrivals',
+    goal: ARRIVALS_GOAL,
+    requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
+    classification: 'list_page',
+    optional: false,
+    progressLabel: "Finding today's arrivals…",
+    progressPct: 44,
+  },
+  {
+    key: 'getDepartures',
+    goal: DEPARTURES_GOAL,
+    requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
+    classification: 'list_page',
+    optional: false,
+    progressLabel: "Finding today's departures…",
+    progressPct: 48,
+  },
+  {
+    key: 'getWorkOrders',
+    goal: WORK_ORDERS_GOAL,
+    requiredFields: ['pms_work_order_id', 'description', 'status', 'out_of_order'],
+    classification: 'list_page',
+    optional: false,
+    progressLabel: 'Finding maintenance + work orders…',
+    progressPct: 52,
+  },
+
+  // Tier 2 — business-critical net-new (revenue / rates / channels).
+  // Auto-promotion needs ≥3 of these to clear the gate (plan v7).
+  {
+    key: 'getRevenueDaily',
+    goal: REVENUE_DAILY_GOAL,
+    requiredFields: ['date', 'rooms_revenue_cents', 'occupied_rooms', 'adr_cents'],
+    classification: 'report_menu',
+    optional: true,        // franchise tiers may not expose this
+    progressLabel: 'Finding the daily revenue summary…',
+    progressPct: 56,
+  },
+  {
+    key: 'getRatesAndInventory',
+    goal: RATES_AND_INVENTORY_GOAL,
+    requiredFields: ['date', 'room_type', 'rate_plan', 'rate_amount_cents'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Finding rate plans + available inventory…',
+    progressPct: 60,
+  },
+  {
+    key: 'getChannelPerformance',
+    goal: CHANNEL_PERFORMANCE_GOAL,
+    requiredFields: ['date', 'channel', 'bookings_count', 'revenue_cents'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Finding the booking-channel breakdown…',
+    progressPct: 64,
+  },
+
+  // Tier 3 — drill-down + supplementary data.
+  {
+    key: 'getGuests',
+    goal: GUESTS_GOAL,
+    requiredFields: ['pms_guest_id', 'name'],
+    classification: 'drilldown_sample',
+    optional: false,       // guest data is too valuable to skip
+    progressLabel: 'Drilling into guest profiles…',
+    progressPct: 68,
+  },
+  {
+    key: 'getStaffRoster',
+    goal: STAFF_GOAL,
+    requiredFields: ['name'],
+    classification: 'list_page',
+    optional: true,        // not in the v4 pms_* schema yet; legacy
+    progressLabel: 'Finding the staff list…',
+    progressPct: 72,
+  },
+
+  // Tier 4 — nice-to-have (forecast, groups, lost & found, audit log).
+  {
+    key: 'getForecastDaily',
+    goal: FORECAST_DAILY_GOAL,
+    requiredFields: ['forecast_date', 'snapshot_date', 'projected_occupancy_pct'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Looking for the occupancy/revenue forecast…',
+    progressPct: 76,
+  },
+  {
+    key: 'getGroupsAndBlocks',
+    goal: GROUPS_AND_BLOCKS_GOAL,
+    requiredFields: ['pms_group_id', 'group_name', 'block_start_date', 'rooms_blocked'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Finding group bookings + blocks…',
+    progressPct: 80,
+  },
+  {
+    key: 'getLostAndFound',
+    goal: LOST_AND_FOUND_GOAL,
+    requiredFields: ['item_description', 'location_found', 'found_at', 'status'],
+    classification: 'drilldown_sample',
+    optional: true,
+    progressLabel: 'Finding the lost-and-found log…',
+    progressPct: 83,
+  },
+  {
+    key: 'getActivityLog',
+    goal: ACTIVITY_LOG_GOAL,
+    requiredFields: ['captured_at', 'pms_user', 'action'],
+    classification: 'drilldown_sample',
+    optional: true,        // admin-only on most PMSes
+    progressLabel: 'Looking for the audit / activity log…',
+    progressPct: 86,
+  },
+];

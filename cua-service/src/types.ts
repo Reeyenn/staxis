@@ -123,18 +123,110 @@ export interface Recipe {
   description?: string;
   login: LoginSteps;
   actions: {
+    // Original 4 actions (Phase 1 scope)
     getArrivals?:        ActionRecipe;
     getDepartures?:      ActionRecipe;
     getRoomStatus?:      ActionRecipe;
     getStaffRoster?:     ActionRecipe;
+    // Already-extensible Phase 1 keys
     getRoomLayout?:      ActionRecipe;
     getDashboardCounts?: ActionRecipe;
     getHistoricalOccupancy?: ActionRecipe;
+    // Phase 2 (Plan v7) — 9 net-new targets for the full 15-table schema.
+    // Each maps to one pms_* table in v4. `getReportsCache` is the one
+    // intentionally-deferred target (too polymorphic — see plan v7 OOS).
+    getGuests?:               ActionRecipe;
+    getRevenueDaily?:         ActionRecipe;
+    getForecastDaily?:        ActionRecipe;
+    getChannelPerformance?:   ActionRecipe;
+    getActivityLog?:          ActionRecipe;
+    getLostAndFound?:         ActionRecipe;
+    getGroupsAndBlocks?:      ActionRecipe;
+    getRatesAndInventory?:    ActionRecipe;
+    getWorkOrders?:           ActionRecipe;  // currently fetched via fetch_api on CA but the mapper's never been pointed at it; adding so a fresh PMS can have it learned
   };
   hints?: {
     dismissDialogs?: string[];
     scrollBeforeParse?: boolean;
   };
+}
+
+// ─── Plan v7: TableTemplate — the canonical runtime template ──────────────
+//
+// `recipe-adapter.ts` translates BOTH legacy Recipe.actions AND new mapper
+// output into this shape. Runtime (template-runner.ts, generic-table-writer.ts)
+// only ever sees TableTemplate — eliminates split-brain risk between the
+// legacy normalizer path and the new template path.
+//
+// `sources[]` is multi-source by default: most feeds have one source, but
+// dashboard_counts has three (parallel fetch + aggregate). URL templates
+// support drill-down: mapper learns N concrete URLs from samples, infers
+// the template (e.g. `/Reservation/view?id={pms_reservation_id}`), verifies
+// with an extra sample.
+
+export type WriteStrategy = 'upsert' | 'append' | 'reconcile';
+export type SnapshotScope = 'full' | 'delta';
+export type ExtractionMode = 'csv_download' | 'dom_table' | 'fetch_api' | 'dom_inline';
+
+export interface TableTemplateSource {
+  /** Stable name within the template (matches keys in `aggregate.rules` if used). */
+  name: string;
+  /** Concrete URL (single-source feeds), or one-of-N sample URLs (drill-down). */
+  url: string;
+  /** Templated URL, e.g. '/Reservation/view?id={pms_reservation_id}'. Optional —
+   *  if set, runtime substitutes params per-row before fetching (drill-down). */
+  urlTemplate?: string;
+  /** Mapping from template placeholder → source column (e.g. {pms_reservation_id: 'pms_reservations.pms_reservation_id'}). */
+  urlParams?: Record<string, string>;
+  mode: ExtractionMode;
+  /** Mode-specific selectors (e.g. {rowSelector: '...'} for dom_table; {csvCheckbox, downloadButton} for csv_download). */
+  selectors?: Record<string, string>;
+  /** Field → selector/column map for the rows this source returns. */
+  columns?: Record<string, string>;
+  /** Opaque per-mode extras (HTTP method/body for fetch_api, preStepClick for csv_download, etc.). */
+  extra?: Record<string, unknown>;
+}
+
+export interface TableTemplateAggregate {
+  /** How to combine rows from multiple sources into a single result set. */
+  strategy: 'merge_named' | 'concat_rows' | 'first_non_null';
+  /** For merge_named: target_col → "from source <name> field <col>". */
+  rules?: Record<string, string>;
+}
+
+export type FieldOrigin = 'list_row' | 'detail_page';
+
+export interface TableTemplateField {
+  /** Where this field's value comes from. For drill-down targets, fields can
+   *  come from the list row (cheap, high-throughput) or from per-record
+   *  detail-page extraction (expensive, only on demand). */
+  origin: FieldOrigin;
+  /** Which source[] name this field reads from. */
+  source: string;
+  /** Selector or CSV column name in the source. */
+  selectorOrColumn: string;
+  /** Parser plugin to apply (looked up from parsers/registry.ts). */
+  parser?: string;
+}
+
+export interface TableTemplate {
+  /** Target table in the pms_* schema (e.g. 'pms_reservations'). */
+  tableName: string;
+  /** Natural-key columns used for upserts / reconcile lookups. */
+  keys: string[];
+  writeStrategy: WriteStrategy;
+  /** Required for `reconcile`. `'full'` permits auto-resolve of disappeared
+   *  rows; `'delta'` does NOT (the extractor isn't seeing every row). */
+  snapshotScope: SnapshotScope;
+  /** One or more sources. Single-source = no aggregation needed. */
+  sources: TableTemplateSource[];
+  /** Required iff sources.length > 1. */
+  aggregate?: TableTemplateAggregate;
+  /** Per-column extraction spec. */
+  fields: Record<string, TableTemplateField>;
+  /** Set by the mapper when budget tripped mid-target — runtime uses partial
+   *  data but flags in admin UI as "needs operator review." */
+  incomplete?: boolean;
 }
 
 // ─── Job + recipe storage shapes ──────────────────────────────────────────
