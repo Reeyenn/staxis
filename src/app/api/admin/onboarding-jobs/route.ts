@@ -37,6 +37,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import {
+  IN_FLIGHT_LEGACY_STATUSES,
+  mapPropertySessionStatusToJobShape,
+  type LegacyJobStatus,
+} from '@/lib/cua-session-job-mapping';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,7 +52,7 @@ interface JobRow {
   propertyId: string;
   propertyName: string | null;
   pmsType: string;
-  status: 'queued' | 'running' | 'mapping' | 'extracting' | 'complete' | 'failed' | 'cancelled';
+  status: LegacyJobStatus;
   step: string | null;
   progressPct: number | null;
   error: string | null;
@@ -70,39 +75,6 @@ interface SessionRow {
   last_successful_read_at: string | null;
   created_at: string;
   updated_at: string;
-}
-
-const RUNNING_STATES = new Set<JobRow['status']>(['queued', 'running', 'mapping', 'extracting']);
-
-interface MappedShape {
-  status: JobRow['status'];
-  step: string;
-  progressPct: number | null;
-}
-
-function mapSessionToJobShape(s: SessionRow): MappedShape {
-  switch (s.status) {
-    case 'starting':
-      return { status: 'running', step: 'Logging into PMS…', progressPct: 30 };
-    case 'alive':
-      return { status: 'complete', step: 'Connected — polling every ~30s.', progressPct: 100 };
-    case 'paused_mfa':
-      return { status: 'mapping', step: 'Waiting for MFA — click to resolve.', progressPct: 70 };
-    case 'paused_no_knowledge_file':
-      return { status: 'mapping', step: 'Awaiting mapper — PMS not learned yet.', progressPct: 50 };
-    case 'paused_cost_cap':
-      return { status: 'running', step: 'Cost cap tripped — auto-resumes at midnight.', progressPct: 90 };
-    case 'paused_circuit_breaker':
-      return { status: 'failed', step: 'Repeated read failures — paused for triage.', progressPct: null };
-    case 'failed_restart':
-      return { status: 'failed', step: 'Login failing — edit credentials and retry.', progressPct: null };
-    case 'stopped':
-      return { status: 'cancelled', step: 'Stopped by admin.', progressPct: null };
-    default:
-      // Future-proof: unknown status → surface as 'running' with the
-      // raw status as the step so admin can see something's off.
-      return { status: 'running', step: `Status: ${s.status}`, progressPct: null };
-  }
 }
 
 export async function GET(req: NextRequest) {
@@ -149,14 +121,14 @@ export async function GET(req: NextRequest) {
 
   const now = Date.now();
   const allRows: JobRow[] = sessions.map((s) => {
-    const mapped = mapSessionToJobShape(s);
+    const mapped = mapPropertySessionStatusToJobShape(s.status);
     const startedMs = Date.parse(s.created_at);
     const completedMs = s.status === 'alive' && s.last_alive_at
       ? Date.parse(s.last_alive_at)
       : null;
     const durationMs = completedMs
       ? completedMs - startedMs
-      : (RUNNING_STATES.has(mapped.status) ? now - startedMs : null);
+      : (IN_FLIGHT_LEGACY_STATUSES.has(mapped.status) ? now - startedMs : null);
 
     return {
       // Use property_id as the jobId: one session per hotel in v4 (the
@@ -183,12 +155,12 @@ export async function GET(req: NextRequest) {
   let rows = allRows;
   if (filter === 'failed') rows = allRows.filter((r) => r.status === 'failed');
   if (filter === 'complete') rows = allRows.filter((r) => r.status === 'complete');
-  if (liveOnly) rows = allRows.filter((r) => RUNNING_STATES.has(r.status));
+  if (liveOnly) rows = allRows.filter((r) => IN_FLIGHT_LEGACY_STATUSES.has(r.status));
 
   // Summary computed over the full set so the UI header is accurate.
   const summary = {
     total: allRows.length,
-    running: allRows.filter((r) => RUNNING_STATES.has(r.status)).length,
+    running: allRows.filter((r) => IN_FLIGHT_LEGACY_STATUSES.has(r.status)).length,
     failed: allRows.filter((r) => r.status === 'failed').length,
     complete: allRows.filter((r) => r.status === 'complete').length,
   };

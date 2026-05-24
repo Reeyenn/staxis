@@ -84,6 +84,19 @@ interface KnowledgeFileRow {
   knowledge: unknown;
 }
 
+/**
+ * Narrow-shape guard for the knowledge.feeds jsonb. Returns an empty
+ * object when knowledge is missing, isn't an object, or its `feeds`
+ * field isn't an object. Keeps the coverage calculation deterministic
+ * for malformed rows (every feed shows as missing) without throwing.
+ */
+function extractFeedsMap(knowledge: unknown): Record<string, unknown> {
+  if (!knowledge || typeof knowledge !== 'object') return {};
+  const feeds = (knowledge as Record<string, unknown>).feeds;
+  if (!feeds || typeof feeds !== 'object' || Array.isArray(feeds)) return {};
+  return feeds as Record<string, unknown>;
+}
+
 interface PropertySessionRow {
   property_id: string;
   pms_family: string;
@@ -190,14 +203,10 @@ export async function GET(req: NextRequest) {
 
     const captured: TargetFeed[] = [];
     const missing: TargetFeed[] = [];
-    if (kf && kf.knowledge && typeof kf.knowledge === 'object') {
-      const feeds = (kf.knowledge as { feeds?: Record<string, unknown> }).feeds ?? {};
-      for (const f of TARGET_FEEDS) {
-        if (feeds[f]) captured.push(f);
-        else missing.push(f);
-      }
-    } else {
-      missing.push(...TARGET_FEEDS);
+    const feeds = extractFeedsMap(kf?.knowledge);
+    for (const f of TARGET_FEEDS) {
+      if (feeds[f]) captured.push(f);
+      else missing.push(f);
     }
 
     const recipe = kf

@@ -108,6 +108,14 @@ begin
   -- Bootstrap the property_sessions row so the supervisor sees this
   -- hotel and spawns a driver on next reconcile. Only re-arm dead/stopped
   -- states; leave alive/paused alone (those have their own admin flows).
+  --
+  -- The `status in ('failed_restart', 'stopped')` predicate is repeated
+  -- across four SET assignments below. This is structural — a PL/pgSQL
+  -- local boolean computed before the upsert would introduce a TOCTOU
+  -- between the SELECT and the INSERT...ON CONFLICT, and Postgres'
+  -- ON CONFLICT SET clause has no syntax for a single computed-once
+  -- predicate. Keeping it atomic is the priority; the repetition is the
+  -- cost. Update all four together if the rule changes.
   insert into public.property_sessions
     (property_id, pms_family, status,
      restart_count, daily_claude_cost_micros, daily_claude_cost_resets_at)

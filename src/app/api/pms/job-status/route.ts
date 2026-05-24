@@ -31,6 +31,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
+import { mapPropertySessionStatusToJobShape } from '@/lib/cua-session-job-mapping';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,35 +45,6 @@ interface SessionRow {
   last_alive_at: string | null;
   created_at: string;
   updated_at: string;
-}
-
-interface MappedShape {
-  status: 'queued' | 'running' | 'mapping' | 'extracting' | 'complete' | 'failed' | 'cancelled';
-  step: string;
-  progressPct: number | null;
-}
-
-function mapSessionToJobShape(s: SessionRow): MappedShape {
-  switch (s.status) {
-    case 'starting':
-      return { status: 'running', step: 'Logging into PMS…', progressPct: 30 };
-    case 'alive':
-      return { status: 'complete', step: 'Connected — polling every ~30s.', progressPct: 100 };
-    case 'paused_mfa':
-      return { status: 'mapping', step: 'Waiting for MFA — finish login from the admin panel.', progressPct: 70 };
-    case 'paused_no_knowledge_file':
-      return { status: 'mapping', step: 'Awaiting mapper — your PMS isn’t learned yet.', progressPct: 50 };
-    case 'paused_cost_cap':
-      return { status: 'running', step: 'Cost cap tripped — auto-resumes at midnight.', progressPct: 90 };
-    case 'paused_circuit_breaker':
-      return { status: 'failed', step: 'Repeated read failures — paused for triage.', progressPct: null };
-    case 'failed_restart':
-      return { status: 'failed', step: 'Login failing — please verify credentials.', progressPct: null };
-    case 'stopped':
-      return { status: 'cancelled', step: 'Stopped by admin.', progressPct: null };
-    default:
-      return { status: 'running', step: `Status: ${s.status}`, progressPct: null };
-  }
 }
 
 export async function GET(req: NextRequest) {
@@ -109,7 +81,7 @@ export async function GET(req: NextRequest) {
     return err('Job not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
   const row = rowRaw as SessionRow;
-  const mapped = mapSessionToJobShape(row);
+  const mapped = mapPropertySessionStatusToJobShape(row.status);
 
   return ok({
     id: row.property_id,

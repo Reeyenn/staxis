@@ -131,7 +131,7 @@ export function OnboardingTab() {
   // stays on this tab. Replaces the old `!lastSyncedAt` check which
   // never flipped because nothing in v4 writes properties.last_synced_at.
   const inOnboarding = props.filter((p) => p.sessionStatus !== 'alive');
-  const stages = bucketByStage(inOnboarding, liveJobs);
+  const stages = bucketByStage(inOnboarding);
 
   // PMS coverage filter: only show PMSes the agent has actually learned.
   const learnedPms = pms.filter((p) => p.recipe !== null);
@@ -470,7 +470,7 @@ function ErrorRow({ text }: { text: string }) {
 
 /** v4 bucket: drive everything off property_sessions.status. The
  *  legacy onboarding_jobs/last_synced_at signals don't exist in v4. */
-function bucketByStage(props: PropertyRow[], _liveJobs: JobRow[]) {
+function bucketByStage(props: PropertyRow[]) {
   const signedUp: PipelineRow[] = [];
   const wizardDone: PipelineRow[] = [];
   const connecting: PipelineRow[] = [];

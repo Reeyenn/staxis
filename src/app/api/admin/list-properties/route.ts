@@ -25,6 +25,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { mapPropertySessionStatusToJobShape } from '@/lib/cua-session-job-mapping';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -133,37 +134,18 @@ export async function GET(req: NextRequest) {
     sessionByProperty.set(s.property_id, s);
   }
 
-  // Map session status → legacy onboarding-job shape so the
+  // Project a session row → legacy onboarding-job shape so the
   // PropertyRow.latestJob field the UI already consumes keeps working.
+  // Status/step/progressPct projection is centralized in
+  // src/lib/cua-session-job-mapping.ts (also used by /api/admin/onboarding-jobs
+  // and /api/pms/job-status). One source of truth — no drift.
   const mapSessionToJob = (s: SessionLite) => {
-    let status: string;
-    let step: string;
-    let progress: number | null = null;
-    switch (s.status) {
-      case 'starting':
-        status = 'running'; step = 'Logging into PMS…'; progress = 30; break;
-      case 'alive':
-        status = 'complete'; step = 'Connected — polling.'; progress = 100; break;
-      case 'paused_mfa':
-        status = 'mapping'; step = 'Waiting for MFA — click to resolve.'; progress = 70; break;
-      case 'paused_no_knowledge_file':
-        status = 'mapping'; step = 'Awaiting mapper — PMS not learned.'; progress = 50; break;
-      case 'paused_cost_cap':
-        status = 'running'; step = 'Cost cap — auto-resumes at midnight.'; progress = 90; break;
-      case 'paused_circuit_breaker':
-        status = 'failed'; step = 'Repeated read failures.'; break;
-      case 'failed_restart':
-        status = 'failed'; step = 'Login failing — edit credentials.'; break;
-      case 'stopped':
-        status = 'cancelled'; step = 'Stopped by admin.'; break;
-      default:
-        status = 'running'; step = `Status: ${s.status}`;
-    }
+    const mapped = mapPropertySessionStatusToJobShape(s.status);
     return {
       id: s.property_id,
-      status,
-      step,
-      progressPct: progress,
+      status: mapped.status,
+      step: mapped.step,
+      progressPct: mapped.progressPct,
       error: s.paused_reason,
       createdAt: s.updated_at,
       startedAt: s.updated_at,
