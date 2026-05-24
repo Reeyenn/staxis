@@ -5,11 +5,18 @@
  * same error show as a single row with a count + a list of affected
  * properties. Returned newest-first.
  *
- * Reads three sources and merges them:
- *   1. error_logs   — generic app errors (Sentry mirror, API failures)
- *   2. pull_metrics — CUA / scraper pull failures (ok=false)
- *   3. dashboard_by_date — per-property dashboard pull errors
- *      (error_code IS NOT NULL on a row)
+ * Source (post-v4 cutover, 2026-05-24):
+ *   error_logs — generic app errors (Sentry mirror, API failures)
+ *
+ * Pre-v4 this route also merged `pull_metrics` (Railway scraper pull
+ * failures) and `dashboard_by_date` (per-property dashboard pull
+ * errors). Both tables were dropped in the v4 cleanup — Sentry then
+ * started spamming "pull_metrics query failed" every time this endpoint
+ * was hit. Removed those reads here so the noise stops.
+ *
+ * The new v4 CUA worker reports its own failures into
+ * `property_sessions.paused_reason` + `error_logs` — no separate
+ * pull-metrics surface needed.
  *
  * Powers the "Recent errors" panel on the Live hotels tab.
  *
@@ -22,7 +29,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,40 +68,15 @@ export async function GET(req: NextRequest) {
 
   const since = sinceParam ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-  // Run all three queries in parallel — they're independent reads.
-  const [logsRes, pullsRes, dashRes] = await Promise.all([
-    supabaseAdmin
-      .from('error_logs')
-      .select('source, message, stack, property_id, ts')
-      .gte('ts', since)
-      .order('ts', { ascending: false })
-      .limit(2000),
-    supabaseAdmin
-      .from('pull_metrics')
-      .select('property_id, pull_type, error_code, pulled_at')
-      .eq('ok', false)
-      .gte('pulled_at', since)
-      .order('pulled_at', { ascending: false })
-      .limit(500),
-    supabaseAdmin
-      .from('dashboard_by_date')
-      .select('property_id, date, error_code, error_message, error_page, errored_at')
-      .not('error_code', 'is', null)
-      .gte('errored_at', since)
-      .order('errored_at', { ascending: false })
-      .limit(500),
-  ]);
+  const logsRes = await supabaseAdmin
+    .from('error_logs')
+    .select('source, message, stack, property_id, ts')
+    .gte('ts', since)
+    .order('ts', { ascending: false })
+    .limit(2000);
 
   if (logsRes.error) {
     return err(`recent-errors query failed: ${logsRes.error.message}`, { requestId, status: 500 });
-  }
-  // pull_metrics + dashboard_by_date errors are best-effort: if either
-  // query fails we still want to return what we have. Log + continue.
-  if (pullsRes.error) {
-    log.error('[recent-errors] pull_metrics query failed', { requestId, msg: pullsRes.error.message });
-  }
-  if (dashRes.error) {
-    log.error('[recent-errors] dashboard_by_date query failed', { requestId, msg: dashRes.error.message });
   }
 
   // Normalize every source into a common shape so the grouping pass
@@ -109,39 +91,6 @@ export async function GET(req: NextRequest) {
       stack: r.stack,
       property_id: r.property_id,
       ts: r.ts,
-    });
-  }
-
-  for (const row of (pullsRes.data ?? [])) {
-    const r = row as { property_id: string | null; pull_type: string | null; error_code: string | null; pulled_at: string };
-    // Surface as "scraper:<pull_type>: <error_code>" so different
-    // pull-types and error-codes group separately in the UI but a
-    // single "csv_morning: login_failed" run-of-failures collapses
-    // into one row with a count.
-    all.push({
-      source: 'scraper',
-      message: `${r.pull_type ?? 'pull'}: ${r.error_code ?? 'unknown'}`,
-      stack: null,
-      property_id: r.property_id,
-      ts: r.pulled_at,
-    });
-  }
-
-  for (const row of (dashRes.data ?? [])) {
-    const r = row as { property_id: string | null; date: string | null; error_code: string | null; error_message: string | null; error_page: string | null; errored_at: string | null };
-    if (!r.errored_at) continue;
-    // Friendly error_message is more useful than the bare code when
-    // both are present (e.g. "session expired — please re-login")
-    // — but fall back to the code for grouping consistency.
-    const msg = r.error_message
-      ? `dashboard: ${r.error_code ?? 'error'} — ${r.error_message}`
-      : `dashboard: ${r.error_code ?? 'pull failed'}`;
-    all.push({
-      source: 'dashboard',
-      message: msg,
-      stack: r.error_page ?? null,
-      property_id: r.property_id,
-      ts: r.errored_at,
     });
   }
 

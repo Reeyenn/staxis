@@ -34,14 +34,17 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // (single-source-of-truth doctrine: all SMS-firing crons in one
   // observable channel).
   { heartbeatName: 'process-sms-jobs',                  source: { kind: 'github', workflowFile: 'sms-jobs-cron.yml' },                       cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'scraper-health',                    source: { kind: 'github', workflowFile: 'scraper-health-cron.yml' },                 cronExpr: '*/15 * * * *' },
+  // Plan v4 (2026-05-24): removed `scraper-health` cron entry — Railway
+  // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
+  // its replacement.
   { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'doctor-check',                      source: { kind: 'vercel', cronPath: '/api/cron/doctor-check' },                       cronExpr: '0 * * * *' },
   { heartbeatName: 'walkthrough-heal-stale',            source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-heal-stale' },             cronExpr: '*/30 * * * *' },
   { heartbeatName: 'walkthrough-health-alert',          source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-health-alert' },           cronExpr: '*/10 * * * *' },
-  { heartbeatName: 'seed-rooms-daily',                  source: { kind: 'vercel', cronPath: '/api/cron/seed-rooms-daily' },                   cronExpr: '10 * * * *' },
+  // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
+  // legacy `rooms` table (dropped in v4).
   { heartbeatName: 'sweep-orphan-auth-users',           source: { kind: 'vercel', cronPath: '/api/cron/sweep-orphan-auth-users' },             cronExpr: '*/30 * * * *' },
   { heartbeatName: 'sweep-mfa-verified-sessions',       source: { kind: 'vercel', cronPath: '/api/cron/sweep-mfa-verified-sessions' },         cronExpr: '0 */6 * * *' },
   // Moved to Vercel native 2026-05-17 after a GH Actions scheduler stall
@@ -70,7 +73,8 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'ml-train-supply',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 8 * * 0' },
   { heartbeatName: 'ml-train-inventory',    source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 9 * * 0' },
   { heartbeatName: 'ml-retention-purge',    source: { kind: 'github', workflowFile: 'ml-retention-purge.yml' },      cronExpr: '0 8 * * *' },
-  { heartbeatName: 'scraper-weekly-digest', source: { kind: 'github', workflowFile: 'scraper-weekly-digest-cron.yml' }, cronExpr: '0 14 * * 6' },
+  // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
+  // scraper observability cron.
   // Plan v4 (2026-05-23): replaces scraper/vercel-watchdog.js (Railway
   // process killed in the v4 cutover). Polls /api/admin/doctor every 5
   // min and alerts Sentry/SMS on fail with business-hours-only bumps.

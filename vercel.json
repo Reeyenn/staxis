@@ -46,10 +46,6 @@
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/api/cron/seed-rooms-daily",
-      "schedule": "10 * * * *"
-    },
-    {
       "path": "/api/cron/seal-daily",
       "schedule": "5 * * * *"
     },

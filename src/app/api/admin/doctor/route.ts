@@ -173,26 +173,22 @@ const checks: Array<[string, CheckFn]> = [
   // Supabase SQL editor.
   ['storage_bucket_policy_coverage', checkStorageBucketPolicyCoverage],
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
-  ['supabase_heartbeat',             checkSupabaseHeartbeat],
-  ['supabase_dashboard',             checkSupabaseDashboard],
-  // F7 (master plan v2): per-property dashboard freshness, aligned with
-  // the UI's DASHBOARD_STALE_MINUTES contract. Warns at 25 min (matching
-  // the customer-visible "stale" banner threshold), fails at 45 min
-  // (Codex review reframe — "reuse UI helper contract, don't redefine").
-  ['dashboard_freshness',            checkDashboardFreshness],
-  // F7 (master plan v2): bubble up watchdog degradation to /doctor.
-  // The scraper writes a coarse boolean degraded + degradedReason to
-  // scraper_status['vercel_watchdog'] each tick. If true, the SMS path
-  // is broken regardless of how green every other check is — surface
-  // that loudly here so we don't trust the silence.
-  ['vercel_watchdog_degraded',       checkVercelWatchdogDegraded],
+  // Plan v4 (2026-05-24): removed `supabase_heartbeat`, `supabase_dashboard`,
+  // `dashboard_freshness`, and `vercel_watchdog_degraded` checks. All four
+  // read from `scraper_status` / `dashboard_by_date` — tables dropped in
+  // the v4 cleanup. The CUA replacement health is covered by the
+  // `cua_sessions_alive` / `cua_cost_cap_paused` / `cua_mfa_pending` /
+  // `cua_knowledge_files_active` checks added below.
+
   // Schema-drift detection: every migration in /supabase/migrations/ must be
   // recorded in applied_migrations on the live DB. Catches the "deployed
   // code that calls a column added in 00NN before 00NN was applied" failure
   // mode that otherwise surfaces as cryptic 'relation … not found' 500s.
   ['supabase_migrations_applied',    checkAppliedMigrations],
-  ['scraper_csv_pull',               checkScraperCsvPull],
-  ['scraper_health_cron',            checkScraperHealthCronLiveness],
+  // Plan v4 (2026-05-24): removed `scraper_csv_pull` + `scraper_health_cron`.
+  // Both read scraper_status keys (`morning`/`evening`/`alertState`) the
+  // Railway scraper wrote. Scraper service is gone; CUA polling is
+  // monitored via `cua_sessions_alive` instead.
   ['twilio_credentials',             checkTwilioCredentials],
   ['twilio_balance',                 checkTwilioBalance],
   // Twilio FROM-number registration: existing twilio_credentials check
@@ -207,13 +203,16 @@ const checks: Array<[string, CheckFn]> = [
   ['alert_phone_shape',              checkAlertPhoneShape],
   ['cron_secret_shape',              checkCronSecretShape],
   ['cron_secret_cross_platform',     checkCronSecretCrossPlatform],
-  ['watchdog_alert_path',            checkWatchdogAlertPath],
-  ['scraper_pull_latency',           checkScraperPullLatency],
-  // Smoke-detectors for silent ML feature failures. Both paths fall back
-  // to NULL fields and let the housekeeper tap "succeed" — the only way
-  // we know they fired is by reading these counters.
-  ['ml_occupancy_capture_failures',  checkOccupancyCaptureFailures],
-  ['ml_feature_derivation_failures', checkFeatureDerivationFailures],
+  // Plan v4 (2026-05-24): removed `watchdog_alert_path` +
+  // `scraper_pull_latency`. The former read scraper_status['vercel_watchdog'] +
+  // ['alertState'] (Railway scraper observability); the latter read
+  // `pull_metrics`. Both tables / sources are gone post-v4. The new
+  // 5-min `vercel-watchdog` cron polls /api/admin/doctor directly.
+  // Plan v4 (2026-05-24): removed `ml_occupancy_capture_failures` +
+  // `ml_feature_derivation_failures`. Both incremented counters in
+  // scraper_status[ml_failures:<kind>] — dead post-v4. If the new CUA
+  // worker needs to surface feature-derivation failures, it'll write
+  // to error_logs (already surfaced via recent-errors).
   // Prediction freshness — closes the silent-cron-success bug class.
   // The cron route returns ok:true even if the inner ML calls all fail;
   // the only way to detect that is "did the database actually get new
@@ -360,14 +359,11 @@ const checks: Array<[string, CheckFn]> = [
   // /admin/pms (filters checks by `cua_` prefix) so Reeyen sees the
   // onboarding safety net in the same place he opens for PMS work.
   ['cua_service_ci_recent_pass',     checkCuaServiceCiRecentPass],
-  // Round 14 (2026-05-14): every active property's `rooms` table for
-  // today should have one row per inventory entry. The AI tools now
-  // compute totals from room_inventory (Layer 1), but if today's seed
-  // is short, get_today_summary still under-counts the operational
-  // statuses (dirty/in_progress/clean) for missing rooms. This check
-  // alerts when the gap is ≥ 4 rooms or > 10% of inventory so the
-  // seed-rooms-daily cron's failure mode pages SMS within an hour.
-  ['rooms_today_seeded',             checkRoomsTodaySeeded],
+  // Plan v4 (2026-05-24): removed `rooms_today_seeded`. The check
+  // counted rows in the legacy `rooms` table (one-row-per-property-per-
+  // date model), which was dropped in v4. The new CUA writes room
+  // state into `pms_room_status_log` (event-sourced, not daily-seeded).
+  // No equivalent "rows-per-day" check is needed in v4.
   // Audit Batch 2 (F-04): assert every bucket that's supposed to be
   // private actually is. A Supabase Studio UI click can flip a bucket
   // to public; nothing else alarms. List below tracks every bucket
@@ -1807,10 +1803,16 @@ async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durati
  * migration 0007_realtime_publication_doctor.sql (added alongside this).
  */
 async function checkSupabaseRealtimePublication(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Plan v4 (2026-05-24): removed `rooms`, `work_orders`, `plan_snapshots`,
+  // `scraper_status` from the required-realtime list. All four tables
+  // were dropped in the v4 cleanup (rooms/work_orders/plan_snapshots
+  // became service-role-only empty stubs in 0205, then dropped via
+  // Chrome; scraper_status was dropped outright). Their realtime
+  // subscriptions no longer exist in the v4 web app.
   const REQUIRED_TABLES = [
-    'staff', 'rooms', 'work_orders', 'preventive_tasks',
-    'inventory', 'handoff_logs', 'guest_requests', 'plan_snapshots',
-    'schedule_assignments', 'shift_confirmations', 'manager_notifications', 'scraper_status',
+    'staff', 'preventive_tasks',
+    'inventory', 'handoff_logs', 'guest_requests',
+    'schedule_assignments', 'shift_confirmations', 'manager_notifications',
   ];
   try {
     const { data, error } = await supabaseAdmin.rpc('staxis_realtime_publication_tables');
@@ -2722,7 +2724,9 @@ export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
 
 export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
   // Tight cadences
-  { name: 'scraper-health',                cadenceHours: 0.25,  description: '15-min liveness watcher (Vercel native cron)' },
+  // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
+  // service is gone. The new `vercel-watchdog` (5-min, listed at the
+  // bottom) replaces it.
   { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron)' },
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
@@ -2732,7 +2736,9 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
   { name: 'sweep-orphan-auth-users',       cadenceHours: 30/60, description: 'every-30-min orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4)' },
   { name: 'sweep-mfa-verified-sessions',   cadenceHours: 6,     description: 'every-6-hour sweep of mfa_verified_sessions rows older than 30 days — Phase 2B Door B fix' },
-  { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
+  // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
+  // legacy `rooms` table (dropped in v4). CUA writes room state to
+  // pms_room_status_log (event-sourced, no per-day seeding needed).
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's
   // schedule. Treated as a single heartbeat — either slot writing
@@ -2755,7 +2761,8 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
-  { name: 'scraper-weekly-digest',         cadenceHours: 168,   description: 'weekly scraper health digest SMS' },
+  // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
+  // scraper observability cron, scraper service is gone.
   { name: 'agent-weekly-digest',           cadenceHours: 168,   description: 'weekly agent activity digest SMS to MANAGER_PHONE (Sundays 9am UTC)' },
   // Plan v4 (2026-05-23): replaces the Railway-hosted vercel-watchdog.js.
   // Runs the doctor every 5 min, Sentry-alerts on fail with business-hours-only SMS bump.
