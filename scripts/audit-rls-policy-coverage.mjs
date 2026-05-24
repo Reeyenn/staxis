@@ -168,6 +168,12 @@ const SERVICE_ROLE_ONLY = new Set([
   'rooms',
   'work_orders',
   'plan_snapshots',
+  // ─── Migration 0210 — Staxis-side cleaning tasks. ────────────────────
+  // RLS enabled + REVOKE + explicit `cleaning_tasks_deny_all_browser`
+  // policy. Rules engine writes via service-role; the future
+  // housekeeping UI reads via /api/* with supabaseAdmin. The UI branch
+  // will add per-role read policies in a follow-up migration.
+  'cleaning_tasks',
 ]);
 
 function listMigrations() {

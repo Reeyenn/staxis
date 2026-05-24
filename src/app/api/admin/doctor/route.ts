@@ -2771,6 +2771,10 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
   // 2026-05-24: cua-parity-diff retired — shadow gate removed alongside
   // legacy CA normalizers; new generic-table-writer is the only path now.
+  // Migration 0210: cleaning-rules engine that turns live PMS data into
+  // Staxis-side cleaning task records (departure clean, VIP amenity
+  // setup, tight-turnaround priority bump, …).
+  { name: 'run-rules-engine',              cadenceHours: 5/60,  description: '5-min cleaning-rules engine — reads pms_*, writes cleaning_tasks (Vercel native cron)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
