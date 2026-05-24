@@ -64,6 +64,10 @@
     {
       "path": "/api/cron/vercel-watchdog",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/process-pending-callouts",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

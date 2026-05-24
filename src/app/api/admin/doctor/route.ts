@@ -2771,6 +2771,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
   // 2026-05-24: cua-parity-diff retired — shadow gate removed alongside
   // legacy CA normalizers; new generic-table-writer is the only path now.
+  // 2026-05-24: sick-callout coverage flow (feature #6). Sweeps callouts
+  // whose redistribute_at has passed (or whose 'after_current_room'
+  // gate is now satisfied) and fires the redistribute. Safety net for
+  // inline failures on the report routes.
+  { name: 'process-pending-callouts',      cadenceHours: 5/60,  description: '5-min Vercel cron that processes deferred sick-callout redistribution (feature #6)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
