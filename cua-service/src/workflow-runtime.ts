@@ -41,6 +41,15 @@ import type { SessionSupervisor } from './session-supervisor.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const WORKFLOW_TIMEOUT_MS = 10 * 60_000;
+// Plan v7 Phase 2c — mapper jobs need more headroom for 13-target runs.
+const MAPPER_JOB_TIMEOUT_MS = 60 * 60_000;
+
+// Plan v7 Phase 2c — workflow kinds that don't require an alive
+// SessionDriver. Mapper jobs trigger on paused_no_knowledge_file
+// (precisely when no driver is alive), so claimNextJob's alive-driver
+// filter would deadlock them forever. These kinds get a separate
+// claim path + handler dispatch.
+const NO_DRIVER_KINDS = new Set<string>(['mapper.learn_pms_family']);
 
 interface WorkflowJobRow {
   id: string;
@@ -57,8 +66,14 @@ export interface WorkflowContext {
   propertyId: string;
   kind: string;
   payload: Record<string, unknown>;
-  page: Page;
-  recordClaudeSpendMicros: (micros: number, note?: string) => Promise<void>;
+  /** Plan v7 — null for no-driver kinds (mapper.*). Handler must spawn
+   *  its own browser if it needs one (see mapping-driver.ts). */
+  page: Page | null;
+  /** Plan v7 — abort signal threaded from the workflow timeout. Handlers
+   *  SHOULD pass this to long-running async calls (Anthropic, Playwright)
+   *  so a timeout actually cancels in-flight work instead of waiting. */
+  signal: AbortSignal;
+  recordClaudeSpendMicros: (micros: number, note?: string, source?: 'mapping' | 'workflow' | 'repair') => Promise<void>;
 }
 
 export type WorkflowHandler = (ctx: WorkflowContext) => Promise<{
@@ -94,9 +109,36 @@ export class WorkflowRuntime {
       pollIntervalMs: POLL_INTERVAL_MS,
       registeredKinds: Array.from(this.handlers.keys()),
     });
+    // Plan v7 Phase 2c — SIGTERM-safe retry. On boot, find any
+    // `running` rows from a previous worker that crashed mid-job and
+    // requeue them. Idempotency key prevents double-execution if the
+    // previous worker actually completed but its DB update was lost.
+    void this.reclaimStaleRunningJobs();
+
     this.pollHandle = setInterval(() => {
       void this.pollOnce();
     }, POLL_INTERVAL_MS);
+  }
+
+  /** Plan v7 — reclaim `running` rows older than 2× max timeout that
+   *  presumably belong to a crashed worker. Requeue them so the next
+   *  poll picks them up. The unique-idempotency-key constraint on
+   *  workflow_jobs prevents double-execution. */
+  private async reclaimStaleRunningJobs(): Promise<void> {
+    const staleCutoff = new Date(Date.now() - 2 * MAPPER_JOB_TIMEOUT_MS).toISOString();
+    const { data, error } = await supabase
+      .from('workflow_jobs')
+      .update({ status: 'queued', error: 'reclaimed: worker restart before completion' })
+      .eq('status', 'running')
+      .lt('last_attempt_at', staleCutoff)
+      .select('id');
+    if (error) {
+      log.warn('workflow-runtime: stale reclaim failed', { err: error.message });
+      return;
+    }
+    if (data && data.length > 0) {
+      log.info('workflow-runtime: reclaimed stale running jobs', { count: data.length });
+    }
   }
 
   stop(): void {
@@ -119,21 +161,44 @@ export class WorkflowRuntime {
   }
 
   private async claimNextJob(): Promise<WorkflowJobRow | null> {
-    // Find oldest queued job for any property that has an alive session.
-    const aliveDriverIds = this.supervisor.listDrivers().map((d) => d.propertyId);
-    if (aliveDriverIds.length === 0) return null;
-
-    const { data, error } = await supabase
+    // Plan v7 Phase 2c — TWO claim paths:
+    //   (a) Alive-driver jobs: anything that needs to drive the persistent
+    //       browser of a hotel (e.g. "mark room clean in PMS"). Filter to
+    //       hotels with active SessionDrivers.
+    //   (b) No-driver jobs (NO_DRIVER_KINDS): mapper jobs. The mapper-driver
+    //       owns its own browser; no SessionDriver needed.
+    //
+    // Try (b) first — mapper jobs are admin/onboarding and rare, so it
+    // doesn't matter if they preempt; but if (a) had no alive drivers
+    // we'd starve the queue forever without (b).
+    const noDriverKinds = [...NO_DRIVER_KINDS];
+    const { data: noDriverRow } = await supabase
       .from('workflow_jobs')
       .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key')
-      .in('property_id', aliveDriverIds)
+      .in('kind', noDriverKinds)
       .eq('status', 'queued')
       .order('created_at', { ascending: true })
       .limit(1)
       .maybeSingle();
 
-    if (error || !data) return null;
-    const row = data as WorkflowJobRow;
+    let row: WorkflowJobRow | null = noDriverRow ? (noDriverRow as WorkflowJobRow) : null;
+
+    if (!row) {
+      // Path (a): jobs for alive hotels only.
+      const aliveDriverIds = this.supervisor.listDrivers().map((d) => d.propertyId);
+      if (aliveDriverIds.length === 0) return null;
+      const { data, error } = await supabase
+        .from('workflow_jobs')
+        .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key')
+        .in('property_id', aliveDriverIds)
+        .not('kind', 'in', `(${noDriverKinds.map((k) => `"${k}"`).join(',')})`)
+        .eq('status', 'queued')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (error || !data) return null;
+      row = data as WorkflowJobRow;
+    }
 
     // Atomic claim: flip status to 'running' for THIS row only.
     const { data: claim, error: claimErr } = await supabase
@@ -157,40 +222,55 @@ export class WorkflowRuntime {
   }
 
   private async runJob(job: WorkflowJobRow): Promise<void> {
-    const driver = this.supervisor.getDriver(job.property_id);
-    if (!driver) {
-      await this.markFailed(job, 'no live session-driver for this property');
-      return;
-    }
     const handler = this.handlers.get(job.kind);
     if (!handler) {
       await this.markFailed(job, `no handler registered for kind=${job.kind}`);
       return;
     }
 
+    // Plan v7 Phase 2c — kind-aware dispatch.
+    //   no-driver kinds (mapper.*): handler runs without a SessionDriver
+    //     and owns its own browser (see mapping-driver.ts). No browser
+    //     lock to acquire/release.
+    //   alive-driver kinds: existing path — acquire SessionDriver's
+    //     browser lock and pass its page to the handler.
+    const isNoDriverKind = NO_DRIVER_KINDS.has(job.kind);
+    const timeoutMs = isNoDriverKind ? MAPPER_JOB_TIMEOUT_MS : WORKFLOW_TIMEOUT_MS;
+
     log.info('workflow-runtime: running job', {
       jobId: job.id,
       propertyId: job.property_id,
       kind: job.kind,
       attempt: job.attempts + 1,
+      isNoDriverKind,
+      timeoutMs,
     });
 
-    const release = driver.acquireBrowserLock();
-    const page = driver.getPageForWorkflow();
-    if (!page) {
-      release();
-      await this.markFailed(job, 'session-driver has no page (not started yet?)');
-      return;
+    let release: (() => void) | null = null;
+    let page: Page | null = null;
+    if (!isNoDriverKind) {
+      const driver = this.supervisor.getDriver(job.property_id);
+      if (!driver) {
+        await this.markFailed(job, 'no live session-driver for this property');
+        return;
+      }
+      release = driver.acquireBrowserLock();
+      page = driver.getPageForWorkflow();
+      if (!page) {
+        release();
+        await this.markFailed(job, 'session-driver has no page (not started yet?)');
+        return;
+      }
     }
 
-    let finished = false;
+    // Plan v7 Phase 2c — real AbortController. Handler receives the
+    // signal and can pass it to its Anthropic / Playwright calls. The
+    // timeout fires abort(); the in-flight async chain unwinds.
+    const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => {
-      if (!finished) {
-        log.warn('workflow-runtime: timeout — workflow will be marked failed if it returns', {
-          jobId: job.id,
-        });
-      }
-    }, WORKFLOW_TIMEOUT_MS);
+      abortController.abort(new Error(`workflow timeout ${timeoutMs}ms`));
+      log.warn('workflow-runtime: timeout — aborting via signal', { jobId: job.id, timeoutMs });
+    }, timeoutMs);
 
     try {
       const result = await handler({
@@ -199,11 +279,14 @@ export class WorkflowRuntime {
         kind: job.kind,
         payload: job.payload,
         page,
-        recordClaudeSpendMicros: async (micros, note) => {
-          await recordSpend(job.property_id, micros, { kind: 'workflow', note });
+        signal: abortController.signal,
+        recordClaudeSpendMicros: async (micros, note, source = 'workflow') => {
+          // Plan v7 — source='mapping' skips the per-hotel daily cap.
+          // For workflow kinds it stays in the cap. Cost-cap.ts handles
+          // the source-aware dispatch (Phase 2c chunk 3).
+          await recordSpend(job.property_id, micros, { kind: source, note });
         },
       });
-      finished = true;
       clearTimeout(timeoutHandle);
       if (result.ok) {
         await this.markCompleted(job, result.result ?? {});
@@ -211,7 +294,6 @@ export class WorkflowRuntime {
         await this.markFailedOrRetry(job, result.error ?? 'handler returned ok=false');
       }
     } catch (err) {
-      finished = true;
       clearTimeout(timeoutHandle);
       log.error('workflow-runtime: handler threw', {
         jobId: job.id,
@@ -219,7 +301,7 @@ export class WorkflowRuntime {
       });
       await this.markFailedOrRetry(job, (err as Error).message);
     } finally {
-      release();
+      if (release) release();
     }
   }
 

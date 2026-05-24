@@ -32,6 +32,7 @@ import { log, makeWorkerId } from './log.js';
 import { env } from './env.js';
 import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
+import { runMappingJob, type MappingJobInput } from './mapping-driver.js';
 
 const WORKER_ID = makeWorkerId();
 
@@ -98,10 +99,29 @@ async function main(): Promise<void> {
   await supervisor.start();
   runtime.start();
 
-  // No specific workflow handlers are registered in this rebuild.
-  // When Reeyen wires up his trigger sources + workflows separately,
-  // call runtime.registerHandler(kind, handler) here (or from a
-  // workflows/ subdirectory that the runtime imports).
+  // ─── Plan v7 Phase 2c — mapper.learn_pms_family handler ──────────────
+  // Bridges workflow-runtime → mapping-driver. The no-driver claim path
+  // in workflow-runtime (NO_DRIVER_KINDS) picks up mapper jobs even when
+  // no SessionDriver is alive — exactly the paused_no_knowledge_file
+  // case where session-driver enqueued the mapper job.
+  runtime.registerHandler('mapper.learn_pms_family', async (ctx) => {
+    const input = ctx.payload as unknown as MappingJobInput;
+    const result = await runMappingJob(input, ctx.jobId, ctx.signal);
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? 'mapping failed' };
+    }
+    return {
+      ok: true,
+      result: {
+        knowledge_file_id: result.knowledgeFileId,
+        knowledge_file_version: result.knowledgeFileVersion,
+        targets_found: result.targetsFound,
+        targets_unavailable: result.targetsUnavailable,
+        targets_failed: result.targetsFailed,
+        spent_micros: result.spentMicros,
+      },
+    };
+  });
 
   log.info('cua-service ready', {
     workerId: WORKER_ID,
