@@ -22,15 +22,17 @@ import { ScheduleTab } from './_components/ScheduleTab';
 import { RoomsTab } from './_components/RoomsTab';
 import { DeepCleanTab } from './_components/DeepCleanTab';
 import { PerformanceTab } from './_components/PerformanceTab';
+import { InspectionsTab } from './_components/InspectionsTab';
 import { T, FONT_SANS } from './_components/_snow';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'rooms' | 'schedule' | 'deepclean' | 'performance';
+type TabKey = 'rooms' | 'schedule' | 'inspections' | 'deepclean' | 'performance';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
   { key: 'rooms',       label: 'Rooms',       labelEs: 'Habitaciones'    },
   { key: 'schedule',    label: 'Schedule',    labelEs: 'Horario'         },
+  { key: 'inspections', label: 'Inspections', labelEs: 'Inspecciones'    },
   { key: 'performance', label: 'Performance', labelEs: 'Rendimiento'     },
   { key: 'deepclean',   label: 'Deep Clean',  labelEs: 'Limpieza prof.'  },
 ];
@@ -55,7 +57,7 @@ export default function HousekeepingPage() {
   // Restore tab from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem('hk-tab') as TabKey | null;
-    const valid: TabKey[] = ['rooms', 'schedule', 'deepclean', 'performance'];
+    const valid: TabKey[] = ['rooms', 'schedule', 'inspections', 'deepclean', 'performance'];
     if (saved && valid.includes(saved)) setActiveTabState(saved);
   }, []);
 
@@ -122,6 +124,7 @@ export default function HousekeepingPage() {
       <div key={activeTab} className="animate-in stagger-1">
         {activeTab === 'rooms'       && <RoomsTab />}
         {activeTab === 'schedule'    && <ScheduleTab />}
+        {activeTab === 'inspections' && <InspectionsTab />}
         {activeTab === 'performance' && <PerformanceTab />}
         {activeTab === 'deepclean'   && <DeepCleanTab />}
       </div>

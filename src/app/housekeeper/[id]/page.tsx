@@ -19,6 +19,7 @@ import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
+import InspectorView from './_components/InspectorView';
 
 // Rooms come off Supabase via `subscribeToRoomsForStaff` fully shaped as our
 // canonical Room type — no Firestore DocumentReference to carry around.
@@ -877,6 +878,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           </div>
         )}
       </div>
+
+      {/* ── Inspector view (renders only when staff.can_inspect=true) ── */}
+      <InspectorView pid={pid} staffId={housekeeperId} lang={lang} />
 
       {/* ── Room list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
