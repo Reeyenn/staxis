@@ -546,7 +546,19 @@ async function saveDraftKnowledgeFile(
       signedWithKeyId = sig.signedWithKeyId;
       signedAt = sig.signedAt;
     } catch (err) {
-      log.warn('saveDraftKnowledgeFile: signRecipe failed — saving unsigned', {
+      // Plan v8 Phase B review P1-5 (Codex finding) — under enforce mode,
+      // saving unsigned would silently break the hotel: recipe-runner
+      // refuses unsigned recipes on every poll, and the operator's only
+      // signal is a doctor red row. Fail the save loudly so the admin
+      // sees a clear error + can investigate (key corruption, HSM hiccup,
+      // env mismatch). In warn mode, preserve today's behavior (log +
+      // save unsigned — recipe-runner will log a warning and proceed).
+      if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
+        const msg = `signRecipe failed under enforce mode — refusing to save unsigned recipe: ${(err as Error).message}`;
+        log.warn('saveDraftKnowledgeFile: ' + msg, { pmsFamily, version: nextVersion });
+        return { ok: false, error: msg };
+      }
+      log.warn('saveDraftKnowledgeFile: signRecipe failed — saving unsigned (warn mode)', {
         err: (err as Error).message, pmsFamily, version: nextVersion,
       });
     }
