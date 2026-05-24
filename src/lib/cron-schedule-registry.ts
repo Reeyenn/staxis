@@ -81,9 +81,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // process killed in the v4 cutover). Polls /api/admin/doctor every 5
   // min and alerts Sentry/SMS on fail with business-hours-only bumps.
   { heartbeatName: 'vercel-watchdog',       source: { kind: 'vercel', cronPath: '/api/cron/vercel-watchdog' },                  cronExpr: '*/5 * * * *' },
-  // Plan v7 Phase 2b parity gate. Daily 4 UTC compares pms_*_shadow
-  // vs authoritative; writes diffs to pms_parity_diffs. 7 consecutive
-  // days of zero diffs per table = that table's generic-writer path
-  // flips authoritative. Cron + heartbeat retire when all tables cut over.
-  { heartbeatName: 'cua-parity-diff',       source: { kind: 'vercel', cronPath: '/api/cron/cua-parity-diff' },                  cronExpr: '0 4 * * *' },
+  // 2026-05-24: cua-parity-diff retired — shadow gate removed; new
+  // generic-table-writer is the only write path now.
 ];

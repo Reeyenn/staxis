@@ -64,10 +64,6 @@
     {
       "path": "/api/cron/vercel-watchdog",
       "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/cua-parity-diff",
-      "schedule": "0 4 * * *"
     }
   ]
 }

@@ -28,7 +28,7 @@ import type { Browser, BrowserContext, Page } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
-import { loadActive, type LoadedKnowledgeFile, type FeedSpec } from './knowledge-file.js';
+import { loadActive, type LoadedKnowledgeFile } from './knowledge-file.js';
 import { checkBudget, markResumed } from './cost-cap.js';
 import { schedule as singleFlight, getMetrics as getSingleFlightMetrics } from './single-flight.js';
 import { shouldRestart } from './memory-monitor.js';
@@ -37,35 +37,16 @@ import {
   detectMfaPrompt,
   pauseForMfa,
 } from './mfa-handler.js';
-import { extractDomTable } from './extractors/dom-table.js';
-import { extractFetchApi } from './extractors/fetch-api.js';
-import { extractDomInline } from './extractors/dom-inline.js';
-import { extractCsvDownload } from './extractors/csv-download.js';
-import {
-  normalizeCaCsv,
-  normalizeCaHkCenter,
-  normalizeCaWorkOrders,
-  normalizeCaDashboardCounts,
-  type CaDashboardPage,
-} from './extractors/choice-advantage.js';
-import {
-  saveReservations,
-  saveRoomStatuses,
-  saveHousekeepingAssignments,
-  saveWorkOrders,
-  saveInHouseSnapshot,
-} from './persistence/new-schema-writer.js';
-// Plan v7 Phase 2b — shadow-mode parallel write through the new
-// template-driven path. When CUA_SHADOW_MODE=true, certain feeds ALSO
-// write to pms_*_shadow tables; the daily parity-diff cron compares
-// the two. Once a table passes 7 days of zero-diff, its CUA_USE_GENERIC_
-// WRITER_<table>=true flag flips and the legacy normalizer path retires
-// for that table.
+// Plan v7 sole-path runtime (2026-05-24). Legacy choice-advantage
+// normalizers + new-schema-writer hand-coded writers were retired —
+// the generic-table-writer driven by mapper-produced TableTemplates
+// is the only write path now.
 import { saveGenericTable } from './persistence/generic-table-writer.js';
+import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
-import { dashboardCountsTemplateFromLegacy } from './recipe-adapter.js';
+import { recipeToTableTemplates } from './recipe-adapter.js';
 import { safeGoto } from './browser-utils/navigate.js';
-import type { ScraperCredentialsRow } from './types.js';
+import type { Recipe, ScraperCredentialsRow } from './types.js';
 
 const VIEWPORT = { width: 1280, height: 800 };
 const POLL_INTERVAL_MS = 30_000;
@@ -90,11 +71,27 @@ export interface SessionDriverOptions {
   workerMachineId: string;
 }
 
-interface FeedRunResult {
-  feed: string;
-  ok: boolean;
-  reason?: string;
-  rowsWritten?: number;
+// Plan v7 — priority order for the polling loop's table sweep.
+// Lower number = runs earlier. Dashboard / in-house snapshot first
+// (cheapest, most-displayed); then list pages; then drill-down.
+const TABLE_PRIORITY: Record<string, number> = {
+  pms_in_house_snapshot: 1,
+  pms_reservations: 2,
+  pms_rooms_inventory: 3,
+  pms_room_status_log: 4,
+  pms_housekeeping_assignments: 5,
+  pms_work_orders_v2: 6,
+  pms_revenue_daily: 7,
+  pms_rates_and_inventory: 8,
+  pms_channel_performance: 9,
+  pms_forecast_daily: 10,
+  pms_groups_and_blocks: 11,
+  pms_guests: 12,         // drill-down: most expensive
+  pms_lost_and_found: 13,
+  pms_activity_log: 14,
+};
+function priorityOf(tableName: string): number {
+  return TABLE_PRIORITY[tableName] ?? 99;
 }
 
 /**
@@ -609,222 +606,94 @@ export class SessionDriver {
     });
   }
 
+  /**
+   * Plan v7 sole-path runtime (2026-05-24): drive extraction off the
+   * mapper-produced Recipe.actions in the knowledge file, translated to
+   * TableTemplate[] by recipe-adapter, then run + save via the generic
+   * pipeline. Replaces the legacy per-feed mode-switch that called
+   * choice-advantage normalizers + new-schema-writer hand-coded writers.
+   */
   private async runAllFeeds(signal: AbortSignal): Promise<void> {
-    if (!this.knowledgeFile || !this.page) return;
-    const feeds = this.knowledgeFile.knowledge.feeds;
-    const results: FeedRunResult[] = [];
-    const today = todayInTimezone('America/Chicago');
+    if (!this.knowledgeFile || !this.page || !this.allowedHost) return;
 
-    // CA-specific dispatch for Phase 1. When more PMS families come,
-    // dispatch on this.pmsFamily and call the right normalizer.
-    const isCa = this.pmsFamily === 'choice_advantage';
+    const actions = this.knowledgeFile.knowledge.actions as Recipe['actions'] | undefined;
+    if (!actions || Object.keys(actions).length === 0) {
+      log.warn('session-driver: knowledge file has no recipe.actions — nothing to poll', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+        knowledgeFileVersion: this.knowledgeFileVersion,
+      });
+      return;
+    }
 
-    // Process feeds in a stable order so dashboard updates feel monotonic.
-    const order: string[] = [
-      'dashboard_counts',
-      'arrivals_departures',
-      'room_status',
-      'housekeeping',
-      'work_orders',
-    ];
+    // Recipe.actions → TableTemplate[]. Each template knows its target
+    // pms_* table, write strategy, sources, fields, parsers.
+    const recipe: Recipe = {
+      schema: 1,
+      login: this.knowledgeFile.knowledge.login as Recipe['login'],
+      actions,
+    };
+    const adaptResult = recipeToTableTemplates(recipe);
+    if (adaptResult.skipped.length > 0) {
+      log.warn('session-driver: some actions skipped by adapter', {
+        propertyId: this.propertyId,
+        skipped: adaptResult.skipped,
+      });
+    }
 
-    for (const feedName of order) {
+    const results: Array<{ table: string; ok: boolean; rowsWritten?: number; reason?: string }> = [];
+
+    // Process in stable order: dashboard / in-house snapshot first
+    // (cheapest, most-displayed), then list pages, then drill-down.
+    const sorted = [...adaptResult.templates].sort((a, b) => priorityOf(a.tableName) - priorityOf(b.tableName));
+
+    for (const template of sorted) {
       if (signal.aborted) break;
-      const feed = feeds[feedName];
-      if (!feed) continue;
       try {
-        const r = await this.runFeed(feedName, feed, today, isCa, signal);
-        results.push(r);
+        const runResult = template.sources.length > 1
+          ? await runMultiSourceTemplate({
+              page: this.page,
+              template,
+              allowedHost: this.allowedHost,
+              signal,
+            })
+          : await runSingleSourceTemplate({
+              page: this.page,
+              template,
+              allowedHost: this.allowedHost,
+              signal,
+            });
+
+        if (!runResult.ok) {
+          results.push({ table: template.tableName, ok: false, reason: runResult.reason });
+          continue;
+        }
+
+        const saveResult = await saveGenericTable(
+          this.propertyId,
+          template.tableName,
+          runResult.rows,
+        );
+        results.push({
+          table: template.tableName,
+          ok: saveResult.ok,
+          rowsWritten: saveResult.inserted + saveResult.updated + saveResult.autoResolved,
+          reason: saveResult.errors[0],
+        });
       } catch (err) {
-        log.warn('session-driver: feed run threw', {
+        log.warn('session-driver: template run threw', {
           propertyId: this.propertyId,
-          feed: feedName,
+          tableName: template.tableName,
           err: err instanceof Error ? err.message : String(err),
         });
-        results.push({ feed: feedName, ok: false, reason: (err as Error).message });
+        results.push({ table: template.tableName, ok: false, reason: (err as Error).message });
       }
-      // Plan v7 — parallel shadow write during the parity window.
-      // Fire-and-forget; doesn't block the polling loop or fail the feed.
-      void this.shadowWriteFeed(feedName, feed, signal);
     }
 
     log.info('session-driver: poll complete', {
       propertyId: this.propertyId,
       results,
     });
-  }
-
-  private async runFeed(
-    feedName: string,
-    feed: FeedSpec,
-    today: string,
-    isCa: boolean,
-    signal: AbortSignal,
-  ): Promise<FeedRunResult> {
-    if (!this.page || !this.allowedHost) {
-      return { feed: feedName, ok: false, reason: 'no page or allowedHost' };
-    }
-    switch (feed.mode) {
-      case 'csv_download': {
-        const result = await extractCsvDownload({
-          page: this.page,
-          feedSpec: feed,
-          allowedHost: this.allowedHost,
-          signal,
-        });
-        if (!result.ok) return { feed: feedName, ok: false, reason: result.reason };
-        if (!isCa) return { feed: feedName, ok: true };
-        const normalized = normalizeCaCsv(result.rows, { today });
-        const r = await saveReservations(this.propertyId, normalized.reservations);
-        const h = await saveHousekeepingAssignments(this.propertyId, normalized.housekeeping);
-        const s = await saveRoomStatuses(this.propertyId, normalized.roomStatuses);
-        return {
-          feed: feedName,
-          ok: r.ok && h.ok && s.ok,
-          rowsWritten: r.inserted + h.upserted + s.statusChanges,
-        };
-      }
-      case 'dom_table': {
-        const result = await extractDomTable({
-          page: this.page,
-          feedSpec: feed,
-          allowedHost: this.allowedHost,
-          signal,
-        });
-        if (!result.ok) return { feed: feedName, ok: false, reason: result.reason };
-        if (!isCa) return { feed: feedName, ok: true };
-        if (feedName === 'room_status' || feedName === 'housekeeping') {
-          // dom-table returns Record<string,string>[]; normalizeCaHkCenter
-          // declares the `number` field required but tolerates absence at
-          // runtime — accept the type cast.
-          const normalized = normalizeCaHkCenter(
-            result.rows as unknown as Parameters<typeof normalizeCaHkCenter>[0],
-            { today },
-          );
-          const s = await saveRoomStatuses(this.propertyId, normalized.roomStatuses);
-          const h = await saveHousekeepingAssignments(this.propertyId, normalized.housekeeping);
-          return {
-            feed: feedName,
-            ok: s.ok && h.ok,
-            rowsWritten: s.statusChanges + h.upserted,
-          };
-        }
-        return { feed: feedName, ok: true };
-      }
-      case 'fetch_api': {
-        const result = await extractFetchApi({ page: this.page, feedSpec: feed, signal });
-        if (!result.ok) return { feed: feedName, ok: false, reason: result.reason };
-        if (!isCa) return { feed: feedName, ok: true };
-        if (feedName === 'work_orders') {
-          const normalized = normalizeCaWorkOrders(result.data, { oooOnly: true });
-          const w = await saveWorkOrders(this.propertyId, normalized);
-          return {
-            feed: feedName,
-            ok: w.ok,
-            rowsWritten: w.inserted + w.updated + w.reopened,
-          };
-        }
-        return { feed: feedName, ok: true };
-      }
-      case 'dom_inline': {
-        // Dashboard counts: special-cased CA flow with 3 URLs.
-        if (isCa && feedName === 'dashboard_counts') {
-          return this.runCaDashboardCounts(feed, signal);
-        }
-        const result = await extractDomInline({
-          page: this.page,
-          feedSpec: feed,
-          allowedHost: this.allowedHost,
-          signal,
-        });
-        return { feed: feedName, ok: result.ok, reason: result.reason };
-      }
-    }
-  }
-
-  /**
-   * Plan v7 Phase 2b — fire-and-forget shadow write through the new
-   * template-driven path. Runs in parallel with the legacy path during
-   * the parity window. Failures are logged but don't fail the feed.
-   *
-   * Today: handles dashboard_counts (the multi-source case). Extend to
-   * other feeds as the parity gate qualifies them.
-   */
-  private async shadowWriteFeed(feedName: string, feed: FeedSpec, signal: AbortSignal): Promise<void> {
-    if (!env.CUA_SHADOW_MODE) return;
-    if (!this.page || !this.allowedHost) return;
-    try {
-      if (feedName === 'dashboard_counts') {
-        const template = dashboardCountsTemplateFromLegacy(feed as Parameters<typeof dashboardCountsTemplateFromLegacy>[0]);
-        if (!template) return;
-        const result = await runMultiSourceTemplate({
-          page: this.page,
-          template,
-          allowedHost: this.allowedHost,
-          signal,
-        });
-        if (!result.ok) {
-          log.warn('shadow write: template runner failed', {
-            propertyId: this.propertyId, feedName, reason: result.reason,
-          });
-          return;
-        }
-        await saveGenericTable(this.propertyId, template.tableName, result.rows, { shadowMode: true });
-      }
-      // Other feeds (arrivals_departures, room_status, housekeeping,
-      // work_orders) will be added here as the parity gate progresses.
-      // Each needs its own knowledgeFeedToTemplate helper in
-      // recipe-adapter.ts.
-    } catch (err) {
-      log.warn('shadow write: threw', {
-        propertyId: this.propertyId, feedName,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  private async runCaDashboardCounts(
-    feed: FeedSpec,
-    signal: AbortSignal,
-  ): Promise<FeedRunResult> {
-    if (!this.page || !this.allowedHost) {
-      return { feed: 'dashboard_counts', ok: false, reason: 'no page' };
-    }
-    // Feed spec for CA dashboard has extra.pages = { inHouse: url, arrivals: url, departures: url }.
-    const pages = (feed.extra?.pages as Record<string, string> | undefined) ?? {};
-    if (!pages.inHouse || !pages.arrivals || !pages.departures) {
-      return {
-        feed: 'dashboard_counts',
-        ok: false,
-        reason: 'feedSpec.extra.pages missing inHouse/arrivals/departures URLs',
-      };
-    }
-    const fields = feed.columns ?? { roomCount: 'label:has-text("Room Count:") + * .CHI_Data' };
-    const fetchPage = async (url: string): Promise<CaDashboardPage> => {
-      const r = await extractDomInline({
-        page: this.page!,
-        feedSpec: { mode: 'dom_inline', url, columns: fields },
-        allowedHost: this.allowedHost!,
-        signal,
-      });
-      if (!r.ok) return { roomCount: null };
-      return {
-        roomCount: r.data.roomCount ?? null,
-        guestCount: r.data.guestCount ?? null,
-      };
-    };
-
-    const [inHouse, arrivals, departures] = await Promise.all([
-      fetchPage(pages.inHouse),
-      fetchPage(pages.arrivals),
-      fetchPage(pages.departures),
-    ]);
-
-    if (signal.aborted) return { feed: 'dashboard_counts', ok: false, reason: 'aborted' };
-
-    const snapshot = normalizeCaDashboardCounts({ inHouse, arrivals, departures });
-    const result = await saveInHouseSnapshot(this.propertyId, snapshot);
-    return { feed: 'dashboard_counts', ok: result.ok, reason: result.message };
   }
 
   // ─── Internals: heartbeat + status ───────────────────────────────────

@@ -78,15 +78,17 @@ export interface KnowledgeFile {
   schema: 1;
   description?: string;
   login: LoginSpec;
-  feeds: {
-    arrivals_departures?: FeedSpec;
-    room_status?: FeedSpec;
-    dashboard_counts?: FeedSpec;
-    housekeeping?: FeedSpec;
-    work_orders?: FeedSpec;
-    // Other feeds (rates, revenue, etc.) added in Phase 2+.
-    [key: string]: FeedSpec | undefined;
-  };
+  /**
+   * Mapper output (Plan v7 sole shape post-2026-05-24). One ActionRecipe
+   * per target table. session-driver iterates this via recipe-adapter →
+   * TableTemplate → generic-table-writer. The legacy `feeds.{name}` shape
+   * was retired when the hand-coded CA normalizers were deleted.
+   *
+   * Typed loosely (Record<string, unknown>) at this layer because the
+   * source of truth for the Recipe.actions shape lives in
+   * cua-service/src/types.ts and we don't want a circular dep.
+   */
+  actions?: Record<string, unknown>;
   hints?: {
     dismissDialogs?: string[];
     pollingP95Ms?: number;
@@ -370,17 +372,10 @@ function validate(k: KnowledgeFile): void {
   if (!Array.isArray(k.login.successSelectors) || k.login.successSelectors.length === 0) {
     throw new Error('knowledge-file: login.successSelectors must be non-empty array');
   }
-  if (!k.feeds || typeof k.feeds !== 'object') {
-    throw new Error('knowledge-file: missing feeds');
-  }
-  // Per-feed validation: each present feed must have a mode.
-  for (const [name, feed] of Object.entries(k.feeds)) {
-    if (!feed) continue;
-    if (!feed.mode) {
-      throw new Error(`knowledge-file: feed ${name} missing mode`);
-    }
-    if (!['csv_download', 'dom_table', 'fetch_api', 'dom_inline'].includes(feed.mode)) {
-      throw new Error(`knowledge-file: feed ${name} has invalid mode ${feed.mode}`);
-    }
+  // Plan v7 — knowledge files now use Recipe.actions shape (one per
+  // target table). Detailed validation lives in the recipe-adapter when
+  // it translates to TableTemplate; here we just check the envelope.
+  if (!k.actions || typeof k.actions !== 'object' || Object.keys(k.actions).length === 0) {
+    throw new Error('knowledge-file: missing actions (mapper output expected)');
   }
 }

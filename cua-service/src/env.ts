@@ -25,13 +25,9 @@ const Schema = z.object({
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
-  // Plan v7 Phase 2b — shadow-mode parity gate. When true, the new
-  // generic-table-writer (persistence/generic-table-writer.ts) writes to
-  // `pms_*_shadow` tables instead of authoritative ones. Daily diff cron
-  // compares; per-table cutover flag flips once each table sees zero
-  // diff for 7 days. After all tables cut over, this flag goes false +
-  // shadow tables get dropped in a follow-up migration.
-  CUA_SHADOW_MODE: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  // 2026-05-24: CUA_SHADOW_MODE removed. Legacy CA normalizers + the
+  // 7-day parity gate were retired so the new generic-table-writer
+  // (persistence/generic-table-writer.ts) is the only write path now.
 
   // ── Recipe signing (Plan v2 F-AI-2) ─────────────────────
   // Active HMAC key used to sign and verify pms_recipes.recipe rows.

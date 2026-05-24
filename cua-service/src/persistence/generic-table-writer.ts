@@ -206,8 +206,6 @@ export interface SaveGenericTableOptions {
   /** Override descriptor's snapshot_scope_default. Required when caller
    *  knows the extractor produced a partial view (e.g. filtered to today). */
   snapshotScope?: SnapshotScope;
-  /** Force shadow-mode write target. If not set, reads env CUA_SHADOW_MODE. */
-  shadowMode?: boolean;
 }
 
 export interface SaveGenericTableResult {
@@ -216,8 +214,7 @@ export interface SaveGenericTableResult {
   inserted: number;
   updated: number;
   /** For reconcile-mode tables: rows auto-resolved because they
-   *  disappeared from the snapshot. 0 in shadow mode (resolved is logged
-   *  but not applied). */
+   *  disappeared from the snapshot. */
   autoResolved: number;
   rejected: number;
   errors: string[];
@@ -238,8 +235,9 @@ export async function saveGenericTable(
   }
 
   const snapshotScope = options.snapshotScope ?? descriptor.snapshot_scope_default;
-  const shadowMode = options.shadowMode ?? env.CUA_SHADOW_MODE ?? false;
-  const targetTable = shadowMode ? `${tableName}_shadow` : tableName;
+  // Plan v7 sole-path (2026-05-24): shadow tables retired. Always
+  // write to authoritative.
+  const targetTable = tableName;
 
   // ── Validate ──
   // Stamp property_id on every row before validation so the required-field
@@ -279,7 +277,7 @@ export async function saveGenericTable(
       case 'reconcile':
         return await writeReconcile(
           targetTable, validation.valid, descriptor, snapshotScope,
-          shadowMode, propertyId, validation.rejected.length,
+          propertyId, validation.rejected.length,
         );
     }
   } catch (err) {
@@ -334,7 +332,6 @@ async function writeReconcile(
   rows: Array<Record<string, unknown>>,
   descriptor: TableSchemaDescriptor,
   snapshotScope: SnapshotScope,
-  shadowMode: boolean,
   propertyId: string,
   rejected: number,
 ): Promise<SaveGenericTableResult> {
@@ -377,14 +374,6 @@ async function writeReconcile(
 
       if (toResolve.length === 0) {
         autoResolved = 0;
-      } else if (shadowMode) {
-        // Shadow mode: log what we WOULD resolve, don't actually mutate.
-        log.info('reconcile (shadow mode): would auto-resolve disappeared rows', {
-          tableName: descriptor.table_name,
-          count: toResolve.length,
-          keys: toResolve.map((r) => r[reconcileKey]),
-        });
-        autoResolved = 0;  // shadow mode reports zero applied
       } else {
         const idsToResolve = toResolve.map((r) => r.id);
         const { error: updErr } = await supabase

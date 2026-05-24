@@ -2769,10 +2769,8 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Plan v4 (2026-05-23): replaces the Railway-hosted vercel-watchdog.js.
   // Runs the doctor every 5 min, Sentry-alerts on fail with business-hours-only SMS bump.
   { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
-  // Plan v7 Phase 2b: daily 4 UTC shadow-vs-authoritative diff for the
-  // 6 pms_* tables in the parity window. Heartbeat with status='degraded'
-  // when any table has diffs. Cron + heartbeat retire when all tables cut over.
-  { name: 'cua-parity-diff',               cadenceHours: 24,    description: 'daily 4 UTC parity-diff cron during Plan v7 Phase 2b shadow window' },
+  // 2026-05-24: cua-parity-diff retired — shadow gate removed alongside
+  // legacy CA normalizers; new generic-table-writer is the only path now.
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
