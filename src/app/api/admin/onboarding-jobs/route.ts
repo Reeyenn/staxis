@@ -108,8 +108,24 @@ export async function GET(req: NextRequest) {
 
   const sessions = (rawSessions ?? []) as SessionRow[];
 
-  // Look up property names for display in one round-trip.
-  const propIds = Array.from(new Set(sessions.map((s) => s.property_id))).filter(Boolean);
+  // Plan v7 Phase 2c — also surface in-flight mapper.learn_pms_family
+  // workflow jobs. These don't show up in property_sessions (mapper
+  // runs in mapping-driver, not session-driver), but admins need to
+  // see them in the Onboarding tab's live-status column so they know
+  // mapping is progressing on a brand-new PMS family.
+  const { data: mapperJobsRaw } = await supabaseAdmin
+    .from('workflow_jobs')
+    .select('id, property_id, kind, status, payload, attempts, started_at, last_attempt_at, completed_at, error, result, created_at')
+    .like('kind', 'mapper.%')
+    .in('status', ['queued', 'running'])
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  // Look up property names for display in one round-trip (cover both
+  // sessions + mapper jobs).
+  const sessionPropIds = sessions.map((s) => s.property_id);
+  const mapperPropIds = (mapperJobsRaw ?? []).map((j) => j.property_id as string);
+  const propIds = Array.from(new Set([...sessionPropIds, ...mapperPropIds])).filter(Boolean);
   const nameByPid = new Map<string, string>();
   if (propIds.length > 0) {
     const { data: props } = await supabaseAdmin
@@ -150,6 +166,32 @@ export async function GET(req: NextRequest) {
       resumeUrl: s.status === 'paused_mfa' ? `/admin/mfa-resume/${s.property_id}` : null,
     };
   });
+
+  // Plan v7 Phase 2c — append mapper.* workflow jobs as additional
+  // rows (visible alongside the session-derived ones).
+  for (const mj of mapperJobsRaw ?? []) {
+    const payload = (mj.payload as Record<string, unknown> | null) ?? {};
+    const startedMs = mj.started_at ? Date.parse(mj.started_at as string) : null;
+    const dur = startedMs ? now - startedMs : null;
+    allRows.push({
+      id: mj.id as string,
+      propertyId: mj.property_id as string,
+      propertyName: nameByPid.get(mj.property_id as string) ?? null,
+      pmsType: (payload.pms_family as string) ?? 'unknown',
+      status: mj.status === 'running' ? 'mapping' : 'queued',
+      step: mj.status === 'running'
+        ? `Mapper learning ${payload.pms_family ?? 'PMS'} (attempt ${mj.attempts ?? 1})`
+        : `Mapper queued for ${payload.pms_family ?? 'PMS'}`,
+      progressPct: mj.status === 'running' ? 50 : 10,
+      error: mj.error as string | null,
+      createdAt: mj.created_at as string,
+      startedAt: mj.started_at as string | null,
+      completedAt: mj.completed_at as string | null,
+      durationMs: dur,
+      forceRemap: false,
+      resumeUrl: null,
+    });
+  }
 
   // Apply filters.
   let rows = allRows;
