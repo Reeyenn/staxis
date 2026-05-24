@@ -22,9 +22,14 @@ export const supabase: SupabaseClient = createClient(env.NEXT_PUBLIC_SUPABASE_UR
 });
 
 /** Used at startup to verify the service-role key is valid before
- *  entering the polling loop. Mirrors verifySupabaseAdmin() in the app. */
+ *  entering the polling loop. Mirrors verifySupabaseAdmin() in the app.
+ *
+ *  Switched from scraper_status (Plan v3 legacy) to applied_migrations
+ *  in v4 cleanup (2026-05-24): the scraper_status table was dropped post-v4
+ *  and the cua-service was crash-looping at boot because of it.
+ *  applied_migrations is a small, always-present audit table — safe to read. */
 export async function verifyConnection(): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error } = await supabase.from('scraper_status').select('key').limit(1);
+  const { error } = await supabase.from('applied_migrations').select('version').limit(1);
   if (error) {
     return { ok: false, error: error.message };
   }
