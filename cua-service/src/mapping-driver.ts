@@ -34,6 +34,7 @@ import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { mapPMS, type MapperResult } from './mapper.js';
 import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
+import { env } from './env.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
 
 export interface MappingJobInput {
@@ -42,6 +43,13 @@ export interface MappingJobInput {
   /** Optional: override the global cost cap for this specific run.
    *  Useful for re-running a partial map with a higher budget. */
   cost_cap_micros?: number;
+  /** Plan v8 Phase A — per-job mapper mode override. Falls back to
+   *  env.MAPPER_MODE when absent. Admin checks "use vision" in the
+   *  Enqueue Mapper UI to set this. */
+  mapper_mode?: 'dom' | 'vision';
+  /** Plan v8 Phase A — per-job Claude model. Defaults to claude-sonnet-4-6.
+   *  Admin opts into Opus for hard PMSes per-job. */
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
 }
 
 export interface MappingJobResult {
@@ -98,6 +106,10 @@ export async function runMappingJob(
     return { ok: false, error: 'no active scraper_credentials for representative property' };
   }
 
+  // Plan v8 Phase A — resolve mode (per-job override > env default).
+  // Same mode threaded through preflight + mapPMS.
+  const mode: 'dom' | 'vision' = input.mapper_mode ?? env.MAPPER_MODE;
+
   // 1.5. Pre-flight check: try to actually load the login URL with no
   //      Claude involvement at all. If the URL is wrong, the PMS is down,
   //      it redirects to a different domain, or it serves a non-login
@@ -105,8 +117,13 @@ export async function runMappingJob(
   //      Anthropic API. This is the single biggest money-saver: failed
   //      mapping runs that were going to fail anyway now cost $0 instead
   //      of $4-10. Adds ~5-15s to the happy path.
-  log.info('mapping-driver: pre-flight starting', { jobId, loginUrl: credentials.loginUrl });
-  const preflight = await preflightLoginPage(credentials.loginUrl, signal);
+  //
+  //      Plan v8 P1-5: preflight is mode-aware. DOM mode requires an
+  //      input[type="password"] (proves it's a login form). Vision mode
+  //      additionally accepts canvas-rendered login pages that have no
+  //      DOM password input (the exact PMSes vision is for).
+  log.info('mapping-driver: pre-flight starting', { jobId, loginUrl: credentials.loginUrl, mode });
+  const preflight = await preflightLoginPage(credentials.loginUrl, signal, mode);
   if (!preflight.ok) {
     log.warn('mapping-driver: pre-flight failed — aborting before Claude is called', {
       jobId,
@@ -123,6 +140,8 @@ export async function runMappingJob(
     propertyId: input.property_id,
     jobId,
     signal,
+    mode,
+    model: input.model,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
     },
@@ -259,6 +278,7 @@ async function promoteDraft(
 async function preflightLoginPage(
   loginUrl: string,
   signal: AbortSignal,
+  mode: 'dom' | 'vision' = 'dom',
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (signal.aborted) {
     return { ok: false, reason: 'job aborted before pre-flight could start' };
@@ -298,20 +318,46 @@ async function preflightLoginPage(
       // Look for a password input — proves this is a real login form.
       // If absent, this is likely a T&C page, maintenance page, OR the
       // PMS vendor changed their login URL without us updating it.
+      //
+      // Plan v8 P1-5: vision-mode fallback. Some PMSes (the exact ones
+      // vision mode exists to handle) render login UI in <canvas> with no
+      // DOM password input. For those, ALSO accept "page has a <canvas>
+      // AND visible text contains login/password/sign-in". Otherwise
+      // preflight would reject exactly the canvas-rendered PMSes the
+      // operator expects vision to handle.
       try {
         await page.waitForSelector('input[type="password"]', {
           timeout: 5_000,
           state: 'attached',
         });
+        return { ok: true };
       } catch {
+        // No DOM password input. In DOM mode, fail — the mapper can't
+        // type into a non-DOM form anyway.
+        if (mode !== 'vision') {
+          const finalUrl = page.url().slice(0, 120);
+          return {
+            ok: false,
+            reason: `no password input on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+          };
+        }
+        // Vision mode: check the canvas+text fallback before giving up.
+        const isCanvasLogin = await page.evaluate(() => {
+          const hasCanvas = document.querySelector('canvas') !== null;
+          if (!hasCanvas) return false;
+          const text = (document.body?.innerText ?? '').toLowerCase();
+          return text.includes('login') || text.includes('password') ||
+                 text.includes('sign in') || text.includes('sign-in');
+        }).catch(() => false);
+        if (isCanvasLogin) {
+          return { ok: true };
+        }
         const finalUrl = page.url().slice(0, 120);
         return {
           ok: false,
-          reason: `no password input on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+          reason: `no password input AND no canvas login on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
         };
       }
-
-      return { ok: true };
     } finally {
       signal.removeEventListener('abort', abortHandler);
     }

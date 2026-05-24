@@ -21,8 +21,9 @@
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
-import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
+import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT, getModeConfig } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
+import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
@@ -69,6 +70,21 @@ const MAX_INPUT_TOKENS_PER_RUN = 800_000;
 const MAX_OUTPUT_TOKENS_PER_TURN = 4096;
 const PHASE_WALLCLOCK_BUDGET_MS = 5 * 60_000;
 const HISTORY_KEEP_RECENT = 1;
+// Plan v8 P0-1 — vision mode keeps last 3 screenshots in history (vs DOM's 1).
+// Vision conversations balloon with image tokens; truncating aggressively
+// keeps each turn under the per-target cost cap. 3 is a balance: enough
+// recent context for the model to re-orient after each action, few enough
+// that input-token cost stays bounded.
+const HISTORY_KEEP_RECENT_VISION = 3;
+
+/**
+ * Plan v8 — mode-aware history retention. DOM mode keeps 1 image (screenshot
+ * action is rare, mostly a fallback). Vision mode keeps 3 — every turn ships
+ * a screenshot, and the model needs the recent few for continuity.
+ */
+function historyKeepFor(mode: 'dom' | 'vision'): number {
+  return mode === 'vision' ? HISTORY_KEEP_RECENT_VISION : HISTORY_KEEP_RECENT;
+}
 // Truncate any single read_page or get_page_text result over this size.
 // 20K chars ≈ 5-6K tokens. Most pages have a few hundred interactive
 // elements; this is more than enough for navigation, less than enough
@@ -132,6 +148,24 @@ interface MapperOptions {
    * failed without interrupting the runaway work.
    */
   signal?: AbortSignal;
+  /**
+   * Plan v8 Phase A — mapper mode.
+   *   'dom'    — custom browser tool with DOM accessibility tree + refs
+   *              (cheap, works on PMSes with parseable HTML, ~$3-6/run)
+   *   'vision' — Anthropic's computer_20251124 beta tool with screenshots
+   *              + pixel coordinates (works on canvas/Flash/DOS-style
+   *              PMSes, ~$15-25/run; requires computer-use-2025-11-24
+   *              beta header which getModeConfig handles)
+   * Default 'dom' for backward compat. Per-job override via
+   * workflow_jobs.payload.mapper_mode (mapping-driver reads + passes here).
+   */
+  mode?: 'dom' | 'vision';
+  /**
+   * Plan v8 Phase A — Claude model. Sonnet 4.6 is the cheap default; admin
+   * can opt into Opus 4.7 per-job for hard PMSes via the same payload route.
+   * Both models support the computer-use-2025-11-24 beta header.
+   */
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
 }
 
 /**
@@ -165,12 +199,19 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
 
+    // Plan v8 Phase A: resolve mode once for the whole run. Same mode used
+    // by login, mapAction, mapDrillDownAction. Per-job override via opts.mode.
+    const mode = opts.mode ?? 'dom';
+    const model = opts.model;
+
     // ─── Phase 1: learn the login flow ─────────────────────────────────────
     opts.onProgress?.('Logging in for the first time…', 25);
     const loginResult = await mapLogin(page, opts.credentials, {
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
       signal: opts.signal,
+      mode,
+      model,
     });
     if (!loginResult.ok) {
       return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
@@ -253,6 +294,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             propertyId: opts.propertyId ?? null,
             jobId: opts.jobId ?? null,
             signal: opts.signal,
+            mode,
+            model,
           })
         : await mapAction({
             page,
@@ -265,6 +308,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             propertyId: opts.propertyId ?? null,
             jobId: opts.jobId ?? null,
             signal: opts.signal,
+            mode,
+            model,
           });
       if (result.ok) {
         actions[target.key] = result.action;
@@ -328,8 +373,19 @@ interface LoginMapFailure {
 async function mapLogin(
   page: Page,
   creds: PMSCredentials,
-  ctx: { propertyId: string | null; jobId: string | null; signal?: AbortSignal },
+  ctx: {
+    propertyId: string | null;
+    jobId: string | null;
+    signal?: AbortSignal;
+    /** Plan v8 — picked at mapPMS entry; same mode used for login + targets. */
+    mode: 'dom' | 'vision';
+    model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  },
 ): Promise<LoginMapResult | LoginMapFailure> {
+  // Plan v8: resolve tool + system prompt + beta header + model by mode.
+  // Mode-aware Anthropic call replaces direct CLAUDE_MODEL / BROWSER_TOOL /
+  // MAPPING_SYSTEM_PROMPT references below.
+  const cfg = getModeConfig(ctx.mode, ctx.model);
   // The login URL itself is the trust anchor — no allowedHost yet (we'll
   // pin to creds.loginUrl's host for every subsequent goto). safeGoto
   // still rejects javascript:/file:/private-IP URLs, so a misconfigured
@@ -439,18 +495,18 @@ async function mapLogin(
       : `anon:login:${stepIdx}:${Date.now()}`;
 
     const response = await anthropic.beta.messages.create({
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
       system: [
         {
           type: 'text',
-          text: MAPPING_SYSTEM_PROMPT,
+          text: cfg.systemPrompt,
           cache_control: { type: 'ephemeral' },
         },
       ],
-      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31'],
+      tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, historyKeepFor(ctx.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -463,7 +519,7 @@ async function mapLogin(
     // logClaudeUsage swallows its own failures.
     void logClaudeUsage(response.usage ?? {}, {
       workload: 'cua_mapping_login',
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       propertyId: ctx.propertyId,
       jobId: ctx.jobId,
       metadata: { stepIdx },
@@ -539,11 +595,14 @@ async function mapLogin(
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
-      const action = toolUse.input as BrowserAction;
+      // Plan v8 Phase A: dispatch by mode. VisionAction and BrowserAction
+      // have different shapes; cast at the call edge.
       // Plan v2 F-AI-7: login phase — the policy layer allows writes on
-      // login-shaped controls (ARIA name/role match) and refuses
-      // everything else.
-      const exec = await executeBrowserAction(page, action, creds, 'login');
+      // login-shaped controls and refuses everything else (DOM mode has
+      // ref-derived hints; vision mode passes empty hint per P1-1 Option I).
+      const exec = ctx.mode === 'vision'
+        ? await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login')
+        : await executeBrowserAction(page, toolUse.input as BrowserAction, creds, 'login');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
@@ -576,7 +635,12 @@ async function mapAction(args: {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
+  /** Plan v8 Phase A — picked at mapPMS entry; same mode used for all targets. */
+  mode: 'dom' | 'vision';
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
 }): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Plan v8: resolve config once at the top of the per-target loop.
+  const cfg = getModeConfig(args.mode, args.model);
   // Plan v7: per-target step + cost caps. Drill-down targets get fewer
   // steps PER record but execute against multiple samples; report-menu
   // targets get more steps to drill through reports submenus.
@@ -711,18 +775,18 @@ async function mapAction(args: {
       : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
 
     const response = await anthropic.beta.messages.create({
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
       system: [
         {
           type: 'text',
-          text: MAPPING_SYSTEM_PROMPT,
+          text: cfg.systemPrompt,
           cache_control: { type: 'ephemeral' },
         },
       ],
-      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31'],
+      tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -732,7 +796,7 @@ async function mapAction(args: {
 
     void logClaudeUsage(response.usage ?? {}, {
       workload: 'cua_mapping_action',
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       propertyId: args.propertyId,
       jobId: args.jobId,
       metadata: { actionName: args.actionName, stepIdx },
@@ -809,15 +873,19 @@ async function mapAction(args: {
       // Plan v2 F-AI-7: action phase — write-style actions (type /
       // form_input / click) are refused. Mapper must navigate + read +
       // emit the JSON recipe; no mutations on the data pages.
-      const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
+      // Plan v8 Phase A: dispatch by mode (DOM vs vision executor).
+      const exec = args.mode === 'vision'
+        ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
+        : await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
 
       // Plan v7 — track activity for the unavailable floor.
-      // `read_page` is the most expensive evidence (forces DOM serialize).
-      // Navigations / clicks count toward the navigation budget.
+      // DOM: read_page / get_page_text. Vision: screenshot. All count as
+      // "actually looked at the page" evidence. Navigations / clicks count
+      // toward the navigation budget regardless of mode.
       const actionType = (action as { action?: string }).action ?? '';
-      if (actionType === 'read_page' || actionType === 'get_page_text') {
+      if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') {
         readPageCount++;
       } else if (actionType === 'navigate' || actionType === 'left_click' ||
                  actionType === 'double_click' || actionType === 'find' ||
@@ -890,7 +958,13 @@ async function mapDrillDownAction(args: {
   propertyId: string | null;
   jobId: string | null;
   signal?: AbortSignal;
+  /** Plan v8 Phase A — same mode for all targets across the mapping run. */
+  mode: 'dom' | 'vision';
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
 }): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Plan v8: resolve config once at top.
+  const cfg = getModeConfig(args.mode, args.model);
+
   // Reuse the post-login navigation setup from mapAction.
   if (args.page.url() !== args.postLoginUrl) {
     const allowedHost = new URL(args.credentials.loginUrl).host;
@@ -989,14 +1063,14 @@ async function mapDrillDownAction(args: {
       : `anon:drilldown:${args.actionName}:${stepIdx}:${Date.now()}`;
 
     const response = await anthropic.beta.messages.create({
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
       system: [
-        { type: 'text', text: MAPPING_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: cfg.systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
-      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31'],
+      tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -1005,7 +1079,7 @@ async function mapDrillDownAction(args: {
     totalInputTokens += response.usage?.input_tokens ?? 0;
     void logClaudeUsage(response.usage ?? {}, {
       workload: 'cua_mapping_drilldown',
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       propertyId: args.propertyId,
       jobId: args.jobId,
       metadata: { actionName: args.actionName, stepIdx },
@@ -1145,12 +1219,18 @@ async function mapDrillDownAction(args: {
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
       const action = toolUse.input as BrowserAction;
-      const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
+      // Plan v8 Phase A: dispatch by mode (DOM vs vision executor).
+      const exec = args.mode === 'vision'
+        ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
+        : await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
 
       const actionType = (action as { action?: string }).action ?? '';
-      if (actionType === 'read_page' || actionType === 'get_page_text') readPageCount++;
+      // Both DOM (read_page/get_page_text) and vision (screenshot) count
+      // toward the "explored at least one page" floor — the agent must
+      // have actually looked at SOMETHING before claiming unavailable.
+      if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') readPageCount++;
       else if (actionType === 'navigate' || actionType === 'left_click' ||
                actionType === 'double_click' || actionType === 'find' ||
                actionType === 'scroll_to' || actionType === 'form_input') navigationCount++;

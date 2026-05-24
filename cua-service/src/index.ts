@@ -119,6 +119,8 @@ async function main(): Promise<void> {
         targets_unavailable: result.targetsUnavailable,
         targets_failed: result.targetsFailed,
         spent_micros: result.spentMicros,
+        promotion_decision: result.promotionDecision,
+        promotion_reason: result.promotionReason,
       },
     };
   });
