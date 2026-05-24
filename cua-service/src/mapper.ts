@@ -24,6 +24,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT, getModeConfig } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
 import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
+import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
@@ -89,6 +90,97 @@ const HISTORY_KEEP_RECENT_VISION = 3;
  */
 function historyKeepFor(mode: 'dom' | 'vision'): number {
   return mode === 'vision' ? HISTORY_KEEP_RECENT_VISION : HISTORY_KEEP_RECENT;
+}
+
+/**
+ * Plan v8 Phase B P0-2 — when the floor-met `{unavailable: true}` fires,
+ * give a live admin a chance to unstick the agent before we mark the
+ * target unavailable for the whole replay future.
+ *
+ * Returns one of:
+ *   - { kind: 'continue', hintText }       → caller rewinds messages, pushes
+ *                                            user-turn hint, re-enters loop
+ *   - { kind: 'mark_unavailable', reason } → caller returns ActionMapFailure
+ *   - { kind: 'takeover' }                 → caller enters takeover (Phase B chunk 2)
+ *   - { kind: 'abort', reason }            → caller throws to fail the whole job
+ *
+ * Skips the help request entirely when: jobId is null, the help-flood
+ * circuit-breaker is tripped, or no admin is online (handled inside
+ * requestHelp). In all skip cases, returns { kind: 'mark_unavailable' }
+ * so behavior matches today's "no help available, mark unavailable" path.
+ */
+async function maybeAskAdminBeforeUnavailable(args: {
+  page: Page;
+  jobId: string | null;
+  targetKey: string;
+  agentReason: string;
+  signal?: AbortSignal;
+}): Promise<
+  | { kind: 'continue'; hintText: string }
+  | { kind: 'mark_unavailable'; reason: string }
+  | { kind: 'takeover' }
+  | { kind: 'abort'; reason: string }
+> {
+  if (!args.jobId) {
+    return { kind: 'mark_unavailable', reason: args.agentReason };
+  }
+  // P2-4 — circuit-breaker. After 3 unsuccessful requests, don't even ask.
+  if (await checkHelpFlood(args.jobId)) {
+    log.warn('mapper: help-flood circuit-breaker tripped — auto-abort', {
+      jobId: args.jobId, targetKey: args.targetKey,
+    });
+    return { kind: 'abort', reason: 'help_request_flood' };
+  }
+
+  // Take a screenshot for the help card. Best-effort — if screenshot or
+  // upload fails, log + fall through to mark_unavailable.
+  let screenshotPath: string;
+  try {
+    const buf = await args.page.screenshot({ fullPage: false });
+    screenshotPath = await saveScreenshotToStorage(args.jobId, args.targetKey, buf);
+  } catch (err) {
+    log.warn('mapper: help-request screenshot/upload failed — falling through', {
+      err: (err as Error).message, jobId: args.jobId, targetKey: args.targetKey,
+    });
+    return { kind: 'mark_unavailable', reason: args.agentReason };
+  }
+
+  const scroll = await args.page
+    .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    .catch(() => ({ x: 0, y: 0 }));
+
+  const help = await requestHelp({
+    jobId: args.jobId,
+    targetKey: args.targetKey,
+    question: `Stuck on ${args.targetKey}: ${args.agentReason.slice(0, 200)}`,
+    screenshotStoragePath: screenshotPath,
+    scroll,
+    viewport: { w: 1280, h: 800 },
+    signal: args.signal ?? new AbortController().signal,
+  });
+
+  switch (help.actionType as HelpActionType) {
+    case 'guidance':
+      return {
+        kind: 'continue',
+        hintText: help.responseText ?? '(admin provided guidance but no text)',
+      };
+    case 'unavailable':
+      return {
+        kind: 'mark_unavailable',
+        reason: `unavailable: ${help.responseText ?? 'admin marked'}`,
+      };
+    case 'takeover':
+      // Phase B chunk 2 implements the takeover loop. For chunk 1, treat
+      // takeover as "admin will handle it" → mark unavailable so the run
+      // doesn't hang. The takeover handler in chunk 2 replaces this branch.
+      log.warn('mapper: takeover requested — chunk 1 stub, marking unavailable', {
+        jobId: args.jobId, targetKey: args.targetKey,
+      });
+      return { kind: 'mark_unavailable', reason: 'takeover requested (handler not yet implemented)' };
+    case 'abort':
+      return { kind: 'abort', reason: 'admin_aborted' };
+  }
 }
 
 /**
@@ -925,9 +1017,38 @@ async function mapAction(args: {
             finalUrl: args.page.url(),
           };
         }
+        // Plan v8 Phase B — ask an online admin before accepting unavailable.
+        // P0-2: on 'guidance', REWIND messages + push user-turn hint + re-enter
+        // loop (does NOT use synthetic tool_result — that's API-invalid after
+        // end_turn). On 'mark_unavailable', preserve today's behavior.
+        const agentReason = typeof parsed.reason === 'string' ? parsed.reason : 'no reason given';
+        const helpOutcome = await maybeAskAdminBeforeUnavailable({
+          page: args.page,
+          jobId: args.jobId,
+          targetKey: args.actionName,
+          agentReason,
+          signal: args.signal,
+        });
+        if (helpOutcome.kind === 'continue') {
+          // Pop the assistant turn that emitted the unavailable JSON, push
+          // a user-turn hint, reset floor counters, re-enter the agent loop.
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this target.` }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+        if (helpOutcome.kind === 'abort') {
+          throw new Error(helpOutcome.reason);
+        }
         return {
           ok: false,
-          reason: `unavailable: ${typeof parsed.reason === 'string' ? parsed.reason : 'no reason given'}`,
+          reason: helpOutcome.kind === 'takeover'
+            ? 'takeover requested (handler not yet implemented)'
+            : helpOutcome.reason,
           finalUrl: args.page.url(),
         };
       }
@@ -1189,9 +1310,33 @@ async function mapDrillDownAction(args: {
             finalUrl: args.page.url(),
           };
         }
+        // Plan v8 Phase B — same admin-help hook as mapAction. See P0-2.
+        const agentReason = typeof parsed.reason === 'string' ? parsed.reason : 'no reason given';
+        const helpOutcome = await maybeAskAdminBeforeUnavailable({
+          page: args.page,
+          jobId: args.jobId,
+          targetKey: args.actionName,
+          agentReason,
+          signal: args.signal,
+        });
+        if (helpOutcome.kind === 'continue') {
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this drill-down target.` }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+        if (helpOutcome.kind === 'abort') {
+          throw new Error(helpOutcome.reason);
+        }
         return {
           ok: false,
-          reason: `unavailable: ${typeof parsed.reason === 'string' ? parsed.reason : 'no reason given'}`,
+          reason: helpOutcome.kind === 'takeover'
+            ? 'takeover requested (handler not yet implemented)'
+            : helpOutcome.reason,
           finalUrl: args.page.url(),
         };
       }

