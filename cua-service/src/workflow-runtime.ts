@@ -37,12 +37,31 @@ import type { Page } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { recordSpend } from './cost-cap.js';
+import { env } from './env.js';
 import type { SessionSupervisor } from './session-supervisor.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const WORKFLOW_TIMEOUT_MS = 10 * 60_000;
 // Plan v7 Phase 2c — mapper jobs need more headroom for 13-target runs.
+// Plan v8 Phase A: vision-mode jobs use a separate 90-min default
+// (env.MAPPER_JOB_TIMEOUT_MS_VISION). DOM mode keeps 60min. Per-job
+// override via workflow_jobs.payload.timeout_ms.
 const MAPPER_JOB_TIMEOUT_MS = 60 * 60_000;
+
+/**
+ * Pick the mapper timeout for a specific job. Reads (in order):
+ *   1. job.payload.timeout_ms — per-job override (admin checkbox)
+ *   2. env.MAPPER_JOB_TIMEOUT_MS_VISION when mode='vision'
+ *   3. MAPPER_JOB_TIMEOUT_MS (60min) — DOM mode default
+ */
+function pickMapperTimeoutMs(job: WorkflowJobRow): number {
+  const payload = (job.payload ?? {}) as { timeout_ms?: number; mapper_mode?: 'dom' | 'vision' };
+  if (typeof payload.timeout_ms === 'number' && payload.timeout_ms > 0) {
+    return payload.timeout_ms;
+  }
+  const mode = payload.mapper_mode ?? env.MAPPER_MODE;
+  return mode === 'vision' ? env.MAPPER_JOB_TIMEOUT_MS_VISION : MAPPER_JOB_TIMEOUT_MS;
+}
 
 // Plan v7 Phase 2c — workflow kinds that don't require an alive
 // SessionDriver. Mapper jobs trigger on paused_no_knowledge_file
@@ -120,12 +139,21 @@ export class WorkflowRuntime {
     }, POLL_INTERVAL_MS);
   }
 
-  /** Plan v7 — reclaim `running` rows older than 2× max timeout that
-   *  presumably belong to a crashed worker. Requeue them so the next
-   *  poll picks them up. The unique-idempotency-key constraint on
-   *  workflow_jobs prevents double-execution. */
+  /** Plan v7 — reclaim `running` rows older than 1.5× the LONGEST possible
+   *  mapper timeout. Requeue them so the next poll picks them up. The
+   *  unique-idempotency-key constraint on workflow_jobs prevents
+   *  double-execution.
+   *
+   *  Plan v8 P2-3 (Codex hard pass): multiplier dropped from 2× to 1.5×
+   *  AND threshold uses MAPPER_JOB_TIMEOUT_MS_VISION (90min) so a
+   *  long-running vision job isn't reclaimed under its own feet. 1.5 × 90
+   *  = 135 min between crash and reclaim. Was 2 × 60 = 120 min before
+   *  vision but vision broke that math (a real 89-min vision job would
+   *  look "stale" at 120 min).
+   */
   private async reclaimStaleRunningJobs(): Promise<void> {
-    const staleCutoff = new Date(Date.now() - 2 * MAPPER_JOB_TIMEOUT_MS).toISOString();
+    const longestTimeout = Math.max(MAPPER_JOB_TIMEOUT_MS, env.MAPPER_JOB_TIMEOUT_MS_VISION);
+    const staleCutoff = new Date(Date.now() - 1.5 * longestTimeout).toISOString();
     const { data, error } = await supabase
       .from('workflow_jobs')
       .update({ status: 'queued', error: 'reclaimed: worker restart before completion' })
@@ -235,7 +263,10 @@ export class WorkflowRuntime {
     //   alive-driver kinds: existing path — acquire SessionDriver's
     //     browser lock and pass its page to the handler.
     const isNoDriverKind = NO_DRIVER_KINDS.has(job.kind);
-    const timeoutMs = isNoDriverKind ? MAPPER_JOB_TIMEOUT_MS : WORKFLOW_TIMEOUT_MS;
+    // Plan v8 Phase A: mapper-kind timeout is mode-aware (DOM 60min,
+    // vision 90min) and per-job-overridable. Non-mapper kinds keep the
+    // workflow timeout.
+    const timeoutMs = isNoDriverKind ? pickMapperTimeoutMs(job) : WORKFLOW_TIMEOUT_MS;
 
     log.info('workflow-runtime: running job', {
       jobId: job.id,
