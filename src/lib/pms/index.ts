@@ -1,12 +1,12 @@
 /**
  * Public surface of the PMS abstraction.
  *
- * Client components should import only from here. Server modules can
- * import directly from ./recipe-loader (which uses service-role) or
- * from this index.
+ * After Plan v8 Phase D.3 sweep: only types + registry remain. The
+ * legacy adapter / recipe / recipe-loader files were unused (entire
+ * code paths superseded by cua-service's mapping-driver + recipe-runner
+ * + new generic-table-writer pipeline).
  */
 
-// Types — safe to import everywhere
 export type {
   AdapterError,
   AdapterErrorCode,
@@ -23,26 +23,6 @@ export type {
   RoomCondition,
 } from './types';
 export { PMS_TYPES, isPMSType, adapterError } from './types';
-
-export type {
-  ActionRecipe,
-  ActionSteps,
-  ArrivalsParseHint,
-  CsvHint,
-  DashboardParseHint,
-  DeparturesParseHint,
-  HistoryParseHint,
-  LoginSteps,
-  Recipe,
-  RecipeStep,
-  RoomLayoutParseHint,
-  RoomStatusParseHint,
-  StaffParseHint,
-  TableRowHint,
-} from './recipe';
-export { isRecipeShape } from './recipe';
-
-export type { PMSAdapter, AdapterContext } from './adapter';
 
 export type { PMSDefinition } from './registry';
 export { PMS_REGISTRY, PMS_DROPDOWN_OPTIONS, getPMSDefinition } from './registry';
