@@ -28,9 +28,12 @@
  * from the per-hotel daily cost cap.
  */
 
+import type { Browser } from 'playwright';
+import { chromium } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { mapPMS, type MapperResult } from './mapper.js';
+import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
 
 export interface MappingJobInput {
@@ -94,6 +97,24 @@ export async function runMappingJob(
   if (!credentials) {
     return { ok: false, error: 'no active scraper_credentials for representative property' };
   }
+
+  // 1.5. Pre-flight check: try to actually load the login URL with no
+  //      Claude involvement at all. If the URL is wrong, the PMS is down,
+  //      it redirects to a different domain, or it serves a non-login
+  //      page (T&C wall, maintenance page), abort with $0 spent on the
+  //      Anthropic API. This is the single biggest money-saver: failed
+  //      mapping runs that were going to fail anyway now cost $0 instead
+  //      of $4-10. Adds ~5-15s to the happy path.
+  log.info('mapping-driver: pre-flight starting', { jobId, loginUrl: credentials.loginUrl });
+  const preflight = await preflightLoginPage(credentials.loginUrl, signal);
+  if (!preflight.ok) {
+    log.warn('mapping-driver: pre-flight failed — aborting before Claude is called', {
+      jobId,
+      reason: preflight.reason,
+    });
+    return { ok: false, error: `pre-flight check failed (no Claude spend): ${preflight.reason}` };
+  }
+  log.info('mapping-driver: pre-flight passed', { jobId });
 
   // 2. Run mapPMS. The mapper opens its own browser via chromium.launch.
   const result = await mapPMS({
@@ -213,6 +234,92 @@ async function promoteDraft(
   if (promErr) return { ok: false, error: `promote failed: ${promErr.message}` };
 
   return { ok: true };
+}
+
+// ─── Pre-flight check ───────────────────────────────────────────────────
+
+/**
+ * Sanity-check the login URL before spending any Claude tokens. Catches:
+ *  - Wrong/stale URL (404, no DNS, bad scheme)
+ *  - PMS down (timeout, 5xx, no response)
+ *  - T&C wall / maintenance page (no `<input type="password">` on the
+ *    landing page — a legitimate PMS login always exposes one)
+ *  - Unsafe URLs (private IP, non-http(s) scheme) via safeGoto's checks
+ *
+ * Goes through safeGoto so all the URL safety guards apply. NEVER calls
+ * Anthropic, so the worst case is ~$0 + 20s of compute vs the mapper
+ * agent's $4-10 + 5-45min when it fails the same way deeper in.
+ *
+ * Note on the selector check: we look for `input[type="password"]` as
+ * proof of a real login form. This is the single workhorse signal — a
+ * 404 page, T&C wall, maintenance page, or redirect to a vendor's
+ * marketing site all reliably fail it. A correct login page always
+ * exposes one.
+ */
+async function preflightLoginPage(
+  loginUrl: string,
+  signal: AbortSignal,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (signal.aborted) {
+    return { ok: false, reason: 'job aborted before pre-flight could start' };
+  }
+
+  let browser: Browser | null = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const page = await context.newPage();
+    page.setDefaultTimeout(10_000);
+
+    // Honor the workflow's AbortController — kill the browser if the
+    // caller cancels mid-pre-flight.
+    const abortHandler = () => {
+      browser?.close().catch(() => {});
+    };
+    signal.addEventListener('abort', abortHandler);
+
+    try {
+      // First navigation of the job — `allowedHost: null` per safeGoto's
+      // contract (this is what establishes the PMS session host).
+      try {
+        await safeGoto(page, loginUrl, {
+          allowedHost: null,
+          context: 'mapping-driver-preflight',
+          waitUntil: 'domcontentloaded',
+          timeoutMs: 15_000,
+        });
+      } catch (err) {
+        if (err instanceof UnsafeNavigationError) {
+          return { ok: false, reason: `unsafe login URL (${err.reason}): ${err.message.slice(0, 200)}` };
+        }
+        return { ok: false, reason: `failed to load: ${(err as Error).message.slice(0, 200)}` };
+      }
+
+      // Look for a password input — proves this is a real login form.
+      // If absent, this is likely a T&C page, maintenance page, OR the
+      // PMS vendor changed their login URL without us updating it.
+      try {
+        await page.waitForSelector('input[type="password"]', {
+          timeout: 5_000,
+          state: 'attached',
+        });
+      } catch {
+        const finalUrl = page.url().slice(0, 120);
+        return {
+          ok: false,
+          reason: `no password input on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+        };
+      }
+
+      return { ok: true };
+    } finally {
+      signal.removeEventListener('abort', abortHandler);
+    }
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
 }
 
 // ─── Internals ──────────────────────────────────────────────────────────
