@@ -86,6 +86,58 @@ const BUSINESS_CRITICAL_TARGETS: Array<keyof Recipe['actions']> = [
 ];
 const MIN_BUSINESS_CRITICAL_FOR_AUTO = 3;
 
+// ─── Live event broadcast (Plan v8 Phase B chunk 2) ─────────────────────
+//
+// The Live Mapping admin console subscribes to two Supabase realtime
+// channels for each in-flight mapper job:
+//   1. postgres_changes on mapping_help_requests filtered by job_id —
+//      drives the help-request panel (Phase B chunk 1 wired this).
+//   2. broadcast channel `mapping:{jobId}` — drives the activity feed
+//      (this file).
+//
+// This is intentionally COARSE-GRAINED for v1: lifecycle events only
+// (start, preflight_passed, mapping_started, target_started,
+// target_completed, mapping_completed). Per-action streaming + screenshot
+// frames are deferred to a follow-up — the admin can already see "what
+// target the agent is on" + "is anything stuck waiting for me" from
+// these events.
+
+type MappingEventType =
+  | 'mapping_started'
+  | 'preflight_passed'
+  | 'preflight_failed'
+  | 'mapping_in_progress'   // generic progress tick from mapPMS onProgress
+  | 'mapping_completed'
+  | 'mapping_failed';
+
+interface MappingEvent {
+  type: MappingEventType;
+  jobId: string;
+  label?: string;       // human-readable progress label
+  pct?: number;         // 0-100 for the progress bar
+  detail?: Record<string, unknown>;
+  at: string;           // ISO timestamp
+}
+
+async function broadcastMappingEvent(evt: MappingEvent): Promise<void> {
+  try {
+    const channel = supabase.channel(`mapping:${evt.jobId}`);
+    await channel.send({
+      type: 'broadcast',
+      event: evt.type,
+      payload: evt,
+    });
+    // Channel.send doesn't subscribe; clean up to avoid leaking handles.
+    await channel.unsubscribe();
+  } catch (err) {
+    // Best-effort — never let a broadcast failure abort the mapper.
+    log.warn('mapping-driver: broadcast failed (non-fatal)', {
+      jobId: evt.jobId, type: evt.type,
+      err: (err as Error).message,
+    });
+  }
+}
+
 /**
  * Run a mapping job end-to-end. Called by the workflow-runtime's
  * mapper-kind handler.
@@ -99,6 +151,16 @@ export async function runMappingJob(
     jobId,
     pmsFamily: input.pms_family,
     propertyId: input.property_id,
+  });
+
+  // Plan v8 Phase B chunk 2 — Live Mapping admin UI watches for these.
+  await broadcastMappingEvent({
+    type: 'mapping_started',
+    jobId,
+    label: 'Starting',
+    pct: 5,
+    detail: { pmsFamily: input.pms_family, propertyId: input.property_id },
+    at: new Date().toISOString(),
   });
 
   // 1. Load credentials for the representative property.
@@ -130,9 +192,23 @@ export async function runMappingJob(
       jobId,
       reason: preflight.reason,
     });
+    await broadcastMappingEvent({
+      type: 'preflight_failed',
+      jobId,
+      label: 'Pre-flight failed',
+      detail: { reason: preflight.reason },
+      at: new Date().toISOString(),
+    });
     return { ok: false, error: `pre-flight check failed (no Claude spend): ${preflight.reason}` };
   }
   log.info('mapping-driver: pre-flight passed', { jobId });
+  await broadcastMappingEvent({
+    type: 'preflight_passed',
+    jobId,
+    label: 'Login URL OK',
+    pct: 15,
+    at: new Date().toISOString(),
+  });
 
   // 2. Run mapPMS. The mapper opens its own browser via chromium.launch.
   // Plan v8 review P0-A: thread per-job cost cap through. Without this
@@ -148,10 +224,28 @@ export async function runMappingJob(
     jobCostCapMicros: input.cost_cap_micros,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
+      // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
+      // Mapping admin UI. mapper.ts emits these from mapPMS at:
+      // login start/done, each target start, each target done. Fire-
+      // and-forget; broadcastMappingEvent never throws.
+      void broadcastMappingEvent({
+        type: 'mapping_in_progress',
+        jobId,
+        label,
+        pct,
+        at: new Date().toISOString(),
+      });
     },
   });
 
   if (!result.ok) {
+    await broadcastMappingEvent({
+      type: 'mapping_failed',
+      jobId,
+      label: 'Mapping failed',
+      detail: { reason: result.userMessage },
+      at: new Date().toISOString(),
+    });
     return { ok: false, error: result.userMessage };
   }
 
@@ -195,6 +289,21 @@ export async function runMappingJob(
     knowledgeFileVersion: draft.version,
     promotionDecision: gate.decision,
     ...stats,
+  });
+
+  await broadcastMappingEvent({
+    type: 'mapping_completed',
+    jobId,
+    label: `Done — ${gate.decision}`,
+    pct: 100,
+    detail: {
+      knowledgeFileId: draft.id,
+      knowledgeFileVersion: draft.version,
+      promotionDecision: gate.decision,
+      promotionReason: gate.reason,
+      ...stats,
+    },
+    at: new Date().toISOString(),
   });
 
   return {
