@@ -34,6 +34,7 @@
 import { supabase } from '../supabase.js';
 import { log } from '../log.js';
 import { env } from '../env.js';
+import { getValidator } from '../validators-phase2.js';
 
 // ─── Descriptor cache ────────────────────────────────────────────────────
 // The descriptor table is read-mostly (admins rarely edit). Cache for the
@@ -149,6 +150,19 @@ function validateRows(
           rejected.push({ rowIndex, row, reason: `field "${col.name}" value "${String(value)}" not in allowed_values` });
           return;
         }
+      }
+    }
+
+    // Layer 2 — per-table validator (cross-field invariants).
+    // Looked up by tableName from validators-phase2.VALIDATOR_REGISTRY.
+    // Tables without a registered validator skip this layer (layer-1
+    // type checks above are sufficient).
+    const validator = getValidator(descriptor.table_name);
+    if (validator) {
+      const result = validator(row);
+      if (!result.ok) {
+        rejected.push({ rowIndex, row, reason: `layer-2: ${result.reason}` });
+        return;
       }
     }
 

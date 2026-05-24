@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0207b — Plan v7 Phase 2c: claude_usage_log source column.
+-- 0208 — Plan v7 Phase 2c: claude_usage_log source column.
 --
 -- Why this exists:
 --   The CUA mapper run (Plan v7) for a brand-new PMS family burns
@@ -49,7 +49,7 @@ create index if not exists claude_usage_log_source_idx
 -- ─── Track the migration ─────────────────────────────────────────────────
 
 insert into public.applied_migrations (version, description)
-values ('0207b', 'Plan v7 Phase 2c: add source column to claude_usage_log so mapper-only spend is separable from per-hotel daily cap. Backfills mapping workload rows.')
+values ('0208', 'Plan v7 Phase 2c: add source column to claude_usage_log so mapper-only spend is separable from per-hotel daily cap. Backfills mapping workload rows.')
 on conflict (version) do nothing;
 
 notify pgrst, 'reload schema';
