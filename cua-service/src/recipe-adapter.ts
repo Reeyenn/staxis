@@ -82,16 +82,8 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
     snapshotScope: 'full',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
-  getStaffRoster: {
-    // No pms_staff_roster table in v4 yet — legacy field; route to a
-    // placeholder so the adapter doesn't reject it. Generic writer skips
-    // unknown tables with a warning.
-    tableName: 'pms_legacy_staff',
-    keys: ['property_id', 'name'],
-    writeStrategy: 'upsert',
-    snapshotScope: 'full',
-    modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
-  },
+  // getStaffRoster route removed in v8 Phase D.1 — no pms_staff_roster
+  // table in v4; mapper no longer emits this key.
   getRoomLayout: {
     tableName: 'pms_rooms_inventory',
     keys: ['property_id', 'room_number'],

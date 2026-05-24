@@ -208,14 +208,6 @@ export function OnboardingTab() {
           caps="Coverage"
           title="PMS"
           italic="coverage"
-          right={
-            <Link href="/admin/pms" style={{
-              fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
-              textDecoration: 'none', letterSpacing: '0.16em', textTransform: 'uppercase',
-            }}>
-              details →
-            </Link>
-          }
         />
         {learnedPms.length === 0 ? (
           <EmptyState text="No PMSes learned yet. First hotel onboarding will populate this list." />

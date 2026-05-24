@@ -28,7 +28,6 @@ import type {
   PMSDeparture,
   PMSRoomDescriptor,
   PMSRoomStatus,
-  PMSStaffMember,
   Recipe,
   RecipeStep,
 } from './types.js';
@@ -61,7 +60,6 @@ interface RunOptions {
 
 export interface ExtractedData {
   rooms: PMSRoomDescriptor[];
-  staff: PMSStaffMember[];
   arrivalsToday: PMSArrival[];
   departuresToday: PMSDeparture[];
   roomStatus: PMSRoomStatus[];
@@ -104,7 +102,6 @@ class RecipeActionFailedError extends Error {
  */
 const REQUIRED_ACTIONS: ReadonlySet<string> = new Set([
   'getRoomLayout',
-  'getStaffRoster',
   'getRoomStatus',
   'getHistoricalOccupancy',
 ]);
@@ -178,7 +175,6 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
     // ─── Run each supported action ────────────────────────────────────────
     const data: ExtractedData = {
       rooms: [],
-      staff: [],
       arrivalsToday: [],
       departuresToday: [],
       roomStatus: [],
@@ -191,12 +187,7 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
         page, 'getRoomLayout', opts.recipe.actions.getRoomLayout, opts.credentials, allowedHost,
       );
     }
-    if (opts.recipe.actions.getStaffRoster) {
-      opts.onProgress?.('Pulling staff roster…', 78);
-      data.staff = await runActionAsTable<PMSStaffMember>(
-        page, 'getStaffRoster', opts.recipe.actions.getStaffRoster, opts.credentials, allowedHost,
-      );
-    }
+    // getStaffRoster branch removed in v8 Phase D.1.
     if (opts.recipe.actions.getArrivals) {
       opts.onProgress?.('Pulling today\'s arrivals…', 82);
       data.arrivalsToday = await runActionAsTable<PMSArrival>(
@@ -265,7 +256,6 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
 function humanizeAction(actionName: string): string {
   switch (actionName) {
     case 'getRoomLayout':         return 'the room list';
-    case 'getStaffRoster':        return 'the staff roster';
     case 'getArrivals':           return "today's arrivals";
     case 'getDepartures':         return "today's departures";
     case 'getRoomStatus':         return 'room status';

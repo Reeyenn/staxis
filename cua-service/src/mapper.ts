@@ -1391,16 +1391,7 @@ const DEPARTURES_GOAL =
   `  - Confirmation number (if shown)\n` +
   `  - Checked-out flag (if shown)`;
 
-const STAFF_GOAL =
-  `Find the STAFF / EMPLOYEES / USERS list — the page that shows who works ` +
-  `at this property. Usually under "Staff", "Users", "Setup → Users", ` +
-  `"Admin → Employees", or similar.\n\n` +
-  `The right page is a list where each row is one staff member.\n\n` +
-  `Columns we need:\n` +
-  `  - Name (required)\n` +
-  `  - Role / department / title (housekeeper, front desk, maintenance, etc.)\n` +
-  `  - Phone number (if shown)\n` +
-  `  - Email (if shown)`;
+// STAFF_GOAL removed in v8 Phase D.1 along with the getStaffRoster target.
 
 // ─── Plan v7 Phase 2a: 9 net-new targets ─────────────────────────────────
 // Each target maps to one v4 pms_* table. Targets vary in difficulty:
@@ -1643,15 +1634,8 @@ TARGETS = [
     progressLabel: 'Drilling into guest profiles…',
     progressPct: 68,
   },
-  {
-    key: 'getStaffRoster',
-    goal: STAFF_GOAL,
-    requiredFields: ['name'],
-    classification: 'list_page',
-    optional: true,        // not in the v4 pms_* schema yet; legacy
-    progressLabel: 'Finding the staff list…',
-    progressPct: 72,
-  },
+  // getStaffRoster removed in v8 Phase D.1 — no pms_staff_roster table in
+  // the v4 schema and the runtime had no writer for it. Was Tier-3 legacy.
 
   // Tier 4 — nice-to-have (forecast, groups, lost & found, audit log).
   {

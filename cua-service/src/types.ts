@@ -157,11 +157,12 @@ export interface Recipe {
   description?: string;
   login: LoginSteps;
   actions: {
-    // Original 4 actions (Phase 1 scope)
+    // Original Phase 1 keys (getStaffRoster dropped in v8 Phase D.1 — no
+    // pms_staff_roster table; never migrated to v4 schema; mapper hasn't
+    // emitted it since the 13-target TARGETS array landed in 2026-05).
     getArrivals?:        ActionRecipe;
     getDepartures?:      ActionRecipe;
     getRoomStatus?:      ActionRecipe;
-    getStaffRoster?:     ActionRecipe;
     // Already-extensible Phase 1 keys
     getRoomLayout?:      ActionRecipe;
     getDashboardCounts?: ActionRecipe;
