@@ -72,6 +72,11 @@ const POLL_INTERVAL_MS = 30_000;
 const POLL_JITTER_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const READ_TIMEOUT_MS = 120_000;
+// Plan v7 Phase 2c — knowledge hot-reload poll. Every 60s, the driver
+// checks whether the active version for its pms_family has changed
+// (e.g. mapping-driver promoted a new draft). If so, reload in place
+// — no full driver restart needed.
+const KNOWLEDGE_RELOAD_INTERVAL_MS = 60_000;
 
 interface ScraperSessionRow {
   property_id: string;
@@ -104,6 +109,10 @@ export class SessionDriver {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private knowledgeFile: LoadedKnowledgeFile | null = null;
+  /** Plan v7 — version of the currently-loaded knowledge file. Compared
+   *  against the active version in DB every 60s; mismatch = hot-reload. */
+  private knowledgeFileVersion: number = 0;
+  private knowledgeReloadHandle: NodeJS.Timeout | null = null;
   private credentials: { username: string; password: string; loginUrl: string } | null = null;
   private allowedHost: string | null = null;
   private pollHandle: NodeJS.Timeout | null = null;
@@ -134,23 +143,30 @@ export class SessionDriver {
     // 1. Load knowledge file for this hotel's PMS family.
     this.knowledgeFile = await loadActive(this.pmsFamily);
     if (!this.knowledgeFile) {
-      // Graceful pause — distinct from failed_restart (which is the
-      // dead-letter signal for transient crashes). paused_no_knowledge_file
+      // Graceful pause — distinct from failed_restart. paused_no_knowledge_file
       // is admin-resolvable: someone needs to run the mapper or hand-seed
-      // a knowledge file for this PMS. Funnel UI surfaces this in the
-      // "Needs help" stage with a clear CTA. Don't bump restart_count —
-      // not a transient failure, no point hitting the dead-letter cap.
-      log.warn('session-driver: no active knowledge file — pausing', {
+      // a knowledge file for this PMS. Plan v7 Phase 2c: also auto-enqueue
+      // a mapper workflow job so the operator doesn't have to trigger it
+      // manually. The workflow-runtime's no-driver claim path picks it
+      // up; mapping-driver runs; auto-promotion may flip the new draft
+      // to active; this driver's next start (after the supervisor reconciles)
+      // loads the new recipe and goes alive. Whole flow: ~30-45 min.
+      log.warn('session-driver: no active knowledge file — pausing + auto-enqueuing mapper', {
         propertyId: this.propertyId,
         pmsFamily: this.pmsFamily,
       });
       await this.updateStatus({
         status: 'paused_no_knowledge_file',
-        paused_reason: `No active knowledge file for ${this.pmsFamily}. Run the mapper or hand-seed a knowledge file to onboard this PMS.`,
+        paused_reason: `No active knowledge file for ${this.pmsFamily}. Auto-enqueued a mapper job; check /admin/property-sessions for progress.`,
       });
+      await this.autoEnqueueMapperJob();
       this.running = false;
       return;
     }
+    // Track loaded version for the hot-reload poll (Plan v7 Phase 2c —
+    // when admin/auto promotes a new active version, we reload without
+    // a full driver restart).
+    this.knowledgeFileVersion = this.knowledgeFile.version;
 
     this.allowedHost = new URL(this.knowledgeFile.knowledge.login.startUrl).host;
 
@@ -204,6 +220,10 @@ export class SessionDriver {
     this.heartbeatHandle = setInterval(() => {
       void this.publishHeartbeat();
     }, HEARTBEAT_INTERVAL_MS);
+    // Plan v7 Phase 2c — knowledge hot-reload poll.
+    this.knowledgeReloadHandle = setInterval(() => {
+      void this.checkKnowledgeReload();
+    }, KNOWLEDGE_RELOAD_INTERVAL_MS);
 
     log.info('session-driver: started', { propertyId: this.propertyId });
   }
@@ -220,6 +240,7 @@ export class SessionDriver {
 
     if (this.pollHandle) clearTimeout(this.pollHandle);
     if (this.heartbeatHandle) clearInterval(this.heartbeatHandle);
+    if (this.knowledgeReloadHandle) clearInterval(this.knowledgeReloadHandle);
 
     // Save final storage state. context.storageState can fail if Fly
     // already started tearing down the firecracker VM — the warn is
@@ -948,6 +969,75 @@ export class SessionDriver {
       }
     }
     throw new Error(`clickFirstMatching exhausted ${selectors.length} selectors: ${errors.join(' | ')}`);
+  }
+
+  // ─── Plan v7 Phase 2c: knowledge hot-reload + mapper auto-enqueue ───
+
+  /**
+   * Polled every 60s. Compares loaded `knowledgeFileVersion` against
+   * the active version in DB; reloads in place if they differ. Lets
+   * mapping-driver's auto-promotion take effect within ~60s instead of
+   * waiting for the next 3am nightly restart.
+   */
+  private async checkKnowledgeReload(): Promise<void> {
+    if (this.stopping || !this.running) return;
+    try {
+      const latest = await loadActive(this.pmsFamily);
+      if (!latest) return;
+      if (latest.version === this.knowledgeFileVersion) return;
+      log.info('session-driver: hot-reloading knowledge file', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+        oldVersion: this.knowledgeFileVersion,
+        newVersion: latest.version,
+      });
+      this.knowledgeFile = latest;
+      this.knowledgeFileVersion = latest.version;
+      this.allowedHost = new URL(latest.knowledge.login.startUrl).host;
+      // No browser restart needed — next pollOnce uses the new feeds.
+    } catch (err) {
+      log.warn('session-driver: knowledge hot-reload check failed', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Enqueue a mapper.learn_pms_family job when this driver enters
+   * paused_no_knowledge_file. Idempotency key is per-PMS-family so
+   * 3 hotels onboarding simultaneously on the same brand-new PMS
+   * trigger ONE mapping run, not three.
+   */
+  private async autoEnqueueMapperJob(): Promise<void> {
+    const idempotencyKey = `mapper.learn_pms_family:${this.pmsFamily}`;
+    const { error } = await supabase.from('workflow_jobs').insert({
+      property_id: this.propertyId,
+      kind: 'mapper.learn_pms_family',
+      payload: { pms_family: this.pmsFamily, property_id: this.propertyId },
+      idempotency_key: idempotencyKey,
+      // status defaults to 'queued' per migration 0201.
+      // max_attempts defaults to 3.
+      triggered_by: 'session-driver:paused_no_knowledge_file',
+    });
+    if (error) {
+      // Duplicate idempotency_key violation = another hotel on the
+      // same family already enqueued the job. That's the desired
+      // outcome (one mapper run per family), so log info not warn.
+      if (error.message.includes('idempotency')) {
+        log.info('session-driver: mapper job already enqueued for this family', {
+          pmsFamily: this.pmsFamily, idempotencyKey,
+        });
+      } else {
+        log.warn('session-driver: mapper auto-enqueue failed', {
+          propertyId: this.propertyId, err: error.message,
+        });
+      }
+      return;
+    }
+    log.info('session-driver: mapper job auto-enqueued', {
+      propertyId: this.propertyId, pmsFamily: this.pmsFamily, idempotencyKey,
+    });
   }
 
   private async closeBrowser(): Promise<void> {
