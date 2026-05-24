@@ -48,7 +48,7 @@ interface AnthropicUsage {
 }
 
 interface LogContext {
-  workload: 'cua_mapping_login' | 'cua_mapping_action' | 'cua_extraction' | 'other';
+  workload: 'cua_mapping_login' | 'cua_mapping_action' | 'cua_mapping_drilldown' | 'cua_extraction' | 'other';
   model: string;
   propertyId?: string | null;
   jobId?: string | null;
