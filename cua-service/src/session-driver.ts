@@ -55,6 +55,15 @@ import {
   saveWorkOrders,
   saveInHouseSnapshot,
 } from './persistence/new-schema-writer.js';
+// Plan v7 Phase 2b — shadow-mode parallel write through the new
+// template-driven path. When CUA_SHADOW_MODE=true, certain feeds ALSO
+// write to pms_*_shadow tables; the daily parity-diff cron compares
+// the two. Once a table passes 7 days of zero-diff, its CUA_USE_GENERIC_
+// WRITER_<table>=true flag flips and the legacy normalizer path retires
+// for that table.
+import { saveGenericTable } from './persistence/generic-table-writer.js';
+import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
+import { dashboardCountsTemplateFromLegacy } from './recipe-adapter.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import type { ScraperCredentialsRow } from './types.js';
 
@@ -613,6 +622,9 @@ export class SessionDriver {
         });
         results.push({ feed: feedName, ok: false, reason: (err as Error).message });
       }
+      // Plan v7 — parallel shadow write during the parity window.
+      // Fire-and-forget; doesn't block the polling loop or fail the feed.
+      void this.shadowWriteFeed(feedName, feed, signal);
     }
 
     log.info('session-driver: poll complete', {
@@ -706,6 +718,47 @@ export class SessionDriver {
         });
         return { feed: feedName, ok: result.ok, reason: result.reason };
       }
+    }
+  }
+
+  /**
+   * Plan v7 Phase 2b — fire-and-forget shadow write through the new
+   * template-driven path. Runs in parallel with the legacy path during
+   * the parity window. Failures are logged but don't fail the feed.
+   *
+   * Today: handles dashboard_counts (the multi-source case). Extend to
+   * other feeds as the parity gate qualifies them.
+   */
+  private async shadowWriteFeed(feedName: string, feed: FeedSpec, signal: AbortSignal): Promise<void> {
+    if (!env.CUA_SHADOW_MODE) return;
+    if (!this.page || !this.allowedHost) return;
+    try {
+      if (feedName === 'dashboard_counts') {
+        const template = dashboardCountsTemplateFromLegacy(feed as Parameters<typeof dashboardCountsTemplateFromLegacy>[0]);
+        if (!template) return;
+        const result = await runMultiSourceTemplate({
+          page: this.page,
+          template,
+          allowedHost: this.allowedHost,
+          signal,
+        });
+        if (!result.ok) {
+          log.warn('shadow write: template runner failed', {
+            propertyId: this.propertyId, feedName, reason: result.reason,
+          });
+          return;
+        }
+        await saveGenericTable(this.propertyId, template.tableName, result.rows, { shadowMode: true });
+      }
+      // Other feeds (arrivals_departures, room_status, housekeeping,
+      // work_orders) will be added here as the parity gate progresses.
+      // Each needs its own knowledgeFeedToTemplate helper in
+      // recipe-adapter.ts.
+    } catch (err) {
+      log.warn('shadow write: threw', {
+        propertyId: this.propertyId, feedName,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
