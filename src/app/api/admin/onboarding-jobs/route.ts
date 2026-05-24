@@ -1,22 +1,35 @@
 /**
  * GET /api/admin/onboarding-jobs
  *
- * Returns recent onboarding_jobs rows (most-recent first) joined with
- * the property name and current pms_type. Powers the Onboarding tab on
- * /admin/properties — Reeyen's "where do hotels get stuck" view.
+ * Returns the in-flight CUA session state for every hotel, projected to
+ * the legacy "onboarding job" shape so the OnboardingTab UI doesn't
+ * need to be rewritten.
  *
- * Per-row fields:
- *   - jobId, propertyId, propertyName
- *   - pmsType, status (queued/running/mapping/extracting/complete/failed)
- *   - step (current human-readable step) + progressPct
- *   - error (set on failed)
- *   - timing: createdAt, startedAt, completedAt
- *   - durationMs (computed: completedAt - startedAt, or now - startedAt
- *                 if still running)
+ * Source of truth: `public.property_sessions` (one row per hotel). The
+ * legacy `onboarding_jobs` table is an empty stub since Plan v4 cutover
+ * (consumer cua-service/src/job-runner.ts was deleted) — this route used
+ * to read it and always returned `[]`, breaking the funnel UI.
  *
- * Default: last 50 jobs. ?status=failed to filter for failures only.
- * ?live=1 to show only currently-running jobs (for monitoring an active
- * onboarding).
+ * Status mapping (property_sessions.status → legacy job shape):
+ *   - starting                  → running,  step="Logging into PMS…",      progress=30
+ *   - alive                     → complete, step="Connected — polling…",   progress=100
+ *   - paused_mfa                → mapping,  step="Waiting for MFA…",       progress=70
+ *   - paused_no_knowledge_file  → mapping,  step="Awaiting mapper…",       progress=50
+ *   - paused_cost_cap           → running,  step="Cost cap — auto-resumes",progress=90
+ *   - paused_circuit_breaker    → failed,   step="Repeated read failures"
+ *   - failed_restart            → failed,   step="Login failing — edit creds"
+ *   - stopped                   → cancelled, step="Stopped by admin"
+ *
+ * ?live=1 returns anything that's not 'alive' or 'stopped' (anything
+ * the admin should be watching).
+ * ?status=failed returns failed/paused-cb/failed_restart.
+ * ?status=complete returns alive sessions.
+ *
+ * Per-row fields (kept compatible with OnboardingTab.tsx contract):
+ *   - jobId (= property_id, since one session per hotel)
+ *   - propertyId, propertyName, pmsType
+ *   - status, step, progressPct, error
+ *   - createdAt, startedAt, completedAt, durationMs, forceRemap (always false)
  */
 
 import { NextRequest } from 'next/server';
@@ -34,7 +47,7 @@ interface JobRow {
   propertyId: string;
   propertyName: string | null;
   pmsType: string;
-  status: string;
+  status: 'queued' | 'running' | 'mapping' | 'extracting' | 'complete' | 'failed' | 'cancelled';
   step: string | null;
   progressPct: number | null;
   error: string | null;
@@ -43,9 +56,54 @@ interface JobRow {
   completedAt: string | null;
   durationMs: number | null;
   forceRemap: boolean;
+  /** Optional CTA target — UI can link to /admin/mfa-resume/[hotelId] for paused_mfa. */
+  resumeUrl: string | null;
 }
 
-const RUNNING_STATES = new Set(['queued', 'running', 'mapping', 'extracting']);
+interface SessionRow {
+  property_id: string;
+  pms_family: string;
+  status: string;
+  paused_reason: string | null;
+  paused_until: string | null;
+  last_alive_at: string | null;
+  last_successful_read_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const RUNNING_STATES = new Set<JobRow['status']>(['queued', 'running', 'mapping', 'extracting']);
+
+interface MappedShape {
+  status: JobRow['status'];
+  step: string;
+  progressPct: number | null;
+}
+
+function mapSessionToJobShape(s: SessionRow): MappedShape {
+  switch (s.status) {
+    case 'starting':
+      return { status: 'running', step: 'Logging into PMS…', progressPct: 30 };
+    case 'alive':
+      return { status: 'complete', step: 'Connected — polling every ~30s.', progressPct: 100 };
+    case 'paused_mfa':
+      return { status: 'mapping', step: 'Waiting for MFA — click to resolve.', progressPct: 70 };
+    case 'paused_no_knowledge_file':
+      return { status: 'mapping', step: 'Awaiting mapper — PMS not learned yet.', progressPct: 50 };
+    case 'paused_cost_cap':
+      return { status: 'running', step: 'Cost cap tripped — auto-resumes at midnight.', progressPct: 90 };
+    case 'paused_circuit_breaker':
+      return { status: 'failed', step: 'Repeated read failures — paused for triage.', progressPct: null };
+    case 'failed_restart':
+      return { status: 'failed', step: 'Login failing — edit credentials and retry.', progressPct: null };
+    case 'stopped':
+      return { status: 'cancelled', step: 'Stopped by admin.', progressPct: null };
+    default:
+      // Future-proof: unknown status → surface as 'running' with the
+      // raw status as the step so admin can see something's off.
+      return { status: 'running', step: `Status: ${s.status}`, progressPct: null };
+  }
+}
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -58,68 +116,81 @@ export async function GET(req: NextRequest) {
   const liveOnly = url.searchParams.get('live') === '1';
   const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 200);
 
-  let query = supabaseAdmin
-    .from('onboarding_jobs')
+  // Pull all sessions; we filter in memory after status mapping. Volume
+  // is tiny (one row per hotel, capped at a few hundred for the
+  // foreseeable future).
+  const { data: rawSessions, error: sessErr } = await supabaseAdmin
+    .from('property_sessions')
     .select(`
-      id, property_id, pms_type, status, step, progress_pct, error,
-      created_at, started_at, completed_at, force_remap
+      property_id, pms_family, status, paused_reason, paused_until,
+      last_alive_at, last_successful_read_at, created_at, updated_at
     `)
-    .order('created_at', { ascending: false })
+    .order('updated_at', { ascending: false })
     .limit(limit);
 
-  if (filter === 'failed') query = query.eq('status', 'failed');
-  if (filter === 'complete') query = query.eq('status', 'complete');
-  if (liveOnly) query = query.in('status', Array.from(RUNNING_STATES));
-
-  const { data: jobs, error: jobsErr } = await query;
-  if (jobsErr) {
-    return err(`Could not load jobs: ${jobsErr.message}`, {
+  if (sessErr) {
+    return err(`Could not load sessions: ${sessErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
 
+  const sessions = (rawSessions ?? []) as SessionRow[];
+
   // Look up property names for display in one round-trip.
-  const propIds = Array.from(new Set((jobs ?? []).map((j) => j.property_id))).filter(Boolean);
+  const propIds = Array.from(new Set(sessions.map((s) => s.property_id))).filter(Boolean);
   const nameByPid = new Map<string, string>();
   if (propIds.length > 0) {
     const { data: props } = await supabaseAdmin
       .from('properties')
       .select('id, name')
       .in('id', propIds);
-    for (const p of props ?? []) nameByPid.set(p.id, p.name ?? '(unnamed)');
+    for (const p of props ?? []) nameByPid.set(p.id, (p.name as string | null) ?? '(unnamed)');
   }
 
   const now = Date.now();
-  const rows: JobRow[] = (jobs ?? []).map((j) => {
-    const startedMs = j.started_at ? new Date(j.started_at).getTime() : null;
-    const completedMs = j.completed_at ? new Date(j.completed_at).getTime() : null;
-    let durationMs: number | null = null;
-    if (startedMs && completedMs) durationMs = completedMs - startedMs;
-    else if (startedMs && RUNNING_STATES.has(j.status)) durationMs = now - startedMs;
+  const allRows: JobRow[] = sessions.map((s) => {
+    const mapped = mapSessionToJobShape(s);
+    const startedMs = Date.parse(s.created_at);
+    const completedMs = s.status === 'alive' && s.last_alive_at
+      ? Date.parse(s.last_alive_at)
+      : null;
+    const durationMs = completedMs
+      ? completedMs - startedMs
+      : (RUNNING_STATES.has(mapped.status) ? now - startedMs : null);
 
     return {
-      id: j.id,
-      propertyId: j.property_id,
-      propertyName: nameByPid.get(j.property_id) ?? null,
-      pmsType: j.pms_type,
-      status: j.status,
-      step: j.step,
-      progressPct: j.progress_pct,
-      error: j.error,
-      createdAt: j.created_at,
-      startedAt: j.started_at,
-      completedAt: j.completed_at,
+      // Use property_id as the jobId: one session per hotel in v4 (the
+      // old onboarding_jobs had multiple rows per property — that's a
+      // collapse the v4 model intentionally makes).
+      id: s.property_id,
+      propertyId: s.property_id,
+      propertyName: nameByPid.get(s.property_id) ?? null,
+      pmsType: s.pms_family,
+      status: mapped.status,
+      step: mapped.step,
+      progressPct: mapped.progressPct,
+      error: s.paused_reason,
+      createdAt: s.created_at,
+      startedAt: s.created_at,
+      completedAt: completedMs ? new Date(completedMs).toISOString() : null,
       durationMs,
-      forceRemap: j.force_remap ?? false,
+      forceRemap: false,
+      resumeUrl: s.status === 'paused_mfa' ? `/admin/mfa-resume/${s.property_id}` : null,
     };
   });
 
-  // Summary counts (compute over the un-filtered last N for context).
+  // Apply filters.
+  let rows = allRows;
+  if (filter === 'failed') rows = allRows.filter((r) => r.status === 'failed');
+  if (filter === 'complete') rows = allRows.filter((r) => r.status === 'complete');
+  if (liveOnly) rows = allRows.filter((r) => RUNNING_STATES.has(r.status));
+
+  // Summary computed over the full set so the UI header is accurate.
   const summary = {
-    total: rows.length,
-    running: rows.filter((r) => RUNNING_STATES.has(r.status)).length,
-    failed: rows.filter((r) => r.status === 'failed').length,
-    complete: rows.filter((r) => r.status === 'complete').length,
+    total: allRows.length,
+    running: allRows.filter((r) => RUNNING_STATES.has(r.status)).length,
+    failed: allRows.filter((r) => r.status === 'failed').length,
+    complete: allRows.filter((r) => r.status === 'complete').length,
   };
 
   return ok({ jobs: rows, summary }, { requestId });

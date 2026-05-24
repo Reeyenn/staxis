@@ -108,23 +108,68 @@ export async function GET(req: NextRequest) {
   const propertyIds = properties.map((p) => p.id);
   const now = Date.now();
 
-  // ─── Latest onboarding_jobs row per property ────────────────────────────
-  // We query in one shot then bucket in memory. For 200 properties × ~5 jobs
-  // each that's ~1000 rows — well under any concern.
-  const { data: jobs } = await supabaseAdmin
-    .from('onboarding_jobs')
-    .select('id, property_id, status, step, progress_pct, error, created_at, started_at, completed_at')
-    .in('property_id', propertyIds.length > 0 ? propertyIds : ['00000000-0000-0000-0000-000000000000'])
-    .order('created_at', { ascending: false })
-    .limit(2000);
+  // ─── Property session state (v4) ─────────────────────────────────────
+  // Replaced the old onboarding_jobs lookup (post-v4 those rows are
+  // an empty stub). property_sessions is one-row-per-hotel with the
+  // canonical CUA driver state. Used by OnboardingTab to bucket
+  // hotels into the onboarding funnel.
+  const { data: sessionsRaw } = await supabaseAdmin
+    .from('property_sessions')
+    .select(
+      'property_id, status, paused_reason, last_alive_at, last_successful_read_at, updated_at',
+    )
+    .in('property_id', propertyIds.length > 0 ? propertyIds : ['00000000-0000-0000-0000-000000000000']);
 
-  const latestJobByProperty = new Map<string, NonNullable<typeof jobs>[number]>();
-  for (const j of (jobs ?? [])) {
-    const pid = j.property_id as string;
-    if (!latestJobByProperty.has(pid)) {
-      latestJobByProperty.set(pid, j);
-    }
+  interface SessionLite {
+    property_id: string;
+    status: string;
+    paused_reason: string | null;
+    last_alive_at: string | null;
+    last_successful_read_at: string | null;
+    updated_at: string;
   }
+  const sessionByProperty = new Map<string, SessionLite>();
+  for (const s of (sessionsRaw ?? []) as SessionLite[]) {
+    sessionByProperty.set(s.property_id, s);
+  }
+
+  // Map session status → legacy onboarding-job shape so the
+  // PropertyRow.latestJob field the UI already consumes keeps working.
+  const mapSessionToJob = (s: SessionLite) => {
+    let status: string;
+    let step: string;
+    let progress: number | null = null;
+    switch (s.status) {
+      case 'starting':
+        status = 'running'; step = 'Logging into PMS…'; progress = 30; break;
+      case 'alive':
+        status = 'complete'; step = 'Connected — polling.'; progress = 100; break;
+      case 'paused_mfa':
+        status = 'mapping'; step = 'Waiting for MFA — click to resolve.'; progress = 70; break;
+      case 'paused_no_knowledge_file':
+        status = 'mapping'; step = 'Awaiting mapper — PMS not learned.'; progress = 50; break;
+      case 'paused_cost_cap':
+        status = 'running'; step = 'Cost cap — auto-resumes at midnight.'; progress = 90; break;
+      case 'paused_circuit_breaker':
+        status = 'failed'; step = 'Repeated read failures.'; break;
+      case 'failed_restart':
+        status = 'failed'; step = 'Login failing — edit credentials.'; break;
+      case 'stopped':
+        status = 'cancelled'; step = 'Stopped by admin.'; break;
+      default:
+        status = 'running'; step = `Status: ${s.status}`;
+    }
+    return {
+      id: s.property_id,
+      status,
+      step,
+      progressPct: progress,
+      error: s.paused_reason,
+      createdAt: s.updated_at,
+      startedAt: s.updated_at,
+      completedAt: s.last_alive_at,
+    };
+  };
 
   // ─── Staff counts per property ───────────────────────────────────────────
   // We need the count of active staff per property. supabase-js doesn't
@@ -147,14 +192,26 @@ export async function GET(req: NextRequest) {
 
   // ─── Build the response ─────────────────────────────────────────────────
   const enriched = properties.map((p) => {
-    const job = latestJobByProperty.get(p.id);
-    const lastSyncMs = p.last_synced_at ? Date.parse(p.last_synced_at) : null;
+    const session = sessionByProperty.get(p.id);
+    const mapped = session ? mapSessionToJob(session) : null;
+
+    // In v4 the truth-of-record for "is data flowing" is property_sessions,
+    // not properties.last_synced_at (which nothing writes anymore). Treat
+    // session.last_successful_read_at as the freshness signal; fall back to
+    // properties.last_synced_at for legacy display.
+    const lastSyncIso = session?.last_successful_read_at ?? p.last_synced_at;
+    const lastSyncMs = lastSyncIso ? Date.parse(lastSyncIso) : null;
     const syncFreshnessMin = lastSyncMs ? Math.round((now - lastSyncMs) / 60_000) : null;
 
+    // In v4, "pms connected" = there's a session row for this hotel.
+    // Fall back to the legacy boolean column if the session table is
+    // empty (shouldn't happen post-0206, but defensive).
+    const pmsConnected = !!session || !!p.pms_connected;
+
     // A property is "stale" if it has a PMS connected and sync is >2h old.
-    // Only counts if pms_connected=true — fresh trial signups without
-    // PMS connections aren't stale, they're just not started yet.
-    const isStale = p.pms_connected && syncFreshnessMin !== null && syncFreshnessMin > 120;
+    // Only counts if pmsConnected — fresh trial signups without PMS
+    // connections aren't stale, they're just not started yet.
+    const isStale = pmsConnected && syncFreshnessMin !== null && syncFreshnessMin > 120;
 
     // Trial expired but still in trial status = needs nudging
     const trialExpired = p.subscription_status === 'trial'
@@ -169,26 +226,19 @@ export async function GET(req: NextRequest) {
       trialEndsAt: p.trial_ends_at,
       trialExpired,
       pmsType: p.pms_type,
-      pmsConnected: !!p.pms_connected,
-      lastSyncedAt: p.last_synced_at,
+      pmsConnected,
+      lastSyncedAt: lastSyncIso,
       syncFreshnessMin,
       isStale,
       staffCount: staffCount.get(p.id) ?? 0,
       onboardingSource: p.onboarding_source,
       propertyKind: p.property_kind,
       createdAt: p.created_at,
-      latestJob: job
-        ? {
-            id: job.id,
-            status: job.status,
-            step: job.step,
-            progressPct: job.progress_pct,
-            error: job.error,
-            createdAt: job.created_at,
-            startedAt: job.started_at,
-            completedAt: job.completed_at,
-          }
-        : null,
+      // v4 session state — added 0206 rewire. OnboardingTab uses this
+      // to bucket hotels into the funnel stages.
+      sessionStatus: session?.status ?? null,
+      sessionPausedReason: session?.paused_reason ?? null,
+      latestJob: mapped,
     };
   });
 

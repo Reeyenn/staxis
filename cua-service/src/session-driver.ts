@@ -125,13 +125,19 @@ export class SessionDriver {
     // 1. Load knowledge file for this hotel's PMS family.
     this.knowledgeFile = await loadActive(this.pmsFamily);
     if (!this.knowledgeFile) {
-      log.error('session-driver: no active knowledge file for pms_family', {
+      // Graceful pause — distinct from failed_restart (which is the
+      // dead-letter signal for transient crashes). paused_no_knowledge_file
+      // is admin-resolvable: someone needs to run the mapper or hand-seed
+      // a knowledge file for this PMS. Funnel UI surfaces this in the
+      // "Needs help" stage with a clear CTA. Don't bump restart_count —
+      // not a transient failure, no point hitting the dead-letter cap.
+      log.warn('session-driver: no active knowledge file — pausing', {
         propertyId: this.propertyId,
         pmsFamily: this.pmsFamily,
       });
       await this.updateStatus({
-        status: 'failed_restart',
-        paused_reason: `No active knowledge file for ${this.pmsFamily}. Run the mapper before starting this hotel.`,
+        status: 'paused_no_knowledge_file',
+        paused_reason: `No active knowledge file for ${this.pmsFamily}. Run the mapper or hand-seed a knowledge file to onboard this PMS.`,
       });
       this.running = false;
       return;

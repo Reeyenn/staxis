@@ -129,7 +129,13 @@ describe('RLS tenant isolation — real Postgres via pglite (real migrations)', 
     console.log(`[integration] per-property tables (${perPropertyTables.length}): ${perPropertyTables.join(', ')}`);
     // Core tables that have existed since 0001 — if any of these is missing
     // the migration runner has a serious regression.
-    for (const required of ['rooms', 'staff', 'work_orders', 'inventory', 'daily_logs', 'guest_requests']) {
+    //
+    // Plan v4 (2026-05-23): `rooms` and `work_orders` were dropped (0204)
+    // then recreated as service-role-only empty stubs (0205) so legacy
+    // web-app code paths don't 500. They no longer have user_owns_property
+    // policies — those tables aren't tenant-scoped in v4. Removed from the
+    // required list.
+    for (const required of ['staff', 'inventory', 'daily_logs', 'guest_requests']) {
       assert.ok(
         perPropertyTables.includes(required),
         `expected per-property table '${required}' to be discovered`,
@@ -221,19 +227,22 @@ describe('RLS tenant isolation — real Postgres via pglite (real migrations)', 
   });
 
   describe('admin role — cross-property access', () => {
-    test('admin sees rooms from BOTH properties', async () => {
-      // Seed rooms for both properties via service role first.
-      // (`date` is NOT NULL in the real schema.)
+    test('admin sees staff from BOTH properties', async () => {
+      // Plan v4 (2026-05-23): switched from `rooms` to `staff` because the
+      // legacy `rooms` table is now a service-role-only stub (deny-all-
+      // browser policy from 0205) — admin browser sessions can't read it
+      // by design. `staff` is a long-standing tenant-scoped table with the
+      // user_owns_property policy this test wants to exercise.
       await fx.pg.query(
-        `insert into rooms (property_id, number, date, type, status) values
-           ($1, 'A-101', current_date, 'vacant', 'dirty'),
-           ($2, 'B-202', current_date, 'vacant', 'dirty')
+        `insert into staff (property_id, name, department, is_active) values
+           ($1, 'Alice A', 'housekeeping', true),
+           ($2, 'Bob B',   'housekeeping', true)
          on conflict do nothing`,
         [PID_A, PID_B],
       );
-      const r = await fx.runAsUser(UID_ADMIN, `select count(*)::int as n from rooms where number in ('A-101','B-202')`);
+      const r = await fx.runAsUser(UID_ADMIN, `select count(*)::int as n from staff where name in ('Alice A','Bob B')`);
       const result = r as { rows: { n: number }[] };
-      assert.ok(result.rows[0].n >= 2, 'admin must see rooms from both properties');
+      assert.ok(result.rows[0].n >= 2, 'admin must see staff from both properties');
     });
   });
 

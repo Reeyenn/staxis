@@ -2,19 +2,31 @@
  * GET /api/admin/pms-coverage
  *
  * Returns one row per supported PMS type with the state of its active
- * recipe + how many properties are currently using it. Powers the
- * /admin/pms page — Reeyen's "what does our agent already know how to
- * do" view.
+ * v4 knowledge file + how many properties use it. Powers the
+ * "PMS coverage" column on the Onboarding tab.
+ *
+ * Source of truth (post-v4): `public.pms_knowledge_files`. The legacy
+ * `pms_recipes` table is read elsewhere by the old mapper but is no
+ * longer the canonical store; v4 dispatches off pms_knowledge_files.
+ *
+ * Coverage is computed against the 5 v4 feeds the new CUA polls (vs
+ * the 4 legacy actions the old mapper covered):
+ *   - dashboard_counts
+ *   - arrivals_departures
+ *   - room_status
+ *   - housekeeping
+ *   - work_orders
  *
  * Per-PMS fields:
- *   - active recipe id, version, created_at (or null if never mapped)
- *   - mapped action set (which of the 4 actions the recipe covers)
- *   - propertyCount — how many properties currently set to this PMS
- *   - latestJob — the most recent onboarding_job for this pms_type:
- *       status / step / progress / error / age
+ *   - active knowledge file id, version, learned_at (null if not learned)
+ *   - feeds captured / missing
+ *   - coveragePct: 0..100 = captured / 5
+ *   - propertyCount: hotels currently on this PMS
+ *   - latestJob: most-recent in-flight session (paused_mfa / paused_no_kf /
+ *     failed_restart) for any hotel on this PMS — gives the admin a
+ *     fast read on "is anyone stuck on this PMS right now"
  *
- * No mutations — read-only. The /api/admin/regenerate-recipe endpoint
- * still owns the mutation path (queueing a fresh mapping job).
+ * Read-only.
  */
 
 import { NextRequest } from 'next/server';
@@ -29,8 +41,15 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
-const TARGET_ACTIONS = ['getRoomStatus', 'getArrivals', 'getDepartures', 'getStaffRoster'] as const;
-type TargetAction = (typeof TARGET_ACTIONS)[number];
+// The 5 feeds the v4 CUA polls (mirrors pms_knowledge_files.knowledge.feeds keys).
+const TARGET_FEEDS = [
+  'dashboard_counts',
+  'arrivals_departures',
+  'room_status',
+  'housekeeping',
+  'work_orders',
+] as const;
+type TargetFeed = (typeof TARGET_FEEDS)[number];
 
 interface CoverageRow {
   pmsType: PMSType;
@@ -42,9 +61,9 @@ interface CoverageRow {
     id: string;
     version: number;
     createdAt: string;
-    actionsCaptured: TargetAction[];
-    actionsMissing: TargetAction[];
-    coveragePct: number; // 0..100, share of TARGET_ACTIONS captured
+    actionsCaptured: TargetFeed[];
+    actionsMissing: TargetFeed[];
+    coveragePct: number;
   } | null;
   propertyCount: number;
   latestJob: {
@@ -57,27 +76,44 @@ interface CoverageRow {
   } | null;
 }
 
+interface KnowledgeFileRow {
+  id: string;
+  pms_family: string;
+  version: number;
+  learned_at: string;
+  knowledge: unknown;
+}
+
+interface PropertySessionRow {
+  property_id: string;
+  pms_family: string;
+  status: string;
+  paused_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  // Pull active recipes (one per pms_type, status='active' is unique by
-  // contract — see staxis_swap_active_recipe RPC).
-  const { data: activeRecipes, error: recipeErr } = await supabaseAdmin
-    .from('pms_recipes')
-    .select('id, pms_type, version, created_at, recipe')
+  // ─── Active knowledge files per PMS family (one per family by partial
+  //     unique index, see migration 0201). ────────────────────────────────
+  const { data: kfRowsRaw, error: kfErr } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('id, pms_family, version, learned_at, knowledge')
     .eq('status', 'active');
 
-  if (recipeErr) {
-    return err(`Could not load recipes: ${recipeErr.message}`, {
+  if (kfErr) {
+    return err(`Could not load knowledge files: ${kfErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
+  const kfRows = (kfRowsRaw ?? []) as KnowledgeFileRow[];
 
-  // Per-PMS property counts. Properties without a pms_type are skipped.
-  // We do an aggregate count by pms_type with a single RPC-less query.
+  // ─── Property counts per pms_type ─────────────────────────────────────
   const { data: properties, error: propErr } = await supabaseAdmin
     .from('properties')
     .select('pms_type');
@@ -90,74 +126,104 @@ export async function GET(req: NextRequest) {
 
   const propertyCountByPms = new Map<string, number>();
   for (const p of properties ?? []) {
-    if (!p.pms_type) continue;
-    propertyCountByPms.set(p.pms_type, (propertyCountByPms.get(p.pms_type) ?? 0) + 1);
+    const t = (p as { pms_type: string | null }).pms_type;
+    if (!t) continue;
+    propertyCountByPms.set(t, (propertyCountByPms.get(t) ?? 0) + 1);
   }
 
-  // Latest onboarding_job per pms_type. Cheap query — we only need 1
-  // per type. Fetch the last 100 jobs, then keep the newest per pms.
-  const { data: recentJobs, error: jobErr } = await supabaseAdmin
-    .from('onboarding_jobs')
-    .select('id, pms_type, status, step, progress_pct, error, created_at')
-    .order('created_at', { ascending: false })
-    .limit(100);
+  // ─── Most-recent in-flight session per pms_family. ────────────────────
+  // Surfaces "is anyone stuck on this PMS right now" — paused_mfa /
+  // paused_no_knowledge_file / failed_restart are the interesting states.
+  const { data: sessionsRaw, error: sessErr } = await supabaseAdmin
+    .from('property_sessions')
+    .select('property_id, pms_family, status, paused_reason, created_at, updated_at')
+    .order('updated_at', { ascending: false })
+    .limit(200);
 
-  if (jobErr) {
-    return err(`Could not load jobs: ${jobErr.message}`, {
+  if (sessErr) {
+    return err(`Could not load sessions: ${sessErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
+  const sessions = (sessionsRaw ?? []) as PropertySessionRow[];
 
-  const latestJobByPms = new Map<string, NonNullable<typeof recentJobs>[number]>();
-  for (const j of recentJobs ?? []) {
-    if (!j.pms_type) continue;
-    if (!latestJobByPms.has(j.pms_type)) {
-      latestJobByPms.set(j.pms_type, j);
+  // Keep the most-recent non-alive session per family — that's the one
+  // surfaced as "latest job".
+  const NON_ALIVE = new Set(['paused_mfa', 'paused_no_knowledge_file', 'paused_circuit_breaker', 'failed_restart', 'stopped', 'paused_cost_cap']);
+  const latestNonAliveByFamily = new Map<string, PropertySessionRow>();
+  for (const s of sessions) {
+    if (!NON_ALIVE.has(s.status)) continue;
+    if (!latestNonAliveByFamily.has(s.pms_family)) {
+      latestNonAliveByFamily.set(s.pms_family, s);
     }
   }
 
-  // Build one CoverageRow per registered PMS (skip 'other' — it's a
-  // catch-all input value, not a real PMS).
+  // Helper: derive (status, step, progress) from a session row for the
+  // legacy CoverageRow.latestJob shape.
+  const mapSessionForLatestJob = (s: PropertySessionRow) => {
+    let status = 'running';
+    let step: string | null = null;
+    let progress: number | null = null;
+    switch (s.status) {
+      case 'paused_mfa':
+        status = 'mapping'; step = 'Waiting for MFA'; progress = 70; break;
+      case 'paused_no_knowledge_file':
+        status = 'mapping'; step = 'Awaiting mapper'; progress = 50; break;
+      case 'paused_cost_cap':
+        status = 'running'; step = 'Cost cap tripped'; progress = 90; break;
+      case 'paused_circuit_breaker':
+      case 'failed_restart':
+        status = 'failed'; step = 'Login / read failures'; break;
+      case 'stopped':
+        status = 'cancelled'; step = 'Stopped by admin'; break;
+    }
+    return { status, step, progress };
+  };
+
+  // ─── Assemble rows ─────────────────────────────────────────────────────
+  // Skip 'other' — it's a catch-all input value, not a real PMS.
   const pmsTypes = Object.keys(PMS_REGISTRY).filter((t) => t !== 'other') as PMSType[];
 
   const rows: CoverageRow[] = pmsTypes.map((pmsType) => {
     const def = PMS_REGISTRY[pmsType];
-    const recipeRow = (activeRecipes ?? []).find((r) => r.pms_type === pmsType);
-    const captured: TargetAction[] = [];
-    const missing: TargetAction[] = [];
+    const kf = kfRows.find((k) => k.pms_family === pmsType);
 
-    if (recipeRow && recipeRow.recipe && typeof recipeRow.recipe === 'object') {
-      const actions = (recipeRow.recipe as { actions?: Record<string, unknown> }).actions ?? {};
-      for (const a of TARGET_ACTIONS) {
-        if (actions[a]) captured.push(a);
-        else missing.push(a);
+    const captured: TargetFeed[] = [];
+    const missing: TargetFeed[] = [];
+    if (kf && kf.knowledge && typeof kf.knowledge === 'object') {
+      const feeds = (kf.knowledge as { feeds?: Record<string, unknown> }).feeds ?? {};
+      for (const f of TARGET_FEEDS) {
+        if (feeds[f]) captured.push(f);
+        else missing.push(f);
       }
     } else {
-      missing.push(...TARGET_ACTIONS);
+      missing.push(...TARGET_FEEDS);
     }
 
-    const recipe = recipeRow
+    const recipe = kf
       ? {
-          id: recipeRow.id,
-          version: recipeRow.version,
-          createdAt: recipeRow.created_at,
+          id: kf.id,
+          version: kf.version,
+          createdAt: kf.learned_at,
           actionsCaptured: captured,
           actionsMissing: missing,
-          coveragePct: Math.round((captured.length / TARGET_ACTIONS.length) * 100),
+          coveragePct: Math.round((captured.length / TARGET_FEEDS.length) * 100),
         }
       : null;
 
-    const job = latestJobByPms.get(pmsType);
-    const latestJob = job
-      ? {
-          id: job.id,
-          status: job.status,
-          step: job.step,
-          progressPct: job.progress_pct,
-          error: job.error,
-          createdAt: job.created_at,
-        }
-      : null;
+    const session = latestNonAliveByFamily.get(pmsType);
+    let latestJob: CoverageRow['latestJob'] = null;
+    if (session) {
+      const m = mapSessionForLatestJob(session);
+      latestJob = {
+        id: session.property_id,
+        status: m.status,
+        step: m.step,
+        progressPct: m.progress,
+        error: session.paused_reason,
+        createdAt: session.updated_at,
+      };
+    }
 
     return {
       pmsType,
@@ -171,8 +237,8 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  // Sort: PMSes WITH active recipes first (by coverage desc), then
-  // unmapped ones (by property count desc — most-needed first).
+  // Sort: PMSes WITH active knowledge files first (by coverage desc),
+  // then unmapped (by property count desc — most-needed first).
   rows.sort((a, b) => {
     const aHas = a.recipe ? 1 : 0;
     const bHas = b.recipe ? 1 : 0;

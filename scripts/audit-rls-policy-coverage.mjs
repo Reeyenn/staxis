@@ -134,6 +134,40 @@ const SERVICE_ROLE_ONLY = new Set([
   'demand_priors',
   'supply_priors',
   'applied_migrations',
+  // ─── Plan v4 (migration 0201) — universal CUA infrastructure. ────────
+  // All three tables: RLS enabled + REVOKE all from public/anon/auth +
+  // explicit `*_deny_all_browser` policy with `using (false)`. CUA worker
+  // reads/writes via service-role; web app via /api/admin/* with
+  // supabaseAdmin. Never user-readable.
+  'property_sessions',
+  'workflow_jobs',
+  'pms_knowledge_files',
+  // ─── Plan v4 (migration 0202) — 15-table PMS data schema. ────────────
+  // RLS enabled via a dynamic `do $$ ... execute format(...)` loop the
+  // static parser doesn't follow. Same deny-all-browser pattern as 0201.
+  // CUA worker writes; web app reads via supabaseAdmin.
+  'pms_reservations',
+  'pms_guests',
+  'pms_rooms_inventory',
+  'pms_room_status_log',
+  'pms_housekeeping_assignments',
+  'pms_work_orders_v2',
+  'pms_revenue_daily',
+  'pms_forecast_daily',
+  'pms_channel_performance',
+  'pms_reports_cache',
+  'pms_in_house_snapshot',
+  'pms_activity_log',
+  'pms_lost_and_found',
+  'pms_groups_and_blocks',
+  'pms_rates_and_inventory',
+  // ─── Plan v4 (migration 0205) — empty stub tables. ───────────────────
+  // Recreated as empty stubs so legacy web-app code paths don't 500 with
+  // "relation does not exist". RLS enabled via the same dynamic SQL
+  // loop pattern. Service-role-only.
+  'rooms',
+  'work_orders',
+  'plan_snapshots',
 ]);
 
 function listMigrations() {
@@ -372,8 +406,12 @@ for (const [name, t] of tables.entries()) {
   if (tenantCols.length === 0) continue;
   scoped++;
 
-  // Tenant-scoped tables must have RLS on.
+  // Tenant-scoped tables must have RLS on. Allowlist escape: tables in
+  // SERVICE_ROLE_ONLY have RLS enabled via dynamic SQL (do $$ ... execute
+  // format(...)) blocks the static parser doesn't follow — e.g. migrations
+  // 0201, 0202, 0205. We trust the prod state where the migration ran.
   if (!t.rls) {
+    if (SERVICE_ROLE_ONLY.has(name) || t.allowlistComment) continue;
     violations.push({ name, reason: 'has tenant column(s) but RLS not enabled', tenantCols });
     continue;
   }

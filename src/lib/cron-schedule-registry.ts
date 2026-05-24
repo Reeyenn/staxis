@@ -71,4 +71,8 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'ml-train-inventory',    source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 9 * * 0' },
   { heartbeatName: 'ml-retention-purge',    source: { kind: 'github', workflowFile: 'ml-retention-purge.yml' },      cronExpr: '0 8 * * *' },
   { heartbeatName: 'scraper-weekly-digest', source: { kind: 'github', workflowFile: 'scraper-weekly-digest-cron.yml' }, cronExpr: '0 14 * * 6' },
+  // Plan v4 (2026-05-23): replaces scraper/vercel-watchdog.js (Railway
+  // process killed in the v4 cutover). Polls /api/admin/doctor every 5
+  // min and alerts Sentry/SMS on fail with business-hours-only bumps.
+  { heartbeatName: 'vercel-watchdog',       source: { kind: 'vercel', cronPath: '/api/cron/vercel-watchdog' },                  cronExpr: '*/5 * * * *' },
 ];

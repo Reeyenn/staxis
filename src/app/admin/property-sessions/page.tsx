@@ -50,13 +50,14 @@ interface SessionRow {
 }
 
 const STATUS_STYLE: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
-  starting:                { color: 'text-blue-700 bg-blue-50',     icon: <Clock className="h-4 w-4" />,        label: 'Starting' },
-  alive:                   { color: 'text-green-700 bg-green-50',   icon: <CheckCircle2 className="h-4 w-4" />, label: 'Alive' },
-  paused_cost_cap:         { color: 'text-amber-700 bg-amber-50',   icon: <AlertCircle className="h-4 w-4" />,  label: 'Cost cap' },
-  paused_mfa:              { color: 'text-amber-700 bg-amber-50',   icon: <ShieldAlert className="h-4 w-4" />,  label: 'MFA needed' },
-  paused_circuit_breaker:  { color: 'text-red-700 bg-red-50',       icon: <AlertCircle className="h-4 w-4" />,  label: 'Circuit broken' },
-  failed_restart:          { color: 'text-red-700 bg-red-50',       icon: <AlertCircle className="h-4 w-4" />,  label: 'Failed' },
-  stopped:                 { color: 'text-gray-700 bg-gray-50',     icon: <StopCircle className="h-4 w-4" />,   label: 'Stopped' },
+  starting:                  { color: 'text-blue-700 bg-blue-50',     icon: <Clock className="h-4 w-4" />,        label: 'Starting' },
+  alive:                     { color: 'text-green-700 bg-green-50',   icon: <CheckCircle2 className="h-4 w-4" />, label: 'Alive' },
+  paused_cost_cap:           { color: 'text-amber-700 bg-amber-50',   icon: <AlertCircle className="h-4 w-4" />,  label: 'Cost cap' },
+  paused_mfa:                { color: 'text-amber-700 bg-amber-50',   icon: <ShieldAlert className="h-4 w-4" />,  label: 'MFA needed' },
+  paused_no_knowledge_file:  { color: 'text-amber-700 bg-amber-50',   icon: <AlertCircle className="h-4 w-4" />,  label: 'Needs mapping' },
+  paused_circuit_breaker:    { color: 'text-red-700 bg-red-50',       icon: <AlertCircle className="h-4 w-4" />,  label: 'Circuit broken' },
+  failed_restart:            { color: 'text-red-700 bg-red-50',       icon: <AlertCircle className="h-4 w-4" />,  label: 'Failed' },
+  stopped:                   { color: 'text-gray-700 bg-gray-50',     icon: <StopCircle className="h-4 w-4" />,   label: 'Stopped' },
 };
 
 export default function PropertySessionsPage() {
@@ -120,11 +121,11 @@ export default function PropertySessionsPage() {
       <div className="px-6 py-8 max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <Link href="/admin" className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900 mb-2">
-              <ChevronLeft className="h-4 w-4 mr-1" /> Admin
+            <Link href="/admin?tab=onboarding" className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900 mb-2">
+              <ChevronLeft className="h-4 w-4 mr-1" /> Onboarding
             </Link>
             <h1 className="text-2xl font-semibold">CUA Sessions</h1>
-            <p className="text-sm text-gray-600 mt-1">Per-hotel session-driver health, heartbeat, and cost.</p>
+            <p className="text-sm text-gray-600 mt-1">Per-hotel session-driver health, heartbeat, and cost. New hotels are onboarded from the <Link href="/admin?tab=onboarding" className="underline">Onboarding tab</Link>.</p>
           </div>
           <button
             onClick={() => void load()}

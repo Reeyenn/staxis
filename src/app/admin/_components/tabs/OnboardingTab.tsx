@@ -1,14 +1,23 @@
 'use client';
 
 /**
- * Onboarding tab — Snow design (May 2026).
+ * Onboarding tab — Snow design (May 2026, v4-rewired 2026-05-24).
  *
- *   Onboarding (prospects)    │  CUA agent learning PMS  │  Onboarding pipeline  │  PMS coverage
- *   (ProspectsSection)        │  (live mapping jobs)     │  (4-stage funnel)     │  (learned-only)
+ *   Onboarding (prospects)    │  Live in-flight sessions  │  Onboarding pipeline  │  PMS coverage
+ *   (ProspectsSection)        │  (paused / starting)      │  (5-stage funnel)     │  (learned-only)
  *
- * PMS coverage is filtered to PMSes the agent has actually learned
- * (recipe.coveragePct > 0). PMSes with zero progress are hidden — they
- * just clutter the list when we have one customer.
+ * Plan v4 rewire: the funnel buckets now come from the v4 source-of-truth
+ * (`property_sessions.status`) instead of the legacy `onboarding_jobs`
+ * table (empty stub post-v4) and `properties.last_synced_at` (not written
+ * by anything in v4). See migration 0206 + /api/admin/list-properties rewire.
+ *
+ * Funnel stages:
+ *   Signed up      — properties row, no staff added yet
+ *   Wizard done    — staff added, no PMS creds saved
+ *   Connecting     — creds saved, session in 'starting' (CUA logging in)
+ *   Needs help     — paused_mfa / paused_no_knowledge_file / failed_restart /
+ *                    paused_cost_cap (one-click CTAs to resolve)
+ *   Live           — session 'alive' (graduates out — shows on Live hotels)
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -16,7 +25,7 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   CheckCircle2, AlertCircle, Clock, Loader2,
-  AlertTriangle, Plus,
+  AlertTriangle, Plus, ShieldAlert,
 } from 'lucide-react';
 import { ProspectsSection } from '@/app/admin/_components/ProspectsSection';
 import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
@@ -33,6 +42,9 @@ interface PropertyRow {
   lastSyncedAt: string | null;
   staffCount: number;
   createdAt: string;
+  /** v4: property_sessions.status — drives funnel bucketing. */
+  sessionStatus: string | null;
+  sessionPausedReason: string | null;
   latestJob: {
     id: string; status: string | null; step: string | null;
     progressPct: number | null; error: string | null; createdAt: string;
@@ -113,9 +125,12 @@ export function OnboardingTab() {
     );
   }
 
-  // Hotels that are ALREADY live (synced + connected) don't show on this
-  // tab; they belong on Live hotels. We only surface in-flight onboardings.
-  const inOnboarding = props.filter((p) => !p.lastSyncedAt);
+  // v4: a hotel is "in onboarding" until its CUA session goes 'alive'.
+  // A session in 'alive' state with a recent heartbeat = live; anything
+  // else (no session row, starting, paused_*, failed_restart, stopped)
+  // stays on this tab. Replaces the old `!lastSyncedAt` check which
+  // never flipped because nothing in v4 writes properties.last_synced_at.
+  const inOnboarding = props.filter((p) => p.sessionStatus !== 'alive');
   const stages = bucketByStage(inOnboarding, liveJobs);
 
   // PMS coverage filter: only show PMSes the agent has actually learned.
@@ -158,11 +173,11 @@ export function OnboardingTab() {
       {/* Column 1: Onboarding (sales pipeline) */}
       <ProspectsSection />
 
-      {/* Column 2: CUA agent learning PMS */}
+      {/* Column 2: Live in-flight sessions (anything not 'alive'). */}
       <section style={columnStyle}>
-        <SectionTitle caps="Live mapping" title="CUA agent" italic="learning PMS" />
+        <SectionTitle caps="Live status" title="In-flight" italic="sessions" />
         {liveJobs.length === 0 ? (
-          <EmptyState text="Nothing mapping right now ✓" />
+          <EmptyState text="Every hotel is alive and polling ✓" />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
             {liveJobs.map((j) => <LiveJobCard key={j.id} job={j} />)}
@@ -170,14 +185,20 @@ export function OnboardingTab() {
         )}
       </section>
 
-      {/* Column 3: Onboarding pipeline */}
+      {/* Column 3: Onboarding pipeline. */}
       <section style={columnStyle}>
         <SectionTitle caps="Pipeline" title="Onboarding" italic="funnel" />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
           <PipelineColumn title="Signed up" hint="Account exists, wizard not done" rows={stages.signedUp} />
           <PipelineColumn title="Wizard done" hint="Staff added, no PMS yet" rows={stages.wizardDone} />
-          <PipelineColumn title="PMS connected" hint="Creds saved, not mapped" rows={stages.pmsConnected} />
-          <PipelineColumn title="Mapping" hint="Agent is learning right now" rows={stages.mapping} accent={T.caramelDeep} />
+          <PipelineColumn title="Connecting" hint="Creds saved, CUA logging in" rows={stages.connecting} accent={T.caramelDeep} />
+          <PipelineColumn
+            title="Needs help"
+            hint="MFA, unsupported PMS, or login failing — click a row"
+            rows={stages.needsHelp}
+            accent={T.warm}
+            showHelpIcon
+          />
         </div>
       </section>
 
@@ -286,10 +307,22 @@ function LiveJobCard({ job }: { job: JobRow }) {
   );
 }
 
-function PipelineColumn({ title, hint, rows, accent }: {
+interface PipelineRow {
+  id: string;
+  name: string | null;
+  pmsType: string | null;
+  /** Optional CTA — overrides the default /admin/properties/[id] link.
+   *  Used by "Needs help" to deep-link to /admin/mfa-resume etc. */
+  href?: string;
+  /** Optional sub-line (e.g. "Waiting for MFA"). */
+  subline?: string;
+}
+
+function PipelineColumn({ title, hint, rows, accent, showHelpIcon }: {
   title: string; hint: string;
-  rows: { id: string; name: string | null; pmsType: string | null }[];
+  rows: PipelineRow[];
   accent?: string;
+  showHelpIcon?: boolean;
 }) {
   return (
     <Card padding="14px">
@@ -313,7 +346,7 @@ function PipelineColumn({ title, hint, rows, accent }: {
           {rows.map((r) => (
             <Link
               key={r.id}
-              href={`/admin/properties/${r.id}`}
+              href={r.href ?? `/admin/properties/${r.id}`}
               style={{
                 fontSize: 12.5,
                 padding: '6px 10px',
@@ -321,18 +354,31 @@ function PipelineColumn({ title, hint, rows, accent }: {
                 borderRadius: 8,
                 textDecoration: 'none',
                 color: T.ink,
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
               }}
             >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {r.name ?? '(unnamed)'}
-              </span>
-              {r.pmsType && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <span style={{
-                  fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
-                  flexShrink: 0, marginLeft: 6, letterSpacing: '0.04em',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
-                  {r.pmsType}
+                  {showHelpIcon && <ShieldAlert size={11} color={accent ?? T.ink2} style={{ flexShrink: 0 }} />}
+                  {r.name ?? '(unnamed)'}
+                </span>
+                {r.pmsType && (
+                  <span style={{
+                    fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
+                    flexShrink: 0, letterSpacing: '0.04em',
+                  }}>
+                    {r.pmsType}
+                  </span>
+                )}
+              </div>
+              {r.subline && (
+                <span style={{ fontSize: 11, color: accent ?? T.ink2, lineHeight: 1.3 }}>
+                  {r.subline}
                 </span>
               )}
             </Link>
@@ -422,24 +468,74 @@ function ErrorRow({ text }: { text: string }) {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-function bucketByStage(props: PropertyRow[], liveJobs: JobRow[]) {
-  const liveJobByPropertyId = new Map(liveJobs.map((j) => [j.propertyId, j]));
-
-  const signedUp: PropertyRow[] = [];
-  const wizardDone: PropertyRow[] = [];
-  const pmsConnected: PropertyRow[] = [];
-  const mapping: PropertyRow[] = [];
+/** v4 bucket: drive everything off property_sessions.status. The
+ *  legacy onboarding_jobs/last_synced_at signals don't exist in v4. */
+function bucketByStage(props: PropertyRow[], _liveJobs: JobRow[]) {
+  const signedUp: PipelineRow[] = [];
+  const wizardDone: PipelineRow[] = [];
+  const connecting: PipelineRow[] = [];
+  const needsHelp: PipelineRow[] = [];
 
   for (const p of props) {
-    if (liveJobByPropertyId.has(p.id)) {
-      mapping.push(p);
-    } else if (p.pmsConnected) {
-      pmsConnected.push(p);
+    const base: PipelineRow = { id: p.id, name: p.name, pmsType: p.pmsType };
+
+    switch (p.sessionStatus) {
+      case 'paused_mfa':
+        needsHelp.push({
+          ...base,
+          href: `/admin/mfa-resume/${p.id}`,
+          subline: 'Waiting for MFA — click to resolve.',
+        });
+        continue;
+      case 'paused_no_knowledge_file':
+        needsHelp.push({
+          ...base,
+          href: `/admin/property-sessions`,
+          subline: 'Awaiting mapper — PMS not learned.',
+        });
+        continue;
+      case 'paused_cost_cap':
+        needsHelp.push({
+          ...base,
+          href: `/admin/property-sessions`,
+          subline: 'Cost cap — auto-resumes at midnight.',
+        });
+        continue;
+      case 'paused_circuit_breaker':
+      case 'failed_restart':
+        needsHelp.push({
+          ...base,
+          href: `/admin/property-sessions`,
+          subline: p.sessionPausedReason ?? 'Login failing — edit credentials.',
+        });
+        continue;
+      case 'starting':
+        connecting.push({
+          ...base,
+          subline: 'CUA logging in…',
+        });
+        continue;
+      case 'stopped':
+        // Stopped is an admin action — surface in Needs help with
+        // restart hint, not in the funnel proper.
+        needsHelp.push({
+          ...base,
+          href: `/admin/property-sessions`,
+          subline: 'Stopped — click to restart.',
+        });
+        continue;
+    }
+
+    // No session row → still pre-creds.
+    if (p.pmsConnected) {
+      // Defensive fallback (shouldn't happen post-0206): creds saved
+      // but no session row. Treat as connecting.
+      connecting.push({ ...base, subline: 'Creds saved, awaiting session.' });
     } else if (p.staffCount > 0) {
-      wizardDone.push(p);
+      wizardDone.push(base);
     } else {
-      signedUp.push(p);
+      signedUp.push(base);
     }
   }
-  return { signedUp, wizardDone, pmsConnected, mapping };
+  return { signedUp, wizardDone, connecting, needsHelp };
 }

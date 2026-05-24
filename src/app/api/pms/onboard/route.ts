@@ -1,161 +1,94 @@
 /**
  * POST /api/pms/onboard
  *
- * Kicks off a full onboarding job for the property. Inserts a row in
- * onboarding_jobs which the Fly.io CUA worker (cua-service/) picks up
- * within POLL_INTERVAL_MS (~5s) and processes end-to-end:
- *   1. Logs into the PMS using credentials in scraper_credentials.
- *   2. If no active recipe exists for this PMS type, runs Claude vision
- *      to learn one and saves as a draft to pms_recipes.
- *   3. Replays the recipe to extract rooms, staff, and history.
- *   4. Persists the data to the property's tables.
- *   5. Promotes the recipe to active (if newly mapped).
+ * Owner-facing "start the onboarding" trigger called from the wizard
+ * (/onboard) and the settings page (/settings/pms) after credentials
+ * are saved.
  *
- * Body: { propertyId }    (credentials must already be saved via
- *                          /api/pms/save-credentials)
+ * Plan v4 behavior (2026-05-24): in v4 the credentials-save RPC
+ * (`staxis_upsert_scraper_credentials`, extended in migration 0206)
+ * already bootstraps the `property_sessions` row that drives the CUA
+ * supervisor. This endpoint is now a thin **shim** kept for backward
+ * compatibility with the owner UI:
  *
- * Returns: { jobId } — the client polls /api/pms/job-status?id=<jobId>
+ *   - Verifies the caller owns the property
+ *   - Verifies a property_sessions row exists (i.e. credentials were
+ *     saved first)
+ *   - Returns `{ jobId: propertyId }` so the UI keeps polling
+ *     /api/pms/job-status (which now also reads property_sessions)
+ *
+ * In v4 there is one session-per-hotel, so jobId == propertyId. The
+ * polling UI then watches property_sessions.status flow from
+ * 'starting' → 'alive' (= "complete" in the legacy job shape).
+ *
+ * Pre-v4 this used to insert into `onboarding_jobs` for a worker that
+ * polled the queue. That worker was deleted in the v4 cutover; this
+ * shim replaces the now-orphaned write path.
  */
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
-import { recordAppEvent } from '@/lib/event-recorder';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-interface Body { propertyId?: unknown }
+interface Body {
+  propertyId?: unknown;
+}
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  // ─── Auth ────────────────────────────────────────────────────────────────
   const session = await requireSession(req);
   if (!session.ok) return session.response;
 
-  // ─── Validate ───────────────────────────────────────────────────────────
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) {
     return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) {
     return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // ─── Capability: caller must own this property ──────────────────────────
+  // Ownership: caller must own the property.
   const { data: property } = await supabaseAdmin
     .from('properties')
     .select('id, owner_id')
     .eq('id', pidV.value!)
     .maybeSingle();
-
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
-  // Explicit null check — an orphaned property (owner_id=NULL) shouldn't
-  // pass ownership. Without this the !== comparison still rejects NULL
-  // but the intent is clearer this way.
   if (!property.owner_id || (property.owner_id as string) !== session.userId) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
-  // ─── Confirm credentials exist ──────────────────────────────────────────
-  // Without scraper_credentials the worker has nothing to log into. Make
-  // this a clear error rather than letting the worker mark the job
-  // 'failed' a few seconds later.
-  const { data: creds } = await supabaseAdmin
-    .from('scraper_credentials')
-    .select('property_id, pms_type, is_active')
+  // The credentials-save RPC should have bootstrapped property_sessions
+  // already. Verify it. If not, that's a setup-flow bug — surface it.
+  const { data: sessionRow } = await supabaseAdmin
+    .from('property_sessions')
+    .select('property_id, status')
     .eq('property_id', pidV.value!)
     .maybeSingle();
 
-  if (!creds || !creds.is_active) {
-    return err(
-      'No active PMS credentials found for this property. Save your credentials first.',
-      { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
-    );
-  }
-
-  // ─── Rate limit ─────────────────────────────────────────────────────────
-  // Cap onboardings at 5/hour per property. Each kicks off a Fly worker
-  // run that may spend $1-3 in Claude tokens for a brand-new PMS;
-  // throttling protects the daily budget against a runaway script or a
-  // confused GM hitting Save in a loop. The throttle below already
-  // prevents back-to-back queueing while a job is running, but the
-  // hourly cap is the broader budget guardrail.
-  const rl = await checkAndIncrementRateLimit('pms-onboard', pidV.value!);
-  if (!rl.allowed) {
-    return err(
-      `Rate limited. ${rl.current}/${rl.cap} onboarding attempts this hour for this property. Try again in ${rl.retryAfterSec}s.`,
-      { requestId, status: 429, code: ApiErrorCode.RateLimited,
-        headers: { 'Retry-After': String(rl.retryAfterSec) } },
-    );
-  }
-
-  // ─── Throttle: don't queue a second job while one is already running ────
-  // Otherwise a double-click on Save would fire two CUA mappings for the
-  // same property — wasteful and possibly causing race conditions in
-  // saveExtractedData.
-  const { data: pendingJob } = await supabaseAdmin
-    .from('onboarding_jobs')
-    .select('id, status')
-    .eq('property_id', pidV.value!)
-    .in('status', ['queued', 'running', 'mapping', 'extracting'])
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (pendingJob) {
-    // Idempotent: return the existing job so the UI can resume polling.
-    return ok({ jobId: pendingJob.id, alreadyRunning: true }, { requestId });
-  }
-
-  // ─── Insert the job ──────────────────────────────────────────────────────
-  const { data: job, error: insertErr } = await supabaseAdmin
-    .from('onboarding_jobs')
-    .insert({
-      property_id: pidV.value!,
-      pms_type: creds.pms_type,
-      status: 'queued',
-      step: 'Waiting for a worker…',
-      progress_pct: 0,
-    })
-    .select('id')
-    .single();
-
-  if (insertErr || !job) {
-    log.error('[pms/onboard] insert failed', { requestId, msg: errToString(insertErr) });
-    return err('Could not queue the onboarding job', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
+  if (!sessionRow) {
+    log.warn('[pms/onboard] no property_sessions row — credentials not saved yet?', {
+      propertyId: pidV.value, requestId,
     });
+    return err(
+      'No CUA session for this property. Save credentials first, then try again.',
+      { requestId, status: 409, code: ApiErrorCode.ValidationFailed },
+    );
   }
 
-  // Audit-trail event — answers "who kicked off this onboarding job for
-  // this hotel" without grepping web request logs. recordAppEvent is
-  // best-effort (try/catch + log on failure inside the helper), so a
-  // failed event write never breaks the user's request. user_role is
-  // 'owner' because the capability check above already required the
-  // caller to be the property's owner_id.
-  await recordAppEvent({
-    property_id: pidV.value!,
-    user_id: session.userId,
-    user_role: 'owner',
-    event_type: 'pms_onboarding_started',
-    metadata: {
-      job_id: job.id,
-      pms_type: creds.pms_type,
-      request_id: requestId,
-      source: 'web',
-    },
-  });
-
-  return ok({ jobId: job.id, alreadyRunning: false }, { requestId, status: 202 });
+  // jobId == propertyId in v4 (one session per hotel). UI polls
+  // /api/pms/job-status?id=<jobId> to watch the session come alive.
+  return ok({ jobId: pidV.value! }, { requestId });
 }

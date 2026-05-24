@@ -2757,6 +2757,9 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
   { name: 'scraper-weekly-digest',         cadenceHours: 168,   description: 'weekly scraper health digest SMS' },
   { name: 'agent-weekly-digest',           cadenceHours: 168,   description: 'weekly agent activity digest SMS to MANAGER_PHONE (Sundays 9am UTC)' },
+  // Plan v4 (2026-05-23): replaces the Railway-hosted vercel-watchdog.js.
+  // Runs the doctor every 5 min, Sentry-alerts on fail with business-hours-only SMS bump.
+  { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
