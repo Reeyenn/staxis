@@ -46,6 +46,11 @@ import {
   getActiveOptimizerForTomorrow,
   getActiveDemandForTomorrow,
 } from '@/lib/ml-schedule-helpers';
+// Auto-Assign Board — manager view of the new cleaning_tasks + hk_assignments
+// system. Renders below the existing PMS strip / crew rows / action band and
+// degrades to an empty-state when the rules engine hasn't produced tasks for
+// today yet, so it's safe to ship before the rules-engine cron is enabled.
+import { AutoAssignBoard } from './AutoAssignBoard';
 
 type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
@@ -1384,6 +1389,21 @@ export function ScheduleTab() {
           </Btn>
         </div>
       </div>
+
+      {/* AUTO-ASSIGN BOARD — new cleaning_tasks + hk_assignments system.
+          Renders below the existing legacy schedule. Only shows when there's
+          a property + date in context, so the rest of the tab works the same
+          when the manager hasn't selected a property yet. */}
+      {pid && (
+        <div style={{ marginTop: 24 }}>
+          <AutoAssignBoard
+            propertyId={pid}
+            shiftDate={shiftDate}
+            shiftMinutes={SHIFT_MINS}
+            lang={lang}
+          />
+        </div>
+      )}
 
       {/* FLOATING GHOST — follows the cursor while a room is held.
           pointerEvents: 'none' so the cursor still hits drop targets
