@@ -2780,11 +2780,19 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // gate is now satisfied) and fires the redistribute. Safety net for
   // inline failures on the report routes.
   { name: 'process-pending-callouts',      cadenceHours: 5/60,  description: '5-min Vercel cron that processes deferred sick-callout redistribution (feature #6)' },
-  // Plan v8 Phase B (migration 0217, formerly 0214): 5-min Vercel cron
-  // that flips mapping_help_requests past expires_at to 'expired' and
-  // deletes their screenshots from the mapping-screenshots storage
-  // bucket. Without this the 15-min TTL pending rows accumulate forever.
+  // Plan v8 Phase B (migration 0217): 5-min Vercel cron that flips
+  // mapping_help_requests past expires_at to 'expired' and deletes their
+  // screenshots from the mapping-screenshots storage bucket. Without this
+  // the 15-min TTL pending rows accumulate forever.
   { name: 'expire-help-requests',          cadenceHours: 5/60,  description: '5-min Vercel cron that expires stale mapping_help_requests + purges their screenshot storage objects (Plan v8 Phase B)' },
+  // 2026-05-24: feature #17 — daily + weekly housekeeping reports.
+  // 30-min cadence; per-property time-window check in the route picks
+  // the right firing for each hotel's local 4pm/6pm/8pm/10pm slot.
+  { name: 'run-daily-report',              cadenceHours: 30/60, description: '30-min cron that builds the per-property daily housekeeping report and emails it to active GMs/owners at their configured local time' },
+  // Weekly fires the same 30-min cron — the route itself skips non-Sunday
+  // runs early. Cadence is 30/60 because the heartbeat lands every tick
+  // regardless of whether a property got mailed.
+  { name: 'run-weekly-report',             cadenceHours: 30/60, description: 'Sunday-only logic, 30-min cron — same per-property time-window check as run-daily-report; emits the Mon–Sun digest with a Claude-generated AI insight at the top' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

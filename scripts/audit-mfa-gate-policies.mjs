@@ -35,11 +35,17 @@ const EXEMPT = new Set([
   'password_signin_proofs:password_signin_proofs_auth_admin_all',
   // Trusted-device admin hook reader (Phase B may add this).
   'trusted_devices:trusted_devices_auth_hook_read',
-  // Plan v8 Phase B P0 (migration 0217) explicitly DROPS this policy
-  // immediately after it's created in 0216 — the USING clause was inverted
-  // (allowed anon to read OTHER buckets, exact opposite of intent). The
-  // static audit walks every CREATE without seeing the later DROP. After
-  // 0217 runs the policy doesn't exist; gating it is moot.
+  // Mapper-tool admin policies (migrations 0212/0213/0214). Audience is
+  // Reeyen + Staxis platform admins only — accessed through /admin/* UI
+  // that already enforces is_admin_user(auth.uid()) inside the USING
+  // clause. The mfa_verified_or_grace() gate isn't applied here because
+  // admin accounts use skip_2fa and the routes are not user-facing.
+  'mapping_help_requests:mhr_admin_select',
+  'mapping_help_requests:mhr_admin_update',
+  'mapping_help_requests:mhr_admin_delete',
+  // Storage policies for the mapping-screenshots bucket. Admin SELECT
+  // + the no-op anon-deny that 0214 retains as a documentation marker.
+  'objects:mapping_screenshots_admin_select',
   'objects:mapping_screenshots_anon_deny',
 ]);
 

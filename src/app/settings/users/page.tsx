@@ -1,0 +1,355 @@
+'use client';
+
+
+export const dynamic = 'force-dynamic';
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { AppLayout } from '@/components/layout/AppLayout';
+import { useAuth } from '@/contexts/AuthContext';
+import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
+import { ChevronLeft, UserCog, UserX, UserCheck, Crown, ShieldCheck } from 'lucide-react';
+import { fetchWithAuth } from '@/lib/api-fetch';
+import { ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole } from '@/lib/roles';
+
+interface UserRow {
+  accountId: string;
+  username: string;
+  displayName: string;
+  email: string;
+  role: AppRole;
+  active: boolean;
+  lastSignInAt: string | null;
+  propertyAccess: string[];
+}
+
+export default function UsersPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const { properties } = useProperty();
+  const { lang } = useLang();
+
+  useEffect(() => {
+    if (user && !canManageTeam(user.role)) router.replace('/settings');
+  }, [user, router]);
+
+  const [propertyId, setPropertyId] = useState<string>('');
+  useEffect(() => {
+    if (!propertyId && properties.length > 0) setPropertyId(properties[0].id);
+  }, [properties, propertyId]);
+
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busyAccountId, setBusyAccountId] = useState<string | null>(null);
+  const [transferTarget, setTransferTarget] = useState<UserRow | null>(null);
+
+  const load = useCallback(async () => {
+    if (!propertyId) return;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetchWithAuth(`/api/settings/users?propertyId=${propertyId}`);
+      const body = await res.json() as { ok?: boolean; data?: { users: UserRow[] }; error?: string };
+      if (!res.ok || !body.ok || !body.data) {
+        setError(body.error || 'Failed to load users');
+        return;
+      }
+      setUsers(body.data.users);
+    } finally {
+      setLoading(false);
+    }
+  }, [propertyId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const performAction = async (accountId: string, action: string, payload: Record<string, unknown> = {}) => {
+    if (!propertyId) return;
+    setBusyAccountId(accountId);
+    setError('');
+    try {
+      const res = await fetchWithAuth('/api/settings/users', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId, accountId, action, ...payload }),
+      });
+      const body = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        setError(body.error || 'Action failed');
+        return;
+      }
+      await load();
+    } finally {
+      setBusyAccountId(null);
+    }
+  };
+
+  const isOwnerCaller = user?.role === 'owner' || user?.role === 'admin';
+
+  // Sort: active first, then by display name. Owners pinned to the top.
+  const sortedUsers = useMemo(() => {
+    return [...users].sort((a, b) => {
+      if (a.role === 'owner' && b.role !== 'owner') return -1;
+      if (b.role === 'owner' && a.role !== 'owner') return 1;
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return a.displayName.localeCompare(b.displayName);
+    });
+  }, [users]);
+
+  if (!user || !canManageTeam(user.role)) return null;
+
+  return (
+    <AppLayout>
+      <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 880 }}>
+        <div>
+          <button
+            onClick={() => router.back()}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: 13,
+              cursor: 'pointer', padding: '0 0 12px', fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <ChevronLeft size={14} />
+            {lang === 'es' ? 'Configuración' : 'Settings'}
+          </button>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 17, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <UserCog size={15} color="var(--navy)" />
+            {lang === 'es' ? 'Usuarios y roles' : 'Users & Roles'}
+          </h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
+            {lang === 'es'
+              ? 'Cambia el rol de tu equipo, desactiva cuentas que ya no se usan y transfiere la propiedad si es necesario.'
+              : 'Change your team\'s roles, deactivate accounts that aren\'t in use, and transfer ownership when you need to.'}
+          </p>
+        </div>
+
+        {properties.length > 1 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={labelStyle}>{lang === 'es' ? 'Hotel' : 'Hotel'}</label>
+            <select value={propertyId} onChange={e => setPropertyId(e.target.value)} style={{ ...inputStyle, height: 42 }}>
+              {properties.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+            </select>
+          </div>
+        )}
+
+        {error && (
+          <p style={{ fontSize: 13, color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
+            {error}
+          </p>
+        )}
+
+        {loading && (
+          <div style={{ padding: 32, display: 'flex', justifyContent: 'center' }}>
+            <div className="spinner" style={{ width: 28, height: 28 }} />
+          </div>
+        )}
+
+        {!loading && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {sortedUsers.map(u => {
+              const isSelf = u.accountId === user.accountId;
+              const isOwner = u.role === 'owner';
+              const canBeChanged = u.role !== 'admin';
+              return (
+                <div key={u.accountId} style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-lg)', padding: '14px 16px',
+                  display: 'flex', flexDirection: 'column', gap: 10,
+                  opacity: u.active ? 1 : 0.62,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{
+                      width: 38, height: 38, borderRadius: '50%',
+                      background: isOwner ? 'rgba(212,144,64,0.12)' : 'rgba(100,116,139,0.12)',
+                      border: `1px solid ${isOwner ? 'rgba(212,144,64,0.3)' : 'var(--border)'}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      {isOwner ? <Crown size={16} color="var(--amber)" /> : <ShieldCheck size={16} color="var(--text-muted)" />}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {u.displayName}
+                        {isSelf && (
+                          <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>
+                            {lang === 'es' ? '(tú)' : '(you)'}
+                          </span>
+                        )}
+                        {!u.active && (
+                          <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--red)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                            {lang === 'es' ? 'inactivo' : 'inactive'}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {u.email} · {u.lastSignInAt
+                          ? `${lang === 'es' ? 'último ingreso' : 'last sign-in'} ${new Date(u.lastSignInAt).toLocaleDateString()}`
+                          : (lang === 'es' ? 'sin ingresos aún' : 'no sign-ins yet')}
+                      </div>
+                    </div>
+                  </div>
+
+                  {canBeChanged && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                      <select
+                        value={u.role}
+                        onChange={e => performAction(u.accountId, 'change_role', { newRole: e.target.value })}
+                        disabled={busyAccountId === u.accountId || isSelf || !u.active}
+                        style={{ ...inputStyle, width: 'auto', height: 36, fontSize: 13 }}
+                      >
+                        {ASSIGNABLE_ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
+                      </select>
+
+                      {u.active ? (
+                        !isSelf && (
+                          <button
+                            onClick={() => {
+                              const msg = lang === 'es'
+                                ? `¿Desactivar la cuenta de ${u.displayName}? Ya no podrá ingresar y dejará de recibir reportes. Puedes reactivarla más tarde.`
+                                : `Deactivate ${u.displayName}'s account? They won't be able to sign in and will stop getting reports. You can reactivate them later.`;
+                              if (confirm(msg)) void performAction(u.accountId, 'deactivate');
+                            }}
+                            disabled={busyAccountId === u.accountId}
+                            style={ghostBtnStyle('#dc2626')}
+                          >
+                            <UserX size={13} />
+                            {lang === 'es' ? 'Desactivar' : 'Deactivate'}
+                          </button>
+                        )
+                      ) : (
+                        <button
+                          onClick={() => performAction(u.accountId, 'reactivate')}
+                          disabled={busyAccountId === u.accountId}
+                          style={ghostBtnStyle('#16a34a')}
+                        >
+                          <UserCheck size={13} />
+                          {lang === 'es' ? 'Reactivar' : 'Reactivate'}
+                        </button>
+                      )}
+
+                      {isOwnerCaller && !isOwner && u.active && !isSelf && (
+                        <button
+                          onClick={() => setTransferTarget(u)}
+                          disabled={busyAccountId === u.accountId}
+                          style={ghostBtnStyle('var(--amber)')}
+                        >
+                          <Crown size={13} />
+                          {lang === 'es' ? 'Hacer propietario' : 'Make owner'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {transferTarget && (
+          <TransferOwnershipModal
+            target={transferTarget}
+            onClose={() => setTransferTarget(null)}
+            onConfirm={async (reason) => {
+              await performAction(transferTarget.accountId, 'transfer_ownership', {
+                newOwnerAccountId: transferTarget.accountId,
+                reason: reason || null,
+              });
+              setTransferTarget(null);
+            }}
+          />
+        )}
+      </div>
+    </AppLayout>
+  );
+}
+
+function TransferOwnershipModal({ target, onClose, onConfirm }: {
+  target: UserRow;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const { lang } = useLang();
+  const [reason, setReason] = useState('');
+  const [confirmText, setConfirmText] = useState('');
+  const expected = lang === 'es' ? 'transferir' : 'transfer';
+  const canSubmit = confirmText.trim().toLowerCase() === expected;
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 60,
+      background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        width: '100%', maxWidth: 440,
+        background: 'var(--bg-elevated)', border: '1px solid var(--border-bright)',
+        borderRadius: 'var(--radius-lg)', padding: '20px 20px 22px',
+        display: 'flex', flexDirection: 'column', gap: 12,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Crown size={18} color="var(--amber)" />
+          <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, color: 'var(--text-primary)' }}>
+            {lang === 'es' ? 'Transferir la propiedad' : 'Transfer ownership'}
+          </h2>
+        </div>
+        <p style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+          {lang === 'es'
+            ? `Vas a hacer a ${target.displayName} el nuevo propietario de este hotel. Tu propio rol pasará a Gerente General. Esto NO se puede deshacer desde la app — necesitarás pedirle al nuevo propietario que te promueva de vuelta.`
+            : `You're about to make ${target.displayName} the new owner of this hotel. Your own role will drop to General Manager. This canNOT be undone from the app — you'll need to ask the new owner to promote you back.`}
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label style={labelStyle}>{lang === 'es' ? 'Razón (opcional)' : 'Reason (optional)'}</label>
+          <input type="text" value={reason} onChange={e => setReason(e.target.value)} placeholder={lang === 'es' ? 'Ej. cambio de gerencia' : 'e.g. handover after sale'} style={inputStyle} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label style={labelStyle}>
+            {lang === 'es' ? `Escribe "transferir" para confirmar` : `Type "transfer" to confirm`}
+          </label>
+          <input type="text" value={confirmText} onChange={e => setConfirmText(e.target.value)} style={inputStyle} />
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button onClick={onClose} style={ghostBtnStyle('var(--text-secondary)')}>
+            {lang === 'es' ? 'Cancelar' : 'Cancel'}
+          </button>
+          <button
+            disabled={!canSubmit}
+            onClick={() => onConfirm(reason)}
+            style={{
+              flex: 1, height: 42, borderRadius: 'var(--radius-md)',
+              background: canSubmit ? 'var(--amber)' : 'rgba(212,144,64,0.4)',
+              color: '#fff', border: 'none', cursor: canSubmit ? 'pointer' : 'not-allowed',
+              fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}
+          >
+            <Crown size={14} />
+            {lang === 'es' ? 'Transferir' : 'Transfer'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 12, fontWeight: 600, letterSpacing: '0.04em',
+  color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-sans)',
+};
+
+const inputStyle: React.CSSProperties = {
+  height: 42, borderRadius: 'var(--radius-md)',
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  padding: '0 12px', color: 'var(--text-primary)', fontSize: 14,
+  fontFamily: 'var(--font-sans)', outline: 'none', width: '100%',
+};
+
+function ghostBtnStyle(color: string): React.CSSProperties {
+  return {
+    height: 36, padding: '0 12px', borderRadius: 'var(--radius-sm)',
+    background: 'transparent', border: `1px solid var(--border)`,
+    color, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+    fontFamily: 'var(--font-sans)',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+  };
+}

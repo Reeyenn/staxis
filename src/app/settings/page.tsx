@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -33,6 +33,18 @@ export default function SettingsPage() {
             icon:Users,
             label: lang === 'es' ? 'Cuenta y equipo' : 'Account & Team',
             desc: lang === 'es' ? 'Tu perfil, contraseña y cuentas del equipo' : 'Your profile, password, and team accounts',
+          },
+          {
+            href:'/settings/users',
+            icon:UserCog,
+            label: lang === 'es' ? 'Usuarios y roles' : 'Users & Roles',
+            desc: lang === 'es' ? 'Cambia roles, desactiva cuentas, transfiere propietario' : 'Change roles, deactivate accounts, transfer ownership',
+          },
+          {
+            href:'/settings/notifications',
+            icon:Bell,
+            label: lang === 'es' ? 'Notificaciones' : 'Notifications',
+            desc: lang === 'es' ? 'Cuándo y cómo recibir el reporte diario y semanal' : 'When and how to receive the daily and weekly report',
           },
           {
             href:'/settings/shifts',

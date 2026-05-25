@@ -93,11 +93,17 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // report routes — if their inline call failed transiently, this picks
   // up the slack.
   { heartbeatName: 'process-pending-callouts', source: { kind: 'vercel', cronPath: '/api/cron/process-pending-callouts' },        cronExpr: '*/5 * * * *' },
-  // Plan v8 Phase B (migration 0217, formerly 0214): every 5 min,
-  // flips mapping_help_requests past expires_at from 'pending' to
-  // 'expired' and deletes the corresponding screenshot objects from
-  // the mapping-screenshots Supabase Storage bucket. Without this the
+  // Plan v8 Phase B (migration 0217): every 5 min, flips
+  // mapping_help_requests past expires_at from 'pending' to 'expired'
+  // and deletes the corresponding screenshot objects from the
+  // mapping-screenshots Supabase Storage bucket. Without this the
   // 15-min TTL pending rows + their screenshots would accumulate
   // forever.
   { heartbeatName: 'expire-help-requests', source: { kind: 'vercel', cronPath: '/api/cron/expire-help-requests' },                cronExpr: '*/5 * * * *' },
+  // 2026-05-24: daily + weekly housekeeping reports (feature #17). Daily
+  // cron fires every 30 min so it can hit every property's local 4pm/
+  // 6pm/8pm/10pm slot regardless of timezone. Weekly cron is the same
+  // shape — the route itself skips non-Sunday runs early.
+  { heartbeatName: 'run-daily-report',         source: { kind: 'vercel', cronPath: '/api/cron/run-daily-report' },               cronExpr: '*/30 * * * *' },
+  { heartbeatName: 'run-weekly-report',        source: { kind: 'vercel', cronPath: '/api/cron/run-weekly-report' },              cronExpr: '*/30 * * * *' },
 ];

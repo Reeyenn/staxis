@@ -262,6 +262,27 @@ export async function PUT(req: NextRequest) {
     },
   });
 
+  // Mirror role changes from this route into the structured role_changes
+  // audit table — so a future "history of role X for user Y" UI sees the
+  // same trail regardless of which surface (Accounts page vs Users page)
+  // made the change. Best-effort; failure does not roll back.
+  if (nextRole) {
+    try {
+      const { writeRoleChange } = await import('@/app/api/settings/users/route');
+      await writeRoleChange({
+        accountId,
+        propertyId: hotelId,
+        changedByAccountId: caller.accountId,
+        oldRole: target.role as AppRole,
+        newRole: nextRole,
+        changeKind: 'role_change',
+        reason: null,
+      });
+    } catch (e) {
+      log.warn('[team:PUT] role_changes mirror failed', { requestId, msg: errToString(e) });
+    }
+  }
+
   return ok({ success: true }, { requestId });
 }
 

@@ -76,6 +76,14 @@
     {
       "path": "/api/cron/process-pending-callouts",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/run-daily-report",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/run-weekly-report",
+      "schedule": "*/30 * * * *"
     }
   ]
 }
