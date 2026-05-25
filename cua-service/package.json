@@ -9,7 +9,7 @@
     "build": "tsc -p . && cp -R src/browser-utils dist/",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit -p .",
-    "test": "tsx --test src/__tests__/*.test.ts"
+    "test": "NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars ANTHROPIC_API_KEY=sk-ant-placeholder-for-tests tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

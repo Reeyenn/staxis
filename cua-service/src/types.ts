@@ -71,14 +71,44 @@ export interface PMSRoomDescriptor {
 
 // ─── Recipe shape (mirrors src/lib/pms/recipe.ts) ────────────────────────
 
+/**
+ * Plan v9 F2 — tiered element selector. Recipe replay tries each tier in
+ * the order role+name → css → xpath and logs which tier resolved so we
+ * can watch CSS selector durability over weeks of polling.
+ *
+ * Why each tier exists:
+ *   - `roleName` is the most durable. ARIA role + accessible name survive
+ *     PMS CSS class renames, dynamic className hashing, and most layout
+ *     redesigns. Maps directly to Playwright's `page.getByRole(role, {name})`.
+ *   - `css` is the historical default — fast, precise, but the first to
+ *     break when the PMS team renames a class or restructures the DOM.
+ *   - `xpath` is the last resort — most fragile against structural
+ *     reorganization but works when class-based selectors fail and there's
+ *     no semantic role yet (legacy PMS UIs with no ARIA).
+ *
+ * All fields are optional so a partial selector still resolves through
+ * the tiers we DO have. An empty TieredSelector is a no-op.
+ */
+export interface TieredSelector {
+  roleName?: { role: string; name: string };
+  css?: string;
+  xpath?: string;
+}
+
 export type RecipeStep =
   | { kind: 'goto';        url: string }
   | { kind: 'fill';        selector: string; value: '$username' | '$password' | string }
-  | { kind: 'click';       selector: string }
-  // Coordinate-based variants — emitted by the legacy computer-use mapper.
-  // The browser-tool mapper avoids these in favor of click/fill (selector-
-  // based), but we still parse them so old recipes keep replaying.
-  | { kind: 'click_at';    x: number; y: number }
+  // Plan v9 F2: optional tiered fallback. When `tieredSelector` is set the
+  // runner tries role+name → css → xpath in order; the legacy single-string
+  // `selector` field is still authoritative when `tieredSelector` is absent.
+  | { kind: 'click';       selector: string; tieredSelector?: TieredSelector }
+  // Coordinate-based variants — emitted by the vision-mode mapper.
+  // Plan v9 F2: when SoM resolves a #N badge OR an elementsFromPoint
+  // lookup at the click coord finds a labeled element, we also record
+  // role+name. Replay tries `getByRole(role, {name})` first and falls back
+  // to the recorded coordinate. Old recipes (no roleName) replay
+  // exactly as before via `page.mouse.click(x, y)`.
+  | { kind: 'click_at';    x: number; y: number; roleName?: { role: string; name: string } }
   | { kind: 'type_text';   value: '$username' | '$password' | string }
   | { kind: 'wait_for';    selector: string; timeoutMs?: number }
   | { kind: 'wait_ms';     ms: number }
@@ -220,6 +250,17 @@ export interface TableTemplateSource {
   columns?: Record<string, string>;
   /** Opaque per-mode extras (HTTP method/body for fetch_api, preStepClick for csv_download, etc.). */
   extra?: Record<string, unknown>;
+  /** Plan v9 F2 — tiered alternatives to `selectors.rowSelector`. When set,
+   *  runtime tries role+name → css → xpath in order. Falls back to
+   *  `selectors.rowSelector` if all tiers fail or this field is absent.
+   *  Backward-compat: legacy templates without this field replay using
+   *  the existing single-string rowSelector exactly as before. */
+  selectorsTiered?: Record<string, TieredSelector>;
+  /** Plan v9 F2 — tiered per-column alternatives. Keyed by the same
+   *  column name as `columns`. Runtime checks columnsTiered first; if
+   *  the column has tiered selectors AND any tier resolves on the row,
+   *  uses that. Else falls through to `columns[col]` (CSS). Optional. */
+  columnsTiered?: Record<string, TieredSelector>;
 }
 
 export interface TableTemplateAggregate {
