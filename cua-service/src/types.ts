@@ -262,6 +262,14 @@ export interface TableTemplate {
   /** Set by the mapper when budget tripped mid-target — runtime uses partial
    *  data but flags in admin UI as "needs operator review." */
   incomplete?: boolean;
+  /** Plan v8 self-repair — the Recipe.actions key this template was built
+   *  from. Lets session-driver's zero-row-failure detection map a broken
+   *  TEMPLATE back to the RECIPE TARGET KEY for a single-target re-learn
+   *  (vs the full $25 re-mapping). For multi-source templates (e.g.
+   *  dashboard_counts merges arrivals+departures+in_house), this is the
+   *  PRIMARY source's action key — repair re-learns that one and accepts
+   *  that the other sources' selectors are still good. */
+  sourceActionKey?: keyof Recipe['actions'];
 }
 
 // ─── Job + recipe storage shapes ──────────────────────────────────────────

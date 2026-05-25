@@ -260,6 +260,10 @@ export function actionRecipeToTableTemplate(
     snapshotScope: route.snapshotScope,
     sources,
     fields,
+    // Plan v8 self-repair — bridge template → recipe action_key so
+    // session-driver's zero-row failure detector can enqueue a
+    // single-target re-learn instead of the full 13-target re-mapping.
+    sourceActionKey: actionKey,
   };
 }
 
@@ -339,6 +343,10 @@ export function dashboardCountsTemplateFromLegacy(
       arrivals_remaining_today: { origin: 'list_row', source: 'arrivals', selectorOrColumn: 'roomCount' },
       departures_remaining_today: { origin: 'list_row', source: 'departures', selectorOrColumn: 'roomCount' },
     },
+    // Plan v8 self-repair — dashboard_counts comes from the legacy
+    // getDashboardCounts action. Repair re-learns that one (which will
+    // re-fetch all 3 sub-pages on the new mapper run).
+    sourceActionKey: 'getDashboardCounts',
   };
 }
 

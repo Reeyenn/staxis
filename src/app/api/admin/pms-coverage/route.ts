@@ -64,8 +64,14 @@ interface CoverageRow {
     actionsCaptured: TargetFeed[];
     actionsMissing: TargetFeed[];
     coveragePct: number;
+    /** Plan v8 self-repair — all action_keys present in the active
+     *  recipe. Admin Repair button populates its dropdown from this. */
+    actionKeys: string[];
   } | null;
   propertyCount: number;
+  /** Plan v8 self-repair — any property on this PMS family. Repair
+   *  jobs need SOME property_id; admin shouldn't have to pick one. */
+  representativePropertyId: string | null;
   latestJob: {
     id: string;
     status: string;
@@ -95,6 +101,25 @@ function extractFeedsMap(knowledge: unknown): Record<string, unknown> {
   const feeds = (knowledge as Record<string, unknown>).feeds;
   if (!feeds || typeof feeds !== 'object' || Array.isArray(feeds)) return {};
   return feeds as Record<string, unknown>;
+}
+
+/**
+ * Plan v8 self-repair — list of action_keys in the active recipe.
+ * Used by the admin Repair button to populate its target dropdown.
+ * Mapper-produced recipes store these under `knowledge.actions`; the
+ * legacy hand-seeded migration 0203 stored them under `knowledge.feeds`
+ * — return both so the button shows targets either way.
+ */
+function extractActionKeys(knowledge: unknown): string[] {
+  if (!knowledge || typeof knowledge !== 'object') return [];
+  const k = knowledge as Record<string, unknown>;
+  const fromActions = (k.actions && typeof k.actions === 'object' && !Array.isArray(k.actions))
+    ? Object.keys(k.actions as Record<string, unknown>)
+    : [];
+  const fromFeeds = (k.feeds && typeof k.feeds === 'object' && !Array.isArray(k.feeds))
+    ? Object.keys(k.feeds as Record<string, unknown>)
+    : [];
+  return Array.from(new Set([...fromActions, ...fromFeeds]));
 }
 
 interface PropertySessionRow {
@@ -129,7 +154,7 @@ export async function GET(req: NextRequest) {
   // ─── Property counts per pms_type ─────────────────────────────────────
   const { data: properties, error: propErr } = await supabaseAdmin
     .from('properties')
-    .select('pms_type');
+    .select('id, pms_type');
 
   if (propErr) {
     return err(`Could not load properties: ${propErr.message}`, {
@@ -138,10 +163,18 @@ export async function GET(req: NextRequest) {
   }
 
   const propertyCountByPms = new Map<string, number>();
+  // Plan v8 self-repair — also remember ONE representative property_id
+  // per PMS family, so the admin Repair button can target a real
+  // property without making the admin pick one.
+  const representativePropIdByPms = new Map<string, string>();
   for (const p of properties ?? []) {
-    const t = (p as { pms_type: string | null }).pms_type;
+    const row = p as { pms_type: string | null; id?: string };
+    const t = row.pms_type;
     if (!t) continue;
     propertyCountByPms.set(t, (propertyCountByPms.get(t) ?? 0) + 1);
+    if (row.id && !representativePropIdByPms.has(t)) {
+      representativePropIdByPms.set(t, row.id);
+    }
   }
 
   // ─── Most-recent in-flight session per pms_family. ────────────────────
@@ -217,6 +250,8 @@ export async function GET(req: NextRequest) {
           actionsCaptured: captured,
           actionsMissing: missing,
           coveragePct: Math.round((captured.length / TARGET_FEEDS.length) * 100),
+          // Plan v8 self-repair — full action_keys list for the Repair button.
+          actionKeys: extractActionKeys(kf.knowledge),
         }
       : null;
 
@@ -242,6 +277,7 @@ export async function GET(req: NextRequest) {
       runtime: def.runtime,
       recipe,
       propertyCount: propertyCountByPms.get(pmsType) ?? 0,
+      representativePropertyId: representativePropIdByPms.get(pmsType) ?? null,
       latestJob,
     };
   });

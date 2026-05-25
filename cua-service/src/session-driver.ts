@@ -46,7 +46,7 @@ import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { safeGoto } from './browser-utils/navigate.js';
-import type { Recipe, ScraperCredentialsRow } from './types.js';
+import type { Recipe, ScraperCredentialsRow, TableTemplate } from './types.js';
 
 const VIEWPORT = { width: 1280, height: 800 };
 const POLL_INTERVAL_MS = 30_000;
@@ -118,6 +118,19 @@ export class SessionDriver {
   private stopping = false;
   /** When > 0, browser is locked by workflow-runtime; reads pause. */
   private browserLockDepth = 0;
+
+  /**
+   * Plan v8 self-repair (the "middle ground" — recipe-runner spots a
+   * dead selector and fires a tiny single-target re-learn, instead of
+   * failing-forever or doing a full $25 re-mapping).
+   *
+   * Per-action consecutive-zero-rows counter. After CONSECUTIVE_ZERO_THRESHOLD
+   * polls returning 0 rows for the same target, enqueue a repair job
+   * (mapper.learn_pms_family with payload.seed_actions populated). The
+   * idempotency_key prevents duplicate enqueue while the repair is
+   * already in-flight.
+   */
+  private consecutiveZeroRowsByAction: Map<string, number> = new Map();
 
   constructor(opts: SessionDriverOptions) {
     this.propertyId = opts.propertyId;
@@ -666,6 +679,10 @@ export class SessionDriver {
 
         if (!runResult.ok) {
           results.push({ table: template.tableName, ok: false, reason: runResult.reason });
+          // Plan v8 self-repair — a run failure (broken navigation,
+          // bad selector) counts toward consecutive-zero just like a
+          // 0-row extraction. Both mean "selector probably drifted."
+          this.maybeFireSelfRepair(template, 0);
           continue;
         }
 
@@ -680,6 +697,9 @@ export class SessionDriver {
           rowsWritten: saveResult.inserted + saveResult.updated + saveResult.autoResolved,
           reason: saveResult.errors[0],
         });
+        // Plan v8 self-repair — track zero-row streak; trigger repair
+        // when threshold tripped. Non-zero row count resets the streak.
+        this.maybeFireSelfRepair(template, runResult.rows.length);
       } catch (err) {
         log.warn('session-driver: template run threw', {
           propertyId: this.propertyId,
@@ -913,6 +933,109 @@ export class SessionDriver {
     }
     log.info('session-driver: mapper job auto-enqueued', {
       propertyId: this.propertyId, pmsFamily: this.pmsFamily, idempotencyKey,
+    });
+  }
+
+  /**
+   * Plan v8 self-repair — the "middle ground" between full re-mapping
+   * ($25) and ignoring drift (silent data loss).
+   *
+   * Tracks consecutive zero-row polls per recipe action. When the
+   * threshold trips, fires a single-target re-learn (~$2) via the same
+   * mapper.learn_pms_family workflow kind, with payload.seed_actions
+   * pre-populated with every action EXCEPT the failing one — so the
+   * mapper skips the 12 known-good targets and only re-learns the
+   * broken one. New recipe version auto-promotes via the existing
+   * promotion-gate logic. Live polling picks up the new selectors on
+   * the next hot-reload tick (~60s).
+   *
+   * Idempotency key = `mapper.repair:{family}:{actionKey}` prevents
+   * double-enqueue while a repair is in-flight OR after a failed
+   * repair (failed = constraint persists = no silent re-trigger; admin
+   * must manually retry from the UI).
+   */
+  private maybeFireSelfRepair(template: TableTemplate, rowCount: number): void {
+    const actionKey = template.sourceActionKey;
+    if (!actionKey) return;  // template can't be repaired (no source tag)
+
+    if (rowCount > 0) {
+      this.consecutiveZeroRowsByAction.set(actionKey, 0);
+      return;
+    }
+
+    const ZERO_THRESHOLD = 5;  // ~5 polls × 30s = ~2.5 min of nothing
+    const count = (this.consecutiveZeroRowsByAction.get(actionKey) ?? 0) + 1;
+    this.consecutiveZeroRowsByAction.set(actionKey, count);
+
+    if (count < ZERO_THRESHOLD) return;
+
+    log.warn('session-driver: zero-row threshold tripped — firing self-repair', {
+      propertyId: this.propertyId,
+      pmsFamily: this.pmsFamily,
+      actionKey,
+      consecutiveZeroPolls: count,
+      tableName: template.tableName,
+    });
+
+    // Fire-and-forget — never let a repair-enqueue failure block the
+    // next poll tick. Reset the counter after the attempt so we don't
+    // hammer the workflow_jobs INSERT every 30s if something's wrong.
+    this.consecutiveZeroRowsByAction.set(actionKey, 0);
+    void this.enqueueSelfRepairJob(actionKey);
+  }
+
+  private async enqueueSelfRepairJob(actionKey: keyof Recipe['actions']): Promise<void> {
+    if (!this.knowledgeFile) return;
+    const allActions = this.knowledgeFile.knowledge.actions as Recipe['actions'];
+    if (!allActions || !(actionKey in allActions)) {
+      log.warn('session-driver: self-repair skipped — target not in active recipe', {
+        actionKey, propertyId: this.propertyId,
+      });
+      return;
+    }
+    const seedActions: Recipe['actions'] = { ...allActions };
+    delete seedActions[actionKey];
+
+    const idempotencyKey = `mapper.repair:${this.pmsFamily}:${actionKey}`;
+    const { error } = await supabase.from('workflow_jobs').insert({
+      property_id: this.propertyId,
+      kind: 'mapper.learn_pms_family',
+      idempotency_key: idempotencyKey,
+      // No silent auto-retry — failed repair requires admin to re-trigger
+      // (matches the rule we set on the fresh-mapping autoEnqueue path).
+      max_attempts: 1,
+      triggered_by: `session-driver:auto-repair`,
+      payload: {
+        pms_family: this.pmsFamily,
+        property_id: this.propertyId,
+        // Repairs always vision — DOM would re-fail the same way.
+        mapper_mode: 'vision',
+        // Tight cap — single target.
+        cost_cap_micros: 2_000_000,
+        // The whole point — seed all other actions so mapper skips them.
+        seed_actions: seedActions,
+        // For audit + Live Mapping UI to render context.
+        repair_target_key: actionKey,
+        repaired_from_version: this.knowledgeFile.version,
+      },
+    });
+    if (error) {
+      if (error.message.includes('idempotency') || error.code === '23505') {
+        // Repair already in-flight OR a failed one is still on the
+        // workflow_jobs row. Either way, don't re-fire. Admin's task
+        // to retry from the UI when ready.
+        log.info('session-driver: self-repair skipped — already enqueued', {
+          actionKey, idempotencyKey, propertyId: this.propertyId,
+        });
+        return;
+      }
+      log.warn('session-driver: self-repair enqueue failed', {
+        actionKey, propertyId: this.propertyId, err: error.message,
+      });
+      return;
+    }
+    log.info('session-driver: self-repair enqueued', {
+      actionKey, propertyId: this.propertyId, pmsFamily: this.pmsFamily,
     });
   }
 

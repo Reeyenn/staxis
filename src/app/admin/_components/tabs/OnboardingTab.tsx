@@ -72,8 +72,16 @@ interface PMSCoverage {
   label: string;
   hint: string;
   tier: 1 | 2 | 3;
-  recipe: { coveragePct: number; version: number; createdAt: string } | null;
+  recipe: {
+    coveragePct: number;
+    version: number;
+    createdAt: string;
+    /** Plan v8 — for the Repair dropdown. */
+    actionKeys?: string[];
+  } | null;
   propertyCount: number;
+  /** Plan v8 — admin Repair button targets ANY hotel on this family. */
+  representativePropertyId?: string | null;
   latestJob: { status: string; error: string | null; createdAt: string } | null;
 }
 
@@ -416,25 +424,114 @@ function PMSRow({ pms }: { pms: PMSCoverage }) {
   }
 
   return (
-    <Card padding="14px 16px" style={{
-      display: 'flex', alignItems: 'center', gap: 12,
-    }}>
-      {icon}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
-          {pms.label}
+    <Card padding="14px 16px" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {icon}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
+            {pms.label}
+          </div>
+          <div style={{ fontSize: 12, color, marginTop: 3, lineHeight: 1.4 }}>
+            {status}
+          </div>
         </div>
-        <div style={{ fontSize: 12, color, marginTop: 3, lineHeight: 1.4 }}>
-          {status}
-        </div>
+        <span style={{
+          fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
+          flexShrink: 0, letterSpacing: '0.04em',
+        }}>
+          {pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'}
+        </span>
       </div>
-      <span style={{
-        fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
-        flexShrink: 0, letterSpacing: '0.04em',
-      }}>
-        {pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'}
-      </span>
+      {/* Plan v8 self-repair — admin Repair button. Shows only when an
+          active recipe exists + at least one property. Picks a feed,
+          fires a single-target re-learn (~$2). Auto-repair from the
+          session-driver also runs after 5 consecutive zero-row polls;
+          this is the manual override. */}
+      {pms.recipe?.actionKeys?.length && pms.representativePropertyId && (
+        <RepairFeedRow
+          pmsType={pms.pmsType}
+          propertyId={pms.representativePropertyId}
+          actionKeys={pms.recipe.actionKeys}
+        />
+      )}
     </Card>
+  );
+}
+
+function RepairFeedRow({
+  pmsType, propertyId, actionKeys,
+}: { pmsType: string; propertyId: string; actionKeys: string[] }) {
+  const [targetKey, setTargetKey] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const fire = async () => {
+    if (!targetKey) { setMsg('Pick a feed first.'); return; }
+    if (!confirm(`Re-learn the "${targetKey}" feed for ${pmsType}? Costs about $2 in Claude API spend.`)) return;
+    setBusy(true); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/repair-feed', {
+        method: 'POST',
+        body: JSON.stringify({ pmsFamily: pmsType, propertyId, targetKey }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setMsg(json.data.enqueued
+          ? `Enqueued — watch at /admin/properties/mapper/${json.data.jobId}`
+          : `Already running.`);
+        setTargetKey('');
+      } else {
+        setMsg(`Failed: ${json.error ?? 'unknown'}`);
+      }
+    } catch (err) {
+      setMsg(`Network error: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6,
+      paddingTop: 8, borderTop: `1px solid ${T.rule}`,
+    }}>
+      <span style={{
+        fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
+        letterSpacing: '0.06em', textTransform: 'uppercase', marginRight: 4,
+      }}>
+        Repair
+      </span>
+      <select
+        value={targetKey}
+        onChange={(e) => setTargetKey(e.target.value)}
+        disabled={busy}
+        style={{
+          flex: 1, fontFamily: FONT_MONO, fontSize: 11, color: T.ink,
+          padding: '4px 6px', border: `1px solid ${T.rule}`, borderRadius: 4,
+          background: T.paper,
+        }}
+      >
+        <option value="">-- pick a feed --</option>
+        {actionKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+      </select>
+      <Btn
+        variant="warm"
+        size="sm"
+        onClick={fire}
+        disabled={busy || !targetKey}
+      >
+        {busy ? '…' : 'Fix'}
+      </Btn>
+      {msg && (
+        <span style={{
+          fontFamily: FONT_MONO, fontSize: 10, color: T.ink2,
+          marginLeft: 6, maxWidth: 200, overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {msg}
+        </span>
+      )}
+    </div>
   );
 }
 
