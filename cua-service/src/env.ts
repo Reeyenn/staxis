@@ -60,6 +60,20 @@ const Schema = z.object({
   // within 30 steps).
   CUA_AUTO_SCREENSHOT: z.enum(['true', 'false']).default('false'),
 
+  // ── Critic (pre/post screenshot validator) ───────────────
+  // Pre/post screenshot critic that grades each click in vision mode
+  // and injects a "Critic note: …" if the click didn't appear to
+  // achieve its intended outcome (arXiv 2410.00689 pattern, +5% on
+  // WebVoyager). Defaults to 'true'; flip to 'false' via `fly secrets
+  // set CUA_CRITIC_ENABLED=false -a staxis-cua` as a panic switch if
+  // critic spend or false-failure injections cause problems in
+  // production. Critic only fires on click verbs (left_click /
+  // double_click) in vision mode — DOM mode skips it entirely
+  // (read_page already provides grounding). Tested at runtime by
+  // reading process.env directly, so test runs can flip between cases
+  // without subprocess gymnastics.
+  CUA_CRITIC_ENABLED: z.enum(['true', 'false']).default('true'),
+
   // ── DNS rebinding preflight (Plan v2 F-AI-5) ────────────
   // When 'true', safeGoto resolves the target hostname via dns.lookup
   // before navigating and refuses if the resolved IP is private. Closes
