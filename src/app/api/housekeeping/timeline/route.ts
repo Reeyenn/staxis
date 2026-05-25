@@ -192,7 +192,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         { requestId },
       );
     }
-    const tasks = (taskRows ?? []) as CleaningTaskRow[];
+    const tasks = (taskRows ?? []) as unknown as CleaningTaskRow[];
 
     // 3. Active assignments — same posture as the board route.
     const taskIds = tasks.map(t => t.id);
