@@ -51,6 +51,16 @@ const Schema = z.object({
   // an agent-friendly error so Claude retries.
   CUA_POLICY_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
 
+  // ── DOM snapshot source (Plan v8 CDP refactor) ──────────
+  // 'legacy' (default): use the existing page.evaluate(window.__generateAccessibilityTree)
+  // path. Fast for simple PMS pages — a single optimized in-renderer JS walk.
+  // 'cdp': use the CDP-direct DOMSnapshot.captureSnapshot + Accessibility.getFullAXTree
+  // fusion. Slower on simple pages (1-2x measured on Wikipedia) but unlocks
+  // future iframe / shadow-DOM coverage and emits backendNodeId-stable refs.
+  // Flips per-PMS once a canary proves the speedup actually materializes on
+  // that PMS's UI shape.
+  CUA_DOM_SOURCE: z.enum(['legacy', 'cdp']).default('legacy'),
+
   // ── Screenshot minimization (Plan v2 F-AI-10) ────────────
   // The mapper used to auto-capture a screenshot on navigate + hover
   // and ship it to Anthropic. Default is now 'false' — Claude relies on

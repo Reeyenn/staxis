@@ -42,6 +42,12 @@ import {
   type MappingPhase,
 } from './policy.js';
 import { env } from './env.js';
+import {
+  captureCDPSnapshot,
+  resolveRefViaCDP,
+  formInputViaCDP,
+  type CDPSnapshotResult,
+} from './cdp-snapshot.js';
 
 /**
  * Plan v2 F-AI-10 — auto-screenshots on navigate/hover are off by
@@ -433,26 +439,14 @@ export async function executeBrowserAction(
 
       case 'read_page': {
         const filter = action.text === 'interactive' ? 'interactive' : '';
-        const tree = await page.evaluate(`
-          (() => {
-            ${DOM_SCRIPT}
-            return window.__generateAccessibilityTree(${JSON.stringify(filter)});
-          })()
-        `);
-        const content = extractPageContent(tree);
+        const content = await readPageSnapshot(page, filter);
         return { output: content };
       }
 
       case 'find': {
         // Local lightweight "find" — no second Anthropic call. We grep the
         // accessibility tree text for the query and return matching refs.
-        const tree = await page.evaluate(`
-          (() => {
-            ${DOM_SCRIPT}
-            return window.__generateAccessibilityTree('');
-          })()
-        `);
-        const content = extractPageContent(tree);
+        const content = await readPageSnapshot(page, '');
         const query = action.text.toLowerCase();
         const matches = content
           .split('\n')
@@ -487,12 +481,28 @@ export async function executeBrowserAction(
           : isPasswordPh
             ? creds.password
             : requested;
-        const refLit = JSON.stringify(action.ref);
-        const valueLit = JSON.stringify(realValue);
-        const result = await page.evaluate(`(${FORM_INPUT_SCRIPT})(${refLit}, ${valueLit})`);
-        const r = result as { success?: boolean; message?: string } | null;
-        if (!r || !r.success) {
-          return { output: `form_input failed: ${r?.message ?? 'unknown error'}`, isError: true };
+        // Adversarial-review fix (Codex pass): a CDP-emitted ref (`ref_b...`)
+        // doesn't live in window.__claudeElementMap, so the legacy FORM_INPUT_SCRIPT
+        // would silently fail and the recipe would never record a fill step.
+        // Route CDP refs through formInputViaCDP first; counter-style refs go
+        // through the legacy script as before.
+        let fillOk = false;
+        let fillMessage: string | undefined;
+        if (/^ref_b\d+$/.test(action.ref)) {
+          const cdpResult = await formInputViaCDP(page, action.ref, realValue);
+          fillOk = cdpResult.success;
+          fillMessage = cdpResult.message;
+        }
+        if (!fillOk) {
+          const refLit = JSON.stringify(action.ref);
+          const valueLit = JSON.stringify(realValue);
+          const result = await page.evaluate(`(${FORM_INPUT_SCRIPT})(${refLit}, ${valueLit})`);
+          const r = result as { success?: boolean; message?: string } | null;
+          fillOk = !!r?.success;
+          fillMessage = r?.message ?? fillMessage;
+        }
+        if (!fillOk) {
+          return { output: `form_input failed: ${fillMessage ?? 'unknown error'}`, isError: true };
         }
         // Resolve the ref again to capture a stable selector for replay.
         const info = await resolveRef(page, action.ref);
@@ -553,8 +563,39 @@ interface ResolvedRefFailure {
 }
 
 async function resolveRef(page: Page, ref: string): Promise<ResolvedRefSuccess | ResolvedRefFailure> {
+  // CDP path first — refs emitted by the CDP snapshot are `ref_<backendNodeId>`
+  // and resolve via DOM.resolveNode + Runtime.callFunctionOn (one fused round-
+  // trip versus the legacy 2x page.evaluate). On any failure (ref format wrong,
+  // backendNodeId stale because the page navigated, CDP timeout) fall through
+  // to the legacy element.js path so we don't lose old-style refs.
+  const cdpResult = await resolveRefViaCDP(page, ref);
+  if (cdpResult.success) {
+    return {
+      success: true,
+      coordinates: cdpResult.coordinates,
+      elementInfo: cdpResult.elementInfo,
+      attributes: cdpResult.attributes,
+      isVisible: cdpResult.isVisible,
+      isInteractable: cdpResult.isInteractable,
+      stableSelector: cdpResult.stableSelector,
+    };
+  }
+
+  // Legacy fallback: window.__claudeElementMap-based resolution. Refs in this
+  // format only exist when read_page itself fell back from CDP to the legacy
+  // DOM_SCRIPT, so we'll usually skip this branch once CDP is healthy.
   const refLit = JSON.stringify(ref);
-  const raw = await page.evaluate(`(${ELEMENT_SCRIPT})(${refLit})`);
+  let raw: unknown;
+  try {
+    raw = await page.evaluate(`(${ELEMENT_SCRIPT})(${refLit})`);
+  } catch (err) {
+    return {
+      success: false,
+      message: `${cdpResult.message} (legacy fallback also failed: ${(err as Error).message})`,
+      coordinates: [0, 0],
+      stableSelector: null,
+    };
+  }
   const result = raw as
     | {
         success: true;
@@ -567,7 +608,13 @@ async function resolveRef(page: Page, ref: string): Promise<ResolvedRefSuccess |
     | { success: false; message: string };
 
   if (!result.success) {
-    return { success: false, message: result.message, coordinates: [0, 0], stableSelector: null };
+    // Both paths failed. Surface both messages so the agent + logs see why.
+    return {
+      success: false,
+      message: `cdp:${cdpResult.message} | legacy:${result.message}`,
+      coordinates: [0, 0],
+      stableSelector: null,
+    };
   }
 
   const stableSelector = await synthesizeStableSelector(page, ref);
@@ -585,6 +632,55 @@ async function resolveRef(page: Page, ref: string): Promise<ResolvedRefSuccess |
     isInteractable: result.isInteractable,
     stableSelector,
   };
+}
+
+/**
+ * Capture a page snapshot for read_page / find. By default uses the legacy
+ * `page.evaluate(window.__generateAccessibilityTree)` path; flips to the
+ * CDP-direct path when env `CUA_DOM_SOURCE=cdp`.
+ *
+ * CDP fallback semantics: even when CDP is the chosen source, any CDP error
+ * (timeout, session lost, payload too large) falls through to the legacy
+ * path so the agent loop never crashes because the inspector layer hiccuped.
+ *
+ * Telemetry: each call logs the chosen source + elapsed ms so we can
+ * quantify the cost in production logs and decide when to flip the default.
+ */
+async function readPageSnapshot(page: Page, filter: 'interactive' | ''): Promise<string> {
+  if (env.CUA_DOM_SOURCE === 'cdp') {
+    const cdpStart = Date.now();
+    const cdp = await captureCDPSnapshot(page, { filter });
+    if (!('error' in cdp)) {
+      logCDPSnapshot(cdp, Date.now() - cdpStart);
+      return cdp.pageContent;
+    }
+    log.warn('cdp snapshot failed; falling back to legacy DOM_SCRIPT', {
+      err: cdp.error,
+      ms: cdp.snapshotMs,
+    });
+  }
+  const legacyStart = Date.now();
+  const tree = await page.evaluate(`
+    (() => {
+      ${DOM_SCRIPT}
+      return window.__generateAccessibilityTree(${JSON.stringify(filter)});
+    })()
+  `);
+  log.info('legacy snapshot complete', {
+    ms: Date.now() - legacyStart,
+    source: env.CUA_DOM_SOURCE,
+  });
+  return extractPageContent(tree);
+}
+
+function logCDPSnapshot(cdp: CDPSnapshotResult, wallMs: number): void {
+  log.info('cdp snapshot complete', {
+    snapshotMs: cdp.snapshotMs,
+    fetchMs: cdp.fetchMs,
+    renderMs: cdp.renderMs,
+    wallMs,
+    warnings: cdp.warnings,
+  });
 }
 
 /**
