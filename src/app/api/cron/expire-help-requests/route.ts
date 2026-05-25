@@ -4,7 +4,7 @@
  * Plan v8 hardening (Codex P1 #5) — runs every few minutes to:
  *   1. Flip mapping_help_requests rows past expires_at from 'pending'
  *      to 'expired' via the expire_stale_help_requests() SECURITY DEFINER
- *      function (migration 0214).
+ *      function (migration 0217, formerly 0214 pre-renumber).
  *   2. Delete the corresponding screenshot objects from Supabase Storage
  *      so the mapping-screenshots bucket doesn't grow unbounded.
  *
@@ -16,6 +16,12 @@
  * Schedule: every 5 min via Vercel cron (vercel.json) — TTL on a row is
  * 15 min by default, so a 5-min sweep catches each one within one tick
  * of expiry.
+ *
+ * Heartbeat: writes 'expire-help-requests' to cron_heartbeats at the end
+ * of every successful tick. The doctor's cron_heartbeats_fresh check
+ * pages if this stops landing for >10 min (2× the 5-min cadence). Without
+ * the heartbeat, a silent failure (RPC error, storage 500s) would never
+ * surface — Vercel still returns 200 on the function shell.
  */
 
 import { NextRequest } from 'next/server';
@@ -23,6 +29,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,6 +75,16 @@ export async function GET(req: NextRequest): Promise<Response> {
       }
     }
   }
+
+  // Heartbeat AS THE LAST THING so the doctor can distinguish "function
+  // shell ran" (Vercel 200) from "function actually finished its work."
+  // Marked 'degraded' when any storage deletion failed — doctor surfaces
+  // a yellow banner after 24h of degraded; pages only on missing heartbeats.
+  await writeCronHeartbeat('expire-help-requests', {
+    requestId,
+    notes: { expired: rows.length, storageDeleted, storageFailed },
+    status: storageFailed > 0 ? 'degraded' : 'ok',
+  });
 
   return ok({
     expired: rows.length,

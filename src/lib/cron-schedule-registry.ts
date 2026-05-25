@@ -93,4 +93,11 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // report routes — if their inline call failed transiently, this picks
   // up the slack.
   { heartbeatName: 'process-pending-callouts', source: { kind: 'vercel', cronPath: '/api/cron/process-pending-callouts' },        cronExpr: '*/5 * * * *' },
+  // Plan v8 Phase B (migration 0217, formerly 0214): every 5 min,
+  // flips mapping_help_requests past expires_at from 'pending' to
+  // 'expired' and deletes the corresponding screenshot objects from
+  // the mapping-screenshots Supabase Storage bucket. Without this the
+  // 15-min TTL pending rows + their screenshots would accumulate
+  // forever.
+  { heartbeatName: 'expire-help-requests', source: { kind: 'vercel', cronPath: '/api/cron/expire-help-requests' },                cronExpr: '*/5 * * * *' },
 ];

@@ -54,14 +54,15 @@ COMMENT ON FUNCTION is_admin_user IS
 DROP POLICY IF EXISTS mhr_admin_select ON mapping_help_requests;
 DROP POLICY IF EXISTS mhr_admin_update ON mapping_help_requests;
 
+-- Post-2B MFA gate AND-ed in alongside the admin check. See migration 0161.
 CREATE POLICY mhr_admin_select ON mapping_help_requests
   FOR SELECT TO authenticated
-  USING (is_admin_user(auth.uid()));
+  USING (is_admin_user(auth.uid()) AND public.mfa_verified_or_grace());
 
 CREATE POLICY mhr_admin_update ON mapping_help_requests
   FOR UPDATE TO authenticated
-  USING (is_admin_user(auth.uid()))
-  WITH CHECK (is_admin_user(auth.uid()));
+  USING (is_admin_user(auth.uid()) AND public.mfa_verified_or_grace())
+  WITH CHECK (is_admin_user(auth.uid()) AND public.mfa_verified_or_grace());
 
 -- ─── Fix 2: realtime publication + REPLICA IDENTITY FULL ─────────────────
 
@@ -90,7 +91,12 @@ END $$;
 
 -- The bucket holds short-lived screenshots taken at the moment the mapper
 -- asks for help. Admin UI fetches via signed URL (1h expiry — set client-
--- side). Auto-purge sweep happens via /api/cron (follow-up).
+-- side). Auto-purge sweep happens via /api/cron/expire-help-requests
+-- (migration 0217 / route in src/app/api/cron/expire-help-requests/).
+-- @storage: service-role-only — uploads come from cua-service (Fly) via
+-- service-role; admin reads via signed URLs minted server-side in
+-- /api/admin/mapper/live. No per-property scoping because these objects
+-- are tied to a workflow_job, not to a property in a way users could own.
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('mapping-screenshots', 'mapping-screenshots', false)
 ON CONFLICT (id) DO NOTHING;
@@ -105,12 +111,21 @@ DROP POLICY IF EXISTS mapping_screenshots_anon_deny ON storage.objects;
 CREATE POLICY mapping_screenshots_admin_select ON storage.objects
   FOR SELECT TO authenticated
   USING (
-    bucket_id = 'mapping-screenshots' AND is_admin_user(auth.uid())
+    bucket_id = 'mapping-screenshots'
+    AND is_admin_user(auth.uid())
+    AND public.mfa_verified_or_grace()
   );
 
 CREATE POLICY mapping_screenshots_anon_deny ON storage.objects
   FOR ALL TO anon
   USING (bucket_id != 'mapping-screenshots')
   WITH CHECK (bucket_id != 'mapping-screenshots');
+
+insert into public.applied_migrations (version, description)
+values (
+  '0216',
+  'Phase B review fixes: mapping_help_requests RLS subquery rewrite, mapping-screenshots storage bucket + deny-all policies, is_admin_user() helper. Renumbered from 0213 post-merge after collision with 0213_callout_events.'
+)
+on conflict (version) do nothing;
 
 COMMIT;

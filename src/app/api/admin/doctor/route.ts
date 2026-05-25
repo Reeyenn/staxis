@@ -2780,6 +2780,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // gate is now satisfied) and fires the redistribute. Safety net for
   // inline failures on the report routes.
   { name: 'process-pending-callouts',      cadenceHours: 5/60,  description: '5-min Vercel cron that processes deferred sick-callout redistribution (feature #6)' },
+  // Plan v8 Phase B (migration 0217, formerly 0214): 5-min Vercel cron
+  // that flips mapping_help_requests past expires_at to 'expired' and
+  // deletes their screenshots from the mapping-screenshots storage
+  // bucket. Without this the 15-min TTL pending rows accumulate forever.
+  { name: 'expire-help-requests',          cadenceHours: 5/60,  description: '5-min Vercel cron that expires stale mapping_help_requests + purges their screenshot storage objects (Plan v8 Phase B)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

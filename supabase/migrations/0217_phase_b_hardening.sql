@@ -3,7 +3,7 @@
 -- Fixes 4 production-readiness gaps surfaced by the post-Phase-B
 -- adversarial review.
 --
---   P0 — Migration 0213 created a storage RLS policy
+--   P0 — Migration 0216 (formerly 0213) created a storage RLS policy
 --        `mapping_screenshots_anon_deny ON storage.objects FOR ALL TO anon
 --         USING (bucket_id != 'mapping-screenshots')`
 --        Postgres RLS treats USING=true as ALLOW — so this policy GRANTS
@@ -17,7 +17,7 @@
 --        unindexed scans become a bottleneck.
 --
 --   P1 — Sweep cron for mapping_help_requests with expires_at < now().
---        Migration 0212 added expires_at + an index but nothing reads it.
+--        Migration 0215 (formerly 0212) added expires_at + an index but nothing reads it.
 --        Storage objects + DB rows accumulate forever otherwise. We add
 --        a SECURITY DEFINER helper the /api/cron sweep can call —
 --        cleanup of storage objects happens app-side via the cron route
@@ -97,9 +97,17 @@ COMMENT ON FUNCTION expire_stale_help_requests IS
 -- ─── P2: admin DELETE policy on mapping_help_requests ────────────────────
 
 -- For ops cleanup of misconfigured rows. Uses the same is_admin_user
--- SECURITY DEFINER helper added in 0213.
+-- SECURITY DEFINER helper added in 0216 (formerly 0213). MFA gate AND-ed
+-- in per the post-2B convention (migration 0161).
 CREATE POLICY mhr_admin_delete ON mapping_help_requests
   FOR DELETE TO authenticated
-  USING (is_admin_user(auth.uid()));
+  USING (is_admin_user(auth.uid()) AND public.mfa_verified_or_grace());
+
+insert into public.applied_migrations (version, description)
+values (
+  '0217',
+  'Phase B production hardening: expire_stale_help_requests() RPC, mapping_help_requests admin-delete RLS, plus 4 audit-pass fixes. Renumbered from 0214 post-merge to maintain phase_b sequential ordering after 0216.'
+)
+on conflict (version) do nothing;
 
 COMMIT;

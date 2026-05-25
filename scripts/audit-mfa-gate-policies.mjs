@@ -35,6 +35,12 @@ const EXEMPT = new Set([
   'password_signin_proofs:password_signin_proofs_auth_admin_all',
   // Trusted-device admin hook reader (Phase B may add this).
   'trusted_devices:trusted_devices_auth_hook_read',
+  // Plan v8 Phase B P0 (migration 0217) explicitly DROPS this policy
+  // immediately after it's created in 0216 — the USING clause was inverted
+  // (allowed anon to read OTHER buckets, exact opposite of intent). The
+  // static audit walks every CREATE without seeing the later DROP. After
+  // 0217 runs the policy doesn't exist; gating it is moot.
+  'objects:mapping_screenshots_anon_deny',
 ]);
 
 // Regex matches `create policy NAME on TABLE` or `alter policy NAME on TABLE`.

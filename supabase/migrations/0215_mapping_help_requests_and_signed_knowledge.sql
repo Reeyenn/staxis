@@ -89,19 +89,27 @@ CREATE INDEX mapping_help_requests_expires_idx
 -- expires_at sweep cron can UPDATE.
 ALTER TABLE mapping_help_requests ENABLE ROW LEVEL SECURITY;
 
+-- Post-2B all authenticated/public policies must AND-in the
+-- mfa_verified_or_grace() gate so a hijacked non-MFA session can't read
+-- ops data. See migration 0161 for the original gate rollout pattern.
+-- (0216 immediately rebuilds these to use is_admin_user(); the gate is
+-- preserved there too.)
 CREATE POLICY mhr_admin_select ON mapping_help_requests
   FOR SELECT TO authenticated
   USING (
     EXISTS (SELECT 1 FROM accounts WHERE id = auth.uid() AND role = 'admin')
+    AND public.mfa_verified_or_grace()
   );
 
 CREATE POLICY mhr_admin_update ON mapping_help_requests
   FOR UPDATE TO authenticated
   USING (
     EXISTS (SELECT 1 FROM accounts WHERE id = auth.uid() AND role = 'admin')
+    AND public.mfa_verified_or_grace()
   )
   WITH CHECK (
     EXISTS (SELECT 1 FROM accounts WHERE id = auth.uid() AND role = 'admin')
+    AND public.mfa_verified_or_grace()
   );
 
 CREATE POLICY mhr_anon_deny_all ON mapping_help_requests
@@ -141,5 +149,12 @@ COMMENT ON COLUMN pms_knowledge_files.signed_with_key_id IS
   '8-hex-char fingerprint of the signing key (see recipe-signing.ts:34). '
   'Used to distinguish active vs previous key during a key rotation grace '
   'window.';
+
+insert into public.applied_migrations (version, description)
+values (
+  '0215',
+  'mapping_help_requests + pms_knowledge_files signing columns (active_signing_key_fingerprint). Plan v8 Phase B chunk 1 — human-assisted mapper. Renumbered from 0212 post-merge after collision with 0212_inspections.'
+)
+on conflict (version) do nothing;
 
 COMMIT;
