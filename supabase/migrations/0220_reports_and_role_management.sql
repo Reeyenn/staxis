@@ -306,3 +306,16 @@ comment on function public.staxis_transfer_ownership(uuid, uuid, uuid) is
 
 revoke all on function public.staxis_transfer_ownership(uuid, uuid, uuid) from public, anon, authenticated;
 grant execute on function public.staxis_transfer_ownership(uuid, uuid, uuid) to service_role;
+
+-- ── Migration record ────────────────────────────────────────────────────
+-- Was missing from the original merge; migration-bookkeeping.test.ts
+-- catches it. Added during the housekeeper-mobile-rebuild-A rebase
+-- (0222 series) so the test suite stays green across the merge.
+insert into public.applied_migrations (version, description)
+values (
+  '0220',
+  'reports + role management: daily/weekly housekeeping report engine + self-serve owner/manager role transfer RPCs.'
+)
+on conflict (version) do nothing;
+
+notify pgrst, 'reload schema';

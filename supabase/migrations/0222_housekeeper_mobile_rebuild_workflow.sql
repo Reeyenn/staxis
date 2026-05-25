@@ -1,10 +1,12 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0215 — Housekeeper mobile rebuild (piece A): workflow state machine,
+-- 0222 — Housekeeper mobile rebuild (piece A): workflow state machine,
 --        checklists, exceptions, lunch breaks, rush + floor + manager notes.
 --
--- Renumbered from 0214 → 0215 to avoid collision with
--- 0214_phase_b_hardening.sql (Plan v8 cua-vision branch merged to main
--- while this branch was in flight).
+-- Renumbered from 0214 → 0215 → 0222 across two rebases as parallel
+-- branches (cua-vision Plan v8, voice issue reporting, reports engine,
+-- inspections idempotency) all landed migrations in front of this one
+-- while the housekeeper-mobile rebuild was in flight. 0222 is the next
+-- free slot above main's 0221_inspections_seed_idempotency_and_unique.
 --
 -- Why this exists:
 --   Piece A of the housekeeper mobile rebuild. The current page collapses
@@ -164,7 +166,7 @@ create table if not exists public.cleaning_checklist_items (
   is_critical     boolean not null default false,
   created_at      timestamptz not null default now(),
   -- One item per (template, sort_order). Stable conflict target for the
-  -- seed block at the bottom of this migration so re-running 0215 doesn't
+  -- seed block at the bottom of this migration so re-running 0222 doesn't
   -- duplicate every default item (the unique generated-uuid PK alone made
   -- `on conflict do nothing` a no-op against itself).
   constraint cleaning_checklist_items_template_order_unique
@@ -450,13 +452,13 @@ revoke all on function public.staxis_checklist_toggle(uuid, uuid, boolean) from 
 grant execute on function public.staxis_checklist_toggle(uuid, uuid, boolean) to service_role;
 
 comment on function public.staxis_checklist_toggle(uuid, uuid, boolean) is
-  'Atomic toggle of an item ID in rooms.checklist_progress. Locks the room row, verifies the item belongs to the room''s current template, and updates the jsonb array without read-modify-write loss. Added 0215.';
+  'Atomic toggle of an item ID in rooms.checklist_progress. Locks the room row, verifies the item belongs to the room''s current template, and updates the jsonb array without read-modify-write loss. Added 0222.';
 
 -- ─── Track the migration ─────────────────────────────────────────────────
 
 insert into public.applied_migrations (version, description)
 values (
-  '0215',
+  '0222',
   'Housekeeper mobile rebuild A: workflow state machine on rooms (paused/exception/checklist), room_pause_events, cleaning_checklist_templates + items (seeded 5 defaults), staff_breaks, atomic checklist-toggle RPC, rush + floor + manager_notes on rooms.'
 )
 on conflict (version) do nothing;
