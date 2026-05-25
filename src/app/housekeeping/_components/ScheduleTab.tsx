@@ -52,6 +52,10 @@ import {
 // degrades to an empty-state when the rules engine hasn't produced tasks for
 // today yet, so it's safe to ship before the rules-engine cron is enabled.
 import { AutoAssignBoard } from './AutoAssignBoard';
+// Timeline View — Gantt-style strip below the Auto-Assign Board. Shows each
+// housekeeper's day on a horizontal time axis. Same data model as the board,
+// richer payload via /api/housekeeping/timeline (lifecycle timestamps).
+import { TimelineView } from './TimelineView';
 
 type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
@@ -1411,6 +1415,14 @@ export function ScheduleTab() {
             shiftMinutes={SHIFT_MINS}
             lang={lang}
           />
+        </div>
+      )}
+
+      {/* TIMELINE VIEW — horizontal time-axis strip beneath the board.
+          Board = place work; timeline = watch it unfold. */}
+      {pid && (
+        <div style={{ marginTop: 24 }}>
+          <TimelineView propertyId={pid} shiftDate={shiftDate} lang={lang} />
         </div>
       )}
 
