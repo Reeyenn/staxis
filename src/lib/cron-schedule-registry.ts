@@ -86,4 +86,11 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Migration 0210: cleaning-rules engine. Reads pms_* → writes
   // cleaning_tasks every 5 min. Idempotent.
   { heartbeatName: 'run-rules-engine',      source: { kind: 'vercel', cronPath: '/api/cron/run-rules-engine' },                 cronExpr: '*/5 * * * *' },
+  // 2026-05-24: sick-callout coverage flow (feature #6). Every 5 min,
+  // sweeps callout_events for rows whose redistribute_at has passed
+  // (or whose 'after_current_room' guard is now satisfied) and fires
+  // the redistribute. Acts as a safety net for the inline path on the
+  // report routes — if their inline call failed transiently, this picks
+  // up the slack.
+  { heartbeatName: 'process-pending-callouts', source: { kind: 'vercel', cronPath: '/api/cron/process-pending-callouts' },        cronExpr: '*/5 * * * *' },
 ];

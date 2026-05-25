@@ -20,6 +20,7 @@ import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 import InspectorView from './_components/InspectorView';
+import { SickReportButton } from './SickReportButton';
 
 // Rooms come off Supabase via `subscribeToRoomsForStaff` fully shaped as our
 // canonical Room type — no Firestore DocumentReference to carry around.
@@ -930,6 +931,21 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           }}>
             {t('hkShiftStarted', lang)} · {format(new Date(shiftStartedAt), 'h:mm a', lang === 'es' ? { locale: esLocale } : undefined)}
           </div>
+        )}
+
+        {/* Sick / callout entry — feature #6. Only render when we have the
+            URL ids (pid + housekeeperId) AND the housekeeper actually has
+            rooms today. Mid-shift detection uses inProgress > 0 to swap
+            the button label and surface the timing picker. */}
+        {pid && housekeeperId && total > 0 && !allDone && (
+          <SickReportButton
+            pid={pid}
+            staffId={housekeeperId}
+            businessDate={activeDate}
+            language={lang}
+            isMidShift={inProgress > 0}
+            onCalloutChange={() => { lastRefetchAtRef.current = Date.now(); }}
+          />
         )}
 
         {allDone && (

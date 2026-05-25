@@ -112,7 +112,29 @@ export type RateLimitEndpoint =
   // Scraper hardening v2 (F6) — read-only freshness probe powering the
   // <StaleDataBanner /> on /dashboard and /staff. Polled every 60s
   // from each open tab. Keyed on (userId, propertyId).
-  | 'scraper-status';
+  | 'scraper-status'
+  // Sick-callout coverage flow (feature #6, 2026-05-24). Each entry point
+  // gets its own bucket so a runaway in one channel doesn't lock the
+  // others. Caps tuned to "this is a person tapping a button" — anything
+  // above the cap is bot/script abuse and should 429.
+  //
+  // callout-housekeeper: HK taps "I can't work today" on their mobile.
+  //   Keyed on (pid, staffId). 10/hr — one real callout per day, the
+  //   rest is room for accidental re-taps and undo-then-redo flows.
+  // callout-manager: manager presses "Mark sick" on the dashboard.
+  //   Keyed on (pid, userId). Manager might mark several HKs sick in a
+  //   bad-flu morning, so 30/hr.
+  // callout-sms: inbound Twilio webhook firing the SICK keyword.
+  //   Keyed on the sender phone hash. 20/hr stops a Twilio replay or a
+  //   phone in someone's pocket dialing the route.
+  // callout-revert: same cap shape as the report path it mirrors.
+  // callout-status: read endpoint feeding the CalloutBanner. Polled on
+  //   the manager page; 600/hr per property is plenty.
+  | 'callout-housekeeper'
+  | 'callout-manager'
+  | 'callout-sms'
+  | 'callout-revert'
+  | 'callout-status';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -219,6 +241,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // 240/hr per (user, property) to absorb 4 open tabs without 429,
   // while still stopping a runaway useEffect or stale-link DDoS.
   'scraper-status':              240,
+  // Sick-callout buckets — see RateLimitEndpoint union comment for rationale.
+  'callout-housekeeper':          10,
+  'callout-manager':              30,
+  'callout-sms':                  20,
+  'callout-revert':               30,
+  'callout-status':              600,
 };
 
 /**

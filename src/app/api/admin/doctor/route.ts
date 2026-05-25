@@ -2775,6 +2775,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Staxis-side cleaning task records (departure clean, VIP amenity
   // setup, tight-turnaround priority bump, …).
   { name: 'run-rules-engine',              cadenceHours: 5/60,  description: '5-min cleaning-rules engine — reads pms_*, writes cleaning_tasks (Vercel native cron)' },
+  // 2026-05-24: sick-callout coverage flow (feature #6). Sweeps callouts
+  // whose redistribute_at has passed (or whose 'after_current_room'
+  // gate is now satisfied) and fires the redistribute. Safety net for
+  // inline failures on the report routes.
+  { name: 'process-pending-callouts',      cadenceHours: 5/60,  description: '5-min Vercel cron that processes deferred sick-callout redistribution (feature #6)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
