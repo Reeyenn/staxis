@@ -42,6 +42,7 @@ import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, HousekeeperDot,
 } from './_snow';
+import { CalloutBanner } from './CalloutBanner';
 import {
   getActiveOptimizerForTomorrow,
   getActiveDemandForTomorrow,
@@ -770,6 +771,8 @@ export function ScheduleTab() {
           <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, 1))}>{lang === 'es' ? 'Mañana' : 'Tomorrow'} →</Btn>
         </div>
       </div>
+
+      <CalloutBanner shiftDate={shiftDate} />
 
       {/* PMS PULL STRIP — current pull's numbers in plain sight.
           The design also showed ‹/› buttons toggling between morning and
