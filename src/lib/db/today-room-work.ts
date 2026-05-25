@@ -133,9 +133,17 @@ export function subscribeTodayRoomWork(
     'pms_reservations',              // same-day check-in flips stay_type
   ] as const;
 
+  // Per-subscriber channel suffix. Supabase Realtime dedupes channels
+  // by name globally — if two callers (subscribeToPlanSnapshot +
+  // subscribeToDashboardByDate, both used by ScheduleTab) created
+  // identically-named channels for the same property, the second
+  // `.on()` call would throw "cannot add postgres_changes callbacks
+  // after subscribe()". Random suffix guarantees uniqueness per call.
+  const subscriberId = Math.random().toString(36).slice(2, 10);
+
   for (const table of tables) {
     const ch = supabase
-      .channel(`today-room-work:${table}:${propertyId}`)
+      .channel(`today-room-work:${table}:${propertyId}:${subscriberId}`)
       .on(
         'postgres_changes',
         {
