@@ -168,7 +168,7 @@ export async function GET(req: NextRequest) {
   const emailByUserId = new Map<string, string>();
   // Supabase Auth tracks last_sign_in_at natively on auth.users — use
   // that as the source of truth rather than maintaining a parallel
-  // column ourselves (the accounts.last_sign_in_at column added in 0215
+  // column ourselves (the accounts.last_sign_in_at column added in 0220
   // is reserved for future app-side tracking distinct from auth-level).
   const lastSignInByUserId = new Map<string, string | null>();
   const { data: authPage } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
@@ -414,7 +414,7 @@ export async function PUT(req: NextRequest) {
       const newOwnerOldRole = newOwner.role as AppRole;
 
       // Atomic swap inside one transaction via the SECURITY DEFINER
-      // helper added by migration 0215. Replaces the prior two-step
+      // helper added by migration 0220. Replaces the prior two-step
       // UPDATE pattern, which could leave the hotel with two owners
       // (or zero) if the second update failed and the rollback also
       // failed.

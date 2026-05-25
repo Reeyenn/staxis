@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0215 — Daily/weekly housekeeping reports + self-serve role management
+-- 0220 — Daily/weekly housekeeping reports + self-serve role management
 --
 -- Adds the persistence layer for feature #17:
 --
@@ -96,7 +96,7 @@ create table if not exists public.report_runs (
 );
 
 comment on table public.report_runs is
-  'Audit trail of every daily/weekly report generated, with per-recipient delivery outcome. Service-role only — read/written by /api/cron/run-*-report. Created 0215.';
+  'Audit trail of every daily/weekly report generated, with per-recipient delivery outcome. Service-role only — read/written by /api/cron/run-*-report. Created 0220.';
 
 create index if not exists report_runs_property_date_idx
   on public.report_runs (property_id, report_date desc, report_type);
@@ -146,7 +146,7 @@ create table if not exists public.report_preferences (
 );
 
 comment on table public.report_preferences is
-  'Per-user, per-property preferences for daily/weekly housekeeping reports. Service-role only — read/written by /api/settings/notifications/*. Created 0215.';
+  'Per-user, per-property preferences for daily/weekly housekeeping reports. Service-role only — read/written by /api/settings/notifications/*. Created 0220.';
 
 create index if not exists report_preferences_property_idx
   on public.report_preferences (property_id);
@@ -196,7 +196,7 @@ create table if not exists public.role_changes (
 );
 
 comment on table public.role_changes is
-  'Structured audit log of role changes. Cheaper to query than admin_audit_log because the columns are typed. Service-role only — written by /api/auth/team + /api/settings/users. Created 0215.';
+  'Structured audit log of role changes. Cheaper to query than admin_audit_log because the columns are typed. Service-role only — written by /api/auth/team + /api/settings/users. Created 0220.';
 
 create index if not exists role_changes_account_idx
   on public.role_changes (account_id, changed_at desc);
@@ -228,7 +228,7 @@ alter table public.accounts
   add column if not exists active boolean not null default true;
 
 comment on column public.accounts.active is
-  'When false, the account is deactivated: excluded from report-recipient queries. Sign-in is blocked separately by the deactivate API setting ban_duration on the matching auth.users row. property_access preserved so reactivation restores prior hotel scope. Added 0215.';
+  'When false, the account is deactivated: excluded from report-recipient queries. Sign-in is blocked separately by the deactivate API setting ban_duration on the matching auth.users row. property_access preserved so reactivation restores prior hotel scope. Added 0220.';
 
 create index if not exists accounts_active_idx on public.accounts (active);
 
@@ -302,7 +302,7 @@ end;
 $$;
 
 comment on function public.staxis_transfer_ownership(uuid, uuid, uuid) is
-  'Atomic owner-swap: promote one account to owner, demote the current owner to general_manager, inside one transaction. Called by /api/settings/users via supabaseAdmin.rpc. Added 0215.';
+  'Atomic owner-swap: promote one account to owner, demote the current owner to general_manager, inside one transaction. Called by /api/settings/users via supabaseAdmin.rpc. Added 0220.';
 
 revoke all on function public.staxis_transfer_ownership(uuid, uuid, uuid) from public, anon, authenticated;
 grant execute on function public.staxis_transfer_ownership(uuid, uuid, uuid) to service_role;
