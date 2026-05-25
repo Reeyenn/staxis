@@ -120,8 +120,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   const totalPaused = result.next.totalPausedSeconds;
   const durationMin = activeDurationMinutes(startedAt, completedAt, totalPaused);
 
-  // ─── Update rooms ──────────────────────────────────────────────────────
-  const { error: updErr } = await supabaseAdmin
+  // ─── Update rooms (conditional) ────────────────────────────────────────
+  // The conditional .eq('status', 'in_progress') closes the race where
+  // two devices race to complete the same room: the second tap finds 0
+  // rows updated and we 409 + skip the cleaning_events insert. Without
+  // it, the dedupe lookup races (read-before-write) could let both taps
+  // through and write two cleaning_events rows whose completed_at differ
+  // by milliseconds — Performance tab would double-count the clean.
+  const { data: updated, error: updErr } = await supabaseAdmin
     .from('rooms')
     .update({
       status: 'clean',
@@ -131,7 +137,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       paused_at: null,
       total_paused_seconds: totalPaused,
     })
-    .eq('id', body.roomId);
+    .eq('id', body.roomId)
+    .eq('status', 'in_progress')
+    .select('id');
   if (updErr) {
     log.error('complete-clean: room update failed', {
       requestId: gate.requestId,
@@ -143,6 +151,17 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
+      headers: gate.headers,
+    });
+  }
+  if (!updated || updated.length === 0) {
+    // Race: another device completed (or reset) the room between our
+    // transition() check and this UPDATE. The other completion already
+    // wrote the cleaning_events row; nothing for us to do.
+    return err('room state changed', {
+      requestId: gate.requestId,
+      status: 409,
+      code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
   }
@@ -244,10 +263,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         date: room.date,
         room_number: room.number,
         room_type: room.type,
-        // bucketStayoverDay reads from a typed-but-optional field; the
-        // legacy room shape might not have it on every row.
         stayover_day: bucketStayoverDay(
-          (room as { stayover_day?: number }).stayover_day ?? null,
+          room.stayover_day ?? null,
           room.type as 'checkout' | 'stayover',
         ),
         staff_id: gate.staffId,

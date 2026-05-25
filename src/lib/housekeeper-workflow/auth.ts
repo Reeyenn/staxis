@@ -186,6 +186,12 @@ export interface RoomRowForWorkflow {
   rush_due_by: string | null;
   marked_for_inspection_at: string | null;
   floor: string | null;
+  // stayover_day comes off the legacy rooms columns (0-indexed: 0 = arrival
+  // day, 1 = light, 2 = full, ...). complete-clean buckets it into the
+  // cleaning_events row so the supply ML model sees the same shape as the
+  // legacy room-action route. Missing this column means every new
+  // cleaning_events row had stayover_day=null after the rebuild.
+  stayover_day: number | null;
 }
 
 export async function loadRoomForStaff(args: {
@@ -209,7 +215,7 @@ export async function loadRoomForStaff(args: {
       'id, property_id, number, date, type, priority, status, assigned_to, assigned_name, ' +
         'started_at, completed_at, is_dnd, is_paused, paused_at, total_paused_seconds, ' +
         'exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, ' +
-        'manager_notes, is_rush, rush_due_by, marked_for_inspection_at, floor',
+        'manager_notes, is_rush, rush_due_by, marked_for_inspection_at, floor, stayover_day',
     )
     .eq('id', roomId)
     .maybeSingle();

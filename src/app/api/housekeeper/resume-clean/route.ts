@@ -70,14 +70,20 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  const { error: updErr } = await supabaseAdmin
+  // Conditional UPDATE: row must still be in_progress AND paused. Race
+  // window: complete-clean could have closed the room while the user
+  // tapped Resume on a stale UI.
+  const { data: updated, error: updErr } = await supabaseAdmin
     .from('rooms')
     .update({
       is_paused: false,
       paused_at: null,
       total_paused_seconds: result.next.totalPausedSeconds,
     })
-    .eq('id', body.roomId);
+    .eq('id', body.roomId)
+    .eq('status', 'in_progress')
+    .eq('is_paused', true)
+    .select('id');
   if (updErr) {
     log.error('resume-clean: room update failed', {
       requestId: gate.requestId,
@@ -89,6 +95,14 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
+      headers: gate.headers,
+    });
+  }
+  if (!updated || updated.length === 0) {
+    return err('room state changed', {
+      requestId: gate.requestId,
+      status: 409,
+      code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
   }

@@ -1,10 +1,18 @@
 /**
  * POST /api/housekeeper/checklist/toggle
  *
- * Toggle a checklist item on/off for a room. Stored as a jsonb array of
- * completed item IDs in `rooms.checklist_progress`. Toggle is idempotent:
- * sending the same id twice keeps it in the same state if `checked` is
- * passed explicitly; otherwise it flips.
+ * Toggle a checklist item on/off for a room. Backed by the
+ * staxis_checklist_toggle RPC (migration 0215) which:
+ *   1. Locks the rooms row.
+ *   2. Verifies the item belongs to the room's current checklist
+ *      template (stale UIs / forged taps with a foreign template's
+ *      item ID get a 409).
+ *   3. Atomically updates the jsonb array without read-modify-write
+ *      loss under concurrent toggles.
+ *
+ * Toggle semantics: if `checked` is omitted, the route flips the current
+ * state (reads first, then flips). Explicit `checked=true|false` lets
+ * the client be authoritative when it knows what it wants.
  */
 
 import type { NextRequest } from 'next/server';
@@ -49,38 +57,32 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!roomR.ok) return roomR.response;
   const room = roomR.room;
 
-  // Parse the current progress array. Defensive against stale shapes
-  // and accidental string values in the jsonb column.
+  // Resolve the desired post-toggle state. If `checked` is supplied,
+  // trust it. Otherwise flip whatever the current jsonb says — small
+  // race window here is fine because the RPC below is idempotent on the
+  // explicit boolean.
   const raw = room.checklist_progress;
-  const current: string[] = Array.isArray(raw) ? (raw as unknown[]).filter((x): x is string => typeof x === 'string') : [];
-  const hasItem = current.includes(body.itemId);
+  const currentList = Array.isArray(raw)
+    ? (raw as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+  const nextChecked = typeof body.checked === 'boolean'
+    ? body.checked
+    : !currentList.includes(body.itemId);
 
-  let next: string[];
-  let isChecked: boolean;
-  if (typeof body.checked === 'boolean') {
-    isChecked = body.checked;
-    if (body.checked && !hasItem) {
-      next = [...current, body.itemId];
-    } else if (!body.checked && hasItem) {
-      next = current.filter((x) => x !== body.itemId);
-    } else {
-      next = current;
-    }
-  } else {
-    isChecked = !hasItem;
-    next = hasItem ? current.filter((x) => x !== body.itemId) : [...current, body.itemId];
-  }
-
-  const { error: updErr } = await supabaseAdmin
-    .from('rooms')
-    .update({ checklist_progress: next })
-    .eq('id', body.roomId);
-  if (updErr) {
-    log.error('checklist-toggle: room update failed', {
+  const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc(
+    'staxis_checklist_toggle',
+    {
+      p_room_id: body.roomId,
+      p_item_id: body.itemId,
+      p_checked: nextChecked,
+    },
+  );
+  if (rpcErr) {
+    log.error('checklist-toggle: rpc failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(updErr),
+      err: errToString(rpcErr),
     });
     return err('Internal server error', {
       requestId: gate.requestId,
@@ -90,12 +92,30 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
+  type ToggleRow = {
+    new_checked_count: number;
+    is_checked: boolean;
+    template_mismatch: boolean;
+  };
+  const row = Array.isArray(rpcResult) && rpcResult.length > 0
+    ? (rpcResult[0] as ToggleRow)
+    : null;
+
+  if (row?.template_mismatch) {
+    return err('checklist item does not belong to this room\'s template', {
+      requestId: gate.requestId,
+      status: 409,
+      code: ApiErrorCode.ValidationFailed,
+      headers: gate.headers,
+    });
+  }
+
   return ok(
     {
       roomId: body.roomId,
       itemId: body.itemId,
-      checked: isChecked,
-      checkedCount: next.length,
+      checked: row?.is_checked ?? nextChecked,
+      checkedCount: row?.new_checked_count ?? 0,
     },
     { requestId: gate.requestId, headers: gate.headers },
   );

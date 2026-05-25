@@ -1,6 +1,10 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0214 — Housekeeper mobile rebuild (piece A): workflow state machine,
+-- 0215 — Housekeeper mobile rebuild (piece A): workflow state machine,
 --        checklists, exceptions, lunch breaks, rush + floor + manager notes.
+--
+-- Renumbered from 0214 → 0215 to avoid collision with
+-- 0214_phase_b_hardening.sql (Plan v8 cua-vision branch merged to main
+-- while this branch was in flight).
 --
 -- Why this exists:
 --   Piece A of the housekeeper mobile rebuild. The current page collapses
@@ -158,7 +162,13 @@ create table if not exists public.cleaning_checklist_items (
   item_es         text not null,
   sort_order      integer not null default 0,
   is_critical     boolean not null default false,
-  created_at      timestamptz not null default now()
+  created_at      timestamptz not null default now(),
+  -- One item per (template, sort_order). Stable conflict target for the
+  -- seed block at the bottom of this migration so re-running 0215 doesn't
+  -- duplicate every default item (the unique generated-uuid PK alone made
+  -- `on conflict do nothing` a no-op against itself).
+  constraint cleaning_checklist_items_template_order_unique
+    unique (template_id, sort_order)
 );
 
 create index if not exists cci_template_order_idx
@@ -247,7 +257,7 @@ begin
       (v_departure_id, 'living',   'Empty trash',                  'Vaciar la basura',              120, true),
       (v_departure_id, 'final',    'Check mini-fridge',            'Revisar el mini-bar',           130, false),
       (v_departure_id, 'final',    'Final walk-through',           'Inspección final',              140, true)
-    on conflict do nothing;
+    on conflict on constraint cleaning_checklist_items_template_order_unique do nothing;
   end if;
 
   -- STAYOVER -------------------------------------------------------------
@@ -270,7 +280,7 @@ begin
       (v_stayover_id, 'amenities','Restock toiletries as needed','Reponer artículos según necesidad', 40, false),
       (v_stayover_id, 'living',   'Empty trash',                'Vaciar la basura',             50, true),
       (v_stayover_id, 'living',   'Light vacuum',               'Aspirado ligero',              60, false)
-    on conflict do nothing;
+    on conflict on constraint cleaning_checklist_items_template_order_unique do nothing;
   end if;
 
   -- DEEP -----------------------------------------------------------------
@@ -303,7 +313,7 @@ begin
       (v_deep_id, 'living',   'Empty trash and replace liner',         'Vaciar basura y cambiar bolsa', 140, true),
       (v_deep_id, 'final',    'Test TV, lights, outlets',              'Probar TV, luces, enchufes',     150, false),
       (v_deep_id, 'final',    'Final walk-through',                    'Inspección final',               160, true)
-    on conflict do nothing;
+    on conflict on constraint cleaning_checklist_items_template_order_unique do nothing;
   end if;
 
   -- REFRESH --------------------------------------------------------------
@@ -324,7 +334,7 @@ begin
       (v_refresh_id, 'bathroom', 'Wipe sink',                        'Limpiar el lavabo',         20, false),
       (v_refresh_id, 'living',   'Empty trash if needed',            'Vaciar la basura si hace falta', 30, false),
       (v_refresh_id, 'final',    'Spray air freshener',              'Aromatizar el ambiente',    40, false)
-    on conflict do nothing;
+    on conflict on constraint cleaning_checklist_items_template_order_unique do nothing;
   end if;
 
   -- INSPECTION -----------------------------------------------------------
@@ -346,16 +356,108 @@ begin
       (v_inspection_id, 'amenities','All amenities present',         'Todos los amenities presentes',   30, true),
       (v_inspection_id, 'living',   'Floor is clean',                'El piso está limpio',             40, true),
       (v_inspection_id, 'final',    'Room ready for guest',          'Habitación lista para huésped',   50, true)
-    on conflict do nothing;
+    on conflict on constraint cleaning_checklist_items_template_order_unique do nothing;
   end if;
 end $$;
+
+-- ─── G. Atomic checklist-toggle RPC ─────────────────────────────────────
+--
+-- Read-modify-write on rooms.checklist_progress (jsonb array) from the
+-- API route was lossy under concurrent toggles: two devices toggling
+-- different items at once each read the same prior array and wrote back
+-- their own version, dropping the other device's update. The RPC below
+-- does the update atomically in a single statement with the correct
+-- concurrent semantics.
+--
+-- It also verifies the item belongs to the room's currently-active
+-- checklist template — a forged or stale tap can't smuggle an item ID
+-- from a different template into the progress array.
+--
+-- Returns the new checked count + whether the item was added or removed,
+-- and a `template_mismatch` flag so the caller can surface a 409 if the
+-- tap was stale.
+
+create or replace function public.staxis_checklist_toggle(
+  p_room_id uuid,
+  p_item_id uuid,
+  p_checked boolean
+)
+returns table (
+  new_checked_count integer,
+  is_checked boolean,
+  template_mismatch boolean
+)
+language plpgsql
+security definer
+set search_path = public, pg_catalog
+as $$
+declare
+  v_template_id uuid;
+  v_item_template_id uuid;
+  v_progress jsonb;
+  v_already_present boolean;
+begin
+  -- Atomically lock the room row + read its template + current progress.
+  select checklist_template_id, coalesce(checklist_progress, '[]'::jsonb)
+    into v_template_id, v_progress
+  from public.rooms
+  where id = p_room_id
+  for update;
+
+  if not found then
+    return query select 0, false, false;
+    return;
+  end if;
+
+  select template_id into v_item_template_id
+  from public.cleaning_checklist_items
+  where id = p_item_id;
+
+  if v_item_template_id is null or v_item_template_id is distinct from v_template_id then
+    return query select coalesce(jsonb_array_length(v_progress), 0), false, true;
+    return;
+  end if;
+
+  v_already_present := v_progress @> to_jsonb(p_item_id::text);
+
+  if p_checked then
+    if not v_already_present then
+      v_progress := v_progress || to_jsonb(p_item_id::text);
+    end if;
+  else
+    if v_already_present then
+      -- Drop every matching entry (defensive against duplicate ids).
+      v_progress := coalesce(
+        (
+          select jsonb_agg(elem)
+          from jsonb_array_elements(v_progress) elem
+          where elem <> to_jsonb(p_item_id::text)
+        ),
+        '[]'::jsonb
+      );
+    end if;
+  end if;
+
+  update public.rooms
+     set checklist_progress = v_progress
+   where id = p_room_id;
+
+  return query select coalesce(jsonb_array_length(v_progress), 0), p_checked, false;
+end;
+$$;
+
+revoke all on function public.staxis_checklist_toggle(uuid, uuid, boolean) from public, anon, authenticated;
+grant execute on function public.staxis_checklist_toggle(uuid, uuid, boolean) to service_role;
+
+comment on function public.staxis_checklist_toggle(uuid, uuid, boolean) is
+  'Atomic toggle of an item ID in rooms.checklist_progress. Locks the room row, verifies the item belongs to the room''s current template, and updates the jsonb array without read-modify-write loss. Added 0215.';
 
 -- ─── Track the migration ─────────────────────────────────────────────────
 
 insert into public.applied_migrations (version, description)
 values (
-  '0214',
-  'Housekeeper mobile rebuild A: workflow state machine on rooms (paused/exception/checklist), room_pause_events, cleaning_checklist_templates + items (seeded 5 defaults), staff_breaks, rush + floor + manager_notes on rooms.'
+  '0215',
+  'Housekeeper mobile rebuild A: workflow state machine on rooms (paused/exception/checklist), room_pause_events, cleaning_checklist_templates + items (seeded 5 defaults), staff_breaks, atomic checklist-toggle RPC, rush + floor + manager_notes on rooms.'
 )
 on conflict (version) do nothing;
 

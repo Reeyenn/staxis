@@ -275,6 +275,34 @@ export default function HousekeeperRoomPage({
     setRooms((curr) => sortRooms(curr, groupBy));
   }, [groupBy]);
 
+  // Hydrate the open-break state from server on mount. Without this, a
+  // refresh during an active lunch shows "Start lunch" and the next tap
+  // accidentally ENDS the still-open break (server toggle is open-or-end,
+  // not state-aware). Fixes the cross-midnight case too — the lunch GET
+  // searches by (pid, staffId) regardless of business_date.
+  useEffect(() => {
+    if (!pid || !housekeeperId || !authReady) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/housekeeper/lunch-break?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+        );
+        const json = (await res.json().catch(() => null)) as
+          | { ok?: boolean; data?: { openBreak: { startedAt: string } | null } }
+          | null;
+        if (!cancelled && res.ok && json?.ok && json.data?.openBreak) {
+          setOpenBreakStartedAt(json.data.openBreak.startedAt);
+        }
+      } catch {
+        // silent — button just defaults to "Start lunch"
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pid, housekeeperId, authReady]);
+
   // Fetch reservation context for the active date.
   useEffect(() => {
     if (!pid || !housekeeperId || !activeDate || !authReady) return;
