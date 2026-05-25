@@ -217,41 +217,64 @@ async function runForProperty(propertyId: string, tz: string | null): Promise<Pr
   const assignmentTasks = tasksToPlace.map(taskRowToAssignmentTask);
   const result = assignTasks(assignmentTasks, workingHks, cfg);
 
-  // 5. Persist decisions. We do hk_assignments inserts then a single
-  // bulk update to cleaning_tasks.assignee_id. If anything fails
-  // mid-way, the partial state is recoverable — re-running the cron
-  // picks up where it left off because finished rows already have
-  // active hk_assignments rows.
+  // 5. Persist decisions. Insert hk_assignments rows then update the
+  // cleaning_tasks.assignee_id cache. Concurrent cron runs are possible
+  // (two regions, manual retrigger, etc.), so we insert one row at a
+  // time and treat a 23505 unique-violation as "another runner placed
+  // this task already" — keeps the cron idempotent under contention.
+  //
+  // Failed inserts (other error codes) abort the rest so we don't paper
+  // over a structural issue. Failed cache updates are warned and
+  // continue — hk_assignments is the source of truth, the cache just
+  // saves a join on the housekeeper-facing reads.
   if (result.decisions.length > 0) {
-    const inserts = result.decisions.map(d => ({
-      property_id: propertyId,
-      cleaning_task_id: d.taskId,
-      housekeeper_id: d.housekeeperId,
-      queue_order: d.queueOrder,
-      is_active: true,
-      assigned_at: new Date().toISOString(),
-      assigned_by: 'auto' as const,
-      assigned_by_user_id: null,
-      reason: d.reason,
-      score: d.score,
-    }));
-    const { error: insErr } = await supabaseAdmin.from('hk_assignments').insert(inserts);
-    if (insErr) throw new Error(`insert hk_assignments: ${insErr.message}`);
-
-    // Cache the assignee on cleaning_tasks. Do this per-task because
-    // Supabase doesn't support a single-statement UPDATE … FROM
-    // VALUES; per-task it's still <50ms for a typical 30-task property.
+    let conflictNoops = 0;
     for (const d of result.decisions) {
+      const { error: insErr } = await supabaseAdmin.from('hk_assignments').insert({
+        property_id: propertyId,
+        cleaning_task_id: d.taskId,
+        housekeeper_id: d.housekeeperId,
+        queue_order: d.queueOrder,
+        is_active: true,
+        assigned_at: new Date().toISOString(),
+        assigned_by: 'auto' as const,
+        assigned_by_user_id: null,
+        reason: d.reason,
+        score: d.score,
+      });
+      if (insErr) {
+        // 23505 unique_violation = the partial unique index on
+        // (cleaning_task_id) where is_active=true fired. Means another
+        // runner (concurrent cron, manual reassignment that beat us)
+        // placed this task between our existing-assignment check and
+        // this insert. Treat as a successful no-op — re-running the
+        // cron later will see the active row and skip the task entirely.
+        const code = (insErr as { code?: string }).code ?? '';
+        if (code === '23505') {
+          conflictNoops += 1;
+          continue;
+        }
+        throw new Error(`insert hk_assignments: ${insErr.message}`);
+      }
+
+      // Cache the assignee on cleaning_tasks. Scoped by property_id as
+      // well as id (defense in depth — every cleaning_tasks write in
+      // this file should be tenant-pinned).
       const { error: updErr } = await supabaseAdmin
         .from('cleaning_tasks')
         .update({ assignee_id: d.housekeeperId })
-        .eq('id', d.taskId);
+        .eq('id', d.taskId)
+        .eq('property_id', propertyId);
       if (updErr) {
-        // Best-effort — the source of truth is hk_assignments. Log and continue.
         log.warn('run-auto-assign: failed to cache assignee_id', {
           propertyId, taskId: d.taskId, msg: updErr.message,
         });
       }
+    }
+    if (conflictNoops > 0) {
+      log.info('run-auto-assign: concurrent placements detected', {
+        propertyId, conflictNoops,
+      });
     }
   }
 

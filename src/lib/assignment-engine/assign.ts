@@ -70,6 +70,24 @@ function dueByMs(t: AssignmentTask): number {
 }
 
 /**
+ * Numeric-aware room-number comparator. Pure string `localeCompare`
+ * orders "1001" before "999" because '1' < '9' lexicographically, which
+ * mis-sorts high-rise rooms. Strategy: if BOTH room numbers parse as
+ * integers (post-strip), compare numerically. Otherwise fall back to
+ * `localeCompare` so labels like "LOBBY", "203A" still sort sanely.
+ */
+function compareRoomNumbers(a: string, b: string): number {
+  const aDigits = a.replace(/[^0-9]/g, '');
+  const bDigits = b.replace(/[^0-9]/g, '');
+  if (aDigits.length > 0 && bDigits.length > 0 && aDigits === a && bDigits === b) {
+    const na = parseInt(aDigits, 10);
+    const nb = parseInt(bDigits, 10);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  }
+  return a.localeCompare(b);
+}
+
+/**
  * Sort tasks for the greedy intake pass: priority desc, then due_by asc,
  * then room number asc as a stable deterministic tiebreak.
  */
@@ -81,7 +99,7 @@ function sortForIntake(tasks: readonly AssignmentTask[]): AssignmentTask[] {
     const da = dueByMs(a);
     const db = dueByMs(b);
     if (da !== db) return da - db;
-    return a.room_number.localeCompare(b.room_number);
+    return compareRoomNumbers(a.room_number, b.room_number);
   });
 }
 
@@ -112,7 +130,7 @@ function sortQueue(
       const db2 = fb != null ? Math.abs(fb - startFloor) : 999;
       if (da2 !== db2) return da2 - db2;
     }
-    return a.room_number.localeCompare(b.room_number);
+    return compareRoomNumbers(a.room_number, b.room_number);
   });
 }
 

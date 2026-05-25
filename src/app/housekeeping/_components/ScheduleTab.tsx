@@ -304,7 +304,13 @@ export function ScheduleTab() {
   // not a hardcoded 8h — the auto-assign algorithm and the capacity
   // bars MUST agree on the same number, or the bars will misrepresent
   // what auto-assign actually produced.
-  const SHIFT_MINS = activeProperty?.shiftMinutes ?? 420;
+  //
+  // Clamp to a positive minimum: a misconfigured property row (0 or
+  // negative shiftMinutes) would otherwise propagate as Infinity through
+  // every division in the tab (recommendedHKs, capacity bars, etc.) and
+  // render literal "Infinity HKs". Bottom-clamp at 60 — anything below
+  // a single hour-long shift is almost certainly a fat-finger.
+  const SHIFT_MINS = Math.max(60, activeProperty?.shiftMinutes ?? 420);
   // Recommended housekeeping headcount = cleaning crew needed to cover
   // the total cleaning minutes within shift hours, plus 1 dedicated to
   // laundry. Matches the previous version's `recommendedStaff` formula.

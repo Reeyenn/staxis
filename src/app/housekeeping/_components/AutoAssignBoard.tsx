@@ -206,24 +206,40 @@ export function AutoAssignBoard({
       if (!task) return;
       if (task.assignee_id === hkId) return; // dropped back on same column
       // Optimistic update — flip the assignee locally so the column
-      // count moves immediately. Roll back on error.
-      const prev = data;
+      // count moves immediately. On error we roll back BY DELTA, not by
+      // restoring a snapshot — if a refresh lands mid-flight (eg. the
+      // cron writes new assignments), a snapshot rollback would clobber
+      // that fresh data. Reverting just the (task, workload) delta
+      // commutes with any other change to other tasks/housekeepers.
       const taskMinutes = task.estimated_minutes_resolved;
       const oldHkId = task.assignee_id;
-      setData(prevData => {
+      const applyDelta = (
+        prevData: BoardData | null,
+        direction: 'forward' | 'reverse',
+      ): BoardData | null => {
         if (!prevData) return prevData;
+        const sign = direction === 'forward' ? 1 : -1;
+        const newAssignee = direction === 'forward' ? hkId : oldHkId;
+        const newAssignedBy = direction === 'forward' ? 'manual' : task.assigned_by;
         const tasks = prevData.tasks.map(t =>
-          t.id === task.id ? { ...t, assignee_id: hkId, assigned_by: 'manual' } : t,
+          t.id === task.id
+            ? { ...t, assignee_id: newAssignee, assigned_by: newAssignedBy }
+            : t,
         );
+        const adjustedToId = direction === 'forward' ? hkId : oldHkId;
+        const adjustedFromId = direction === 'forward' ? oldHkId : hkId;
         const housekeepers = prevData.housekeepers.map(h => {
-          if (h.id === hkId) return { ...h, workload_minutes: h.workload_minutes + taskMinutes };
-          if (oldHkId && h.id === oldHkId) {
-            return { ...h, workload_minutes: Math.max(0, h.workload_minutes - taskMinutes) };
+          if (h.id === adjustedToId) {
+            return { ...h, workload_minutes: h.workload_minutes + sign * taskMinutes };
+          }
+          if (adjustedFromId && h.id === adjustedFromId) {
+            return { ...h, workload_minutes: Math.max(0, h.workload_minutes - sign * taskMinutes) };
           }
           return h;
         });
         return { ...prevData, tasks, housekeepers };
-      });
+      };
+      setData(prevData => applyDelta(prevData, 'forward'));
       try {
         const res = await fetchWithAuth('/api/housekeeping/reassign', {
           method: 'POST',
@@ -240,7 +256,11 @@ export function AutoAssignBoard({
         }
         await refresh();
       } catch (e) {
-        setData(prev); // rollback
+        // Reverse the same delta. If state has changed underneath us
+        // (refresh landed, another drag moved a different task), we
+        // still only touch THIS task + the two affected HK workloads —
+        // other state stays intact.
+        setData(prevData => applyDelta(prevData, 'reverse'));
         setReassignErr(e instanceof Error ? e.message : String(e));
       }
     },
