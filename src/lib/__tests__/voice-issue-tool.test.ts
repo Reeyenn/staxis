@@ -69,7 +69,9 @@ const insertedIssues: Array<Record<string, unknown>> = [];
 let nextInsertError: { code?: string; message?: string } | null = null;
 // Used by the idempotency test as the row returned by the post-conflict
 // SELECT — i.e. the already-stored ticket for this voice session.
-let existingIssueRow: { id: string } | null = null;
+// Widened: the idempotent-retry test hydrates response fields from the
+// stored row, so the lookup may return room_number + voice_metadata too.
+let existingIssueRow: Record<string, unknown> | null = null;
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 
@@ -124,9 +126,12 @@ function buildTableStub(table: string) {
       }),
     };
   }
-  if (table === 'staxis_voice_issues') {
+  if (table === 'pms_work_orders_v2') {
+    // Migration 0225 unified the voice-issue write path into
+    // pms_work_orders_v2. The tool inserts a row with source='housekeeper_voice'
+    // and a voice_metadata jsonb blob; the post-conflict lookup queries by
+    // voice_session_id (partial unique index).
     return {
-      // Insert path (happy + 23505 unique_violation simulation).
       insert: (row: Record<string, unknown>) => ({
         select: (_cols: string) => ({
           single: async () => {
@@ -140,7 +145,6 @@ function buildTableStub(table: string) {
           },
         }),
       }),
-      // Post-conflict lookup: select … from staxis_voice_issues where voice_session_id=?
       select: (_cols: string) => ({
         eq: (_col: string, _v: string) => ({
           maybeSingle: async () => ({ data: existingIssueRow, error: null }),
@@ -195,7 +199,7 @@ describe('createMaintenanceWorkOrder — validation', () => {
     assert.match(r.error ?? '', /item is required/);
   });
 
-  test('defaults severity to MINOR when omitted', async () => {
+  test('defaults severity to MINOR (priority=low) when omitted', async () => {
     const r = await executeTool(
       'createMaintenanceWorkOrder',
       { action: 'REPAIR', item: 'sink' },
@@ -203,10 +207,40 @@ describe('createMaintenanceWorkOrder — validation', () => {
     );
     assert.equal(r.ok, true);
     assert.equal(insertedIssues.length, 1);
-    assert.equal(insertedIssues[0]!.severity, 'MINOR');
+    // Severity lives inside voice_metadata since migration 0225.
+    const row = insertedIssues[0]!;
+    const meta = row.voice_metadata as { severity?: string };
+    assert.equal(meta.severity, 'MINOR');
+    // Mapped onto pms_work_orders_v2.priority — MINOR → low.
+    assert.equal(row.priority, 'low');
+    assert.equal(row.source, 'housekeeper_voice');
   });
 
-  test('caps a runaway note at 300 chars', async () => {
+  test('severity URGENT maps to priority=urgent', async () => {
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink', severity: 'URGENT' },
+      makeCtx(),
+    );
+    assert.equal(r.ok, true);
+    assert.equal(insertedIssues[0]!.priority, 'urgent');
+  });
+
+  test('severity MAJOR maps to priority=high (broken equipment must reach critical reports)', async () => {
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink', severity: 'MAJOR' },
+      makeCtx(),
+    );
+    assert.equal(r.ok, true);
+    // Codex 2026-05-25 MAJOR fix: MAJOR previously mapped to 'medium'
+    // which fell outside src/lib/reports/aggregate.ts's critical filter
+    // (urgent + high only) — broken in-room equipment disappeared from
+    // the dashboard's critical-pending count.
+    assert.equal(insertedIssues[0]!.priority, 'high');
+  });
+
+  test('caps a runaway note at 300 chars (note lives in voice_metadata)', async () => {
     const longNote = 'x'.repeat(5000);
     const r = await executeTool(
       'createMaintenanceWorkOrder',
@@ -214,8 +248,56 @@ describe('createMaintenanceWorkOrder — validation', () => {
       makeCtx(),
     );
     assert.equal(r.ok, true);
-    const stored = insertedIssues[0]!.note as string;
-    assert.equal(stored.length, 300);
+    const meta = insertedIssues[0]!.voice_metadata as { note?: string };
+    assert.equal((meta.note ?? '').length, 300);
+  });
+
+  test('writes a deterministic pms_work_order_id derived from voice_session_id (idempotency anchor)', async () => {
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink' },
+      makeCtx({ voiceSessionId: '00000000-0000-0000-0000-000000000099' }),
+    );
+    assert.equal(r.ok, true);
+    assert.equal(
+      insertedIssues[0]!.pms_work_order_id,
+      'staxis-voice-00000000-0000-0000-0000-000000000099',
+    );
+  });
+
+  test('packs forensic fields into voice_metadata', async () => {
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      {
+        action: 'REPAIR',
+        item: 'sink',
+        location_detail: 'bathroom',
+        severity: 'URGENT',
+        note: 'water leaking',
+        original_language: 'tl',
+        original_transcription: 'Ang lababo ay sira sa banyo',
+      },
+      makeCtx(),
+    );
+    assert.equal(r.ok, true);
+    const meta = insertedIssues[0]!.voice_metadata as {
+      action?: string;
+      item?: string;
+      location_detail?: string;
+      severity?: string;
+      note?: string;
+      original_language?: string;
+      original_transcription?: string;
+    };
+    assert.equal(meta.action, 'REPAIR');
+    assert.equal(meta.item, 'sink');
+    assert.equal(meta.location_detail, 'bathroom');
+    assert.equal(meta.severity, 'URGENT');
+    assert.equal(meta.note, 'water leaking');
+    assert.equal(meta.original_language, 'tl');
+    assert.equal(meta.original_transcription, 'Ang lababo ay sira sa banyo');
+    // Description is the human-readable summary.
+    assert.match(insertedIssues[0]!.description as string, /REPAIR sink \(bathroom\) — water leaking/);
   });
 });
 
@@ -313,6 +395,50 @@ describe('createMaintenanceWorkOrder — idempotency (Codex 2026-05-25 MAJOR fix
     assert.equal(data.idempotent, true);
     // No new row should have been inserted on the conflict path.
     assert.equal(insertedIssues.length, 0);
+  });
+
+  test('idempotent retry returns the STORED ticket fields, not the retry\'s caller-supplied ones', async () => {
+    // Codex 2026-05-25 adversarial gate (MAJOR fix): a retried call with
+    // different fields used to get a response describing its own fields,
+    // not what was actually saved. Now the response is hydrated from the
+    // stored row's voice_metadata + room_number.
+    nextInsertError = { code: '23505', message: 'unique_violation' };
+    existingIssueRow = {
+      id: 'pre-existing-issue-id',
+      room_number: '410',
+      voice_metadata: {
+        action: 'REPLACE',
+        item: 'TV',
+        location_detail: 'above the bed',
+        severity: 'URGENT',
+        note: 'cracked screen',
+        original_language: 'es',
+      },
+    };
+
+    // Retry passes DIFFERENT fields — the response must echo the STORED
+    // ones (410 / REPLACE / TV / URGENT / "cracked screen"), not the
+    // retry's (305 / REPAIR / sink / MINOR / null).
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink', severity: 'MINOR' },
+      makeCtx({ currentRoomNumber: '305' }),
+    );
+    assert.equal(r.ok, true);
+    const data = r.data as {
+      idempotent: boolean;
+      room_number: string;
+      action: string;
+      item: string;
+      severity: string;
+      note: string | null;
+    };
+    assert.equal(data.idempotent, true);
+    assert.equal(data.room_number, '410');
+    assert.equal(data.action, 'REPLACE');
+    assert.equal(data.item, 'TV');
+    assert.equal(data.severity, 'URGENT');
+    assert.equal(data.note, 'cracked screen');
   });
 
   test('a generic insert error is still surfaced as a hard failure', async () => {

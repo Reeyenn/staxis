@@ -1,22 +1,31 @@
 // ─── createMaintenanceWorkOrder — housekeeper voice issue tool ───────────
 //
-// Feature #11. A housekeeper taps the mic on a room card, speaks the issue
-// in any of EN/ES/HT/TL/VI; ElevenLabs transcribes; Claude extracts
-// structured fields; this tool writes the row.
+// Feature #11 + 2026-05-25 unification. A housekeeper taps the mic on a
+// room card, speaks the issue in any of EN/ES/HT/TL/VI; ElevenLabs
+// transcribes; Claude extracts structured fields; this tool writes the
+// row directly into pms_work_orders_v2 — the canonical maintenance table.
+//
+// History: feature #11 (migration 0218) originally wrote to a separate
+// staxis_voice_issues table because the CUA reconciles pms_work_orders_v2
+// as a full snapshot of the PMS feed — any row not in the next sync gets
+// auto-resolved (cua-service/src/persistence/generic-table-writer.ts
+// writeReconcile). A Staxis-originated row had no PMS counterpart and
+// would have flipped to 'resolved' 30s later.
+//
+// Migration 0225 closed that gap by:
+//   1. Adding `source` to pms_work_orders_v2 (default 'pms_sync').
+//   2. Teaching the CUA reconciler to scope auto-resolve to
+//      `source = 'pms_sync'`. Voice-originated rows are now invisible to
+//      the reconciliation pass.
+//   3. Backfilling existing staxis_voice_issues into pms_work_orders_v2
+//      and dropping the legacy table.
 //
 // Scope:
 //   - VOICE surface only, and only in voice mode 'housekeeper_issue'. The
 //     same call signature is unreachable from the chat surface or from the
 //     general voice catalog — see `voiceModes` declaration below + the
 //     belt-and-braces gate in executeTool().
-//   - We DO NOT write to pms_work_orders_v2. That table is a reconciled
-//     snapshot of the PMS feed (cua-service/src/recipe-adapter.ts:165 sets
-//     writeStrategy='reconcile' which auto-resolves any row that disappears
-//     from the next 30s sync). A Staxis-originated ticket has no PMS
-//     counterpart and would silently flip to 'resolved' on the very next
-//     poll. Instead we write to public.staxis_voice_issues — a dedicated
-//     table that the CUA never touches (migration 0214).
-//   - We ALSO mirror the spoken note into rooms.issue_note when a matching
+//   - We also mirror the spoken note into rooms.issue_note when a matching
 //     room exists, so the housekeeper sees the issue surface on the room
 //     card without having to wait on the maintenance dashboard. This
 //     re-uses the existing `flag_issue` rendering path.
@@ -198,48 +207,116 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
       };
     }
 
-    // ─── 4. Insert into staxis_voice_issues ─────────────────────────────
-    // Codex 2026-05-25 adversarial gate (MAJOR fix): the voice-session id
-    // is the idempotency anchor. If the agent fires this tool twice within
-    // one session (model retry, webhook retry, double model output, etc.),
-    // the partial unique index on (voice_session_id) refuses the second
-    // insert with a 23505 unique_violation. We swallow that and fetch the
-    // already-stored row so the caller sees ONE ticket per session.
+    // ─── 4. Insert into pms_work_orders_v2 ──────────────────────────────
+    // Idempotency: the voice-session id is the anchor. If the agent fires
+    // this tool twice within one session (model retry, webhook retry, double
+    // model output, etc.), the partial unique index on (voice_session_id)
+    // refuses the second insert with a 23505 unique_violation. We swallow
+    // that and fetch the already-stored row so the caller sees ONE ticket
+    // per session.
+    //
+    // pms_work_order_id is set to a deterministic 'staxis-voice-<uuid>' so
+    // it's both unique per property (the canonical natural key) AND stable
+    // across retries within the same session.
+    //
+    // Severity → priority mapping (pms_work_orders_v2 priority enum is
+    // 'urgent'|'high'|'medium'|'low'). MAJOR is defined in the prompt as
+    // "in-room equipment broken" — that needs to land on the high-priority
+    // queue so the manager's dashboard treats broken AC / TV / fridge the
+    // same as the PMS-reported `high` priority work orders. Codex
+    // 2026-05-25 adversarial gate (MAJOR fix): the prior MAJOR→medium
+    // mapping silently dropped broken equipment out of
+    // `src/lib/reports/aggregate.ts:339-342`'s critical-pending count
+    // (which only sums urgent + high).
+    //    URGENT  → urgent
+    //    MAJOR   → high
+    //    MINOR   → low
     const voiceSessionId = ctx.voiceSessionId ?? null;
+    const pmsWorkOrderId = voiceSessionId
+      ? `staxis-voice-${voiceSessionId}`
+      // No session id (test / dev path) — fall back to a per-call random id
+      // so the natural-key index doesn't reject the row.
+      : `staxis-voice-adhoc-${crypto.randomUUID()}`;
+
+    const priority =
+      severity === 'URGENT' ? 'urgent' :
+      severity === 'MAJOR'  ? 'high'   :
+                              'low';
+
+    // Description: "REPAIR sink (bathroom) — water leaking" style. The
+    // maintenance team sees this on the first row hit; the structured
+    // fields live in voice_metadata for any UI that wants to render them.
+    const descriptionParts: string[] = [`${action} ${item}`];
+    if (locationDetail) descriptionParts[0] += ` (${locationDetail})`;
+    if (note)           descriptionParts.push(note);
+    const description = descriptionParts.join(' — ').slice(0, 1000);
+
+    const reportedBy = ctx.user.displayName || ctx.user.username || 'Housekeeper voice report';
+    const nowIso = new Date().toISOString();
+
     const insertPayload = {
       property_id: ctx.propertyId,
-      staff_id: ctx.staffId,
-      account_id: ctx.user.accountId,
-      voice_session_id: voiceSessionId,
-      conversation_id: null, // voice-brain doesn't pass conversationId into ToolContext today; future enhancement
+      pms_work_order_id: pmsWorkOrderId,
       room_number: resolvedRoomNumber,
-      action,
-      item,
-      location_detail: locationDetail,
-      severity,
-      note,
-      original_language: originalLanguage,
-      original_transcription: originalTranscription,
-      voice_clip_path: voiceClipPath,
+      description,
+      priority,
       status: 'open',
+      reported_by: reportedBy,
+      reported_at: nowIso,
+      source: 'housekeeper_voice',
+      voice_session_id: voiceSessionId,
+      voice_metadata: {
+        action,
+        item,
+        location_detail: locationDetail,
+        severity,
+        note,
+        original_language: originalLanguage,
+        original_transcription: originalTranscription,
+        voice_clip_path: voiceClipPath,
+        staff_id: ctx.staffId,
+        account_id: ctx.user.accountId,
+      },
     };
+
     const { data, error } = await supabaseAdmin
-      .from('staxis_voice_issues')
+      .from('pms_work_orders_v2')
       .insert(insertPayload)
       .select('id')
       .single();
+
     let issueId: string | null = null;
     let idempotent = false;
+    // Effective fields for the response. On the happy path these are the
+    // same as what we just inserted; on the idempotent path they are the
+    // STORED values from the first call so a retried call that changed
+    // its mind (different action / room / severity) doesn't get a
+    // response lying about what's actually in the DB.
+    // Codex 2026-05-25 adversarial gate (MAJOR fix): the previous version
+    // returned the retry's caller-supplied fields after a 23505 — the
+    // agent or UI would then speak "ticket filed for X" while the DB
+    // recorded Y.
+    let respRoomNumber: string | null = resolvedRoomNumber;
+    let respAction: IssueAction = action;
+    let respItem: string = item;
+    let respLocationDetail: string | null = locationDetail;
+    let respSeverity: IssueSeverity = severity;
+    let respNote: string | null = note;
+    let respOriginalLanguage: string | null = originalLanguage;
     if (error) {
       const code = (error as { code?: string }).code;
-      // 23505 = Postgres unique_violation. Only the per-session partial
-      // unique index can fire here (we don't declare any other unique
-      // constraints), so this branch is the "agent fired the tool twice"
-      // case — fetch the already-stored row instead of a hard error.
+      // 23505 = Postgres unique_violation. Two indexes can fire it here:
+      //   (a) the partial unique index on (voice_session_id), or
+      //   (b) the canonical unique index on (property_id, pms_work_order_id).
+      // Both branches mean "this voice session already produced a ticket" —
+      // look it up by voice_session_id, hydrate response fields from
+      // the stored row, and return. If we don't have a session id (test
+      // / dev path), the conflict is the natural-key one and we can't
+      // recover — surface a hard error.
       if (code === '23505' && voiceSessionId) {
         const { data: existing, error: lookupErr } = await supabaseAdmin
-          .from('staxis_voice_issues')
-          .select('id')
+          .from('pms_work_orders_v2')
+          .select('id, room_number, voice_metadata')
           .eq('voice_session_id', voiceSessionId)
           .maybeSingle();
         if (lookupErr || !existing) {
@@ -250,6 +327,27 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
         }
         issueId = existing.id as string;
         idempotent = true;
+        const storedMeta = (existing.voice_metadata ?? {}) as {
+          action?: string;
+          item?: string;
+          location_detail?: string | null;
+          severity?: string;
+          note?: string | null;
+          original_language?: string | null;
+        };
+        respRoomNumber = (existing.room_number as string | null) ?? respRoomNumber;
+        if (storedMeta.action && ACTION_VALUES.includes(storedMeta.action as IssueAction)) {
+          respAction = storedMeta.action as IssueAction;
+        }
+        if (typeof storedMeta.item === 'string' && storedMeta.item.length > 0) {
+          respItem = storedMeta.item;
+        }
+        respLocationDetail = (storedMeta.location_detail as string | null) ?? null;
+        if (storedMeta.severity && SEVERITY_VALUES.includes(storedMeta.severity as IssueSeverity)) {
+          respSeverity = storedMeta.severity as IssueSeverity;
+        }
+        respNote = (storedMeta.note as string | null) ?? null;
+        respOriginalLanguage = (storedMeta.original_language as string | null) ?? null;
       } else {
         return {
           ok: false,
@@ -268,15 +366,15 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
     // error up. The "ticket created" feedback comes from the verbal
     // confirmation either way.
     //
-    // Codex 2026-05-25 adversarial gate (MAJOR fix): never overwrite a
-    // non-empty issue_note. If a prior issue was already flagged on the
-    // room, last-writer-wins would silently hide it from the housekeeper
-    // UI even though both tickets exist in staxis_voice_issues. We only
-    // write the mirror when the column is null/empty, and we skip the
-    // mirror entirely when the insert was idempotent (the same session's
-    // first call already mirrored). For "second different issue on the
-    // same room" the maintenance dashboard reads the canonical list from
-    // staxis_voice_issues — the room card just shows the first hint.
+    // Never overwrite a non-empty issue_note. If a prior issue was already
+    // flagged on the room, last-writer-wins would silently hide it from
+    // the housekeeper UI even though both tickets exist in
+    // pms_work_orders_v2. We only write the mirror when the column is
+    // null/empty, and we skip the mirror entirely when the insert was
+    // idempotent (the same session's first call already mirrored). For
+    // "second different issue on the same room" the maintenance dashboard
+    // reads the canonical list from pms_work_orders_v2 — the room card
+    // just shows the first hint.
     if (resolvedRoomNumber && !idempotent) {
       const summary = locationDetail
         ? `${action.toLowerCase()} ${item} (${locationDetail})`
@@ -298,15 +396,17 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
         // True when this call hit the unique index — i.e. the session
         // already had a ticket and we returned the existing one rather
         // than creating a second. The agent can mention "already filed"
-        // instead of "created" if it cares.
+        // instead of "created" if it cares. When idempotent=true the
+        // fields below describe the STORED ticket, not whatever the
+        // retried call passed in.
         idempotent,
-        room_number: resolvedRoomNumber,
-        action,
-        item,
-        location_detail: locationDetail,
-        severity,
-        note,
-        original_language: originalLanguage,
+        room_number: respRoomNumber,
+        action: respAction,
+        item: respItem,
+        location_detail: respLocationDetail,
+        severity: respSeverity,
+        note: respNote,
+        original_language: respOriginalLanguage,
       },
     };
   },

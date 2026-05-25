@@ -66,11 +66,14 @@ export async function GET(req: NextRequest): Promise<Response> {
     );
   }
 
-  // Look up the ticket for this session. The partial unique index on
-  // (voice_session_id) guarantees at most one row.
+  // Look up the ticket for this session. Reads from pms_work_orders_v2
+  // (canonical maintenance table since migration 0225). The partial unique
+  // index on (voice_session_id) guarantees at most one row. The voice-
+  // specific fields live in voice_metadata; we flatten them onto the
+  // response so the client doesn't have to reach into jsonb.
   const { data: issue, error: issueErr } = await supabaseAdmin
-    .from('staxis_voice_issues')
-    .select('id, room_number, action, item, location_detail, severity, status, created_at')
+    .from('pms_work_orders_v2')
+    .select('id, room_number, status, created_at, voice_metadata')
     .eq('voice_session_id', voiceSessionId)
     .maybeSingle();
   if (issueErr) {
@@ -87,16 +90,23 @@ export async function GET(req: NextRequest): Promise<Response> {
     );
   }
 
+  const meta = (issue.voice_metadata ?? {}) as {
+    action?: string;
+    item?: string;
+    location_detail?: string | null;
+    severity?: string;
+  };
+
   return NextResponse.json({
     ok: true,
     data: {
       ticketFiled: true,
       issueId: issue.id,
       roomNumber: issue.room_number,
-      action: issue.action,
-      item: issue.item,
-      locationDetail: issue.location_detail,
-      severity: issue.severity,
+      action: meta.action ?? null,
+      item: meta.item ?? null,
+      locationDetail: meta.location_detail ?? null,
+      severity: meta.severity ?? null,
       status: issue.status,
       createdAt: issue.created_at,
     },
