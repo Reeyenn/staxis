@@ -21,6 +21,7 @@ import {
   recipeSigningMode,
   isRecipeSigningConfigured,
 } from './recipe-signing.js';
+import { createHash } from 'node:crypto';
 import type {
   ActionRecipe,
   PMSArrival,
@@ -30,7 +31,24 @@ import type {
   PMSRoomStatus,
   Recipe,
   RecipeStep,
+  TieredSelector,
 } from './types.js';
+
+/**
+ * Codex adversarial review P1 — don't ship raw role/name strings to
+ * production logs. Accessible names sometimes embed guest data (e.g.
+ * "Open reservation for Jane Smith") and the worker's `info`/`warn`
+ * logs land in Fly stdout. Hash the name (first 12 hex chars of SHA-256)
+ * so durability telemetry stays useful — we can still spot the SAME
+ * name resolving across runs by hash equality — without storing the
+ * literal PII.
+ */
+function nameTelemetry(name: string): { nameHash: string; nameLength: number } {
+  return {
+    nameHash: createHash('sha256').update(name).digest('hex').slice(0, 12),
+    nameLength: name.length,
+  };
+}
 
 /** Derive the allowed-host bound from a recipe's login.startUrl. Used
  *  for every navigation AFTER the login startUrl itself — keeps replay
@@ -291,6 +309,104 @@ function resolveValueWithScope(
   return rawValue;
 }
 
+/**
+ * Plan v9 F2 — tiered click. Tries Playwright tiers in order:
+ *   1. page.getByRole(role, { name }).click()    — most durable
+ *   2. page.locator(css).click()                  — fast & precise but brittle
+ *   3. page.locator('xpath=' + xpath).click()     — last resort
+ *
+ * Logs `resolved_tier` so we have telemetry on selector durability over
+ * weeks of polling. Returns `true` on success, throws on full exhaustion.
+ *
+ * Each tier gets its own 5s timeout — total worst case is ~15s for an
+ * element that doesn't exist at all, which is what the legacy click
+ * step's 10s timeout would have spent already.
+ */
+async function clickWithTieredFallback(
+  page: Page,
+  tier: TieredSelector,
+  /** Optional legacy CSS string — used when `tier.css` is unset (back-compat). */
+  legacyCss?: string,
+  /** For telemetry — caller passes the step kind ('click' / 'click_at'). */
+  context: string = 'click',
+): Promise<{ resolvedTier: 'role_name' | 'css' | 'xpath' }> {
+  const TIER_TIMEOUT_MS = 5_000;
+  // Tier 1: role + accessible name.
+  //
+  // Codex adversarial review P1 fix: pass `exact: true` so Playwright
+  // matches the FULL accessible name, not a substring. Without it,
+  // recorded `Edit` would also resolve `Edit reservation`, `Edit guest`,
+  // etc., and `.first()` would silently click whichever is topmost. We
+  // also drop `.first()`: when multiple elements share the exact role+
+  // name (rare but possible — e.g. two identical "Continue" buttons in
+  // separate panels), Playwright's strict-mode locator action throws
+  // and we fall through to tier 2 (CSS) rather than guess.
+  if (tier.roleName) {
+    try {
+      await page
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .getByRole(tier.roleName.role as any, { name: tier.roleName.name, exact: true })
+        .click({ timeout: TIER_TIMEOUT_MS });
+      log.info('recipe-runner: tier resolved', {
+        context,
+        resolvedTier: 'role_name',
+        role: tier.roleName.role,
+        ...nameTelemetry(tier.roleName.name),
+      });
+      return { resolvedTier: 'role_name' };
+    } catch (err) {
+      log.warn('recipe-runner: role_name tier failed, falling back', {
+        context,
+        role: tier.roleName.role,
+        ...nameTelemetry(tier.roleName.name),
+        message: (err as Error).message,
+      });
+    }
+  }
+  // Tier 2: CSS.
+  const css = tier.css ?? legacyCss;
+  if (css) {
+    try {
+      await page.locator(css).first().click({ timeout: TIER_TIMEOUT_MS });
+      log.info('recipe-runner: tier resolved', {
+        context,
+        resolvedTier: 'css',
+        css,
+      });
+      return { resolvedTier: 'css' };
+    } catch (err) {
+      log.warn('recipe-runner: css tier failed, falling back', {
+        context,
+        css,
+        message: (err as Error).message,
+      });
+    }
+  }
+  // Tier 3: xpath.
+  if (tier.xpath) {
+    try {
+      await page.locator(`xpath=${tier.xpath}`).first().click({ timeout: TIER_TIMEOUT_MS });
+      log.info('recipe-runner: tier resolved', {
+        context,
+        resolvedTier: 'xpath',
+        xpath: tier.xpath,
+      });
+      return { resolvedTier: 'xpath' };
+    } catch (err) {
+      log.warn('recipe-runner: xpath tier failed', {
+        context,
+        xpath: tier.xpath,
+        message: (err as Error).message,
+      });
+    }
+  }
+  // Exhausted every tier the caller supplied.
+  throw new Error(
+    `tiered_click_exhausted: tried roleName=${tier.roleName ? 'yes' : 'no'} ` +
+      `css=${css ? 'yes' : 'no'} xpath=${tier.xpath ? 'yes' : 'no'}`,
+  );
+}
+
 async function runStep(
   page: Page,
   step: RecipeStep,
@@ -315,13 +431,60 @@ async function runStep(
       return;
     }
     case 'click':
-      await page.click(step.selector, { timeout: 10_000 });
+      // Plan v9 F2 — when the step carries tiered selectors, try them in
+      // order and only fall back to the legacy single-selector click if
+      // every tier exhausts. Recipes recorded BEFORE this feature have
+      // no `tieredSelector`, so they take the legacy path and replay
+      // exactly as before.
+      if (step.tieredSelector) {
+        await clickWithTieredFallback(page, step.tieredSelector, step.selector, 'click');
+      } else {
+        await page.click(step.selector, { timeout: 10_000 });
+      }
       return;
     case 'click_at':
+      // Plan v9 F2 — when the vision-mode click handler recorded a
+      // role+name alongside the coordinate, try `getByRole` first. If
+      // that fails (the PMS UI shifted), fall back to the recorded
+      // coordinate — same behavior as before the upgrade.
+      //
+      // Codex adversarial review P1 fix: `exact: true` to avoid silent
+      // substring matches, no `.first()` so ambiguity surfaces and we
+      // fall through to coord. Telemetry hashes the name to avoid PII
+      // leaks to Fly stdout.
+      if (step.roleName) {
+        try {
+          await page
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .getByRole(step.roleName.role as any, { name: step.roleName.name, exact: true })
+            .click({ timeout: 5_000 });
+          log.info('recipe-runner: tier resolved', {
+            context: 'click_at',
+            resolvedTier: 'role_name',
+            role: step.roleName.role,
+            ...nameTelemetry(step.roleName.name),
+          });
+          return;
+        } catch (err) {
+          log.warn('recipe-runner: click_at role_name tier failed, falling back to coordinate', {
+            role: step.roleName.role,
+            ...nameTelemetry(step.roleName.name),
+            x: step.x,
+            y: step.y,
+            message: (err as Error).message,
+          });
+        }
+      }
       // Coordinate-based replay — the mapper recorded a click at (x, y)
       // because Claude clicked at pixel coordinates rather than a CSS
-      // selector. Brittle to UI resizes but adequate for v0.
+      // selector. Brittle to UI resizes but adequate as a backstop.
       await page.mouse.click(step.x, step.y);
+      log.info('recipe-runner: tier resolved', {
+        context: 'click_at',
+        resolvedTier: 'coordinate',
+        x: step.x,
+        y: step.y,
+      });
       return;
     case 'type_text': {
       // The mapper substituted credentials with $username / $password

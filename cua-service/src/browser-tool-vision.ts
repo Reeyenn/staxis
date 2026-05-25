@@ -44,6 +44,141 @@ import type { Page } from 'playwright';
 import type { PMSCredentials, RecipeStep } from './types.js';
 import type { MappingPhase } from './policy.js';
 import { log } from './log.js';
+import { applySetOfMark, clearSetOfMark, type BadgeInfo } from './set-of-mark.js';
+
+// ─── Set-of-Mark badge store ─────────────────────────────────────────────
+//
+// Each screenshot draws numbered badges on every clickable element so the
+// agent can request `left_click` with `text: "#N"` instead of guessing a
+// pixel coordinate. The map from badge ID → BadgeInfo is stashed per-page
+// here, so the next `left_click` action can resolve `#N` to the badge's
+// center coordinate (and pick up its ARIA role+name for selector fallback).
+//
+// WeakMap so closing a page auto-frees the map — we never need to clean
+// up stale entries across navigations on our own. The badge DOM itself is
+// removed at the start of every non-screenshot action (see executeVisionAction).
+const setOfMarkStore = new WeakMap<Page, Map<number, BadgeInfo>>();
+
+/**
+ * Resolve a `#N` token from the action's text payload to a badge-center
+ * coordinate AND the badge's role+name (if any). Returns `null` if the
+ * token doesn't match a known badge — caller falls back to the original
+ * pixel coordinate.
+ *
+ * Exported for tests; not part of the public action surface.
+ */
+export function resolveBadgeReference(
+  page: Page,
+  badgeText: string | undefined,
+): { x: number; y: number; roleName?: { role: string; name: string } } | null {
+  if (!badgeText) return null;
+  const match = /^#(\d+)$/.exec(badgeText.trim());
+  if (!match) return null;
+  const id = parseInt(match[1]!, 10);
+  const badges = setOfMarkStore.get(page);
+  if (!badges) return null;
+  const badge = badges.get(id);
+  if (!badge) return null;
+  const roleName =
+    badge.role && badge.name ? { role: badge.role, name: badge.name } : undefined;
+  return { x: badge.x, y: badge.y, ...(roleName ? { roleName } : {}) };
+}
+
+/**
+ * For an unmarked coordinate click, peek at the element under (x, y) and
+ * extract its ARIA role + accessible name. This lets the replay path try
+ * Playwright's `getByRole` before falling back to raw coordinates, which
+ * survives PMS UI rewrites that move the element to a new pixel position.
+ *
+ * Best-effort: returns undefined if the element isn't reachable or
+ * doesn't have a meaningful name. Don't throw — vision-mode clicks are
+ * already coordinate-grounded and don't NEED roleName to succeed.
+ */
+async function extractRoleNameAtPoint(
+  page: Page,
+  x: number,
+  y: number,
+): Promise<{ role: string; name: string } | undefined> {
+  try {
+    // NOTE: page.evaluate body is inline-only — see set-of-mark.ts for the
+    // `__name is not defined` esbuild gotcha we worked around there.
+    const result = await page.evaluate(
+      ({ cx, cy }) => {
+        const stack = document.elementsFromPoint(cx, cy);
+        let el: Element | null = null;
+        for (const e of stack) {
+          if (!(e as HTMLElement).dataset.staxisSomBadge) {
+            el = e;
+            break;
+          }
+        }
+        if (!el) return null;
+
+        // Walk up to find a sensible click target (button, link, [role], etc.).
+        let target: Element | null = el;
+        for (let i = 0; i < 6 && target; i++) {
+          const tag = target.tagName.toLowerCase();
+          const isTarget =
+            tag === 'a' ||
+            tag === 'button' ||
+            tag === 'input' ||
+            tag === 'select' ||
+            tag === 'textarea' ||
+            target.hasAttribute('role') ||
+            target.hasAttribute('onclick') ||
+            (target.getAttribute('tabindex') !== null &&
+              target.getAttribute('tabindex') !== '-1');
+          if (isTarget) break;
+          target = target.parentElement;
+        }
+        if (!target) target = el;
+
+        // Role: explicit attr or tag-derived.
+        let role: string | null = target.getAttribute('role');
+        if (!role) {
+          const tag = target.tagName.toLowerCase();
+          if (tag === 'a' && target.hasAttribute('href')) role = 'link';
+          else if (tag === 'button') role = 'button';
+          else if (tag === 'input') {
+            const type = (target as HTMLInputElement).type || 'text';
+            if (type === 'checkbox') role = 'checkbox';
+            else if (type === 'radio') role = 'radio';
+            else if (type === 'submit' || type === 'button') role = 'button';
+            else role = 'textbox';
+          } else if (tag === 'select') role = 'combobox';
+          else if (tag === 'textarea') role = 'textbox';
+        }
+        if (!role) return null;
+
+        // Name: aria-label > text > placeholder > title.
+        let name: string | null = null;
+        const aria = target.getAttribute('aria-label');
+        if (aria && aria.trim()) name = aria.trim();
+        if (!name) {
+          const t = (target.textContent || '').replace(/\s+/g, ' ').trim();
+          if (t) name = t.slice(0, 80);
+        }
+        if (!name) {
+          const ph = target.getAttribute('placeholder');
+          if (ph && ph.trim()) name = ph.trim();
+        }
+        if (!name) {
+          const tt = target.getAttribute('title');
+          if (tt && tt.trim()) name = tt.trim();
+        }
+        if (!name) return null;
+        return { role, name };
+      },
+      { cx: x, cy: y },
+    );
+    return result ? { role: result.role, name: result.name } : undefined;
+  } catch (err) {
+    log.warn('extractRoleNameAtPoint: evaluate failed', {
+      message: (err as Error).message,
+    });
+    return undefined;
+  }
+}
 
 // ─── Anthropic computer_20251124 tool param ──────────────────────────────
 
@@ -127,16 +262,48 @@ export async function executeVisionAction(
     // We log every vision action for ops visibility.
     log.info('vision-action', { phase, action: action.action });
 
+    // Set-of-Mark cleanup. Badges from the previous screenshot are
+    // pointer-events:none so they don't block clicks, but we still
+    // remove them at the start of every non-screenshot action so the
+    // page DOM doesn't slowly accumulate stale badges across an entire
+    // mapping run (defense-in-depth in case a future PMS overrides our
+    // pointer-events). For `screenshot` we leave the prior badges alone
+    // here — the screenshot handler does a fresh clear+apply itself.
+    if (action.action !== 'screenshot') {
+      await clearSetOfMark(page);
+    }
+
     switch (action.action) {
       case 'screenshot': {
-        // Plan v8 P0-B: add visual-only black overlays over sensitive
-        // elements, screenshot, ALWAYS remove overlays in finally so the
-        // page doesn't carry them forward (would block future clicks).
+        // Set-of-Mark visual grounding (Plan v9 F1): draw numbered badges
+        // on every clickable element BEFORE the privacy overlay + screenshot,
+        // stash the badge map so the next left_click can resolve `#N`.
+        //
+        // Order matters:
+        //   1. Clear any leftover SoM badges from a prior screenshot.
+        //   2. Apply SoM — captures the badge map, paints the page.
+        //   3. Apply privacy hardening — its overlays sit above SoM badges
+        //      (z-index 2147483647 vs SoM's 2147483646) so passwords stay
+        //      blanked even if a SoM badge happens to overlap a sensitive
+        //      input.
+        //   4. Take the screenshot.
+        //   5. ALWAYS remove privacy overlays in finally. SoM badges are
+        //      removed at the start of the next non-screenshot action
+        //      (see top of executeVisionAction) — leaving them visible in
+        //      the agent's last screenshot is the WHOLE POINT of SoM, so
+        //      we deliberately do NOT clear them here.
+        await clearSetOfMark(page);
+        const badges = await applySetOfMark(page);
+        setOfMarkStore.set(page, badges);
         await hardenScreenshotPrivacy(page);
         try {
           const buf = await page.screenshot({ fullPage: false });
           return {
-            output: 'Screenshot captured.',
+            output:
+              badges.size > 0
+                ? `Screenshot captured. Set-of-Mark applied: ${badges.size} clickable element(s) labeled with numbered badges. ` +
+                  `Click a badge by sending {action: "left_click", coordinate: [x, y], text: "#N"} where N is the badge number.`
+                : 'Screenshot captured. (No clickable elements detected for Set-of-Mark — click by pixel coordinate as usual.)',
             screenshotB64: buf.toString('base64'),
           };
         } finally {
@@ -145,11 +312,33 @@ export async function executeVisionAction(
       }
 
       case 'left_click': {
-        const [x, y] = action.coordinate;
+        // Set-of-Mark resolution (Plan v9 F1): if the agent passed
+        // `text: "#N"`, resolve to the badge's center coordinate AND pick
+        // up its ARIA role + accessible name so the recipe step can later
+        // try Playwright's getByRole during replay (tier 1 of the
+        // selector fallback chain). The Coordinate it sent is ignored
+        // when the badge resolves, since visual targeting via SoM is
+        // strictly more accurate than visual targeting via pixel guess.
+        const resolved = resolveBadgeReference(page, action.text);
+        const [rawX, rawY] = action.coordinate;
+        const x = resolved?.x ?? rawX;
+        const y = resolved?.y ?? rawY;
+        // Capture role+name BEFORE the click — the click may navigate
+        // away and the element will be gone afterward. Prefer the badge's
+        // own roleName (we already extracted it during applySetOfMark);
+        // fall back to a fresh elementsFromPoint lookup if the agent
+        // clicked by raw coordinate.
+        const roleName = resolved?.roleName ?? (await extractRoleNameAtPoint(page, x, y));
         await page.mouse.click(x, y);
+        const step: RecipeStep = roleName
+          ? { kind: 'click_at', x, y, roleName }
+          : { kind: 'click_at', x, y };
+        const tag = resolved
+          ? ` (via badge ${action.text})`
+          : '';
         return {
-          output: `Left-clicked at (${x}, ${y}).`,
-          recordedStep: { kind: 'click_at', x, y },
+          output: `Left-clicked at (${x}, ${y})${tag}.`,
+          recordedStep: step,
         };
       }
 
