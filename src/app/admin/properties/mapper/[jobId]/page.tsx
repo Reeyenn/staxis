@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Live Mapping admin console — Plan v8 Phase B chunk 2.
  *
@@ -154,7 +156,6 @@ export default function LiveMappingPage() {
     };
     const ch = supabase
       .channel(`mapping-help:${jobId}`)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .on('postgres_changes' as any, {
         event: '*',
         schema: 'public',
@@ -180,7 +181,6 @@ export default function LiveMappingPage() {
     if (!jobId) return;
     const ch = supabase
       .channel(`mapping:${jobId}`)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .on('broadcast' as any, { event: '*' }, (msg: { event: string; payload: MappingEvent }) => {
         setActivity((prev) => [...prev, msg.payload].slice(-50));
       })

@@ -329,6 +329,15 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Without this, a Supabase blip would let a runaway client bypass the
   // cap until the daily budget tripped.
   'agent-tts-speak',
+  // Codex review 2026-05-24 (Probe 10) — sick-callout report endpoints
+  // fan out Twilio SMS to every affected housekeeper plus the manager
+  // via sendCalloutNotifications. A rate-limit RPC failure would let a
+  // valid (pid, staffId) link spam those messages until the daily
+  // Twilio cap hit. callout-status is read-only and stays fail-open.
+  'callout-housekeeper',
+  'callout-manager',
+  'callout-sms',
+  'callout-revert',
 ]);
 
 /**

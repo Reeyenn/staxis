@@ -93,7 +93,20 @@ export function CalloutBanner({ shiftDate }: Props) {
           window.alert(msg);
           return;
         }
-        await refresh();
+        // Codex review 2026-05-24, Probe 6: optimistically remove the
+        // reverted callout from local state BEFORE the refresh. If the
+        // refresh fails (transient network, server hiccup), the manager
+        // doesn't see a stale "still called out" banner — they see the
+        // truth their click just established. The next poll will sync
+        // any drift. We also surface the refresh failure inline so the
+        // manager knows the data may not be fully current.
+        setEntries((prev) => prev.filter((e) => e.callout_id !== calloutId));
+        try {
+          await refresh();
+        } catch {
+          // refresh already swallows errors into setError; nothing more
+          // to do here.
+        }
       } finally {
         setRevertingId(null);
       }
@@ -121,6 +134,14 @@ export function CalloutBanner({ shiftDate }: Props) {
         <div style={{ fontSize: 13, color: T.ink2 }}>{error}</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Surface refresh errors inline even when we have stale entries,
+              so the manager knows the data on screen may be lagging
+              (Codex review 2026-05-24, Probe 6). */}
+          {error ? (
+            <div style={{ fontSize: 12, color: T.warm, fontStyle: 'italic' }}>
+              {error}
+            </div>
+          ) : null}
           {entries.map((entry) => (
             <CalloutRow
               key={entry.callout_id}

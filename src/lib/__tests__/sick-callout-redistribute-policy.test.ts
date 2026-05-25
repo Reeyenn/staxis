@@ -85,6 +85,27 @@ describe('planRevert', () => {
     assert.equal(decisions[0].outcome.reason, 'task_missing');
   });
 
+  test('manager manually reassigned to a third person after redistribute → stays with that person', () => {
+    // Codex review 2026-05-24, Probe 3: redistribute moved t1 to Carlos.
+    // Later, the manager manually reassigned it from Carlos to Diana. On
+    // revert, we should NOT clobber Diana's assignment by sending t1 back
+    // to the sick HK.
+    const impactedList = [impacted('t1', '101', 'carlos', 'scheduled')];
+    const cur = new Map([['t1', current('t1', 'scheduled', 'diana')]]);
+    const decisions = planRevert(impactedList, cur);
+    assert.equal(decisions[0].apply, false, 'should not touch a manager-overridden task');
+    assert.equal(decisions[0].outcome.stayed_with, 'diana');
+    assert.equal(decisions[0].outcome.returned_to_original, false);
+  });
+
+  test('task still on the rebalance assignee (no manager override) → returns to original', () => {
+    const impactedList = [impacted('t1', '101', 'carlos', 'scheduled')];
+    const cur = new Map([['t1', current('t1', 'scheduled', 'carlos')]]);
+    const decisions = planRevert(impactedList, cur);
+    assert.equal(decisions[0].apply, true);
+    assert.equal(decisions[0].new_assignee_id, 'sick-staff');
+  });
+
   test('mixed scenario — 7 of 8 return, 1 stays with Carlos (matches spec)', () => {
     // Spec example: "7 of 8 rooms returned to Maria. Carlos already
     // started 308 — that stays with him."
