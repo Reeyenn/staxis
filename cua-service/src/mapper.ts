@@ -28,6 +28,7 @@ import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionTy
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
+import { supabase } from './supabase.js';
 import { env } from './env.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
@@ -288,6 +289,51 @@ interface MapperOptions {
  * Codex audit 2026-05-12. Cheap (~50ms Supabase query) vs. each Anthropic
  * call (~3-30s + cost), so it's worth running before every turn.
  */
+/**
+ * Plan v8 final review B6 — reclaim-safe progress persistence.
+ *
+ * Loads any actions persisted by a prior attempt of THIS workflow job.
+ * Returns {} for fresh jobs or any read failure (degrades gracefully —
+ * worst case the mapper runs from scratch, same as before B6).
+ */
+async function loadPriorActions(jobId: string | null | undefined): Promise<Recipe['actions']> {
+  if (!jobId) return {};
+  const { data, error } = await supabase
+    .from('workflow_jobs')
+    .select('result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (error || !data) return {};
+  const result = data.result as { actionsSoFar?: Recipe['actions'] } | null;
+  return result?.actionsSoFar ?? {};
+}
+
+/**
+ * Persist the current actions accumulator into workflow_jobs.result so
+ * a reclaim after crash can resume from here. Atomic single-row UPDATE.
+ * Uses a top-level `actionsSoFar` key so we don't clobber any other
+ * result fields a handler might add.
+ */
+async function persistTargetProgress(
+  jobId: string | null | undefined,
+  actions: Recipe['actions'],
+): Promise<void> {
+  if (!jobId) return;
+  // Merge with existing result via the workflow_jobs.result jsonb. We do
+  // an UPDATE with a select-then-merge pattern (PostgREST jsonb_set RPC
+  // isn't worth the indirection for a 13-key object updated 13 times
+  // per job — once per target).
+  const { data: row, error: selErr } = await supabase
+    .from('workflow_jobs')
+    .select('result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (selErr || !row) return;
+  const existingResult = (row.result as Record<string, unknown>) ?? {};
+  const newResult = { ...existingResult, actionsSoFar: actions };
+  await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
+}
+
 async function isJobOverBudget(
   jobId: string | null,
   /** Plan v8 review P0-A — per-job cap override (falls back to env default). */
@@ -385,9 +431,31 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     // report). See plan v7's "auto-promotion criteria" for how downstream
     // consumes this.
 
-    const actions: Recipe['actions'] = {};
+    // Plan v8 final review B6 — per-target progress persistence.
+    // Without this, a Fly machine crash mid-job + reclaim = full $25
+    // vision pass re-run from scratch. By writing partial progress to
+    // workflow_jobs.result after EACH target completes, a reclaim picks
+    // up where the prior attempt left off (skips already-completed
+    // targets). Combined with max_attempts=1 (B1 fix) this means
+    // reclaim cost ≈ remaining-targets × per-target-cost, not full job
+    // cost.
+    const priorActions = await loadPriorActions(opts.jobId);
+    const actions: Recipe['actions'] = { ...priorActions };
+    if (Object.keys(priorActions).length > 0) {
+      log.info('mapper: resuming from prior progress', {
+        jobId: opts.jobId ?? undefined,
+        priorTargets: Object.keys(priorActions),
+      });
+    }
 
     for (const target of TARGETS) {
+      // Skip targets already mapped in a prior attempt (B6 reclaim path).
+      if (actions[target.key]) {
+        log.info('mapper: skipping target — already completed in prior attempt', {
+          jobId: opts.jobId ?? undefined, actionName: target.key,
+        });
+        continue;
+      }
       opts.onProgress?.(target.progressLabel, target.progressPct);
       const overBudget = await checkBudget();
       if (overBudget) {
@@ -436,6 +504,14 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           });
       if (result.ok) {
         actions[target.key] = result.action;
+        // Plan v8 B6 — persist after each successful target so a crash
+        // doesn't lose the work. Best-effort: on persist failure, keep
+        // running (the next target will retry the persist with both).
+        await persistTargetProgress(opts.jobId, actions).catch((err) => {
+          log.warn('mapper: persistTargetProgress failed (non-fatal)', {
+            jobId: opts.jobId ?? undefined, actionName: target.key, err: (err as Error).message,
+          });
+        });
       } else {
         // Failure on an OPTIONAL target = informational. Failure on a
         // REQUIRED target = logged louder and may block promotion.

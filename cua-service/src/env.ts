@@ -94,6 +94,15 @@ const Schema = z.object({
   // 90s + admin-online check (skip help-request when no admin heartbeat
   // in last 5min), the cost stays bounded.
   HELP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+
+  // Plan v8 final review B1 + S1 — org-wide daily mapping spend cap.
+  // Sum of cost_micros for source='mapping' rows over the last 24h.
+  // When exceeded, mapping-driver refuses new jobs (existing ones run
+  // to their per-job cap). Per-job cap is FIRST line; this is the
+  // SAFETY NET against a 300-hotel wave where each hits per-job + the
+  // aggregate still bombs. Default $100/day — raise via fly secrets
+  // once vision proven across multiple PMSes.
+  CUA_DAILY_MAPPING_SPEND_CAP_MICROS: z.coerce.number().int().positive().default(100_000_000),
   // Hard cap on the preflight lookup itself. Without this, a flaky
   // resolver can hang dns.lookup() indefinitely — Playwright's own
   // 30s navigation timeout only starts AFTER safeGoto's awaits return.

@@ -292,6 +292,54 @@ async function markPaused(propertyId: string, resetsAt: Date): Promise<void> {
  * Resume a hotel that was paused for cost. Called by session-supervisor
  * when checkBudget reports ok=true again after a reset.
  */
+/**
+ * Plan v8 final review B1 + S1 — org-wide daily mapping spend cap.
+ *
+ * Mapping spend is excluded from the per-hotel cap (mapping is bursty + a
+ * shared cost across many hotels on the same PMS family). But there's
+ * still a real cost-bomb risk: at 300 hotels onboarding with vision mode
+ * at $25/run, if 30% fail and need re-mapping, that's $2,250 in a day.
+ * Without an aggregate cap, no code stops it.
+ *
+ * This cap is a SAFETY NET that pauses new mapper jobs (existing in-flight
+ * runs continue to their per-job cap) when the org has spent more than
+ * CUA_DAILY_MAPPING_SPEND_CAP_MICROS in the last 24h on source='mapping'
+ * rows in claude_usage_log. Default: $100/day. Raise via fly secret once
+ * vision is proven on multiple PMSes.
+ *
+ * Workflow-runtime + mapping-driver both call this. workflow-runtime
+ * leaves the job queued (won't claim); mapping-driver returns early with
+ * a clear error so the workflow_jobs row gets a recognizable last_error.
+ */
+export async function checkDailyMappingSpend(): Promise<{
+  over: boolean;
+  spentMicros: number;
+  capMicros: number;
+}> {
+  const capMicros = env.CUA_DAILY_MAPPING_SPEND_CAP_MICROS;
+  const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+  // Sum cost_micros where source='mapping' AND ts >= 24h ago.
+  // Using a select with sum aggregate via PostgREST.
+  const { data, error } = await supabase
+    .from('claude_usage_log')
+    .select('cost_micros')
+    .eq('source', 'mapping')
+    .gte('ts', since);
+  if (error) {
+    // Don't fail-closed: if the cap-check query itself fails, we
+    // log + treat as under-budget. The per-job cap still applies.
+    log.warn('cost-cap: daily mapping spend query failed — assuming under cap', {
+      err: error.message,
+    });
+    return { over: false, spentMicros: 0, capMicros };
+  }
+  const spentMicros = (data ?? []).reduce(
+    (sum, row) => sum + ((row as { cost_micros: number }).cost_micros ?? 0),
+    0,
+  );
+  return { over: spentMicros >= capMicros, spentMicros, capMicros };
+}
+
 export async function markResumed(propertyId: string): Promise<void> {
   const { error } = await supabase
     .from('property_sessions')

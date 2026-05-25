@@ -149,6 +149,26 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
     .single<PendingRequestRow>();
 
   if (error || !inserted) {
+    // Plan v8 final review B4 — race: SELECT+INSERT is not atomic and
+    // the partial unique index `mapping_help_requests_one_pending_per_job`
+    // can reject our INSERT if a concurrent mapper attempt (post-reclaim)
+    // inserted first. Postgres returns code '23505' (unique_violation) for
+    // that case. Re-select the row the other side just inserted and reuse
+    // it — we want to converge on the SAME pending request, not fail.
+    if (error?.code === '23505') {
+      const { data: raced } = await supabase
+        .from('mapping_help_requests')
+        .select('id')
+        .eq('job_id', input.jobId)
+        .eq('status', 'pending')
+        .maybeSingle<PendingRequestRow>();
+      if (raced?.id) {
+        log.info('help-request: lost INSERT race; reusing winner row', {
+          requestId: raced.id, jobId: input.jobId, targetKey: input.targetKey,
+        });
+        return raced.id;
+      }
+    }
     throw new Error(`help-request insert failed: ${error?.message ?? 'unknown'}`);
   }
   return inserted.id;
@@ -319,9 +339,14 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
  * counter captures it.
  */
 export async function checkHelpFlood(jobId: string): Promise<boolean> {
-  const { count, error } = await supabase
+  // Plan v8 final review B2 — count UNIQUE target_keys, not rows.
+  // Previous version counted rows, so 3 retries of the SAME target (e.g.
+  // admin sent 3 unhelpful hints, all rejected) tripped the breaker even
+  // though only one target was actually unmappable. We want to abort
+  // when 3 DIFFERENT targets are unmappable.
+  const { data, error } = await supabase
     .from('mapping_help_requests')
-    .select('id', { count: 'exact', head: true })
+    .select('target_key')
     .eq('job_id', jobId)
     .or('action_type.in.(unavailable,abort),status.in.(expired,aborted)');
   if (error) {
@@ -330,7 +355,8 @@ export async function checkHelpFlood(jobId: string): Promise<boolean> {
     });
     return false;
   }
-  return (count ?? 0) >= 3;
+  const uniqueTargets = new Set((data ?? []).map((r) => (r as { target_key: string }).target_key));
+  return uniqueTargets.size >= 3;
 }
 
 /**

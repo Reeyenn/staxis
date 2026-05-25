@@ -36,6 +36,7 @@ import { mapPMS, type MapperResult } from './mapper.js';
 import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
+import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
 
 export interface MappingJobInput {
@@ -134,8 +135,27 @@ interface MappingEvent {
  */
 type MappingBroadcastChannel = ReturnType<typeof supabase.channel>;
 
-function openBroadcastChannel(jobId: string): MappingBroadcastChannel {
-  return supabase.channel(`mapping:${jobId}`);
+/**
+ * Plan v8 final review A1 — open AND subscribe the channel so subsequent
+ * .send() calls go over the persistent WebSocket. Without .subscribe(),
+ * Supabase JS silently falls back to a REST POST per send — defeating
+ * the channel-per-job optimization. We subscribe with a 3s timeout so a
+ * flaky realtime endpoint doesn't block job startup (graceful degrade
+ * to REST-per-send on timeout — that's the OLD behavior, not worse).
+ */
+async function openBroadcastChannel(jobId: string): Promise<MappingBroadcastChannel> {
+  const channel = supabase.channel(`mapping:${jobId}`);
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => resolve(), 3_000);
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' ||
+          status === 'CLOSED' || status === 'TIMED_OUT') {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+  return channel;
 }
 
 async function broadcastMappingEvent(
@@ -178,9 +198,27 @@ export async function runMappingJob(
     propertyId: input.property_id,
   });
 
+  // Plan v8 final review B1 — org-wide daily mapping spend cap. Per-job
+  // cap stops a single run from bleeding past its budget; THIS stops the
+  // 300-hotel wave from aggregate-bombing even if each individual run
+  // honored its per-job cap. Check BEFORE opening the channel + browser
+  // so a paused run leaves zero side effects.
+  const dailyCap = await checkDailyMappingSpend();
+  if (dailyCap.over) {
+    log.warn('mapping-driver: refusing — org daily mapping spend cap exceeded', {
+      jobId,
+      spentDollars: microsToDollars(dailyCap.spentMicros),
+      capDollars: microsToDollars(dailyCap.capMicros),
+    });
+    return {
+      ok: false,
+      error: `org daily mapping spend cap exceeded ($${microsToDollars(dailyCap.spentMicros).toFixed(2)} of $${microsToDollars(dailyCap.capMicros).toFixed(2)}). Raise CUA_DAILY_MAPPING_SPEND_CAP_MICROS via fly secrets to unblock.`,
+    };
+  }
+
   // Plan v8 hardening — one realtime channel per job, reused across all
   // lifecycle events. Closed in the finally block at the bottom.
-  const channel: MappingBroadcastChannel = openBroadcastChannel(jobId);
+  const channel: MappingBroadcastChannel = await openBroadcastChannel(jobId);
 
   try {
   // Plan v8 Phase B chunk 2 — Live Mapping admin UI watches for these.
