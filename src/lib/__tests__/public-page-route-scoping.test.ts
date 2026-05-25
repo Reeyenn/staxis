@@ -66,6 +66,11 @@ const CAPABILITY_CHECK_PATTERNS = [
   /\bstaff\??\.property_id\s*!==?\s*(?:body\.)?pid\b/,
   /\broom\??\.property_id\s*!==?\s*(?:body\.)?pid\b/,
   /\bassigned_to\s*!==?\s*(?:body\.)?staffId\b/,
+  // Housekeeper mobile rebuild piece A (migration 0214) — workflow routes
+  // delegate the (pid, staffId) check to gateHousekeeperRequest which
+  // does staff.property_id === pid + rate limit + JSON-parse error
+  // handling. Same trust model as the legacy room-action route.
+  /\bgateHousekeeperRequest\s*</,
 ];
 
 function walk(dir: string, out: string[] = []): string[] {
