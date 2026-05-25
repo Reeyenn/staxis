@@ -223,7 +223,12 @@ type TranslationKey =
   | 'roomsCleaned' | 'avgTime' | 'noRoomsCompleted' | 'avgTurnover'
   | 'noDataYet' | 'cleanedBy' | 'cleanTime' | 'sendBack'
   // Stale-data banner (scraper hardening F8)
-  | 'staleDataYellow' | 'staleDataRed' | 'staleAlertingDegraded';
+  | 'staleDataYellow' | 'staleDataRed' | 'staleAlertingDegraded'
+  // Voice issue reporting (feature #11)
+  | 'voiceIssueTapToSpeak' | 'voiceIssueConnecting' | 'voiceIssueListening'
+  | 'voiceIssueProcessing' | 'voiceIssueSuccess' | 'voiceIssueErrorHeard'
+  | 'voiceIssueMicBlocked' | 'voiceIssueCapped' | 'voiceIssueError'
+  | 'voiceIssueHint' | 'voiceIssueTapToStop';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -853,6 +858,20 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     staleDataYellow:       'Numbers may be out of date (last updated {{age}} ago).',
     staleDataRed:          'Live numbers unavailable. Don’t act on these until they update (last updated {{age}} ago).',
     staleAlertingDegraded: 'Alerting is degraded — SMS notifications may not fire.',
+    // Voice issue reporting (feature #11). The mic button on the issue
+    // modal — housekeeper taps it, speaks in their own language, AI
+    // extracts structured fields and files the maintenance ticket.
+    voiceIssueTapToSpeak: 'Tap to speak — describe the problem',
+    voiceIssueConnecting: 'Connecting…',
+    voiceIssueListening:  'Listening… speak in any language',
+    voiceIssueTapToStop:  'Tap to stop',
+    voiceIssueProcessing: 'Got it — filing the ticket…',
+    voiceIssueSuccess:    'Ticket filed.',
+    voiceIssueErrorHeard: "Sorry, I didn't catch that. Try again or type it.",
+    voiceIssueMicBlocked: 'Mic blocked. Enable microphone access in your phone settings, or type the issue.',
+    voiceIssueCapped:     'Voice limit reached for today. Please type the issue.',
+    voiceIssueError:      "Voice didn't work. You can type the issue instead.",
+    voiceIssueHint:       'Or type below',
   },
 
   es: {
@@ -1482,6 +1501,18 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     staleDataYellow:       'Los números pueden estar desactualizados (última actualización hace {{age}}).',
     staleDataRed:          'Datos en vivo no disponibles. No actúe sobre estos números hasta que se actualicen (última actualización hace {{age}}).',
     staleAlertingDegraded: 'Las alertas están degradadas — las notificaciones SMS pueden no enviarse.',
+    // Reporte de problema por voz (función #11).
+    voiceIssueTapToSpeak: 'Toca para hablar — describe el problema',
+    voiceIssueConnecting: 'Conectando…',
+    voiceIssueListening:  'Escuchando… habla en tu idioma',
+    voiceIssueTapToStop:  'Toca para detener',
+    voiceIssueProcessing: 'Listo — creando el ticket…',
+    voiceIssueSuccess:    'Ticket creado.',
+    voiceIssueErrorHeard: 'Lo siento, no escuché bien. Intenta de nuevo o escríbelo.',
+    voiceIssueMicBlocked: 'Micrófono bloqueado. Permite el acceso al micrófono en la configuración del teléfono, o escribe el problema.',
+    voiceIssueCapped:     'Límite de voz alcanzado por hoy. Por favor escribe el problema.',
+    voiceIssueError:      'La voz no funcionó. Puedes escribir el problema en su lugar.',
+    voiceIssueHint:       'O escribe abajo',
   },
 };
 

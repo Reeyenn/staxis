@@ -452,10 +452,18 @@ export async function POST(req: NextRequest): Promise<Response> {
         // surface='voice' is passed below to getToolsForRole — the voice
         // catalog is empty today (no tool opts in via surfaces:['voice']),
         // which is the secure-by-default posture after the Codex P0 fix.
+        //
+        // Feature #11: the voice mode + UI room hint are stitched into the
+        // system prompt by buildSystemPrompt so the agent in 'housekeeper_issue'
+        // mode knows it should only fire createMaintenanceWorkOrder and
+        // defaults the room to whatever the UI hint says.
         let systemPrompt;
         try {
           const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId);
-          systemPrompt = await buildSystemPrompt(ctx.role, snapshot, ctx.conversationId);
+          systemPrompt = await buildSystemPrompt(ctx.role, snapshot, ctx.conversationId, {
+            mode: ctx.mode,
+            currentRoomNumber: ctx.currentRoomNumber,
+          });
         } catch (e) {
           log.error('[voice-brain] failed to build system prompt', { requestId, e });
           const id = makeOpenAiId();
@@ -475,7 +483,14 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Today no tool opts in → voice gets an empty tool list, which is
         // the secure default. Curating which tools are voice-callable is a
         // deliberate product decision tracked separately.
-        const tools = getToolsForRole(ctx.role, 'voice');
+        //
+        // Feature #11 (2026-05-24): pass the voice mode so tools that opt
+        // into a specific mode (e.g. createMaintenanceWorkOrder with
+        // voiceModes: ['housekeeper_issue']) are only exposed when the
+        // session is in that mode. General voice sessions still get an
+        // empty catalog; housekeeper_issue mode gets just the issue-
+        // reporter tool.
+        const tools = getToolsForRole(ctx.role, 'voice', ctx.mode);
         const userCtx = {
           uid: ctx.userId,
           accountId: ctx.accountId,
@@ -497,6 +512,8 @@ export async function POST(req: NextRequest): Promise<Response> {
             staffId: ctx.staffId,
             requestId,
             surface: 'voice',
+            voiceMode: ctx.mode,
+            currentRoomNumber: ctx.currentRoomNumber,
           },
         });
 
@@ -615,6 +632,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           // STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true; otherwise the
           // bind-required mode would refuse every turn.
           hasConvId: !!elevenlabsConvId,
+          mode: ctx.mode,
+          hasRoomHint: !!ctx.currentRoomNumber,
         });
       } catch (e) {
         log.error('[voice-brain] unhandled error', { requestId, e });

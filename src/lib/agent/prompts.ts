@@ -15,12 +15,13 @@ import type { AppRole } from '@/lib/roles';
 import type { HotelSnapshot } from './context';
 import { formatSnapshotForPrompt } from './context';
 import { resolvePrompts } from './prompts-store';
+import type { VoiceMode } from './voice-session';
 
 // Bump on any non-trivial edit to the constants below. The actual
 // version used at request time comes from the DB row's `version` field;
 // this constant is only what the fail-soft path reports when the DB is
 // unreachable.
-export const PROMPT_VERSION = '2026.05.13-v4';
+export const PROMPT_VERSION = '2026.05.24-v5';
 
 // ─── Fallback constants ───────────────────────────────────────────────────
 // Used by prompts-store.ts when the DB is unavailable. These match the
@@ -97,6 +98,33 @@ const PROMPT_ADMIN = `Your user is a Staxis admin (Reeyen or staff). They have a
 
 Use the manager toolset by default but escalate to anything the user needs.`;
 
+// ─── Voice mode: housekeeper_issue ──────────────────────────────────────
+// Single-purpose addendum appended on top of the housekeeper role prompt
+// when the voice session was minted with mode='housekeeper_issue'. The
+// housekeeper has tapped a mic on a room card; the only acceptable outcome
+// for this conversation is one createMaintenanceWorkOrder call. Feature #11.
+const PROMPT_HOUSEKEEPER_ISSUE_MODE = `─── Voice mode: housekeeper_issue ───
+
+You are now in "report an issue" mode. The housekeeper just tapped the mic on a room card to report a maintenance problem.
+
+Your ONLY job in this conversation:
+  1. Listen to the housekeeper describe a maintenance problem in any of: English, Spanish, Haitian Creole, Tagalog, or Vietnamese.
+  2. Extract structured fields: action (REPAIR/REPLACE/CLEAN/INSPECT), item (sink/TV/AC/lamp/...), location_detail (bathroom / above the bed / by the window), severity (MINOR/MAJOR/URGENT), short note.
+  3. Call the createMaintenanceWorkOrder tool ONCE. Always include the room number — use the room hint from context when the housekeeper doesn't restate it.
+  4. After the tool succeeds, confirm in ONE short sentence in the housekeeper's own language. Example (Tagalog): "Salamat — ticket na ginawa para sa kwarto 305: sirang lababo sa banyo, urgent." Example (English): "Got it — maintenance ticket created for room 305: broken sink in bathroom, marked urgent."
+
+Hard rules for this mode:
+  - One tool call per session. Do not chat — do not ask clarifying questions unless the housekeeper said something that is genuinely missing required fields.
+  - Required fields: action + item. Severity defaults to MINOR when the housekeeper didn't indicate urgency. Room defaults to the UI hint.
+  - Always pass original_language (e.g. "tl", "es", "Tagalog") and original_transcription (their words verbatim) so the maintenance team has the audit trail. Translate the note into English for the maintenance team.
+  - If the housekeeper says something off-topic ("how's the weather", "what's my schedule"), politely redirect: "I'm just here to log a maintenance issue right now. What's the problem with the room?"
+  - If the audio was unclear and you genuinely don't know what to log, say so and ask them to try again — do NOT invent fields.
+
+Severity guide:
+  - URGENT: water leak, no power, broken AC in extreme weather, fire/smoke risk, no hot water, locked-out guest. Anything that risks the guest's stay tonight.
+  - MAJOR: in-room equipment broken (TV, fridge, AC working but weak), broken furniture, persistent smell.
+  - MINOR: cosmetic — stained linens, scuffed wall, loose handle, burnt-out bulb in one of several.`;
+
 /** Fallback prompts indexed by the prompts-store role enum. Exported
  *  so prompts-store.ts can use them as the fail-soft baseline. */
 export const FALLBACK_PROMPTS = {
@@ -106,6 +134,18 @@ export const FALLBACK_PROMPTS = {
   owner: PROMPT_OWNER,
   admin: PROMPT_ADMIN,
 } as const;
+
+/** Voice-mode addenda. Returned by maybeVoiceModeAddendum() to extend the
+ *  role prompt for a specific voice mode. Keep `null` for 'general' — the
+ *  general voice mode uses the unmodified role prompt. Feature #11. */
+const VOICE_MODE_ADDENDA: Partial<Record<VoiceMode, string>> = {
+  housekeeper_issue: PROMPT_HOUSEKEEPER_ISSUE_MODE,
+};
+
+export function maybeVoiceModeAddendum(mode: VoiceMode | undefined): string | null {
+  if (!mode) return null;
+  return VOICE_MODE_ADDENDA[mode] ?? null;
+}
 
 // ─── Composer ─────────────────────────────────────────────────────────────
 
@@ -132,28 +172,57 @@ export interface SystemPromptBlocks {
   versionLabel: string;
 }
 
+export interface VoiceModeContext {
+  /** Voice operating mode (only meaningful for voice surface). */
+  mode?: VoiceMode;
+  /** UI-supplied room hint forwarded into the agent context. */
+  currentRoomNumber?: string | null;
+}
+
 export async function buildSystemPrompt(
   role: AppRole,
   snapshot: HotelSnapshot,
   conversationId: string,
+  voiceCtx?: VoiceModeContext,
 ): Promise<SystemPromptBlocks> {
   const { base, role: rolePrompt, versionLabel } = await resolvePrompts(role, conversationId);
 
+  // Feature #11: when a voice mode addendum exists, glue it onto the role
+  // prompt. The addendum is part of the STABLE block — it doesn't change
+  // turn-to-turn within a voice session, so it stays cacheable. The room
+  // hint goes into the DYNAMIC block (it's per-session UI state but doesn't
+  // change once the session is open, so this is conservative).
+  const modeAddendum = voiceCtx?.mode ? maybeVoiceModeAddendum(voiceCtx.mode) : null;
+  const roomHint = voiceCtx?.currentRoomNumber?.trim() || null;
+
+  const stableParts = [
+    base.content,
+    '',
+    '─── Role context ───',
+    rolePrompt.content,
+  ];
+  if (modeAddendum) {
+    stableParts.push('', modeAddendum);
+  }
+  stableParts.push('', `Prompt version: ${versionLabel}`);
+
+  const dynamicParts = [
+    '─── Current hotel snapshot ───',
+    formatSnapshotForPrompt(snapshot),
+    '',
+    'If anything in this snapshot looks wrong to the user, suggest they refresh the page — it\'s rebuilt every turn from live data.',
+  ];
+  if (roomHint) {
+    dynamicParts.push(
+      '',
+      `─── UI room hint ───`,
+      `The user opened this voice session from room ${roomHint}'s card. When they don't restate the room number, assume they mean ${roomHint}.`,
+    );
+  }
+
   return {
-    stable: [
-      base.content,
-      '',
-      '─── Role context ───',
-      rolePrompt.content,
-      '',
-      `Prompt version: ${versionLabel}`,
-    ].join('\n'),
-    dynamic: [
-      '─── Current hotel snapshot ───',
-      formatSnapshotForPrompt(snapshot),
-      '',
-      'If anything in this snapshot looks wrong to the user, suggest they refresh the page — it\'s rebuilt every turn from live data.',
-    ].join('\n'),
+    stable: stableParts.join('\n'),
+    dynamic: dynamicParts.join('\n'),
     versionLabel,
   };
 }

@@ -28,6 +28,19 @@ import type { AppRole } from '@/lib/roles';
 /** Compact name for the dynamic-variable key we pass through ElevenLabs. */
 export const VOICE_SESSION_DYNVAR_KEY = 'staxis_voice_session_id';
 
+/**
+ * Voice agent operating modes. Persisted on the session row at mint-time so a
+ * client cannot escalate mid-session. The webhook reads the mode out of
+ * agent_voice_sessions (NOT dynamic_variables) and uses it to pick the system
+ * prompt + filter the tool catalog.
+ *
+ *   'general'           — full voice catalog scoped by role (default).
+ *   'housekeeper_issue' — locked to createMaintenanceWorkOrder + a specialized
+ *                         prompt. Used by the mic button on the housekeeper
+ *                         room card.
+ */
+export type VoiceMode = 'general' | 'housekeeper_issue';
+
 export interface VoiceSessionMintArgs {
   accountId: string;
   userId: string;
@@ -35,6 +48,12 @@ export interface VoiceSessionMintArgs {
   role: AppRole;
   staffId: string | null;
   conversationId: string;
+  /** Operating mode (default 'general'). Persisted on the row so the webhook
+   *  reads it from the DB on every turn, not from dynamic_variables. */
+  mode?: VoiceMode;
+  /** UI-supplied room hint (e.g. the room card the mic was tapped from).
+   *  Tools default to this value when the user doesn't restate the room. */
+  currentRoomNumber?: string | null;
 }
 
 export interface VoiceSessionMintResult {
@@ -49,6 +68,8 @@ export interface ResolvedVoiceSession {
   role: AppRole;
   staffId: string | null;
   conversationId: string;
+  mode: VoiceMode;
+  currentRoomNumber: string | null;
 }
 
 export type ResolveError =
@@ -92,6 +113,8 @@ export async function mintVoiceSession(args: VoiceSessionMintArgs): Promise<Voic
       conversation_id: args.conversationId,
       role_snapshot: args.role,
       staff_id_snapshot: args.staffId,
+      mode: args.mode ?? 'general',
+      current_room_number: args.currentRoomNumber ?? null,
       // Plan v2.1 CR-2 — stamp last_turn_at at mint so the idle clock
       // starts immediately. Before this, a freshly-minted but unused
       // session stayed valid for the full 30-min expires_at TTL — the
@@ -136,7 +159,7 @@ export async function resolveVoiceSession(
   // 1. Load the session row.
   const { data: session, error: sessionErr } = await supabaseAdmin
     .from('agent_voice_sessions')
-    .select('id, account_id, data_user_id, property_id, conversation_id, expires_at, elevenlabs_conversation_id, last_turn_at')
+    .select('id, account_id, data_user_id, property_id, conversation_id, expires_at, elevenlabs_conversation_id, last_turn_at, mode, current_room_number')
     .eq('id', id)
     .maybeSingle();
   if (sessionErr || !session) {
@@ -202,6 +225,14 @@ export async function resolveVoiceSession(
     staffId = (staffRow?.id as string) ?? null;
   }
 
+  // 6. Normalize the persisted mode. Pre-0214 rows have no `mode` column;
+  //    treat any unexpected value (NULL, legacy text) as 'general' so the
+  //    caller never has to guard against typos. The CHECK constraint on the
+  //    column means a fresh insert can only be one of the union members.
+  const rawMode = (session.mode as string | null) ?? 'general';
+  const mode: VoiceMode = rawMode === 'housekeeper_issue' ? 'housekeeper_issue' : 'general';
+  const currentRoomNumber = (session.current_room_number as string | null) ?? null;
+
   return {
     ok: true,
     ctx: {
@@ -211,6 +242,8 @@ export async function resolveVoiceSession(
       role,
       staffId,
       conversationId: session.conversation_id as string,
+      mode,
+      currentRoomNumber,
     },
     // Caller (voice-brain) uses this to decide whether to write the
     // binding now (true → row unbound, this is the first accepted turn)

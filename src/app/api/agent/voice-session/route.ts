@@ -33,7 +33,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { createConversation } from '@/lib/agent/memory';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
-import { mintVoiceSession, VOICE_SESSION_DYNVAR_KEY } from '@/lib/agent/voice-session';
+import { mintVoiceSession, VOICE_SESSION_DYNVAR_KEY, type VoiceMode } from '@/lib/agent/voice-session';
 import type { AppRole } from '@/lib/roles';
 import { env } from '@/lib/env';
 import {
@@ -46,7 +46,17 @@ export const dynamic = 'force-dynamic';
 
 interface RequestBody {
   propertyId: string;
+  /** Optional operating mode. 'general' (default) gives the full voice
+   *  catalog; 'housekeeper_issue' locks the agent to the createMaintenance-
+   *  WorkOrder tool with a specialized prompt for spoken issue reports. */
+  mode?: VoiceMode;
+  /** Optional UI-supplied room hint forwarded into the agent context.
+   *  The mic button on a room card sets this to the card's room number so
+   *  the agent doesn't have to ask "which room" up front. */
+  currentRoomNumber?: string | null;
 }
+
+const ALLOWED_MODES: readonly VoiceMode[] = ['general', 'housekeeper_issue'];
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -63,6 +73,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!body.propertyId) {
     return NextResponse.json({ ok: false, error: 'propertyId required', requestId }, { status: 400 });
   }
+
+  // Validate mode: anything outside the union collapses to 'general' so a
+  // future client typo doesn't 4xx — secure-by-default. The DB CHECK
+  // constraint would reject it anyway, so this also avoids a 500.
+  const mode: VoiceMode = body.mode && ALLOWED_MODES.includes(body.mode) ? body.mode : 'general';
+  // Cap the room hint at 32 chars — real room numbers are 1-8 chars
+  // (e.g. "302", "PH-1", "A101"). Anything longer is a paste / injection
+  // attempt and shouldn't make it onto the row.
+  const rawRoom = body.currentRoomNumber;
+  const currentRoomNumber =
+    typeof rawRoom === 'string' && rawRoom.trim().length > 0
+      ? rawRoom.trim().slice(0, 32)
+      : null;
 
   const hasAccess = await userHasPropertyAccess(auth.userId, body.propertyId);
   if (!hasAccess) {
@@ -126,7 +149,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       propertyId: body.propertyId,
       role,
       promptVersion: PROMPT_VERSION,
-      title: '(voice)',
+      title: mode === 'housekeeper_issue' ? '(voice issue)' : '(voice)',
     });
   } catch (e) {
     log.error('[voice-session] failed to create conversation', { requestId, e });
@@ -137,6 +160,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   // (Pattern A): this row is the canonical identity for the duration of
   // the voice session. Its id is the ONLY thing we expose to ElevenLabs;
   // role + property are re-read from accounts on every webhook call.
+  // The mode + currentRoomNumber are persisted here too so the webhook
+  // reads them off the DB row, not from client-controlled dynamic vars.
   let voiceSessionId: string;
   try {
     const minted = await mintVoiceSession({
@@ -146,6 +171,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       role,
       staffId,
       conversationId,
+      mode,
+      currentRoomNumber,
     });
     voiceSessionId = minted.id;
   } catch (e) {

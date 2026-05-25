@@ -20,6 +20,7 @@ import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 import InspectorView from './_components/InspectorView';
+import VoiceIssueButton from './_components/VoiceIssueButton';
 import { SickReportButton } from './SickReportButton';
 
 // Rooms come off Supabase via `subscribeToRoomsForStaff` fully shaped as our
@@ -1031,6 +1032,19 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
               {t('hkRoomShort', lang)} {rooms.find(r => r.id === issueRoomId)?.number}
             </p>
+            {/* ── Voice issue button (feature #11) ──────────────────────
+                The housekeeper can tap a mic, speak the problem in any
+                of EN/ES/HT/TL/VI; the AI extracts structured fields and
+                files the maintenance ticket. The textarea below still
+                works — voice is an ADDITIONAL fast path, not a replacement.
+                onTicketFiled refetches rooms so the new issue_note shows
+                on the room card. */}
+            <VoiceIssueButton
+              propertyId={pid}
+              roomNumber={rooms.find(r => r.id === issueRoomId)?.number ?? null}
+              lang={lang}
+              onTicketFiled={() => { void refetchRooms(); }}
+            />
             <textarea
                
               autoFocus

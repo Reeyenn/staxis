@@ -13,6 +13,7 @@
 // Just import their module from agent/index.ts and the registration fires.
 
 import type { AppRole } from '@/lib/roles';
+import type { VoiceMode } from './voice-session';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -42,6 +43,17 @@ export interface ToolContext {
    *  (Pattern E — surface required at the type level so the compiler
    *  catches any caller that forgets). */
   surface: AgentSurface;
+  /** Voice operating mode (only meaningful when surface === 'voice'). Tools
+   *  may opt into specific voice modes via `voiceModes`; an unmatched mode
+   *  causes executeTool to refuse. Feature #11 (housekeeper voice issue
+   *  reporting) — a tool that only makes sense inside the housekeeper-issue
+   *  mode declares `voiceModes: ['housekeeper_issue']` so it cannot be
+   *  reached from a general voice session. */
+  voiceMode?: VoiceMode;
+  /** Room number hint forwarded from the UI on session mint. Tools that
+   *  default a room argument (e.g. createMaintenanceWorkOrder) consult this
+   *  when the user doesn't restate the room. Voice-only. */
+  currentRoomNumber?: string | null;
   /** When true, mutation tools should run their pre-write validation
    *  (lookups, role checks, etc.) but SKIP the actual DB mutation —
    *  return synthetic success at the would-have-mutated boundary.
@@ -91,6 +103,14 @@ export interface ToolDefinition<TArgs = unknown> {
    */
   surfaces?: readonly AgentSurface[];
   /**
+   * Voice modes the tool opts into. Only consulted when `surface === 'voice'`.
+   * Undefined means "all voice modes" (the standard voice catalog), matching
+   * pre-feature-#11 behaviour. A list restricts the tool to those modes — e.g.
+   * `voiceModes: ['housekeeper_issue']` makes the tool unreachable from a
+   * general voice session, which is what we want for createMaintenanceWorkOrder.
+   */
+  voiceModes?: readonly VoiceMode[];
+  /**
    * True when this tool MUTATES data (writes to DB, sends SMS, sends nudges).
    * False/undefined for read-only queries. Eval refusal checks derive the
    * "destructive tools" set from this flag at runtime, so adding a new
@@ -125,12 +145,26 @@ export function listAllTools(): ToolDefinition[] {
  *  closing the gap that let `/api/agent/voice-brain` silently inherit the
  *  full chat tool catalog. A tool without an explicit `surfaces` field
  *  defaults to chat-only (matching pre-L3 behaviour) so voice + walkthrough
- *  remain toolless until tools deliberately opt in. */
-export function getToolsForRole(role: AppRole, surface: AgentSurface): ToolDefinition[] {
+ *  remain toolless until tools deliberately opt in.
+ *
+ *  Feature #11 (2026-05-24): when `surface === 'voice'` and a `voiceMode`
+ *  is supplied, tools also filter on `voiceModes` — a tool with an explicit
+ *  voiceModes list is hidden from any session whose mode isn't on it. The
+ *  default (no `voiceModes` declared) means "all voice modes" so the
+ *  existing voice catalog is unaffected. */
+export function getToolsForRole(
+  role: AppRole,
+  surface: AgentSurface,
+  voiceMode?: VoiceMode,
+): ToolDefinition[] {
   return Array.from(registry.values()).filter(t => {
     if (!t.allowedRoles.includes(role)) return false;
     const allowedSurfaces = t.surfaces ?? ['chat'];
-    return allowedSurfaces.includes(surface);
+    if (!allowedSurfaces.includes(surface)) return false;
+    if (surface === 'voice' && t.voiceModes && voiceMode) {
+      if (!t.voiceModes.includes(voiceMode)) return false;
+    }
+    return true;
   });
 }
 
@@ -173,6 +207,18 @@ export async function executeTool(
       ok: false,
       error: `Tool ${name} is not available on the ${ctx.surface} surface.`,
     };
+  }
+  // Feature #11: voice-mode gate. Matches the getToolsForRole filter so
+  // executeTool refuses a tool whose voiceModes list doesn't include the
+  // current session mode, even if the model somehow hallucinated a call
+  // for a tool it shouldn't see. Belt-and-braces against tool-list leaks.
+  if (ctx.surface === 'voice' && tool.voiceModes && ctx.voiceMode) {
+    if (!tool.voiceModes.includes(ctx.voiceMode)) {
+      return {
+        ok: false,
+        error: `Tool ${name} is not available in this voice mode.`,
+      };
+    }
   }
   if (!tool.allowedRoles.includes(ctx.user.role)) {
     return {

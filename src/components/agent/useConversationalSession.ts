@@ -42,12 +42,25 @@ export type ConversationStatus =
   | 'capped'
   | 'error';
 
+/** Operating mode for the voice session — forwarded to /api/agent/voice-session
+ *  which persists it on the agent_voice_sessions row. The webhook reads it from
+ *  the DB (not from dynamic_variables) and uses it to pick which subset of the
+ *  tool catalog to expose. Feature #11. */
+export type VoiceSessionMode = 'general' | 'housekeeper_issue';
+
 interface UseConversationalSessionOpts {
   propertyId: string | null;
   /** Auto-start the session as soon as `propertyId` becomes non-null and
    *  the consumer flips `active` to true. The overlay uses this so the
    *  WebSocket opens in the same gesture frame that mounted the overlay. */
   active: boolean;
+  /** Optional voice mode. Defaults to 'general' on the server. The
+   *  housekeeper voice-issue mic passes 'housekeeper_issue'. */
+  mode?: VoiceSessionMode;
+  /** Optional room hint forwarded into the agent context (e.g. the room
+   *  card the mic was tapped from). The agent defaults a room argument to
+   *  this value when the user doesn't restate the room. */
+  currentRoomNumber?: string | null;
 }
 
 interface SessionMintResponse {
@@ -78,7 +91,7 @@ export interface UseConversationalSessionReturn {
 }
 
 export function useConversationalSession(opts: UseConversationalSessionOpts): UseConversationalSessionReturn {
-  const { propertyId, active } = opts;
+  const { propertyId, active, mode, currentRoomNumber } = opts;
 
   const [status, setStatus] = useState<ConversationStatus>('idle');
   const [lastAssistant, setLastAssistant] = useState('');
@@ -120,7 +133,14 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
         const res = await fetchWithAuth('/api/agent/voice-session', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ propertyId }),
+          body: JSON.stringify({
+            propertyId,
+            // Feature #11: forward voice mode + room hint to the mint
+            // endpoint so the housekeeper-issue path lands on a session
+            // pre-scoped to the createMaintenanceWorkOrder tool.
+            mode: mode ?? 'general',
+            currentRoomNumber: currentRoomNumber ?? null,
+          }),
         });
         if (res.status === 429) {
           if (!cancelled) { setStatus('capped'); setError("You've hit today's voice limit."); }
@@ -287,7 +307,7 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
       startedRef.current = false;
       if (conv) conv.endSession().catch(() => {});
     };
-  }, [active, propertyId]);
+  }, [active, propertyId, mode, currentRoomNumber]);
 
   return { status, lastAssistant, lastUser, error, stop };
 }
