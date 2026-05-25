@@ -29,7 +29,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession } from '@/lib/api-auth';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -96,6 +96,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     const propertyId = pidCheck.value!;
     const businessDate = dateCheck.value!;
+
+    // Tenant-scope gate: the session caller must have access to this
+    // property. Without it any signed-in user could enumerate another
+    // hotel's cleaning_tasks + staff roster by spraying property UUIDs
+    // (matches the pattern in /api/housekeeping/rooms).
+    const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
+    if (!hasAccess) {
+      log.warn('board: forbidden — user lacks property access', {
+        requestId, userId: auth.userId, propertyId,
+      });
+      return err('forbidden — no access to this property', {
+        requestId, status: 403, code: 'forbidden',
+      });
+    }
 
     // 1. Tasks for today (any status — the UI surfaces in-progress and
     //    completed too so the manager has the full picture).

@@ -31,7 +31,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession } from '@/lib/api-auth';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -79,6 +79,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const propertyId = pidCheck.value!;
   const taskId = taskCheck.value!;
   const toHkId = hkCheck.value!;
+
+  // Tenant-scope gate: the session caller must have access to this
+  // property before any task/staff lookup or mutation. Without this
+  // any signed-in user with two UUIDs (task + housekeeper) could move
+  // work between housekeepers at another hotel via the service-role
+  // client.
+  const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
+  if (!hasAccess) {
+    log.warn('reassign: forbidden — user lacks property access', {
+      requestId, userId: auth.userId, propertyId,
+    });
+    return err('forbidden — no access to this property', {
+      requestId, status: 403, code: 'forbidden',
+    });
+  }
 
   let reason: string | null = null;
   if (body.reason != null) {
