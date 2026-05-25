@@ -134,7 +134,14 @@ export type RateLimitEndpoint =
   | 'callout-manager'
   | 'callout-sms'
   | 'callout-revert'
-  | 'callout-status';
+  | 'callout-status'
+  // Post-merge sweep (Plan v4 cutover, 2026-05-25) — manager-facing Rooms
+  // board read endpoint. RoomsTab polls every 6s when foregrounded; one
+  // manager session = 600/hr from polling alone, plus per-visibility-change
+  // refetches. Keyed on (userId, propertyId). 2400/hr = 4x headroom over a
+  // single-session worst case (4 open browser tabs on the same property),
+  // tight enough to stop a runaway tab or stolen session looping.
+  | 'housekeeping-rooms';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -247,6 +254,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'callout-sms':                  20,
   'callout-revert':               30,
   'callout-status':              600,
+  // Plan v4 manager Rooms board — 6s polling + visibility refetches.
+  'housekeeping-rooms':         2400,
 };
 
 /**
