@@ -69,6 +69,40 @@ const Schema = z.object({
   // rollout because dns.lookup adds latency + can flake on slow DNS;
   // flip to 'true' once we've measured the impact.
   CUA_DNS_PREFLIGHT: z.enum(['true', 'false']).default('false'),
+
+  // ── Mapper mode (Plan v8 — vision swap) ─────────────────
+  // Default 'dom' (current behavior). Flip to 'vision' via
+  // `fly secrets set MAPPER_MODE=vision -a staxis-cua` AFTER the canary
+  // proves vision works (Phase C). Per-job override available via
+  // workflow_jobs.payload.mapper_mode — admin can opt in per PMS family.
+  //
+  // P2-2 (Codex hard adversarial pass): default MUST be 'dom' so a Fly
+  // boot without the env set doesn't silently switch to vision. Flip is
+  // an explicit operator action via fly secrets.
+  MAPPER_MODE: z.enum(['dom', 'vision']).default('dom'),
+
+  // Vision-mode timeout. Vision is 3-5x slower per-target than DOM. Bump
+  // from 60min (DOM default in workflow-runtime.ts) to 90min so a real
+  // vision run + multiple help-request waits fit in one job's lifetime.
+  // Per-job override via workflow_jobs.payload.timeout_ms.
+  MAPPER_JOB_TIMEOUT_MS_VISION: z.coerce.number().int().positive().default(90 * 60_000),
+
+  // Help-request timeout — how long the mapper waits for admin to answer
+  // a help-request before falling back to "mark target unavailable".
+  // P1-2 (Codex hard pass): default 90s, not 5min, because Reeyen is one
+  // admin and 5min × 13 targets = 65 minutes of pure idle waiting. With
+  // 90s + admin-online check (skip help-request when no admin heartbeat
+  // in last 5min), the cost stays bounded.
+  HELP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+
+  // Plan v8 final review B1 + S1 — org-wide daily mapping spend cap.
+  // Sum of cost_micros for source='mapping' rows over the last 24h.
+  // When exceeded, mapping-driver refuses new jobs (existing ones run
+  // to their per-job cap). Per-job cap is FIRST line; this is the
+  // SAFETY NET against a 300-hotel wave where each hits per-job + the
+  // aggregate still bombs. Default $100/day — raise via fly secrets
+  // once vision proven across multiple PMSes.
+  CUA_DAILY_MAPPING_SPEND_CAP_MICROS: z.coerce.number().int().positive().default(100_000_000),
   // Hard cap on the preflight lookup itself. Without this, a flaky
   // resolver can hang dns.lookup() indefinitely — Playwright's own
   // 30s navigation timeout only starts AFTER safeGoto's awaits return.

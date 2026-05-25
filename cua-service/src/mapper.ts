@@ -21,11 +21,14 @@
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
-import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
+import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT, getModeConfig } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
+import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
+import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
+import { supabase } from './supabase.js';
 import { env } from './env.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
@@ -68,7 +71,127 @@ const MAX_INPUT_TOKENS_PER_RUN = 800_000;
 // before the JSON.)
 const MAX_OUTPUT_TOKENS_PER_TURN = 4096;
 const PHASE_WALLCLOCK_BUDGET_MS = 5 * 60_000;
+// Plan v8 review P1-B — vision is 3-5× slower per target (more turns, image
+// generation time per screenshot). 5min wallclock would constantly trip
+// before vision even gets a chance to find anything. 15min matches the
+// vision-mode per-target step cap headroom.
+const PHASE_WALLCLOCK_BUDGET_MS_VISION = 15 * 60_000;
 const HISTORY_KEEP_RECENT = 1;
+// Plan v8 P0-1 — vision mode keeps last 3 screenshots in history (vs DOM's 1).
+// Vision conversations balloon with image tokens; truncating aggressively
+// keeps each turn under the per-target cost cap. 3 is a balance: enough
+// recent context for the model to re-orient after each action, few enough
+// that input-token cost stays bounded.
+const HISTORY_KEEP_RECENT_VISION = 3;
+
+/**
+ * Plan v8 — mode-aware history retention. DOM mode keeps 1 image (screenshot
+ * action is rare, mostly a fallback). Vision mode keeps 3 — every turn ships
+ * a screenshot, and the model needs the recent few for continuity.
+ */
+function historyKeepFor(mode: 'dom' | 'vision'): number {
+  return mode === 'vision' ? HISTORY_KEEP_RECENT_VISION : HISTORY_KEEP_RECENT;
+}
+
+/**
+ * Plan v8 Phase B P0-2 — when the floor-met `{unavailable: true}` fires,
+ * give a live admin a chance to unstick the agent before we mark the
+ * target unavailable for the whole replay future.
+ *
+ * Returns one of:
+ *   - { kind: 'continue', hintText }       → caller rewinds messages, pushes
+ *                                            user-turn hint, re-enters loop
+ *   - { kind: 'mark_unavailable', reason } → caller returns ActionMapFailure
+ *   - { kind: 'takeover' }                 → caller enters takeover (Phase B chunk 2)
+ *   - { kind: 'abort', reason }            → caller throws to fail the whole job
+ *
+ * Skips the help request entirely when: jobId is null, the help-flood
+ * circuit-breaker is tripped, or no admin is online (handled inside
+ * requestHelp). In all skip cases, returns { kind: 'mark_unavailable' }
+ * so behavior matches today's "no help available, mark unavailable" path.
+ */
+async function maybeAskAdminBeforeUnavailable(args: {
+  page: Page;
+  jobId: string | null;
+  targetKey: string;
+  agentReason: string;
+  signal?: AbortSignal;
+}): Promise<
+  | { kind: 'continue'; hintText: string }
+  | { kind: 'mark_unavailable'; reason: string }
+  | { kind: 'takeover' }
+  | { kind: 'abort'; reason: string }
+> {
+  if (!args.jobId) {
+    return { kind: 'mark_unavailable', reason: args.agentReason };
+  }
+  // P2-4 — circuit-breaker. After 3 unsuccessful requests, don't even ask.
+  if (await checkHelpFlood(args.jobId)) {
+    log.warn('mapper: help-flood circuit-breaker tripped — auto-abort', {
+      jobId: args.jobId, targetKey: args.targetKey,
+    });
+    return { kind: 'abort', reason: 'help_request_flood' };
+  }
+
+  // Take a screenshot for the help card. Best-effort — if screenshot or
+  // upload fails, log + fall through to mark_unavailable.
+  let screenshotPath: string;
+  try {
+    const buf = await args.page.screenshot({ fullPage: false });
+    screenshotPath = await saveScreenshotToStorage(args.jobId, args.targetKey, buf);
+  } catch (err) {
+    log.warn('mapper: help-request screenshot/upload failed — falling through', {
+      err: (err as Error).message, jobId: args.jobId, targetKey: args.targetKey,
+    });
+    return { kind: 'mark_unavailable', reason: args.agentReason };
+  }
+
+  const scroll = await args.page
+    .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    .catch(() => ({ x: 0, y: 0 }));
+
+  const help = await requestHelp({
+    jobId: args.jobId,
+    targetKey: args.targetKey,
+    question: `Stuck on ${args.targetKey}: ${args.agentReason.slice(0, 200)}`,
+    screenshotStoragePath: screenshotPath,
+    scroll,
+    viewport: { w: 1280, h: 800 },
+    signal: args.signal ?? new AbortController().signal,
+  });
+
+  switch (help.actionType as HelpActionType) {
+    case 'guidance':
+      return {
+        kind: 'continue',
+        hintText: help.responseText ?? '(admin provided guidance but no text)',
+      };
+    case 'unavailable':
+      return {
+        kind: 'mark_unavailable',
+        reason: `unavailable: ${help.responseText ?? 'admin marked'}`,
+      };
+    case 'takeover':
+      // Phase B chunk 2 implements the takeover loop. For chunk 1, treat
+      // takeover as "admin will handle it" → mark unavailable so the run
+      // doesn't hang. The takeover handler in chunk 2 replaces this branch.
+      log.warn('mapper: takeover requested — chunk 1 stub, marking unavailable', {
+        jobId: args.jobId, targetKey: args.targetKey,
+      });
+      return { kind: 'mark_unavailable', reason: 'takeover requested (handler not yet implemented)' };
+    case 'abort':
+      return { kind: 'abort', reason: 'admin_aborted' };
+  }
+}
+
+/**
+ * Plan v8 review P1-B — wallclock budget per phase, mode-aware. Vision needs
+ * more headroom because each turn is slower (screenshot + image-token input)
+ * and the model often takes 3-5× more turns to find an element via vision.
+ */
+function phaseWallclockFor(mode: 'dom' | 'vision'): number {
+  return mode === 'vision' ? PHASE_WALLCLOCK_BUDGET_MS_VISION : PHASE_WALLCLOCK_BUDGET_MS;
+}
 // Truncate any single read_page or get_page_text result over this size.
 // 20K chars ≈ 5-6K tokens. Most pages have a few hundred interactive
 // elements; this is more than enough for navigation, less than enough
@@ -125,6 +248,13 @@ interface MapperOptions {
   propertyId?: string | null;
   jobId?: string | null;
   /**
+   * Plan v8 review P0-A — per-job cost cap override. When set, replaces
+   * env.CUA_JOB_COST_CAP_MICROS for cap-check inside isJobOverBudget +
+   * checkBudget. Vision-mode jobs set this to $50 during canary; flip to
+   * $25 once paper-cost is measured. DOM-mode jobs keep the $5 env default.
+   */
+  jobCostCapMicros?: number;
+  /**
    * Optional abort signal — passed to every anthropic.beta.messages.create()
    * call so the runJob timeout can actually cancel in-flight Claude requests
    * instead of letting them run to completion past the deadline. Added
@@ -132,6 +262,24 @@ interface MapperOptions {
    * failed without interrupting the runaway work.
    */
   signal?: AbortSignal;
+  /**
+   * Plan v8 Phase A — mapper mode.
+   *   'dom'    — custom browser tool with DOM accessibility tree + refs
+   *              (cheap, works on PMSes with parseable HTML, ~$3-6/run)
+   *   'vision' — Anthropic's computer_20251124 beta tool with screenshots
+   *              + pixel coordinates (works on canvas/Flash/DOS-style
+   *              PMSes, ~$15-25/run; requires computer-use-2025-11-24
+   *              beta header which getModeConfig handles)
+   * Default 'dom' for backward compat. Per-job override via
+   * workflow_jobs.payload.mapper_mode (mapping-driver reads + passes here).
+   */
+  mode?: 'dom' | 'vision';
+  /**
+   * Plan v8 Phase A — Claude model. Sonnet 4.6 is the cheap default; admin
+   * can opt into Opus 4.7 per-job for hard PMSes via the same payload route.
+   * Both models support the computer-use-2025-11-24 beta header.
+   */
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
 }
 
 /**
@@ -141,13 +289,61 @@ interface MapperOptions {
  * Codex audit 2026-05-12. Cheap (~50ms Supabase query) vs. each Anthropic
  * call (~3-30s + cost), so it's worth running before every turn.
  */
+/**
+ * Plan v8 final review B6 — reclaim-safe progress persistence.
+ *
+ * Loads any actions persisted by a prior attempt of THIS workflow job.
+ * Returns {} for fresh jobs or any read failure (degrades gracefully —
+ * worst case the mapper runs from scratch, same as before B6).
+ */
+async function loadPriorActions(jobId: string | null | undefined): Promise<Recipe['actions']> {
+  if (!jobId) return {};
+  const { data, error } = await supabase
+    .from('workflow_jobs')
+    .select('result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (error || !data) return {};
+  const result = data.result as { actionsSoFar?: Recipe['actions'] } | null;
+  return result?.actionsSoFar ?? {};
+}
+
+/**
+ * Persist the current actions accumulator into workflow_jobs.result so
+ * a reclaim after crash can resume from here. Atomic single-row UPDATE.
+ * Uses a top-level `actionsSoFar` key so we don't clobber any other
+ * result fields a handler might add.
+ */
+async function persistTargetProgress(
+  jobId: string | null | undefined,
+  actions: Recipe['actions'],
+): Promise<void> {
+  if (!jobId) return;
+  // Merge with existing result via the workflow_jobs.result jsonb. We do
+  // an UPDATE with a select-then-merge pattern (PostgREST jsonb_set RPC
+  // isn't worth the indirection for a 13-key object updated 13 times
+  // per job — once per target).
+  const { data: row, error: selErr } = await supabase
+    .from('workflow_jobs')
+    .select('result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (selErr || !row) return;
+  const existingResult = (row.result as Record<string, unknown>) ?? {};
+  const newResult = { ...existingResult, actionsSoFar: actions };
+  await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
+}
+
 async function isJobOverBudget(
   jobId: string | null,
+  /** Plan v8 review P0-A — per-job cap override (falls back to env default). */
+  capMicrosOverride?: number,
 ): Promise<{ over: false } | { over: true; spentMicros: number; capMicros: number }> {
   if (!jobId) return { over: false };
+  const capMicros = capMicrosOverride ?? JOB_COST_CAP_MICROS;
   const spentMicros = await getJobCostMicros(jobId);
-  if (spentMicros >= JOB_COST_CAP_MICROS) {
-    return { over: true, spentMicros, capMicros: JOB_COST_CAP_MICROS };
+  if (spentMicros >= capMicros) {
+    return { over: true, spentMicros, capMicros };
   }
   return { over: false };
 }
@@ -165,12 +361,20 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
 
+    // Plan v8 Phase A: resolve mode once for the whole run. Same mode used
+    // by login, mapAction, mapDrillDownAction. Per-job override via opts.mode.
+    const mode = opts.mode ?? 'dom';
+    const model = opts.model;
+
     // ─── Phase 1: learn the login flow ─────────────────────────────────────
     opts.onProgress?.('Logging in for the first time…', 25);
     const loginResult = await mapLogin(page, opts.credentials, {
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
       signal: opts.signal,
+      mode,
+      model,
+      jobCostCapMicros: opts.jobCostCapMicros,
     });
     if (!loginResult.ok) {
       return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
@@ -183,14 +387,18 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     // checkBudget queries claude_usage_log for spend so far on this job;
     // returns null when under budget, an over-budget failure result when over.
     // Skipped when jobId is null (one-off dev runs).
+    // Plan v8 review P0-A — uses opts.jobCostCapMicros if set (vision $50
+    // canary cap), else env default ($5). Without this fix, vision runs hit
+    // the DOM $5 cap and die mid-map.
+    const effectiveCapMicros = opts.jobCostCapMicros ?? JOB_COST_CAP_MICROS;
     const checkBudget = async (): Promise<MapperResult | null> => {
       if (!opts.jobId) return null;
       const spentMicros = await getJobCostMicros(opts.jobId);
-      if (spentMicros >= JOB_COST_CAP_MICROS) {
+      if (spentMicros >= effectiveCapMicros) {
         log.warn('cua mapper aborting — cumulative cost cap hit', {
           jobId: opts.jobId,
           spentMicros,
-          capMicros: JOB_COST_CAP_MICROS,
+          capMicros: effectiveCapMicros,
         });
         return {
           ok: false,
@@ -201,7 +409,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             phase: 'mapper',
             reason: 'cost_cap_exceeded',
             spent_micros: spentMicros,
-            cap_micros: JOB_COST_CAP_MICROS,
+            cap_micros: effectiveCapMicros,
           },
         };
       }
@@ -223,9 +431,31 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     // report). See plan v7's "auto-promotion criteria" for how downstream
     // consumes this.
 
-    const actions: Recipe['actions'] = {};
+    // Plan v8 final review B6 — per-target progress persistence.
+    // Without this, a Fly machine crash mid-job + reclaim = full $25
+    // vision pass re-run from scratch. By writing partial progress to
+    // workflow_jobs.result after EACH target completes, a reclaim picks
+    // up where the prior attempt left off (skips already-completed
+    // targets). Combined with max_attempts=1 (B1 fix) this means
+    // reclaim cost ≈ remaining-targets × per-target-cost, not full job
+    // cost.
+    const priorActions = await loadPriorActions(opts.jobId);
+    const actions: Recipe['actions'] = { ...priorActions };
+    if (Object.keys(priorActions).length > 0) {
+      log.info('mapper: resuming from prior progress', {
+        jobId: opts.jobId ?? undefined,
+        priorTargets: Object.keys(priorActions),
+      });
+    }
 
     for (const target of TARGETS) {
+      // Skip targets already mapped in a prior attempt (B6 reclaim path).
+      if (actions[target.key]) {
+        log.info('mapper: skipping target — already completed in prior attempt', {
+          jobId: opts.jobId ?? undefined, actionName: target.key,
+        });
+        continue;
+      }
       opts.onProgress?.(target.progressLabel, target.progressPct);
       const overBudget = await checkBudget();
       if (overBudget) {
@@ -253,6 +483,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             propertyId: opts.propertyId ?? null,
             jobId: opts.jobId ?? null,
             signal: opts.signal,
+            mode,
+            model,
+            jobCostCapMicros: opts.jobCostCapMicros,
           })
         : await mapAction({
             page,
@@ -265,9 +498,20 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             propertyId: opts.propertyId ?? null,
             jobId: opts.jobId ?? null,
             signal: opts.signal,
+            mode,
+            model,
+            jobCostCapMicros: opts.jobCostCapMicros,
           });
       if (result.ok) {
         actions[target.key] = result.action;
+        // Plan v8 B6 — persist after each successful target so a crash
+        // doesn't lose the work. Best-effort: on persist failure, keep
+        // running (the next target will retry the persist with both).
+        await persistTargetProgress(opts.jobId, actions).catch((err) => {
+          log.warn('mapper: persistTargetProgress failed (non-fatal)', {
+            jobId: opts.jobId ?? undefined, actionName: target.key, err: (err as Error).message,
+          });
+        });
       } else {
         // Failure on an OPTIONAL target = informational. Failure on a
         // REQUIRED target = logged louder and may block promotion.
@@ -328,8 +572,21 @@ interface LoginMapFailure {
 async function mapLogin(
   page: Page,
   creds: PMSCredentials,
-  ctx: { propertyId: string | null; jobId: string | null; signal?: AbortSignal },
+  ctx: {
+    propertyId: string | null;
+    jobId: string | null;
+    signal?: AbortSignal;
+    /** Plan v8 — picked at mapPMS entry; same mode used for login + targets. */
+    mode: 'dom' | 'vision';
+    model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+    /** Plan v8 review P0-A — per-job cap override. */
+    jobCostCapMicros?: number;
+  },
 ): Promise<LoginMapResult | LoginMapFailure> {
+  // Plan v8: resolve tool + system prompt + beta header + model by mode.
+  // Mode-aware Anthropic call replaces direct CLAUDE_MODEL / BROWSER_TOOL /
+  // MAPPING_SYSTEM_PROMPT references below.
+  const cfg = getModeConfig(ctx.mode, ctx.model);
   // The login URL itself is the trust anchor — no allowedHost yet (we'll
   // pin to creds.loginUrl's host for every subsequent goto). safeGoto
   // still rejects javascript:/file:/private-IP URLs, so a misconfigured
@@ -350,26 +607,15 @@ async function mapLogin(
   // password never enter the Claude conversation (and so don't end up
   // in Anthropic API logs, message history files, or any future model-
   // training capture).
-  const goal =
+  const credentialIntro =
     `Log into this hotel PMS. The username and password are NOT shown ` +
     `to you for security; pass these literal placeholder strings as the ` +
-    `value when calling form_input or type, and the browser tool will ` +
-    `substitute the real credentials before typing them into the page:\n` +
+    `value when typing into the credential fields, and the tool will ` +
+    `substitute the real credentials before sending them to the page:\n` +
     `  username placeholder: "$username"\n` +
-    `  password placeholder: "$password"\n\n` +
+    `  password placeholder: "$password"\n\n`;
 
-    `STEP-BY-STEP:\n` +
-    `1. Call read_page with text="interactive" to see the form fields and ` +
-    `their refs.\n` +
-    `2. Call form_input with the username field's ref and value="$username".\n` +
-    `3. Call form_input with the password field's ref and value="$password".\n` +
-    `4. Click the submit button (form_input or left_click with the submit ref).\n` +
-    `5. Wait for the next page (use wait if it's slow), then read_page again.\n` +
-    `6. If you land on a property picker, click the FIRST property. If you ` +
-    `land on a "Welcome" splash (Choice Advantage), click "Continue" or ` +
-    `"Enter PMS".\n` +
-    `7. Repeat read_page + click as needed to reach the dashboard.\n\n` +
-
+  const successCriteria =
     `WHEN YOU'RE LOGGED IN (you see a dashboard with hotel-specific data: ` +
     `room counts, today's date, guest names, navigation menu with ` +
     `reports/front-desk/etc.), reply with JSON ONLY (no commentary):\n` +
@@ -379,6 +625,35 @@ async function mapLogin(
 
     `IF login fails permanently (wrong creds, account locked, PMS down), ` +
     `reply with {"error": "<short reason>"} and stop.`;
+
+  const goal = credentialIntro +
+    (ctx.mode === 'vision'
+      ? `STEP-BY-STEP (vision mode):\n` +
+        `1. Take a SCREENSHOT to see the login form.\n` +
+        `2. left_click on the username input field's coordinate.\n` +
+        `3. Send {action: "type", text: "$username"}. The tool substitutes ` +
+        `the real username before it hits the page.\n` +
+        `4. left_click on the password field's coordinate.\n` +
+        `5. Send {action: "type", text: "$password"}.\n` +
+        `6. Click the submit / log-in button.\n` +
+        `7. Wait for the next page (use {action: "wait", duration: 2} if slow), ` +
+        `then take a fresh screenshot.\n` +
+        `8. If you land on a property picker, click the FIRST property. If ` +
+        `you land on a "Welcome" splash (Choice Advantage), click "Continue" ` +
+        `or "Enter PMS" or the property name.\n` +
+        `9. Repeat screenshot + click as needed to reach the dashboard.\n\n`
+      : `STEP-BY-STEP:\n` +
+        `1. Call read_page with text="interactive" to see the form fields and ` +
+        `their refs.\n` +
+        `2. Call form_input with the username field's ref and value="$username".\n` +
+        `3. Call form_input with the password field's ref and value="$password".\n` +
+        `4. Click the submit button (form_input or left_click with the submit ref).\n` +
+        `5. Wait for the next page (use wait if it's slow), then read_page again.\n` +
+        `6. If you land on a property picker, click the FIRST property. If you ` +
+        `land on a "Welcome" splash (Choice Advantage), click "Continue" or ` +
+        `"Enter PMS".\n` +
+        `7. Repeat read_page + click as needed to reach the dashboard.\n\n`) +
+    successCriteria;
 
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: goal }] },
@@ -395,7 +670,7 @@ async function mapLogin(
         detail: { phase: 'login_mapping', reason: 'token_budget_exceeded', totalInputTokens },
       };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt > phaseWallclockFor(ctx.mode)) {
       log.warn('mapper exceeded wall-clock budget', { stepIdx });
       return {
         ok: false,
@@ -405,7 +680,7 @@ async function mapLogin(
     }
     // Per-turn budget check — see isJobOverBudget() comment.
     {
-      const budget = await isJobOverBudget(ctx.jobId);
+      const budget = await isJobOverBudget(ctx.jobId, ctx.jobCostCapMicros);
       if (budget.over) {
         log.warn('login mapper aborting — cumulative cost cap hit', { jobId: ctx.jobId ?? undefined, ...budget });
         return {
@@ -439,18 +714,18 @@ async function mapLogin(
       : `anon:login:${stepIdx}:${Date.now()}`;
 
     const response = await anthropic.beta.messages.create({
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
       system: [
         {
           type: 'text',
-          text: MAPPING_SYSTEM_PROMPT,
+          text: cfg.systemPrompt,
           cache_control: { type: 'ephemeral' },
         },
       ],
-      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31'],
+      tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, historyKeepFor(ctx.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -463,7 +738,7 @@ async function mapLogin(
     // logClaudeUsage swallows its own failures.
     void logClaudeUsage(response.usage ?? {}, {
       workload: 'cua_mapping_login',
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       propertyId: ctx.propertyId,
       jobId: ctx.jobId,
       metadata: { stepIdx },
@@ -539,11 +814,14 @@ async function mapLogin(
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
-      const action = toolUse.input as BrowserAction;
+      // Plan v8 Phase A: dispatch by mode. VisionAction and BrowserAction
+      // have different shapes; cast at the call edge.
       // Plan v2 F-AI-7: login phase — the policy layer allows writes on
-      // login-shaped controls (ARIA name/role match) and refuses
-      // everything else.
-      const exec = await executeBrowserAction(page, action, creds, 'login');
+      // login-shaped controls and refuses everything else (DOM mode has
+      // ref-derived hints; vision mode passes empty hint per P1-1 Option I).
+      const exec = ctx.mode === 'vision'
+        ? await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login')
+        : await executeBrowserAction(page, toolUse.input as BrowserAction, creds, 'login');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
@@ -576,7 +854,14 @@ async function mapAction(args: {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
+  /** Plan v8 Phase A — picked at mapPMS entry; same mode used for all targets. */
+  mode: 'dom' | 'vision';
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
+  jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Plan v8: resolve config once at the top of the per-target loop.
+  const cfg = getModeConfig(args.mode, args.model);
   // Plan v7: per-target step + cost caps. Drill-down targets get fewer
   // steps PER record but execute against multiple samples; report-menu
   // targets get more steps to drill through reports submenus.
@@ -615,27 +900,49 @@ async function mapAction(args: {
 
   const fullGoal =
     args.goal +
-    `\n\nWORKFLOW (do these in order, don't skip):\n` +
-    `1. Call \`read_page\` with text="interactive" — this gives you ALL ` +
-    `clickable links/buttons on the dashboard with their refs.\n` +
-    `2. SCAN the read_page output for any item whose name or aria-label ` +
-    `matches the target page (e.g. for housekeeping look for "Housekeeping", ` +
-    `"Rooms", "Status", "Maid"; for staff look for "Users", "Staff", "Setup", ` +
-    `"Admin", "Employees"). The match doesn't have to be exact — partial is fine.\n` +
-    `3. If a single obvious match exists, click that ref and read_page again.\n` +
-    `4. If NO single match, click the most likely menu item (e.g. "Reports", ` +
-    `"Setup", or a hamburger icon). Then read_page on the resulting submenu — ` +
-    `submenus often hold the target.\n` +
-    `5. If you've clicked through 2 menu levels and STILL don't see the target, ` +
-    `try the \`find\` tool with the keyword (e.g. find("housekeeping")). It ` +
-    `searches the whole DOM tree, not just visible items.\n` +
-    `6. Once on the target page, look for a TABLE with one row per record. ` +
-    `Identify a stable rowSelector. For each required field, find a column ` +
-    `selector relative to one row.\n` +
-    `7. If the page DOES NOT have the data we need (e.g. no Housekeeping ` +
-    `report exists in this PMS, or it's behind a paid module), reply with ` +
-    `{"unavailable": true, "reason": "<why>"} so we can mark this action ` +
-    `as unsupported and continue.\n\n` +
+    (args.mode === 'vision'
+      ? `\n\nWORKFLOW (vision mode — use the computer tool):\n` +
+        `1. Take a SCREENSHOT to see the dashboard.\n` +
+        `2. SCAN the screenshot for any menu item / link / tab whose visible ` +
+        `text matches the target (e.g. for housekeeping look for "Housekeeping", ` +
+        `"Rooms", "Status", "Maid"; for revenue look for "Reports", "Audit", ` +
+        `"Revenue", "Daily Summary"). Partial matches are fine.\n` +
+        `3. left_click the most-likely target's coordinate. Look at the screenshot ` +
+        `carefully — small misalignments will miss the element.\n` +
+        `4. Take another screenshot to see the new page.\n` +
+        `5. If you're not on the target page yet, repeat: scan, click, screenshot. ` +
+        `Most data lives 1-3 levels under Reports / Front Desk / Setup menus.\n` +
+        `6. Once on the target page (you see a table with one row per record), ` +
+        `take a final screenshot and identify the table visually. Make your best ` +
+        `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
+        `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
+        `your selectors on the first extraction; if wrong, a self-heal job will ` +
+        `re-engage you.\n` +
+        `7. If the page DOES NOT have the data we need (no equivalent report ` +
+        `exists in this PMS, or it's behind a paid module), reply with ` +
+        `{"unavailable": true, "reason": "<why>"} so we can mark this target ` +
+        `as unsupported and continue.\n\n`
+      : `\n\nWORKFLOW (do these in order, don't skip):\n` +
+        `1. Call \`read_page\` with text="interactive" — this gives you ALL ` +
+        `clickable links/buttons on the dashboard with their refs.\n` +
+        `2. SCAN the read_page output for any item whose name or aria-label ` +
+        `matches the target page (e.g. for housekeeping look for "Housekeeping", ` +
+        `"Rooms", "Status", "Maid"; for staff look for "Users", "Staff", "Setup", ` +
+        `"Admin", "Employees"). The match doesn't have to be exact — partial is fine.\n` +
+        `3. If a single obvious match exists, click that ref and read_page again.\n` +
+        `4. If NO single match, click the most likely menu item (e.g. "Reports", ` +
+        `"Setup", or a hamburger icon). Then read_page on the resulting submenu — ` +
+        `submenus often hold the target.\n` +
+        `5. If you've clicked through 2 menu levels and STILL don't see the target, ` +
+        `try the \`find\` tool with the keyword (e.g. find("housekeeping")). It ` +
+        `searches the whole DOM tree, not just visible items.\n` +
+        `6. Once on the target page, look for a TABLE with one row per record. ` +
+        `Identify a stable rowSelector. For each required field, find a column ` +
+        `selector relative to one row.\n` +
+        `7. If the page DOES NOT have the data we need (e.g. no Housekeeping ` +
+        `report exists in this PMS, or it's behind a paid module), reply with ` +
+        `{"unavailable": true, "reason": "<why>"} so we can mark this action ` +
+        `as unsupported and continue.\n\n`) +
 
     `WHEN DONE WITH A REAL PAGE — your reply MUST start with the JSON ` +
     `object on the first line. No preamble like "I found the page" or ` +
@@ -665,12 +972,12 @@ async function mapAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt > phaseWallclockFor(args.mode)) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
     // Per-turn budget check — global job cap.
     {
-      const budget = await isJobOverBudget(args.jobId);
+      const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
       if (budget.over) {
         log.warn('action mapper aborting — cumulative job cost cap hit', {
           jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
@@ -711,18 +1018,18 @@ async function mapAction(args: {
       : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
 
     const response = await anthropic.beta.messages.create({
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
       system: [
         {
           type: 'text',
-          text: MAPPING_SYSTEM_PROMPT,
+          text: cfg.systemPrompt,
           cache_control: { type: 'ephemeral' },
         },
       ],
-      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31'],
+      tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -732,7 +1039,7 @@ async function mapAction(args: {
 
     void logClaudeUsage(response.usage ?? {}, {
       workload: 'cua_mapping_action',
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       propertyId: args.propertyId,
       jobId: args.jobId,
       metadata: { actionName: args.actionName, stepIdx },
@@ -786,9 +1093,38 @@ async function mapAction(args: {
             finalUrl: args.page.url(),
           };
         }
+        // Plan v8 Phase B — ask an online admin before accepting unavailable.
+        // P0-2: on 'guidance', REWIND messages + push user-turn hint + re-enter
+        // loop (does NOT use synthetic tool_result — that's API-invalid after
+        // end_turn). On 'mark_unavailable', preserve today's behavior.
+        const agentReason = typeof parsed.reason === 'string' ? parsed.reason : 'no reason given';
+        const helpOutcome = await maybeAskAdminBeforeUnavailable({
+          page: args.page,
+          jobId: args.jobId,
+          targetKey: args.actionName,
+          agentReason,
+          signal: args.signal,
+        });
+        if (helpOutcome.kind === 'continue') {
+          // Pop the assistant turn that emitted the unavailable JSON, push
+          // a user-turn hint, reset floor counters, re-enter the agent loop.
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this target.` }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+        if (helpOutcome.kind === 'abort') {
+          throw new Error(helpOutcome.reason);
+        }
         return {
           ok: false,
-          reason: `unavailable: ${typeof parsed.reason === 'string' ? parsed.reason : 'no reason given'}`,
+          reason: helpOutcome.kind === 'takeover'
+            ? 'takeover requested (handler not yet implemented)'
+            : helpOutcome.reason,
           finalUrl: args.page.url(),
         };
       }
@@ -809,15 +1145,19 @@ async function mapAction(args: {
       // Plan v2 F-AI-7: action phase — write-style actions (type /
       // form_input / click) are refused. Mapper must navigate + read +
       // emit the JSON recipe; no mutations on the data pages.
-      const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
+      // Plan v8 Phase A: dispatch by mode (DOM vs vision executor).
+      const exec = args.mode === 'vision'
+        ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
+        : await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
 
       // Plan v7 — track activity for the unavailable floor.
-      // `read_page` is the most expensive evidence (forces DOM serialize).
-      // Navigations / clicks count toward the navigation budget.
+      // DOM: read_page / get_page_text. Vision: screenshot. All count as
+      // "actually looked at the page" evidence. Navigations / clicks count
+      // toward the navigation budget regardless of mode.
       const actionType = (action as { action?: string }).action ?? '';
-      if (actionType === 'read_page' || actionType === 'get_page_text') {
+      if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') {
         readPageCount++;
       } else if (actionType === 'navigate' || actionType === 'left_click' ||
                  actionType === 'double_click' || actionType === 'find' ||
@@ -890,7 +1230,15 @@ async function mapDrillDownAction(args: {
   propertyId: string | null;
   jobId: string | null;
   signal?: AbortSignal;
+  /** Plan v8 Phase A — same mode for all targets across the mapping run. */
+  mode: 'dom' | 'vision';
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
+  jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Plan v8: resolve config once at top.
+  const cfg = getModeConfig(args.mode, args.model);
+
   // Reuse the post-login navigation setup from mapAction.
   if (args.page.url() !== args.postLoginUrl) {
     const allowedHost = new URL(args.credentials.loginUrl).host;
@@ -912,11 +1260,19 @@ async function mapDrillDownAction(args: {
 
   const fullGoal =
     args.goal +
-    `\n\nDRILL-DOWN WORKFLOW (do these in order):\n` +
-    `1. read_page to see the dashboard menus.\n` +
-    `2. Navigate to the LIST page (e.g. reservations list, lost-items list).\n` +
-    `3. Capture the list page selectors: a stable rowSelector + columns ` +
-    `for the fields visible IN THE ROW.\n` +
+    (args.mode === 'vision'
+      ? `\n\nDRILL-DOWN WORKFLOW (vision mode):\n` +
+        `1. Take a SCREENSHOT to see the dashboard menus.\n` +
+        `2. Navigate to the LIST page by clicking visible menus (e.g. ` +
+        `reservations list, lost-items list).\n` +
+        `3. Look at the list visually. Make your best-guess CSS selectors for ` +
+        `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
+        `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n`
+      : `\n\nDRILL-DOWN WORKFLOW (do these in order):\n` +
+        `1. read_page to see the dashboard menus.\n` +
+        `2. Navigate to the LIST page (e.g. reservations list, lost-items list).\n` +
+        `3. Capture the list page selectors: a stable rowSelector + columns ` +
+        `for the fields visible IN THE ROW.\n`) +
     `4. Pick ${SAMPLE_COUNT} sample rows. For each one:\n` +
     `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
     `   - Click into the row to open the detail page\n` +
@@ -963,10 +1319,10 @@ async function mapDrillDownAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt > phaseWallclockFor(args.mode)) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
-    const budget = await isJobOverBudget(args.jobId);
+    const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
     if (budget.over) {
       log.warn('drilldown mapper aborting — cumulative job cost cap hit', {
         jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
@@ -989,14 +1345,14 @@ async function mapDrillDownAction(args: {
       : `anon:drilldown:${args.actionName}:${stepIdx}:${Date.now()}`;
 
     const response = await anthropic.beta.messages.create({
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
       system: [
-        { type: 'text', text: MAPPING_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: cfg.systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
-      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31'],
+      tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -1005,7 +1361,7 @@ async function mapDrillDownAction(args: {
     totalInputTokens += response.usage?.input_tokens ?? 0;
     void logClaudeUsage(response.usage ?? {}, {
       workload: 'cua_mapping_drilldown',
-      model: CLAUDE_MODEL,
+      model: cfg.model,
       propertyId: args.propertyId,
       jobId: args.jobId,
       metadata: { actionName: args.actionName, stepIdx },
@@ -1030,9 +1386,33 @@ async function mapDrillDownAction(args: {
             finalUrl: args.page.url(),
           };
         }
+        // Plan v8 Phase B — same admin-help hook as mapAction. See P0-2.
+        const agentReason = typeof parsed.reason === 'string' ? parsed.reason : 'no reason given';
+        const helpOutcome = await maybeAskAdminBeforeUnavailable({
+          page: args.page,
+          jobId: args.jobId,
+          targetKey: args.actionName,
+          agentReason,
+          signal: args.signal,
+        });
+        if (helpOutcome.kind === 'continue') {
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this drill-down target.` }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+        if (helpOutcome.kind === 'abort') {
+          throw new Error(helpOutcome.reason);
+        }
         return {
           ok: false,
-          reason: `unavailable: ${typeof parsed.reason === 'string' ? parsed.reason : 'no reason given'}`,
+          reason: helpOutcome.kind === 'takeover'
+            ? 'takeover requested (handler not yet implemented)'
+            : helpOutcome.reason,
           finalUrl: args.page.url(),
         };
       }
@@ -1145,12 +1525,18 @@ async function mapDrillDownAction(args: {
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
       const action = toolUse.input as BrowserAction;
-      const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
+      // Plan v8 Phase A: dispatch by mode (DOM vs vision executor).
+      const exec = args.mode === 'vision'
+        ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
+        : await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
 
       const actionType = (action as { action?: string }).action ?? '';
-      if (actionType === 'read_page' || actionType === 'get_page_text') readPageCount++;
+      // Both DOM (read_page/get_page_text) and vision (screenshot) count
+      // toward the "explored at least one page" floor — the agent must
+      // have actually looked at SOMETHING before claiming unavailable.
+      if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') readPageCount++;
       else if (actionType === 'navigate' || actionType === 'left_click' ||
                actionType === 'double_click' || actionType === 'find' ||
                actionType === 'scroll_to' || actionType === 'form_input') navigationCount++;

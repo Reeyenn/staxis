@@ -34,6 +34,9 @@ import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { mapPMS, type MapperResult } from './mapper.js';
 import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
+import { env } from './env.js';
+import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
+import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
 
 export interface MappingJobInput {
@@ -42,6 +45,13 @@ export interface MappingJobInput {
   /** Optional: override the global cost cap for this specific run.
    *  Useful for re-running a partial map with a higher budget. */
   cost_cap_micros?: number;
+  /** Plan v8 Phase A — per-job mapper mode override. Falls back to
+   *  env.MAPPER_MODE when absent. Admin checks "use vision" in the
+   *  Enqueue Mapper UI to set this. */
+  mapper_mode?: 'dom' | 'vision';
+  /** Plan v8 Phase A — per-job Claude model. Defaults to claude-sonnet-4-6.
+   *  Admin opts into Opus for hard PMSes per-job. */
+  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
 }
 
 export interface MappingJobResult {
@@ -77,6 +87,102 @@ const BUSINESS_CRITICAL_TARGETS: Array<keyof Recipe['actions']> = [
 ];
 const MIN_BUSINESS_CRITICAL_FOR_AUTO = 3;
 
+// ─── Live event broadcast (Plan v8 Phase B chunk 2) ─────────────────────
+//
+// The Live Mapping admin console subscribes to two Supabase realtime
+// channels for each in-flight mapper job:
+//   1. postgres_changes on mapping_help_requests filtered by job_id —
+//      drives the help-request panel (Phase B chunk 1 wired this).
+//   2. broadcast channel `mapping:{jobId}` — drives the activity feed
+//      (this file).
+//
+// This is intentionally COARSE-GRAINED for v1: lifecycle events only
+// (start, preflight_passed, mapping_started, target_started,
+// target_completed, mapping_completed). Per-action streaming + screenshot
+// frames are deferred to a follow-up — the admin can already see "what
+// target the agent is on" + "is anything stuck waiting for me" from
+// these events.
+
+type MappingEventType =
+  | 'mapping_started'
+  | 'preflight_passed'
+  | 'preflight_failed'
+  | 'mapping_in_progress'   // generic progress tick from mapPMS onProgress
+  | 'mapping_completed'
+  | 'mapping_failed';
+
+interface MappingEvent {
+  type: MappingEventType;
+  jobId: string;
+  label?: string;       // human-readable progress label
+  pct?: number;         // 0-100 for the progress bar
+  detail?: Record<string, unknown>;
+  at: string;           // ISO timestamp
+}
+
+/**
+ * Plan v8 hardening (Codex P1) — channel-per-job, not channel-per-event.
+ *
+ * Earlier version created and unsubscribed a fresh Supabase realtime
+ * channel for every progress event. At 300 hotels × ~50 events per job
+ * that's 15K channel lifecycle cycles per onboarding wave, which churns
+ * the realtime WebSocket pool harder than Supabase's per-connection
+ * limits expect.
+ *
+ * Now: openBroadcastChannel(jobId) at the top of runMappingJob, all
+ * subsequent broadcasts reuse it, closeBroadcastChannel(channel) in the
+ * finally block. One channel per job lifecycle.
+ */
+type MappingBroadcastChannel = ReturnType<typeof supabase.channel>;
+
+/**
+ * Plan v8 final review A1 — open AND subscribe the channel so subsequent
+ * .send() calls go over the persistent WebSocket. Without .subscribe(),
+ * Supabase JS silently falls back to a REST POST per send — defeating
+ * the channel-per-job optimization. We subscribe with a 3s timeout so a
+ * flaky realtime endpoint doesn't block job startup (graceful degrade
+ * to REST-per-send on timeout — that's the OLD behavior, not worse).
+ */
+async function openBroadcastChannel(jobId: string): Promise<MappingBroadcastChannel> {
+  const channel = supabase.channel(`mapping:${jobId}`);
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => resolve(), 3_000);
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' ||
+          status === 'CLOSED' || status === 'TIMED_OUT') {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+  return channel;
+}
+
+async function broadcastMappingEvent(
+  channel: MappingBroadcastChannel | null,
+  evt: MappingEvent,
+): Promise<void> {
+  if (!channel) return;
+  try {
+    await channel.send({
+      type: 'broadcast',
+      event: evt.type,
+      payload: evt,
+    });
+  } catch (err) {
+    // Best-effort — never let a broadcast failure abort the mapper.
+    log.warn('mapping-driver: broadcast failed (non-fatal)', {
+      jobId: evt.jobId, type: evt.type,
+      err: (err as Error).message,
+    });
+  }
+}
+
+async function closeBroadcastChannel(channel: MappingBroadcastChannel | null): Promise<void> {
+  if (!channel) return;
+  try { await channel.unsubscribe(); } catch { /* noop */ }
+}
+
 /**
  * Run a mapping job end-to-end. Called by the workflow-runtime's
  * mapper-kind handler.
@@ -92,11 +198,48 @@ export async function runMappingJob(
     propertyId: input.property_id,
   });
 
+  // Plan v8 final review B1 — org-wide daily mapping spend cap. Per-job
+  // cap stops a single run from bleeding past its budget; THIS stops the
+  // 300-hotel wave from aggregate-bombing even if each individual run
+  // honored its per-job cap. Check BEFORE opening the channel + browser
+  // so a paused run leaves zero side effects.
+  const dailyCap = await checkDailyMappingSpend();
+  if (dailyCap.over) {
+    log.warn('mapping-driver: refusing — org daily mapping spend cap exceeded', {
+      jobId,
+      spentDollars: microsToDollars(dailyCap.spentMicros),
+      capDollars: microsToDollars(dailyCap.capMicros),
+    });
+    return {
+      ok: false,
+      error: `org daily mapping spend cap exceeded ($${microsToDollars(dailyCap.spentMicros).toFixed(2)} of $${microsToDollars(dailyCap.capMicros).toFixed(2)}). Raise CUA_DAILY_MAPPING_SPEND_CAP_MICROS via fly secrets to unblock.`,
+    };
+  }
+
+  // Plan v8 hardening — one realtime channel per job, reused across all
+  // lifecycle events. Closed in the finally block at the bottom.
+  const channel: MappingBroadcastChannel = await openBroadcastChannel(jobId);
+
+  try {
+  // Plan v8 Phase B chunk 2 — Live Mapping admin UI watches for these.
+  await broadcastMappingEvent(channel, {
+    type: 'mapping_started',
+    jobId,
+    label: 'Starting',
+    pct: 5,
+    detail: { pmsFamily: input.pms_family, propertyId: input.property_id },
+    at: new Date().toISOString(),
+  });
+
   // 1. Load credentials for the representative property.
   const credentials = await loadCredentials(input.property_id);
   if (!credentials) {
     return { ok: false, error: 'no active scraper_credentials for representative property' };
   }
+
+  // Plan v8 Phase A — resolve mode (per-job override > env default).
+  // Same mode threaded through preflight + mapPMS.
+  const mode: 'dom' | 'vision' = input.mapper_mode ?? env.MAPPER_MODE;
 
   // 1.5. Pre-flight check: try to actually load the login URL with no
   //      Claude involvement at all. If the URL is wrong, the PMS is down,
@@ -105,30 +248,72 @@ export async function runMappingJob(
   //      Anthropic API. This is the single biggest money-saver: failed
   //      mapping runs that were going to fail anyway now cost $0 instead
   //      of $4-10. Adds ~5-15s to the happy path.
-  log.info('mapping-driver: pre-flight starting', { jobId, loginUrl: credentials.loginUrl });
-  const preflight = await preflightLoginPage(credentials.loginUrl, signal);
+  //
+  //      Plan v8 P1-5: preflight is mode-aware. DOM mode requires an
+  //      input[type="password"] (proves it's a login form). Vision mode
+  //      additionally accepts canvas-rendered login pages that have no
+  //      DOM password input (the exact PMSes vision is for).
+  log.info('mapping-driver: pre-flight starting', { jobId, loginUrl: credentials.loginUrl, mode });
+  const preflight = await preflightLoginPage(credentials.loginUrl, signal, mode);
   if (!preflight.ok) {
     log.warn('mapping-driver: pre-flight failed — aborting before Claude is called', {
       jobId,
       reason: preflight.reason,
     });
+    await broadcastMappingEvent(channel, {
+      type: 'preflight_failed',
+      jobId,
+      label: 'Pre-flight failed',
+      detail: { reason: preflight.reason },
+      at: new Date().toISOString(),
+    });
     return { ok: false, error: `pre-flight check failed (no Claude spend): ${preflight.reason}` };
   }
   log.info('mapping-driver: pre-flight passed', { jobId });
+  await broadcastMappingEvent(channel, {
+    type: 'preflight_passed',
+    jobId,
+    label: 'Login URL OK',
+    pct: 15,
+    at: new Date().toISOString(),
+  });
 
   // 2. Run mapPMS. The mapper opens its own browser via chromium.launch.
+  // Plan v8 review P0-A: thread per-job cost cap through. Without this
+  // vision-mode jobs would hit the DOM mode's $5 env default and abort.
   const result = await mapPMS({
     credentials,
     pmsType: input.pms_family as PMSType,
     propertyId: input.property_id,
     jobId,
     signal,
+    mode,
+    model: input.model,
+    jobCostCapMicros: input.cost_cap_micros,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
+      // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
+      // Mapping admin UI. mapper.ts emits these from mapPMS at:
+      // login start/done, each target start, each target done. Fire-
+      // and-forget; broadcastMappingEvent never throws.
+      void broadcastMappingEvent(channel, {
+        type: 'mapping_in_progress',
+        jobId,
+        label,
+        pct,
+        at: new Date().toISOString(),
+      });
     },
   });
 
   if (!result.ok) {
+    await broadcastMappingEvent(channel, {
+      type: 'mapping_failed',
+      jobId,
+      label: 'Mapping failed',
+      detail: { reason: result.userMessage },
+      at: new Date().toISOString(),
+    });
     return { ok: false, error: result.userMessage };
   }
 
@@ -174,6 +359,21 @@ export async function runMappingJob(
     ...stats,
   });
 
+  await broadcastMappingEvent(channel, {
+    type: 'mapping_completed',
+    jobId,
+    label: `Done — ${gate.decision}`,
+    pct: 100,
+    detail: {
+      knowledgeFileId: draft.id,
+      knowledgeFileVersion: draft.version,
+      promotionDecision: gate.decision,
+      promotionReason: gate.reason,
+      ...stats,
+    },
+    at: new Date().toISOString(),
+  });
+
   return {
     ok: true,
     knowledgeFileId: draft.id,
@@ -182,6 +382,12 @@ export async function runMappingJob(
     promotionReason: gate.reason,
     ...stats,
   };
+  } finally {
+    // Plan v8 hardening — close the per-job channel once, regardless of
+    // success/failure/exception. Without this finally a thrown exception
+    // would leak the WebSocket channel handle.
+    await closeBroadcastChannel(channel);
+  }
 }
 
 // ─── Promotion gate ────────────────────────────────────────────────────
@@ -259,6 +465,7 @@ async function promoteDraft(
 async function preflightLoginPage(
   loginUrl: string,
   signal: AbortSignal,
+  mode: 'dom' | 'vision' = 'dom',
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (signal.aborted) {
     return { ok: false, reason: 'job aborted before pre-flight could start' };
@@ -298,20 +505,46 @@ async function preflightLoginPage(
       // Look for a password input — proves this is a real login form.
       // If absent, this is likely a T&C page, maintenance page, OR the
       // PMS vendor changed their login URL without us updating it.
+      //
+      // Plan v8 P1-5: vision-mode fallback. Some PMSes (the exact ones
+      // vision mode exists to handle) render login UI in <canvas> with no
+      // DOM password input. For those, ALSO accept "page has a <canvas>
+      // AND visible text contains login/password/sign-in". Otherwise
+      // preflight would reject exactly the canvas-rendered PMSes the
+      // operator expects vision to handle.
       try {
         await page.waitForSelector('input[type="password"]', {
           timeout: 5_000,
           state: 'attached',
         });
+        return { ok: true };
       } catch {
+        // No DOM password input. In DOM mode, fail — the mapper can't
+        // type into a non-DOM form anyway.
+        if (mode !== 'vision') {
+          const finalUrl = page.url().slice(0, 120);
+          return {
+            ok: false,
+            reason: `no password input on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+          };
+        }
+        // Vision mode: check the canvas+text fallback before giving up.
+        const isCanvasLogin = await page.evaluate(() => {
+          const hasCanvas = document.querySelector('canvas') !== null;
+          if (!hasCanvas) return false;
+          const text = (document.body?.innerText ?? '').toLowerCase();
+          return text.includes('login') || text.includes('password') ||
+                 text.includes('sign in') || text.includes('sign-in');
+        }).catch(() => false);
+        if (isCanvasLogin) {
+          return { ok: true };
+        }
         const finalUrl = page.url().slice(0, 120);
         return {
           ok: false,
-          reason: `no password input on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+          reason: `no password input AND no canvas login on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
         };
       }
-
-      return { ok: true };
     } finally {
       signal.removeEventListener('abort', abortHandler);
     }
@@ -368,6 +601,47 @@ async function saveDraftKnowledgeFile(
     hints: recipe.hints ?? {},
   };
 
+  // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-
+  // mode recipe-injection vector: when admin drives the browser in Live
+  // Mapping, admin-recorded click_at / type_text steps land in this same
+  // insert. A compromised or socially-engineered admin could otherwise
+  // inject {kind: 'goto', url: 'attacker.example'} or {kind: 'fill',
+  // selector: ..., value: '$password'}. Signing ties the recipe to the
+  // active key; replay-time verifyRecipe refuses tampered rows under
+  // RECIPE_SIGNING_ENFORCE=enforce. When no key is configured (legacy
+  // dev), we log + skip — recipe-runner runs in warn mode and proceeds.
+  let signatureBytes: Buffer | null = null;
+  let signedWithKeyId: string | null = null;
+  let signedAt: string | null = null;
+  if (isRecipeSigningConfigured()) {
+    try {
+      const sig = signRecipe(recipe);
+      signatureBytes = sig.signature;
+      signedWithKeyId = sig.signedWithKeyId;
+      signedAt = sig.signedAt;
+    } catch (err) {
+      // Plan v8 Phase B review P1-5 (Codex finding) — under enforce mode,
+      // saving unsigned would silently break the hotel: recipe-runner
+      // refuses unsigned recipes on every poll, and the operator's only
+      // signal is a doctor red row. Fail the save loudly so the admin
+      // sees a clear error + can investigate (key corruption, HSM hiccup,
+      // env mismatch). In warn mode, preserve today's behavior (log +
+      // save unsigned — recipe-runner will log a warning and proceed).
+      if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
+        const msg = `signRecipe failed under enforce mode — refusing to save unsigned recipe: ${(err as Error).message}`;
+        log.warn('saveDraftKnowledgeFile: ' + msg, { pmsFamily, version: nextVersion });
+        return { ok: false, error: msg };
+      }
+      log.warn('saveDraftKnowledgeFile: signRecipe failed — saving unsigned (warn mode)', {
+        err: (err as Error).message, pmsFamily, version: nextVersion,
+      });
+    }
+  } else {
+    log.info('saveDraftKnowledgeFile: signing key not configured — saving unsigned', {
+      pmsFamily, version: nextVersion,
+    });
+  }
+
   const { data: inserted, error: insErr } = await supabase
     .from('pms_knowledge_files')
     .insert({
@@ -377,6 +651,9 @@ async function saveDraftKnowledgeFile(
       knowledge,
       created_by: 'mapper:mapping-driver',
       notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.`,
+      signature: signatureBytes,
+      signed_with_key_id: signedWithKeyId,
+      signed_at: signedAt,
     })
     .select('id')
     .single();

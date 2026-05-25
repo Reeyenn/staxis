@@ -6,6 +6,10 @@
       "schedule": "0 9 * * *"
     },
     {
+      "path": "/api/cron/expire-help-requests",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/agent/nudges/check",
       "schedule": "*/5 * * * *"
     },

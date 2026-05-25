@@ -885,8 +885,15 @@ export class SessionDriver {
       kind: 'mapper.learn_pms_family',
       payload: { pms_family: this.pmsFamily, property_id: this.propertyId },
       idempotency_key: idempotencyKey,
+      // Plan v8 final review B1 — cost-bomb cap. Mapper jobs spend real
+      // money ($25-50/run in vision mode). Default workflow_jobs.max_attempts
+      // = 3 would silently turn a $25 cost cap into a $75 worst case PER
+      // failed job. At 300-hotel onboarding wave with vision mode +
+      // mapping failure on, say, 10 of them, that's $750 → $2,250 with
+      // retries. Force max_attempts=1: a failed mapper requires admin
+      // attention (re-trigger via UI) instead of silent auto-retry.
+      max_attempts: 1,
       // status defaults to 'queued' per migration 0201.
-      // max_attempts defaults to 3.
       triggered_by: 'session-driver:paused_no_knowledge_file',
     });
     if (error) {

@@ -32,6 +32,9 @@
 
 import { supabase } from './supabase.js';
 import { log } from './log.js';
+import { env } from './env.js';
+import { verifyRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
+import type { Recipe } from './types.js';
 
 // ─── Knowledge file schema ────────────────────────────────────────────────
 
@@ -107,6 +110,11 @@ export interface LoadedKnowledgeFile {
   knowledge: KnowledgeFile;
   learnedAt: Date;
   createdBy: string;
+  /** Plan v8 P1-7 — HMAC signature columns from pms_knowledge_files.
+   *  Verified before each polling cycle to catch tampered rows.
+   *  NULL when the row pre-dates signing or signing was bypassed. */
+  signature: Buffer | null;
+  signedWithKeyId: string | null;
 }
 
 // ─── Load ────────────────────────────────────────────────────────────────
@@ -119,7 +127,7 @@ export interface LoadedKnowledgeFile {
 export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile | null> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
     .maybeSingle();
@@ -129,7 +137,57 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
     return null;
   }
   if (!data) return null;
-  return unwrap(data as Record<string, unknown>);
+  const loaded = unwrap(data as Record<string, unknown>);
+  if (!loaded) return null;
+
+  // Plan v8 P1-7 + Codex final review A2 hardening — verify the recipe
+  // signature before handing the knowledge file to a polling driver.
+  // Without this, a tampered row would replay malicious selectors on
+  // every poll.
+  //
+  // Three failure shapes:
+  //   1. Signing IS configured but the row is unsigned (no signature col).
+  //      In FY25, this can only happen if mapper signing threw + saved
+  //      unsigned (only allowed in warn mode — see mapping-driver.ts).
+  //      Refuse the load unconditionally — even in warn mode — because
+  //      a configured environment seeing an unsigned active row is a
+  //      red flag that needs operator attention. Falling through silently
+  //      defeats the purpose of having signing on at all. (Codex A2 fix:
+  //      previous version only refused in 'enforce' mode, leaving warn
+  //      mode operationally identical to "no signing".)
+  //   2. Signing configured + signature present + verification fails:
+  //      enforce refuses; warn logs + proceeds (per the env contract).
+  //   3. Signing NOT configured + signature present from a prior config:
+  //      verifyRecipe returns 'no_key_configured'; treat as failure and
+  //      apply the same enforce/warn split.
+  if (isRecipeSigningConfigured() || loaded.signature) {
+    const verify = verifyRecipe(
+      loaded.knowledge as unknown as Recipe,
+      loaded.signature,
+      loaded.signedWithKeyId,
+    );
+    if (!verify.ok) {
+      const detail = {
+        pmsFamily,
+        knowledgeFileId: loaded.id,
+        version: loaded.version,
+        reason: verify.reason,
+        signedWithKeyId: loaded.signedWithKeyId,
+      };
+      // Special case for #1 above — unsigned row with signing configured
+      // is a deployment hazard regardless of mode. Always refuse.
+      if (isRecipeSigningConfigured() && verify.reason === 'no_signature') {
+        log.error('knowledge-file: unsigned active row with signing configured — refusing load (deployment hazard)', detail);
+        return null;
+      }
+      if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
+        log.error('knowledge-file: signature verification FAILED — refusing load (enforce mode)', detail);
+        return null;
+      }
+      log.warn('knowledge-file: signature verification failed (warn mode — proceeding)', detail);
+    }
+  }
+  return loaded;
 }
 
 /**
@@ -142,7 +200,7 @@ export async function loadByVersion(
 ): Promise<LoadedKnowledgeFile | null> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
     .eq('version', version)
     .maybeSingle();
@@ -157,7 +215,7 @@ export async function loadByVersion(
 export async function listVersions(pmsFamily: string): Promise<LoadedKnowledgeFile[]> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
     .order('version', { ascending: false });
 
@@ -345,7 +403,27 @@ function unwrap(row: Record<string, unknown>): LoadedKnowledgeFile | null {
     knowledge,
     learnedAt: new Date(row.learned_at as string),
     createdBy: row.created_by as string,
+    signature: decodeBytea(row.signature),
+    signedWithKeyId: typeof row.signed_with_key_id === 'string' ? row.signed_with_key_id : null,
   };
+}
+
+/**
+ * Plan v8 P1-7 hardening — PostgREST serializes bytea as either a
+ * `\xHEX` string (default) or base64 (if Content-Type negotiation pushes
+ * it). Buffer-ify both. Returns null when the column was NULL (legacy
+ * row pre-dating signing, or signing bypass under warn mode).
+ */
+function decodeBytea(raw: unknown): Buffer | null {
+  if (raw == null) return null;
+  if (raw instanceof Buffer) return raw;  // defensive, future-proof
+  if (typeof raw !== 'string') return null;
+  if (raw.startsWith('\\x')) {
+    // hex form: '\xDEADBEEF…'
+    try { return Buffer.from(raw.slice(2), 'hex'); } catch { return null; }
+  }
+  // assume base64
+  try { return Buffer.from(raw, 'base64'); } catch { return null; }
 }
 
 /**
