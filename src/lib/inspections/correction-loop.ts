@@ -24,9 +24,11 @@
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 import {
   completeInspection,
   countConsecutiveFails,
+  fromInspectionRow,
   getInspectionById,
   linkRecheck,
 } from '@/lib/db/inspections';
@@ -79,16 +81,88 @@ export async function finalizeInspection(
   let escalated = false;
   let escalationReason: string | null = null;
   if (input.result === 'fail' && before.parentInspectionId) {
-    const priorFails = await countConsecutiveFails(before.parentInspectionId);
+    // Codex M7: scope the chain walk to this property + room so a
+    // malformed parent link can't pull failures from another property
+    // into the escalation count.
+    const priorFails = await countConsecutiveFails({
+      parentId: before.parentInspectionId,
+      propertyId: before.propertyId,
+      roomNumber: before.roomNumber,
+    });
     if (priorFails + 1 >= threshold) {
       escalated = true;
       escalationReason = `Failed ${priorFails + 1} consecutive inspections on room ${before.roomNumber}`;
     }
   }
 
-  // 1. Update the inspections row.
-  let correctionNoticeSentAt: string | null = null;
-  if (input.result === 'fail') correctionNoticeSentAt = new Date().toISOString();
+  // 1. Atomic finalize via RPC. complete_inspection_atomic (migration
+  //    0225) wraps the inspections row update + rooms + cleaning_tasks
+  //    + parent-link in one transaction. If the RPC succeeds, every
+  //    side-effect lands atomically. If it fails (DB error, migration
+  //    not applied yet, etc.) we fall back to the non-atomic legacy
+  //    path so the workflow stays online during a rollout.
+  const correctionNoticeSentAt: string | null =
+    input.result === 'fail' ? new Date().toISOString() : null;
+  const correctionNote: string | null =
+    input.result === 'fail' ? buildCorrectionNote(input.failedItems) : null;
+
+  const atomic = await tryAtomicFinalize({
+    inspectionId: input.inspectionId,
+    propertyId: before.propertyId,
+    result: input.result,
+    failedItems: input.failedItems,
+    passedItems: input.passedItems,
+    notes: input.notes,
+    escalated,
+    escalationReason,
+    correctionNoticeSentAt,
+    correctionNote,
+  });
+
+  if (atomic.ok) {
+    return {
+      inspection: atomic.inspection,
+      correctionNoticeSent: input.result === 'fail',
+      escalated,
+    };
+  }
+
+  // Codex M6 follow-up — before running the legacy path, re-fetch the
+  // row. If the RPC actually committed but the HTTP response was lost
+  // (network blip / gateway timeout), the inspection is already in its
+  // final state. Running completeInspection now would fail the
+  // result='in_progress' guard and surface a spurious error to the UI;
+  // the housekeeper retries and the retry fails the same way. Instead,
+  // detect the "already-finalized to the requested result" case and
+  // return as if the RPC succeeded.
+  const refetched = await getInspectionById(input.inspectionId);
+  if (refetched && refetched.result === input.result) {
+    log.info('[inspections.finalize] RPC committed but response lost — returning existing finalized row', {
+      inspectionId: input.inspectionId,
+      result: refetched.result,
+      err: atomic.err,
+    });
+    return {
+      inspection: refetched,
+      correctionNoticeSent: input.result === 'fail',
+      escalated: refetched.escalated,
+    };
+  }
+  if (refetched && refetched.result !== 'in_progress') {
+    // Row is finalized but NOT to the requested result. That's a real
+    // conflict — surface it.
+    throw new Error(
+      `inspection ${input.inspectionId} was finalized as ${refetched.result}, not the requested ${input.result}`,
+    );
+  }
+
+  // Legacy non-atomic path. Only reached when the RPC genuinely failed
+  // AND the row is still in_progress. Visible logging on every
+  // side-effect failure is preserved from the earlier C1 fix.
+  log.warn('[inspections.finalize] atomic RPC unavailable, falling back to legacy path', {
+    inspectionId: input.inspectionId,
+    err: atomic.err,
+  });
 
   const finalized = await completeInspection({
     id: input.inspectionId,
@@ -101,17 +175,14 @@ export async function finalizeInspection(
     correctionNoticeSentAt,
   });
 
-  // 2. Link the parent if this was a re-check. (Sets parent.recheck_inspection_id = this.id.)
   if (before.parentInspectionId) {
     try {
       await linkRecheck(before.parentInspectionId, finalized.id);
     } catch {
-      // Non-fatal — the chain is also reconstructible by walking parent_inspection_id.
-      // Swallow so a transient failure doesn't roll back the inspection itself.
+      // Non-fatal — chain reconstructible via parent_inspection_id.
     }
   }
 
-  // 3. Side effects per result.
   if (input.result === 'pass') {
     await applyPassSideEffects(finalized);
   } else {
@@ -123,6 +194,82 @@ export async function finalizeInspection(
     correctionNoticeSent: input.result === 'fail',
     escalated,
   };
+}
+
+interface TryAtomicArgs {
+  inspectionId: string;
+  propertyId: string;
+  result: 'pass' | 'fail';
+  failedItems: InspectionFailedItem[];
+  passedItems: string[];
+  notes: string | null;
+  escalated: boolean;
+  escalationReason: string | null;
+  correctionNoticeSentAt: string | null;
+  correctionNote: string | null;
+}
+
+type AtomicOutcome =
+  | { ok: true; inspection: Inspection }
+  | { ok: false; err: string };
+
+/**
+ * Wrap the RPC call. Distinguishes between:
+ *  - already-finalized / not-found / bad-result / property-mismatch
+ *    → re-throws (caller's bug or data-integrity issue)
+ *  - any other failure → returns ok=false so caller can fall back
+ *
+ * The RPC raises with specific message prefixes:
+ *   E_NOT_FOUND, E_ALREADY_FINALIZED, E_BAD_RESULT,
+ *   E_ROOM_PROPERTY_MISMATCH, E_TASK_PROPERTY_MISMATCH
+ *
+ * Postgres error messages may be wrapped by PostgREST as
+ * "<errcode> ... <message>"; we match on substring rather than prefix
+ * for resilience.
+ */
+const CALLER_BUG_PREFIXES = [
+  'E_NOT_FOUND',
+  'E_ALREADY_FINALIZED',
+  'E_BAD_RESULT',
+  'E_ROOM_PROPERTY_MISMATCH',
+  'E_TASK_PROPERTY_MISMATCH',
+] as const;
+
+function isCallerBugError(msg: string): boolean {
+  return CALLER_BUG_PREFIXES.some((p) => msg.includes(p));
+}
+
+async function tryAtomicFinalize(args: TryAtomicArgs): Promise<AtomicOutcome> {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('complete_inspection_atomic', {
+      p_inspection_id: args.inspectionId,
+      p_property_id: args.propertyId,
+      p_result: args.result,
+      p_failed_items: args.failedItems as unknown as Record<string, unknown>[],
+      p_passed_items: args.passedItems,
+      p_notes: args.notes,
+      p_escalated: args.escalated,
+      p_escalation_reason: args.escalationReason,
+      p_correction_notice_sent_at: args.correctionNoticeSentAt,
+      p_correction_note: args.correctionNote,
+    });
+    if (error) {
+      const msg = error.message ?? '';
+      if (isCallerBugError(msg)) throw new Error(msg);
+      return { ok: false, err: msg };
+    }
+    // supabase.rpc returns the function result; for a function that
+    // returns a single row, that's the row itself (not wrapped in an
+    // array). Some Postgres + PostgREST versions return it wrapped, so
+    // unwrap defensively.
+    const raw = Array.isArray(data) ? data[0] : data;
+    if (!raw) return { ok: false, err: 'RPC returned no row' };
+    return { ok: true, inspection: fromInspectionRow(raw as Parameters<typeof fromInspectionRow>[0]) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isCallerBugError(msg)) throw err;
+    return { ok: false, err: msg };
+  }
 }
 
 // ─── Side effects ─────────────────────────────────────────────────────────
