@@ -131,7 +131,28 @@ export function planRevert(
       };
     }
 
-    // Untouched (still scheduled / ready_now / deferred). Return it.
+    // Manual override since redistribute — the manager (or auto-assign
+    // cron) reassigned the room to a third HK after the sick callout.
+    // Returning it to the sick HK would clobber that intentional override.
+    // Keep it where it is and record who actually has it.
+    // (Codex review 2026-05-24, Probe 3.)
+    if (current.assignee_id && current.assignee_id !== entry.redistributed_to) {
+      return {
+        task_id: entry.task_id,
+        new_assignee_id: null,
+        apply: false,
+        outcome: {
+          task_id: entry.task_id,
+          room_number: entry.room_number,
+          returned_to_original: false,
+          stayed_with: current.assignee_id,
+          reason: 'already_started',  // reuses the audit bucket — manager UI shows "stayed with <name>"
+        },
+      };
+    }
+
+    // Untouched (still scheduled / ready_now / deferred, still on the
+    // rebalance assignee). Return it to the sick HK.
     return {
       task_id: entry.task_id,
       new_assignee_id: entry.original_assignee_id,

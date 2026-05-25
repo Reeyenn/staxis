@@ -56,13 +56,30 @@ export function SickReportButton({
   const [reverting, setReverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Read existing callout from session — there's no public read endpoint
-  // for this, but the parent will pass onCalloutChange after the report
-  // route POST, which re-mounts via state. For initial load we trust the
-  // POST response to seed `active`; if the page reloads mid-day we fall
-  // back to optimistic "no callout" (manager can still see truth).
-  // A future enhancement could add a public read endpoint scoped by
-  // (pid, staffId) for the housekeeper's own callout state.
+  // Codex review 2026-05-24, Probe 7: seed the active-callout state from
+  // the server on mount so a housekeeper who closes the tab and reopens
+  // it still sees they're sick. Without this, the button defaults to
+  // "I can't work today" even when there's an active callout for them.
+  //
+  // Best-effort: a failure here just falls back to the optimistic "no
+  // callout" view (same as the pre-fix behavior). The manager-side
+  // banner is still the authoritative source of truth.
+  useEffect(() => {
+    if (!pid || !staffId || !businessDate) return;
+    const ctrl = new AbortController();
+    fetch(
+      `/api/housekeeper/callout/status?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}&businessDate=${encodeURIComponent(businessDate)}`,
+      { signal: ctrl.signal },
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { ok?: boolean; data?: { active: ActiveCallout | null } } | null) => {
+        if (body?.ok && body.data?.active) {
+          setActive(body.data.active);
+        }
+      })
+      .catch(() => {/* ignore — falls back to "no callout" optimistic view */});
+    return () => ctrl.abort();
+  }, [pid, staffId, businessDate]);
 
   useEffect(() => {
     if (!modalOpen) {

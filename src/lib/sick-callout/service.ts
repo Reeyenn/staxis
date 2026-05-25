@@ -207,8 +207,7 @@ export async function runRedistributionForCallout(
   supabase: SupabaseClient,
   calloutId: string,
 ): Promise<{ alreadyDone: boolean; impacted: ImpactedAssignment[] }> {
-  // Read the callout under a fresh lookup so we don't double-process if
-  // the cron re-fires a row that was already handled.
+  // Read the callout for its property/staff/date fields.
   const calloutLookup = await supabase
     .from('callout_events')
     .select('*')
@@ -222,6 +221,37 @@ export async function runRedistributionForCallout(
     return { alreadyDone: true, impacted: callout.impacted_assignments ?? [] };
   }
   if (callout.redistributed_at) {
+    return { alreadyDone: true, impacted: callout.impacted_assignments ?? [] };
+  }
+
+  // Codex review 2026-05-24, Probe 8: atomic CLAIM before doing any
+  // work. Two overlapping cron ticks (Vercel sometimes fires close
+  // together) used to both pass the redistributed_at-IS-NULL check
+  // above and both proceed to fan out SMS — double notifications,
+  // double work. The compare-and-swap below collapses to a single
+  // winner per callout: only the tick whose UPDATE matched a row
+  // where redistributed_at was still NULL continues. The other tick
+  // sees null data and bails out as "already done."
+  //
+  // We stamp a placeholder timestamp here; impacted_assignments gets
+  // filled in at the end of the function when the actual decisions
+  // are known.
+  const nowIso = new Date().toISOString();
+  const claim = await supabase
+    .from('callout_events')
+    .update({ redistributed_at: nowIso })
+    .eq('id', calloutId)
+    .eq('status', 'active')
+    .is('redistributed_at', null)
+    .select('id')
+    .maybeSingle();
+  if (claim.error) {
+    throw new Error(
+      `runRedistributionForCallout: claim failed: ${claim.error.message}`,
+    );
+  }
+  if (!claim.data) {
+    // Another tick beat us. Return its impacted_assignments if we can.
     return { alreadyDone: true, impacted: callout.impacted_assignments ?? [] };
   }
 
@@ -285,25 +315,20 @@ export async function runRedistributionForCallout(
     };
   });
 
-  // Apply DB changes. Order: deactivate sick HK's hk_assignments → insert
-  // rebalance rows → update cached cleaning_tasks.assignee_id.
+  // Apply DB changes. Order: INSERT rebalance rows first, THEN deactivate
+  // sick HK's rows. Order matters: if a connection drop interrupts the
+  // sequence between steps, the worst observable state is "task briefly
+  // has TWO active hk_assignments rows" (which the auto-assign cron + UI
+  // tolerate — they pick the freshest). Reversing the order would leave
+  // "task has ZERO active rows" which causes a phantom-unassigned blip
+  // on the manager dashboard. (Codex review 2026-05-24, Probe 2.)
+  //
+  // Full atomicity would need a Postgres function (SECURITY DEFINER) and
+  // is the right long-term fix; the order-swap is the defense-in-depth
+  // version that keeps the system self-healing even mid-failure.
   const hkAssignmentsAvailable = await hkAssignmentsTableExists(supabase);
 
   if (hkAssignmentsAvailable && toRespread.length > 0) {
-    const taskIds = toRespread.map((t) => t.id as string);
-    const { error: deactivateErr } = await supabase
-      .from('hk_assignments')
-      .update({ is_active: false })
-      .eq('property_id', callout.property_id)
-      .eq('housekeeper_id', callout.staff_id)
-      .eq('is_active', true)
-      .in('cleaning_task_id', taskIds);
-    if (deactivateErr) {
-      throw new Error(
-        `runRedistributionForCallout: failed to deactivate sick HK's hk_assignments: ${deactivateErr.message}`,
-      );
-    }
-
     if (result.decisions.length > 0) {
       const now = new Date().toISOString();
       const inserts = result.decisions.map((d) => ({
@@ -327,6 +352,22 @@ export async function runRedistributionForCallout(
         );
       }
     }
+
+    // Deactivate the sick HK's rows AFTER the new rows are in place so
+    // there's no observable gap where the task is unassigned.
+    const taskIds = toRespread.map((t) => t.id as string);
+    const { error: deactivateErr } = await supabase
+      .from('hk_assignments')
+      .update({ is_active: false })
+      .eq('property_id', callout.property_id)
+      .eq('housekeeper_id', callout.staff_id)
+      .eq('is_active', true)
+      .in('cleaning_task_id', taskIds);
+    if (deactivateErr) {
+      throw new Error(
+        `runRedistributionForCallout: failed to deactivate sick HK's hk_assignments: ${deactivateErr.message}`,
+      );
+    }
   }
 
   // Update cached assignee_id on cleaning_tasks (manager UI + housekeeper
@@ -343,19 +384,18 @@ export async function runRedistributionForCallout(
     }
   }
 
-  // Stamp the callout. Status stays 'active' (only revert flips it);
-  // redistributed_at being set is the signal the cron is done.
+  // Final stamp — record the impacted_assignments now that we know
+  // what they are. redistributed_at was already set by the atomic
+  // CLAIM at the top (Codex review 2026-05-24, Probe 8); we don't
+  // touch it here.
   const stamp = await supabase
     .from('callout_events')
-    .update({
-      redistributed_at: new Date().toISOString(),
-      impacted_assignments: impacted,
-    })
+    .update({ impacted_assignments: impacted })
     .eq('id', calloutId)
     .eq('status', 'active');
   if (stamp.error) {
     throw new Error(
-      `runRedistributionForCallout: failed to stamp callout ${calloutId}: ${stamp.error.message}`,
+      `runRedistributionForCallout: failed to stamp impacted_assignments on ${calloutId}: ${stamp.error.message}`,
     );
   }
 
@@ -574,27 +614,16 @@ export async function revertCallout(
   let returnedCount = 0;
   let retainedCount = 0;
 
-  // Mirror the redistribute path's hk_assignments lifecycle: deactivate
-  // the rebalance row(s) we're undoing, then insert a fresh rebalance
-  // row putting the task back with the sick HK, then update the cached
-  // cleaning_tasks.assignee_id pointer.
+  // Mirror the redistribute path's hk_assignments lifecycle (same order
+  // swap from Codex review Probe 2): INSERT the fresh rebalance row putting
+  // the task back with the sick HK first, THEN deactivate the prior
+  // rebalance row. Worst observable state mid-failure is "two active
+  // rows" (tolerated) instead of "zero active rows" (phantom-unassigned).
+  // Then update the cached cleaning_tasks.assignee_id pointer.
   const hkAssignmentsAvailable = await hkAssignmentsTableExists(supabase);
   const tasksToReturn = decisions.filter((d) => d.apply);
 
   if (hkAssignmentsAvailable && tasksToReturn.length > 0) {
-    const returnTaskIds = tasksToReturn.map((d) => d.task_id);
-    const { error: deactivateErr } = await supabase
-      .from('hk_assignments')
-      .update({ is_active: false })
-      .eq('property_id', callout.property_id)
-      .eq('is_active', true)
-      .in('cleaning_task_id', returnTaskIds);
-    if (deactivateErr) {
-      throw new Error(
-        `revertCallout: failed to deactivate rebalance hk_assignments: ${deactivateErr.message}`,
-      );
-    }
-
     const now = new Date().toISOString();
     const inserts = tasksToReturn.map((d, idx) => ({
       property_id: callout.property_id,
@@ -614,6 +643,21 @@ export async function revertCallout(
     if (insertErr) {
       throw new Error(
         `revertCallout: failed to insert revert hk_assignments: ${insertErr.message}`,
+      );
+    }
+
+    // Deactivate the prior rebalance rows AFTER the new ones land.
+    const returnTaskIds = tasksToReturn.map((d) => d.task_id);
+    const { error: deactivateErr } = await supabase
+      .from('hk_assignments')
+      .update({ is_active: false })
+      .eq('property_id', callout.property_id)
+      .eq('is_active', true)
+      .neq('housekeeper_id', callout.staff_id)  // don't deactivate the row we just inserted
+      .in('cleaning_task_id', returnTaskIds);
+    if (deactivateErr) {
+      throw new Error(
+        `revertCallout: failed to deactivate rebalance hk_assignments: ${deactivateErr.message}`,
       );
     }
   }
