@@ -61,6 +61,14 @@ create table if not exists public.staxis_voice_issues (
   staff_id                 uuid references public.staff(id) on delete set null,
   account_id               uuid references public.accounts(id) on delete set null,
   conversation_id          uuid references public.agent_conversations(id) on delete set null,
+  -- Idempotency anchor. Codex 2026-05-25 (MAJOR fix): without a per-session
+  -- unique constraint, a retried model call OR a webhook retry creates a
+  -- second ticket with identical content. The tool now stamps the row with
+  -- the resolved voice-session id and the partial unique index below
+  -- collapses duplicate inserts onto the first row. The partial WHERE is
+  -- there because we still allow NULL for historical / synthetic inserts
+  -- (e.g. tests that bypass a real voice session).
+  voice_session_id         uuid references public.agent_voice_sessions(id) on delete set null,
 
   -- Structured fields extracted by the agent from the spoken transcription.
   room_number              text,
@@ -106,6 +114,13 @@ create index if not exists staxis_voice_issues_staff_idx
 create index if not exists staxis_voice_issues_room_idx
   on public.staxis_voice_issues (property_id, room_number)
   where room_number is not null;
+
+-- Idempotency: one ticket per voice session. A duplicate insert (model
+-- retried createMaintenanceWorkOrder, webhook retried, etc.) hits this
+-- index, the tool catches the 23505 and returns the existing row.
+create unique index if not exists staxis_voice_issues_voice_session_unique
+  on public.staxis_voice_issues (voice_session_id)
+  where voice_session_id is not null;
 
 -- ── 3. RLS ─────────────────────────────────────────────────────────────
 -- Deny-all by default — service-role only. Reads + writes go through /api/*

@@ -111,6 +111,24 @@ export async function POST(req: NextRequest): Promise<Response> {
   const accountId = account.id as string;
   const role = ((account.role as string) ?? 'staff') as AppRole;
 
+  // Codex 2026-05-25 adversarial gate (CRITICAL): mode='housekeeper_issue'
+  // exposes the createMaintenanceWorkOrder tool. Without a role gate at mint
+  // time, any property user (manager, owner, front desk, even a maintenance
+  // tech) could open a session in that mode and file tickets that bypass
+  // the housekeeping floor-role scope. We restrict housekeeper_issue mode
+  // to the housekeeping + maintenance roles — the two roles that actually
+  // walk floors and find broken things. Manager-tier users can file via
+  // chat (or via the typed-issue path on the modal — voice is just a fast
+  // path for floor staff).
+  const HOUSEKEEPER_ISSUE_ROLES: ReadonlyArray<AppRole> = ['housekeeping', 'maintenance'];
+  if (mode === 'housekeeper_issue' && !HOUSEKEEPER_ISSUE_ROLES.includes(role)) {
+    log.warn('[voice-session] housekeeper_issue mode refused for role', { requestId, role });
+    return NextResponse.json(
+      { ok: false, error: 'voice issue reporting is only available to floor staff', requestId },
+      { status: 403 },
+    );
+  }
+
   // Pre-flight: refuse a NEW voice session if the user has already hit the
   // daily audio cap. Mid-session minutes meter on ElevenLabs' side; this
   // gate stops a fresh session being opened over the cap. Mirrors what the

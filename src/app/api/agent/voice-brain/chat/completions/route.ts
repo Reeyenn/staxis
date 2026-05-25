@@ -514,6 +514,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             surface: 'voice',
             voiceMode: ctx.mode,
             currentRoomNumber: ctx.currentRoomNumber,
+            voiceSessionId: ctx.voiceSessionId,
           },
         });
 

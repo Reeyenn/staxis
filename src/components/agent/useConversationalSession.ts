@@ -88,6 +88,12 @@ export interface UseConversationalSessionReturn {
   error: string | null;
   /** End the session and release the mic. Safe to call multiple times. */
   stop: () => void;
+  /** The server-minted voice-session id (a UUID). Surfaced here so the
+   *  housekeeper voice-issue UI can poll /api/agent/voice-issue/status to
+   *  see whether the agent actually fired the tool — replacing the brittle
+   *  "count assistant messages" heuristic. Null until the mint round-trip
+   *  finishes. Feature #11 / Codex 2026-05-25 MAJOR fix. */
+  voiceSessionId: string | null;
 }
 
 export function useConversationalSession(opts: UseConversationalSessionOpts): UseConversationalSessionReturn {
@@ -97,6 +103,7 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
   const [lastAssistant, setLastAssistant] = useState('');
   const [lastUser, setLastUser] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(null);
 
   const conversationRef = useRef<Conversation | null>(null);
   // Ratcheted by the start effect — only the first invocation in this
@@ -115,6 +122,9 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
       conv.endSession().catch(() => { /* already ended */ });
     }
     setStatus('idle');
+    // Don't clear voiceSessionId here — the VoiceIssueButton needs it AFTER
+    // the session ends to poll the status endpoint and confirm the ticket
+    // landed. Cleared at the next mint instead.
   }, []);
 
   useEffect(() => {
@@ -125,6 +135,19 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
     let cancelled = false;
     setStatus('connecting');
     setError(null);
+    // Clear the previous session's id BEFORE the new mint round-trip so
+    // a consumer can't get confused into polling for a ticket against
+    // last session's id. Set again once the new mint succeeds.
+    setVoiceSessionId(null);
+
+    // Codex 2026-05-25 (MAJOR fix): under React StrictMode the effect
+    // runs twice in dev — setup, cleanup, setup again. The first setup
+    // fires the mint POST; cleanup sets `cancelled=true` but the in-flight
+    // fetch keeps going server-side and writes a row into
+    // agent_voice_sessions. Without an AbortController the orphan row
+    // exists forever; with one, the network request is cancelled the
+    // moment cleanup runs and the row is never created.
+    const mintAbort = new AbortController();
 
     void (async () => {
       // 1. Mint a signed URL.
@@ -141,6 +164,7 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
             mode: mode ?? 'general',
             currentRoomNumber: currentRoomNumber ?? null,
           }),
+          signal: mintAbort.signal,
         });
         if (res.status === 429) {
           if (!cancelled) { setStatus('capped'); setError("You've hit today's voice limit."); }
@@ -164,6 +188,10 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
         mintData = body.data ?? null;
       } catch (e) {
         if (e instanceof SessionEndedError) return;  // redirect in progress; let it happen
+        // AbortError from the mintAbort controller is expected during
+        // StrictMode cleanup — treat it as a silent cancellation, not a
+        // user-facing error.
+        if (e instanceof DOMException && e.name === 'AbortError') return;
         if (!cancelled) {
           setStatus('error');
           setError('Network error starting voice session.');
@@ -171,6 +199,16 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
         return;
       }
       if (cancelled || !mintData) return;
+
+      // Surface the server-minted voice session id so consumers (e.g. the
+      // VoiceIssueButton polling for ticket status) can hit the status
+      // endpoint with a UUID they didn't have to guess. The id rides in
+      // the dynamic_variables payload under the well-known key — same
+      // value the webhook re-resolves on every turn.
+      const mintedVoiceSessionId = mintData.dynamicVariables?.['staxis_voice_session_id'];
+      if (typeof mintedVoiceSessionId === 'string') {
+        setVoiceSessionId(mintedVoiceSessionId);
+      }
 
       // 2. Open the conversation with the SDK.
       try {
@@ -302,6 +340,9 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
 
     return () => {
       cancelled = true;
+      // Cancel any in-flight mint POST so StrictMode's setup/cleanup/setup
+      // double-fire doesn't write two agent_voice_sessions rows.
+      mintAbort.abort();
       const conv = conversationRef.current;
       conversationRef.current = null;
       startedRef.current = false;
@@ -309,5 +350,5 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
     };
   }, [active, propertyId, mode, currentRoomNumber]);
 
-  return { status, lastAssistant, lastUser, error, stop };
+  return { status, lastAssistant, lastUser, error, stop, voiceSessionId };
 }

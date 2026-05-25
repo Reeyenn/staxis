@@ -64,7 +64,12 @@ interface RoomRow {
 
 let roomRow: RoomRow | null = null;
 const insertedIssues: Array<Record<string, unknown>> = [];
-const insertErrors: { message?: string } | null = null;
+// Used by the idempotency test to simulate a 23505 unique_violation on
+// the partial unique index on staxis_voice_issues.voice_session_id.
+let nextInsertError: { code?: string; message?: string } | null = null;
+// Used by the idempotency test as the row returned by the post-conflict
+// SELECT — i.e. the already-stored ticket for this voice session.
+let existingIssueRow: { id: string } | null = null;
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 
@@ -86,6 +91,8 @@ beforeEach(() => {
     type: 'checkout',
   };
   insertedIssues.length = 0;
+  nextInsertError = null;
+  existingIssueRow = null;
 
   // @ts-expect-error monkey-patch the singleton for the test
   supabaseAdmin.from = (table: string) => buildTableStub(table);
@@ -119,13 +126,24 @@ function buildTableStub(table: string) {
   }
   if (table === 'staxis_voice_issues') {
     return {
+      // Insert path (happy + 23505 unique_violation simulation).
       insert: (row: Record<string, unknown>) => ({
         select: (_cols: string) => ({
           single: async () => {
-            if (insertErrors) return { data: null, error: insertErrors };
+            if (nextInsertError) {
+              const err = nextInsertError;
+              nextInsertError = null; // one-shot
+              return { data: null, error: err };
+            }
             insertedIssues.push(row);
             return { data: { id: 'issue-id-stub' }, error: null };
           },
+        }),
+      }),
+      // Post-conflict lookup: select … from staxis_voice_issues where voice_session_id=?
+      select: (_cols: string) => ({
+        eq: (_col: string, _v: string) => ({
+          maybeSingle: async () => ({ data: existingIssueRow, error: null }),
         }),
       }),
     };
@@ -149,6 +167,7 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     surface: 'voice',
     voiceMode: 'housekeeper_issue',
     currentRoomNumber: '305',
+    voiceSessionId: '00000000-0000-0000-0000-000000000099',
     ...overrides,
   };
 }
@@ -226,16 +245,134 @@ describe('createMaintenanceWorkOrder — room hint fallback', () => {
     assert.equal(insertedIssues[0]!.room_number, '410');
   });
 
-  test('no room found in DB — still inserts the ticket with the raw room number', async () => {
-    // findRoomByNumber returns []
+  test('floor role + room not found in DB → refused (Codex 2026-05-25 MAJOR fix)', async () => {
+    // findRoomByNumber returns []; the housekeeper can't file against a
+    // room that isn't on their assignment list.
     roomRow = null;
     const r = await executeTool(
       'createMaintenanceWorkOrder',
       { action: 'REPAIR', item: 'sink', room_number: '999' },
       makeCtx({ currentRoomNumber: null }),
     );
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? '', /assignment list/);
+    assert.equal(insertedIssues.length, 0);
+  });
+
+  test('manager-tier role + room not found → still inserts the ticket', async () => {
+    roomRow = null;
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink', room_number: '999' },
+      makeCtx({
+        currentRoomNumber: null,
+        user: {
+          uid: '00000000-0000-0000-0000-000000000020',
+          accountId: ACCOUNT_ID,
+          username: 'gm',
+          displayName: 'GM',
+          role: 'general_manager',
+          propertyAccess: [PROPERTY_ID],
+        },
+      }),
+    );
     assert.equal(r.ok, true);
     assert.equal(insertedIssues[0]!.room_number, '999');
+  });
+
+  test('floor role with no room number and no UI hint → refused', async () => {
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink' },
+      makeCtx({ currentRoomNumber: null }),
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? '', /confirm which room/);
+    assert.equal(insertedIssues.length, 0);
+  });
+});
+
+// ─── Idempotency ─────────────────────────────────────────────────────────
+
+describe('createMaintenanceWorkOrder — idempotency (Codex 2026-05-25 MAJOR fix)', () => {
+  test('a unique-violation on voice_session_id returns the existing ticket instead of erroring', async () => {
+    // Simulate the partial unique index on (voice_session_id) catching a
+    // duplicate insert and Postgres throwing 23505. The tool must swallow
+    // the error and SELECT the already-stored row.
+    nextInsertError = { code: '23505', message: 'unique_violation' };
+    existingIssueRow = { id: 'pre-existing-issue-id' };
+
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink' },
+      makeCtx(),
+    );
+    assert.equal(r.ok, true);
+    const data = r.data as { issue_id: string; idempotent: boolean };
+    assert.equal(data.issue_id, 'pre-existing-issue-id');
+    assert.equal(data.idempotent, true);
+    // No new row should have been inserted on the conflict path.
+    assert.equal(insertedIssues.length, 0);
+  });
+
+  test('a generic insert error is still surfaced as a hard failure', async () => {
+    nextInsertError = { code: '99999', message: 'transient' };
+    const r = await executeTool(
+      'createMaintenanceWorkOrder',
+      { action: 'REPAIR', item: 'sink' },
+      makeCtx(),
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? '', /transient|maintenance ticket/);
+  });
+});
+
+// ─── Issue-note mirror — non-clobber ─────────────────────────────────────
+
+describe('createMaintenanceWorkOrder — rooms.issue_note mirror', () => {
+  test('skips the mirror update when the room already has an issue_note (Codex MAJOR fix)', async () => {
+    // Track update calls on the rooms table.
+    const roomUpdates: Array<Record<string, unknown>> = [];
+    const orig = supabaseAdmin.from.bind(supabaseAdmin);
+    // @ts-expect-error monkey-patch
+    supabaseAdmin.from = (table: string) => {
+      if (table === 'rooms') {
+        return {
+          select: (_cols: string) => ({
+            eq: (_c1: string, _v1: string) => ({
+              eq: (_c2: string, _v2: string) => ({
+                order: (_c3: string, _o: unknown) => ({
+                  limit: async (_n: number) => ({
+                    data: [{ ...roomRow!, issue_note: 'previous issue still pending' }],
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          }),
+          update: (patch: Record<string, unknown>) => ({
+            eq: async (_col: string, _v: string) => {
+              roomUpdates.push(patch);
+              return { data: null, error: null };
+            },
+          }),
+        };
+      }
+      // Fall through to the default stub for the other tables.
+      return buildTableStub(table);
+    };
+
+    try {
+      const r = await executeTool(
+        'createMaintenanceWorkOrder',
+        { action: 'REPAIR', item: 'sink' },
+        makeCtx(),
+      );
+      assert.equal(r.ok, true);
+      assert.equal(roomUpdates.length, 0, 'must not overwrite a non-empty issue_note');
+    } finally {
+      supabaseAdmin.from = orig;
+    }
   });
 });
 

@@ -35,6 +35,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mic, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useConversationalSession } from '@/components/agent/useConversationalSession';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { t, type Language } from '@/lib/translations';
 
 export interface VoiceIssueButtonProps {
@@ -76,12 +77,14 @@ export default function VoiceIssueButton(props: VoiceIssueButtonProps): React.JS
   // submitting.
   const [lastAssistant, setLastAssistant] = useState('');
 
-  // Was a tool call observed? The SDK doesn't expose tool_call events to
-  // the browser directly, but our agent's confirmation message reliably
-  // contains "ticket" (EN) / "ticket" (ES) / etc. We use that as a heuristic
-  // and also fire onTicketFiled() once per session on any agent message —
-  // the parent can dedupe / refetch idempotently.
-  const ticketAnnouncedRef = useRef(false);
+  // Once true, the agent has actually filed the maintenance ticket. We
+  // confirm this against the server via /api/agent/voice-issue/status —
+  // we don't trust the spoken assistant message because that string could
+  // be a clarifying question or an apology. Codex 2026-05-25 MAJOR fix:
+  // the previous "second assistant message means ticket filed" heuristic
+  // would mis-fire on back-and-forth conversations where the tool never
+  // actually ran.
+  const ticketConfirmedRef = useRef(false);
 
   const session = useConversationalSession({
     propertyId,
@@ -109,30 +112,57 @@ export default function VoiceIssueButton(props: VoiceIssueButtonProps): React.JS
     }
   }, [session.status, active, uiState]);
 
-  // Track the agent's spoken confirmation. The first non-empty agent
-  // message after a session opens is the greeting; subsequent messages
-  // are typically confirmations. We treat ANY agent message after the
-  // first as evidence the tool fired and notify the parent. This is a
-  // best-effort heuristic — the parent does an idempotent refetch.
-  const agentMessageCountRef = useRef(0);
+  // Echo the agent's most recent spoken turn under the button — purely
+  // informational, no longer used to decide "ticket filed."
   useEffect(() => {
     if (!session.lastAssistant) return;
     setLastAssistant(session.lastAssistant);
-    agentMessageCountRef.current += 1;
-    if (agentMessageCountRef.current >= 2 && !ticketAnnouncedRef.current) {
-      ticketAnnouncedRef.current = true;
-      onTicketFiled();
-    }
-  }, [session.lastAssistant, onTicketFiled]);
+  }, [session.lastAssistant]);
 
-  // Reset the per-session counters when the user opens a fresh session.
+  // Reset per-session UI state when a fresh session opens.
   useEffect(() => {
     if (active) {
-      agentMessageCountRef.current = 0;
-      ticketAnnouncedRef.current = false;
+      ticketConfirmedRef.current = false;
       setLastAssistant('');
     }
   }, [active]);
+
+  // Poll the status endpoint after each assistant turn. The endpoint
+  // returns ticketFiled=true only when staxis_voice_issues actually has a
+  // row stamped with this voice session id — the agent firing the tool is
+  // the ONLY way to land in that table. Replaces the previous "count
+  // assistant messages" heuristic that mis-fired on clarifying questions
+  // (Codex 2026-05-25 MAJOR fix).
+  useEffect(() => {
+    const voiceSessionId = session.voiceSessionId;
+    if (!voiceSessionId) return;
+    if (!session.lastAssistant) return;
+    if (ticketConfirmedRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(
+          `/api/agent/voice-issue/status?voiceSessionId=${encodeURIComponent(voiceSessionId)}`,
+        );
+        if (cancelled || !res.ok) return;
+        const body = await res.json().catch(() => null) as
+          | { ok?: boolean; data?: { ticketFiled?: boolean } }
+          | null;
+        if (cancelled) return;
+        if (body?.ok && body.data?.ticketFiled === true) {
+          ticketConfirmedRef.current = true;
+          onTicketFiled();
+        }
+      } catch (e) {
+        if (e instanceof SessionEndedError) return; // redirect in progress
+        // Silent — the user's room card will refresh either way on the
+        // next polling tick, and we don't want to surface a transient
+        // network blip as a "ticket failed" message when the agent's
+        // confirmation already played.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session.lastAssistant, session.voiceSessionId, onTicketFiled]);
 
   // ── Tap handler ────────────────────────────────────────────────────────
   // Single button toggles open/close. If we're in a terminal state
@@ -146,7 +176,7 @@ export default function VoiceIssueButton(props: VoiceIssueButtonProps): React.JS
       // the confirmation before the button returns to idle on next tap.
       session.stop();
       setActive(false);
-      if (ticketAnnouncedRef.current) {
+      if (ticketConfirmedRef.current) {
         setUiState('success');
       } else {
         setUiState('idle');

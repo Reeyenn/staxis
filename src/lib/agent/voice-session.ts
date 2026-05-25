@@ -62,6 +62,11 @@ export interface VoiceSessionMintResult {
 }
 
 export interface ResolvedVoiceSession {
+  /** The session id itself — the row's primary key. Plumbed back into
+   *  ToolContext so per-tool idempotency keys (e.g. one maintenance ticket
+   *  per session) can use it as a stable, server-canonical fingerprint.
+   *  Codex 2026-05-25 (MAJOR — close double-insert window). */
+  voiceSessionId: string;
   accountId: string;
   userId: string;
   propertyId: string;
@@ -236,6 +241,7 @@ export async function resolveVoiceSession(
   return {
     ok: true,
     ctx: {
+      voiceSessionId: session.id as string,
       accountId: session.account_id as string,
       userId: session.data_user_id as string,
       propertyId: session.property_id as string,

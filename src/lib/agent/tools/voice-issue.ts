@@ -149,8 +149,16 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
 
     // ─── 3. Floor-role scope check ──────────────────────────────────────
     // Mirrors flag_issue: a housekeeper can only report against a room
-    // they're assigned to (or any room when the lookup misses). Manager-
-    // tier roles bypass via assertFloorRoleCanMutateRoom returning null.
+    // they're assigned to. Manager-tier roles bypass via
+    // assertFloorRoleCanMutateRoom returning null.
+    //
+    // Codex 2026-05-25 adversarial gate (MAJOR fix): the previous version
+    // fell through and wrote a ticket whenever findRoomByNumber returned
+    // null (vacant rooms outside the seeded set). A housekeeper could
+    // therefore file arbitrary made-up room numbers within their property.
+    // Now: for floor roles, an unresolvable room number is a hard refusal.
+    // Manager-tier roles can still file for rooms not in the rooms table.
+    const isFloorRole = ctx.user.role === 'housekeeping' || ctx.user.role === 'maintenance';
     let resolvedRoomNumber: string | null = roomNumber;
     if (roomNumber) {
       const room = await findRoomByNumber(ctx.propertyId, roomNumber);
@@ -158,11 +166,21 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
         const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
         if (scopeError) return { ok: false, error: scopeError };
         resolvedRoomNumber = room.number;
+      } else if (isFloorRole) {
+        return {
+          ok: false,
+          error: `Room ${roomNumber} isn't on your assignment list. Ask the user to double-check the room number.`,
+        };
       }
-      // If the room isn't found in the rooms table (e.g. a vacant room
-      // outside the seeded set), we still write the ticket — the
-      // maintenance team needs to know about it. The room number stays
-      // on the row as text.
+      // Manager-tier roles fall through with the raw room number.
+    } else if (isFloorRole) {
+      // Floor role with no room number AND no UI hint — we can't scope
+      // the ticket. Refuse rather than file a roomless issue under their
+      // identity.
+      return {
+        ok: false,
+        error: 'Please confirm which room the issue is in.',
+      };
     }
 
     if (ctx.dryRun) {
@@ -181,46 +199,91 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
     }
 
     // ─── 4. Insert into staxis_voice_issues ─────────────────────────────
+    // Codex 2026-05-25 adversarial gate (MAJOR fix): the voice-session id
+    // is the idempotency anchor. If the agent fires this tool twice within
+    // one session (model retry, webhook retry, double model output, etc.),
+    // the partial unique index on (voice_session_id) refuses the second
+    // insert with a 23505 unique_violation. We swallow that and fetch the
+    // already-stored row so the caller sees ONE ticket per session.
+    const voiceSessionId = ctx.voiceSessionId ?? null;
+    const insertPayload = {
+      property_id: ctx.propertyId,
+      staff_id: ctx.staffId,
+      account_id: ctx.user.accountId,
+      voice_session_id: voiceSessionId,
+      conversation_id: null, // voice-brain doesn't pass conversationId into ToolContext today; future enhancement
+      room_number: resolvedRoomNumber,
+      action,
+      item,
+      location_detail: locationDetail,
+      severity,
+      note,
+      original_language: originalLanguage,
+      original_transcription: originalTranscription,
+      voice_clip_path: voiceClipPath,
+      status: 'open',
+    };
     const { data, error } = await supabaseAdmin
       .from('staxis_voice_issues')
-      .insert({
-        property_id: ctx.propertyId,
-        staff_id: ctx.staffId,
-        account_id: ctx.user.accountId,
-        conversation_id: null, // voice-brain doesn't pass conversationId into ToolContext today; future enhancement
-        room_number: resolvedRoomNumber,
-        action,
-        item,
-        location_detail: locationDetail,
-        severity,
-        note,
-        original_language: originalLanguage,
-        original_transcription: originalTranscription,
-        voice_clip_path: voiceClipPath,
-        status: 'open',
-      })
+      .insert(insertPayload)
       .select('id')
       .single();
-    if (error || !data) {
-      return {
-        ok: false,
-        error: `Failed to create the maintenance ticket: ${error?.message ?? 'no row returned'}`,
-      };
+    let issueId: string | null = null;
+    let idempotent = false;
+    if (error) {
+      const code = (error as { code?: string }).code;
+      // 23505 = Postgres unique_violation. Only the per-session partial
+      // unique index can fire here (we don't declare any other unique
+      // constraints), so this branch is the "agent fired the tool twice"
+      // case — fetch the already-stored row instead of a hard error.
+      if (code === '23505' && voiceSessionId) {
+        const { data: existing, error: lookupErr } = await supabaseAdmin
+          .from('staxis_voice_issues')
+          .select('id')
+          .eq('voice_session_id', voiceSessionId)
+          .maybeSingle();
+        if (lookupErr || !existing) {
+          return {
+            ok: false,
+            error: `Failed to create the maintenance ticket (duplicate detected but lookup failed): ${lookupErr?.message ?? 'no row'}`,
+          };
+        }
+        issueId = existing.id as string;
+        idempotent = true;
+      } else {
+        return {
+          ok: false,
+          error: `Failed to create the maintenance ticket: ${error.message ?? 'no row returned'}`,
+        };
+      }
+    } else if (!data) {
+      return { ok: false, error: 'Failed to create the maintenance ticket: no row returned' };
+    } else {
+      issueId = data.id as string;
     }
-    const issueId = data.id as string;
 
     // ─── 5. Mirror onto rooms.issue_note so the housekeeper sees it ─────
     // Re-uses the existing rooms.issue_note rendering. Best-effort: if the
     // mirror write fails the ticket still exists, so we don't bubble the
     // error up. The "ticket created" feedback comes from the verbal
     // confirmation either way.
-    if (resolvedRoomNumber) {
+    //
+    // Codex 2026-05-25 adversarial gate (MAJOR fix): never overwrite a
+    // non-empty issue_note. If a prior issue was already flagged on the
+    // room, last-writer-wins would silently hide it from the housekeeper
+    // UI even though both tickets exist in staxis_voice_issues. We only
+    // write the mirror when the column is null/empty, and we skip the
+    // mirror entirely when the insert was idempotent (the same session's
+    // first call already mirrored). For "second different issue on the
+    // same room" the maintenance dashboard reads the canonical list from
+    // staxis_voice_issues — the room card just shows the first hint.
+    if (resolvedRoomNumber && !idempotent) {
       const summary = locationDetail
         ? `${action.toLowerCase()} ${item} (${locationDetail})`
         : `${action.toLowerCase()} ${item}`;
       const noteForCard = (`${summary}${note ? ` — ${note}` : ''}`).slice(0, 500);
       const room = await findRoomByNumber(ctx.propertyId, resolvedRoomNumber);
-      if (room) {
+      if (room && !(room.issue_note && room.issue_note.trim().length > 0)) {
         await supabaseAdmin
           .from('rooms')
           .update({ issue_note: noteForCard })
@@ -232,6 +295,11 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
       ok: true,
       data: {
         issue_id: issueId,
+        // True when this call hit the unique index — i.e. the session
+        // already had a ticket and we returned the existing one rather
+        // than creating a second. The agent can mention "already filed"
+        // instead of "created" if it cares.
+        idempotent,
         room_number: resolvedRoomNumber,
         action,
         item,

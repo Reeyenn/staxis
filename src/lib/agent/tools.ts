@@ -54,6 +54,12 @@ export interface ToolContext {
    *  default a room argument (e.g. createMaintenanceWorkOrder) consult this
    *  when the user doesn't restate the room. Voice-only. */
   currentRoomNumber?: string | null;
+  /** Voice-session id (agent_voice_sessions.id) — the canonical, server-
+   *  minted identifier for this voice session. Tools use it as a stable
+   *  idempotency key: createMaintenanceWorkOrder, for example, persists it
+   *  on the new row and a unique partial index refuses a duplicate insert
+   *  from a retried model call. Voice-only. Codex 2026-05-25 (MAJOR fix). */
+  voiceSessionId?: string;
   /** When true, mutation tools should run their pre-write validation
    *  (lookups, role checks, etc.) but SKIP the actual DB mutation —
    *  return synthetic success at the would-have-mutated boundary.
