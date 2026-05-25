@@ -41,6 +41,10 @@ import { env } from './env.js';
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
+import {
+  createPruneState,
+  maybePruneHistory,
+} from './history-pruning.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
 // Higher cap for per-action mapping — action 4 (staff) is buried in
@@ -49,14 +53,19 @@ const MAX_AGENT_STEPS_PER_ACTION = 80;
 const VIEWPORT = { width: 1280, height: 800 };
 
 // Token + wallclock guards. Browser-tool's read_page is the heaviest call
-// — DOM trees can be 5-30K tokens each. We aggressively truncate to keep
-// per-turn context bounded:
-//   - Only the LATEST read_page output is kept verbatim; older ones
-//     become a 1-line marker. The agent only acts on the current state.
-//   - Same for screenshots — only the latest is kept.
-//   - We also TRUNCATE huge tool_result text (> READ_PAGE_TRUNCATE_CHARS)
-//     before sending. CA's DOM trees can be 100K+ chars; sending those
-//     once burns the budget on its own.
+// — DOM trees can be 5-30K tokens each. The pruner (history-pruning.ts)
+// keeps recent heavy content and elides older content past `keepLast`:
+//   - Vision mode keeps last 3 screenshots; DOM mode keeps last 1
+//     (historyKeepFor below).
+//   - Pruning runs in BATCHES every PRUNE_BATCH_TURNS (~25 turns) per
+//     Anthropic best-practices so older-content bytes stay stable
+//     between prunes — a prerequisite for caching conversation history.
+//     Between prune events, the working set may TEMPORARILY exceed
+//     `keepLast` (acceptable trade-off for cache stability).
+//   - We also TRUNCATE single huge tool_result text blocks to keep one
+//     read_page from drowning the budget (CA's DOM trees hit 100K+ chars).
+//     READ_PAGE_TRUNCATE_CHARS lives in history-pruning.ts alongside the
+//     pruner.
 //
 // Combined with prompt caching on the system prompt, a 60-step run on
 // CA fits well under MAX_INPUT_TOKENS_PER_RUN.
@@ -83,6 +92,21 @@ const HISTORY_KEEP_RECENT = 1;
 // recent context for the model to re-orient after each action, few enough
 // that input-token cost stays bounded.
 const HISTORY_KEEP_RECENT_VISION = 3;
+
+// Extended thinking budget for VISION mode only (Anthropic best-practices
+// for computer/browser use: https://claude.com/blog/best-practices-for-
+// computer-and-browser-use-with-claude). 2000 tokens is the documented
+// "medium" effort default for Sonnet 4.6 — Anthropic notes that even
+// "low" thinking uses fewer total output tokens than disabling thinking
+// entirely (the model is more deliberate, fewer dead-end clicks).
+//
+// DOM-mode (Choice Advantage recipe v5) is intentionally LEFT UNCHANGED.
+// DOM mode is working today; adding thinking there is a separate change
+// with its own validation surface.
+//
+// Invariant: must be < MAX_OUTPUT_TOKENS_PER_TURN (Anthropic API rejects
+// budget_tokens >= max_tokens). 2000 < 4096 ✓.
+const THINKING_BUDGET_TOKENS_VISION = 2000;
 
 /**
  * Plan v8 — mode-aware history retention. DOM mode keeps 1 image (screenshot
@@ -192,11 +216,9 @@ async function maybeAskAdminBeforeUnavailable(args: {
 function phaseWallclockFor(mode: 'dom' | 'vision'): number {
   return mode === 'vision' ? PHASE_WALLCLOCK_BUDGET_MS_VISION : PHASE_WALLCLOCK_BUDGET_MS;
 }
-// Truncate any single read_page or get_page_text result over this size.
-// 20K chars ≈ 5-6K tokens. Most pages have a few hundred interactive
-// elements; this is more than enough for navigation, less than enough
-// to drown the agent in noise.
-const READ_PAGE_TRUNCATE_CHARS = 20_000;
+// READ_PAGE_TRUNCATE_CHARS moved to history-pruning.ts (the only call
+// site after the extraction). Mentioned by name in this file's header
+// comment at the top, but unused at module scope.
 
 // ─── Plan v7 Phase 2a: per-target cost budgets ─────────────────────────────
 // Per-target caps prevent one runaway target from blowing the global $10
@@ -686,6 +708,9 @@ async function mapLogin(
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: goal }] },
   ];
+  // Batched-pruning state — one per agent loop. See PRUNE_BATCH_TURNS
+  // and maybePruneHistory() for the cache-friendliness rationale.
+  const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
 
@@ -741,9 +766,23 @@ async function mapLogin(
       ? `${ctx.jobId}:login:${stepIdx}`
       : `anon:login:${stepIdx}:${Date.now()}`;
 
+    // Extended thinking — vision mode only. See THINKING_BUDGET_TOKENS_VISION
+    // comment for rationale + the DOM-mode-unchanged invariant.
+    // Thinking tokens consume from max_tokens — bump max_tokens by the
+    // thinking budget so the VISIBLE-output cap remains MAX_OUTPUT_TOKENS_
+    // PER_TURN (4096), the pre-thinking ceiling. Without this bump, a
+    // long final JSON could truncate (Codex review finding 2).
+    const thinkingParam = ctx.mode === 'vision'
+      ? { thinking: { type: 'enabled' as const, budget_tokens: THINKING_BUDGET_TOKENS_VISION } }
+      : {};
+    const maxTokensForCall = ctx.mode === 'vision'
+      ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
+      : MAX_OUTPUT_TOKENS_PER_TURN;
+
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
+      max_tokens: maxTokensForCall,
+      ...thinkingParam,
       system: [
         {
           type: 'text',
@@ -752,7 +791,7 @@ async function mapLogin(
         },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, historyKeepFor(ctx.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      messages: maybePruneHistory(messages, pruneState, stepIdx, historyKeepFor(ctx.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(ctx.signal ? { signal: ctx.signal } : {}),
@@ -993,6 +1032,9 @@ async function mapAction(args: {
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: fullGoal }] },
   ];
+  // Batched-pruning state — one per agent loop. See PRUNE_BATCH_TURNS
+  // and maybePruneHistory() for the cache-friendliness rationale.
+  const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
 
@@ -1045,9 +1087,22 @@ async function mapAction(args: {
       ? `${args.jobId}:${args.actionName}:${stepIdx}`
       : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
 
+    // Extended thinking — vision mode only. See THINKING_BUDGET_TOKENS_VISION
+    // comment for rationale + the DOM-mode-unchanged invariant.
+    // Thinking tokens consume from max_tokens — bump max_tokens by the
+    // thinking budget so the VISIBLE-output cap remains 4096 (Codex
+    // review finding 2).
+    const thinkingParam = args.mode === 'vision'
+      ? { thinking: { type: 'enabled' as const, budget_tokens: THINKING_BUDGET_TOKENS_VISION } }
+      : {};
+    const maxTokensForCall = args.mode === 'vision'
+      ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
+      : MAX_OUTPUT_TOKENS_PER_TURN;
+
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
+      max_tokens: maxTokensForCall,
+      ...thinkingParam,
       system: [
         {
           type: 'text',
@@ -1056,7 +1111,7 @@ async function mapAction(args: {
         },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      messages: maybePruneHistory(messages, pruneState, stepIdx, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
@@ -1331,6 +1386,9 @@ async function mapDrillDownAction(args: {
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: fullGoal }] },
   ];
+  // Batched-pruning state — one per agent loop. See PRUNE_BATCH_TURNS
+  // and maybePruneHistory() for the cache-friendliness rationale.
+  const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
   // Same unavailable-floor tracking as mapAction.
@@ -1372,14 +1430,27 @@ async function mapDrillDownAction(args: {
       ? `${args.jobId}:drilldown:${args.actionName}:${stepIdx}`
       : `anon:drilldown:${args.actionName}:${stepIdx}:${Date.now()}`;
 
+    // Extended thinking — vision mode only. See THINKING_BUDGET_TOKENS_VISION
+    // comment for rationale + the DOM-mode-unchanged invariant.
+    // Thinking tokens consume from max_tokens — bump max_tokens by the
+    // thinking budget so the VISIBLE-output cap remains 4096 (Codex
+    // review finding 2).
+    const thinkingParam = args.mode === 'vision'
+      ? { thinking: { type: 'enabled' as const, budget_tokens: THINKING_BUDGET_TOKENS_VISION } }
+      : {};
+    const maxTokensForCall = args.mode === 'vision'
+      ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
+      : MAX_OUTPUT_TOKENS_PER_TURN;
+
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
+      max_tokens: maxTokensForCall,
+      ...thinkingParam,
       system: [
         { type: 'text', text: cfg.systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: truncateOldHistory(messages, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      messages: maybePruneHistory(messages, pruneState, stepIdx, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
@@ -1588,12 +1659,12 @@ function makeToolResult(
   exec: { output: string; screenshotB64?: string; isError?: boolean },
 ): Anthropic.Messages.ToolResultBlockParam {
   const content: Array<Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam> = [];
-  if (exec.screenshotB64) {
-    content.push({
-      type: 'image',
-      source: { type: 'base64', media_type: 'image/png', data: exec.screenshotB64 },
-    });
-  }
+  // Anthropic best-practices guidance (https://claude.com/blog/best-practices-
+  // for-computer-and-browser-use-with-claude): place TEXT BEFORE IMAGE in
+  // tool_result content. The model attends to text as it processes the
+  // screenshot, so a leading text block ("Left-clicked at (320, 480).")
+  // primes recognition of what it should now be looking at — measurable
+  // improvement in click accuracy on dense PMS pages.
   // Codex audit pass-6 P1 — wrap PMS-derived text in an explicit
   // untrusted-content boundary. The system prompt instructs Claude to
   // treat anything inside this tag strictly as data, never as
@@ -1604,6 +1675,12 @@ function makeToolResult(
     ? exec.output
     : `<untrusted_pms_content>\n${exec.output}\n</untrusted_pms_content>`;
   content.push({ type: 'text', text: wrappedText });
+  if (exec.screenshotB64) {
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: exec.screenshotB64 },
+    });
+  }
   return {
     type: 'tool_result',
     tool_use_id: toolUseId,
@@ -1619,66 +1696,6 @@ function extractFinalText(content: Anthropic.Messages.ContentBlock[]): string {
     .filter((c): c is Anthropic.Messages.TextBlock => c.type === 'text')
     .map((c) => c.text)
     .join('\n');
-}
-
-/**
- * Walk the message history and elide older heavy content. Two passes:
- *   1. ELIDE — older instances (past `keepLast`) of screenshots and
- *      large text blocks (read_page output, get_page_text) become a
- *      one-line marker.
- *   2. TRUNCATE — even kept text blocks are capped at
- *      READ_PAGE_TRUNCATE_CHARS, with a clear note so the agent knows
- *      output was clipped. CA's DOM trees are 100K+ chars — sending
- *      one whole one burns the budget on its own.
- *
- * Without this, a 60-step run on a deep menu structure exhausts the
- * 400K input-token cap before reaching the data page. (Diagnosed
- * 2026-05-09 from CA canary v4 — 3/4 actions all failed at "token
- * budget exceeded" despite reaching the right URL.)
- */
-function truncateOldHistory(
-  messages: Anthropic.Messages.MessageParam[],
-  keepLast: number,
-): Anthropic.Messages.MessageParam[] {
-  let imagesSeen = 0;
-  let bigTextSeen = 0;
-  const BIG_TEXT_THRESHOLD = 1500;
-
-  const trimText = (text: string) => {
-    if (text.length <= READ_PAGE_TRUNCATE_CHARS) return text;
-    const head = text.slice(0, READ_PAGE_TRUNCATE_CHARS);
-    return `${head}\n\n[…truncated ${text.length - READ_PAGE_TRUNCATE_CHARS} chars — page is large; use \`find\` for narrower searches]`;
-  };
-
-  const reversed = [...messages].reverse().map((msg) => {
-    if (msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
-    const newContent = msg.content.map((block) => {
-      if (block.type === 'tool_result' && Array.isArray(block.content)) {
-        const inner = block.content.map((b) => {
-          if (b.type === 'image') {
-            imagesSeen++;
-            if (imagesSeen > keepLast) {
-              return { type: 'text' as const, text: '[older screenshot elided]' };
-            }
-            return b;
-          }
-          if (b.type === 'text' && b.text.length > BIG_TEXT_THRESHOLD) {
-            bigTextSeen++;
-            if (bigTextSeen > keepLast) {
-              return { type: 'text' as const, text: `[older read_page output elided — was ${b.text.length} chars]` };
-            }
-            // Kept — but still truncate if very large.
-            return { ...b, text: trimText(b.text) };
-          }
-          return b;
-        });
-        return { ...block, content: inner };
-      }
-      return block;
-    });
-    return { ...msg, content: newContent };
-  });
-  return reversed.reverse();
 }
 
 /**
