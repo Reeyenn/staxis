@@ -33,6 +33,7 @@ import {
   type StaffRow,
 } from './aggregate';
 import { detectAnomalies } from './anomaly-detector';
+import { buildDailyReport } from './daily-report';
 import { generateWeeklyInsight } from './weekly-insights';
 import type {
   DailyReportPayload,
@@ -200,6 +201,65 @@ export async function buildWeeklyReport(args: {
     loadWeekDailies({ propertyId, weekStart, weekEnd: reportDate }),
     loadWeekDailies({ propertyId, weekStart: priorWeekStart, weekEnd: priorWeekEnd }),
   ]);
+
+  // Sunday-cron-ordering safety net: the weekly cron and the daily cron
+  // can both fire in the same 30-min tick (Sunday at the GM's chosen
+  // local time). If the weekly runs first, the Sunday daily isn't in
+  // report_runs yet and the week aggregate would be biased low by ~14%.
+  //
+  // Fix: if reportDate (Sunday) is missing from this week's payloads,
+  // build the daily inline RIGHT NOW so the aggregate has all 7 days.
+  // Two-step:
+  //   (1) inline-build the Sunday daily with skipBaseline (saves ~1
+  //       round-trip; the weekly does its own anomaly pass downstream).
+  //   (2) BEFORE folding the inline payload in, re-check report_runs.
+  //       If the daily cron landed its canonical row mid-build, prefer
+  //       that one — the daily cron is the writer of record for
+  //       report_runs and will email recipients off that payload. Using
+  //       our inline copy would diverge the weekly's numbers from the
+  //       daily email's numbers for the same day (a small drift, but
+  //       confusing).
+  //
+  // We do NOT persist the inline payload back to report_runs. Two reasons:
+  //   - Tradeoff (accepted v1): the daily cron's idempotency uses the
+  //     report_runs row as its "already sent" marker; a shadow write
+  //     from here would suppress the daily email entirely.
+  //   - Cost of re-building each weekly is bounded (1x/week per property)
+  //     and the next daily cron tick will catch up and persist.
+  const hasSundayDaily = thisDailies.some(d => d.reportDate === reportDate);
+  if (!hasSundayDaily) {
+    try {
+      const sundayDaily = await buildDailyReport({
+        propertyId,
+        reportDate,
+        skipBaseline: true,
+      });
+      if (sundayDaily) {
+        // Race recheck: did the daily cron land its row while we were
+        // building? Re-query report_runs for ONLY this Sunday and prefer
+        // the canonical row if found.
+        const { data: canonicalRow, error: recheckErr } = await supabaseAdmin
+          .from('report_runs')
+          .select('report_payload')
+          .eq('property_id', propertyId)
+          .eq('report_type', 'daily')
+          .eq('report_date', reportDate)
+          .maybeSingle();
+        let toAppend: DailyReportPayload = sundayDaily;
+        if (!recheckErr && canonicalRow?.report_payload) {
+          toAppend = canonicalRow.report_payload as DailyReportPayload;
+        }
+        thisDailies.push(toAppend);
+        // Keep oldest-first ordering — the accumulator doesn't care
+        // about order, but downstream consumers might.
+        thisDailies.sort((a, b) => a.reportDate.localeCompare(b.reportDate));
+      }
+    } catch (e) {
+      log.warn('[weekly-report] inline Sunday daily build failed', {
+        propertyId, reportDate, err: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
 
   const thisAccum = sumDailies(thisDailies);
   const priorAccum = sumDailies(priorDailies);
@@ -402,27 +462,33 @@ export async function buildWeeklyReport(args: {
     captureException(e, { subsystem: 'weekly-report', failure_mode: 'insight_failed', propertyId });
   }
 
-  // Final anomaly detector pass — feed the WEEKLY payload through with
-  // an empty baseline so callout-spike / speed-outlier checks fire on
-  // the week's aggregates even when no dailies were stored. Cheap.
-  if (payload.anomalies.length === 0) {
-    payload.anomalies = detectAnomalies({
-      today: {
-        ...payload,
-        anomalies: [],
-        tomorrow: {
-          arrivals: nextWeek.projectedArrivals,
-          departures: nextWeek.projectedDepartures,
-          projectedRoomsToClean: nextWeek.projectedRoomsToClean,
-          recommendedHeadcount: nextWeek.recommendedHeadcount,
-          recommendedLaborCostCents: null,
-          roomsPendingOOO: 0,
-          roomsPendingInspection: 0,
-        },
-      } as DailyReportPayload,
-      baseline: [],
-      perStaffRoomsToday: ranked.map(r => ({ staffId: r.staffId, name: r.name, rooms: r.roomsCleaned })),
-    });
+  // Week-level anomaly pass — ALWAYS runs (Codex review M6: previously
+  // gated on "no daily anomalies," which suppressed week-aggregate checks
+  // like "this week had 6 callouts total" whenever any single day fired
+  // its own anomaly). Dedup against daily anomalies via the same key
+  // shape so we don't sound the same alarm twice.
+  const weeklyAnomalies = detectAnomalies({
+    today: {
+      ...payload,
+      anomalies: [],
+      tomorrow: {
+        arrivals: nextWeek.projectedArrivals,
+        departures: nextWeek.projectedDepartures,
+        projectedRoomsToClean: nextWeek.projectedRoomsToClean,
+        recommendedHeadcount: nextWeek.recommendedHeadcount,
+        recommendedLaborCostCents: null,
+        roomsPendingOOO: 0,
+        roomsPendingInspection: 0,
+      },
+    } as DailyReportPayload,
+    baseline: [],
+    perStaffRoomsToday: ranked.map(r => ({ staffId: r.staffId, name: r.name, rooms: r.roomsCleaned })),
+  });
+  for (const a of weeklyAnomalies) {
+    const key = `${a.kind}:${a.message.slice(0, 40)}`;
+    if (seenAnomalyKey.has(key)) continue;
+    seenAnomalyKey.add(key);
+    payload.anomalies.push(a);
   }
 
   return payload;

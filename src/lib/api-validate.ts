@@ -142,6 +142,46 @@ export function validateDateStr(
   return { value: v };
 }
 
+/**
+ * Validate an ISO timestamp that must be in the future. Used by /api/settings/
+ * notifications for `pausedUntil` (a "pause delivery until" date) — accepting
+ * a past timestamp silently was a confusing UX where the API returned 200
+ * but the pause didn't fire (the cron's `paused_until > now` check just
+ * never matched).
+ *
+ * Default: STRICT — any timestamp at or before `now` is rejected. Callers
+ * that need clock-skew tolerance must opt in via `clockSkewSlackMs`. The
+ * notifications route opts in for 60s to absorb client-to-server round-trip
+ * latency when the user picks "right now-ish."
+ *
+ * Options:
+ *   - clockSkewSlackMs: how far in the past is still treated as "now"
+ *     (default 0 = strict).
+ *   - maxFutureDays: reject timestamps further than this many days out
+ *     (defaults to no cap; pass e.g. 180 for "pause-until cannot be
+ *     more than 6 months out").
+ *   - now: override Date.now() for tests (defaults to current time).
+ *
+ * Returns `{ value: <iso> }` on success or `{ error: <message> }`.
+ */
+export function validateFutureTimestamp(
+  v: unknown,
+  opts: { label: string; clockSkewSlackMs?: number; maxFutureDays?: number; now?: number } = { label: 'timestamp' },
+): { error?: string; value?: string } {
+  const { label } = opts;
+  if (typeof v !== 'string') return { error: `${label} must be an ISO date string` };
+  const ms = Date.parse(v);
+  if (!Number.isFinite(ms)) return { error: `${label} is not a valid ISO date string` };
+  const now = opts.now ?? Date.now();
+  const slack = opts.clockSkewSlackMs ?? 0;
+  if (ms < now - slack) return { error: `${label} must be a future timestamp` };
+  if (opts.maxFutureDays !== undefined) {
+    const maxMs = now + opts.maxFutureDays * 24 * 60 * 60 * 1000;
+    if (ms > maxMs) return { error: `${label} cannot be more than ${opts.maxFutureDays} days in the future` };
+  }
+  return { value: new Date(ms).toISOString() };
+}
+
 export function validateArray<T>(
   v: unknown,
   opts: { max: number; min?: number; label: string },

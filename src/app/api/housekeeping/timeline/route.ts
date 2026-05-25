@@ -177,7 +177,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         'estimated_minutes, requires_inspection, extras, status, started_at, completed_at',
       )
       .eq('property_id', propertyId)
-      .eq('business_date', businessDate);
+      .eq('business_date', businessDate)
+      // .returns<T>() asserts the row shape so TypeScript's strict mode
+      // typechecks the select column list against the local interface.
+      // The runtime behavior is unchanged. Without this assertion, the
+      // Supabase JS generic infers `GenericStringError[]` when the table
+      // isn't in the generated database.types.ts — landing in strict tsc
+      // as the same "incompatible row shape" error. Narrowing via
+      // `.returns<>()` keeps Postgres's actual row shape (verified by
+      // the column list above) as the only place reality is asserted.
+      .returns<CleaningTaskRow[]>();
     if (taskErr) {
       log.warn('timeline: cleaning_tasks load failed; returning empty timeline', {
         requestId, msg: taskErr.message,
@@ -192,7 +201,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         { requestId },
       );
     }
-    const tasks = (taskRows ?? []) as CleaningTaskRow[];
+    const tasks = taskRows ?? [];
 
     // 3. Active assignments — same posture as the board route.
     const taskIds = tasks.map(t => t.id);
