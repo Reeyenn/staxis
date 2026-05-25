@@ -438,6 +438,68 @@ export async function lookupStaffNames(staffIds: string[]): Promise<Map<string, 
 }
 
 /**
+ * Returns true if the given roomId actually exists in the property's
+ * rooms table. Used as a property-scope guard on the start routes so a
+ * caller can't pass a roomId from a different property and have its
+ * status mutated downstream. Falls back to the pms_rooms_inventory
+ * lookup when the rooms row is missing (post-migration, only the PMS
+ * canonical inventory is guaranteed present). Returns false on any
+ * DB error to fail-closed.
+ *
+ * Codex C2 post-merge sweep, 2026-05-24.
+ */
+export async function roomBelongsToProperty(propertyId: string, roomId: string): Promise<boolean> {
+  // Check the legacy rooms table first — that's what side-effects mutate.
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rooms')
+      .select('id, property_id')
+      .eq('id', roomId)
+      .maybeSingle();
+    if (!error && data) {
+      const row = data as { id: string; property_id: string | null };
+      return row.property_id === propertyId;
+    }
+  } catch {
+    // fall through to inventory lookup
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pms_rooms_inventory')
+      .select('id, property_id')
+      .eq('id', roomId)
+      .maybeSingle();
+    if (error || !data) return false;
+    const row = data as { id: string; property_id: string | null };
+    return row.property_id === propertyId;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns true if the given inspectionId exists AND its propertyId
+ * matches. Used by the start routes to validate parentInspectionId
+ * before chaining a re-check.
+ *
+ * Codex C3 post-merge sweep, 2026-05-24.
+ */
+export async function inspectionBelongsToProperty(propertyId: string, inspectionId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('inspections')
+      .select('id, property_id')
+      .eq('id', inspectionId)
+      .maybeSingle();
+    if (error || !data) return false;
+    const row = data as { id: string; property_id: string };
+    return row.property_id === propertyId;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Returns true if the staff row has can_inspect=true. Used by the
  * /api/housekeeping/inspections/me route that the InspectorView calls
  * on mount to decide whether to render.

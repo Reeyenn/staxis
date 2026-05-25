@@ -15,6 +15,8 @@ import {
   createInspection,
   getActiveChecklists,
   getInspectionById,
+  inspectionBelongsToProperty,
+  roomBelongsToProperty,
   staffCanInspect,
 } from '@/lib/db/inspections';
 import { selectChecklist } from '@/lib/inspections';
@@ -85,6 +87,26 @@ export async function POST(req: NextRequest) {
     return err('forbidden — not an inspector', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });
+  }
+
+  // Cross-property guard (Codex C2): roomId must belong to pid.
+  if (roomId) {
+    const roomOk = await roomBelongsToProperty(pid, roomId);
+    if (!roomOk) {
+      return err('roomId does not belong to this property', {
+        requestId, status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
+  }
+
+  // Cross-property guard (Codex C3): parentInspectionId must belong to pid.
+  if (parentInspectionId) {
+    const parentOk = await inspectionBelongsToProperty(pid, parentInspectionId);
+    if (!parentOk) {
+      return err('parentInspectionId does not belong to this property', {
+        requestId, status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
   }
 
   try {

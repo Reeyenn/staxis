@@ -24,6 +24,7 @@
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 import {
   completeInspection,
   countConsecutiveFails,
@@ -130,36 +131,67 @@ export async function finalizeInspection(
 /**
  * On pass: mark the room "inspected" if it still has a rows-table entry
  * (legacy compat). If a cleaning_task is linked, flip its status to
- * inspected_pass. Errors are swallowed individually so a missing rooms
- * row doesn't block the cleaning_task flip and vice versa.
+ * inspected_pass.
+ *
+ * Errors are isolated per side-effect (a missing rooms row doesn't
+ * block the cleaning_task flip and vice versa) but every failure is
+ * logged via log.error so partial inconsistencies surface in Sentry
+ * instead of silently desyncing inspection state from rooms /
+ * cleaning_tasks state (Codex C1 post-merge sweep, 2026-05-24).
  */
 export async function applyPassSideEffects(inspection: Inspection): Promise<void> {
   if (inspection.roomId) {
-    await supabaseAdmin
-      .from('rooms')
-      .update({
-        status: 'inspected',
-        inspected_at: new Date().toISOString(),
-      })
-      .eq('id', inspection.roomId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
+    try {
+      const { error } = await supabaseAdmin
+        .from('rooms')
+        .update({
+          status: 'inspected',
+          inspected_at: new Date().toISOString(),
+        })
+        .eq('id', inspection.roomId);
+      if (error) {
+        log.error('[inspections.applyPassSideEffects] rooms update failed', {
+          inspectionId: inspection.id,
+          roomId: inspection.roomId,
+          propertyId: inspection.propertyId,
+          err: error.message,
+        });
+      }
+    } catch (err) {
+      log.error('[inspections.applyPassSideEffects] rooms update threw', {
+        inspectionId: inspection.id,
+        roomId: inspection.roomId,
+        propertyId: inspection.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   if (inspection.cleaningTaskId) {
-    await supabaseAdmin
-      .from('cleaning_tasks')
-      .update({
-        status: 'inspected_pass',
-        inspected_at: new Date().toISOString(),
-      })
-      .eq('id', inspection.cleaningTaskId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
+    try {
+      const { error } = await supabaseAdmin
+        .from('cleaning_tasks')
+        .update({
+          status: 'inspected_pass',
+          inspected_at: new Date().toISOString(),
+        })
+        .eq('id', inspection.cleaningTaskId);
+      if (error) {
+        log.error('[inspections.applyPassSideEffects] cleaning_tasks update failed', {
+          inspectionId: inspection.id,
+          cleaningTaskId: inspection.cleaningTaskId,
+          propertyId: inspection.propertyId,
+          err: error.message,
+        });
+      }
+    } catch (err) {
+      log.error('[inspections.applyPassSideEffects] cleaning_tasks update threw', {
+        inspectionId: inspection.id,
+        cleaningTaskId: inspection.cleaningTaskId,
+        propertyId: inspection.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -169,38 +201,70 @@ export async function applyPassSideEffects(inspection: Inspection): Promise<void
  * housekeeper sees this surface naturally in her existing queue (the
  * RoomCard component already renders issue_note as a red banner).
  * Also flips the cleaning_task status to correction_pending.
+ *
+ * Errors are isolated per side-effect but every failure is logged
+ * via log.error so partial inconsistencies surface in Sentry
+ * (Codex C1 post-merge sweep, 2026-05-24). Atomicity is still
+ * best-effort; a follow-up migration may add an RPC for true
+ * transactional safety.
  */
 export async function applyFailSideEffects(inspection: Inspection): Promise<void> {
   const note = buildCorrectionNote(inspection.failedItems);
 
   if (inspection.roomId) {
-    await supabaseAdmin
-      .from('rooms')
-      .update({
-        status: 'dirty',
-        completed_at: null,
-        issue_note: note,
-      })
-      .eq('id', inspection.roomId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
+    try {
+      const { error } = await supabaseAdmin
+        .from('rooms')
+        .update({
+          status: 'dirty',
+          completed_at: null,
+          issue_note: note,
+        })
+        .eq('id', inspection.roomId);
+      if (error) {
+        log.error('[inspections.applyFailSideEffects] rooms update failed', {
+          inspectionId: inspection.id,
+          roomId: inspection.roomId,
+          propertyId: inspection.propertyId,
+          err: error.message,
+        });
+      }
+    } catch (err) {
+      log.error('[inspections.applyFailSideEffects] rooms update threw', {
+        inspectionId: inspection.id,
+        roomId: inspection.roomId,
+        propertyId: inspection.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   if (inspection.cleaningTaskId) {
-    await supabaseAdmin
-      .from('cleaning_tasks')
-      .update({
-        status: 'correction_pending',
-        priority: 'high',
-        notes: note,
-      })
-      .eq('id', inspection.cleaningTaskId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
+    try {
+      const { error } = await supabaseAdmin
+        .from('cleaning_tasks')
+        .update({
+          status: 'correction_pending',
+          priority: 'high',
+          notes: note,
+        })
+        .eq('id', inspection.cleaningTaskId);
+      if (error) {
+        log.error('[inspections.applyFailSideEffects] cleaning_tasks update failed', {
+          inspectionId: inspection.id,
+          cleaningTaskId: inspection.cleaningTaskId,
+          propertyId: inspection.propertyId,
+          err: error.message,
+        });
+      }
+    } catch (err) {
+      log.error('[inspections.applyFailSideEffects] cleaning_tasks update threw', {
+        inspectionId: inspection.id,
+        cleaningTaskId: inspection.cleaningTaskId,
+        propertyId: inspection.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
