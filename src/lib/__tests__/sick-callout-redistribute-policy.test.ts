@@ -1,119 +1,27 @@
 /**
- * Tests for the redistribute + revert policy decisions.
+ * Tests for the sick-callout revert + scheduling policy.
  *
  * Run via: npx tsx --test src/lib/__tests__/sick-callout-redistribute-policy.test.ts
  *
- * These are the pure functions that decide:
- *   - which tasks need new assignees
- *   - which housekeepers pick them up (naive balance until
- *     feature/hk-auto-assignment lands)
- *   - which tasks get returned on revert vs stay with the new assignee
- *   - when the redistribute should actually fire (now / in 15 min / after
- *     current room)
- *
- * The DB-touching code in service.ts wraps these functions, so getting
- * the policy right here pins down the user-facing behavior independent
- * of any Supabase mocking.
+ * The redistribute SCORING engine (`rebalanceForSickCallout`) lives in
+ * @/lib/assignment-engine and has its own test file. This file pins
+ * down the policy that's SPECIFIC to the callout flow:
+ *   - revert: started rooms stay with the new assignee; untouched rooms
+ *     return to the original (sick) HK; completed rooms freeze credit.
+ *   - scheduling: when to fire the redistribute (now / in 15 min /
+ *     after current room).
  */
 
 import { test, describe } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
-  planRedistribution,
   planRevert,
-  buildImpactedAssignments,
   computeRedistributeAt,
 } from '../sick-callout/redistribute-policy';
 import type {
-  RedistributableTask,
-  RedistributionEligibleStaff,
   CurrentTaskState,
 } from '../sick-callout/redistribute-policy';
 import type { ImpactedAssignment } from '../sick-callout/types';
-
-function task(
-  id: string,
-  room: string,
-  status: string = 'scheduled',
-  assignee: string | null = 'sick-staff',
-  started_at: string | null = null,
-): RedistributableTask {
-  return { id, room_number: room, assignee_id: assignee, status, started_at };
-}
-
-// ───────────────────────────────────────────────────────────────────────
-// REDISTRIBUTION
-// ───────────────────────────────────────────────────────────────────────
-
-describe('planRedistribution', () => {
-  test('empty input → empty output', () => {
-    const plan = planRedistribution([], []);
-    assert.equal(plan.assignments.length, 0);
-    assert.equal(plan.retained_with_sick.length, 0);
-  });
-
-  test('no eligible staff → tasks become unassigned', () => {
-    const plan = planRedistribution([task('t1', '101'), task('t2', '102')], []);
-    assert.equal(plan.assignments.length, 2);
-    assert.equal(plan.assignments[0].new_assignee_id, null);
-    assert.equal(plan.assignments[1].new_assignee_id, null);
-  });
-
-  test('round-robin to least-loaded HK', () => {
-    const eligible: RedistributionEligibleStaff[] = [
-      { id: 'a', current_load: 0 },
-      { id: 'b', current_load: 0 },
-      { id: 'c', current_load: 0 },
-    ];
-    const plan = planRedistribution(
-      [task('t1', '101'), task('t2', '102'), task('t3', '103')],
-      eligible,
-    );
-    // With a tie on load=0, smallest staff_id wins each pick after the
-    // load bumps. Order: a (load 0→1), then b (load 0→1), then c.
-    assert.equal(plan.assignments[0].new_assignee_id, 'a');
-    assert.equal(plan.assignments[1].new_assignee_id, 'b');
-    assert.equal(plan.assignments[2].new_assignee_id, 'c');
-  });
-
-  test('respects pre-existing load — heaviest does not get more', () => {
-    const eligible: RedistributionEligibleStaff[] = [
-      { id: 'busy', current_load: 10 },
-      { id: 'free', current_load: 0 },
-    ];
-    const plan = planRedistribution([task('t1', '101'), task('t2', '102')], eligible);
-    assert.equal(plan.assignments[0].new_assignee_id, 'free');
-    assert.equal(plan.assignments[1].new_assignee_id, 'free');
-  });
-
-  test('started tasks stay with sick HK (retained, not reassigned)', () => {
-    const tasks = [
-      task('t1', '101', 'in_progress'),
-      task('t2', '102', 'scheduled'),
-      task('t3', '103', 'completed'),
-      task('t4', '104', 'paused'),
-    ];
-    const eligible: RedistributionEligibleStaff[] = [{ id: 'a', current_load: 0 }];
-    const plan = planRedistribution(tasks, eligible);
-
-    const retainedRooms = plan.retained_with_sick.map((t) => t.room_number).sort();
-    assert.deepEqual(retainedRooms, ['101', '103', '104']);
-
-    const assignedRooms = plan.assignments.map((a) => a.task.room_number);
-    assert.deepEqual(assignedRooms, ['102']);
-    assert.equal(plan.assignments[0].new_assignee_id, 'a');
-  });
-
-  test('sort is by room number — handles non-numeric labels', () => {
-    const eligible: RedistributionEligibleStaff[] = [{ id: 'a', current_load: 0 }];
-    const plan = planRedistribution(
-      [task('t1', '201'), task('t2', '101'), task('t3', '101A')],
-      eligible,
-    );
-    const order = plan.assignments.map((a) => a.task.room_number);
-    assert.deepEqual(order, ['101', '101A', '201']);
-  });
-});
 
 // ───────────────────────────────────────────────────────────────────────
 // REVERT
@@ -236,26 +144,5 @@ describe('computeRedistributeAt', () => {
   test('"after_current_room" → sentinel far future (cron uses task-state check)', () => {
     const result = computeRedistributeAt(NOW, 'after_current_room');
     assert.ok(result.getTime() > NOW.getTime() + 60 * 60_000);
-  });
-});
-
-// ───────────────────────────────────────────────────────────────────────
-// IMPACTED ASSIGNMENTS PAYLOAD
-// ───────────────────────────────────────────────────────────────────────
-
-describe('buildImpactedAssignments', () => {
-  test('captures original assignee + new assignee + status at redistribute', () => {
-    const plan = planRedistribution(
-      [task('t1', '101', 'scheduled'), task('t2', '102', 'scheduled')],
-      [{ id: 'a', current_load: 0 }, { id: 'b', current_load: 0 }],
-    );
-    const impactedList = buildImpactedAssignments(plan, 'sick-uuid');
-    assert.equal(impactedList.length, 2);
-    for (const i of impactedList) {
-      assert.equal(i.original_assignee_id, 'sick-uuid');
-      assert.equal(i.task_status_at_redistribute, 'scheduled');
-    }
-    assert.ok(impactedList.some((i) => i.redistributed_to === 'a'));
-    assert.ok(impactedList.some((i) => i.redistributed_to === 'b'));
   });
 });

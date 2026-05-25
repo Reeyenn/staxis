@@ -1,5 +1,9 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0211 — Sick callout coverage flow (feature #6).
+-- 0213 — Sick callout coverage flow (feature #6).
+--
+-- Number history: originally drafted as 0211; bumped to 0213 because main
+-- received 0211_hk_assignments + 0212_inspections from parallel branches
+-- before this one merged.
 --
 -- Why this exists:
 --   When a housekeeper can't work (sick, family emergency, mid-shift bail),
@@ -156,5 +160,5 @@ create policy callout_events_service_role_only
 notify pgrst, 'reload schema';
 
 insert into public.applied_migrations (version, description)
-values ('0211', 'Add callout_events table for the sick-callout coverage flow (feature #6). Tracks self/manager/SMS callouts, impacted task list, and revert outcomes. Service-role only.')
+values ('0213', 'Add callout_events table for the sick-callout coverage flow (feature #6). Tracks self/manager/SMS callouts, impacted task list, and revert outcomes. Service-role only.')
 on conflict (version) do nothing;

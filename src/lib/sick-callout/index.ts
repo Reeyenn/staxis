@@ -31,16 +31,11 @@ export type {
 } from './service';
 
 export {
-  planRedistribution,
   planRevert,
-  buildImpactedAssignments,
   computeRedistributeAt,
 } from './redistribute-policy';
 
 export type {
-  RedistributableTask,
-  RedistributionEligibleStaff,
-  RedistributionPlan,
   CurrentTaskState,
   RevertDecision,
 } from './redistribute-policy';

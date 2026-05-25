@@ -11,11 +11,14 @@
 
 import { test, describe } from 'node:test';
 import { strict as assert } from 'node:assert';
+// Import from sms-bodies (the pure-function module) rather than notify.ts —
+// notify.ts pulls in @/lib/sms → @sentry/nextjs which has a module-load
+// side effect that hangs the Node test runner under tsx.
 import {
   buildPickupSms,
   buildManagerSummarySms,
   buildRevertSms,
-} from '../sick-callout/notify';
+} from '../sick-callout/sms-bodies';
 
 describe('buildPickupSms', () => {
   test('English with single room', () => {

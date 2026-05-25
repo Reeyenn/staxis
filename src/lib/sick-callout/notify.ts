@@ -21,9 +21,22 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { sendSms } from '@/lib/sms';
 import { isSmsConfigured } from '@/lib/env';
 import { log } from '@/lib/log';
-import { sanitizeForSms } from '@/lib/api-validate';
-import { t, type Language } from '@/lib/translations';
+import type { Language } from '@/lib/translations';
 import type { CalloutEvent, ImpactedAssignment } from './types';
+// Pure-function builders live in sms-bodies.ts so the test suite can
+// exercise them without paying the @sentry/nextjs import side effect
+// that @/lib/sms drags in.
+import {
+  buildPickupSms,
+  buildManagerSummarySms,
+  buildRevertSms,
+} from './sms-bodies';
+
+export {
+  buildPickupSms,
+  buildManagerSummarySms,
+  buildRevertSms,
+} from './sms-bodies';
 
 interface StaffContact {
   id: string;
@@ -31,59 +44,6 @@ interface StaffContact {
   phone: string | null;
   language: Language;
 }
-
-/**
- * Build the SMS body for an affected housekeeper. Falls back to English
- * when language is unset. Body is intentionally short — Twilio segments at
- * 160 chars and we want one segment per message.
- *
- * Pure function so the test suite can verify the text rendering without
- * standing up Twilio.
- */
-export function buildPickupSms(
-  sickStaffName: string,
-  pickedUpRoomNumbers: string[],
-  newTotalRooms: number,
-  language: Language,
-): string {
-  const rooms = pickedUpRoomNumbers.join(', ');
-  const body =
-    language === 'es'
-      ? `${sickStaffName} se reportó enfermo — recogiste habitaciones ${rooms}. Nuevo total: ${newTotalRooms}.`
-      : `${sickStaffName} called out — you picked up rooms ${rooms}. New total: ${newTotalRooms}.`;
-  // Reuse the existing SMS sanitiser to strip control chars and trim.
-  return sanitizeForSms(body);
-}
-
-export function buildManagerSummarySms(
-  sickStaffName: string,
-  totalRedistributed: number,
-  pickups: Array<{ staff_name: string; count: number }>,
-): string {
-  if (totalRedistributed === 0) {
-    return sanitizeForSms(
-      `${sickStaffName} called out today. No rooms to redistribute (none assigned yet).`,
-    );
-  }
-  const breakdown = pickups
-    .filter((p) => p.count > 0)
-    .map((p) => `${p.staff_name} +${p.count}`)
-    .join(', ');
-  return sanitizeForSms(
-    `${sickStaffName} called out — ${totalRedistributed} room${totalRedistributed === 1 ? '' : 's'} redistributed. ${breakdown}.`,
-  );
-}
-
-export function buildRevertSms(sickStaffName: string, language: Language): string {
-  const body =
-    language === 'es'
-      ? `Se canceló la ausencia de ${sickStaffName}. Tu lista de habitaciones volvió a la normalidad.`
-      : `${sickStaffName}'s callout was reverted — your queue is back to normal.`;
-  return sanitizeForSms(body);
-}
-
-// silence "unused t/lang import" if the build tree-shakes
-void t;
 
 // ───────────────────────────────────────────────────────────────────────
 // SEND FUNCTIONS

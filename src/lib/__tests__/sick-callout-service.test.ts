@@ -54,6 +54,7 @@ class MockDB {
     };
     this.tables.cleaning_tasks = { rows: [] };
     this.tables.staff = { rows: [] };
+    this.tables.hk_assignments = { rows: [] };
   }
 
   seed(tableName: string, rows: MockRow[]): void {
@@ -79,6 +80,7 @@ class MockQuery {
   private tableName: string;
   private op: 'select' | 'insert' | 'update' | 'delete' = 'select';
   private payload: MockRow | null = null;
+  private bulkPayload: MockRow[] | null = null;
   private updatePayload: MockRow | null = null;
   private limitN: number | null = null;
   private orderBy: { col: string; asc: boolean } | null = null;
@@ -89,7 +91,13 @@ class MockQuery {
   }
 
   select(_cols?: string): MockQuery { return this; }
-  insert(row: MockRow): MockQuery { this.op = 'insert'; this.payload = row; return this; }
+  insert(row: MockRow | MockRow[]): MockQuery {
+    this.op = 'insert';
+    // Support both single-row and array inserts (supabase JS accepts both).
+    this.bulkPayload = Array.isArray(row) ? row : [row];
+    this.payload = Array.isArray(row) ? null : row;
+    return this;
+  }
   update(row: MockRow): MockQuery { this.op = 'update'; this.updatePayload = row; return this; }
   eq(col: string, val: unknown): MockQuery {
     this.filters.push((r) => r[col] === val);
@@ -136,19 +144,24 @@ class MockQuery {
 
   private exec(): { data: MockRow[] | MockRow | null; error: { message?: string; code?: string } | null } {
     const singleMode = !!(this as unknown as { _singleMode: boolean })._singleMode;
-    if (this.op === 'insert' && this.payload) {
-      // Apply unique indexes
+    if (this.op === 'insert' && (this.payload || this.bulkPayload)) {
       const idx = this.table.uniqueIndexes ?? [];
-      for (const keyFn of idx) {
-        const newKey = keyFn(this.payload);
-        if (newKey === null) continue;
-        if (this.table.rows.some((r) => keyFn(r) === newKey)) {
-          return { data: null, error: { code: '23505', message: 'duplicate key' } };
+      const toInsert = this.bulkPayload ?? (this.payload ? [this.payload] : []);
+      const inserted: MockRow[] = [];
+      for (const row of toInsert) {
+        for (const keyFn of idx) {
+          const newKey = keyFn(row);
+          if (newKey === null) continue;
+          if (this.table.rows.some((r) => keyFn(r) === newKey)) {
+            return { data: null, error: { code: '23505', message: 'duplicate key' } };
+          }
         }
+        const enriched = { id: cryptoUuid(), ...row };
+        this.table.rows.push(enriched);
+        inserted.push(enriched);
       }
-      const inserted = { id: cryptoUuid(), ...this.payload };
-      this.table.rows.push(inserted);
-      return { data: singleMode ? inserted : [inserted], error: null };
+      if (singleMode) return { data: inserted[0] ?? null, error: null };
+      return { data: inserted, error: null };
     }
     if (this.op === 'update' && this.updatePayload) {
       const matched = this.table.rows.filter((r) => this.filters.every((f) => f(r)));
@@ -200,9 +213,9 @@ const DATE = '2026-05-24';
 
 function seedStaff(db: MockDB): void {
   db.seed('staff', [
-    { id: SICK, property_id: PID, name: 'Maria',  is_active: true,  phone: '+15551110010', language: 'en', department: 'housekeeping', vacation_dates: [] },
-    { id: A,    property_id: PID, name: 'Carlos', is_active: true,  phone: '+15551110020', language: 'en', department: 'housekeeping', vacation_dates: [] },
-    { id: B,    property_id: PID, name: 'Lupe',   is_active: true,  phone: '+15551110030', language: 'es', department: 'housekeeping', vacation_dates: [] },
+    { id: SICK, property_id: PID, name: 'Maria',  is_active: true, is_senior: true, scheduled_today: true, weekly_hours: 30, max_weekly_hours: 40, phone: '+15551110010', language: 'en', department: 'housekeeping', vacation_dates: [] },
+    { id: A,    property_id: PID, name: 'Carlos', is_active: true, is_senior: true, scheduled_today: true, weekly_hours: 30, max_weekly_hours: 40, phone: '+15551110020', language: 'en', department: 'housekeeping', vacation_dates: [] },
+    { id: B,    property_id: PID, name: 'Lupe',   is_active: true, is_senior: true, scheduled_today: true, weekly_hours: 30, max_weekly_hours: 40, phone: '+15551110030', language: 'es', department: 'housekeeping', vacation_dates: [] },
   ]);
 }
 
@@ -214,6 +227,13 @@ function seedTasks(db: MockDB, rows: Array<{ id: string; room_number: string; st
       property_id: PID,
       business_date: DATE,
       room_number: r.room_number,
+      cleaning_type: 'departure',
+      priority: 'normal',
+      due_by: null,
+      estimated_minutes: 30,
+      requires_inspection: false,
+      extras: [],
+      rule_inputs: {},
       status: r.status ?? 'scheduled',
       assignee_id: r.assignee_id === undefined ? SICK : r.assignee_id,
       started_at: null,

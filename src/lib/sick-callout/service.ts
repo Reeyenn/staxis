@@ -22,14 +22,17 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  planRedistribution,
   planRevert,
-  buildImpactedAssignments,
   computeRedistributeAt,
-  type RedistributableTask,
-  type RedistributionEligibleStaff,
   type CurrentTaskState,
 } from './redistribute-policy';
+import {
+  rebalanceForSickCallout,
+  makeAssignmentConfig,
+  type AssignmentTask,
+  type AssignmentHousekeeper,
+  type AssignmentTaskPriority,
+} from '@/lib/assignment-engine';
 import type {
   CalloutEvent,
   CalloutReporter,
@@ -39,6 +42,28 @@ import type {
   ImpactedAssignment,
   RevertOutcomeEntry,
 } from './types';
+
+// Statuses on cleaning_tasks that mean "not yet started" — only these
+// rows are candidates for redistribution. Anything started (in_progress,
+// paused, completed, inspection_*, correction_*, check_*) stays with the
+// sick HK so they keep credit for work they actually did.
+const STATUSES_NOT_YET_STARTED = new Set(['scheduled', 'ready_now', 'deferred']);
+
+// Statuses that mean the sick HK was actively cleaning a room. Used by the
+// retained-with-sick audit on impacted_assignments + by the cron's
+// "after_current_room" gate.
+const STATUSES_TASK_ALREADY_OWNED = new Set([
+  'in_progress',
+  'paused',
+  'completed',
+  'inspection_pending',
+  'inspected_pass',
+  'inspected_fail',
+  'correction_pending',
+  'correction_complete',
+  'check_pending',
+  'check_complete',
+]);
 
 // ───────────────────────────────────────────────────────────────────────
 // SHARED TYPES
@@ -171,9 +196,12 @@ export async function createCallout(
  * the cron may retry a callout it already processed during the same
  * tick if the first attempt's COMMIT was slow).
  *
- * TODO(integrate-with-feature/hk-auto-assignment): swap the naive
- * planRedistribution call for their smart re-spread engine once it lands.
- * Same signature; this function shouldn't need to change.
+ * Uses `rebalanceForSickCallout` from @/lib/assignment-engine for the
+ * actual scoring (floor cohesion, language match, skill match, workload
+ * balance, overtime cap). Side effects (hk_assignments insert/deactivate,
+ * cleaning_tasks.assignee_id update) mirror /api/cron/run-auto-assign so
+ * the same source-of-truth rules hold for both initial assignment and
+ * rebalance.
  */
 export async function runRedistributionForCallout(
   supabase: SupabaseClient,
@@ -197,21 +225,19 @@ export async function runRedistributionForCallout(
     return { alreadyDone: true, impacted: callout.impacted_assignments ?? [] };
   }
 
-  // Pull this property's cleaning_tasks for the date, assigned to the
-  // sick HK. We pull EVERY status (not just scheduled) so the policy
-  // function can correctly separate already-started rooms (retained
-  // credit) from not-yet-started rooms (redistributed).
+  // Pull the sick HK's cleaning_tasks. We pull EVERY status so we can
+  // separate retained-with-sick (already started) from candidates for
+  // redistribution (not yet started).
   const tasksLookup = await supabase
     .from('cleaning_tasks')
-    .select('id, room_number, assignee_id, status, started_at')
+    .select('id, property_id, room_number, cleaning_type, priority, due_by, estimated_minutes, requires_inspection, extras, rule_inputs, status, assignee_id, started_at')
     .eq('property_id', callout.property_id)
     .eq('business_date', callout.business_date)
     .eq('assignee_id', callout.staff_id);
 
-  // The cleaning_tasks table is owned by feature/cleaning-rules-engine
-  // and may not yet exist in this deploy. Treat "table missing" as
-  // "nothing to redistribute" — the callout is still recorded and the
-  // manager UI just shows an empty redistribution.
+  // The cleaning_tasks table is owned by feature/cleaning-rules-engine and
+  // may not yet exist in some dev deploys. Treat "table missing" as
+  // "nothing to redistribute" — the callout is still recorded.
   const tasksMissingTable =
     tasksLookup.error &&
     /relation .*cleaning_tasks.* does not exist/i.test(tasksLookup.error.message ?? '');
@@ -220,48 +246,105 @@ export async function runRedistributionForCallout(
       `runRedistributionForCallout: cleaning_tasks read failed: ${tasksLookup.error.message}`,
     );
   }
-  const tasks: RedistributableTask[] = tasksMissingTable
-    ? []
-    : (tasksLookup.data ?? []).map((r) => ({
-        id: r.id as string,
-        room_number: r.room_number as string,
-        assignee_id: (r.assignee_id as string | null) ?? null,
-        status: r.status as string,
-        started_at: (r.started_at as string | null) ?? null,
-      }));
+  const allSickTasks = tasksMissingTable ? [] : (tasksLookup.data ?? []);
 
-  // Pull eligible staff — same property, active, not on vacation today,
-  // not themselves out on a callout today, not the sick HK. We pre-fetch
-  // current load (count of cleaning_tasks already assigned) so the
-  // planner can balance pickups.
-  const eligible = await fetchEligibleStaffForRedistribution(
+  // Split: candidates for re-spread vs. tasks that stay with the sick HK.
+  const toRespread = allSickTasks.filter((r) =>
+    STATUSES_NOT_YET_STARTED.has(r.status as string),
+  );
+  // Tasks the sick HK keeps don't go into impacted_assignments (the revert
+  // path doesn't touch them). The line below references the bucket so
+  // future cron logging can surface it.
+  void allSickTasks.filter((r) => STATUSES_TASK_ALREADY_OWNED.has(r.status as string));
+
+  // Build engine inputs.
+  const assignmentTasks: AssignmentTask[] = toRespread.map((r) =>
+    cleaningTaskRowToAssignmentTask(r as CleaningTaskRow),
+  );
+  const { roster, workloadByHk } = await fetchEligibleRosterAndWorkload(
     supabase,
     callout.property_id,
     callout.business_date,
     callout.staff_id,
   );
 
-  const plan = planRedistribution(tasks, eligible);
-  const impacted = buildImpactedAssignments(plan, callout.staff_id);
+  // Score + place.
+  const cfg = makeAssignmentConfig({});
+  const result = rebalanceForSickCallout(assignmentTasks, roster, workloadByHk, cfg);
 
-  // Apply the reassignments. We batch by new_assignee_id to keep the
-  // round-trip count small. Update failures are surfaced — the cron
-  // will retry the whole callout on the next tick.
-  for (const { task, new_assignee_id } of plan.assignments) {
+  // Map engine output → ImpactedAssignment[] for the audit log.
+  const decisionByTaskId = new Map(result.decisions.map((d) => [d.taskId, d]));
+  const impacted: ImpactedAssignment[] = toRespread.map((task) => {
+    const decision = decisionByTaskId.get(task.id as string);
+    return {
+      task_id: task.id as string,
+      room_number: task.room_number as string,
+      original_assignee_id: callout.staff_id,
+      redistributed_to: decision?.housekeeperId ?? null,
+      task_status_at_redistribute: task.status as string,
+    };
+  });
+
+  // Apply DB changes. Order: deactivate sick HK's hk_assignments → insert
+  // rebalance rows → update cached cleaning_tasks.assignee_id.
+  const hkAssignmentsAvailable = await hkAssignmentsTableExists(supabase);
+
+  if (hkAssignmentsAvailable && toRespread.length > 0) {
+    const taskIds = toRespread.map((t) => t.id as string);
+    const { error: deactivateErr } = await supabase
+      .from('hk_assignments')
+      .update({ is_active: false })
+      .eq('property_id', callout.property_id)
+      .eq('housekeeper_id', callout.staff_id)
+      .eq('is_active', true)
+      .in('cleaning_task_id', taskIds);
+    if (deactivateErr) {
+      throw new Error(
+        `runRedistributionForCallout: failed to deactivate sick HK's hk_assignments: ${deactivateErr.message}`,
+      );
+    }
+
+    if (result.decisions.length > 0) {
+      const now = new Date().toISOString();
+      const inserts = result.decisions.map((d) => ({
+        property_id: callout.property_id,
+        cleaning_task_id: d.taskId,
+        housekeeper_id: d.housekeeperId,
+        queue_order: d.queueOrder,
+        is_active: true,
+        assigned_at: now,
+        assigned_by: 'rebalance' as const,
+        assigned_by_user_id: callout.reported_by_user_id,
+        reason: d.reason,
+        score: d.score,
+      }));
+      const { error: insertErr } = await supabase
+        .from('hk_assignments')
+        .insert(inserts);
+      if (insertErr) {
+        throw new Error(
+          `runRedistributionForCallout: failed to insert rebalance hk_assignments: ${insertErr.message}`,
+        );
+      }
+    }
+  }
+
+  // Update cached assignee_id on cleaning_tasks (manager UI + housekeeper
+  // page read from here directly).
+  for (const entry of impacted) {
     const upd = await supabase
       .from('cleaning_tasks')
-      .update({ assignee_id: new_assignee_id })
-      .eq('id', task.id);
+      .update({ assignee_id: entry.redistributed_to })
+      .eq('id', entry.task_id);
     if (upd.error && !tasksMissingTable) {
       throw new Error(
-        `runRedistributionForCallout: failed to reassign task ${task.id}: ${upd.error.message}`,
+        `runRedistributionForCallout: failed to reassign task ${entry.task_id}: ${upd.error.message}`,
       );
     }
   }
 
-  // Stamp the callout with what we did. The status_text on the row
-  // stays 'active' (only revert flips that); redistributed_at being
-  // set is the signal that the cron is done with this row.
+  // Stamp the callout. Status stays 'active' (only revert flips it);
+  // redistributed_at being set is the signal the cron is done.
   const stamp = await supabase
     .from('callout_events')
     .update({
@@ -279,30 +362,100 @@ export async function runRedistributionForCallout(
   return { alreadyDone: false, impacted };
 }
 
-async function fetchEligibleStaffForRedistribution(
+// ───────────────────────────────────────────────────────────────────────
+// Engine-input adapters (mirror /api/cron/run-auto-assign/route.ts)
+// ───────────────────────────────────────────────────────────────────────
+
+type CleaningTaskRow = {
+  id: string;
+  property_id: string;
+  room_number: string;
+  cleaning_type: string;
+  priority: string;
+  due_by: string | null;
+  estimated_minutes: number | null;
+  requires_inspection: boolean | null;
+  extras: unknown;
+  rule_inputs: Record<string, unknown> | null;
+  status: string;
+  assignee_id?: string | null;
+  started_at?: string | null;
+};
+
+type StaffRow = {
+  id: string;
+  name: string;
+  language: string | null;
+  is_senior: boolean | null;
+  is_active: boolean | null;
+  scheduled_today: boolean | null;
+  department: string | null;
+  weekly_hours: number | null;
+  max_weekly_hours: number | null;
+  vacation_dates: string[] | null;
+};
+
+const ASSIGNMENT_PRIORITY: Record<string, AssignmentTaskPriority> = {
+  urgent: 'urgent', high: 'high', normal: 'normal', low: 'low',
+};
+
+function cleaningTaskRowToAssignmentTask(t: CleaningTaskRow): AssignmentTask {
+  const extrasArr = Array.isArray(t.extras) ? (t.extras as unknown[]) : [];
+  const extras = extrasArr.filter((x): x is string => typeof x === 'string');
+  const ri = t.rule_inputs ?? {};
+  const lang = typeof ri.guest_language === 'string' ? ri.guest_language : null;
+  const guest_language: 'en' | 'es' | null =
+    lang === 'es' ? 'es' : lang === 'en' ? 'en' : null;
+  return {
+    id: t.id,
+    property_id: t.property_id,
+    room_number: t.room_number,
+    cleaning_type: t.cleaning_type,
+    priority: ASSIGNMENT_PRIORITY[t.priority] ?? 'normal',
+    due_by: t.due_by,
+    estimated_minutes: t.estimated_minutes,
+    requires_inspection: t.requires_inspection === true,
+    extras,
+    guest_language,
+  };
+}
+
+function staffRowToHousekeeper(s: StaffRow, businessDate: string): AssignmentHousekeeper {
+  const onVacation = (s.vacation_dates ?? []).includes(businessDate);
+  return {
+    id: s.id,
+    name: s.name,
+    language: s.language === 'es' ? 'es' : 'en',
+    isSenior: s.is_senior === true,
+    isActive: s.is_active !== false,
+    homeFloor: null,
+    weeklyHours: s.weekly_hours ?? 0,
+    maxWeeklyHours: s.max_weekly_hours ?? 40,
+    isOutToday: onVacation || s.scheduled_today === false,
+  };
+}
+
+/**
+ * Load eligible roster + current per-HK workload in minutes. Workload feeds
+ * the engine's workload-balance scorer so we don't pile new rooms on
+ * already-loaded HKs.
+ */
+async function fetchEligibleRosterAndWorkload(
   supabase: SupabaseClient,
   propertyId: string,
   businessDate: string,
   excludeStaffId: string,
-): Promise<RedistributionEligibleStaff[]> {
-  // All housekeeping staff at the property who aren't the sick one and
-  // aren't already on a callout today. The vacation/schedule check is
-  // a coarse filter — feature/hk-auto-assignment will tighten it.
+): Promise<{ roster: AssignmentHousekeeper[]; workloadByHk: Record<string, number> }> {
   const staffLookup = await supabase
     .from('staff')
-    .select('id, is_active, vacation_dates, department')
+    .select('id, name, language, is_senior, is_active, scheduled_today, department, weekly_hours, max_weekly_hours, vacation_dates')
     .eq('property_id', propertyId)
+    .eq('department', 'housekeeping')
     .neq('id', excludeStaffId);
   if (staffLookup.error) {
-    throw new Error(`fetchEligibleStaff: staff lookup failed: ${staffLookup.error.message}`);
+    throw new Error(`fetchEligibleRoster: staff lookup failed: ${staffLookup.error.message}`);
   }
-  const baseCandidates = (staffLookup.data ?? [])
-    .filter((s) => s.is_active !== false)
-    .filter((s) => (s.department ?? 'housekeeping') === 'housekeeping')
-    .filter((s) => {
-      const vac = (s.vacation_dates as string[] | null) ?? [];
-      return !vac.includes(businessDate);
-    });
+  const rows = (staffLookup.data ?? []) as StaffRow[];
 
   // Drop anyone who is themselves out on an active callout today.
   const calloutLookup = await supabase
@@ -314,29 +467,49 @@ async function fetchEligibleStaffForRedistribution(
   const sickIds = new Set(
     ((calloutLookup.data ?? []) as Array<{ staff_id: string }>).map((r) => r.staff_id),
   );
-  const candidates = baseCandidates.filter((s) => !sickIds.has(s.id as string));
-  if (candidates.length === 0) return [];
 
-  // Look up current loads. cleaning_tasks may not exist yet; treat as
-  // zero load for all.
+  const roster = rows
+    .filter((s) => !sickIds.has(s.id))
+    .map((s) => staffRowToHousekeeper(s, businessDate))
+    .filter((h) => h.isActive && !h.isOutToday);
+
+  const workloadByHk: Record<string, number> = {};
+  if (roster.length === 0) {
+    return { roster, workloadByHk };
+  }
   const loadLookup = await supabase
     .from('cleaning_tasks')
-    .select('assignee_id')
+    .select('assignee_id, estimated_minutes, cleaning_type')
     .eq('property_id', propertyId)
     .eq('business_date', businessDate)
-    .in('assignee_id', candidates.map((s) => s.id as string));
-  const loadByStaff = new Map<string, number>();
+    .in('assignee_id', roster.map((h) => h.id));
   if (!loadLookup.error && loadLookup.data) {
-    for (const row of loadLookup.data as Array<{ assignee_id: string | null }>) {
+    const FALLBACK_MIN_BY_TYPE: Record<string, number> = {
+      departure: 30, departure_deep: 60, stayover: 15, refresh: 10,
+      deep: 60, room_check: 5, inspection_only: 8, no_clean: 0,
+    };
+    for (const row of loadLookup.data as Array<{
+      assignee_id: string | null;
+      estimated_minutes: number | null;
+      cleaning_type: string | null;
+    }>) {
       if (!row.assignee_id) continue;
-      loadByStaff.set(row.assignee_id, (loadByStaff.get(row.assignee_id) ?? 0) + 1);
+      const min =
+        row.estimated_minutes ??
+        FALLBACK_MIN_BY_TYPE[row.cleaning_type ?? ''] ??
+        20;
+      workloadByHk[row.assignee_id] = (workloadByHk[row.assignee_id] ?? 0) + min;
     }
   }
+  return { roster, workloadByHk };
+}
 
-  return candidates.map((s) => ({
-    id: s.id as string,
-    current_load: loadByStaff.get(s.id as string) ?? 0,
-  }));
+async function hkAssignmentsTableExists(supabase: SupabaseClient): Promise<boolean> {
+  const probe = await supabase.from('hk_assignments').select('id').limit(0);
+  if (probe.error && /relation .*hk_assignments.* does not exist/i.test(probe.error.message ?? '')) {
+    return false;
+  }
+  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -400,6 +573,50 @@ export async function revertCallout(
   const decisions = planRevert(impacted, currentByTaskId);
   let returnedCount = 0;
   let retainedCount = 0;
+
+  // Mirror the redistribute path's hk_assignments lifecycle: deactivate
+  // the rebalance row(s) we're undoing, then insert a fresh rebalance
+  // row putting the task back with the sick HK, then update the cached
+  // cleaning_tasks.assignee_id pointer.
+  const hkAssignmentsAvailable = await hkAssignmentsTableExists(supabase);
+  const tasksToReturn = decisions.filter((d) => d.apply);
+
+  if (hkAssignmentsAvailable && tasksToReturn.length > 0) {
+    const returnTaskIds = tasksToReturn.map((d) => d.task_id);
+    const { error: deactivateErr } = await supabase
+      .from('hk_assignments')
+      .update({ is_active: false })
+      .eq('property_id', callout.property_id)
+      .eq('is_active', true)
+      .in('cleaning_task_id', returnTaskIds);
+    if (deactivateErr) {
+      throw new Error(
+        `revertCallout: failed to deactivate rebalance hk_assignments: ${deactivateErr.message}`,
+      );
+    }
+
+    const now = new Date().toISOString();
+    const inserts = tasksToReturn.map((d, idx) => ({
+      property_id: callout.property_id,
+      cleaning_task_id: d.task_id,
+      housekeeper_id: callout.staff_id,
+      queue_order: idx,
+      is_active: true,
+      assigned_at: now,
+      assigned_by: 'rebalance' as const,
+      assigned_by_user_id: input.revertedByUserId ?? null,
+      reason: 'callout reverted — returned to original housekeeper',
+      score: null,
+    }));
+    const { error: insertErr } = await supabase
+      .from('hk_assignments')
+      .insert(inserts);
+    if (insertErr) {
+      throw new Error(
+        `revertCallout: failed to insert revert hk_assignments: ${insertErr.message}`,
+      );
+    }
+  }
 
   for (const d of decisions) {
     if (d.apply) {

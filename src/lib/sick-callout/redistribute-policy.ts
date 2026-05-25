@@ -1,142 +1,20 @@
 /**
- * Pure-function policy for sick-callout redistribution + revert.
+ * Pure-function policy for sick-callout revert + scheduling.
  *
  * Kept separate from the DB-touching code so we can unit-test the hard
- * cases (in-progress task stays with new assignee, dedup logic, naive
- * round-robin fairness) without standing up Supabase.
+ * cases (in-progress task stays with new assignee, far-future cron
+ * sentinel) without standing up Supabase.
  *
- * The smart re-spread (skill match, floor cohesion, language match,
- * workload balancing) is owned by feature/hk-auto-assignment. Until
- * that lands, we use the naive round-robin in pickRedistributionAssignee
- * below — it produces a working demo with sensible distribution and is
- * a one-function swap when the smart engine lands.
+ * The redistribute SCORING itself is owned by `rebalanceForSickCallout`
+ * in `@/lib/assignment-engine` — that's the production engine that does
+ * floor cohesion, language match, skill match, workload balancing,
+ * overtime caps, etc. This file only handles the policy decisions that
+ * are SPECIFIC to the sick-callout flow: revert behaviour (started rooms
+ * stay with the new assignee) and timing (when to fire the redistribute
+ * for mid-shift "in 15 min" / "after current room" variants).
  */
 
 import type { ImpactedAssignment, RevertOutcomeEntry } from './types';
-
-/**
- * Minimal shape we need from a cleaning_tasks row to decide redistribution.
- * Kept narrow so the test fixtures stay small.
- */
-export interface RedistributableTask {
-  id: string;
-  room_number: string;
-  assignee_id: string | null;
-  status: string;
-  started_at: string | null;
-}
-
-export interface RedistributionEligibleStaff {
-  id: string;
-  /** Existing rooms already in this HK's queue today — used to rank pickups so
-      we don't pile new work on someone already at the top of the list. */
-  current_load: number;
-}
-
-export interface RedistributionPlan {
-  /** One entry per task that needs reassignment. Source rows that were
-      already started/completed are dropped here (preserved as-is on the
-      callout audit log via the caller). */
-  assignments: Array<{
-    task: RedistributableTask;
-    new_assignee_id: string | null;   // null when no eligible staff exists
-  }>;
-  /** Tasks that should stay with the sick HK (because they were already
-      started or completed). Carried through for the audit log so the
-      manager UI can show "credit stayed with Maria for room 301". */
-  retained_with_sick: RedistributableTask[];
-}
-
-/**
- * Decide which tasks need new assignees and which stay with the sick HK.
- * Per spec: "Started/completed tasks stay credited to the sick person."
- *
- * The status check is the authoritative signal — we use it instead of
- * `started_at IS NOT NULL` because a task could have been started AND
- * reset back to scheduled in the same shift, in which case started_at
- * may linger from the earlier attempt. Status reflects current intent.
- */
-const STATUSES_TASK_ALREADY_OWNED = new Set([
-  'in_progress',
-  'paused',
-  'completed',
-  'inspection_pending',
-  'inspected_pass',
-  'inspected_fail',
-  'correction_pending',
-  'correction_complete',
-  'check_pending',
-  'check_complete',
-]);
-
-export function planRedistribution(
-  sickStaffTasks: RedistributableTask[],
-  eligibleStaff: RedistributionEligibleStaff[],
-): RedistributionPlan {
-  const assignments: RedistributionPlan['assignments'] = [];
-  const retained: RedistributableTask[] = [];
-
-  // Mutable copy so we can rebalance load as we hand out tasks.
-  const load = new Map<string, number>();
-  for (const s of eligibleStaff) load.set(s.id, s.current_load);
-
-  // Sort tasks deterministically so the test assertions don't depend on
-  // input order. Room number ASC — same convention as the housekeeper
-  // page's sortRooms().
-  const ordered = [...sickStaffTasks].sort((a, b) => {
-    const an = parseInt(a.room_number, 10);
-    const bn = parseInt(b.room_number, 10);
-    if (!Number.isNaN(an) && !Number.isNaN(bn) && an !== bn) return an - bn;
-    return a.room_number.localeCompare(b.room_number);
-  });
-
-  for (const task of ordered) {
-    if (STATUSES_TASK_ALREADY_OWNED.has(task.status)) {
-      retained.push(task);
-      continue;
-    }
-    // No one to give it to → unassigned. Auto-assignment cron will pick
-    // it up once it lands; in the meantime the room shows up in Maria's
-    // "unassigned" lane on the manager dashboard.
-    if (eligibleStaff.length === 0) {
-      assignments.push({ task, new_assignee_id: null });
-      continue;
-    }
-    // Pick the eligible HK with the lowest current load. Ties break on
-    // staff_id for determinism.
-    let winnerId = eligibleStaff[0].id;
-    let winnerLoad = load.get(winnerId) ?? 0;
-    for (const s of eligibleStaff) {
-      const l = load.get(s.id) ?? 0;
-      if (l < winnerLoad || (l === winnerLoad && s.id < winnerId)) {
-        winnerId = s.id;
-        winnerLoad = l;
-      }
-    }
-    assignments.push({ task, new_assignee_id: winnerId });
-    load.set(winnerId, winnerLoad + 1);
-  }
-
-  return { assignments, retained_with_sick: retained };
-}
-
-/**
- * Build the impacted_assignments payload from a redistribution plan.
- * Captured exactly as planRedistribution decided so the revert path can
- * reverse what actually happened (not what we wish had happened).
- */
-export function buildImpactedAssignments(
-  plan: RedistributionPlan,
-  sickStaffId: string,
-): ImpactedAssignment[] {
-  return plan.assignments.map(({ task, new_assignee_id }) => ({
-    task_id: task.id,
-    room_number: task.room_number,
-    original_assignee_id: sickStaffId,
-    redistributed_to: new_assignee_id,
-    task_status_at_redistribute: task.status,
-  }));
-}
 
 // ───────────────────────────────────────────────────────────────────────
 // REVERT POLICY
