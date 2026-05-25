@@ -30,6 +30,8 @@ import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
 import { supabase } from './supabase.js';
 import { env } from './env.js';
+import { ActionLoopDetector, actionFingerprint, pageFingerprint } from './loop-detector.js';
+import { judgeStepOutcome, captureScreenshotForCritic } from './critic.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
 // Each phase has its own token + wallclock budget (~$2.40 max per phase),
@@ -1038,6 +1040,13 @@ async function mapAction(args: {
 
   const phaseStartedAt = Date.now();
 
+  // Per-target action-loop detector. Trips on the 4th identical
+  // (action, page) tuple within the last 8 turns — defaults chosen so
+  // legitimate "click 3 rows to select 3 items" patterns don't false-
+  // positive. Fresh instance per mapAction call: a loop on `getArrivals`
+  // doesn't poison `getDepartures`.
+  const loopDetector = new ActionLoopDetector();
+
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
@@ -1098,6 +1107,14 @@ async function mapAction(args: {
     const maxTokensForCall = args.mode === 'vision'
       ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
       : MAX_OUTPUT_TOKENS_PER_TURN;
+
+    // Loop-detector input #1 — fingerprint the page state Claude is
+    // about to reason on. Used after toolResults are built to record
+    // (action, page) tuples. Computed BEFORE messages.create so the
+    // page state matches what Claude sees in the screenshot/read_page
+    // it's about to act on. Best-effort: errors fall back to a URL-only
+    // fingerprint inside the helper.
+    const turnPageFingerprint = await pageFingerprint(args.page);
 
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
@@ -1225,6 +1242,20 @@ async function mapAction(args: {
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
       const action = toolUse.input as BrowserAction;
+      const actionType = (action as { action?: string }).action ?? '';
+
+      // Critic — pre-screenshot for click verbs in vision mode only.
+      // DOM mode skips entirely (read_page already grounds the agent).
+      // Click verbs only (left_click, double_click) — scrolls and waits
+      // have no meaningful "intended outcome" worth grading. Best-effort:
+      // if the pre-screenshot capture fails we set preScreenshotB64=null
+      // and the critic block below short-circuits.
+      const isVisionClick = args.mode === 'vision' &&
+        (actionType === 'left_click' || actionType === 'double_click');
+      const preScreenshotB64 = isVisionClick
+        ? await captureScreenshotForCritic(args.page)
+        : null;
+
       // Plan v2 F-AI-7: action phase — write-style actions (type /
       // form_input / click) are refused. Mapper must navigate + read +
       // emit the JSON recipe; no mutations on the data pages.
@@ -1233,19 +1264,83 @@ async function mapAction(args: {
         ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
         : await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
-      toolResults.push(makeToolResult(toolUse.id, exec));
+
+      // Critic — judge the click outcome and optionally prepend a
+      // "Critic note: …" line to the tool_result text so the agent can
+      // reconsider. Fail-open: if any step fails (post-screenshot, the
+      // anthropic call, parse) we treat the verdict as 'unclear' inside
+      // judgeStepOutcome and don't mutate the output.
+      let execForToolResult = exec;
+      if (isVisionClick && preScreenshotB64) {
+        // Settle delay — Codex review high-3: an immediate post-click
+        // screenshot can catch an animating/transitioning page (SPA
+        // route change, modal fade-in, dropdown expansion) and the
+        // critic would falsely judge "no change" or "wrong change".
+        // 300ms is enough for most CSS animations and same-doc SPA
+        // route swaps without adding meaningful latency. For full
+        // page navigations the agent's next screenshot will catch the
+        // settled state; a verdict='unclear' here is the right answer
+        // for an in-flight navigation.
+        await args.page.waitForTimeout(300).catch(() => {});
+        const postScreenshotB64 = await captureScreenshotForCritic(args.page);
+        if (postScreenshotB64) {
+          const coord = (toolUse.input as { coordinate?: unknown }).coordinate;
+          const verdict = await judgeStepOutcome({
+            pre: preScreenshotB64,
+            post: postScreenshotB64,
+            actionDescription: `${actionType} at ${Array.isArray(coord) ? coord.join(',') : 'unknown'}`,
+            intendedOutcome: `make progress toward: ${args.goal.slice(0, 200)}`,
+            jobId: args.jobId,
+            propertyId: args.propertyId,
+            signal: args.signal,
+          });
+          if (verdict.verdict === 'failure') {
+            const note =
+              `Critic note: that click does not appear to have achieved <${args.actionName}>. ` +
+              `${verdict.reason} Reconsider before next action.\n\n`;
+            execForToolResult = { ...exec, output: note + exec.output };
+          } else if (verdict.verdict === 'unclear') {
+            log.warn('critic: unclear verdict — continuing', {
+              jobId: args.jobId ?? undefined,
+              actionName: args.actionName,
+              stepIdx,
+              reason: verdict.reason,
+            });
+          }
+        }
+      }
+
+      toolResults.push(makeToolResult(toolUse.id, execForToolResult));
 
       // Plan v7 — track activity for the unavailable floor.
       // DOM: read_page / get_page_text. Vision: screenshot. All count as
       // "actually looked at the page" evidence. Navigations / clicks count
       // toward the navigation budget regardless of mode.
-      const actionType = (action as { action?: string }).action ?? '';
       if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') {
         readPageCount++;
       } else if (actionType === 'navigate' || actionType === 'left_click' ||
                  actionType === 'double_click' || actionType === 'find' ||
                  actionType === 'scroll_to' || actionType === 'form_input') {
         navigationCount++;
+      }
+    }
+
+    // Loop-detector input #2 — record each toolUse's (action, page)
+    // tuple and abort if any one trips the detector. Page fingerprint is
+    // `turnPageFingerprint` from above (the state Claude reasoned on),
+    // not the post-action state — we're detecting "agent keeps trying
+    // the same thing on the same starting state", which is the canonical
+    // stuck-in-a-loop pattern.
+    for (const toolUse of toolUses) {
+      const stuck = loopDetector.record(actionFingerprint(toolUse.input), turnPageFingerprint);
+      if (stuck.stuck) {
+        log.warn('mapper: action-loop detector tripped — aborting target', {
+          jobId: args.jobId ?? undefined,
+          actionName: args.actionName,
+          stepIdx,
+          reason: stuck.reason,
+        });
+        return { ok: false, reason: 'loop detector tripped', finalUrl: args.page.url() };
       }
     }
 
