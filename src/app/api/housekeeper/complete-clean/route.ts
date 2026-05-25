@@ -26,8 +26,14 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+// Plan v4 bridge: deriveCleaningEventFeatures now reads from the
+// today_room_work_v1 + today_property_counts_v1 RPCs (which derive live
+// from pms_room_status_log + pms_reservations + pms_in_house_snapshot +
+// pms_housekeeping_assignments — all written by the vision CUA). Any
+// feature that can't be derived (CUA hasn't reached the hotel yet,
+// schema drift, RPC error) returns null — cleaning_events insert still
+// proceeds.
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
-import { incrementMLFailureCounter } from '@/lib/ml-failure-counters';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
 import {
   transition,
@@ -228,35 +234,27 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!isDuplicate) {
       const { status, flag_reason } = classify(durationMin);
 
-      // ML feature derivation — non-fatal, all-or-none.
-      let features = {
-        dayOfWeek: null as number | null,
-        dayOfStayRaw: null as number | null,
-        roomFloor: null as number | null,
-        occupancyAtStart: null as number | null,
-        totalCheckoutsToday: null as number | null,
-        totalRoomsAssignedToHk: null as number | null,
-        routePosition: null as number | null,
-        minutesSinceShiftStart: null as number | null,
-        wasDndDuringClean: null as boolean | null,
-        weatherClass: null as string | null,
-      };
-      try {
-        features = await deriveCleaningEventFeatures({
-          propertyId: gate.pid,
-          date: room.date,
-          roomNumber: room.number,
-          staffId: gate.staffId,
-          startedAt: new Date(startedAt),
-          completedAt: new Date(completedAt),
+      // ML feature derivation — best-effort, all-or-some-null is fine.
+      // Reads the today_*_v1 bridge RPCs which derive live from pms_*.
+      const features = await deriveCleaningEventFeatures({
+        propertyId: gate.pid,
+        date: room.date,
+        roomNumber: room.number,
+        staffId: gate.staffId,
+        startedAt: new Date(startedAt),
+        completedAt: new Date(completedAt),
+      }).catch((err: unknown) => {
+        log.error('complete-clean: feature derivation unexpectedly threw', {
+          requestId: gate.requestId, err: errToString(err),
         });
-      } catch (featureErr) {
-        log.error('complete-clean: feature derivation threw', {
-          requestId: gate.requestId,
-          err: errToString(featureErr),
-        });
-        await incrementMLFailureCounter(gate.pid, 'feature_derivation', featureErr);
-      }
+        return {
+          dayOfWeek: null, dayOfStayRaw: null, roomFloor: null,
+          occupancyAtStart: null, totalCheckoutsToday: null,
+          totalRoomsAssignedToHk: null, routePosition: null,
+          minutesSinceShiftStart: null, wasDndDuringClean: null,
+          weatherClass: null,
+        };
+      });
 
       const cePayload: Record<string, unknown> = {
         property_id: gate.pid,

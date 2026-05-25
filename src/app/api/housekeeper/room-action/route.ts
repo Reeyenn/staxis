@@ -37,8 +37,12 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+// Plan v4 bridge: deriveCleaningEventFeatures reads from the
+// today_room_work_v1 + today_property_counts_v1 RPCs (derived live from
+// pms_room_status_log + pms_reservations + pms_in_house_snapshot +
+// pms_housekeeping_assignments, written by the vision CUA). Any feature
+// that can't be derived returns null; cleaning_events insert proceeds.
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
-import { incrementMLFailureCounter } from '@/lib/ml-failure-counters';
 import { deriveStartedAtPure } from '@/lib/cleaning-event-derivation';
 import {
   checkAndIncrementRateLimit,
@@ -477,40 +481,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         const durationMin = Math.max(0, (endMs - startMs) / 60_000);
         const { status, flag_reason } = classify(durationMin);
 
-        // Derive ML features. All failures are non-fatal and logged separately.
-        let features = {
-          dayOfWeek: null as number | null,
-          dayOfStayRaw: null as number | null,
-          roomFloor: null as number | null,
-          occupancyAtStart: null as number | null,
-          totalCheckoutsToday: null as number | null,
-          totalRoomsAssignedToHk: null as number | null,
-          routePosition: null as number | null,
-          minutesSinceShiftStart: null as number | null,
-          wasDndDuringClean: null as boolean | null,
-          weatherClass: null as string | null,
-        };
-        try {
-          features = await deriveCleaningEventFeatures({
-            propertyId: pid,
-            date: cleaningContext.date,
-            roomNumber: cleaningContext.roomNumber,
-            staffId,
-            startedAt: new Date(derivedStartedAt),
-            completedAt: new Date(completedAt),
+        // ML feature derivation — best-effort, never throws.
+        const features = await deriveCleaningEventFeatures({
+          propertyId: pid,
+          date: cleaningContext.date,
+          roomNumber: cleaningContext.roomNumber,
+          staffId,
+          startedAt: new Date(derivedStartedAt),
+          completedAt: new Date(completedAt),
+        }).catch((featureErr: unknown) => {
+          log.error('room-action: feature derivation unexpectedly threw', {
+            requestId, pid, staffId, err: featureErr,
           });
-        } catch (featureErr) {
-          log.error('room-action: feature derivation threw (unexpected)', {
-            requestId, pid, staffId, action: 'finish', err: featureErr
-          });
-          // Smoke-detector: deriveCleaningEventFeatures already swallows its
-          // own internal failures and returns null fields, so reaching this
-          // outer catch means an upstream contract broke (schema drift,
-          // helper signature change, etc.). Bump the counter so the doctor
-          // surfaces it before the supply model retrains on null-padded data.
-          await incrementMLFailureCounter(pid, 'feature_derivation', featureErr);
-          // Continue with null features — the insert must proceed.
-        }
+          return {
+            dayOfWeek: null, dayOfStayRaw: null, roomFloor: null,
+            occupancyAtStart: null, totalCheckoutsToday: null,
+            totalRoomsAssignedToHk: null, routePosition: null,
+            minutesSinceShiftStart: null, wasDndDuringClean: null,
+            weatherClass: null,
+          };
+        });
 
         const cePayload: Record<string, unknown> = {
           property_id: pid,

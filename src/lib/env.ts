@@ -274,10 +274,6 @@ const ServerSchema = z.object({
     }),
   FLY_API_TOKEN: z.string().optional(),
   FLY_APP_NAME: z.string().default('staxis-cua'),
-  RAILWAY_SCRAPER_URL: z.string().url().optional()
-    .refine((v) => !v || hostnameOnAllowlist(v), {
-      message: serviceHostnameAllowlistMessage('RAILWAY_SCRAPER_URL'),
-    }),
 
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

@@ -18,8 +18,6 @@
  *   - web              — trivially green (we're responding)
  *   - ml_service       — GET /health on every shard in ML_SERVICE_URLS
  *   - cua_worker       — onboarding_jobs queue freshness (no HTTP to CUA — see Codex review)
- *   - scraper_heartbeat — uses classifyScraperHeartbeat helper
- *   - scraper_on_demand — GET RAILWAY_SCRAPER_URL/health (the path /api/refresh-from-pms uses)
  *   - supabase         — read 1 row from `accounts` (catches PostgREST schema-cache-stale, which SELECT 1 wouldn't)
  *
  * Response shape (NEVER bare 5xx — always 200 with per-service status):
@@ -34,7 +32,6 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { listMlShardUrls } from '@/lib/ml-routing';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { env } from '@/lib/env';
-import { classifyScraperHeartbeat, parseScraperDate } from '@/lib/scraper-staleness';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,8 +55,6 @@ export interface SystemStatusResponse {
     web: ServiceStatus;
     ml: ServiceStatus;
     cua: ServiceStatus;
-    scraper_heartbeat: ServiceStatus;
-    scraper_on_demand: ServiceStatus;
     supabase: ServiceStatus;
   };
 }
@@ -141,14 +136,16 @@ async function checkCua(): Promise<ServiceStatus> {
       message: 'No queued jobs — CUA caught up.',
     };
   }
-  const oldest = parseScraperDate(data[0].created_at as unknown);
-  if (oldest === null) {
+  const rawCreatedAt = data[0].created_at as unknown;
+  const parsedMs = typeof rawCreatedAt === 'string' ? Date.parse(rawCreatedAt) : NaN;
+  if (!Number.isFinite(parsedMs)) {
     return {
       status: 'green',
       latency_ms: latency,
       message: 'Queued job present but timestamp unreadable.',
     };
   }
+  const oldest = new Date(parsedMs);
   const ageMin = Math.floor((Date.now() - oldest.getTime()) / 60_000);
   if (ageMin > 30) {
     return {
@@ -171,67 +168,9 @@ async function checkCua(): Promise<ServiceStatus> {
   };
 }
 
-async function checkScraperHeartbeat(): Promise<ServiceStatus> {
-  const t0 = Date.now();
-  const { data, error } = await supabaseAdmin
-    .from('scraper_status')
-    .select('key, data')
-    .in('key', ['heartbeat', 'dashboard']);
-  const latency = Date.now() - t0;
-  if (error) {
-    return {
-      status: 'red',
-      latency_ms: latency,
-      message: `Supabase read failed: ${error.message}`,
-    };
-  }
-  const byKey = new Map<string, Record<string, unknown>>();
-  for (const row of data ?? []) {
-    byKey.set(row.key as string, (row.data ?? {}) as Record<string, unknown>);
-  }
-  const heartbeat = byKey.get('heartbeat') ?? {};
-  const dashboard = byKey.get('dashboard') ?? {};
-  const classified = classifyScraperHeartbeat({
-    heartbeatAt: heartbeat.at,
-    pulledAt: dashboard.pulledAt,
-  });
-  return {
-    status: classified.status,
-    latency_ms: latency,
-    message: classified.message,
-  };
-}
-
-async function checkScraperOnDemand(): Promise<ServiceStatus> {
-  const scraperUrl = env.RAILWAY_SCRAPER_URL;
-  if (!scraperUrl) {
-    return { status: 'yellow', message: 'RAILWAY_SCRAPER_URL not configured.' };
-  }
-  // The Railway scraper's HTTP surface lives at /health (a simple liveness
-  // probe added by sentry-init + the existing express setup). If the
-  // scraper hasn't exposed one yet, this will yellow rather than red.
-  const result = await pingHttp(`${scraperUrl.replace(/\/$/, '')}/health`, PER_CHECK_TIMEOUT_MS);
-  if (result.ok) {
-    return {
-      status: 'green',
-      latency_ms: result.latencyMs,
-      message: 'On-demand /scrape/hk-center path reachable.',
-    };
-  }
-  if (result.status === 404) {
-    return {
-      status: 'yellow',
-      latency_ms: result.latencyMs,
-      message: 'Scraper reachable but /health not implemented (older deploy).',
-    };
-  }
-  return {
-    status: 'red',
-    latency_ms: result.latencyMs,
-    message: result.error ?? `HTTP ${result.status}`,
-  };
-}
-
+// (Plan v4 cleanup: checkScraperHeartbeat + checkScraperOnDemand were
+// dropped — they read scraper_status / pinged Railway, both gone post-v4.
+// The CUA worker on Fly is the replacement; checkCua above covers it.)
 async function checkSupabase(): Promise<ServiceStatus> {
   // Read 1 row from a real application table (`accounts`) rather than
   // SELECT 1, so the check catches PostgREST's schema-cache-stale failure
@@ -273,12 +212,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Fail-soft across all checks via allSettled. A single broken check
   // (e.g. Supabase down) must not 5xx the whole endpoint — the panel
-  // needs to render the other 4 services even when one is on fire.
+  // needs to render the other services even when one is on fire.
   const settled = await Promise.allSettled([
     checkMl(),
     checkCua(),
-    checkScraperHeartbeat(),
-    checkScraperOnDemand(),
     checkSupabase(),
   ]);
 
@@ -295,9 +232,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     web: { status: 'green', message: 'Web app responding.' },
     ml: fallback(0),
     cua: fallback(1),
-    scraper_heartbeat: fallback(2),
-    scraper_on_demand: fallback(3),
-    supabase: fallback(4),
+    supabase: fallback(2),
   };
 
   const anyRed = Object.values(services).some((s) => s.status === 'red');
@@ -314,8 +249,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     anyRed,
     ml: services.ml.status,
     cua: services.cua.status,
-    scraper_heartbeat: services.scraper_heartbeat.status,
-    scraper_on_demand: services.scraper_on_demand.status,
     supabase: services.supabase.status,
   });
 

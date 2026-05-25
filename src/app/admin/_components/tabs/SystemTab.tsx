@@ -299,8 +299,6 @@ const SERVICE_ROWS: ServiceRow[] = [
   { key: 'web',               label: 'Web app',          caption: 'Vercel (this server)' },
   { key: 'ml',                label: 'ML brain',         caption: 'Railway — forecast service' },
   { key: 'cua',               label: 'Onboarding robot', caption: 'Fly.io — queue freshness' },
-  { key: 'scraper_heartbeat', label: 'Scraper heartbeat', caption: 'Railway — Node process tick' },
-  { key: 'scraper_on_demand', label: 'Scraper (live)',   caption: 'Railway — on-demand /scrape' },
   { key: 'supabase',          label: 'Database',         caption: 'Supabase — PostgREST + cache' },
 ];
 

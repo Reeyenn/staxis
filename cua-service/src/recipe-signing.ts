@@ -1,12 +1,12 @@
 // ─── Recipe signing — HMAC-SHA256 over canonical JSON ────────────────────
 //
-// Plan v2 F-AI-2 (Chain A close). Every `pms_recipes.recipe` row carries
-// a signature in `signature` BYTEA. We sign at write time in the CUA
-// worker; recipe-runner verifies before each replay. A tampered row
-// (anyone with brief service-role access) is refused — defence-in-depth
-// against the case where a poisoned recipe stays on the PMS domain
-// (so safeGoto can't catch it) and silently fills `$password` into a
-// same-origin share/email form.
+// Plan v2 F-AI-2 (Chain A close). Every `pms_knowledge_files.knowledge` row
+// carries a signature in its `signature` BYTEA column. We sign at write
+// time in the CUA worker (mapping-driver); recipe-runner verifies before
+// each replay. A tampered row (anyone with brief service-role access) is
+// refused — defence-in-depth against the case where a poisoned recipe
+// stays on the PMS domain (so safeGoto can't catch it) and silently fills
+// `$password` into a same-origin share/email form.
 //
 // Why HMAC, not asymmetric: the only signer (CUA worker) and the only
 // verifier (CUA worker on a future pull job) share the same trust

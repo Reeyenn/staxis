@@ -629,13 +629,14 @@ async function checkMfaVerifiedHookSelfTest(): Promise<Omit<Check, 'name' | 'dur
 }
 
 async function checkSupabaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  // Cheapest authenticated query: read one row from a table that always
-  // exists (scraper_status). If the service_role key is revoked/stale
-  // Supabase returns an auth error that we surface with a specific fix.
+  // Cheapest authenticated query: read one row from `properties` (a stable
+  // core table). If the service_role key is revoked/stale Supabase returns
+  // an auth error that we surface with a specific fix.
+  // (Was scraper_status pre-v4; that table is dropped now.)
   try {
     const { error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('key')
+      .from('properties')
+      .select('id')
       .limit(1);
     if (error) throw error;
     return {
@@ -851,7 +852,6 @@ const RLS_REQUIRED_TABLES = [
 
   // Properties + property-scoped customer data
   'properties',
-  'rooms',
   'public_areas',
   'staff',
   'attendance_marks',
@@ -861,19 +861,16 @@ const RLS_REQUIRED_TABLES = [
   'time_off_requests',
   'week_publications',
   'property_shift_presets',
-  'plan_snapshots',
 
   // Operations + housekeeping
   'cleaning_events',
   'daily_logs',
-  'dashboard_by_date',
   'deep_clean_config',
   'deep_clean_records',
   'guest_requests',
   'handoff_logs',
   'manager_notifications',
   'preventive_tasks',
-  'work_orders',
   'laundry_config',
 
   // Inventory
@@ -907,7 +904,6 @@ const RLS_REQUIRED_TABLES = [
   'scraper_credentials',
   'sms_jobs',
   'pull_jobs',
-  'pms_recipes',
   'onboarding_jobs',
   'idempotency_log',
   'stripe_processed_events',
@@ -1021,7 +1017,6 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   'stripe_processed_events',
   'pull_jobs',
   'processed_twilio_webhooks',
-  'pull_metrics',
   'scraper_session',
 ]);
 
@@ -1191,231 +1186,11 @@ async function checkStorageBucketPolicyCoverage(): Promise<Omit<Check, 'name' | 
   }
 }
 
-async function checkSupabaseHeartbeat(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data, updated_at')
-      .eq('key', 'heartbeat')
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) {
-      return {
-        status: 'warn',
-        detail: 'scraper_status.heartbeat row does not exist yet (scraper may not have run)',
-        fix: 'Check Railway: is the hotelops-scraper service running? Look for "Supabase auth verified ✓" in Railway logs.',
-      };
-    }
-    // data column is jsonb: { at: ISO string } or timestamp in updated_at.
-    const value = (data.data ?? {}) as { at?: string };
-    const at = value.at ? new Date(value.at) : (data.updated_at ? new Date(data.updated_at) : null);
-    if (!at || isNaN(at.getTime())) {
-      return { status: 'warn', detail: 'heartbeat row exists but has no parseable timestamp' };
-    }
-    const minAgo = Math.floor((Date.now() - at.getTime()) / 60_000);
-    if (minAgo > 20) {
-      return {
-        status: 'fail',
-        detail: `scraper heartbeat is ${minAgo} min stale (>20 min = dead)`,
-        fix: 'Railway scraper process is not ticking. Check Railway → hotelops-scraper → Logs.',
-      };
-    }
-    if (minAgo > 10) {
-      return {
-        status: 'warn',
-        detail: `scraper heartbeat is ${minAgo} min old (ticks every 5 min, so 10–20 = degraded)`,
-      };
-    }
-    return { status: 'ok', detail: `scraper heartbeat fresh (${minAgo} min ago)` };
-  } catch (err) {
-    return {
-      status: 'fail',
-      detail: `Supabase read failed: ${errToString(err)}`,
-    };
-  }
-}
-
-async function checkSupabaseDashboard(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data, updated_at')
-      .eq('key', 'dashboard')
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) {
-      return {
-        status: 'warn',
-        detail: 'scraper_status.dashboard row does not exist yet (scraper may not have completed a pull)',
-      };
-    }
-    const value = (data.data ?? {}) as { pulledAt?: string; errorCode?: string };
-    const errorCode = typeof value.errorCode === 'string' ? value.errorCode : null;
-
-    if (errorCode) {
-      return {
-        status: 'warn',
-        detail: `dashboard errorCode=${errorCode} (scraper-health handles alerting — this is just FYI)`,
-      };
-    }
-    const pulledAt = value.pulledAt ? new Date(value.pulledAt) : (data.updated_at ? new Date(data.updated_at) : null);
-    if (pulledAt && !isNaN(pulledAt.getTime())) {
-      const minAgo = Math.floor((Date.now() - pulledAt.getTime()) / 60_000);
-      return { status: 'ok', detail: `last successful pull ${minAgo} min ago` };
-    }
-    return { status: 'warn', detail: 'dashboard row exists but has no pulledAt' };
-  } catch (err) {
-    return {
-      status: 'fail',
-      detail: `Supabase read failed: ${errToString(err)}`,
-    };
-  }
-}
-
-// F7: per-property dashboard freshness. Mirrors the UI's
-// DASHBOARD_STALE_MINUTES (25 min) at the warn threshold, fails at 45 min.
-// Skipped outside the scraper's 5am–11pm CT window so off-hours staleness
-// (when no pulls are scheduled) doesn't false-alarm.
-async function checkDashboardFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const localHour = parseInt(
-      new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Chicago' }).format(new Date()),
-      10,
-    );
-    if (localHour < 5 || localHour >= 23) {
-      return { status: 'skipped', detail: `outside scraper window (local hour ${localHour})` };
-    }
-
-    // Pick the most-recently-pulled dashboard_by_date row across properties.
-    // Single-property today; multi-property generalizes naturally —
-    // aggregating to "worst staleness across the fleet" is a follow-up.
-    const { data, error } = await supabaseAdmin
-      .from('dashboard_by_date')
-      .select('property_id, pulled_at, error_code')
-      .order('pulled_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data || !data.pulled_at) {
-      return {
-        status: 'warn',
-        detail: 'no dashboard_by_date rows yet (scraper may not have pulled this property)',
-      };
-    }
-
-    const pulledAt = new Date(data.pulled_at as string);
-    const minAgo = Math.floor((Date.now() - pulledAt.getTime()) / 60_000);
-
-    if (minAgo > 45) {
-      return {
-        status: 'fail',
-        detail: `dashboard_by_date is ${minAgo} min stale (>45 min during scraper window)`,
-        fix: 'Check Railway scraper logs for dashboard-pull errors; check Choice Advantage login.',
-      };
-    }
-    if (minAgo > 25) {
-      return {
-        status: 'warn',
-        detail: `dashboard_by_date is ${minAgo} min stale (>25 min — matches UI stale banner)`,
-      };
-    }
-    return { status: 'ok', detail: `dashboard fresh (${minAgo} min ago)` };
-  } catch (err) {
-    return { status: 'fail', detail: `Supabase read failed: ${errToString(err)}` };
-  }
-}
-
-// F7: surface watchdog degradation. The scraper writes
-// scraper_status['vercel_watchdog'].degraded each tick. true means SMS
-// alerts will not fire (env missing, send failed, or alert phone unset).
-async function checkVercelWatchdogDegraded(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data')
-      .eq('key', 'vercel_watchdog')
-      .maybeSingle();
-    if (error) throw error;
-    const value = (data?.data ?? {}) as { degraded?: boolean; degradedReason?: string };
-    if (value.degraded === true) {
-      return {
-        status: 'fail',
-        detail: `watchdog SMS path degraded (reason=${value.degradedReason ?? 'unknown'})`,
-        fix: 'Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER / OPS_ALERT_PHONE on Railway. A failed send also flips this — verify Twilio account status.',
-      };
-    }
-    return { status: 'ok', detail: 'watchdog SMS path healthy' };
-  } catch (err) {
-    return { status: 'fail', detail: `Supabase read failed: ${errToString(err)}` };
-  }
-}
-
-async function checkScraperHealthCronLiveness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  // scraper-health runs every 15 min via GitHub Actions. On each invocation
-  // it writes `lastCheckAt` into scraper_status.alertState. If that field
-  // is more than 25h stale, the GitHub Actions cron has been silently
-  // disabled (possible causes: 60-day inactivity auto-disable on public
-  // repos, repo transfer, revoked PAT, Actions billing lapse, someone
-  // toggling it in the UI). When that happens scraper-health alerts stop
-  // firing entirely — the single worst silent failure mode for this app.
-  //
-  // The Railway vercel-watchdog polls this doctor endpoint every 5 min, so
-  // a fail here triggers an SMS within minutes even if GitHub Actions is
-  // completely dead. That's the whole point of having TWO independent
-  // platforms watch each other.
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data')
-      .eq('key', 'alertState')
-      .maybeSingle();
-    if (error) throw error;
-    if (!data?.data) {
-      return {
-        status: 'warn',
-        detail: 'scraper_status.alertState row not populated yet — scraper-health has never run',
-        fix: 'Trigger .github/workflows/scraper-health-cron.yml manually once, then confirm it completes.',
-      };
-    }
-    const value = data.data as { lastCheckAt?: string };
-    if (!value.lastCheckAt) {
-      return {
-        status: 'warn',
-        detail: 'alertState.lastCheckAt not set — scraper-health may not have completed a full run',
-      };
-    }
-    const last = new Date(value.lastCheckAt);
-    if (isNaN(last.getTime())) {
-      return { status: 'warn', detail: `lastCheckAt is not a valid date: ${value.lastCheckAt}` };
-    }
-    const minAgo = Math.floor((Date.now() - last.getTime()) / 60_000);
-    // scraper-health runs every 15 min, so anything over 60 min means the
-    // cron is degraded; over 25h (1500 min) means it's dead.
-    if (minAgo > 25 * 60) {
-      return {
-        status: 'fail',
-        detail: `scraper-health cron hasn't run in ${Math.floor(minAgo / 60)}h — GitHub Actions is likely silently disabled`,
-        fix: 'GitHub → Reeyenn/staxis → Actions → Post-deploy smoke test / Scraper Health Check: verify the workflows aren\'t disabled. Also check Actions → Settings → General → "Actions permissions" isn\'t restricted. See RUNBOOKS.md → GitHub Actions cron disabled.',
-      };
-    }
-    if (minAgo > 60) {
-      return {
-        status: 'warn',
-        detail: `scraper-health last ran ${minAgo} min ago (normal cadence is every 15 min)`,
-      };
-    }
-    return {
-      status: 'ok',
-      detail: `scraper-health cron ran ${minAgo} min ago`,
-    };
-  } catch (err) {
-    return {
-      status: 'fail',
-      detail: `scraper-health liveness check failed: ${errToString(err)}`,
-    };
-  }
-}
+// (Plan v4 cleanup deleted checkSupabaseHeartbeat / checkSupabaseDashboard
+// / checkDashboardFreshness / checkVercelWatchdogDegraded /
+// checkScraperHealthCronLiveness — all five read scraper_status or
+// dashboard_by_date, both dropped tables. They had no callers in the
+// check registry; safe to remove.)
 
 async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const sid = env.TWILIO_ACCOUNT_SID;
@@ -1860,196 +1635,6 @@ async function checkSupabaseRealtimePublication(): Promise<Omit<Check, 'name' | 
   }
 }
 
-/**
- * scraper_csv_pull — verify the most recent CSV pull (morning OR evening)
- * was a success, not an error. The `scraper-health` cron now alerts on
- * morning/evening errors but the doctor doesn't mention them at all,
- * which means a deploy can land + smoke-test pass while the morning pull
- * is silently broken.
- */
-async function checkScraperCsvPull(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data: morning } = await supabaseAdmin
-      .from('scraper_status').select('data, updated_at').eq('key', 'morning').maybeSingle();
-    const { data: evening } = await supabaseAdmin
-      .from('scraper_status').select('data, updated_at').eq('key', 'evening').maybeSingle();
-    type CsvRow = {
-      status?: string;
-      at?: string;
-      error?: string;
-      errorCode?: string;
-      consecutiveFailures?: number;
-    };
-    const m = (morning?.data ?? {}) as CsvRow;
-    const e = (evening?.data ?? {}) as CsvRow;
-    const mAt = m.at ? new Date(m.at).getTime() : 0;
-    const eAt = e.at ? new Date(e.at).getTime() : 0;
-    const newest = mAt >= eAt ? { ...m, kind: 'morning' as const } : { ...e, kind: 'evening' as const };
-    if (!newest.at) {
-      return {
-        status: 'warn',
-        detail: 'No CSV pull on record yet (no morning or evening row in scraper_status).',
-        fix: 'Wait for the next scrape tick on Railway, or check the scraper deployment.',
-      };
-    }
-    const ageMin = Math.floor((Date.now() - new Date(newest.at).getTime()) / 60_000);
-    const fails  = newest.consecutiveFailures ?? 0;
-    if (newest.status === 'error') {
-      const codePart = newest.errorCode ? ` [${newest.errorCode}]` : '';
-      return {
-        status: 'fail',
-        detail: `Last ${newest.kind} CSV pull errored${codePart} ${ageMin}m ago (${fails} consecutive ${fails === 1 ? 'failure' : 'failures'}): "${(newest.error ?? '').slice(0, 200)}"`,
-        fix: 'Check Railway logs for scraper/csv-scraper.js. The selector-fallback chain dumps csv-form-dump.html / csv-link-dump.html on selector miss.',
-      };
-    }
-    if (ageMin > 60) {
-      return {
-        status: 'warn',
-        detail: `Last ${newest.kind} CSV pull was ${ageMin}m ago. Scraper may be hung.`,
-        fix: 'Check Railway scraper service is running and the heartbeat is fresh.',
-      };
-    }
-    return { status: 'ok', detail: `Last ${newest.kind} CSV pull succeeded ${ageMin}m ago` };
-  } catch (err) {
-    return {
-      status: 'warn',
-      detail: `csv pull check raised: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-}
-
-/**
- * Read scraper_status['vercel_watchdog'] and verify Railway can actually
- * deliver SMS alerts. The 2026-04-27 outage was silent for 2.5 hours because
- * MANAGER_PHONE wasn't set on Railway — Vercel had it, the doctor was green
- * here, but the watchdog process on Railway logged "ALERT would have fired"
- * and went to bed. Doctor (running on Vercel) can't read Railway's process.env,
- * but it CAN read the shared Postgres state — so when the watchdog detects
- * the no-phone case it stamps `alertSuppressedReason` on its row and we read
- * that here. This makes "the alerter can't alert" itself an alertable
- * condition.
- *
- * Fails on:
- *  - alertSuppressedReason set → Railway is currently unable to send SMS
- *  - lastCheckAt > 15 minutes old → watchdog process is dead on Railway
- *
- * Skips when the watchdog row hasn't been written yet (clean install).
- */
-async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    // Read both alert paths in parallel:
-    //   • vercel_watchdog → Railway-side process pinging Vercel
-    //   • alertState     → Vercel-side cron pinging Supabase
-    // Either path being "tried but couldn't deliver SMS" is a hard fail.
-    const [{ data: watchdogRow, error: wErr }, { data: alertRow, error: aErr }] = await Promise.all([
-      supabaseAdmin.from('scraper_status').select('data, updated_at').eq('key', 'vercel_watchdog').maybeSingle(),
-      supabaseAdmin.from('scraper_status').select('data, updated_at').eq('key', 'alertState').maybeSingle(),
-    ]);
-    if (wErr) return { status: 'warn', detail: `vercel_watchdog read failed: ${errToString(wErr)}` };
-    if (aErr) return { status: 'warn', detail: `alertState read failed: ${errToString(aErr)}` };
-
-    const watchdog = (watchdogRow?.data ?? {}) as {
-      lastCheckAt?: string;
-      alertSuppressedReason?: string | null;
-      alertSuppressedAt?: string | null;
-    };
-    const alertState = (alertRow?.data ?? {}) as {
-      alertSuppressedReason?: string | null;
-      alertSuppressedAt?: string | null;
-      lastSmsError?: string | null;
-      lastAlertedCode?: string | null;
-      lastAlertedAt?: string | null;
-    };
-
-    // ── Stale-state detection (May 2026 audit pass-6) ─────────────────
-    // alertSuppressedReason is a sticky flag — once set, the watchdog
-    // doesn't clear it on the next successful tick. If the underlying
-    // condition resolved 30+ minutes ago, the flag is misleading: the
-    // system isn't actually broken, the operator just hasn't seen the
-    // historical record yet. Treat the flag as `warn` (info-level)
-    // instead of `fail` (CI-blocking) once it's older than 30 min.
-    // Real ongoing outages still produce `fail` because the watchdog
-    // re-stamps the timestamp on each suppression event.
-    const STALE_SUPPRESSION_MIN = 30;
-    const isSuppressionStale = (suppressedAt: string | null | undefined): boolean => {
-      if (!suppressedAt) return false;
-      const ageMin = (Date.now() - new Date(suppressedAt).getTime()) / 60_000;
-      return ageMin > STALE_SUPPRESSION_MIN;
-    };
-
-    // Vercel cron path: did it try to alert and fail?
-    if (alertState.alertSuppressedReason === 'no_alert_phone_on_vercel') {
-      return {
-        status: 'fail',
-        detail: `Vercel cron tried to alert but MANAGER_PHONE is unset on Vercel. Suppressed at ${alertState.alertSuppressedAt}.`,
-        fix: 'Vercel → Project Settings → Environment Variables → set MANAGER_PHONE=+1XXXXXXXXXX (E.164) → redeploy.',
-      };
-    }
-    if (alertState.alertSuppressedReason === 'sms_send_failed') {
-      const stale = isSuppressionStale(alertState.alertSuppressedAt);
-      return {
-        status: stale ? 'warn' : 'fail',
-        detail: stale
-          ? `Vercel cron had a Twilio-step failure ${Math.floor((Date.now() - new Date(alertState.alertSuppressedAt!).getTime()) / 60_000)}m ago (stale — will clear on next successful alert): ${alertState.lastSmsError ?? 'unknown error'}`
-          : `Vercel cron's last alert attempt failed at the Twilio step: ${alertState.lastSmsError ?? 'unknown error'}`,
-        fix: 'Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER on Vercel. Also verify the recipient number is valid and not on Twilio\'s suppression list.',
-      };
-    }
-    if (alertState.alertSuppressedReason) {
-      const stale = isSuppressionStale(alertState.alertSuppressedAt);
-      return {
-        status: stale ? 'warn' : 'fail',
-        detail: stale
-          ? `Vercel cron had a suppression event ${Math.floor((Date.now() - new Date(alertState.alertSuppressedAt!).getTime()) / 60_000)}m ago (stale — will clear on next successful alert): ${alertState.alertSuppressedReason}`
-          : `Vercel cron suppressed an alert for: ${alertState.alertSuppressedReason}`,
-        fix: 'Inspect scraper_status[alertState] in Supabase and the Vercel function logs.',
-      };
-    }
-
-    // Railway watchdog path: alive + alert-capable?
-    if (!watchdog.lastCheckAt) {
-      return {
-        status: 'skipped',
-        detail: 'vercel_watchdog has not run yet — Railway scraper just deployed?',
-      };
-    }
-    const ageMin = Math.floor((Date.now() - new Date(watchdog.lastCheckAt).getTime()) / 60_000);
-    if (ageMin > 15) {
-      return {
-        status: 'fail',
-        detail: `Railway watchdog is dead — last tick ${ageMin}m ago (expected every 5m).`,
-        fix: 'Railway → hotelops-scraper → Deployments. Look for crash loops or missing CRON_SECRET. Without the watchdog, Vercel outages go undetected from Railway side.',
-      };
-    }
-    if (watchdog.alertSuppressedReason === 'no_alert_phone_on_railway') {
-      return {
-        status: 'fail',
-        detail: `Railway watchdog tried to alert but MANAGER_PHONE/OPS_ALERT_PHONE is unset on Railway. Suppressed at ${watchdog.alertSuppressedAt}.`,
-        fix: 'Railway → hotelops-scraper → Variables → add MANAGER_PHONE=+1XXXXXXXXXX (E.164). Same value as on Vercel. Without this, every Vercel outage detected by Railway is silent.',
-      };
-    }
-    if (watchdog.alertSuppressedReason) {
-      const stale = isSuppressionStale(watchdog.alertSuppressedAt);
-      return {
-        status: stale ? 'warn' : 'fail',
-        detail: stale
-          ? `Railway watchdog had a suppression event ${Math.floor((Date.now() - new Date(watchdog.alertSuppressedAt!).getTime()) / 60_000)}m ago (stale — will clear on next successful alert): ${watchdog.alertSuppressedReason}`
-          : `Railway watchdog suppressed an alert for unexpected reason: ${watchdog.alertSuppressedReason}`,
-        fix: 'Inspect scraper_status[vercel_watchdog] in Supabase and the Railway logs.',
-      };
-    }
-
-    return {
-      status: 'ok',
-      detail: `Both alert paths clear (Vercel cron + Railway watchdog ${ageMin}m ago).`,
-    };
-  } catch (err) {
-    return {
-      status: 'warn',
-      detail: `watchdog alert-path check raised: ${errToString(err)}`,
-    };
-  }
-}
 
 /**
  * Verify Vercel's CRON_SECRET matches Railway's. The doctor runs on Vercel
@@ -2332,253 +1917,11 @@ async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationM
   }
 }
 
-/**
- * Surface sustained pull-latency regressions. Reads the most recent 30
- * pull_metrics rows per pull_type and warns if the median is more than 2x
- * the historical baseline. Stays silent on a single slow pull (CA having
- * a bad afternoon is normal); fires when the slowness is consistent.
- *
- * Skips entirely if pull_metrics has <10 rows total (fresh install) or if
- * the table doesn't exist yet (migration 0011 not applied).
- */
-async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('pull_metrics')
-      .select('pull_type, total_ms, ok, pulled_at')
-      .order('pulled_at', { ascending: false })
-      .limit(200);
-    if (error) {
-      // Table doesn't exist yet (migration not applied) — graceful skip.
-      if (errToString(error).includes('does not exist')) {
-        return { status: 'skipped', detail: 'pull_metrics table not present (migration 0011 not applied yet).' };
-      }
-      return { status: 'warn', detail: `pull_metrics read failed: ${errToString(error)}` };
-    }
-    if (!data || data.length < 10) {
-      return { status: 'skipped', detail: `pull_metrics has only ${data?.length ?? 0} rows; need >=10 for trend.` };
-    }
-
-    // ─── PRESENCE CHECK ──────────────────────────────────────────────────
-    // 2026-04-27 incident: pulls stopped completely (Playwright tick wedged
-    // on an unresolved Promise inside the Railway scraper). Heartbeat kept
-    // updating, the watchdog's HTTP ping kept saying "doctor returned 200,"
-    // and this check stayed green for 5 hours because all checks below
-    // ONLY compare slow pulls to baseline — when pulls disappear entirely
-    // there's nothing recent to be slow. The result was a silent outage.
-    //
-    // Fix: read the freshest pull across non-daily types. If the scraper
-    // says it's alive (heartbeat fresh) but the most-recent pull is older
-    // than a generous threshold during business hours, it's wedged.
-    //
-    // OFF-HOURS HANDLING: the scraper itself only pulls when local hour is
-    // 5–22 (5am–10:59pm Central — see scraper.js around line 587). Outside
-    // that window, pulls correctly stop and the freshness check would
-    // false-positive every night. We mirror the same gate here so a sleeping
-    // scraper doesn't trip the alarm. There's also a brief grace window at
-    // 5:00–5:30am while the resumed scraper does its first tick.
-    const STALE_THRESHOLD_MIN = 30;
-    const NON_DAILY_TYPES = new Set(['dashboard', 'ooo', 'csv_evening']);
-    const SCRAPER_WINDOW_START = 5;   // local hour, inclusive
-    const SCRAPER_WINDOW_END   = 23;  // local hour, exclusive (so 22:59 is in)
-    const WARMUP_GRACE_MIN = 30;      // first 30 min of the window — scraper just woke up
-    const TZ = 'America/Chicago';
-    const nowMs = Date.now();
-    // Mirror scraper's localHour() exactly. Intl handles CDT/CST DST.
-    const localTimeParts = new Intl.DateTimeFormat('en-US', {
-      hour: 'numeric', minute: 'numeric', hour12: false, timeZone: TZ,
-    }).formatToParts(new Date());
-    const localHourNow = parseInt(localTimeParts.find(p => p.type === 'hour')?.value ?? '0', 10);
-    const localMinuteNow = parseInt(localTimeParts.find(p => p.type === 'minute')?.value ?? '0', 10);
-    const inScraperWindow = localHourNow >= SCRAPER_WINDOW_START && localHourNow < SCRAPER_WINDOW_END;
-    // The comment in the original version of this check promised a 5:00–5:30
-    // grace window for the scraper's first tick of the day, but never
-    // implemented it — so the doctor fired a false-positive 'fail' SMS at
-    // 5am every morning. Compute the grace explicitly: within the first
-    // WARMUP_GRACE_MIN minutes of SCRAPER_WINDOW_START, ignore stale pulls
-    // (the previous evening's last pull is naturally ~6h old until the
-    // first new tick lands).
-    const inWarmupGrace =
-      localHourNow === SCRAPER_WINDOW_START && localMinuteNow < WARMUP_GRACE_MIN;
-    type Row = { pull_type: string; total_ms: number; ok: boolean; pulled_at: string };
-    const rows = data as Row[];
-    let mostRecentPullMs = 0;
-    let mostRecentPullType: string | undefined;
-    for (const r of rows) {
-      if (!NON_DAILY_TYPES.has(r.pull_type)) continue;
-      const t = new Date(r.pulled_at).getTime();
-      if (t > mostRecentPullMs) { mostRecentPullMs = t; mostRecentPullType = r.pull_type; }
-    }
-
-    if (mostRecentPullMs > 0) {
-      const ageMin = (nowMs - mostRecentPullMs) / 60000;
-      if (ageMin > STALE_THRESHOLD_MIN) {
-        // OFF-HOURS SHORT-CIRCUIT — scraper correctly idles 11pm–5am.
-        // Skip with status=ok so we don't fire a false-positive every
-        // night. Detail still shows the staleness so it's visible if
-        // someone hits doctor manually.
-        if (!inScraperWindow) {
-          return {
-            status: 'ok',
-            detail: `Off-hours (${localHourNow}:00 Central, scraper window ${SCRAPER_WINDOW_START}am–${SCRAPER_WINDOW_END}:00). Most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago — expected during this window.`,
-          };
-        }
-        // WARMUP GRACE — first 30 min of the window. The scraper just
-        // resumed; the previous evening's last pull is ~6h stale until
-        // the new day's first tick completes. Don't false-positive.
-        if (inWarmupGrace) {
-          return {
-            status: 'ok',
-            detail: `Warmup (${localHourNow}:${String(localMinuteNow).padStart(2,'0')} Central, first ${WARMUP_GRACE_MIN}m of scraper window). Most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago — waiting for first tick of the day.`,
-          };
-        }
-        // Cross-reference heartbeat to distinguish "scraper is dead" from
-        // "scraper is alive but tick is wedged." Different fix paths.
-        const { data: hbRow } = await supabaseAdmin
-          .from('scraper_status').select('updated_at').eq('key', 'heartbeat').maybeSingle();
-        const hbAgeMin = hbRow?.updated_at
-          ? (nowMs - new Date(hbRow.updated_at).getTime()) / 60000
-          : Infinity;
-
-        if (hbAgeMin <= 10) {
-          return {
-            status: 'fail',
-            detail: `Scraper heartbeat is fresh (${hbAgeMin.toFixed(1)}m) but pulls have stopped — most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago (threshold ${STALE_THRESHOLD_MIN}m, local hour ${localHourNow}). Tick loop is wedged.`,
-            fix: 'Restart the Railway hotelops-scraper service (Railway dashboard → service → Restart). Check logs for a hung Playwright operation (page.goto / waitForSelector without timeout).',
-          };
-        }
-        return {
-          status: 'fail',
-          detail: `No pulls in ${ageMin.toFixed(1)}m AND heartbeat is ${hbAgeMin === Infinity ? 'missing' : hbAgeMin.toFixed(1) + 'm'} old. Scraper process is down.`,
-          fix: 'Railway dashboard → hotelops-scraper service → check Status. If "Crashed", redeploy from main. If "Stopped", start it.',
-        };
-      }
-    } else {
-      // No non-daily pulls at all in the recent 200 rows? Surface this.
-      return {
-        status: 'warn',
-        detail: 'No dashboard/ooo/csv_evening pulls found in recent metrics. Either the scraper has been off >a few hours, or only csv_morning is firing.',
-        fix: 'Check Railway logs and the scraper schedule.',
-      };
-    }
-
-    // ─── SLOWNESS CHECK (legacy) ──────────────────────────────────────────
-    // Bucket by pull_type, take the most recent 30 successful pulls per
-    // type, compute median. Compare to a baseline (next 30 successful pulls
-    // before that window). 2x slower = warn; 3x slower = fail.
-    const buckets: Record<string, Row[]> = {};
-    for (const row of rows) {
-      if (!row.ok) continue;
-      const k = row.pull_type;
-      buckets[k] = buckets[k] || [];
-      buckets[k].push(row);
-    }
-    const warnings: string[] = [];
-    for (const [pullType, rs] of Object.entries(buckets)) {
-      if (rs.length < 20) continue;
-      const recent = rs.slice(0, 10).map(r => r.total_ms).sort((a, b) => a - b);
-      const baseline = rs.slice(10, 20).map(r => r.total_ms).sort((a, b) => a - b);
-      const recentMedian = recent[Math.floor(recent.length / 2)];
-      const baselineMedian = baseline[Math.floor(baseline.length / 2)];
-      if (recentMedian > 3 * baselineMedian) {
-        warnings.push(`${pullType} 3x+ slower (median ${recentMedian}ms vs baseline ${baselineMedian}ms)`);
-      }
-    }
-    if (warnings.length > 0) {
-      return {
-        status: 'warn',
-        detail: `Pull latency regression: ${warnings.join('; ')}`,
-        fix: 'Check Railway logs for the affected pull type. If sustained, CA may have changed their page weight (more JS, slower auth) — consider tuning waitForLoadState timeouts.',
-      };
-    }
-    return { status: 'ok', detail: `Pulls fresh (${mostRecentPullType} ${((nowMs - mostRecentPullMs) / 60000).toFixed(1)}m ago); latency within baseline across ${Object.keys(buckets).length} pull types.` };
-  } catch (err) {
-    return { status: 'warn', detail: `pull-latency check raised: ${errToString(err)}` };
-  }
-}
-
-/**
- * Smoke-detector for silent ML feature failures.
- *
- * /api/housekeeper/room-action has two best-effort paths whose failures are
- * invisible to the housekeeper (the tap "works"), invisible to Maria (no
- * UI signal), and invisible to Reeyen (just a Vercel log line):
- *
- *   - occupancy_capture: scraper_status.dashboard.in_house wasn't readable
- *     when the housekeeper tapped Start. Done lands with
- *     cleaning_events.occupancy_at_start = NULL.
- *   - feature_derivation: deriveCleaningEventFeatures() threw (schema drift,
- *     helper bug). Done lands with all 10 ML feature columns NULL.
- *
- * Both paths increment a counter in scraper_status[ml_failures:<kind>]. If
- * any failure landed in the last 24h, this check goes RED so the daily
- * drift cron fires an SMS within hours of the first occurrence.
- *
- * `count > 0 in last 24h` is enough — we don't need exact counts. The fix
- * is always "go read the room-action logs for the failing kind."
- */
-async function checkMLFailureCounter(
-  kind: 'occupancy_capture' | 'feature_derivation',
-  fix: string,
-): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data')
-      .eq('key', `ml_failures:${kind}`)
-      .maybeSingle();
-    if (error) {
-      return {
-        status: 'warn',
-        detail: `ml_failures:${kind} read failed: ${errToString(error)}`,
-      };
-    }
-    if (!data?.data) {
-      return { status: 'ok', detail: `no ${kind} failures recorded` };
-    }
-    const row = data.data as {
-      recent?: Array<{ at: string; pid: string; err: string }>;
-      total?: number;
-    };
-    const recent = row.recent ?? [];
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const last24h = recent.filter((r) => {
-      const t = new Date(r.at).getTime();
-      return Number.isFinite(t) && t > cutoff;
-    });
-    if (last24h.length === 0) {
-      return {
-        status: 'ok',
-        detail: `no ${kind} failures in last 24h (lifetime total: ${row.total ?? 0})`,
-      };
-    }
-    const sample = last24h[0];
-    return {
-      status: 'fail',
-      detail: `${last24h.length} ${kind} failure(s) in last 24h. Most recent: ${sample.at} pid=${(sample.pid ?? '').slice(0, 8)} err="${(sample.err ?? '').slice(0, 80)}"`,
-      fix,
-    };
-  } catch (err) {
-    return {
-      status: 'warn',
-      detail: `ml_failures:${kind} check raised: ${errToString(err)}`,
-    };
-  }
-}
-
-async function checkOccupancyCaptureFailures(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  return checkMLFailureCounter(
-    'occupancy_capture',
-    'Inspect Vercel logs for /api/housekeeper/room-action "occupancy capture failed" warnings. Most likely cause: scraper_status.dashboard row stale (>4h) or missing the in_house field. Until fixed, every Start tap lands with cleaning_events.occupancy_at_start = NULL — supply model loses one of its strongest features.',
-  );
-}
-
-async function checkFeatureDerivationFailures(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  return checkMLFailureCounter(
-    'feature_derivation',
-    'Inspect Vercel logs for /api/housekeeper/room-action "feature derivation threw" errors. The helper swallows its own internal failures, so reaching the outer catch means an upstream contract broke (schema drift, helper signature change, missing column). Cleaning_events lands with all 10 ML feature columns NULL until fixed — supply model retrains on null-padded rows.',
-  );
-}
+// (Plan v4 cleanup: checkMLFailureCounter / checkOccupancyCaptureFailures /
+// checkFeatureDerivationFailures all read scraper_status[ml_failures:<kind>]
+// which is dropped. Their callers in room-action/complete-clean were also
+// removed. ML feature derivation needs a rebuild against pms_* before
+// failure-tracking can come back.)
 
 /**
  * Inventory predictions freshness — fail if no row in
@@ -2739,12 +2082,9 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
   // legacy `rooms` table (dropped in v4). CUA writes room state to
   // pms_room_status_log (event-sourced, no per-day seeding needed).
-  { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
-  // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's
-  // schedule. Treated as a single heartbeat — either slot writing
-  // counts as fresh. 24h cadence so a missed 7 AM run doesn't yelp
-  // before the 8 PM run lands.
-  { name: 'schedule-auto-fill',            cadenceHours: 24,    description: 'daily schedule auto-build (7 AM + 8 PM Central via GitHub Actions cron)' },
+  // Plan v4 cleanup: removed `seal-daily` and `schedule-auto-fill` —
+  // both read plan_snapshots (dropped). Re-add when ML training comes
+  // back online against pms_*.
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
   { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },

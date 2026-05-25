@@ -182,7 +182,8 @@ registerTool<{ date?: string }>({
 });
 
 // ─── get_pms_status ───────────────────────────────────────────────────────
-// Reads scraper_status — the heartbeat of the PMS sync.
+// Reads property_sessions (the per-hotel CUA worker state) — the Plan v4
+// replacement for the dropped scraper_status table.
 
 registerTool<Record<string, never>>({
   name: 'get_pms_status',
@@ -192,21 +193,20 @@ registerTool<Record<string, never>>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async (_, ctx): Promise<ToolResult> => {
     const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('key, value, updated_at')
-      .like('key', `${ctx.propertyId}%`);
+      .from('property_sessions')
+      .select('status, paused_reason, last_poll_at, updated_at')
+      .eq('property_id', ctx.propertyId)
+      .maybeSingle();
     if (error) return { ok: false, error: 'Failed to read PMS status.' };
-
-    const heartbeat = data?.find(r => (r.key as string).endsWith(':heartbeat'));
-    const lastSync = data?.find(r => (r.key as string).endsWith(':last_sync'));
-    const lastErr = data?.find(r => (r.key as string).endsWith(':last_error'));
-
+    if (!data) {
+      return { ok: true, data: { heartbeat: null, lastSuccessfulSync: null, lastError: 'no active session' } };
+    }
     return {
       ok: true,
       data: {
-        heartbeat: heartbeat?.updated_at ?? null,
-        lastSuccessfulSync: lastSync?.value ?? null,
-        lastError: lastErr?.value ?? null,
+        heartbeat: data.updated_at,
+        lastSuccessfulSync: data.last_poll_at,
+        lastError: data.status !== 'running' ? (data.paused_reason ?? data.status) : null,
       },
     };
   },

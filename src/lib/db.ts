@@ -44,7 +44,9 @@ export * from './db/ml-stubs';
 export * from './db/ml-inventory-cockpit';
 export * from './db/handoff-logs';
 export * from './db/guest-requests';
-export * from './db/plan-snapshots';
+// Plan v4 bridge — replaces the deleted db/plan-snapshots.ts. Same per-room
+// shape, sourced from pms_room_status_log + pms_reservations live.
+export * from './db/today-room-work';
 export * from './db/dashboard';
 export * from './db/schedule-assignments';
 export * from './db/shift-confirmations';

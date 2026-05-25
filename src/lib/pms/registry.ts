@@ -8,11 +8,9 @@
  * /settings/pms/page.tsx) and server modules (the API routes that
  * validate incoming pms_type values).
  *
- * Adapter execution lives elsewhere — see:
- *   - src/lib/pms/recipe-loader.ts (server-only) for loading the active
- *     recipe from pms_recipes
- *   - cua-service/ (Fly.io worker) for actually running recipes against
- *     real PMSes via Playwright + Claude vision
+ * Adapter execution lives in cua-service/ (Fly.io worker) which loads
+ * active recipes from pms_knowledge_files and replays them against real
+ * PMSes via Playwright. Vision-built only (Plan v8 D.2).
  */
 
 import type { PMSType } from './types';

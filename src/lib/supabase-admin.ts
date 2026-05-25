@@ -36,10 +36,12 @@ if (env.NODE_ENV !== 'production') {
   globalForSupabase.__supabaseAdmin = supabaseAdmin;
 }
 
-// Preflight: does a cheap authenticated read against scraper_status to
+// Preflight: does a cheap authenticated read against `properties` to
 // verify the service_role key is still valid. Call from any route that
-// absolutely needs admin access (e.g. /api/cron/scraper-health) before
-// doing real work.
+// absolutely needs admin access before doing real work.
+//
+// (Plan v4 cleanup: was scraper_status which got dropped. `properties`
+// is a stable core table that always exists.)
 //
 // Memoized per warm container so only the first request per cold-start
 // pays the ~50–200ms round-trip. A failure clears the cache so the next
@@ -51,9 +53,8 @@ export async function verifySupabaseAdmin(): Promise<void> {
     authPreflight = (async () => {
       try {
         const { error } = await supabaseAdmin
-          .from('scraper_status')
-          .select('key')
-          .eq('key', 'heartbeat')
+          .from('properties')
+          .select('id')
           .limit(1);
         if (error) throw error;
       } catch (err) {
