@@ -90,14 +90,28 @@ function subscribeViaPolling(
 ): () => void {
   let cancelled = false;
 
-  const publish = (rows: Room[]) => {
-    if (!cancelled) callback(rows);
-  };
+  // ── Monotonic sequence guard ───────────────────────────────────────────
+  // Post-merge adversarial sweep (2026-05-24) — Codex #6 + my own pass:
+  // every poll fires its own doFetch with no ordering. If poll A starts,
+  // poll B starts before A resolves (slow API, visibilitychange burst,
+  // 6s tick landing mid-flight), and A resolves AFTER B, we'd publish A's
+  // older snapshot on top of B's newer one — UI briefly reverts to stale
+  // state. Same sequence guard as legacy subscribeTable in _common.ts:
+  // any fetch whose ID is less than the latest published ID is silently
+  // discarded.
+  let requestSeq = 0;
+  let lastPublishedSeq = -1;
 
   const fire = () => {
     if (cancelled) return;
+    const myReq = ++requestSeq;
     doFetch()
-      .then(publish)
+      .then(rows => {
+        if (cancelled) return;
+        if (myReq <= lastPublishedSeq) return;
+        lastPublishedSeq = myReq;
+        callback(rows);
+      })
       .catch(err => logErr(channelKey, err));
   };
 
@@ -176,46 +190,60 @@ export async function getRoomsForDate(_uid: string, pid: string, date: string): 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Write functions — stubbed during the Plan v4 cutover.
+// Write functions — silent no-op during the Plan v4 cutover.
 // ═══════════════════════════════════════════════════════════════════════════
 // These used to update the legacy `rooms` table directly via the supabase
 // anon client. That table is dropped (migration 0204). The new write path
 // must land status/assignment changes into the appropriate pms_* table(s)
 // via a server route using supabaseAdmin — same pattern as the read.
 //
-// Ships on a separate branch. Callers that hit these in the meantime
-// surface a clear "write path not yet wired" error rather than silently
-// no-op'ing (which would look like the action worked and then revert on
-// the next poll).
+// Ships on a separate branch. In the meantime we silent-no-op instead of
+// throwing:
+//
+// Why no-op rather than throw — post-merge adversarial sweep (2026-05-24,
+// Codex #1): RoomsTab's handleToggle awaits updateRoom() WITHOUT a
+// try/catch. A throw becomes an unhandled promise rejection — the popup
+// stays open, the action UI looks frozen, and every status tap on the
+// live housekeeping board is broken for every user. The no-op is the
+// lesser evil: the popup closes (setActionRoom(null) runs), and the
+// next 6s poll snaps the tile back to the actual server state. Manager
+// will observe "I tapped, nothing changed" — which IS what's happening
+// (writes aren't wired) — instead of a silently-frozen popup.
+//
+// Per-call console.warn surfaces the gap to developers + dev-tools users
+// without bothering end users.
 
-function unsupportedWriteError(op: string): Error {
-  return new Error(
-    `${op}: room writes are not yet wired into the new pms_* schema (Plan v4 cutover in progress). ` +
-    `The Rooms tab is read-only against live CUA data on this branch.`,
-  );
+function logWriteSkip(op: string): void {
+  if (typeof console !== 'undefined') {
+    console.warn(
+      `[rooms.${op}] write skipped — writes not yet wired into pms_* schema ` +
+      `(read-only on this branch; Plan v4 writes ship separately)`,
+    );
+  }
 }
 
 export async function addRoom(_uid: string, _pid: string, _room: Omit<Room, 'id'>): Promise<string> {
   // TODO(plan-v4-writes): land row into pms_housekeeping_assignments
   // (for the date) and emit a pms_room_status_log entry with source='manual'.
-  throw unsupportedWriteError('addRoom');
+  logWriteSkip('addRoom');
+  return '';
 }
 
 export async function updateRoom(_uid: string, _pid: string, _rid: string, _data: Partial<Room>): Promise<void> {
   // TODO(plan-v4-writes): map Room.status changes to a new
   // pms_room_status_log row (source='manual') and map assignment fields
   // into pms_housekeeping_assignments.
-  throw unsupportedWriteError('updateRoom');
+  logWriteSkip('updateRoom');
 }
 
 export async function deleteRoom(_uid: string, _pid: string, _rid: string): Promise<void> {
   // TODO(plan-v4-writes): not clear deleteRoom has a meaningful target
   // in the new schema — rooms are sourced from PMS inventory, not
   // user-created. May end up no-op or "remove today's assignment."
-  throw unsupportedWriteError('deleteRoom');
+  logWriteSkip('deleteRoom');
 }
 
 export async function bulkAddRooms(_uid: string, _pid: string, _rooms: Omit<Room, 'id'>[]): Promise<void> {
   // TODO(plan-v4-writes): batch the addRoom semantics above.
-  throw unsupportedWriteError('bulkAddRooms');
+  logWriteSkip('bulkAddRooms');
 }
