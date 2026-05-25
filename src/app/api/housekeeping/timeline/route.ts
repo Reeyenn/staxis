@@ -192,7 +192,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         { requestId },
       );
     }
-    const tasks = (taskRows ?? []) as CleaningTaskRow[];
+    // Wide select string outruns supabase-js inference; cast through unknown.
+    const tasks = (taskRows ?? []) as unknown as CleaningTaskRow[];
 
     // 3. Active assignments — same posture as the board route.
     const taskIds = tasks.map(t => t.id);

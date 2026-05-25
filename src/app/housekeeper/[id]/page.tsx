@@ -18,7 +18,8 @@ import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomReservationContext } from '@/types';
 import { t } from '@/lib/translations';
-import type { Language } from '@/lib/translations';
+import type { HousekeeperLocale } from '@/lib/translations';
+import { SUPPORTED_LOCALES, LOCALE_META } from '@/lib/translations';
 import { floorFromRoomNumber, inferCleaningType } from '@/lib/housekeeper-workflow/state-machine';
 import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 
@@ -26,6 +27,17 @@ import InspectorView from './_components/InspectorView';
 import VoiceIssueButton from './_components/VoiceIssueButton';
 import { SickReportButton } from './SickReportButton';
 import { JobCard } from './_components/JobCard';
+import { LanguageSwitcher } from './_components/LanguageSwitcher';
+import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
+import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
+import { AddNoteButton, MarkForInspectionButton } from './_components/RoomCardActionButtons';
+import { ComponentRoomBadge } from './_components/ComponentRoomBadge';
+import {
+  collapseChildComponents,
+  componentForRoom,
+  type ComponentRoomLink,
+} from '@/lib/housekeeper-workflow/component-rooms';
+import { useOfflineSync } from '@/lib/offline-sync/use-offline-sync';
 import { ChecklistModal, type ChecklistItem } from './_components/ChecklistModal';
 import { ExceptionDropdown } from './_components/ExceptionDropdown';
 import { LunchBreakButton } from './_components/LunchBreakButton';
@@ -73,7 +85,10 @@ export default function HousekeeperRoomPage({
   const pid = searchParams.get('pid');
   const today = useTodayStr();
 
-  const [lang, setLang] = useState<Language>('en');
+  const [lang, setLang] = useState<HousekeeperLocale>('en');
+  const [componentLinks, setComponentLinks] = useState<ComponentRoomLink[]>([]);
+  const [managerNotesByRoom, setManagerNotesByRoom] = useState<Record<string, string>>({});
+  const offline = useOfflineSync();
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
   const [reservationsByRoom, setReservationsByRoom] = useState<Record<string, RoomReservationContext>>({});
@@ -225,8 +240,14 @@ export default function HousekeeperRoomPage({
     void (async () => {
       try {
         const s = await getStaffSelfPublic(pid, housekeeperId);
-        if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
-          setLang(s.language);
+        if (!cancelled && s && typeof s.language === 'string') {
+          // staff.language now allows the five housekeeper-facing locales
+          // (migration 0225). Defensively narrow before assigning so a
+          // stale row with an unknown value falls back to EN.
+          const lc = s.language as HousekeeperLocale;
+          if ((SUPPORTED_LOCALES as readonly string[]).includes(lc)) {
+            setLang(lc);
+          }
         }
       } catch {
         // best-effort
@@ -326,6 +347,53 @@ export default function HousekeeperRoomPage({
       cancelled = true;
     };
   }, [pid, housekeeperId, activeDate, authReady]);
+
+  // Fetch component-room links for the property. Manager-curated, doesn't
+  // change often, so a single fetch on mount is fine.
+  useEffect(() => {
+    if (!pid || !housekeeperId || !authReady) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/housekeeper/component-rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+        );
+        const json = (await res.json().catch(() => null)) as
+          | { ok?: boolean; data?: { links: ComponentRoomLink[] } }
+          | null;
+        if (!cancelled && res.ok && json?.ok && json.data?.links) {
+          setComponentLinks(json.data.links);
+        }
+      } catch {
+        // best effort — no links means every room renders as a regular card
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pid, housekeeperId, authReady]);
+
+  // Register the housekeeper service worker for offline shell + asset
+  // caching. The action-queue replay logic lives in useOfflineSync; the
+  // SW only handles cache-first asset serving so a brief connectivity
+  // drop doesn't leave the housekeeper looking at an empty browser.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await navigator.serviceWorker.register('/sw-housekeeper.js', { scope: '/housekeeper/' });
+        if (cancelled) return;
+        // best-effort — even if registration silently fails, the
+        // IndexedDB replay queue still works.
+      } catch {
+        // ignore registration errors; offline replay still works
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Manual refetch path (also used after every action).
   const refetchRooms = useCallback(async () => {
@@ -600,17 +668,26 @@ export default function HousekeeperRoomPage({
    * sort order across renders. Indexes start at 1 to match how the
    * housekeeper counts ("seventh room of the day").
    */
+  // Collapse component-room children — they're cleaned as part of their
+  // parent so the housekeeper sees ONE card for a suite, not N cards for
+  // every sub-room. The componentLinks list comes from the
+  // component_rooms table (migration 0225) and is fetched per property.
+  const visibleRooms = useMemo(
+    () => collapseChildComponents(rooms, componentLinks),
+    [rooms, componentLinks],
+  );
+
   const { groups: groupedRooms, indexByRoomId } = useMemo(() => {
     const indexMap = new Map<string, number>();
-    rooms.forEach((r, i) => indexMap.set(r.id, i + 1));
+    visibleRooms.forEach((r, i) => indexMap.set(r.id, i + 1));
     if (groupBy !== 'floor') {
       return {
-        groups: [{ floor: null as string | null, rooms }],
+        groups: [{ floor: null as string | null, rooms: visibleRooms }],
         indexByRoomId: indexMap,
       };
     }
     const map = new Map<string, RoomRow[]>();
-    for (const r of rooms) {
+    for (const r of visibleRooms) {
       const f = r.floor ?? floorFromRoomNumber(r.number);
       const list = map.get(f) ?? [];
       list.push(r);
@@ -627,7 +704,7 @@ export default function HousekeeperRoomPage({
         return (a.floor ?? '').localeCompare(b.floor ?? '');
       });
     return { groups, indexByRoomId: indexMap };
-  }, [rooms, groupBy]);
+  }, [visibleRooms, groupBy]);
 
   const checklistRoom = checklistRoomId ? rooms.find((r) => r.id === checklistRoomId) : null;
   const checklistTypeKey = checklistRoom ? inferCleaningType(checklistRoom.type) : null;
@@ -810,34 +887,28 @@ export default function HousekeeperRoomPage({
                 })()}
               </p>
             </div>
-            <button
-              onClick={async () => {
-                const next: Language = lang === 'en' ? 'es' : 'en';
+            <LanguageSwitcher
+              current={lang}
+              onChange={async (next) => {
                 setLang(next);
                 if (housekeeperId && pid) {
                   try {
-                    await saveStaffLanguagePublic(pid, housekeeperId, next);
+                    // `saveStaffLanguagePublic` is typed to the bilingual
+                    // Language for legacy callers; the server endpoint
+                    // accepts the wider locale set per migration 0225.
+                    // Cast the new locale to the helper's bilingual type
+                    // — the runtime call just stringifies it.
+                    await saveStaffLanguagePublic(
+                      pid,
+                      housekeeperId,
+                      next as 'en' | 'es',
+                    );
                   } catch {
                     // silent
                   }
                 }
               }}
-              style={{
-                background: 'rgba(255,255,255,0.18)',
-                border: '1.5px solid rgba(255,255,255,0.35)',
-                borderRadius: '12px',
-                color: 'white',
-                fontWeight: 700,
-                fontSize: '14px',
-                padding: '10px 16px',
-                cursor: 'pointer',
-                letterSpacing: '0.05em',
-                flexShrink: 0,
-                WebkitTapHighlightColor: 'transparent',
-              }}
-            >
-              {lang === 'en' ? 'ES' : 'EN'}
-            </button>
+            />
           </div>
 
           {total > 0 && (
@@ -877,6 +948,67 @@ export default function HousekeeperRoomPage({
         <InspectorView pid={pid} staffId={housekeeperId} lang={lang} />
 
         <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {/* Notice board banner — manager broadcasts. Renders nothing
+              when there are no active or undismissed notices. */}
+          <NoticeBoardBanner pid={pid} staffId={housekeeperId} lang={lang} />
+
+          {/* Offline state surface — banner shows queued count when
+              navigator.onLine is false, last drain summary when online. */}
+          {!offline.online && offline.queueLength > 0 && (
+            <div
+              role="status"
+              style={{
+                padding: '10px 14px',
+                background: '#1F2937',
+                color: '#FBBF24',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <span>📡</span>
+              <span style={{ flex: 1 }}>
+                {t('hkOfflineQueueCount', lang)} · {offline.queueLength}
+              </span>
+            </div>
+          )}
+          {offline.online && offline.draining && (
+            <div
+              role="status"
+              style={{
+                padding: '10px 14px',
+                background: '#1E40AF',
+                color: 'white',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              {t('hkOfflineSyncing', lang)}
+            </div>
+          )}
+          {offline.online && offline.lastDrain && offline.lastDrain.failed > 0 && (
+            <button
+              onClick={offline.dismissFailures}
+              style={{
+                padding: '10px 14px',
+                background: '#FEF2F2',
+                border: '1px solid #FCA5A5',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 600,
+                color: '#991B1B',
+                textAlign: 'left',
+                cursor: 'pointer',
+              }}
+            >
+              {t('hkOfflineQueueFailed', lang)} ({offline.lastDrain.failed})
+            </button>
+          )}
+
           {/* Lunch break button */}
           {total > 0 && (
             <LunchBreakButton
@@ -1012,6 +1144,7 @@ export default function HousekeeperRoomPage({
                 const checklist = checklistByType[cleaningTypeKey];
                 const checklistChecked = (room.checklistProgress ?? []).length;
                 const checklistTotal = checklist?.items.length ?? 0;
+                const compLink = componentForRoom(room.number, componentLinks);
                 return (
                   <JobCard
                     key={room.id}
@@ -1040,6 +1173,37 @@ export default function HousekeeperRoomPage({
                         setIssueRoomId(room.id);
                         setIssueNote(room.issueNote ?? '');
                       }}
+                      extraTopSlot={compLink ? (
+                        <div style={{ marginBottom: 10 }}>
+                          <ComponentRoomBadge link={compLink} lang={lang} />
+                        </div>
+                      ) : undefined}
+                      extraActionsSlot={
+                        <>
+                          <AddNoteButton
+                            pid={pid}
+                            staffId={housekeeperId}
+                            roomId={room.id}
+                            lang={lang}
+                            enqueueIfOffline={offline.enqueueIfOffline}
+                            onError={showActionError}
+                            initialNote={room.housekeeperNote ?? null}
+                          />
+                          <MarkForInspectionButton
+                            pid={pid}
+                            staffId={housekeeperId}
+                            roomId={room.id}
+                            lang={lang}
+                            enqueueIfOffline={offline.enqueueIfOffline}
+                            onError={showActionError}
+                            markedAt={
+                              room.markedForInspectionAt
+                                ? new Date(room.markedForInspectionAt).toISOString()
+                                : null
+                            }
+                          />
+                        </>
+                      }
                     />
                   );
                 })}
@@ -1093,126 +1257,28 @@ export default function HousekeeperRoomPage({
           />
         )}
 
-        {issueRoomId && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'rgba(0,0,0,0.4)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '16px',
-              zIndex: 200,
-            }}
-            onClick={(e) => {
-              if (e.target === e.currentTarget) {
+        {issueRoomId && (() => {
+          const issueRoom = rooms.find((r) => r.id === issueRoomId);
+          if (!issueRoom) return null;
+          return (
+            <StructuredIssueReporter
+              pid={pid}
+              staffId={housekeeperId}
+              roomId={issueRoom.id}
+              roomNumber={issueRoom.number}
+              lang={lang}
+              online={offline.online}
+              enqueueIfOffline={offline.enqueueIfOffline}
+              onClose={() => {
                 setIssueRoomId(null);
                 setIssueNote('');
-              }
-            }}
-          >
-            <div
-              style={{
-                width: '100%',
-                maxWidth: '420px',
-                background: 'white',
-                borderRadius: '20px',
-                padding: '24px 20px',
               }}
-            >
-              <h3
-                style={{
-                  fontSize: '20px',
-                  fontWeight: 700,
-                  color: 'var(--text-primary)',
-                  marginBottom: '4px',
-                }}
-              >
-                {t('reportIssue', lang)}
-              </h3>
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-                {t('hkRoomShort', lang)} {rooms.find((r) => r.id === issueRoomId)?.number}
-              </p>
-              {/* Voice issue intake (feature #11, integrated post-rebase). The
-                  housekeeper can tap a mic, speak the problem in any of the
-                  supported languages; the AI extracts structured fields and
-                  files the maintenance ticket. The textarea below remains the
-                  fallback for visual / typed entry. onTicketFiled refetches so
-                  the new issue_note shows on the room card. */}
-              <VoiceIssueButton
-                propertyId={pid}
-                roomNumber={rooms.find((r) => r.id === issueRoomId)?.number ?? null}
-                lang={lang}
-                onTicketFiled={() => {
-                  void refetchRooms();
-                }}
-              />
-              <textarea
-                autoFocus
-                placeholder={t('describeIssue', lang)}
-                value={issueNote}
-                onChange={(e) => setIssueNote(e.target.value)}
-                rows={4}
-                style={{
-                  width: '100%',
-                  padding: '14px',
-                  boxSizing: 'border-box',
-                  border: '1.5px solid var(--border)',
-                  borderRadius: '12px',
-                  fontSize: '16px',
-                  fontFamily: 'inherit',
-                  resize: 'none',
-                  outline: 'none',
-                  lineHeight: 1.5,
-                }}
-              />
-              <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-                <button
-                  onClick={() => {
-                    setIssueRoomId(null);
-                    setIssueNote('');
-                  }}
-                  style={{
-                    flex: 1,
-                    height: '56px',
-                    background: 'var(--bg-elevated, #F3F4F6)',
-                    border: 'none',
-                    borderRadius: '12px',
-                    fontSize: '17px',
-                    fontWeight: 600,
-                    color: 'var(--text-secondary)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {t('cancel', lang)}
-                </button>
-                <button
-                  onClick={handleSubmitIssue}
-                  disabled={!issueNote.trim() || savingIssue}
-                  style={{
-                    flex: 1,
-                    height: '56px',
-                    border: 'none',
-                    borderRadius: '12px',
-                    fontSize: '17px',
-                    fontWeight: 600,
-                    cursor: !issueNote.trim() || savingIssue ? 'not-allowed' : 'pointer',
-                    background:
-                      !issueNote.trim() || savingIssue
-                        ? 'var(--border)'
-                        : 'var(--green-dark, #166534)',
-                    color: !issueNote.trim() || savingIssue ? 'var(--text-muted)' : 'white',
-                  }}
-                >
-                  {savingIssue ? t('savingDots', lang) : t('submit', lang)}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+              onSubmitted={() => {
+                void refetchRooms();
+              }}
+            />
+          );
+        })()}
       </div>
     </div>
   );

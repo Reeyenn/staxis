@@ -2,7 +2,9 @@
 
 import React, { useState } from 'react';
 import { X, AlertTriangle } from 'lucide-react';
-import type { Language } from '@/lib/translations';
+import type { HousekeeperLocale } from '@/lib/translations';
+// Locally aliased so piece-A code keeps reading `lang: Language` everywhere.
+type Language = HousekeeperLocale;
 import { t } from '@/lib/translations';
 import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 

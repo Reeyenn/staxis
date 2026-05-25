@@ -1,0 +1,177 @@
+/**
+ * React hook glue for the offline queue.
+ *
+ * Used by the housekeeper page to:
+ *   - Wrap mutating fetches with `enqueueIfOffline` — when navigator.onLine
+ *     is false the action is queued for replay; when online it's sent
+ *     directly. Either way the function returns the same shape so the
+ *     caller's UI logic doesn't branch on connectivity.
+ *   - Listen for the window 'online' event and trigger a queue drain.
+ *   - Expose the queue length + last drain result for the banner UI.
+ *
+ * Service worker integration: the SW caches the page shell only; it does
+ * NOT intercept fetches and route them through Background Sync. Reason:
+ * Background Sync isn't supported on iOS Safari (which is most of our
+ * housekeeper devices), so a hand-rolled `navigator.onLine` + IndexedDB
+ * dance is simpler and works the same everywhere.
+ */
+
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  enqueueAction,
+  drainQueue,
+  getQueueLength,
+  clearFailures,
+  type QueuedAction,
+  type DrainProgress,
+} from './queue';
+
+export interface OfflineSyncState {
+  /** navigator.onLine — true while connected. */
+  online: boolean;
+  /** Items currently in the queue (includes permanent failures). */
+  queueLength: number;
+  /** Last drain result; null until we've tried at least once. */
+  lastDrain: DrainProgress | null;
+  /** True while a drain is in flight. */
+  draining: boolean;
+}
+
+interface EnqueueOpts {
+  endpoint: string;
+  body: Record<string, unknown>;
+  label: string;
+}
+
+interface FetchResult {
+  ok: boolean;
+  queued: boolean;
+  data?: unknown;
+  status?: number;
+}
+
+export function useOfflineSync() {
+  const [state, setState] = useState<OfflineSyncState>(() => ({
+    online: typeof navigator === 'undefined' ? true : navigator.onLine,
+    queueLength: 0,
+    lastDrain: null,
+    draining: false,
+  }));
+  const drainingRef = useRef(false);
+
+  // Sync queueLength when the component mounts.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const len = await getQueueLength();
+        if (!cancelled) setState((s) => ({ ...s, queueLength: len }));
+      } catch {
+        // best-effort; the banner is OK with stale length
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const triggerDrain = useCallback(async () => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    setState((s) => ({ ...s, draining: true }));
+    try {
+      const result = await drainQueue();
+      const newLen = await getQueueLength();
+      setState((s) => ({
+        ...s,
+        lastDrain: result,
+        queueLength: newLen,
+        draining: false,
+      }));
+    } catch {
+      setState((s) => ({ ...s, draining: false }));
+    } finally {
+      drainingRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => {
+      setState((s) => ({ ...s, online: true }));
+      void triggerDrain();
+    };
+    const onOffline = () => setState((s) => ({ ...s, online: false }));
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [triggerDrain]);
+
+  // Drain on mount too — covers the case where the user opens the app
+  // while online but the queue has leftovers from a previous offline
+  // session that the page closed before draining.
+  useEffect(() => {
+    void triggerDrain();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Fire a mutating request. If we're online, fetches and returns the
+   * server's response. If we're offline, queues the action and returns
+   * `{ ok: true, queued: true }` so the caller can render optimistic UI.
+   */
+  const enqueueIfOffline = useCallback(
+    async ({ endpoint, body, label }: EnqueueOpts): Promise<FetchResult> => {
+      const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+      if (!isOnline) {
+        const queued = await enqueueAction({ endpoint, body, label });
+        const newLen = await getQueueLength();
+        setState((s) => ({ ...s, queueLength: newLen }));
+        return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };
+      }
+      try {
+        const actionId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : undefined;
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(actionId ? { ...body, actionId } : body),
+        });
+        const json = (await res.json().catch(() => null)) as unknown;
+        if (!res.ok) {
+          return { ok: false, queued: false, data: json, status: res.status };
+        }
+        return { ok: true, queued: false, data: json, status: res.status };
+      } catch {
+        // Network-level fail mid-flight — most likely the connection just
+        // dropped. Queue and let the next online event replay.
+        const queued = await enqueueAction({ endpoint, body, label });
+        const newLen = await getQueueLength();
+        setState((s) => ({ ...s, queueLength: newLen, online: false }));
+        return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };
+      }
+    },
+    [],
+  );
+
+  const dismissFailures = useCallback(async () => {
+    await clearFailures();
+    const newLen = await getQueueLength();
+    setState((s) => ({ ...s, queueLength: newLen }));
+  }, []);
+
+  return {
+    ...state,
+    enqueueIfOffline,
+    triggerDrain,
+    dismissFailures,
+  };
+}
+
+export type { QueuedAction };

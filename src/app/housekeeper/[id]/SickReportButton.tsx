@@ -21,7 +21,8 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { t, type Language } from '@/lib/translations';
+import { t, type HousekeeperLocale } from '@/lib/translations';
+type Language = HousekeeperLocale;
 
 type Reason = 'sick' | 'family' | 'personal' | 'other';
 type LeaveTiming = 'now' | 'in_15_min' | 'after_current_room';
@@ -45,8 +46,13 @@ interface ActiveCallout {
 }
 
 export function SickReportButton({
-  pid, staffId, businessDate, language, isMidShift, onCalloutChange,
+  pid, staffId, businessDate, language: localeWide, isMidShift, onCalloutChange,
 }: Props) {
+  // Sick-callout copy ships only EN + ES — the `labels` lookup objects
+  // below are typed `{en, es}`. Narrow the wider housekeeper locale
+  // down to bilingual so HT/TL/VI fall back to EN here. `t()` calls
+  // outside `labels` still get the full multilingual string set.
+  const language: 'en' | 'es' = localeWide === 'es' ? 'es' : 'en';
   const [active, setActive] = useState<ActiveCallout | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [reason, setReason] = useState<Reason>('sick');

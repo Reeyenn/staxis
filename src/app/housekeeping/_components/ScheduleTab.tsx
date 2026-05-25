@@ -56,6 +56,7 @@ import { AutoAssignBoard } from './AutoAssignBoard';
 // housekeeper's day on a horizontal time axis. Same data model as the board,
 // richer payload via /api/housekeeping/timeline (lifecycle timestamps).
 import { TimelineView } from './TimelineView';
+import { NoticeBoardPoster } from './NoticeBoardPoster';
 
 type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
@@ -750,6 +751,8 @@ export function ScheduleTab() {
       padding: '24px 48px 48px', background: T.bg, color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
+
+      <NoticeBoardPoster />
 
       {/* DATE STEPPER */}
       <div style={{
