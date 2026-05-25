@@ -54,6 +54,14 @@ import { log } from './log.js';
  *
  * Display dimensions match the viewport mapping-driver opens — keep
  * these in sync with `cua-service/src/mapper.ts`'s `VIEWPORT` constant.
+ *
+ * enable_zoom: true (Anthropic best-practices for computer/browser use,
+ * https://claude.com/blog/best-practices-for-computer-and-browser-use-
+ * with-claude) — lets the model crop and re-inspect a tight region of
+ * the screenshot at higher effective resolution before committing to a
+ * click. Useful on dense PMS UIs where small buttons / dropdown arrows
+ * are easy to mis-target at the base 1280×800 resolution. Supported on
+ * Claude 4.6 + 4.7 — both models we use in vision mode.
  */
 export const VISION_TOOL_PARAM = {
   type: 'computer_20251124',
@@ -61,6 +69,7 @@ export const VISION_TOOL_PARAM = {
   display_width_px: 1280,
   display_height_px: 800,
   display_number: 1,
+  enable_zoom: true,
 } as const;
 
 export const VISION_TOOL_NAME = 'computer';
