@@ -78,11 +78,15 @@ async function buildQueue(pid: string, date: string): Promise<InspectionQueueRoo
   const rooms = await mergePmsRoomsForDate(pid, date);
   const cleanRooms = rooms.filter((r) => r.status === 'clean' && r.completedAt);
 
+  // Window extends 48h backwards (Codex M6 post-merge sweep) so an
+  // overnight fail can still chain to a morning re-clean instead of
+  // being silently dropped.
+  const windowStart = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const { data: inspectionRows, error: inspErr } = await supabaseAdmin
     .from('inspections')
     .select('*')
     .eq('property_id', pid)
-    .gte('started_at', `${date}T00:00:00`)
+    .gte('started_at', windowStart)
     .order('started_at', { ascending: false });
   if (inspErr) throw inspErr;
 

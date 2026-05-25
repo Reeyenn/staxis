@@ -40,6 +40,7 @@ interface ItemDraft {
   state: SeverityValue;
   note: string;
   photoUrl: string | null;
+  photoPath: string | null;
   uploading: boolean;
 }
 
@@ -153,7 +154,7 @@ export function InspectionsTab() {
       const checklist = json.data.checklist as InspectionChecklist;
       const drafts = new Map<string, ItemDraft>();
       for (const item of checklist.items) {
-        drafts.set(item.id, { state: null, note: '', photoUrl: null, uploading: false });
+        drafts.set(item.id, { state: null, note: '', photoUrl: null, photoPath: null, uploading: false });
       }
       setActive({ inspection, checklist, drafts, notes: '' });
     } catch {
@@ -182,6 +183,7 @@ export function InspectionsTab() {
             label: item.label,
             severity: d.state,
             photoUrl: d.photoUrl,
+            photoPath: d.photoPath,
             note: d.note || null,
           });
         }
@@ -253,7 +255,7 @@ export function InspectionsTab() {
     setActive((prev) => {
       if (!prev) return prev;
       const drafts = new Map(prev.drafts);
-      const cur = drafts.get(itemId) ?? { state: null, note: '', photoUrl: null, uploading: false };
+      const cur = drafts.get(itemId) ?? { state: null, note: '', photoUrl: null, photoPath: null, uploading: false };
       drafts.set(itemId, { ...cur, ...patch });
       return { ...prev, drafts };
     });
@@ -273,7 +275,11 @@ export function InspectionsTab() {
       });
       const json = await res.json().catch(() => null);
       if (res.ok && json?.ok && json.data?.url) {
-        updateDraft(itemId, { photoUrl: json.data.url, uploading: false });
+        updateDraft(itemId, {
+          photoUrl: json.data.url,
+          photoPath: json.data.path ?? null,
+          uploading: false,
+        });
       } else {
         setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
         updateDraft(itemId, { uploading: false });
@@ -489,7 +495,7 @@ function ChecklistBody({
               <ChecklistRow
                 key={item.id}
                 item={item}
-                draft={drafts.get(item.id) ?? { state: null, note: '', photoUrl: null, uploading: false }}
+                draft={drafts.get(item.id) ?? { state: null, note: '', photoUrl: null, photoPath: null, uploading: false }}
                 lang={lang}
                 onState={(st) => onState(item.id, st)}
                 onNote={(n) => onNote(item.id, n)}

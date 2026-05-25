@@ -15,8 +15,6 @@ import {
   createInspection,
   getActiveChecklists,
   getInspectionById,
-  inspectionBelongsToProperty,
-  roomBelongsToProperty,
   staffCanInspect,
 } from '@/lib/db/inspections';
 import { selectChecklist } from '@/lib/inspections';
@@ -89,26 +87,6 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Cross-property guard (Codex C2): roomId must belong to pid.
-  if (roomId) {
-    const roomOk = await roomBelongsToProperty(pid, roomId);
-    if (!roomOk) {
-      return err('roomId does not belong to this property', {
-        requestId, status: 403, code: ApiErrorCode.Forbidden,
-      });
-    }
-  }
-
-  // Cross-property guard (Codex C3): parentInspectionId must belong to pid.
-  if (parentInspectionId) {
-    const parentOk = await inspectionBelongsToProperty(pid, parentInspectionId);
-    if (!parentOk) {
-      return err('parentInspectionId does not belong to this property', {
-        requestId, status: 403, code: ApiErrorCode.Forbidden,
-      });
-    }
-  }
-
   try {
     const cleaningType = typeof body.cleaningType === 'string' && body.cleaningType ? body.cleaningType : null;
     const roomType = typeof body.roomType === 'string' && body.roomType ? body.roomType : null;
@@ -134,18 +112,32 @@ export async function POST(req: NextRequest) {
       return ok({ inspection: full, checklist }, { requestId });
     }
 
-    const inspection = await createInspection({
-      propertyId: pid,
-      roomNumber,
-      roomId,
-      cleaningTaskId: linked.cleaningTaskId,
-      checklistId: checklist.id,
-      inspectorStaffId: staffId,
-      housekeeperStaffId: linked.housekeeperStaffId,
-      parentInspectionId,
-    });
-
-    return ok({ inspection, checklist }, { requestId, status: 201 });
+    try {
+      const inspection = await createInspection({
+        propertyId: pid,
+        roomNumber,
+        roomId,
+        cleaningTaskId: linked.cleaningTaskId,
+        checklistId: checklist.id,
+        inspectorStaffId: staffId,
+        housekeeperStaffId: linked.housekeeperStaffId,
+        parentInspectionId,
+      });
+      return ok({ inspection, checklist }, { requestId, status: 201 });
+    } catch (e: unknown) {
+      // Codex M1 + migration 0221: partial unique index catches a race
+      // between two inspectors opening the same room. Return the
+      // racing row instead of 500ing.
+      const msg = errToString(e);
+      if (msg.includes('inspections_one_in_progress_per_room') || msg.includes('23505')) {
+        const racing = await findInProgress(pid, roomNumber);
+        if (racing) {
+          const full = await getInspectionById(racing.id);
+          return ok({ inspection: full, checklist }, { requestId });
+        }
+      }
+      throw e;
+    }
   } catch (e: unknown) {
     log.error('[housekeeper/inspections/start] failed', {
       requestId, pid, staffId, roomNumber, msg: errToString(e),

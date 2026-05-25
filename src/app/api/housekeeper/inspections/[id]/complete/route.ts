@@ -10,7 +10,7 @@ import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { getInspectionById, staffCanInspect } from '@/lib/db/inspections';
+import { getChecklistById, getInspectionById, staffCanInspect } from '@/lib/db/inspections';
 import { finalizeInspection } from '@/lib/inspections';
 import type { InspectionFailedItem, InspectionItemSeverity } from '@/types/inspections';
 
@@ -108,6 +108,37 @@ export async function POST(
       return err('Inspection does not belong to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
+    }
+
+    // Codex M3 + M2: validate failedItems / passedItems against the
+    // linked checklist + enforce requiresPhotoOnFail server-side.
+    if (before.checklistId) {
+      const checklist = await getChecklistById(before.checklistId);
+      if (checklist) {
+        const validIds = new Set(checklist.items.map((i) => i.id));
+        const photoRequired = new Set(
+          checklist.items.filter((i) => i.requiresPhotoOnFail).map((i) => i.id),
+        );
+        for (const f of failedItems.value!) {
+          if (!validIds.has(f.itemId)) {
+            return err(`failedItems contains an itemId not in the checklist: ${f.itemId}`, {
+              requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+          if (photoRequired.has(f.itemId) && !f.photoUrl) {
+            return err(`item ${f.itemId} requires a photo on fail`, {
+              requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+        }
+        for (const itemId of passedItems.value!) {
+          if (!validIds.has(itemId)) {
+            return err(`passedItems contains an itemId not in the checklist: ${itemId}`, {
+              requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+        }
+      }
     }
 
     const out = await finalizeInspection({
