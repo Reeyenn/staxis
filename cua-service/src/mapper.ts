@@ -280,6 +280,21 @@ interface MapperOptions {
    * Both models support the computer-use-2025-11-24 beta header.
    */
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /**
+   * Plan v8 self-repair — when the live polling finds a broken selector
+   * for one feed, fire a tiny vision-Claude re-learn for JUST that
+   * target instead of re-running the whole 13-target pass.
+   *
+   * When set, mapPMS pre-populates the actions accumulator with these,
+   * so the per-target loop skips them (already known). Only targets NOT
+   * present here actually get mapped. Cost: ~$2 vs ~$25 full re-learn.
+   *
+   * Typical flow: session-driver detects feed X dying → enqueues a repair
+   * workflow_jobs row with payload.seed_actions = currentRecipe.actions
+   * minus the failing X. mapping-driver passes through to here. mapPMS
+   * runs ONLY target X, merges with seedActions, saves as new version.
+   */
+  seedActions?: Recipe['actions'];
 }
 
 /**
@@ -439,8 +454,21 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     // targets). Combined with max_attempts=1 (B1 fix) this means
     // reclaim cost ≈ remaining-targets × per-target-cost, not full job
     // cost.
+    //
+    // Plan v8 self-repair (middle ground) — opts.seedActions pre-populates
+    // the accumulator with the existing active recipe's actions, so the
+    // loop skips them and only re-learns the failing one. Same skip
+    // mechanism that B6 uses; just sourced from the job payload instead
+    // of from prior partial progress.
     const priorActions = await loadPriorActions(opts.jobId);
-    const actions: Recipe['actions'] = { ...priorActions };
+    const seedActions = opts.seedActions ?? {};
+    const actions: Recipe['actions'] = { ...seedActions, ...priorActions };
+    if (Object.keys(seedActions).length > 0) {
+      log.info('mapper: repair mode — seeded with existing actions', {
+        jobId: opts.jobId ?? undefined,
+        seededTargets: Object.keys(seedActions),
+      });
+    }
     if (Object.keys(priorActions).length > 0) {
       log.info('mapper: resuming from prior progress', {
         jobId: opts.jobId ?? undefined,

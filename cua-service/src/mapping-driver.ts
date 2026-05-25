@@ -52,6 +52,13 @@ export interface MappingJobInput {
   /** Plan v8 Phase A — per-job Claude model. Defaults to claude-sonnet-4-6.
    *  Admin opts into Opus for hard PMSes per-job. */
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /** Plan v8 self-repair — pre-populated actions accumulator. mapPMS
+   *  uses this to SKIP targets already in the existing active recipe,
+   *  iterating only the ones that need re-learning (typically one).
+   *  ~$2 per repair vs ~$25 full re-learn. Session-driver enqueues
+   *  repair jobs with this set to currentActiveRecipe.actions minus
+   *  the failing target_key. */
+  seed_actions?: Recipe['actions'];
 }
 
 export interface MappingJobResult {
@@ -290,6 +297,10 @@ export async function runMappingJob(
     mode,
     model: input.model,
     jobCostCapMicros: input.cost_cap_micros,
+    // Plan v8 self-repair — pre-seed the actions accumulator so the
+    // mapper only iterates targets NOT in this set. Empty for full
+    // mappings (fresh PMS family); populated for repairs.
+    seedActions: input.seed_actions,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
       // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
