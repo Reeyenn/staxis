@@ -2082,9 +2082,8 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
   // legacy `rooms` table (dropped in v4). CUA writes room state to
   // pms_room_status_log (event-sourced, no per-day seeding needed).
-  // Plan v4 cleanup: removed `seal-daily` and `schedule-auto-fill` —
-  // both read plan_snapshots (dropped). Re-add when ML training comes
-  // back online against pms_*.
+  { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal — sources today_property_counts_v1 (pms_in_house_snapshot)' },
+  { name: 'schedule-auto-fill',            cadenceHours: 24,    description: 'daily schedule auto-build — sources today_room_work_v1 (pms_room_status_log + pms_reservations)' },
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
   { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },

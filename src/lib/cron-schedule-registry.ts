@@ -47,8 +47,9 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // legacy `rooms` table (dropped in v4).
   { heartbeatName: 'sweep-orphan-auth-users',           source: { kind: 'vercel', cronPath: '/api/cron/sweep-orphan-auth-users' },             cronExpr: '*/30 * * * *' },
   { heartbeatName: 'sweep-mfa-verified-sessions',       source: { kind: 'vercel', cronPath: '/api/cron/sweep-mfa-verified-sessions' },         cronExpr: '0 */6 * * *' },
-  // Plan v4 cleanup: removed `seal-daily` — read plan_snapshots which was
-  // dropped. Re-add when ML training comes back online against pms_*.
+  // Hourly per-property seal-daily. Reads today_property_counts_v1
+  // (Plan v4 bridge → pms_in_house_snapshot + pms_reservations).
+  { heartbeatName: 'seal-daily', source: { kind: 'vercel', cronPath: '/api/cron/seal-daily' }, cronExpr: '5 * * * *' },
   // Daily — most live in ml-cron.yml's multi-cron list
   { heartbeatName: 'ml-run-inference',      source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 10 * * *' },
   { heartbeatName: 'ml-predict-inventory',  source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 11 * * *' },
@@ -57,9 +58,12 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // (ml-cron.yml schedule) but its heartbeat isn't tracked.
   { heartbeatName: 'ml-shadow-evaluate',    source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' }, cronExpr: '30 11 * * *' },
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
-  // Plan v4 cleanup: removed `schedule-auto-fill` — read plan_snapshots
-  // which was dropped. The auto-build needs the pms_in_house_snapshots
-  // path before it can come back.
+  // Daily schedule auto-build. Reads today_room_work_v1 (Plan v4
+  // bridge → pms_room_status_log + pms_reservations) for the per-room
+  // work list, computes optimal HK assignments, writes them via the
+  // atomic schedule-auto-fill RPC.
+  { heartbeatName: 'schedule-auto-fill', source: { kind: 'github', workflowFile: 'schedule-auto-fill-cron.yml' }, cronExpr: '0 12 * * *' },
+  { heartbeatName: 'schedule-auto-fill', source: { kind: 'github', workflowFile: 'schedule-auto-fill-cron.yml' }, cronExpr: '0 1 * * *' },
   // expire-trials is a Vercel native cron (vercel.json), not GH Actions.
   { heartbeatName: 'expire-trials',                     source: { kind: 'vercel', cronPath: '/api/cron/expire-trials' },                    cronExpr: '0 9 * * *' },
   { heartbeatName: 'agent-archive-stale-conversations', source: { kind: 'vercel', cronPath: '/api/cron/agent-archive-stale-conversations' },cronExpr: '0 3 * * *' },

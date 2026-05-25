@@ -44,9 +44,11 @@ export * from './db/ml-stubs';
 export * from './db/ml-inventory-cockpit';
 export * from './db/handoff-logs';
 export * from './db/guest-requests';
-// Plan v4 bridge — replaces the deleted db/plan-snapshots.ts. Same per-room
-// shape, sourced from pms_room_status_log + pms_reservations live.
+// Plan v4 bridge — both files re-derive the old plan_snapshots /
+// dashboard_by_date shapes live from pms_* tables that the vision CUA
+// writes to. The UI surface (Schedule tab, etc.) is unchanged.
 export * from './db/today-room-work';
+export * from './db/plan-snapshots';
 export * from './db/dashboard';
 export * from './db/schedule-assignments';
 export * from './db/shift-confirmations';

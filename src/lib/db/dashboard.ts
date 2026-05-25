@@ -1,11 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Dashboard Numbers — Choice Advantage scraper output (in-house, arrivals,
-// departures). Single-row scraper_status / dashboard_by_date table.
+// Dashboard Numbers — Plan v4 bridge.
 //
-// dashboardFromJson is local because no other domain reads the same shape.
+// Same `DashboardNumbers` shape the Schedule tab + System tab consume,
+// but the source is now the new pms_in_house_snapshot table (written by
+// the vision CUA every 30 sec). The original scraper_status /
+// dashboard_by_date tables are dropped.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr } from './_common';
+import { fetchTodayPropertyCounts, subscribeTodayRoomWork } from './today-room-work';
 import { toDate } from '../db-mappers';
 
 export type DashboardErrorCode =
@@ -99,20 +102,15 @@ function dashboardFromJson(d: Record<string, unknown> | null): DashboardNumbers 
   };
 }
 
+/**
+ * Single-tenant legacy callers (no property scope). Plan v4: deprecated —
+ * always fires null. Use subscribeToDashboardByDate instead.
+ */
 export function subscribeToDashboardNumbers(
   callback: (nums: DashboardNumbers | null) => void,
 ): () => void {
-  return subscribeTable<DashboardNumbers>(
-    'scraper_status:dashboard', 'scraper_status', `key=eq.dashboard`,
-    async () => {
-      const { data, error } = await supabase
-        .from('scraper_status').select('data').eq('key', 'dashboard').maybeSingle();
-      if (error) throw error;
-      const parsed = dashboardFromJson((data?.data as Record<string, unknown>) ?? null);
-      return parsed ? [parsed] : [];
-    },
-    (rows) => callback(rows[0] ?? null),
-  );
+  callback(null);
+  return () => {};
 }
 
 function dashboardFromRow(r: Record<string, unknown>): DashboardNumbers {
@@ -137,44 +135,48 @@ export async function getDashboardForDate(
   propertyId: string,
 ): Promise<DashboardNumbers | null> {
   try {
-    const { data, error } = await supabase
-      .from('dashboard_by_date')
-      .select('*')
-      .eq('date', dateStr)
+    // Plan v4 bridge — read today_property_counts_v1 + latest
+    // pms_in_house_snapshot.captured_at so callers see the same shape
+    // they always saw.
+    const counts = await fetchTodayPropertyCounts(propertyId, dateStr);
+    const { data: ihs } = await supabase
+      .from('pms_in_house_snapshot')
+      .select('arrivals_remaining_today, departures_remaining_today, captured_at, has_error, last_error')
       .eq('property_id', propertyId)
       .maybeSingle();
-    if (error) throw error;
-    return data ? dashboardFromRow(data as Record<string, unknown>) : null;
+    return {
+      inHouse:    counts.in_house,
+      arrivals:   typeof ihs?.arrivals_remaining_today === 'number' ? ihs.arrivals_remaining_today : null,
+      departures: typeof ihs?.departures_remaining_today === 'number' ? ihs.departures_remaining_today : null,
+      inHouseGuests:    null,
+      arrivalsGuests:   null,
+      departuresGuests: null,
+      pulledAt:     toDate(ihs?.captured_at),
+      errorCode:    ihs?.has_error ? 'unknown' : null,
+      errorMessage: typeof ihs?.last_error === 'string' ? ihs.last_error : null,
+      errorPage:    null,
+      erroredAt:    null,
+      error:        typeof ihs?.last_error === 'string' ? ihs.last_error : null,
+    };
   } catch (err) { logErr('getDashboardForDate', err); return null; }
 }
 
-// Per-property realtime subscription on dashboard_by_date. The 15-minute
-// Choice Advantage dashboard pull writes (in_house, arrivals, departures)
-// here per (property_id, date) — used by the Schedule tab to render live
-// PMS counts next to the hourly CSV-derived counts.
+// Per-property "in-house / arrivals / departures" live counts.
 //
-// subscribeToDashboardNumbers() above is legacy (single-tenant
-// scraper_status row); use this instead for any per-property surface.
+// Plan v4 bridge: was a postgres_changes subscription on
+// dashboard_by_date — that table is dropped. Now reads
+// pms_in_house_snapshot (point-in-time CUA writes) + today_property_counts
+// RPC, and refreshes any time the CUA writes a new row to pms_*.
 export function subscribeToDashboardByDate(
   pid: string, date: string,
   callback: (nums: DashboardNumbers | null) => void,
 ): () => void {
-  return subscribeTable<DashboardNumbers>(
-    `dashboard_by_date:${pid}:${date}`, 'dashboard_by_date', `property_id=eq.${pid}`,
-    async () => {
-      const { data, error } = await supabase
-        .from('dashboard_by_date').select('*')
-        .eq('property_id', pid).eq('date', date).maybeSingle();
-      if (error) throw error;
-      return data ? [dashboardFromRow(data as Record<string, unknown>)] : [];
-    },
-    (rows) => callback(rows[0] ?? null),
-    // Realtime can only filter on one column; skip re-fetch when another
-    // date's row changes for the same property.
-    (payload) => {
-      const row = (payload.new ?? payload.old) as Record<string, unknown> | null;
-      if (!row) return false;
-      return row.date === date;
-    },
-  );
+  let active = true;
+  const refresh = async () => {
+    const nums = await getDashboardForDate(date, pid);
+    if (active) callback(nums);
+  };
+  void refresh();
+  const unsub = subscribeTodayRoomWork(pid, () => { void refresh(); });
+  return () => { active = false; unsub(); };
 }

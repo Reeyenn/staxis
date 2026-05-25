@@ -13,7 +13,7 @@
 
 'use client';
 
-import type { TodayRoomWorkRow } from '@/lib/db';
+import type { PlanSnapshot } from '@/lib/db';
 import type { Room, RoomType, RoomPriority, RoomStatus } from '@/types';
 
 // ─── Date helpers ────────────────────────────────────────────────────────
@@ -59,36 +59,35 @@ export function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
   });
 }
 
-// ─── today_room_work rows → Room[] (Plan v4 bridge) ────────────────────
+// ─── PlanSnapshot → Room[] ──────────────────────────────────────────────
 
 /**
- * Derive synthetic Room[] from today_room_work_v1 RPC rows. Source of truth
- * is the new pms_* schema (replaces the dropped plan_snapshots.rooms[]).
- *   - stay_type='C/O' → checkout
- *   - stay_type='Stay' → stayover
- *   - everything else (null) → skipped (vacant / OOO rooms don't need HK)
+ * Derive synthetic Room[] from a planSnapshot (CSV data).
+ * This is the ONLY source the Schedule tab reads from — no rooms-collection dependency.
+ *   - C/O stayType → checkout
+ *   - OCC + Stay stayType → stayover
+ *   - everything else → skipped (arrivals, vacants, OOO don't need HK assignment)
  */
-export function todayRoomWorkToShiftRooms(
-  rows: TodayRoomWorkRow[],
-  date: string,
-  pid: string,
-): Room[] {
+export function snapshotToShiftRooms(snap: PlanSnapshot | null, pid: string): Room[] {
+  if (!snap?.rooms) return [];
   const out: Room[] = [];
-  for (const r of rows) {
+  for (const r of snap.rooms) {
     let type: RoomType | null = null;
-    if (r.stay_type === 'C/O') type = 'checkout';
-    else if (r.stay_type === 'Stay') type = 'stayover';
+    if (r.stayType === 'C/O') type = 'checkout';
+    else if (r.stayType === 'Stay') type = 'stayover';
     if (!type) continue;
     out.push({
-      id: `${date}_${r.room_number}`,
-      number: r.room_number,
+      id: `${snap.date}_${r.number}`,
+      number: r.number,
       type,
       priority: 'standard' as RoomPriority,
       status: 'dirty' as RoomStatus,
-      date,
+      date: snap.date,
       propertyId: pid,
       assignedTo: r.housekeeper ?? undefined,
-      stayoverDay: r.stayover_day ?? undefined,
+      // Carry the stayover cycle day through so the UI can label S1 vs S2
+      // (light vs full clean) on both the unassigned pool and crew tiles.
+      stayoverDay: typeof r.stayoverDay === 'number' ? r.stayoverDay : undefined,
     });
   }
   return out;
