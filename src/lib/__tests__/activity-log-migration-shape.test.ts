@@ -83,6 +83,12 @@ describe('migration 0225 — activity_log', () => {
       'trg_activity_log_room_status_ins',
       'trg_activity_log_account_ins',
       'trg_activity_log_account_role_upd',
+      // Post-rebase: tables added by migrations 0220 + 0222.
+      'trg_activity_log_role_change_ins',
+      'trg_activity_log_staff_break_ins',
+      'trg_activity_log_staff_break_upd',
+      'trg_activity_log_room_pause_ins',
+      'trg_activity_log_room_pause_upd',
     ];
     for (const name of expected) {
       assert.match(SQL, new RegExp(`create trigger ${name}`), `missing trigger ${name}`);
@@ -93,8 +99,9 @@ describe('migration 0225 — activity_log', () => {
     const block = /interval\s+'90 days'/g;
     const count = (SQL.match(block) ?? []).length;
     // Minimum coverage: cleaning_events, cleaning_tasks, inspections (started + outcome),
-    // callout_events (reported + reverted), pms_work_orders_v2, pms_room_status_log.
-    assert.ok(count >= 7, `expected at least 7 backfill blocks, got ${count}`);
+    // callout_events (reported + reverted), pms_work_orders_v2, pms_room_status_log,
+    // role_changes, staff_breaks (started + ended), room_pause_events (paused + resumed).
+    assert.ok(count >= 11, `expected at least 11 backfill blocks, got ${count}`);
   });
 
   test('backfill uses ON CONFLICT DO NOTHING so re-runs are idempotent', () => {

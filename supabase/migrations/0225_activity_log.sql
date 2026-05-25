@@ -1133,6 +1133,252 @@ create trigger trg_activity_log_account_role_upd
   after update of role on public.accounts
   for each row execute function public._activity_log_on_account_role_update();
 
+-- ── 6i. role_changes (migration 0220) ──────────────────────────────────────
+-- The Users & Roles page writes an explicit row per role change. Our
+-- accounts.role UPDATE trigger above also fires, but role_changes carries
+-- richer metadata (who clicked, change_kind, reason) so we log from here
+-- too. The two streams dedupe naturally because each row has its own id
+-- and occurred_at.
+create or replace function public._activity_log_on_role_change_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_target_name text;
+  v_actor_uid   uuid;
+begin
+  select a.display_name into v_target_name
+    from public.accounts a where a.id = new.account_id limit 1;
+
+  -- Map the changer's account.id back to auth.users.id so the actor
+  -- resolver can attribute via accounts.data_user_id.
+  if new.changed_by_account_id is not null then
+    select a.data_user_id into v_actor_uid
+      from public.accounts a where a.id = new.changed_by_account_id limit 1;
+  end if;
+
+  perform public._activity_log_write(
+    new.property_id,
+    new.changed_at,
+    'staff',
+    'role_' || new.change_kind,
+    null,
+    v_actor_uid,
+    'user',
+    new.account_id::text,
+    coalesce(v_target_name, 'A user'),
+    case new.change_kind
+      when 'role_change'         then format('Role for %s changed from %s to %s', coalesce(v_target_name,'a user'), coalesce(new.old_role,'(none)'), new.new_role)
+      when 'deactivate'          then format('%s was deactivated', coalesce(v_target_name,'A user'))
+      when 'reactivate'          then format('%s was reactivated', coalesce(v_target_name,'A user'))
+      when 'transfer_ownership'  then format('Ownership transferred to %s', coalesce(v_target_name,'a user'))
+      else                            format('Role change recorded for %s', coalesce(v_target_name,'a user'))
+    end,
+    'admin_dashboard',
+    new.id,
+    jsonb_build_object(
+      'account_id', new.account_id,
+      'target_name', v_target_name,
+      'changed_by_account_id', new.changed_by_account_id,
+      'old_role', new.old_role,
+      'new_role', new.new_role,
+      'change_kind', new.change_kind,
+      'reason', new.reason
+    )
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_activity_log_role_change_ins on public.role_changes;
+create trigger trg_activity_log_role_change_ins
+  after insert on public.role_changes
+  for each row execute function public._activity_log_on_role_change_insert();
+
+-- ── 6j. staff_breaks (migration 0222) ──────────────────────────────────────
+-- INSERT = break started. UPDATE setting ended_at = break ended.
+create or replace function public._activity_log_on_staff_break_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_name text;
+begin
+  select s.name into v_name from public.staff s where s.id = new.staff_id limit 1;
+  perform public._activity_log_write(
+    new.property_id,
+    new.started_at,
+    'staff',
+    'break_started',
+    new.staff_id,
+    null,
+    'staff',
+    new.staff_id::text,
+    coalesce(v_name, 'A staff member'),
+    format('%s started a %s break', coalesce(v_name,'A staff member'), new.break_type),
+    'housekeeper_app',
+    new.id,
+    jsonb_build_object(
+      'staff_id', new.staff_id,
+      'staff_name', v_name,
+      'business_date', new.business_date,
+      'break_type', new.break_type,
+      'started_at', new.started_at
+    )
+  );
+  return new;
+end;
+$$;
+
+create or replace function public._activity_log_on_staff_break_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_name text;
+  v_min  integer;
+begin
+  -- Only fire when ended_at flips from NULL to a value (the "break done"
+  -- event). Other updates (e.g., correcting the timestamp) don't get a
+  -- new activity row.
+  if old.ended_at is not null or new.ended_at is null then
+    return new;
+  end if;
+  select s.name into v_name from public.staff s where s.id = new.staff_id limit 1;
+  v_min := greatest(0, round(extract(epoch from (new.ended_at - new.started_at)) / 60.0)::int);
+  perform public._activity_log_write(
+    new.property_id,
+    new.ended_at,
+    'staff',
+    'break_ended',
+    new.staff_id,
+    null,
+    'staff',
+    new.staff_id::text,
+    coalesce(v_name, 'A staff member'),
+    format('%s finished a %s break (%s min)', coalesce(v_name,'A staff member'), new.break_type, v_min),
+    'housekeeper_app',
+    new.id,
+    jsonb_build_object(
+      'staff_id', new.staff_id,
+      'staff_name', v_name,
+      'business_date', new.business_date,
+      'break_type', new.break_type,
+      'duration_minutes', v_min
+    )
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_activity_log_staff_break_ins on public.staff_breaks;
+create trigger trg_activity_log_staff_break_ins
+  after insert on public.staff_breaks
+  for each row execute function public._activity_log_on_staff_break_insert();
+
+drop trigger if exists trg_activity_log_staff_break_upd on public.staff_breaks;
+create trigger trg_activity_log_staff_break_upd
+  after update of ended_at on public.staff_breaks
+  for each row execute function public._activity_log_on_staff_break_update();
+
+-- ── 6k. room_pause_events (migration 0222) ─────────────────────────────────
+-- Housekeeper taps Pause/Resume mid-clean.
+create or replace function public._activity_log_on_room_pause_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_name text;
+  v_room text;
+begin
+  select s.name into v_name from public.staff s where s.id = new.staff_id limit 1;
+  select r.number into v_room from public.rooms r where r.id = new.room_id limit 1;
+  perform public._activity_log_write(
+    new.property_id,
+    new.paused_at,
+    'housekeeping',
+    'cleaning_paused_room',
+    new.staff_id,
+    null,
+    'room',
+    coalesce(v_room, new.room_id::text),
+    coalesce('Room ' || v_room, 'Room'),
+    format('%s paused cleaning on room %s%s',
+           coalesce(v_name,'A housekeeper'),
+           coalesce(v_room,'?'),
+           case when new.reason is not null then ' — ' || new.reason else '' end),
+    'housekeeper_app',
+    new.id,
+    jsonb_build_object(
+      'staff_id', new.staff_id,
+      'staff_name', v_name,
+      'room_id', new.room_id,
+      'room_number', v_room,
+      'business_date', new.business_date,
+      'reason', new.reason
+    )
+  );
+  return new;
+end;
+$$;
+
+create or replace function public._activity_log_on_room_pause_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_name text;
+  v_room text;
+begin
+  if old.resumed_at is not null or new.resumed_at is null then
+    return new;
+  end if;
+  select s.name into v_name from public.staff s where s.id = new.staff_id limit 1;
+  select r.number into v_room from public.rooms r where r.id = new.room_id limit 1;
+  perform public._activity_log_write(
+    new.property_id,
+    new.resumed_at,
+    'housekeeping',
+    'cleaning_resumed_room',
+    new.staff_id,
+    null,
+    'room',
+    coalesce(v_room, new.room_id::text),
+    coalesce('Room ' || v_room, 'Room'),
+    format('%s resumed cleaning on room %s', coalesce(v_name,'A housekeeper'), coalesce(v_room,'?')),
+    'housekeeper_app',
+    new.id,
+    jsonb_build_object(
+      'staff_id', new.staff_id,
+      'staff_name', v_name,
+      'room_id', new.room_id,
+      'room_number', v_room
+    )
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_activity_log_room_pause_ins on public.room_pause_events;
+create trigger trg_activity_log_room_pause_ins
+  after insert on public.room_pause_events
+  for each row execute function public._activity_log_on_room_pause_insert();
+
+drop trigger if exists trg_activity_log_room_pause_upd on public.room_pause_events;
+create trigger trg_activity_log_room_pause_upd
+  after update of resumed_at on public.room_pause_events
+  for each row execute function public._activity_log_on_room_pause_update();
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 7. Backfill — last 90 days of source events
 --    Idempotent via the (event_type, source_event_id, occurred_at) unique
@@ -1399,6 +1645,153 @@ select
   jsonb_build_object('room_number', r.room_number, 'status', r.status, 'source', r.source)
 from public.pms_room_status_log r
 where r.changed_at >= now() - interval '90 days'
+on conflict (property_id, event_type, source_event_id, occurred_at)
+  where source_event_id is not null
+  do nothing;
+
+-- 7g. role_changes (post-rebase: added when 0220 landed)
+insert into public.activity_log (
+  property_id, occurred_at, event_category, event_type,
+  actor_name, target_type, target_id, target_label,
+  description, source, source_event_id, metadata
+)
+select
+  rc.property_id,
+  rc.changed_at,
+  'staff',
+  'role_' || rc.change_kind,
+  coalesce((select a.display_name from public.accounts a where a.id = rc.changed_by_account_id), 'System'),
+  'user',
+  rc.account_id::text,
+  coalesce((select a.display_name from public.accounts a where a.id = rc.account_id), 'A user'),
+  case rc.change_kind
+    when 'role_change'         then format('Role for %s changed from %s to %s',
+                                            coalesce((select a.display_name from public.accounts a where a.id = rc.account_id),'a user'),
+                                            coalesce(rc.old_role,'(none)'), rc.new_role)
+    when 'deactivate'          then format('%s was deactivated',
+                                            coalesce((select a.display_name from public.accounts a where a.id = rc.account_id),'A user'))
+    when 'reactivate'          then format('%s was reactivated',
+                                            coalesce((select a.display_name from public.accounts a where a.id = rc.account_id),'A user'))
+    when 'transfer_ownership'  then format('Ownership transferred to %s',
+                                            coalesce((select a.display_name from public.accounts a where a.id = rc.account_id),'a user'))
+    else                            format('Role change recorded for %s',
+                                            coalesce((select a.display_name from public.accounts a where a.id = rc.account_id),'a user'))
+  end,
+  'admin_dashboard',
+  rc.id,
+  jsonb_build_object('old_role', rc.old_role, 'new_role', rc.new_role, 'change_kind', rc.change_kind)
+from public.role_changes rc
+where rc.changed_at >= now() - interval '90 days'
+on conflict (property_id, event_type, source_event_id, occurred_at)
+  where source_event_id is not null
+  do nothing;
+
+-- 7h. staff_breaks — started + ended (if ended_at is set)
+insert into public.activity_log (
+  property_id, occurred_at, event_category, event_type,
+  actor_name, target_type, target_id, target_label,
+  description, source, source_event_id, metadata
+)
+select
+  sb.property_id,
+  sb.started_at,
+  'staff',
+  'break_started',
+  coalesce((select s.name from public.staff s where s.id = sb.staff_id), 'A staff member'),
+  'staff',
+  sb.staff_id::text,
+  coalesce((select s.name from public.staff s where s.id = sb.staff_id), 'A staff member'),
+  format('%s started a %s break',
+         coalesce((select s.name from public.staff s where s.id = sb.staff_id), 'A staff member'),
+         sb.break_type),
+  'housekeeper_app',
+  sb.id,
+  jsonb_build_object('break_type', sb.break_type, 'business_date', sb.business_date)
+from public.staff_breaks sb
+where sb.started_at >= now() - interval '90 days'
+on conflict (property_id, event_type, source_event_id, occurred_at)
+  where source_event_id is not null
+  do nothing;
+
+insert into public.activity_log (
+  property_id, occurred_at, event_category, event_type,
+  actor_name, target_type, target_id, target_label,
+  description, source, source_event_id, metadata
+)
+select
+  sb.property_id,
+  sb.ended_at,
+  'staff',
+  'break_ended',
+  coalesce((select s.name from public.staff s where s.id = sb.staff_id), 'A staff member'),
+  'staff',
+  sb.staff_id::text,
+  coalesce((select s.name from public.staff s where s.id = sb.staff_id), 'A staff member'),
+  format('%s finished a %s break (%s min)',
+         coalesce((select s.name from public.staff s where s.id = sb.staff_id), 'A staff member'),
+         sb.break_type,
+         greatest(0, round(extract(epoch from (sb.ended_at - sb.started_at)) / 60.0)::int)),
+  'housekeeper_app',
+  sb.id,
+  jsonb_build_object('break_type', sb.break_type, 'business_date', sb.business_date)
+from public.staff_breaks sb
+where sb.ended_at is not null
+  and sb.ended_at >= now() - interval '90 days'
+on conflict (property_id, event_type, source_event_id, occurred_at)
+  where source_event_id is not null
+  do nothing;
+
+-- 7i. room_pause_events — paused + resumed (if resumed_at is set)
+insert into public.activity_log (
+  property_id, occurred_at, event_category, event_type,
+  actor_name, target_type, target_id, target_label,
+  description, source, source_event_id, metadata
+)
+select
+  rpe.property_id,
+  rpe.paused_at,
+  'housekeeping',
+  'cleaning_paused_room',
+  coalesce((select s.name from public.staff s where s.id = rpe.staff_id), 'A housekeeper'),
+  'room',
+  coalesce((select r.number from public.rooms r where r.id = rpe.room_id), rpe.room_id::text),
+  coalesce('Room ' || (select r.number from public.rooms r where r.id = rpe.room_id), 'Room'),
+  format('%s paused cleaning on room %s%s',
+         coalesce((select s.name from public.staff s where s.id = rpe.staff_id), 'A housekeeper'),
+         coalesce((select r.number from public.rooms r where r.id = rpe.room_id), '?'),
+         case when rpe.reason is not null then ' — ' || rpe.reason else '' end),
+  'housekeeper_app',
+  rpe.id,
+  jsonb_build_object('room_id', rpe.room_id, 'reason', rpe.reason, 'business_date', rpe.business_date)
+from public.room_pause_events rpe
+where rpe.paused_at >= now() - interval '90 days'
+on conflict (property_id, event_type, source_event_id, occurred_at)
+  where source_event_id is not null
+  do nothing;
+
+insert into public.activity_log (
+  property_id, occurred_at, event_category, event_type,
+  actor_name, target_type, target_id, target_label,
+  description, source, source_event_id, metadata
+)
+select
+  rpe.property_id,
+  rpe.resumed_at,
+  'housekeeping',
+  'cleaning_resumed_room',
+  coalesce((select s.name from public.staff s where s.id = rpe.staff_id), 'A housekeeper'),
+  'room',
+  coalesce((select r.number from public.rooms r where r.id = rpe.room_id), rpe.room_id::text),
+  coalesce('Room ' || (select r.number from public.rooms r where r.id = rpe.room_id), 'Room'),
+  format('%s resumed cleaning on room %s',
+         coalesce((select s.name from public.staff s where s.id = rpe.staff_id), 'A housekeeper'),
+         coalesce((select r.number from public.rooms r where r.id = rpe.room_id), '?')),
+  'housekeeper_app',
+  rpe.id,
+  jsonb_build_object('room_id', rpe.room_id, 'business_date', rpe.business_date)
+from public.room_pause_events rpe
+where rpe.resumed_at is not null
+  and rpe.resumed_at >= now() - interval '90 days'
 on conflict (property_id, event_type, source_event_id, occurred_at)
   where source_event_id is not null
   do nothing;

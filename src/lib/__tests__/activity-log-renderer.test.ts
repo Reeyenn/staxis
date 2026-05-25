@@ -97,6 +97,52 @@ describe('renderDescription', () => {
     assert.match(renderDescription(row, 'es'), /Ana reportó ausencia \(sick\)/);
   });
 
+  test('role_role_change renders in Spanish with old/new role', () => {
+    const row = makeRow({
+      event_type: 'role_role_change',
+      event_category: 'staff',
+      actor_name: 'Pat Owner',
+      metadata: { old_role: 'front_desk', new_role: 'general_manager' },
+      description: 'Role for Pat Owner changed from front_desk to general_manager',
+    });
+    assert.match(renderDescription(row, 'es'), /front_desk a general_manager/);
+  });
+
+  test('break_started + break_ended render in Spanish', () => {
+    const started = makeRow({
+      event_type: 'break_started',
+      actor_name: 'Ana',
+      event_category: 'staff',
+      metadata: { break_type: 'lunch' },
+      description: 'Ana started a lunch break',
+    });
+    assert.match(renderDescription(started, 'es'), /Ana comenzó/);
+
+    const ended = makeRow({
+      event_type: 'break_ended',
+      actor_name: 'Ana',
+      event_category: 'staff',
+      metadata: { duration_minutes: 30, break_type: 'lunch' },
+      description: 'Ana finished a lunch break (30 min)',
+    });
+    assert.match(renderDescription(ended, 'es'), /30 min/);
+  });
+
+  test('cleaning_paused_room + cleaning_resumed_room render in Spanish', () => {
+    const paused = makeRow({
+      event_type: 'cleaning_paused_room',
+      metadata: { room_number: '407', reason: 'guest in room' },
+      description: 'Maria Lopez paused cleaning on room 407 — guest in room',
+    });
+    assert.match(renderDescription(paused, 'es'), /pausó la limpieza en la habitación 407/);
+    const resumed = makeRow({
+      event_type: 'cleaning_resumed_room',
+      metadata: { room_number: '407' },
+      description: 'Maria Lopez resumed cleaning on room 407',
+    });
+    assert.match(renderDescription(resumed, 'es'), /reanudó la limpieza en la habitación 407/);
+  });
+
   test('user_created in Spanish uses the role', () => {
     const row = makeRow({
       event_type: 'user_created',

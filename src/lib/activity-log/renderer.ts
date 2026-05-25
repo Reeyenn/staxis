@@ -158,7 +158,24 @@ function renderSpanish(row: ActivityLogRow): string | null {
     case 'user_created':
       return `${actor} fue agregado con rol ${md.role ?? ''}`;
     case 'role_changed':
+    case 'role_role_change':
       return `${actor} — rol cambiado de ${md.old_role ?? '?'} a ${md.new_role ?? '?'}`;
+    case 'role_deactivate':
+      return `${actor} fue desactivado`;
+    case 'role_reactivate':
+      return `${actor} fue reactivado`;
+    case 'role_transfer_ownership':
+      return `Propiedad transferida a ${actor}`;
+
+    case 'break_started':
+      return `${actor} comenzó un descanso (${md.break_type ?? 'corto'})`;
+    case 'break_ended':
+      return `${actor} terminó un descanso (${md.duration_minutes ?? '?'} min)`;
+
+    case 'cleaning_paused_room':
+      return `${actor} pausó la limpieza en la habitación ${room}${md.reason ? ` — ${md.reason}` : ''}`;
+    case 'cleaning_resumed_room':
+      return `${actor} reanudó la limpieza en la habitación ${room}`;
 
     default:
       return null;
