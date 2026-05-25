@@ -12,7 +12,9 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { writeRoleChange } from '@/app/api/settings/users/route';
+import { writeRoleChange } from '@/lib/audit-role-changes';
+import { denyRoleChange } from '@/app/api/settings/users/route';
+import type { AppRole } from '@/lib/roles';
 
 interface InsertedRow {
   account_id: string;
@@ -107,5 +109,59 @@ describe('writeRoleChange', () => {
       changeKind: 'transfer_ownership', reason: null,
     }));
     assert.equal(state.inserted.length, 0);
+  });
+});
+
+describe('denyRoleChange — permission matrix', () => {
+  const ownerCaller = { role: 'owner' as AppRole, accountId: 'a1', authUserId: 'u1', authEmail: null, propertyAccess: ['p1'] };
+  const gmCaller    = { role: 'general_manager' as AppRole, accountId: 'a2', authUserId: 'u2', authEmail: null, propertyAccess: ['p1'] };
+
+  test('blocks any modification of an admin target', () => {
+    assert.match(
+      denyRoleChange({ caller: ownerCaller, targetCurrentRole: 'admin', newRole: 'general_manager', isSelf: false }) ?? '',
+      /Cannot modify admin/,
+    );
+  });
+
+  test('blocks GM from demoting another GM', () => {
+    assert.match(
+      denyRoleChange({ caller: gmCaller, targetCurrentRole: 'general_manager', newRole: 'housekeeping', isSelf: false }) ?? '',
+      /Only an owner or admin can change another General Manager/,
+    );
+  });
+
+  test('blocks GM from promoting someone to GM', () => {
+    assert.match(
+      denyRoleChange({ caller: gmCaller, targetCurrentRole: 'housekeeping', newRole: 'general_manager', isSelf: false }) ?? '',
+      /Only an owner or admin can promote someone to General Manager/,
+    );
+  });
+
+  test('blocks GM from changing an owner role', () => {
+    assert.match(
+      denyRoleChange({ caller: gmCaller, targetCurrentRole: 'owner', newRole: 'general_manager', isSelf: false }) ?? '',
+      /Only an admin or another owner can change an owner/,
+    );
+  });
+
+  test('allows GM to change non-GM, non-owner staff role', () => {
+    assert.equal(
+      denyRoleChange({ caller: gmCaller, targetCurrentRole: 'housekeeping', newRole: 'front_desk', isSelf: false }),
+      null,
+    );
+  });
+
+  test('allows owner to demote a GM', () => {
+    assert.equal(
+      denyRoleChange({ caller: ownerCaller, targetCurrentRole: 'general_manager', newRole: 'housekeeping', isSelf: false }),
+      null,
+    );
+  });
+
+  test('blocks anyone from changing their own role here', () => {
+    assert.match(
+      denyRoleChange({ caller: ownerCaller, targetCurrentRole: 'owner', newRole: 'general_manager', isSelf: true }) ?? '',
+      /Cannot change your own role here/,
+    );
   });
 });

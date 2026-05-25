@@ -38,6 +38,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
+import { writeRoleChange } from '@/lib/audit-role-changes';
 import { validateUuid } from '@/lib/api-validate';
 import { isAssignableRole, type AppRole, type AssignableRole } from '@/lib/roles';
 
@@ -81,8 +82,9 @@ function callerCanChangeRoles(caller: CallerContext): boolean {
 /**
  * Permission matrix for role changes within a single hotel.
  * Returns null when allowed; an error string when blocked.
+ * Exported for unit tests.
  */
-function denyRoleChange(args: {
+export function denyRoleChange(args: {
   caller: CallerContext;
   targetCurrentRole: AppRole;
   newRole: AssignableRole;
@@ -95,6 +97,21 @@ function denyRoleChange(args: {
   }
   if (targetCurrentRole === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
     return 'Only an admin or another owner can change an owner\'s role';
+  }
+  // GMs can manage non-GM, non-owner, non-admin staff. They can't demote
+  // (or promote) another GM — that's an owner/admin decision so power
+  // doesn't quietly migrate sideways within the GM tier. Same logic
+  // applies to promoting a non-GM to GM: requires owner/admin.
+  if (caller.role === 'general_manager') {
+    if (targetCurrentRole === 'general_manager') {
+      return 'Only an owner or admin can change another General Manager\'s role';
+    }
+    // Target is not currently a GM (early return above). Block promotions
+    // into the GM tier by other GMs — keeps "manage your team" scoped
+    // away from "create new managers."
+    if (newRole === 'general_manager') {
+      return 'Only an owner or admin can promote someone to General Manager';
+    }
   }
   if (isSelf && newRole !== caller.role) {
     return 'Cannot change your own role here — use Transfer Ownership instead';
@@ -215,10 +232,13 @@ export async function PUT(req: NextRequest) {
   const propertyId = pidV.value!;
   const accountId = accountIdV.value!;
 
-  // Load the target row.
+  // Load the target row. We need data_user_id so deactivate/reactivate
+  // can flip ban_duration on the matching auth.users row — without that,
+  // the deactivated user could still sign in (auth is fully client-side
+  // via Supabase Auth; the active column alone is not a sign-in gate).
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, active, property_access, display_name')
+    .select('id, role, active, property_access, display_name, data_user_id')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
@@ -279,12 +299,31 @@ export async function PUT(req: NextRequest) {
         return err('Only an owner or admin can deactivate an owner account', { requestId, status: 403, code: ApiErrorCode.Forbidden });
       }
       if (target.active === false) return ok({ noop: true }, { requestId });
+
+      // Block sign-in FIRST via Supabase Auth's ban_duration. If this
+      // succeeds and the subsequent accounts update fails, the user is
+      // still blocked at the auth layer — which is the actual security
+      // boundary. We use a far-future ban (100y) rather than 'permanent'
+      // because the gotrue API expects a Go-duration string. Reactivate
+      // sets it back to 'none' to clear.
+      const { error: banErr } = await supabaseAdmin.auth.admin.updateUserById(
+        target.data_user_id as string,
+        { ban_duration: '876000h' },
+      );
+      if (banErr) {
+        log.error('[settings/users:PUT] deactivate ban failed', { requestId, err: banErr.message });
+        return err('Failed to block sign-in for account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      }
+
       const { error: upErr } = await supabaseAdmin
         .from('accounts')
         .update({ active: false })
         .eq('id', accountId);
       if (upErr) {
-        log.error('[settings/users:PUT] deactivate failed', { requestId, err: upErr.message });
+        // Roll back the auth ban so we don't leave the user signed-out
+        // but flagged active in the app DB (the inverse split-brain).
+        await supabaseAdmin.auth.admin.updateUserById(target.data_user_id as string, { ban_duration: 'none' });
+        log.error('[settings/users:PUT] deactivate failed (rolled back ban)', { requestId, err: upErr.message });
         return err('Failed to deactivate account', { requestId, status: 500, code: ApiErrorCode.InternalError });
       }
       await writeRoleChange({
@@ -299,13 +338,27 @@ export async function PUT(req: NextRequest) {
         action: 'account.deactivate',
         actorUserId: caller.authUserId, actorEmail: caller.authEmail ?? undefined,
         targetType: 'account', targetId: accountId, hotelId: propertyId,
-        metadata: { role: target.role, reason },
+        metadata: { role: target.role, reason, sign_in_blocked: true },
       });
       return ok({ accountId, active: false }, { requestId });
     }
 
     case 'reactivate': {
       if (target.active === true) return ok({ noop: true }, { requestId });
+
+      // Clear the auth ban first so the user can sign in immediately
+      // once the accounts row flips. Symmetric to deactivate: even if
+      // the accounts update fails, the user becomes signable-in (which
+      // is the right product outcome — reactivation should be lenient).
+      const { error: banErr } = await supabaseAdmin.auth.admin.updateUserById(
+        target.data_user_id as string,
+        { ban_duration: 'none' },
+      );
+      if (banErr) {
+        log.error('[settings/users:PUT] reactivate ban-clear failed', { requestId, err: banErr.message });
+        return err('Failed to unblock sign-in for account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      }
+
       const { error: upErr } = await supabaseAdmin
         .from('accounts')
         .update({ active: true })
@@ -326,7 +379,7 @@ export async function PUT(req: NextRequest) {
         action: 'account.reactivate',
         actorUserId: caller.authUserId, actorEmail: caller.authEmail ?? undefined,
         targetType: 'account', targetId: accountId, hotelId: propertyId,
-        metadata: { role: target.role, reason },
+        metadata: { role: target.role, reason, sign_in_blocked: false },
       });
       return ok({ accountId, active: true }, { requestId });
     }
@@ -342,7 +395,9 @@ export async function PUT(req: NextRequest) {
         return err('You are already the owner', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
 
-      // Load the proposed new owner.
+      // Pre-load the new owner so we can fail fast with a friendly
+      // message (the DB function repeats these checks atomically so a
+      // race between the read here and the RPC can't slip through).
       const { data: newOwner, error: noErr } = await supabaseAdmin
         .from('accounts')
         .select('id, role, active, property_access')
@@ -358,27 +413,33 @@ export async function PUT(req: NextRequest) {
       const oldOwnerOldRole = caller.role as AppRole;
       const newOwnerOldRole = newOwner.role as AppRole;
 
-      // Two updates, no transaction (Supabase JS doesn't expose multi-
-      // statement TXs). If the second update fails, we attempt to revert
-      // the first; if THAT fails we shout to Sentry and 500 — manual
-      // remediation needed. This race window is small (~ms) so the
-      // pragmatic risk is low.
-      const { error: upTargetErr } = await supabaseAdmin
-        .from('accounts')
-        .update({ role: 'owner' })
-        .eq('id', newOwnerId);
-      if (upTargetErr) {
-        log.error('[settings/users:PUT] transfer step 1 failed', { requestId, err: upTargetErr.message });
-        return err('Failed to update new owner role', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      // Atomic swap inside one transaction via the SECURITY DEFINER
+      // helper added by migration 0215. Replaces the prior two-step
+      // UPDATE pattern, which could leave the hotel with two owners
+      // (or zero) if the second update failed and the rollback also
+      // failed.
+      const { data: rpcRes, error: rpcErr } = await supabaseAdmin.rpc(
+        'staxis_transfer_ownership',
+        {
+          p_property_id: propertyId,
+          p_old_owner_account_id: caller.accountId,
+          p_new_owner_account_id: newOwnerId,
+        },
+      );
+      if (rpcErr) {
+        log.error('[settings/users:PUT] transfer rpc failed', { requestId, err: rpcErr.message });
+        return err('Failed to transfer ownership', { requestId, status: 500, code: ApiErrorCode.InternalError });
       }
-      const { error: upCallerErr } = await supabaseAdmin
-        .from('accounts')
-        .update({ role: 'general_manager' })
-        .eq('id', caller.accountId);
-      if (upCallerErr) {
-        log.error('[settings/users:PUT] transfer step 2 failed — rolling back', { requestId, err: upCallerErr.message });
-        await supabaseAdmin.from('accounts').update({ role: newOwnerOldRole }).eq('id', newOwnerId);
-        return err('Failed to demote old owner — change was rolled back', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      // The function returns a JSON-shaped TEXT — Supabase wraps it as
+      // `data: "<string>"`. Parse it once to surface the guard error
+      // (e.g. "caller is not currently the owner") as a 400 the UI can
+      // show verbatim.
+      let parsed: { ok?: boolean; error?: string } = {};
+      try { parsed = JSON.parse(typeof rpcRes === 'string' ? rpcRes : ''); } catch { /* fall through */ }
+      if (!parsed.ok) {
+        return err(parsed.error ?? 'Ownership transfer rejected by the database guard', {
+          requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+        });
       }
 
       await Promise.all([
@@ -415,43 +476,5 @@ export async function PUT(req: NextRequest) {
 
     default:
       return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-}
-
-/**
- * Write a structured row to the role_changes audit table. Best-effort —
- * if it fails, we log + Sentry but don't roll back the action because the
- * generic admin_audit_log already captured it.
- */
-export async function writeRoleChange(args: {
-  accountId: string;
-  propertyId: string;
-  changedByAccountId: string;
-  oldRole: AppRole;
-  newRole: AppRole;
-  changeKind: 'role_change' | 'deactivate' | 'reactivate' | 'transfer_ownership';
-  reason: string | null;
-}): Promise<void> {
-  try {
-    const { error } = await supabaseAdmin
-      .from('role_changes')
-      .insert({
-        account_id: args.accountId,
-        property_id: args.propertyId,
-        changed_by_account_id: args.changedByAccountId,
-        old_role: args.oldRole,
-        new_role: args.newRole,
-        change_kind: args.changeKind,
-        reason: args.reason,
-      });
-    if (error) {
-      log.warn('[settings/users] role_changes insert failed', {
-        accountId: args.accountId, err: error.message,
-      });
-    }
-  } catch (e) {
-    log.warn('[settings/users] role_changes insert threw', {
-      accountId: args.accountId, err: e instanceof Error ? e.message : String(e),
-    });
   }
 }

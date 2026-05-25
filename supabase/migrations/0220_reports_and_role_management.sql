@@ -21,16 +21,24 @@
 --                              person Y" UI later without parsing jsonb.
 --
 --   4. accounts.active       — boolean flag for self-serve deactivate.
---                              The recipient query for reports and any
---                              future "who can sign in" check filters on
+--                              The recipient query for reports filters on
 --                              this. property_access is preserved on
 --                              deactivate so reactivating restores their
 --                              previous hotel scope.
 --
---   5. accounts.last_sign_in_at — informational; populated by the login
---                              route on each successful sign-in. The
---                              Settings → Users page shows it so an owner
---                              can spot dormant accounts.
+--                              Sign-in is blocked separately by the API
+--                              route — it calls Supabase Auth's
+--                              ban_duration on the underlying auth.users
+--                              row. We do NOT enforce sign-in block via
+--                              this column because Staxis auth is fully
+--                              client-side (signInWithPassword); the only
+--                              authoritative gate is Supabase Auth itself.
+--
+--   5. staxis_transfer_ownership(...) — SECURITY DEFINER function that
+--                              swaps two accounts' roles inside one
+--                              transaction. The Settings → Users route
+--                              calls this via RPC so a half-transferred
+--                              state (two owners or none) can never land.
 --
 -- @rls: service-role-only — all three new tables are read/written exclusively
 -- through /api routes that use supabaseAdmin. Adding `-- @rls: service-role-only`
@@ -203,22 +211,98 @@ create policy role_changes_deny_browser on public.role_changes
   for all to anon, authenticated using (false) with check (false);
 
 
--- ── 4. accounts.active + accounts.last_sign_in_at ─────────────────────────
+-- ── 4. accounts.active ─────────────────────────────────────────────────────
 -- `active` defaults to true (every existing row stays signable-in). The
--- recipient query for reports — and any future "can this account sign in"
--- check — filters on `active = true`. Deactivation preserves
--- property_access so reactivation restores the old scope without rebuild.
+-- recipient query for reports filters on `active = true`. Deactivation
+-- preserves property_access so reactivation restores the old scope.
 --
--- `last_sign_in_at` is informational; populated by the login route on
--- success. Surfaced in Settings → Users so an owner can spot dormant
--- accounts. Reads are best-effort — a missed write doesn't break login.
+-- Sign-in is NOT gated by this column. The Settings → Users route also
+-- sets ban_duration on the corresponding auth.users row via
+-- supabaseAdmin.auth.admin.updateUserById, which is the real sign-in
+-- block. We keep `active` so report-recipient queries and admin lists
+-- have a cheap server-side filter without going through auth.users.
+--
+-- last_sign_in_at is intentionally NOT stored here; we read it from
+-- auth.users (Supabase Auth tracks it natively) in the Users API.
 alter table public.accounts
-  add column if not exists active             boolean      not null default true,
-  add column if not exists last_sign_in_at    timestamptz;
+  add column if not exists active boolean not null default true;
 
 comment on column public.accounts.active is
-  'When false, the account is deactivated: blocked from sign-in (enforced by the login route) and excluded from report-recipient queries. property_access preserved so reactivation restores prior hotel scope. Added 0215.';
-comment on column public.accounts.last_sign_in_at is
-  'Set by the login route on each successful sign-in. Best-effort — a missed write does not block login. Surfaced in Settings → Users to flag dormant accounts. Added 0215.';
+  'When false, the account is deactivated: excluded from report-recipient queries. Sign-in is blocked separately by the deactivate API setting ban_duration on the matching auth.users row. property_access preserved so reactivation restores prior hotel scope. Added 0215.';
 
 create index if not exists accounts_active_idx on public.accounts (active);
+
+
+-- ── 5. staxis_transfer_ownership ──────────────────────────────────────────
+-- Atomically swaps two accounts' roles inside a single transaction.
+-- Replaces the prior two-step UPDATE pattern in /api/settings/users,
+-- which could leave the property with two owners (or none) if the
+-- second update failed and rollback also failed.
+--
+-- Signature:
+--   staxis_transfer_ownership(p_property_id uuid, p_old_owner_account_id uuid,
+--                             p_new_owner_account_id uuid)
+--   returns text — JSON-shaped status: '{"ok":true}' on success,
+--   '{"ok":false,"error":"…"}' on a guard violation.
+--
+-- Guards (mirrored on the API side too, defensive):
+--   - both accounts exist and have access to the property
+--   - new owner is not an admin
+--   - new owner is currently active
+--   - caller passes the old owner's account_id and the function verifies
+--     they are currently 'owner'
+create or replace function public.staxis_transfer_ownership(
+  p_property_id          uuid,
+  p_old_owner_account_id uuid,
+  p_new_owner_account_id uuid
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_old_row  public.accounts%rowtype;
+  v_new_row  public.accounts%rowtype;
+begin
+  if p_old_owner_account_id = p_new_owner_account_id then
+    return '{"ok":false,"error":"old and new owner are the same account"}';
+  end if;
+
+  select * into v_old_row from public.accounts where id = p_old_owner_account_id for update;
+  if not found then
+    return '{"ok":false,"error":"old owner account not found"}';
+  end if;
+  if v_old_row.role <> 'owner' then
+    return '{"ok":false,"error":"caller is not currently the owner"}';
+  end if;
+  if not (v_old_row.property_access @> array[p_property_id]) then
+    return '{"ok":false,"error":"old owner has no access to this hotel"}';
+  end if;
+
+  select * into v_new_row from public.accounts where id = p_new_owner_account_id for update;
+  if not found then
+    return '{"ok":false,"error":"new owner account not found"}';
+  end if;
+  if v_new_row.role = 'admin' then
+    return '{"ok":false,"error":"cannot transfer ownership to an admin"}';
+  end if;
+  if v_new_row.active = false then
+    return '{"ok":false,"error":"cannot transfer ownership to a deactivated account"}';
+  end if;
+  if not (v_new_row.property_access @> array[p_property_id]) then
+    return '{"ok":false,"error":"new owner has no access to this hotel"}';
+  end if;
+
+  update public.accounts set role = 'owner'           where id = p_new_owner_account_id;
+  update public.accounts set role = 'general_manager' where id = p_old_owner_account_id;
+
+  return '{"ok":true}';
+end;
+$$;
+
+comment on function public.staxis_transfer_ownership(uuid, uuid, uuid) is
+  'Atomic owner-swap: promote one account to owner, demote the current owner to general_manager, inside one transaction. Called by /api/settings/users via supabaseAdmin.rpc. Added 0215.';
+
+revoke all on function public.staxis_transfer_ownership(uuid, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.staxis_transfer_ownership(uuid, uuid, uuid) to service_role;

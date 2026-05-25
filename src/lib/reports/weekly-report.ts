@@ -26,6 +26,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { captureException } from '@/lib/sentry';
 import {
+  localMidnightToUtc,
   rankStaffPerformance,
   type CleaningTaskRow,
   type InspectionRow,
@@ -233,8 +234,10 @@ export async function buildWeeklyReport(args: {
       .from('inspections')
       .select('id, result, failed_items, housekeeper_staff_id, completed_at')
       .eq('property_id', propertyId)
-      .gte('started_at', `${weekStart}T00:00:00Z`)
-      .lt('started_at', `${addDaysIso(reportDate, 1)}T00:00:00Z`),
+      // Property-local week bounds — see localMidnightToUtc in aggregate.ts
+      // for why the naïve T00:00:00Z form is wrong for non-UTC properties.
+      .gte('started_at', localMidnightToUtc(weekStart, property.timezone))
+      .lt('started_at', localMidnightToUtc(addDaysIso(reportDate, 1), property.timezone)),
     supabaseAdmin
       .from('staff')
       .select('id, name, hourly_wage')

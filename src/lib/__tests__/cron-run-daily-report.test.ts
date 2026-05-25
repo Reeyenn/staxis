@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { NextRequest } from 'next/server';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { GET } from '@/app/api/cron/run-daily-report/route';
+import { GET, minutesAround } from '@/app/api/cron/run-daily-report/route';
 
 const CRON_SECRET = process.env.CRON_SECRET ?? 'placeholder-cron-secret-min-16';
 
@@ -187,5 +187,27 @@ describe('run-daily-report cron — idempotency and skip windows', () => {
   test('rejects without bearer token', async () => {
     const res = await GET(new NextRequest('http://localhost/api/cron/run-daily-report'));
     assert.notEqual(res.status, 200);
+  });
+});
+
+describe('minutesAround — midnight-wrap delivery window', () => {
+  test('matches at exact time', () => {
+    assert.equal(minutesAround('20:00', '20:00'), 0);
+  });
+  test('handles 5 minutes ahead and behind without wrap', () => {
+    assert.equal(minutesAround('20:00', '20:05'), 5);
+    assert.equal(minutesAround('20:05', '20:00'), -5);
+  });
+  test('wraps midnight (00:00 delivery vs 23:55 tick = 5 min ahead)', () => {
+    // This is the load-bearing case — the prior non-wrapping math
+    // would return -1435 here and miss the window.
+    assert.equal(minutesAround('23:55', '00:00'), 5);
+    assert.equal(minutesAround('00:05', '23:55'), -10);
+  });
+  test('returns minimum of forward and backward distance', () => {
+    // Distance from 13:00 to 14:00 is +60, not -1380.
+    assert.equal(minutesAround('13:00', '14:00'), 60);
+    // Distance from 14:00 to 13:00 is -60.
+    assert.equal(minutesAround('14:00', '13:00'), -60);
   });
 });

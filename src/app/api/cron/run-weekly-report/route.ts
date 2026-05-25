@@ -79,10 +79,19 @@ function localDayOfWeek(now: Date, timezone: string): number {
   }
 }
 
-function diffMinutes(hhmmA: string, hhmmB: string): number {
+/**
+ * Signed clock distance in minutes — see run-daily-report.ts for the
+ * full rationale. Wraps midnight so a 00:00 delivery time still
+ * matches a tick at 23:55.
+ */
+function minutesAround(hhmmA: string, hhmmB: string): number {
   const [aH, aM] = hhmmA.split(':').map(Number);
   const [bH, bM] = hhmmB.split(':').map(Number);
-  return (aH * 60 + aM) - (bH * 60 + bM);
+  const dayMin = 24 * 60;
+  let delta = ((bH * 60 + bM) - (aH * 60 + aM)) % dayMin;
+  if (delta > dayMin / 2) delta -= dayMin;
+  if (delta < -dayMin / 2) delta += dayMin;
+  return delta;
 }
 
 interface PropertyToCheck {
@@ -143,12 +152,12 @@ async function processProperty(args: {
     }
     const desired = (await pickPropertyDeliveryTime(property.id)) ?? DEFAULT_DELIVERY_TIME;
     const localNow = localHHMM(now, property.timezone);
-    const delta = diffMinutes(localNow, desired);
+    const delta = minutesAround(localNow, desired);
     if (Math.abs(delta) > DELIVERY_WINDOW_MIN) {
       return {
         propertyId: property.id,
         status: 'skipped_not_in_window',
-        detail: `local ${localNow} vs desired ${desired} (Δ${delta}m, window ±${DELIVERY_WINDOW_MIN}m)`,
+        detail: `local ${localNow} vs desired ${desired} (Δ${delta}m around 24h, window ±${DELIVERY_WINDOW_MIN}m)`,
       };
     }
     reportDate = localDateISO(now, property.timezone);
@@ -198,7 +207,24 @@ async function processProperty(args: {
   const outcomes: RecipientOutcome[] = [];
   let sent = 0;
   let failed = 0;
+  // Per-property deadline — see run-daily-report.ts for the rationale.
+  // Vercel kills the function at 60s; we leave 15s slack for the
+  // report_runs UPDATE at the end.
+  const deadlineMs = Date.now() + 45_000;
   for (const r of recipients) {
+    if (Date.now() > deadlineMs) {
+      outcomes.push({
+        email: r.email,
+        accountId: r.accountId,
+        role: r.role,
+        channel: r.channel,
+        status: 'skipped',
+        error: 'deferred_function_deadline',
+        attempts: 0,
+        lastAttemptAt: new Date().toISOString(),
+      });
+      continue;
+    }
     if (r.channel !== 'email') {
       outcomes.push({
         email: r.email,
@@ -212,34 +238,26 @@ async function processProperty(args: {
       });
       continue;
     }
-    const MAX_ATTEMPTS = 3;
-    let attempt = 0;
     let lastErr: string | undefined;
     let resendId: string | undefined;
     let okSend = false;
-    while (attempt < MAX_ATTEMPTS && !okSend) {
-      attempt += 1;
-      try {
-        const result = await sendWeeklyReportEmail({
-          to: r.email,
-          payload,
-          lang: r.lang,
-          idempotencyKey: `weekly:${runId}:${r.email}`,
-        });
-        if (result.ok) {
-          okSend = true;
-          resendId = result.id;
-        } else {
-          lastErr = result.error;
-          if (result.error.startsWith('rate_limited')) {
-            await new Promise(res => setTimeout(res, 30_000));
-            continue;
-          }
-          break;
-        }
-      } catch (e) {
-        lastErr = e instanceof Error ? e.message : String(e);
+    let attempts = 0;
+    try {
+      attempts = 1;
+      const result = await sendWeeklyReportEmail({
+        to: r.email,
+        payload,
+        lang: r.lang,
+        idempotencyKey: `weekly:${runId}:${r.email}`,
+      });
+      if (result.ok) {
+        okSend = true;
+        resendId = result.id;
+      } else {
+        lastErr = result.error;
       }
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
     }
     if (okSend) {
       sent += 1;
@@ -250,7 +268,7 @@ async function processProperty(args: {
         channel: r.channel,
         status: 'sent',
         resendId,
-        attempts: attempt,
+        attempts,
         lastAttemptAt: new Date().toISOString(),
       });
     } else {
@@ -263,7 +281,7 @@ async function processProperty(args: {
         channel: r.channel,
         status: isRateLimited ? 'rate_limited' : 'failed',
         error: lastErr,
-        attempts: attempt,
+        attempts,
         lastAttemptAt: new Date().toISOString(),
       });
       captureException(new Error(`weekly report send failed: ${lastErr}`), {

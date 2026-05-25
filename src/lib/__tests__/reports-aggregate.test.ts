@@ -26,6 +26,7 @@ import {
   buildOperationsBlock,
   buildQualityBlock,
   isoDateInTz,
+  localMidnightToUtc,
   rankStaffPerformance,
   type CleaningTaskRow,
   type HkAssignmentRow,
@@ -261,6 +262,34 @@ describe('isoDateInTz', () => {
     assert.equal(isoDateInTz('2026-05-24T04:00:00Z', 'America/Chicago'), '2026-05-23');
     // 2026-05-24 06:00 UTC = 2026-05-24 01:00 Chicago — now the 24th
     assert.equal(isoDateInTz('2026-05-24T06:00:00Z', 'America/Chicago'), '2026-05-24');
+  });
+});
+
+describe('localMidnightToUtc — DST-correct date bound helper for queries', () => {
+  test('Chicago midnight in DST is 05:00 UTC', () => {
+    assert.equal(localMidnightToUtc('2026-05-23', 'America/Chicago'), '2026-05-23T05:00:00.000Z');
+  });
+
+  test('Chicago midnight in standard time is 06:00 UTC', () => {
+    // Standard time (CST) starts after the November DST end.
+    assert.equal(localMidnightToUtc('2026-12-15', 'America/Chicago'), '2026-12-15T06:00:00.000Z');
+  });
+
+  test('UTC property = identity', () => {
+    assert.equal(localMidnightToUtc('2026-05-23', 'UTC'), '2026-05-23T00:00:00.000Z');
+  });
+
+  test('Asia/Tokyo midnight (+09:00) is the previous UTC day at 15:00', () => {
+    // 2026-05-23 00:00 JST = 2026-05-22 15:00 UTC
+    assert.equal(localMidnightToUtc('2026-05-23', 'Asia/Tokyo'), '2026-05-22T15:00:00.000Z');
+  });
+
+  test('spring-forward DST day still returns valid midnight', () => {
+    // 2026-03-08 is the US spring-forward; 00:00 local is unambiguous,
+    // it's the 02:00 jump that doesn't exist (not the midnight one).
+    const iso = localMidnightToUtc('2026-03-08', 'America/Chicago');
+    // CST = UTC-6 just before spring forward, so 00:00 local CST = 06:00 UTC.
+    assert.equal(iso, '2026-03-08T06:00:00.000Z');
   });
 });
 

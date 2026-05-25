@@ -368,6 +368,56 @@ export function isoDateInTz(iso: string, timezone: string): string {
   }
 }
 
+/**
+ * Convert a property-local YYYY-MM-DD calendar date into the absolute
+ * UTC ISO instant for that day's midnight in the property's timezone.
+ *
+ * Used to bound time-range queries (e.g. "all inspections that started
+ * on 2026-05-23 in Chicago"). The naïve approach of treating the date
+ * as UTC (`${reportDate}T00:00:00Z`) is wrong for any non-UTC property
+ * — for Chicago in DST, midnight local = 05:00 UTC, so a query bounded
+ * by `2026-05-23T00:00Z … 2026-05-24T00:00Z` would miss the 5 hours
+ * after local midnight on the 24th and include the 5 hours before
+ * local midnight on the 23rd.
+ *
+ * Implementation: iterate at most twice through the UTC formatter to
+ * find the right millisecond. There's no Intl-blessed inverse of
+ * formatToParts; this two-iteration trick handles DST transitions
+ * (which never exceed ~1 hour) cheaply.
+ */
+export function localMidnightToUtc(reportDate: string, timezone: string): string {
+  // Start with midnight in UTC as the candidate, then correct for the
+  // observed offset between the candidate's local-time output and the
+  // requested calendar date. Two passes is enough because the offset
+  // never shifts by more than 1 hour even across DST boundaries.
+  const [y, m, d] = reportDate.split('-').map(Number);
+  let guessMs = Date.UTC(y, m - 1, d, 0, 0, 0);
+  for (let i = 0; i < 2; i++) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(guessMs));
+    const lookup = Object.fromEntries(parts.map(p => [p.type, p.value])) as Record<string, string>;
+    const localY = Number(lookup.year);
+    const localM = Number(lookup.month);
+    const localD = Number(lookup.day);
+    // Some Intl impls emit 24 for midnight; normalize to 0.
+    const localH = lookup.hour === '24' ? 0 : Number(lookup.hour);
+    const localMin = Number(lookup.minute);
+    const localS = Number(lookup.second);
+    // Difference between the observed local clock and the desired
+    // local clock (midnight on reportDate) — in milliseconds.
+    const observedLocalMs = Date.UTC(localY, localM - 1, localD, localH, localMin, localS);
+    const desiredLocalMs  = Date.UTC(y, m - 1, d, 0, 0, 0);
+    const deltaMs = desiredLocalMs - observedLocalMs;
+    if (deltaMs === 0) break;
+    guessMs += deltaMs;
+  }
+  return new Date(guessMs).toISOString();
+}
+
 // ── Per-staff performance (for the weekly top-performer / improvement
 //    opportunity sections) ─────────────────────────────────────────────────
 

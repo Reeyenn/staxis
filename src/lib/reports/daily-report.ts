@@ -28,6 +28,7 @@ import {
   buildOperationsBlock,
   buildQualityBlock,
   isoDateInTz,
+  localMidnightToUtc,
   rankStaffPerformance,
   type CleaningTaskRow,
   type HkAssignmentRow,
@@ -232,12 +233,17 @@ export async function buildDailyReport(args: {
       .select('id, cleaning_type, status, started_at, completed_at, assignee_id, requires_inspection')
       .eq('property_id', propertyId)
       .eq('business_date', reportDate),
+    // Inspections are bounded in property-local time, not UTC. For a
+    // Chicago property on 2026-05-23 (DST), local midnight = 05:00 UTC,
+    // so the right range is [2026-05-23 05:00 UTC, 2026-05-24 05:00 UTC).
+    // The naïve `${reportDate}T00:00Z` would miss the last 5 hours of
+    // the local day and pick up 5 hours from the prior day.
     supabaseAdmin
       .from('inspections')
       .select('id, result, failed_items, housekeeper_staff_id, completed_at')
       .eq('property_id', propertyId)
-      .gte('started_at', `${reportDate}T00:00:00Z`)
-      .lt('started_at', `${nextDayLocal(reportDate)}T00:00:00Z`),
+      .gte('started_at', localMidnightToUtc(reportDate, property.timezone))
+      .lt('started_at', localMidnightToUtc(nextDayLocal(reportDate), property.timezone)),
     supabaseAdmin
       .from('pms_work_orders_v2')
       .select('id, status, priority, out_of_order, reported_at')
