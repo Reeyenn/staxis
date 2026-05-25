@@ -61,6 +61,10 @@ interface JobRow {
   progressPct: number | null;
   error: string | null;
   createdAt: string;
+  /** Plan v8 — for mapper.* workflow_jobs rows, 'mapper' so the
+   *  LiveJobCard links to /admin/properties/mapper/[jobId] (the Live
+   *  Mapping console). For session-derived rows, 'session' or absent. */
+  kind?: 'session' | 'mapper';
 }
 
 interface PMSCoverage {
@@ -260,8 +264,14 @@ function SectionTitle({ caps, title, italic, right }: {
 }
 
 function LiveJobCard({ job }: { job: JobRow }) {
+  // Plan v8 — mapper.* jobs deep-link into the Live Mapping console
+  // (/admin/properties/mapper/[jobId]) so admin can watch + respond to
+  // help requests. Session-derived rows keep linking to the property page.
+  const href = job.kind === 'mapper'
+    ? `/admin/properties/mapper/${job.id}`
+    : `/admin/properties/${job.propertyId}`;
   return (
-    <Link href={`/admin/properties/${job.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+    <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
       <Card padding="14px 16px" style={{ cursor: 'pointer' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
           <Loader2 size={14} color={T.caramelDeep} style={{ animation: 'spin 1.5s linear infinite' }} />

@@ -63,6 +63,10 @@ interface JobRow {
   forceRemap: boolean;
   /** Optional CTA target — UI can link to /admin/mfa-resume/[hotelId] for paused_mfa. */
   resumeUrl: string | null;
+  /** Plan v8 — tag mapper.* workflow rows so the UI deep-links to
+   *  /admin/properties/mapper/[jobId] (Live Mapping console) instead
+   *  of the default property page. Absent for session-derived rows. */
+  kind?: 'session' | 'mapper';
 }
 
 interface SessionRow {
@@ -190,6 +194,9 @@ export async function GET(req: NextRequest) {
       durationMs: dur,
       forceRemap: false,
       resumeUrl: null,
+      // Plan v8 — tag mapper rows so the UI's LiveJobCard deep-links to
+      // /admin/properties/mapper/[jobId] (the Live Mapping console).
+      kind: 'mapper',
     });
   }
 
