@@ -1008,8 +1008,6 @@ export class SessionDriver {
       payload: {
         pms_family: this.pmsFamily,
         property_id: this.propertyId,
-        // Repairs always vision — DOM would re-fail the same way.
-        mapper_mode: 'vision',
         // Tight cap — single target.
         cost_cap_micros: 2_000_000,
         // The whole point — seed all other actions so mapper skips them.

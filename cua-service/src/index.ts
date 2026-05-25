@@ -80,10 +80,8 @@ async function main(): Promise<void> {
   log.info('cua-service starting', { sentryReady, workerId: WORKER_ID });
 
   log.info('cua_posture', {
-    policyMode: env.CUA_POLICY_ENFORCE,
     signingMode: env.RECIPE_SIGNING_ENFORCE,
     dnsPreflight: env.CUA_DNS_PREFLIGHT,
-    autoScreenshot: env.CUA_AUTO_SCREENSHOT,
     signingKeyPresent: !!env.RECIPE_SIGNING_KEY,
   });
 

@@ -17,8 +17,6 @@
  *   1. Loads the currently-active knowledge file for the PMS family
  *   2. Builds payload.seed_actions = knowledge.actions MINUS targetKey
  *   3. INSERTs a mapper.learn_pms_family workflow_jobs row with:
- *        - mapper_mode = 'vision' (repairs use vision so structural
- *          DOM changes don't re-break the new selector)
  *        - cost_cap_micros = $2 (single target, tighter budget)
  *        - seed_actions = pre-populated all-other-targets
  *   4. cua-service's workflow-runtime picks it up, runs mapping-driver
@@ -115,9 +113,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       payload: {
         pms_family: body.pmsFamily,
         property_id: body.propertyId,
-        // Repairs always use vision — DOM-mode would just re-break the
-        // same way DOM mapping originally couldn't learn it.
-        mapper_mode: 'vision',
         // Tight cap — one target, ~$1-2 in vision.
         cost_cap_micros: 2_000_000,
         // The whole point — seed all-other-actions so mapper skips them.

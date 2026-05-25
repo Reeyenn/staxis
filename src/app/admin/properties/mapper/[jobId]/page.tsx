@@ -250,7 +250,6 @@ export default function LiveMappingPage() {
     );
   }
 
-  const mode = (job?.payload as { mapper_mode?: string })?.mapper_mode ?? 'dom';
   const costDollars = job ? (job.claude_cost_micros / 1_000_000).toFixed(2) : '0.00';
 
   return (
@@ -293,10 +292,6 @@ export default function LiveMappingPage() {
               <div>
                 <Caps>Job</Caps>
                 <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink }}>{job.id.slice(0, 8)}…</div>
-              </div>
-              <div>
-                <Caps>Mode</Caps>
-                <Pill tone={mode === 'vision' ? 'caramel' : 'sage'}>{mode}</Pill>
               </div>
               <div>
                 <Caps>Status</Caps>

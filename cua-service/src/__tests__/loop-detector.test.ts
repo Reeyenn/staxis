@@ -188,37 +188,10 @@ describe('actionFingerprint — vision (computer_20251124) action shapes', () =>
   });
 });
 
-describe('actionFingerprint — DOM (browser-tool) action shapes', () => {
-  test('left_click with ref instead of coordinate', () => {
-    const fp = actionFingerprint({ action: 'left_click', ref: 'ref_5' });
-    assert.equal(fp, 'left_click:ref_5');
-  });
-
-  test('read_page with text="interactive" is stable', () => {
-    const fp1 = actionFingerprint({ action: 'read_page', text: 'interactive' });
-    const fp2 = actionFingerprint({ action: 'read_page', text: 'interactive' });
-    assert.equal(fp1, fp2);
-    assert.equal(fp1, 'read_page:interactive');
-  });
-
-  test('find with different keywords differ', () => {
-    const fp1 = actionFingerprint({ action: 'find', text: 'reports' });
-    const fp2 = actionFingerprint({ action: 'find', text: 'housekeeping' });
-    assert.notEqual(fp1, fp2);
-  });
-
-  test('form_input includes ref AND value', () => {
-    const fp1 = actionFingerprint({ action: 'form_input', ref: 'ref_1', value: '$username' });
-    const fp2 = actionFingerprint({ action: 'form_input', ref: 'ref_1', value: '$password' });
-    assert.notEqual(fp1, fp2);
-  });
-
-  test('navigate uses URL/text', () => {
-    const fp1 = actionFingerprint({ action: 'navigate', text: 'https://example.com/a' });
-    const fp2 = actionFingerprint({ action: 'navigate', text: 'https://example.com/b' });
-    assert.notEqual(fp1, fp2);
-  });
-});
+// (Plan v8 D.2 removed DOM-tool action shapes — read_page / find /
+// form_input / navigate / ref-based clicks no longer flow through the
+// pipeline. actionFingerprint() is still shape-generic for safety, but
+// the only live caller is the vision tool.)
 
 describe('pageFingerprint', () => {
   test('combines URL, title, and body-text hash deterministically', async () => {

@@ -45,31 +45,6 @@ const Schema = z.object({
   // 'enforce' — verifier refuses on mismatch / missing signature.
   RECIPE_SIGNING_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
 
-  // ── CUA action policy (Plan v2 F-AI-7) ───────────────────
-  // Phase-aware allowlist for browser-tool actions. 'warn' (default)
-  // logs refusals but lets the action through; 'enforce' refuses with
-  // an agent-friendly error so Claude retries.
-  CUA_POLICY_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
-
-  // ── DOM snapshot source (Plan v8 CDP refactor) ──────────
-  // 'legacy' (default): use the existing page.evaluate(window.__generateAccessibilityTree)
-  // path. Fast for simple PMS pages — a single optimized in-renderer JS walk.
-  // 'cdp': use the CDP-direct DOMSnapshot.captureSnapshot + Accessibility.getFullAXTree
-  // fusion. Slower on simple pages (1-2x measured on Wikipedia) but unlocks
-  // future iframe / shadow-DOM coverage and emits backendNodeId-stable refs.
-  // Flips per-PMS once a canary proves the speedup actually materializes on
-  // that PMS's UI shape.
-  CUA_DOM_SOURCE: z.enum(['legacy', 'cdp']).default('legacy'),
-
-  // ── Screenshot minimization (Plan v2 F-AI-10) ────────────
-  // The mapper used to auto-capture a screenshot on navigate + hover
-  // and ship it to Anthropic. Default is now 'false' — Claude relies on
-  // read_page + get_page_text and only explicit `screenshot` actions
-  // produce image blocks. Set to 'true' if a PMS proves to need vision
-  // grounding (regression metric: % of mapping runs reaching dashboard
-  // within 30 steps).
-  CUA_AUTO_SCREENSHOT: z.enum(['true', 'false']).default('false'),
-
   // ── Critic (pre/post screenshot validator) ───────────────
   // Pre/post screenshot critic that grades each click in vision mode
   // and injects a "Critic note: …" if the click didn't appear to
@@ -94,22 +69,12 @@ const Schema = z.object({
   // flip to 'true' once we've measured the impact.
   CUA_DNS_PREFLIGHT: z.enum(['true', 'false']).default('false'),
 
-  // ── Mapper mode (Plan v8 — vision swap) ─────────────────
-  // Default 'dom' (current behavior). Flip to 'vision' via
-  // `fly secrets set MAPPER_MODE=vision -a staxis-cua` AFTER the canary
-  // proves vision works (Phase C). Per-job override available via
-  // workflow_jobs.payload.mapper_mode — admin can opt in per PMS family.
-  //
-  // P2-2 (Codex hard adversarial pass): default MUST be 'dom' so a Fly
-  // boot without the env set doesn't silently switch to vision. Flip is
-  // an explicit operator action via fly secrets.
-  MAPPER_MODE: z.enum(['dom', 'vision']).default('dom'),
-
-  // Vision-mode timeout. Vision is 3-5x slower per-target than DOM. Bump
-  // from 60min (DOM default in workflow-runtime.ts) to 90min so a real
-  // vision run + multiple help-request waits fit in one job's lifetime.
-  // Per-job override via workflow_jobs.payload.timeout_ms.
-  MAPPER_JOB_TIMEOUT_MS_VISION: z.coerce.number().int().positive().default(90 * 60_000),
+  // ── Mapper job timeout (Plan v8 D.2 — vision is the only mode now) ──
+  // Vision per-target wallclock is 3-5x slower than the deleted DOM tool;
+  // 90min gives a real vision run + multiple help-request waits room
+  // inside one job's lifetime. Per-job override via
+  // workflow_jobs.payload.timeout_ms.
+  MAPPER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(90 * 60_000),
 
   // Help-request timeout — how long the mapper waits for admin to answer
   // a help-request before falling back to "mark target unavailable".

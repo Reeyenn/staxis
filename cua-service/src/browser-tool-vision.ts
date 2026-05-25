@@ -1,15 +1,11 @@
 /**
- * Vision-based computer-use tool — Plan v8 Phase A.
+ * Vision-based computer-use tool — the only mapping tool as of Plan v8 D.2.
  *
  * Wraps Anthropic's official `computer_20251124` beta tool to drive a
- * Playwright Chromium. Used by the mapper when MAPPER_MODE='vision'.
- *
- * Difference from the DOM-aware `browser-tool.ts`:
- *  - Agent receives SCREENSHOTS (PNG) not a DOM accessibility tree
- *  - Clicks use PIXEL COORDINATES not refs
- *  - Recipe steps record as {kind: 'click_at', x, y} / {kind: 'type_text', value}
- *    — these step kinds already exist in types.ts and replay handles them
- *    in recipe-runner.ts (lines 330-336, confirmed by plan v8 self-review F1)
+ * Playwright Chromium browser. Agent receives SCREENSHOTS (PNG), clicks
+ * by PIXEL COORDINATES, and recipe steps record as `{kind: 'click_at'}`
+ * / `{kind: 'type_text'}` / `{kind: 'press_key'}` for deterministic
+ * replay.
  *
  * Required when calling Claude:
  *   anthropic-beta: computer-use-2025-11-24
@@ -20,31 +16,37 @@
  *   - claude-sonnet-4-6 (our default)
  *   - claude-opus-4-5
  *
- * Privacy hardening (P1-4): before EVERY screenshot, blank out elements
- * matching `input[type="password"]`, `[data-sensitive]`, `.ssn`,
- * `.credit-card`. Keeps passwords + PII out of Anthropic conversation
+ * Privacy hardening (P1-4): before EVERY screenshot, paint a black
+ * overlay across `input[type="password"]`, `[data-sensitive]`, `.ssn`,
+ * `.credit-card`. Keeps passwords + PII out of the Anthropic conversation
  * history, the realtime broadcast channel, and the help-request DB row.
  *
- * Policy layer (P1-1 Option I): vision actions don't carry DOM hints,
- * so `policy.ts`'s element-attribute-derived `policyHint` is empty for
- * every action. Plan v8 documents this as an accepted trade-off during
- * vision mode (the F-AI-7 phase-aware write blocker is bypassed for the
- * one-time mapping run; live polling stays deterministic and unaffected).
- * Phase B/C may extend `policy.ts` to use the assistant's text-reasoning
- * as a hint when ref is absent (Option II — deferred).
- *
- * Navigation: no `navigate` action in the vision tool. The agent
- * navigates by clicking visible menu links / typing in input fields.
+ * Navigation: no `navigate` action in the vision tool. The agent navigates
+ * by clicking visible menu links / typing into input fields.
  * `mapping-driver.ts` pre-positions the page via `safeGoto` BEFORE the
  * agent's per-target loop starts. `page.url()` is read between turns to
  * record `{kind: 'goto', url}` steps for replay.
+ *
+ * Read-only invariant is enforced by (a) the system prompt's "Read-only"
+ * rule, and (b) the sandboxed Playwright browser context — no broader
+ * filesystem / OS / network capability than what page.mouse + page.keyboard
+ * + page.screenshot provide.
  */
 
 import type { Page } from 'playwright';
 import type { PMSCredentials, RecipeStep } from './types.js';
-import type { MappingPhase } from './policy.js';
 import { log } from './log.js';
 import { applySetOfMark, clearSetOfMark, type BadgeInfo } from './set-of-mark.js';
+
+/**
+ * Mapping phase — passed through for logging. The DOM-mode-era
+ * policy.ts allow/deny layer was deleted along with the DOM tool;
+ * the read-only invariant is enforced by the system prompt and by
+ * the fact that the vision tool only ever produces coordinate clicks
+ * + keystrokes against a sandboxed Playwright browser. Phase is kept
+ * as a typed argument for log breadcrumbs only.
+ */
+export type MappingPhase = 'login' | 'action';
 
 // ─── Set-of-Mark badge store ─────────────────────────────────────────────
 //
@@ -253,22 +255,10 @@ export async function executeVisionAction(
   phase: MappingPhase = 'login',
 ): Promise<VisionActionResult> {
   try {
-    // Plan v8 review P1-A — VISION MODE BYPASSES policy.ts entirely.
-    //
-    // Why: policy.ts derives its decision from element attributes (text,
-    // aria-label, role, type) accessed via DOM ref. Vision actions carry
-    // pixel coordinates, no DOM hint. policy.ts's default for a missing
-    // hint in the 'action' phase is REFUSE for every click — which would
-    // silently abort every vision-mode navigation under
-    // CUA_POLICY_ENFORCE=enforce. We confirmed in Codex review.
-    //
-    // Trade-off: the F-AI-7 phase-aware write-blocker is bypassed during
-    // the one-time mapping run. Mapping uses read-only PMS browsing; live
-    // polling runs deterministic recipes (no Claude in the loop), so this
-    // exposure is bounded to the mapping window per PMS family. Plan v8
-    // Option II (extend policy.ts with text-reasoning hints) is deferred.
-    //
-    // We log every vision action for ops visibility.
+    // Log every action for ops visibility. The read-only invariant is
+    // enforced by the system prompt + the sandboxed Playwright context
+    // (Plan v8 D.2 deleted the DOM-era policy.ts allow/deny layer; vision
+    // actions don't carry element-attribute hints to gate on anyway).
     log.info('vision-action', { phase, action: action.action });
 
     // Set-of-Mark cleanup. Badges from the previous screenshot are
@@ -627,8 +617,3 @@ function normalizeKey(input: string): string {
   });
   return capitalized.join('+');
 }
-
-// Plan v8 review P1-A: mapToPolicyAction + BrowserActionAlias were used
-// to bridge vision actions through policy.ts. Vision mode now bypasses
-// policy.ts entirely (see executeVisionAction comment) so this helper
-// is no longer called and was deleted.

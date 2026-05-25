@@ -42,25 +42,20 @@ import type { SessionSupervisor } from './session-supervisor.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const WORKFLOW_TIMEOUT_MS = 10 * 60_000;
-// Plan v7 Phase 2c — mapper jobs need more headroom for 13-target runs.
-// Plan v8 Phase A: vision-mode jobs use a separate 90-min default
-// (env.MAPPER_JOB_TIMEOUT_MS_VISION). DOM mode keeps 60min. Per-job
-// override via workflow_jobs.payload.timeout_ms.
-const MAPPER_JOB_TIMEOUT_MS = 60 * 60_000;
-
 /**
  * Pick the mapper timeout for a specific job. Reads (in order):
  *   1. job.payload.timeout_ms — per-job override (admin checkbox)
- *   2. env.MAPPER_JOB_TIMEOUT_MS_VISION when mode='vision'
- *   3. MAPPER_JOB_TIMEOUT_MS (60min) — DOM mode default
+ *   2. env.MAPPER_JOB_TIMEOUT_MS (default 90min)
+ *
+ * Plan v8 D.2 deleted MAPPER_MODE + the per-job mapper_mode override —
+ * vision is the only mode now and its 90min default covers the 13-target run.
  */
 function pickMapperTimeoutMs(job: WorkflowJobRow): number {
-  const payload = (job.payload ?? {}) as { timeout_ms?: number; mapper_mode?: 'dom' | 'vision' };
+  const payload = (job.payload ?? {}) as { timeout_ms?: number };
   if (typeof payload.timeout_ms === 'number' && payload.timeout_ms > 0) {
     return payload.timeout_ms;
   }
-  const mode = payload.mapper_mode ?? env.MAPPER_MODE;
-  return mode === 'vision' ? env.MAPPER_JOB_TIMEOUT_MS_VISION : MAPPER_JOB_TIMEOUT_MS;
+  return env.MAPPER_JOB_TIMEOUT_MS;
 }
 
 // Plan v7 Phase 2c — workflow kinds that don't require an alive
@@ -139,21 +134,16 @@ export class WorkflowRuntime {
     }, POLL_INTERVAL_MS);
   }
 
-  /** Plan v7 — reclaim `running` rows older than 1.5× the LONGEST possible
-   *  mapper timeout. Requeue them so the next poll picks them up. The
-   *  unique-idempotency-key constraint on workflow_jobs prevents
-   *  double-execution.
+  /** Plan v7 — reclaim `running` rows older than 1.5× the mapper timeout.
+   *  Requeue them so the next poll picks them up. The unique-idempotency-key
+   *  constraint on workflow_jobs prevents double-execution.
    *
-   *  Plan v8 P2-3 (Codex hard pass): multiplier dropped from 2× to 1.5×
-   *  AND threshold uses MAPPER_JOB_TIMEOUT_MS_VISION (90min) so a
-   *  long-running vision job isn't reclaimed under its own feet. 1.5 × 90
-   *  = 135 min between crash and reclaim. Was 2 × 60 = 120 min before
-   *  vision but vision broke that math (a real 89-min vision job would
-   *  look "stale" at 120 min).
+   *  Plan v8 P2-3: multiplier dropped from 2× to 1.5× so a long-running
+   *  vision job isn't reclaimed under its own feet. 1.5 × 90 min = 135 min
+   *  between crash and reclaim.
    */
   private async reclaimStaleRunningJobs(): Promise<void> {
-    const longestTimeout = Math.max(MAPPER_JOB_TIMEOUT_MS, env.MAPPER_JOB_TIMEOUT_MS_VISION);
-    const staleCutoff = new Date(Date.now() - 1.5 * longestTimeout).toISOString();
+    const staleCutoff = new Date(Date.now() - 1.5 * env.MAPPER_JOB_TIMEOUT_MS).toISOString();
     const { data, error } = await supabase
       .from('workflow_jobs')
       .update({ status: 'queued', error: 'reclaimed: worker restart before completion' })

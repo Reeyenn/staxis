@@ -1,28 +1,22 @@
 /**
- * PMS mapper — DOM-aware (browser tool) version.
+ * PMS mapper — vision-only.
  *
- * Uses Anthropic's `browser` custom tool family (modeled on
- * anthropic-quickstarts/browser-use-demo) instead of the older pixel-click
- * `computer` tool. The agent reasons in DOM element refs (ref_1, ref_2, …)
- * which the tool resolves to live elements via window.__claudeElementMap.
+ * As of Plan v8 D.2 the legacy DOM tool (browser-tool.ts + browser-utils/)
+ * has been deleted. The agent reasons over SCREENSHOTS from Anthropic's
+ * official `computer_20251124` beta tool, clicks by pixel coordinate
+ * (with Set-of-Mark numbered badges overlaid for grounding), and records
+ * recipe steps as `click_at` / `type_text`.
  *
- * Output is still a Recipe (see types.ts) — the recipe shape is the same
- * but the recorded steps are selector-based (kind: 'click' / 'fill') rather
- * than coordinate-based (kind: 'click_at' / 'type_text'). This makes the
- * recipe survive PMS layout changes that would have broken the old mapper's
- * coordinate-based output.
- *
- * Cost expectation: ~$0.30-0.80 per full mapping run (login + 4 actions)
- * on Sonnet 4.6, vs $1-2 on Sonnet 4.5 with computer-use. The token spend
- * is dominated by read_page outputs (DOM trees), not screenshots — we
- * truncate older read_page results to keep per-turn context bounded.
+ * Cost expectation: ~$15-25 per full mapping run (login + ~13 targets) on
+ * Sonnet 4.6 with extended thinking. One-time per PMS family — all
+ * downstream hotels on the same PMS reuse the recipe via deterministic
+ * Playwright replay (recipe-runner.ts, no Claude in the loop).
  */
 
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
-import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT, getModeConfig } from './anthropic-client.js';
-import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
+import { anthropic, getModeConfig } from './anthropic-client.js';
 import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
 import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
 import { safeGoto } from './browser-utils/navigate.js';
@@ -54,23 +48,13 @@ const MAX_AGENT_STEPS_LOGIN = 60;
 const MAX_AGENT_STEPS_PER_ACTION = 80;
 const VIEWPORT = { width: 1280, height: 800 };
 
-// Token + wallclock guards. Browser-tool's read_page is the heaviest call
-// — DOM trees can be 5-30K tokens each. The pruner (history-pruning.ts)
-// keeps recent heavy content and elides older content past `keepLast`:
-//   - Vision mode keeps last 3 screenshots; DOM mode keeps last 1
-//     (historyKeepFor below).
-//   - Pruning runs in BATCHES every PRUNE_BATCH_TURNS (~25 turns) per
-//     Anthropic best-practices so older-content bytes stay stable
-//     between prunes — a prerequisite for caching conversation history.
-//     Between prune events, the working set may TEMPORARILY exceed
-//     `keepLast` (acceptable trade-off for cache stability).
-//   - We also TRUNCATE single huge tool_result text blocks to keep one
-//     read_page from drowning the budget (CA's DOM trees hit 100K+ chars).
-//     READ_PAGE_TRUNCATE_CHARS lives in history-pruning.ts alongside the
-//     pruner.
-//
-// Combined with prompt caching on the system prompt, a 60-step run on
-// CA fits well under MAX_INPUT_TOKENS_PER_RUN.
+// Token + wallclock guards. Vision agent ships a 1280×800 screenshot
+// (~1366 tokens) on most turns; the pruner (history-pruning.ts) keeps
+// the most recent 3 images and elides older ones, pruning in batches
+// every ~25 turns per Anthropic best-practices so older-content bytes
+// stay byte-stable between prunes (prerequisite for prompt caching).
+// Between prune events the working set may temporarily exceed the
+// `keepLast` bound — accepted trade-off for cache stability.
 const MAX_INPUT_TOKENS_PER_RUN = 800_000;
 // Output cap matters most on the agent's FINAL turn, when it emits the
 // parse-hint JSON. Verbose preambles ("I have all the info needed,
@@ -81,43 +65,26 @@ const MAX_INPUT_TOKENS_PER_RUN = 800_000;
 // canary v6 — getArrivals failed with the agent mid-sentence right
 // before the JSON.)
 const MAX_OUTPUT_TOKENS_PER_TURN = 4096;
-const PHASE_WALLCLOCK_BUDGET_MS = 5 * 60_000;
-// Plan v8 review P1-B — vision is 3-5× slower per target (more turns, image
-// generation time per screenshot). 5min wallclock would constantly trip
-// before vision even gets a chance to find anything. 15min matches the
-// vision-mode per-target step cap headroom.
-const PHASE_WALLCLOCK_BUDGET_MS_VISION = 15 * 60_000;
-const HISTORY_KEEP_RECENT = 1;
-// Plan v8 P0-1 — vision mode keeps last 3 screenshots in history (vs DOM's 1).
-// Vision conversations balloon with image tokens; truncating aggressively
-// keeps each turn under the per-target cost cap. 3 is a balance: enough
-// recent context for the model to re-orient after each action, few enough
-// that input-token cost stays bounded.
-const HISTORY_KEEP_RECENT_VISION = 3;
+// Vision is 3-5× slower per target than the deleted DOM tool (image-token
+// generation per screenshot, more turns to find an element visually).
+// 15min/target is sized for the vision-mode step cap.
+const PHASE_WALLCLOCK_BUDGET_MS = 15 * 60_000;
+// Keep the last 3 screenshots in history. Vision conversations balloon
+// with image tokens; truncating aggressively keeps each turn under the
+// per-target cost cap. 3 is enough recent context to re-orient after
+// each action, few enough that input-token cost stays bounded.
+const HISTORY_KEEP_RECENT = 3;
 
-// Extended thinking budget for VISION mode only (Anthropic best-practices
-// for computer/browser use: https://claude.com/blog/best-practices-for-
-// computer-and-browser-use-with-claude). 2000 tokens is the documented
-// "medium" effort default for Sonnet 4.6 — Anthropic notes that even
-// "low" thinking uses fewer total output tokens than disabling thinking
-// entirely (the model is more deliberate, fewer dead-end clicks).
-//
-// DOM-mode (Choice Advantage recipe v5) is intentionally LEFT UNCHANGED.
-// DOM mode is working today; adding thinking there is a separate change
-// with its own validation surface.
+// Extended thinking budget (Anthropic best-practices for computer/browser
+// use: https://claude.com/blog/best-practices-for-computer-and-browser-use-
+// with-claude). 2000 tokens is the documented "medium" effort default for
+// Sonnet 4.6 — Anthropic notes that even "low" thinking uses fewer total
+// output tokens than disabling thinking entirely (the model is more
+// deliberate, fewer dead-end clicks).
 //
 // Invariant: must be < MAX_OUTPUT_TOKENS_PER_TURN (Anthropic API rejects
 // budget_tokens >= max_tokens). 2000 < 4096 ✓.
-const THINKING_BUDGET_TOKENS_VISION = 2000;
-
-/**
- * Plan v8 — mode-aware history retention. DOM mode keeps 1 image (screenshot
- * action is rare, mostly a fallback). Vision mode keeps 3 — every turn ships
- * a screenshot, and the model needs the recent few for continuity.
- */
-function historyKeepFor(mode: 'dom' | 'vision'): number {
-  return mode === 'vision' ? HISTORY_KEEP_RECENT_VISION : HISTORY_KEEP_RECENT;
-}
+const THINKING_BUDGET_TOKENS = 2000;
 
 /**
  * Plan v8 Phase B P0-2 — when the floor-met `{unavailable: true}` fires,
@@ -210,17 +177,8 @@ async function maybeAskAdminBeforeUnavailable(args: {
   }
 }
 
-/**
- * Plan v8 review P1-B — wallclock budget per phase, mode-aware. Vision needs
- * more headroom because each turn is slower (screenshot + image-token input)
- * and the model often takes 3-5× more turns to find an element via vision.
- */
-function phaseWallclockFor(mode: 'dom' | 'vision'): number {
-  return mode === 'vision' ? PHASE_WALLCLOCK_BUDGET_MS_VISION : PHASE_WALLCLOCK_BUDGET_MS;
-}
 // READ_PAGE_TRUNCATE_CHARS moved to history-pruning.ts (the only call
-// site after the extraction). Mentioned by name in this file's header
-// comment at the top, but unused at module scope.
+// site after the extraction).
 
 // ─── Plan v7 Phase 2a: per-target cost budgets ─────────────────────────────
 // Per-target caps prevent one runaway target from blowing the global $10
@@ -274,8 +232,8 @@ interface MapperOptions {
   /**
    * Plan v8 review P0-A — per-job cost cap override. When set, replaces
    * env.CUA_JOB_COST_CAP_MICROS for cap-check inside isJobOverBudget +
-   * checkBudget. Vision-mode jobs set this to $50 during canary; flip to
-   * $25 once paper-cost is measured. DOM-mode jobs keep the $5 env default.
+   * checkBudget. Vision canary jobs set this to $50; flip to $25 once
+   * paper-cost is measured across PMS families.
    */
   jobCostCapMicros?: number;
   /**
@@ -287,21 +245,8 @@ interface MapperOptions {
    */
   signal?: AbortSignal;
   /**
-   * Plan v8 Phase A — mapper mode.
-   *   'dom'    — custom browser tool with DOM accessibility tree + refs
-   *              (cheap, works on PMSes with parseable HTML, ~$3-6/run)
-   *   'vision' — Anthropic's computer_20251124 beta tool with screenshots
-   *              + pixel coordinates (works on canvas/Flash/DOS-style
-   *              PMSes, ~$15-25/run; requires computer-use-2025-11-24
-   *              beta header which getModeConfig handles)
-   * Default 'dom' for backward compat. Per-job override via
-   * workflow_jobs.payload.mapper_mode (mapping-driver reads + passes here).
-   */
-  mode?: 'dom' | 'vision';
-  /**
-   * Plan v8 Phase A — Claude model. Sonnet 4.6 is the cheap default; admin
-   * can opt into Opus 4.7 per-job for hard PMSes via the same payload route.
-   * Both models support the computer-use-2025-11-24 beta header.
+   * Claude model. Sonnet 4.6 is the default; admin can opt into Opus 4.7
+   * per-job for hard PMSes via workflow_jobs.payload.model.
    */
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
   /**
@@ -400,9 +345,6 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
 
-    // Plan v8 Phase A: resolve mode once for the whole run. Same mode used
-    // by login, mapAction, mapDrillDownAction. Per-job override via opts.mode.
-    const mode = opts.mode ?? 'dom';
     const model = opts.model;
 
     // ─── Phase 1: learn the login flow ─────────────────────────────────────
@@ -411,7 +353,6 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
       signal: opts.signal,
-      mode,
       model,
       jobCostCapMicros: opts.jobCostCapMicros,
     });
@@ -535,7 +476,6 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             propertyId: opts.propertyId ?? null,
             jobId: opts.jobId ?? null,
             signal: opts.signal,
-            mode,
             model,
             jobCostCapMicros: opts.jobCostCapMicros,
           })
@@ -550,7 +490,6 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             propertyId: opts.propertyId ?? null,
             jobId: opts.jobId ?? null,
             signal: opts.signal,
-            mode,
             model,
             jobCostCapMicros: opts.jobCostCapMicros,
           });
@@ -628,17 +567,13 @@ async function mapLogin(
     propertyId: string | null;
     jobId: string | null;
     signal?: AbortSignal;
-    /** Plan v8 — picked at mapPMS entry; same mode used for login + targets. */
-    mode: 'dom' | 'vision';
     model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
     /** Plan v8 review P0-A — per-job cap override. */
     jobCostCapMicros?: number;
   },
 ): Promise<LoginMapResult | LoginMapFailure> {
-  // Plan v8: resolve tool + system prompt + beta header + model by mode.
-  // Mode-aware Anthropic call replaces direct CLAUDE_MODEL / BROWSER_TOOL /
-  // MAPPING_SYSTEM_PROMPT references below.
-  const cfg = getModeConfig(ctx.mode, ctx.model);
+  // Resolve tool + system prompt + beta header + model (vision-only now).
+  const cfg = getModeConfig(ctx.model);
   // The login URL itself is the trust anchor — no allowedHost yet (we'll
   // pin to creds.loginUrl's host for every subsequent goto). safeGoto
   // still rejects javascript:/file:/private-IP URLs, so a misconfigured
@@ -679,32 +614,20 @@ async function mapLogin(
     `reply with {"error": "<short reason>"} and stop.`;
 
   const goal = credentialIntro +
-    (ctx.mode === 'vision'
-      ? `STEP-BY-STEP (vision mode):\n` +
-        `1. Take a SCREENSHOT to see the login form.\n` +
-        `2. left_click on the username input field's coordinate.\n` +
-        `3. Send {action: "type", text: "$username"}. The tool substitutes ` +
-        `the real username before it hits the page.\n` +
-        `4. left_click on the password field's coordinate.\n` +
-        `5. Send {action: "type", text: "$password"}.\n` +
-        `6. Click the submit / log-in button.\n` +
-        `7. Wait for the next page (use {action: "wait", duration: 2} if slow), ` +
-        `then take a fresh screenshot.\n` +
-        `8. If you land on a property picker, click the FIRST property. If ` +
-        `you land on a "Welcome" splash (Choice Advantage), click "Continue" ` +
-        `or "Enter PMS" or the property name.\n` +
-        `9. Repeat screenshot + click as needed to reach the dashboard.\n\n`
-      : `STEP-BY-STEP:\n` +
-        `1. Call read_page with text="interactive" to see the form fields and ` +
-        `their refs.\n` +
-        `2. Call form_input with the username field's ref and value="$username".\n` +
-        `3. Call form_input with the password field's ref and value="$password".\n` +
-        `4. Click the submit button (form_input or left_click with the submit ref).\n` +
-        `5. Wait for the next page (use wait if it's slow), then read_page again.\n` +
-        `6. If you land on a property picker, click the FIRST property. If you ` +
-        `land on a "Welcome" splash (Choice Advantage), click "Continue" or ` +
-        `"Enter PMS".\n` +
-        `7. Repeat read_page + click as needed to reach the dashboard.\n\n`) +
+    `STEP-BY-STEP:\n` +
+    `1. Take a SCREENSHOT to see the login form.\n` +
+    `2. left_click on the username input field's coordinate.\n` +
+    `3. Send {action: "type", text: "$username"}. The tool substitutes ` +
+    `the real username before it hits the page.\n` +
+    `4. left_click on the password field's coordinate.\n` +
+    `5. Send {action: "type", text: "$password"}.\n` +
+    `6. Click the submit / log-in button.\n` +
+    `7. Wait for the next page (use {action: "wait", duration: 2} if slow), ` +
+    `then take a fresh screenshot.\n` +
+    `8. If you land on a property picker, click the FIRST property. If ` +
+    `you land on a "Welcome" splash (Choice Advantage), click "Continue" ` +
+    `or "Enter PMS" or the property name.\n` +
+    `9. Repeat screenshot + click as needed to reach the dashboard.\n\n` +
     successCriteria;
 
   const messages: Anthropic.Messages.MessageParam[] = [
@@ -725,7 +648,7 @@ async function mapLogin(
         detail: { phase: 'login_mapping', reason: 'token_budget_exceeded', totalInputTokens },
       };
     }
-    if (Date.now() - phaseStartedAt > phaseWallclockFor(ctx.mode)) {
+    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
       log.warn('mapper exceeded wall-clock budget', { stepIdx });
       return {
         ok: false,
@@ -768,23 +691,15 @@ async function mapLogin(
       ? `${ctx.jobId}:login:${stepIdx}`
       : `anon:login:${stepIdx}:${Date.now()}`;
 
-    // Extended thinking — vision mode only. See THINKING_BUDGET_TOKENS_VISION
-    // comment for rationale + the DOM-mode-unchanged invariant.
-    // Thinking tokens consume from max_tokens — bump max_tokens by the
-    // thinking budget so the VISIBLE-output cap remains MAX_OUTPUT_TOKENS_
-    // PER_TURN (4096), the pre-thinking ceiling. Without this bump, a
-    // long final JSON could truncate (Codex review finding 2).
-    const thinkingParam = ctx.mode === 'vision'
-      ? { thinking: { type: 'enabled' as const, budget_tokens: THINKING_BUDGET_TOKENS_VISION } }
-      : {};
-    const maxTokensForCall = ctx.mode === 'vision'
-      ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
-      : MAX_OUTPUT_TOKENS_PER_TURN;
-
+    // Extended thinking — Anthropic best-practices: 2000-token "medium"
+    // budget for Sonnet 4.6. Thinking tokens consume from max_tokens —
+    // bump max_tokens by the thinking budget so the VISIBLE-output cap
+    // remains MAX_OUTPUT_TOKENS_PER_TURN (4096), the pre-thinking
+    // ceiling. Without this bump, a long final JSON could truncate.
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: maxTokensForCall,
-      ...thinkingParam,
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS,
+      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS },
       system: [
         {
           type: 'text',
@@ -793,7 +708,7 @@ async function mapLogin(
         },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: maybePruneHistory(messages, pruneState, stepIdx, historyKeepFor(ctx.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      messages: maybePruneHistory(messages, pruneState, stepIdx, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(ctx.signal ? { signal: ctx.signal } : {}),
@@ -883,14 +798,7 @@ async function mapLogin(
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
-      // Plan v8 Phase A: dispatch by mode. VisionAction and BrowserAction
-      // have different shapes; cast at the call edge.
-      // Plan v2 F-AI-7: login phase — the policy layer allows writes on
-      // login-shaped controls and refuses everything else (DOM mode has
-      // ref-derived hints; vision mode passes empty hint per P1-1 Option I).
-      const exec = ctx.mode === 'vision'
-        ? await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login')
-        : await executeBrowserAction(page, toolUse.input as BrowserAction, creds, 'login');
+      const exec = await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
@@ -923,14 +831,11 @@ async function mapAction(args: {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
-  /** Plan v8 Phase A — picked at mapPMS entry; same mode used for all targets. */
-  mode: 'dom' | 'vision';
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
-  // Plan v8: resolve config once at the top of the per-target loop.
-  const cfg = getModeConfig(args.mode, args.model);
+  const cfg = getModeConfig(args.model);
   // Plan v7: per-target step + cost caps. Drill-down targets get fewer
   // steps PER record but execute against multiple samples; report-menu
   // targets get more steps to drill through reports submenus.
@@ -969,49 +874,27 @@ async function mapAction(args: {
 
   const fullGoal =
     args.goal +
-    (args.mode === 'vision'
-      ? `\n\nWORKFLOW (vision mode — use the computer tool):\n` +
-        `1. Take a SCREENSHOT to see the dashboard.\n` +
-        `2. SCAN the screenshot for any menu item / link / tab whose visible ` +
-        `text matches the target (e.g. for housekeeping look for "Housekeeping", ` +
-        `"Rooms", "Status", "Maid"; for revenue look for "Reports", "Audit", ` +
-        `"Revenue", "Daily Summary"). Partial matches are fine.\n` +
-        `3. left_click the most-likely target's coordinate. Look at the screenshot ` +
-        `carefully — small misalignments will miss the element.\n` +
-        `4. Take another screenshot to see the new page.\n` +
-        `5. If you're not on the target page yet, repeat: scan, click, screenshot. ` +
-        `Most data lives 1-3 levels under Reports / Front Desk / Setup menus.\n` +
-        `6. Once on the target page (you see a table with one row per record), ` +
-        `take a final screenshot and identify the table visually. Make your best ` +
-        `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
-        `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
-        `your selectors on the first extraction; if wrong, a self-heal job will ` +
-        `re-engage you.\n` +
-        `7. If the page DOES NOT have the data we need (no equivalent report ` +
-        `exists in this PMS, or it's behind a paid module), reply with ` +
-        `{"unavailable": true, "reason": "<why>"} so we can mark this target ` +
-        `as unsupported and continue.\n\n`
-      : `\n\nWORKFLOW (do these in order, don't skip):\n` +
-        `1. Call \`read_page\` with text="interactive" — this gives you ALL ` +
-        `clickable links/buttons on the dashboard with their refs.\n` +
-        `2. SCAN the read_page output for any item whose name or aria-label ` +
-        `matches the target page (e.g. for housekeeping look for "Housekeeping", ` +
-        `"Rooms", "Status", "Maid"; for staff look for "Users", "Staff", "Setup", ` +
-        `"Admin", "Employees"). The match doesn't have to be exact — partial is fine.\n` +
-        `3. If a single obvious match exists, click that ref and read_page again.\n` +
-        `4. If NO single match, click the most likely menu item (e.g. "Reports", ` +
-        `"Setup", or a hamburger icon). Then read_page on the resulting submenu — ` +
-        `submenus often hold the target.\n` +
-        `5. If you've clicked through 2 menu levels and STILL don't see the target, ` +
-        `try the \`find\` tool with the keyword (e.g. find("housekeeping")). It ` +
-        `searches the whole DOM tree, not just visible items.\n` +
-        `6. Once on the target page, look for a TABLE with one row per record. ` +
-        `Identify a stable rowSelector. For each required field, find a column ` +
-        `selector relative to one row.\n` +
-        `7. If the page DOES NOT have the data we need (e.g. no Housekeeping ` +
-        `report exists in this PMS, or it's behind a paid module), reply with ` +
-        `{"unavailable": true, "reason": "<why>"} so we can mark this action ` +
-        `as unsupported and continue.\n\n`) +
+    `\n\nWORKFLOW (use the computer tool):\n` +
+    `1. Take a SCREENSHOT to see the dashboard.\n` +
+    `2. SCAN the screenshot for any menu item / link / tab whose visible ` +
+    `text matches the target (e.g. for housekeeping look for "Housekeeping", ` +
+    `"Rooms", "Status", "Maid"; for revenue look for "Reports", "Audit", ` +
+    `"Revenue", "Daily Summary"). Partial matches are fine.\n` +
+    `3. left_click the most-likely target's coordinate. Look at the screenshot ` +
+    `carefully — small misalignments will miss the element.\n` +
+    `4. Take another screenshot to see the new page.\n` +
+    `5. If you're not on the target page yet, repeat: scan, click, screenshot. ` +
+    `Most data lives 1-3 levels under Reports / Front Desk / Setup menus.\n` +
+    `6. Once on the target page (you see a table with one row per record), ` +
+    `take a final screenshot and identify the table visually. Make your best ` +
+    `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
+    `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
+    `your selectors on the first extraction; if wrong, a self-heal job will ` +
+    `re-engage you.\n` +
+    `7. If the page DOES NOT have the data we need (no equivalent report ` +
+    `exists in this PMS, or it's behind a paid module), reply with ` +
+    `{"unavailable": true, "reason": "<why>"} so we can mark this target ` +
+    `as unsupported and continue.\n\n` +
 
     `WHEN DONE WITH A REAL PAGE — your reply MUST start with the JSON ` +
     `object on the first line. No preamble like "I found the page" or ` +
@@ -1051,7 +934,7 @@ async function mapAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > phaseWallclockFor(args.mode)) {
+    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
     // Per-turn budget check — global job cap.
@@ -1096,30 +979,23 @@ async function mapAction(args: {
       ? `${args.jobId}:${args.actionName}:${stepIdx}`
       : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
 
-    // Extended thinking — vision mode only. See THINKING_BUDGET_TOKENS_VISION
-    // comment for rationale + the DOM-mode-unchanged invariant.
-    // Thinking tokens consume from max_tokens — bump max_tokens by the
-    // thinking budget so the VISIBLE-output cap remains 4096 (Codex
-    // review finding 2).
-    const thinkingParam = args.mode === 'vision'
-      ? { thinking: { type: 'enabled' as const, budget_tokens: THINKING_BUDGET_TOKENS_VISION } }
-      : {};
-    const maxTokensForCall = args.mode === 'vision'
-      ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
-      : MAX_OUTPUT_TOKENS_PER_TURN;
+    // Extended thinking — 2000-token "medium" budget per Anthropic's
+    // best-practices blog for computer/browser use. Thinking tokens
+    // consume from max_tokens — bump max_tokens by the thinking budget
+    // so the VISIBLE-output cap remains 4096 (Codex review finding 2).
 
     // Loop-detector input #1 — fingerprint the page state Claude is
     // about to reason on. Used after toolResults are built to record
     // (action, page) tuples. Computed BEFORE messages.create so the
-    // page state matches what Claude sees in the screenshot/read_page
-    // it's about to act on. Best-effort: errors fall back to a URL-only
-    // fingerprint inside the helper.
+    // page state matches what Claude sees in the screenshot it's about
+    // to act on. Best-effort: errors fall back to a URL-only fingerprint
+    // inside the helper.
     const turnPageFingerprint = await pageFingerprint(args.page);
 
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: maxTokensForCall,
-      ...thinkingParam,
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS,
+      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS },
       system: [
         {
           type: 'text',
@@ -1128,7 +1004,7 @@ async function mapAction(args: {
         },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: maybePruneHistory(messages, pruneState, stepIdx, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      messages: maybePruneHistory(messages, pruneState, stepIdx, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
@@ -1241,28 +1117,19 @@ async function mapAction(args: {
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
-      const action = toolUse.input as BrowserAction;
+      const action = toolUse.input as VisionAction;
       const actionType = (action as { action?: string }).action ?? '';
 
-      // Critic — pre-screenshot for click verbs in vision mode only.
-      // DOM mode skips entirely (read_page already grounds the agent).
-      // Click verbs only (left_click, double_click) — scrolls and waits
-      // have no meaningful "intended outcome" worth grading. Best-effort:
-      // if the pre-screenshot capture fails we set preScreenshotB64=null
-      // and the critic block below short-circuits.
-      const isVisionClick = args.mode === 'vision' &&
-        (actionType === 'left_click' || actionType === 'double_click');
-      const preScreenshotB64 = isVisionClick
+      // Critic — pre-screenshot for click verbs (left_click, double_click).
+      // Scrolls and waits have no meaningful "intended outcome" worth
+      // grading. Best-effort: if the pre-screenshot capture fails we set
+      // preScreenshotB64=null and the critic block below short-circuits.
+      const isClick = actionType === 'left_click' || actionType === 'double_click';
+      const preScreenshotB64 = isClick
         ? await captureScreenshotForCritic(args.page)
         : null;
 
-      // Plan v2 F-AI-7: action phase — write-style actions (type /
-      // form_input / click) are refused. Mapper must navigate + read +
-      // emit the JSON recipe; no mutations on the data pages.
-      // Plan v8 Phase A: dispatch by mode (DOM vs vision executor).
-      const exec = args.mode === 'vision'
-        ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
-        : await executeBrowserAction(args.page, action, args.credentials, 'action');
+      const exec = await executeVisionAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
 
       // Critic — judge the click outcome and optionally prepend a
@@ -1271,7 +1138,7 @@ async function mapAction(args: {
       // anthropic call, parse) we treat the verdict as 'unclear' inside
       // judgeStepOutcome and don't mutate the output.
       let execForToolResult = exec;
-      if (isVisionClick && preScreenshotB64) {
+      if (isClick && preScreenshotB64) {
         // Settle delay — Codex review high-3: an immediate post-click
         // screenshot can catch an animating/transitioning page (SPA
         // route change, modal fade-in, dropdown expansion) and the
@@ -1313,14 +1180,12 @@ async function mapAction(args: {
       toolResults.push(makeToolResult(toolUse.id, execForToolResult));
 
       // Plan v7 — track activity for the unavailable floor.
-      // DOM: read_page / get_page_text. Vision: screenshot. All count as
-      // "actually looked at the page" evidence. Navigations / clicks count
-      // toward the navigation budget regardless of mode.
-      if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') {
+      // Vision-only: a screenshot is "actually looked at the page";
+      // left_click / double_click / scroll count as navigation effort.
+      if (actionType === 'screenshot') {
         readPageCount++;
-      } else if (actionType === 'navigate' || actionType === 'left_click' ||
-                 actionType === 'double_click' || actionType === 'find' ||
-                 actionType === 'scroll_to' || actionType === 'form_input') {
+      } else if (actionType === 'left_click' || actionType === 'double_click' ||
+                 actionType === 'scroll') {
         navigationCount++;
       }
     }
@@ -1408,14 +1273,11 @@ async function mapDrillDownAction(args: {
   propertyId: string | null;
   jobId: string | null;
   signal?: AbortSignal;
-  /** Plan v8 Phase A — same mode for all targets across the mapping run. */
-  mode: 'dom' | 'vision';
   model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
-  // Plan v8: resolve config once at top.
-  const cfg = getModeConfig(args.mode, args.model);
+  const cfg = getModeConfig(args.model);
 
   // Reuse the post-login navigation setup from mapAction.
   if (args.page.url() !== args.postLoginUrl) {
@@ -1438,19 +1300,13 @@ async function mapDrillDownAction(args: {
 
   const fullGoal =
     args.goal +
-    (args.mode === 'vision'
-      ? `\n\nDRILL-DOWN WORKFLOW (vision mode):\n` +
-        `1. Take a SCREENSHOT to see the dashboard menus.\n` +
-        `2. Navigate to the LIST page by clicking visible menus (e.g. ` +
-        `reservations list, lost-items list).\n` +
-        `3. Look at the list visually. Make your best-guess CSS selectors for ` +
-        `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
-        `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n`
-      : `\n\nDRILL-DOWN WORKFLOW (do these in order):\n` +
-        `1. read_page to see the dashboard menus.\n` +
-        `2. Navigate to the LIST page (e.g. reservations list, lost-items list).\n` +
-        `3. Capture the list page selectors: a stable rowSelector + columns ` +
-        `for the fields visible IN THE ROW.\n`) +
+    `\n\nDRILL-DOWN WORKFLOW:\n` +
+    `1. Take a SCREENSHOT to see the dashboard menus.\n` +
+    `2. Navigate to the LIST page by clicking visible menus (e.g. ` +
+    `reservations list, lost-items list).\n` +
+    `3. Look at the list visually. Make your best-guess CSS selectors for ` +
+    `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
+    `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n` +
     `4. Pick ${SAMPLE_COUNT} sample rows. For each one:\n` +
     `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
     `   - Click into the row to open the detail page\n` +
@@ -1474,7 +1330,7 @@ async function mapDrillDownAction(args: {
     `\n` +
     `If you genuinely can't find the list page (e.g. the PMS doesn't have ` +
     `a Lost & Found module), emit {"unavailable": true, "reason": "..."} ` +
-    `per the system-prompt floor (≥1 read_page, ≥3 navigations first).\n\n` +
+    `per the system-prompt floor (≥1 screenshot, ≥3 navigations first).\n\n` +
     `Required fields: ${args.requiredFields.join(', ')}\n` +
     `Output the JSON on the first line of your reply — no preamble.`;
 
@@ -1500,7 +1356,7 @@ async function mapDrillDownAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > phaseWallclockFor(args.mode)) {
+    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
     const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
@@ -1525,27 +1381,18 @@ async function mapDrillDownAction(args: {
       ? `${args.jobId}:drilldown:${args.actionName}:${stepIdx}`
       : `anon:drilldown:${args.actionName}:${stepIdx}:${Date.now()}`;
 
-    // Extended thinking — vision mode only. See THINKING_BUDGET_TOKENS_VISION
-    // comment for rationale + the DOM-mode-unchanged invariant.
-    // Thinking tokens consume from max_tokens — bump max_tokens by the
-    // thinking budget so the VISIBLE-output cap remains 4096 (Codex
-    // review finding 2).
-    const thinkingParam = args.mode === 'vision'
-      ? { thinking: { type: 'enabled' as const, budget_tokens: THINKING_BUDGET_TOKENS_VISION } }
-      : {};
-    const maxTokensForCall = args.mode === 'vision'
-      ? MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS_VISION
-      : MAX_OUTPUT_TOKENS_PER_TURN;
-
+    // Extended thinking — 2000-token "medium" budget per Anthropic's
+    // best-practices blog. Bump max_tokens by the thinking budget so the
+    // VISIBLE-output cap stays MAX_OUTPUT_TOKENS_PER_TURN (4096).
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: maxTokensForCall,
-      ...thinkingParam,
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS,
+      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS },
       system: [
         { type: 'text', text: cfg.systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages: maybePruneHistory(messages, pruneState, stepIdx, historyKeepFor(args.mode)) as Anthropic.Beta.Messages.BetaMessageParam[],
+      messages: maybePruneHistory(messages, pruneState, stepIdx, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31', ...cfg.betas],
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
@@ -1718,22 +1565,17 @@ async function mapDrillDownAction(args: {
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
-      const action = toolUse.input as BrowserAction;
-      // Plan v8 Phase A: dispatch by mode (DOM vs vision executor).
-      const exec = args.mode === 'vision'
-        ? await executeVisionAction(args.page, toolUse.input as VisionAction, args.credentials, 'action')
-        : await executeBrowserAction(args.page, action, args.credentials, 'action');
+      const action = toolUse.input as VisionAction;
+      const exec = await executeVisionAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
 
       const actionType = (action as { action?: string }).action ?? '';
-      // Both DOM (read_page/get_page_text) and vision (screenshot) count
-      // toward the "explored at least one page" floor — the agent must
-      // have actually looked at SOMETHING before claiming unavailable.
-      if (actionType === 'read_page' || actionType === 'get_page_text' || actionType === 'screenshot') readPageCount++;
-      else if (actionType === 'navigate' || actionType === 'left_click' ||
-               actionType === 'double_click' || actionType === 'find' ||
-               actionType === 'scroll_to' || actionType === 'form_input') navigationCount++;
+      // Vision-only: a screenshot is "actually looked at the page";
+      // click/scroll count as navigation effort.
+      if (actionType === 'screenshot') readPageCount++;
+      else if (actionType === 'left_click' || actionType === 'double_click' ||
+               actionType === 'scroll') navigationCount++;
     }
 
     messages.push({ role: 'user', content: toolResults });
