@@ -2114,6 +2114,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Staxis-side cleaning task records (departure clean, VIP amenity
   // setup, tight-turnaround priority bump, …).
   { name: 'run-rules-engine',              cadenceHours: 5/60,  description: '5-min cleaning-rules engine — reads pms_*, writes cleaning_tasks (Vercel native cron)' },
+  // 2026-05-25: auto-assignment cron. Every 15 min, per-property
+  // timezone. Picks up unassigned cleaning_tasks for each property's
+  // "today" and runs the scoring engine. Idempotent (skips already-
+  // assigned tasks via the hk_assignments partial unique index).
+  { name: 'run-auto-assign',               cadenceHours: 15/60, description: '15-min Vercel cron — auto-assigns cleaning_tasks to housekeepers per property timezone' },
   // 2026-05-24: sick-callout coverage flow (feature #6). Sweeps callouts
   // whose redistribute_at has passed (or whose 'after_current_room'
   // gate is now satisfied) and fires the redistribute. Safety net for

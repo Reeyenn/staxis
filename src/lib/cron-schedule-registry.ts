@@ -87,6 +87,13 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Migration 0210: cleaning-rules engine. Reads pms_* → writes
   // cleaning_tasks every 5 min. Idempotent.
   { heartbeatName: 'run-rules-engine',      source: { kind: 'vercel', cronPath: '/api/cron/run-rules-engine' },                 cronExpr: '*/5 * * * *' },
+  // 2026-05-25: auto-assignment cron. Fires every 15 min unconditionally.
+  // The engine is idempotent (skips tasks with an is_active hk_assignments
+  // row) and `runForProperty` computes "today" per the property's own
+  // timezone — so a single UTC-tick line handles every timezone without
+  // a hardcoded shift-start gate. Rationale + rejected alternatives are
+  // documented in the route file header.
+  { heartbeatName: 'run-auto-assign',       source: { kind: 'vercel', cronPath: '/api/cron/run-auto-assign' },                  cronExpr: '*/15 * * * *' },
   // 2026-05-24: sick-callout coverage flow (feature #6). Every 5 min,
   // sweeps callout_events for rows whose redistribute_at has passed
   // (or whose 'after_current_room' guard is now satisfied) and fires

@@ -74,6 +74,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/run-auto-assign",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/cron/process-pending-callouts",
       "schedule": "*/5 * * * *"
     },
