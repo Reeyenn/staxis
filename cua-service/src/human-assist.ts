@@ -171,6 +171,36 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
     log.info('help-request: skipped — no admin online', {
       jobId: input.jobId, targetKey: input.targetKey,
     });
+    // Plan v8 hardening (Codex P2 #6) — insert a tombstone row so
+    // checkHelpFlood counts this attempt. Without the tombstone, a job
+    // could hit "no admin online" on every target endlessly without
+    // tripping the 3-attempt circuit-breaker.
+    try {
+      await supabase
+        .from('mapping_help_requests')
+        .insert({
+          job_id: input.jobId,
+          target_key: input.targetKey,
+          question: `[skipped — no admin online] ${input.question}`,
+          what_ive_tried: input.whatIveTried ?? [],
+          suggested_paths: input.suggestedPaths ?? [],
+          screenshot_storage_path: input.screenshotStoragePath,
+          scroll_x: input.scroll?.x ?? 0,
+          scroll_y: input.scroll?.y ?? 0,
+          viewport_w: input.viewport?.w ?? 1280,
+          viewport_h: input.viewport?.h ?? 800,
+          status: 'expired',     // counts toward flood (per checkHelpFlood OR clause)
+          action_type: 'unavailable',
+          response_text: 'no admin online',
+          answered_at: new Date().toISOString(),
+        });
+    } catch (err) {
+      // Best-effort tombstone. If the INSERT fails the flood breaker
+      // just won't count this attempt — degraded but not broken.
+      log.warn('help-request: no-admin tombstone insert failed', {
+        err: (err as Error).message, jobId: input.jobId, targetKey: input.targetKey,
+      });
+    }
     return { actionType: 'unavailable', source: 'no_admin_online' };
   }
 
@@ -272,16 +302,28 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
 /**
  * Plan v8 P2-4 — help-flood circuit-breaker. Mapper calls this BEFORE
  * each requestHelp; if 3+ unsuccessful (unavailable / abort / expired /
- * no-admin-online) requests have stacked up on this job, the PMS is
- * fundamentally hard for the mapper and we auto-abort instead of asking
- * for help on a 4th target.
+ * aborted / no-admin-online) requests have stacked up on this job, the
+ * PMS is fundamentally hard for the mapper and we auto-abort instead
+ * of asking for help on a 4th target.
+ *
+ * Plan v8 hardening (Codex P2 #6) — previous version missed two cases:
+ *   1. status='aborted' rows (SIGTERM during a help-wait) had no
+ *      action_type set, so the old `action_type.in.(unavailable,abort)`
+ *      filter skipped them.
+ *   2. no-admin-online early returns inserted NO row at all, so the
+ *      mapper could endlessly hit "no admin online" without ever
+ *      tripping the flood breaker.
+ *
+ * Both fixed: filter now includes status.in.(expired,aborted), and
+ * requestHelp() inserts a tombstone row when no admin is online so the
+ * counter captures it.
  */
 export async function checkHelpFlood(jobId: string): Promise<boolean> {
   const { count, error } = await supabase
     .from('mapping_help_requests')
     .select('id', { count: 'exact', head: true })
     .eq('job_id', jobId)
-    .or('action_type.in.(unavailable,abort),status.eq.expired');
+    .or('action_type.in.(unavailable,abort),status.in.(expired,aborted)');
   if (error) {
     log.warn('checkHelpFlood: query failed — treating as no-flood', {
       err: error.message, jobId,

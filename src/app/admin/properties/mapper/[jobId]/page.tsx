@@ -118,11 +118,14 @@ export default function LiveMappingPage() {
     }
   };
 
+  // Plan v8 hardening (Codex P1 #3) — one initial GET for hydration,
+  // then rely on realtime for updates. Polling only re-enables when the
+  // realtime subscription enters CHANNEL_ERROR / CLOSED state. At 300
+  // concurrent mapping jobs × multiple admins watching each, the old
+  // 10s poll was 1000+ DB reads per minute on top of realtime.
   useEffect(() => {
     if (!jobId) return;
     void load();
-    const t = setInterval(() => { void load(); }, 10_000);
-    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
@@ -137,8 +140,18 @@ export default function LiveMappingPage() {
   }, [user]);
 
   // Subscribe to mapping_help_requests postgres_changes for this job.
+  // If the channel disconnects, fall back to 10s polling until it
+  // reconnects (so admins still see help requests even if realtime drops).
   useEffect(() => {
     if (!jobId) return;
+    let pollFallback: ReturnType<typeof setInterval> | null = null;
+    const startPollFallback = () => {
+      if (pollFallback) return;
+      pollFallback = setInterval(() => { void load(); }, 10_000);
+    };
+    const stopPollFallback = () => {
+      if (pollFallback) { clearInterval(pollFallback); pollFallback = null; }
+    };
     const ch = supabase
       .channel(`mapping-help:${jobId}`)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -148,8 +161,17 @@ export default function LiveMappingPage() {
         table: 'mapping_help_requests',
         filter: `job_id=eq.${jobId}`,
       }, () => { void load(); })
-      .subscribe();
-    return () => { void ch.unsubscribe(); };
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          stopPollFallback();
+        } else if (status === 'CHANNEL_ERROR' || status === 'CLOSED' || status === 'TIMED_OUT') {
+          startPollFallback();
+        }
+      });
+    return () => {
+      stopPollFallback();
+      void ch.unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 

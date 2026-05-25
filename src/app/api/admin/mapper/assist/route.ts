@@ -32,7 +32,14 @@ import { getOrMintRequestId } from '@/lib/log';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const VALID_ACTIONS = new Set(['guidance', 'unavailable', 'takeover', 'abort']);
+// Plan v8 hardening (Codex P2 #7) — 'takeover' is dead-pathed for v1:
+// the dedicated /api/admin/mapper/takeover-action endpoint returns 501
+// and mapper.ts silently downgrades action_type='takeover' to
+// mark-unavailable. Removing it from VALID_ACTIONS here prevents an
+// admin (or buggy UI) from accidentally submitting takeover and getting
+// a surprising "marked unavailable" outcome with no warning. Will be
+// re-added when takeover actually lands.
+const VALID_ACTIONS = new Set(['guidance', 'unavailable', 'abort']);
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);

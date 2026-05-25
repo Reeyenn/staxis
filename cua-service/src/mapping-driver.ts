@@ -119,16 +119,36 @@ interface MappingEvent {
   at: string;           // ISO timestamp
 }
 
-async function broadcastMappingEvent(evt: MappingEvent): Promise<void> {
+/**
+ * Plan v8 hardening (Codex P1) — channel-per-job, not channel-per-event.
+ *
+ * Earlier version created and unsubscribed a fresh Supabase realtime
+ * channel for every progress event. At 300 hotels × ~50 events per job
+ * that's 15K channel lifecycle cycles per onboarding wave, which churns
+ * the realtime WebSocket pool harder than Supabase's per-connection
+ * limits expect.
+ *
+ * Now: openBroadcastChannel(jobId) at the top of runMappingJob, all
+ * subsequent broadcasts reuse it, closeBroadcastChannel(channel) in the
+ * finally block. One channel per job lifecycle.
+ */
+type MappingBroadcastChannel = ReturnType<typeof supabase.channel>;
+
+function openBroadcastChannel(jobId: string): MappingBroadcastChannel {
+  return supabase.channel(`mapping:${jobId}`);
+}
+
+async function broadcastMappingEvent(
+  channel: MappingBroadcastChannel | null,
+  evt: MappingEvent,
+): Promise<void> {
+  if (!channel) return;
   try {
-    const channel = supabase.channel(`mapping:${evt.jobId}`);
     await channel.send({
       type: 'broadcast',
       event: evt.type,
       payload: evt,
     });
-    // Channel.send doesn't subscribe; clean up to avoid leaking handles.
-    await channel.unsubscribe();
   } catch (err) {
     // Best-effort — never let a broadcast failure abort the mapper.
     log.warn('mapping-driver: broadcast failed (non-fatal)', {
@@ -136,6 +156,11 @@ async function broadcastMappingEvent(evt: MappingEvent): Promise<void> {
       err: (err as Error).message,
     });
   }
+}
+
+async function closeBroadcastChannel(channel: MappingBroadcastChannel | null): Promise<void> {
+  if (!channel) return;
+  try { await channel.unsubscribe(); } catch { /* noop */ }
 }
 
 /**
@@ -153,8 +178,13 @@ export async function runMappingJob(
     propertyId: input.property_id,
   });
 
+  // Plan v8 hardening — one realtime channel per job, reused across all
+  // lifecycle events. Closed in the finally block at the bottom.
+  const channel: MappingBroadcastChannel = openBroadcastChannel(jobId);
+
+  try {
   // Plan v8 Phase B chunk 2 — Live Mapping admin UI watches for these.
-  await broadcastMappingEvent({
+  await broadcastMappingEvent(channel, {
     type: 'mapping_started',
     jobId,
     label: 'Starting',
@@ -192,7 +222,7 @@ export async function runMappingJob(
       jobId,
       reason: preflight.reason,
     });
-    await broadcastMappingEvent({
+    await broadcastMappingEvent(channel, {
       type: 'preflight_failed',
       jobId,
       label: 'Pre-flight failed',
@@ -202,7 +232,7 @@ export async function runMappingJob(
     return { ok: false, error: `pre-flight check failed (no Claude spend): ${preflight.reason}` };
   }
   log.info('mapping-driver: pre-flight passed', { jobId });
-  await broadcastMappingEvent({
+  await broadcastMappingEvent(channel, {
     type: 'preflight_passed',
     jobId,
     label: 'Login URL OK',
@@ -228,7 +258,7 @@ export async function runMappingJob(
       // Mapping admin UI. mapper.ts emits these from mapPMS at:
       // login start/done, each target start, each target done. Fire-
       // and-forget; broadcastMappingEvent never throws.
-      void broadcastMappingEvent({
+      void broadcastMappingEvent(channel, {
         type: 'mapping_in_progress',
         jobId,
         label,
@@ -239,7 +269,7 @@ export async function runMappingJob(
   });
 
   if (!result.ok) {
-    await broadcastMappingEvent({
+    await broadcastMappingEvent(channel, {
       type: 'mapping_failed',
       jobId,
       label: 'Mapping failed',
@@ -291,7 +321,7 @@ export async function runMappingJob(
     ...stats,
   });
 
-  await broadcastMappingEvent({
+  await broadcastMappingEvent(channel, {
     type: 'mapping_completed',
     jobId,
     label: `Done — ${gate.decision}`,
@@ -314,6 +344,12 @@ export async function runMappingJob(
     promotionReason: gate.reason,
     ...stats,
   };
+  } finally {
+    // Plan v8 hardening — close the per-job channel once, regardless of
+    // success/failure/exception. Without this finally a thrown exception
+    // would leak the WebSocket channel handle.
+    await closeBroadcastChannel(channel);
+  }
 }
 
 // ─── Promotion gate ────────────────────────────────────────────────────
