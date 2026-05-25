@@ -88,18 +88,39 @@ export async function GET(req: NextRequest) {
       },
     );
 
+    // Treat ANY property-level error as a degraded run. Without this,
+    // the doctor saw a fresh `ok` heartbeat even when migration 0210 was
+    // missing and every property's engine call was throwing — masking a
+    // full engine outage as a healthy cron. (Post-merge sweep: Codex
+    // Finding #4.)
+    //
+    // We also escalate the noise level: log.error ships to Sentry
+    // (log.warn does not), so the operator actually sees the failure.
     if (totals.errorCount > 0) {
-      log.warn('[run-rules-engine] partial errors', {
+      log.error('[run-rules-engine] partial errors', {
         requestId,
         ...totals,
         errors: results.flatMap((r) =>
           r.errors.map((e) => ({ property_id: r.property_id, ...e })),
         ),
       });
+    } else {
+      // Structured success log so operators can answer "did the 9:05 run
+      // actually create tasks?" from logs alone, without inspecting
+      // discarded response bodies. (Codex Finding #12 — fixed alongside
+      // the Critical heartbeat fix because it's the same observability gap.)
+      log.info('[run-rules-engine] run completed', {
+        requestId,
+        ...totals,
+        dryRun,
+        scoped: Boolean(rawPropertyId),
+      });
     }
 
+    const degraded = totals.errorCount > 0;
     await writeCronHeartbeat('run-rules-engine', {
       requestId,
+      status: degraded ? 'degraded' : 'ok',
       notes: {
         ...totals,
         dryRun,

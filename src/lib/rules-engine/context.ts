@@ -65,7 +65,21 @@ interface RawReservation {
   accessibility_needs: string | null;
   package_name: string | null;
   rate_code: string | null;
+  status: string | null;
 }
+
+/** Reservation status values that mean "this reservation should NOT
+ *  generate a cleaning task" — the guest is no longer coming or has
+ *  already left the lifecycle. Post-merge sweep fix (Codex Finding #2).
+ *  Without this filter, a cancelled VIP arrival would still fire the
+ *  vip-arrival rule and produce a spurious task. */
+const TERMINAL_RESERVATION_STATUSES = new Set(['cancelled', 'no_show']);
+
+/** Room statuses where the room is physically unavailable to housekeeping.
+ *  Post-merge sweep fix (Codex Finding #3). Even if a stale reservation
+ *  is still attached, we don't create cleaning tasks for OOO/OOI rooms —
+ *  staff can't enter or the room is held for maintenance. */
+const BLOCKED_ROOM_STATUSES = new Set<string>(['out_of_order', 'out_of_inventory']);
 
 interface RawStatusLog {
   room_number: string;
@@ -125,7 +139,7 @@ export async function buildRoomContexts(
     supabaseAdmin
       .from('pms_reservations')
       .select(
-        'pms_reservation_id, room_number, arrival_date, arrival_time, departure_date, departure_time, num_nights, adults, children, infants, notes, special_requests, dietary_needs, accessibility_needs, package_name, rate_code',
+        'pms_reservation_id, room_number, arrival_date, arrival_time, departure_date, departure_time, num_nights, adults, children, infants, notes, special_requests, dietary_needs, accessibility_needs, package_name, rate_code, status',
       )
       .eq('property_id', propertyId)
       .lte('arrival_date', prop.business_date)
@@ -176,6 +190,10 @@ export function assembleRoomContexts(
   const reservationsByRoom = new Map<string, RawReservation[]>();
   for (const r of reservations) {
     if (!r.room_number) continue;
+    // Drop terminal reservations (cancelled / no_show) before partitioning.
+    // Status is nullable in pms_reservations; null means "PMS didn't expose
+    // the status field" which we treat as still-active.
+    if (r.status && TERMINAL_RESERVATION_STATUSES.has(r.status)) continue;
     const list = reservationsByRoom.get(r.room_number) ?? [];
     list.push(r);
     reservationsByRoom.set(r.room_number, list);
@@ -213,6 +231,13 @@ export function assembleRoomContexts(
     if (!departingRaw && !arrivingRaw && !stayingRaw && !hk) {
       // Room has no reservation activity today and PMS HK plan didn't
       // mention it — nothing to evaluate.
+      continue;
+    }
+
+    // Skip rooms physically unavailable to housekeeping (OOO / OOI). A
+    // stale reservation attached to a blocked room would otherwise
+    // produce a task staff cannot perform.
+    if (status?.status && BLOCKED_ROOM_STATUSES.has(status.status)) {
       continue;
     }
 
