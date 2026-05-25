@@ -174,6 +174,14 @@ const SERVICE_ROLE_ONLY = new Set([
   // housekeeping UI reads via /api/* with supabaseAdmin. The UI branch
   // will add per-role read policies in a follow-up migration.
   'cleaning_tasks',
+  // ─── Migration 0214 — housekeeper mobile rebuild piece A. ────────────
+  // Same deny-all-browser policy pattern as cleaning_tasks (0210).
+  // Service-role only — /api/housekeeper/* mediates all reads/writes via
+  // supabaseAdmin with capability checks (pid + staffId).
+  'room_pause_events',
+  'cleaning_checklist_templates',
+  'cleaning_checklist_items',
+  'staff_breaks',
 ]);
 
 function listMigrations() {

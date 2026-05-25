@@ -83,6 +83,24 @@ export type RateLimitEndpoint =
   | 'housekeeper-rooms'
   | 'housekeeper-room-action'
   | 'housekeeper-save-language'
+  // Housekeeper mobile rebuild piece A (2026-05-24) — explicit
+  // Start → Pause → Resume → Done workflow + 5 exception types +
+  // per-cleaning-type checklists + lunch breaks. Each route gets its
+  // own bucket so a runaway in one (e.g., checklist toggle on a fast
+  // tapper) doesn't lock out Start/Done on the same shift. All keyed on
+  // `${pid}:${staffId}` via hashToRateLimitKey.
+  | 'housekeeper-start-clean'
+  | 'housekeeper-pause-clean'
+  | 'housekeeper-resume-clean'
+  | 'housekeeper-complete-clean'
+  | 'housekeeper-exception'
+  | 'housekeeper-checklist-toggle'
+  | 'housekeeper-checklist-read'
+  | 'housekeeper-lunch-break'
+  | 'housekeeper-daily-summary'
+  // Front-desk "rush" button (display side ships in piece A so the
+  // housekeeper banner works; the posting side comes in piece B).
+  | 'front-desk-rush'
   | 'laundry-bootstrap'
   // F-NEW-02 / Batch D — public POST that swaps the SMS-link CODE for the
   // hashed_token used to verifyOtp. Code is ~40 bits; the rate limit caps
@@ -212,6 +230,32 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Language toggle — a settings change. Set once, occasionally re-toggled.
   // 10/hr is plenty.
   'housekeeper-save-language':   10,
+  // Housekeeper workflow rebuild (piece A). Caps tuned for "this is a
+  // person tapping a button" — a real housekeeper cleans maybe 14 rooms
+  // a shift = 14 Starts and 14 Dones. 200/hr per write endpoint absorbs
+  // accidental double-taps without ever inconveniencing real use, and
+  // bounds a stolen-link replay loop to ≤200 phantom rooms an hour.
+  'housekeeper-start-clean':     200,
+  'housekeeper-pause-clean':     200,
+  'housekeeper-resume-clean':    200,
+  'housekeeper-complete-clean':  200,
+  'housekeeper-exception':       100,
+  // Checklist toggle: fast tappers can fire one item per second through
+  // a long checklist. 600/hr covers 10 items × 60 rooms with headroom.
+  'housekeeper-checklist-toggle': 600,
+  // Checklist template read is cached on the client per cleaning type;
+  // 60/hr is "open every room's checklist once". Bumped if needed.
+  'housekeeper-checklist-read':   60,
+  // Lunch break: at most 4 transitions per shift (start lunch, end
+  // lunch, maybe a short break). 30/hr is "tap a few times by mistake"
+  // headroom.
+  'housekeeper-lunch-break':      30,
+  // Daily summary is a read at end of shift. 30/hr stops a tab that
+  // accidentally polls.
+  'housekeeper-daily-summary':    30,
+  // Front-desk rush button: each rush is a deliberate decision. 60/hr
+  // per (pid, staffId) is generous for a busy front desk.
+  'front-desk-rush':              60,
   // laundry-bootstrap is a read-only page bootstrap. Polled less often
   // than housekeeper. 600/hr per property covers heavy use.
   'laundry-bootstrap':          600,

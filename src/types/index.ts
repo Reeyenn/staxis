@@ -153,8 +153,37 @@ export interface Room {
   stayoverDay?: number;         // 0 = arrival day, 1 = light, 2 = full, 3 = light, … (null if checkout/vacant)
   stayoverMinutes?: number;     // classified cleaning time (0/15/20) — written by CSV scraper
   helpRequested?: boolean;      // housekeeper tapped "Need Help" — shows SOS badge on Maria's view
-  checklist?: Record<string, boolean>; // cleaning checklist item completion
+  checklist?: Record<string, boolean>; // legacy unused jsonb (kept for back-compat)
   photoUrl?: string;            // issue photo URL
+  // Workflow rebuild piece A (migration 0214). Tap-Start → tap-Pause →
+  // tap-Resume → tap-Done with five exception types and per-cleaning-type
+  // checklists. New code reads/writes these; legacy is_dnd is mirrored
+  // when exception_type === 'dnd' so older readers still see DND.
+  isPaused?: boolean;
+  pausedAt?: Date | null;
+  totalPausedSeconds?: number;
+  exceptionType?: 'dnd' | 'nsr' | 'dla' | 'sleep_out' | 'skipped' | null;
+  exceptionNote?: string | null;
+  exceptionAt?: Date | null;
+  floor?: string;
+  checklistTemplateId?: string | null;
+  checklistProgress?: string[]; // array of completed checklist item IDs
+  managerNotes?: string | null; // display-side; posting comes in piece B
+  isRush?: boolean;
+  rushDueBy?: Date | null;
+  markedForInspectionAt?: Date | null;
+}
+
+// ─── Housekeeper job-card context (joined from pms_reservations) ───────────
+
+export interface RoomReservationContext {
+  roomNumber: string;
+  guestName?: string;
+  arrivalDate?: string;
+  arrivalTime?: string;
+  numNights?: number;
+  isVip?: boolean;       // inferred from special_requests / package_name
+  specialRequests?: string;
 }
 
 // ─── Inventory / Supply Tracking ───────────────────────────────────────────

@@ -336,7 +336,43 @@ export function fromRoomRow(r: Record<string, unknown>): Room {
     helpRequested: r.help_requested == null ? undefined : Boolean(r.help_requested),
     checklist: parseRecordField(r.checklist, parseBoolField),
     photoUrl: parseStringField(r.photo_url),
+    // Migration 0214 (housekeeper mobile rebuild piece A).
+    isPaused: r.is_paused == null ? undefined : Boolean(r.is_paused),
+    pausedAt: toDate(r.paused_at),
+    totalPausedSeconds: r.total_paused_seconds == null ? undefined : Number(r.total_paused_seconds),
+    exceptionType: parseRoomExceptionType(r.exception_type),
+    exceptionNote: parseStringField(r.exception_note) ?? null,
+    exceptionAt: toDate(r.exception_at),
+    floor: parseStringField(r.floor),
+    checklistTemplateId: parseStringField(r.checklist_template_id) ?? null,
+    checklistProgress: parseStringArrayField(r.checklist_progress),
+    managerNotes: parseStringField(r.manager_notes) ?? null,
+    isRush: r.is_rush == null ? undefined : Boolean(r.is_rush),
+    rushDueBy: toDate(r.rush_due_by),
+    markedForInspectionAt: toDate(r.marked_for_inspection_at),
   };
+}
+
+const ROOM_EXCEPTION_TYPES = new Set([
+  'dnd',
+  'nsr',
+  'dla',
+  'sleep_out',
+  'skipped',
+]);
+
+function parseRoomExceptionType(
+  v: unknown,
+): 'dnd' | 'nsr' | 'dla' | 'sleep_out' | 'skipped' | null {
+  if (typeof v !== 'string') return null;
+  return ROOM_EXCEPTION_TYPES.has(v)
+    ? (v as 'dnd' | 'nsr' | 'dla' | 'sleep_out' | 'skipped')
+    : null;
+}
+
+function parseStringArrayField(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return (v as unknown[]).filter((x): x is string => typeof x === 'string');
 }
 
 // ─── Public area ────────────────────────────────────────────────────────────

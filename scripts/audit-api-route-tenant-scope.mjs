@@ -79,6 +79,12 @@ const KNOWN_GUARDS = [
   // Rate-limit infra — typically paired with token/code-based auth on the
   // /api/auth/* routes that consume single-use credentials.
   'checkAndIncrementRateLimit',
+  // Housekeeper mobile rebuild piece A (migration 0214) — the new
+  // /api/housekeeper/* workflow routes share this capability check.
+  // It validates (pid, staffId), enforces the rate limit, and confirms
+  // the staff member belongs to the property. Same trust model as the
+  // legacy room-action route, just factored into one helper.
+  'gateHousekeeperRequest',
 ];
 
 // Inline capability-check patterns. If a file contains any of these

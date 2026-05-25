@@ -110,6 +110,28 @@ type TranslationKey =
   | 'hkReportIssueAria' | 'hkIssueShort' | 'hkResetShort' | 'hkUndoShort' | 'hkCompleteShort'
   | 'hkOffline'
   | 'hkErrCouldntMarkClean' | 'hkErrCouldntToggleDnd' | 'hkErrCouldntSaveIssue' | 'hkErrCouldntResetRoom'
+  // Housekeeper mobile rebuild piece A (2026-05-24): Start/Pause/Resume/Done
+  // workflow, checklists, exception buttons, lunch break, daily summary.
+  | 'hkActionStart' | 'hkActionPause' | 'hkActionResume' | 'hkActionDone'
+  | 'hkPaused' | 'hkOpenChecklist' | 'hkChecklistTitle' | 'hkChecklistChecked'
+  | 'hkAreaBathroom' | 'hkAreaBedroom' | 'hkAreaLiving' | 'hkAreaKitchen'
+  | 'hkAreaEntry' | 'hkAreaAmenities' | 'hkAreaFinal'
+  | 'hkException' | 'hkExceptionDnd' | 'hkExceptionNsr' | 'hkExceptionDla'
+  | 'hkExceptionSleepOut' | 'hkExceptionSkipped' | 'hkExceptionLabel'
+  | 'hkExceptionAddNoteOptional' | 'hkExceptionConfirm' | 'hkExceptionClear'
+  | 'hkExceptionDndDescription' | 'hkExceptionNsrDescription'
+  | 'hkExceptionDlaDescription' | 'hkExceptionSleepOutDescription'
+  | 'hkExceptionSkippedDescription'
+  | 'hkGuestNameLabel' | 'hkETALabel' | 'hkNightsLabel' | 'hkNightsUnit'
+  | 'hkManagerNotesLabel' | 'hkRushBanner' | 'hkRushDueIn'
+  | 'hkFloorPrefix' | 'hkGroupByFloor' | 'hkGroupByRoom'
+  | 'hkLunchStart' | 'hkLunchEnd' | 'hkLunchOnBreak' | 'hkLunchMinutesSuffix'
+  | 'hkSummaryTitle' | 'hkSummaryRoomsCleaned' | 'hkSummaryActiveMinutes'
+  | 'hkSummaryAveragePerRoom' | 'hkSummaryLunchMinutes' | 'hkSummaryShiftHours'
+  | 'hkSummaryStillToGo' | 'hkSummaryShowDailySummary'
+  | 'hkErrCouldntStart' | 'hkErrCouldntPause' | 'hkErrCouldntResume'
+  | 'hkErrCouldntComplete' | 'hkErrCouldntSaveException'
+  | 'hkCriticalItem' | 'hkChecklistOptional'
   | 'lndLoadingTasks' | 'lndLaundryLoadsHeading' | 'lndLoadsUnit'
   | 'lndProgressOf' | 'lndProgressDone' | 'lndNoTasksToday'
   // Guest requests
@@ -518,6 +540,66 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     hkErrCouldntToggleDnd: "Couldn't toggle Do Not Disturb.",
     hkErrCouldntSaveIssue: "Couldn't save the issue. Try again.",
     hkErrCouldntResetRoom: "Couldn't reset the room.",
+    // Workflow rebuild A (2026-05-24)
+    hkActionStart: 'Start',
+    hkActionPause: 'Pause',
+    hkActionResume: 'Resume',
+    hkActionDone: 'Done',
+    hkPaused: 'Paused',
+    hkOpenChecklist: 'Open checklist',
+    hkChecklistTitle: 'Cleaning checklist',
+    hkChecklistChecked: 'checked',
+    hkChecklistOptional: 'Items are optional — you can finish without checking every one.',
+    hkCriticalItem: 'Important',
+    hkAreaBathroom: 'Bathroom',
+    hkAreaBedroom: 'Bedroom',
+    hkAreaLiving: 'Living area',
+    hkAreaKitchen: 'Kitchen',
+    hkAreaEntry: 'Entry',
+    hkAreaAmenities: 'Amenities',
+    hkAreaFinal: 'Final check',
+    hkException: 'Exception',
+    hkExceptionDnd: 'Do Not Disturb',
+    hkExceptionNsr: 'No Service',
+    hkExceptionDla: 'Double-Lock',
+    hkExceptionSleepOut: 'Sleep Out',
+    hkExceptionSkipped: 'Skipped',
+    hkExceptionLabel: 'Mark this room as',
+    hkExceptionAddNoteOptional: 'Add a note (optional)',
+    hkExceptionConfirm: 'Confirm',
+    hkExceptionClear: 'Clear exception',
+    hkExceptionDndDescription: 'Guest asked not to be disturbed',
+    hkExceptionNsrDescription: 'Guest opted out of cleaning today',
+    hkExceptionDlaDescription: 'Door is double-locked from inside',
+    hkExceptionSleepOutDescription: "Guest paid but never arrived",
+    hkExceptionSkippedDescription: 'Could not clean — needs supervisor',
+    hkGuestNameLabel: 'Guest',
+    hkETALabel: 'Arriving',
+    hkNightsLabel: 'Nights',
+    hkNightsUnit: 'nights',
+    hkManagerNotesLabel: 'Manager note',
+    hkRushBanner: 'URGENT',
+    hkRushDueIn: 'Due',
+    hkFloorPrefix: 'Floor',
+    hkGroupByFloor: 'By floor',
+    hkGroupByRoom: 'By number',
+    hkLunchStart: 'Start lunch',
+    hkLunchEnd: 'End lunch',
+    hkLunchOnBreak: 'On lunch break',
+    hkLunchMinutesSuffix: 'min',
+    hkSummaryTitle: "Today's summary",
+    hkSummaryRoomsCleaned: 'Rooms cleaned',
+    hkSummaryActiveMinutes: 'Active cleaning',
+    hkSummaryAveragePerRoom: 'Average per room',
+    hkSummaryLunchMinutes: 'Lunch break',
+    hkSummaryShiftHours: 'Shift hours',
+    hkSummaryStillToGo: 'Still to clean',
+    hkSummaryShowDailySummary: 'View summary',
+    hkErrCouldntStart: "Couldn't start the room.",
+    hkErrCouldntPause: "Couldn't pause.",
+    hkErrCouldntResume: "Couldn't resume.",
+    hkErrCouldntComplete: "Couldn't mark Done.",
+    hkErrCouldntSaveException: "Couldn't save exception.",
     lndLoadingTasks: 'Loading tasks...',
     lndLaundryLoadsHeading: 'Laundry Loads',
     lndLoadsUnit: 'loads',
@@ -1161,6 +1243,66 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     hkErrCouldntToggleDnd: 'No se pudo cambiar No Molestar.',
     hkErrCouldntSaveIssue: 'No se pudo guardar el problema. Tócalo otra vez.',
     hkErrCouldntResetRoom: 'No se pudo reiniciar la habitación.',
+    // Workflow rebuild A (2026-05-24)
+    hkActionStart: 'Comenzar',
+    hkActionPause: 'Pausar',
+    hkActionResume: 'Reanudar',
+    hkActionDone: 'Listo',
+    hkPaused: 'En pausa',
+    hkOpenChecklist: 'Ver lista',
+    hkChecklistTitle: 'Lista de limpieza',
+    hkChecklistChecked: 'marcados',
+    hkChecklistOptional: 'La lista es opcional — puedes terminar sin marcar todo.',
+    hkCriticalItem: 'Importante',
+    hkAreaBathroom: 'Baño',
+    hkAreaBedroom: 'Dormitorio',
+    hkAreaLiving: 'Sala',
+    hkAreaKitchen: 'Cocina',
+    hkAreaEntry: 'Entrada',
+    hkAreaAmenities: 'Amenidades',
+    hkAreaFinal: 'Inspección final',
+    hkException: 'Excepción',
+    hkExceptionDnd: 'No Molestar',
+    hkExceptionNsr: 'Sin Servicio',
+    hkExceptionDla: 'Doble Seguro',
+    hkExceptionSleepOut: 'No Llegó',
+    hkExceptionSkipped: 'Omitida',
+    hkExceptionLabel: 'Marcar esta habitación como',
+    hkExceptionAddNoteOptional: 'Agregar nota (opcional)',
+    hkExceptionConfirm: 'Confirmar',
+    hkExceptionClear: 'Quitar excepción',
+    hkExceptionDndDescription: 'El huésped pidió no ser molestado',
+    hkExceptionNsrDescription: 'El huésped no quiere limpieza hoy',
+    hkExceptionDlaDescription: 'Puerta con doble seguro por dentro',
+    hkExceptionSleepOutDescription: 'El huésped pagó pero no llegó',
+    hkExceptionSkippedDescription: 'No se pudo limpiar — avisar supervisor',
+    hkGuestNameLabel: 'Huésped',
+    hkETALabel: 'Llegada',
+    hkNightsLabel: 'Noches',
+    hkNightsUnit: 'noches',
+    hkManagerNotesLabel: 'Nota del supervisor',
+    hkRushBanner: 'URGENTE',
+    hkRushDueIn: 'Para',
+    hkFloorPrefix: 'Piso',
+    hkGroupByFloor: 'Por piso',
+    hkGroupByRoom: 'Por número',
+    hkLunchStart: 'Comenzar almuerzo',
+    hkLunchEnd: 'Terminar almuerzo',
+    hkLunchOnBreak: 'En almuerzo',
+    hkLunchMinutesSuffix: 'min',
+    hkSummaryTitle: 'Resumen del día',
+    hkSummaryRoomsCleaned: 'Habitaciones limpiadas',
+    hkSummaryActiveMinutes: 'Tiempo de limpieza',
+    hkSummaryAveragePerRoom: 'Promedio por habitación',
+    hkSummaryLunchMinutes: 'Tiempo de almuerzo',
+    hkSummaryShiftHours: 'Horas del turno',
+    hkSummaryStillToGo: 'Faltan por limpiar',
+    hkSummaryShowDailySummary: 'Ver resumen',
+    hkErrCouldntStart: 'No se pudo comenzar la habitación.',
+    hkErrCouldntPause: 'No se pudo pausar.',
+    hkErrCouldntResume: 'No se pudo reanudar.',
+    hkErrCouldntComplete: 'No se pudo marcar como Lista.',
+    hkErrCouldntSaveException: 'No se pudo guardar la excepción.',
     lndLoadingTasks: 'Cargando tareas...',
     lndLaundryLoadsHeading: 'Cargas de Lavandería',
     lndLoadsUnit: 'cargas',
