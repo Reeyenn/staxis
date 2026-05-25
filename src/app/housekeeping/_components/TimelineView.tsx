@@ -426,8 +426,10 @@ export function TimelineView({
     if (!taskId || !data) return;
     const task = data.tasks.find(t => t.id === taskId);
     if (!task || task.assignee_id === hkId) return;
-    // Optimistic update for snappy feel; rollback on failure.
-    const prev = data;
+    // Optimistic update for snappy feel. Rollback (below) reverts only
+    // the single task's assignee — not the whole snapshot — so a poll
+    // that completed between drag-start and drop doesn't get clobbered.
+    const previousAssigneeId = task.assignee_id;
     setData(d => {
       if (!d) return d;
       const tasks = d.tasks.map(t => t.id === task.id ? { ...t, assignee_id: hkId } : t);
@@ -443,10 +445,21 @@ export function TimelineView({
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
+      // Server-of-truth wins: refresh the snapshot from the canonical
+      // source. Any concurrent poll either already raced here or will
+      // settle on its next tick — both paths converge on the same data.
       await refresh();
     } catch (e) {
       if (!mountedRef.current) return;
-      setData(prev);
+      // Single-task rollback. Use the functional setter against the
+      // CURRENT snapshot (which may be a polled refresh that landed
+      // mid-flight) instead of overwriting it with the stale pre-drop
+      // snapshot.
+      setData(d => {
+        if (!d) return d;
+        const tasks = d.tasks.map(t => t.id === task.id ? { ...t, assignee_id: previousAssigneeId } : t);
+        return { ...d, tasks };
+      });
       setReassignErr(e instanceof Error ? e.message : String(e));
     }
   }, [draggingTaskId, data, propertyId, refresh]);
