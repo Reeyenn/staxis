@@ -1,4 +1,4 @@
--- Migration 0215: housekeeper voice issue reporting (feature #11)
+-- Migration 0218: housekeeper voice issue reporting (feature #11)
 --
 -- Adds three pieces of infrastructure that let a housekeeper tap a mic on the
 -- room card, speak in any of EN/ES/HT/TL/VI, and get a structured maintenance
@@ -139,11 +139,14 @@ values ('voice-issues', 'voice-issues', false)
 on conflict (id) do nothing;
 
 -- ── 5. Migration record ────────────────────────────────────────────────
--- Renumbered from 0214 → 0215 at merge time: 0214 was claimed by
--- 0214_phase_b_hardening.sql from the cua-vision-mode branch.
+-- Renumbered twice at merge time: started 0214 → became 0215 when
+-- cua-vision shipped its 0214_phase_b_hardening → became 0218 when the
+-- cua-vision follow-up renumbered its three migrations forward into the
+-- 0215/0216/0217 slots. Keeping the rename history here in case the
+-- pattern repeats and the next merger needs to bump us again.
 insert into public.applied_migrations (version, description)
 values (
-  '0215',
+  '0218',
   'voice-issue-reporting: agent_voice_sessions.mode + current_room_number, staxis_voice_issues table, voice-issues storage bucket. Feature #11.'
 )
 on conflict (version) do nothing;
