@@ -23,6 +23,11 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInspectionById } from '@/lib/db/inspections';
+import {
+  declaredMimeMatchesBytes,
+  detectImageMime,
+  looksStructurallyValid,
+} from '@/lib/inspections';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,6 +41,20 @@ export async function POST(req: NextRequest) {
 
   const auth = await requireSession(req, { requestId });
   if (!auth.ok) return auth.response;
+
+  // Codex M1 follow-up — reject oversized payloads BEFORE
+  // req.formData() buffers the whole multipart body into memory.
+  // 100 concurrent 50-MB uploads otherwise put 5 GB in RAM before
+  // the post-parse `file.size > MAX_BYTES` check ever fires.
+  //
+  // The Content-Length cap is slightly larger than MAX_BYTES (5 MB)
+  // to leave room for multipart headers and the small form fields.
+  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > MAX_BYTES + 64 * 1024) {
+    return err('file too large (max 5 MB)', {
+      requestId, status: 413, code: ApiErrorCode.ValidationFailed,
+    });
+  }
 
   let form: FormData;
   try {
@@ -91,15 +110,51 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const ext = file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg';
+    const bytes = new Uint8Array(await file.arrayBuffer());
+
+    // Codex M4 — defense-in-depth on a private bucket: validate the
+    // actual byte signature, not just the multipart-declared
+    // Content-Type. file.type is client-controlled and trivially
+    // spoofed by changing the multipart header. Reject when bytes
+    // don't match one of our three allowed image formats, and
+    // overwrite the stored content-type with the detected one so the
+    // CDN can't be tricked into serving the wrong type.
+    //
+    // Codex M2 follow-up: also do a structural check (trailer marker
+    // + min size). Closes the JPEG-polyglot vector where the first 3
+    // bytes are FF D8 FF but the body is HTML/JS.
+    const detectedMime = detectImageMime(bytes);
+    if (!detectedMime || !declaredMimeMatchesBytes(file.type, bytes)) {
+      log.warn('[inspections/upload-photo] MIME magic-byte mismatch', {
+        requestId,
+        declared: file.type,
+        detected: detectedMime,
+        bytesLength: bytes.length,
+      });
+      return err('file bytes do not match declared image type', {
+        requestId, status: 415, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    if (!looksStructurallyValid(detectedMime, bytes)) {
+      log.warn('[inspections/upload-photo] image structural check failed', {
+        requestId,
+        declared: file.type,
+        detected: detectedMime,
+        bytesLength: bytes.length,
+      });
+      return err('file does not look like a valid image (failed structural check)', {
+        requestId, status: 415, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+
+    const ext = detectedMime === 'image/png' ? 'png' : detectedMime === 'image/webp' ? 'webp' : 'jpg';
     const safeItem = itemId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
     const path = `${inspection.propertyId}/${inspection.id}/${safeItem}-${Date.now()}.${ext}`;
 
-    const bytes = new Uint8Array(await file.arrayBuffer());
     const { error: uploadErr } = await supabaseAdmin.storage
       .from('inspection-photos')
       .upload(path, bytes, {
-        contentType: file.type,
+        contentType: detectedMime,
         upsert: false,
       });
     if (uploadErr) {

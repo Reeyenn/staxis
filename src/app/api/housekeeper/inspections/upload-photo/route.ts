@@ -18,6 +18,11 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInspectionById, staffCanInspect } from '@/lib/db/inspections';
+import {
+  declaredMimeMatchesBytes,
+  detectImageMime,
+  looksStructurallyValid,
+} from '@/lib/inspections';
 import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
@@ -29,6 +34,15 @@ const MAX_BYTES = 5 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+
+  // Codex M1 follow-up — reject oversized payloads before
+  // req.formData() buffers everything into memory.
+  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > MAX_BYTES + 64 * 1024) {
+    return err('file too large (max 5 MB)', {
+      requestId, status: 413, code: ApiErrorCode.ValidationFailed,
+    });
+  }
 
   let form: FormData;
   try {
@@ -88,14 +102,42 @@ export async function POST(req: NextRequest) {
       return err('Inspection not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     }
 
-    const ext = file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg';
+    const bytes = new Uint8Array(await file.arrayBuffer());
+
+    // Codex M4 — magic-byte check (defense-in-depth). See sibling
+    // manager route for the rationale.
+    // Codex M2 follow-up — structural check (trailer + min size).
+    const detectedMime = detectImageMime(bytes);
+    if (!detectedMime || !declaredMimeMatchesBytes(file.type, bytes)) {
+      log.warn('[housekeeper/inspections/upload-photo] MIME magic-byte mismatch', {
+        requestId,
+        declared: file.type,
+        detected: detectedMime,
+        bytesLength: bytes.length,
+      });
+      return err('file bytes do not match declared image type', {
+        requestId, status: 415, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    if (!looksStructurallyValid(detectedMime, bytes)) {
+      log.warn('[housekeeper/inspections/upload-photo] structural check failed', {
+        requestId,
+        declared: file.type,
+        detected: detectedMime,
+        bytesLength: bytes.length,
+      });
+      return err('file does not look like a valid image (failed structural check)', {
+        requestId, status: 415, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+
+    const ext = detectedMime === 'image/png' ? 'png' : detectedMime === 'image/webp' ? 'webp' : 'jpg';
     const safeItem = itemId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
     const path = `${pidSafe}/${inspection.id}/${safeItem}-${Date.now()}.${ext}`;
 
-    const bytes = new Uint8Array(await file.arrayBuffer());
     const { error: uploadErr } = await supabaseAdmin.storage
       .from('inspection-photos')
-      .upload(path, bytes, { contentType: file.type, upsert: false });
+      .upload(path, bytes, { contentType: detectedMime, upsert: false });
     if (uploadErr) {
       log.error('[housekeeper/inspections/upload-photo] upload failed', {
         requestId, path, msg: uploadErr.message,

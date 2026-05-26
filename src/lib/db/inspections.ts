@@ -340,24 +340,67 @@ export async function linkRecheck(parentId: string, recheckId: string): Promise<
 
 /**
  * Walk the parent chain backwards, counting consecutive fails on the
- * same room. Used to decide whether the current inspection escalates.
- * Stops counting at the first non-fail or when there is no parent.
+ * same property + room. Used to decide whether the current inspection
+ * escalates.
+ *
+ * Hardening (Codex M7 sweep + post-sweep tightening):
+ *   - The caller MUST pass the expected propertyId and roomNumber.
+ *     Every step is rejected if the parent's pair doesn't match.
+ *   - The string-or-options overload that briefly existed for back-
+ *     compat was removed (Codex follow-up) — that overload allowed
+ *     callers to silently revert to no-scope walking.
+ *   - Result must be `fail`; cancelled and pass rows interrupt the
+ *     chain regardless of parent_inspection_id.
+ *
+ * Stops counting at the first non-matching row. 20-level guardrail.
  */
-export async function countConsecutiveFails(parentId: string | null): Promise<number> {
+export interface CountConsecutiveFailsOpts {
+  parentId: string | null;
+  /** The property the calling inspection belongs to. Required. */
+  propertyId: string;
+  /** The room number the calling inspection is for. Required. */
+  roomNumber: string;
+}
+
+export async function countConsecutiveFails(
+  opts: CountConsecutiveFailsOpts,
+): Promise<number> {
+  // Runtime defense — types should prevent this, but if a JS caller or
+  // a sloppy cast slips through, refuse to walk the chain rather than
+  // silently dropping the cross-property guard.
+  if (
+    !opts ||
+    typeof opts !== 'object' ||
+    typeof opts.propertyId !== 'string' ||
+    opts.propertyId.length === 0 ||
+    typeof opts.roomNumber !== 'string' ||
+    opts.roomNumber.length === 0
+  ) {
+    throw new Error(
+      'countConsecutiveFails requires { parentId, propertyId, roomNumber } — refusing to walk without scope',
+    );
+  }
+
   let count = 0;
-  let cursor: string | null = parentId;
-  // Guard rail — never walk more than 20 levels deep regardless of data shape.
+  let cursor: string | null = opts.parentId;
   for (let i = 0; i < 20 && cursor; i++) {
-    const { data, error }: { data: Pick<InspectionRow, 'result' | 'parent_inspection_id'> | null; error: unknown } =
-      await supabaseAdmin
-        .from('inspections')
-        .select('result, parent_inspection_id')
-        .eq('id', cursor)
-        .maybeSingle();
+    const { data, error } = await supabaseAdmin
+      .from('inspections')
+      .select('result, parent_inspection_id, property_id, room_number')
+      .eq('id', cursor)
+      .maybeSingle();
     if (error || !data) break;
-    if (data.result !== 'fail') break;
+    const row = data as {
+      result: string;
+      parent_inspection_id: string | null;
+      property_id: string;
+      room_number: string;
+    };
+    if (row.result !== 'fail') break;
+    if (row.property_id !== opts.propertyId) break;
+    if (row.room_number !== opts.roomNumber) break;
     count += 1;
-    cursor = data.parent_inspection_id;
+    cursor = row.parent_inspection_id;
   }
   return count;
 }
