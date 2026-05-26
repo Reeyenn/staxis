@@ -173,7 +173,12 @@ export type RateLimitEndpoint =
   | 'settings-activity-log-export'
   // Post-merge sweep (Plan v4 cutover) — manager-facing Rooms board read
   // endpoint. RoomsTab polls every 6s when foregrounded.
-  | 'housekeeping-rooms';
+  | 'housekeeping-rooms'
+  // Plan v4 manager Rooms-tab writes (tile-cycling, add/delete). The
+  // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
+  // room-action; keyed on (userId, propertyId). 600/hr is ~10 taps/min
+  // sustained — well above realistic manual tile cycling.
+  | 'housekeeping-room-action';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -329,6 +334,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'settings-activity-log-export':  30,
   // Plan v4 manager Rooms board — 6s polling + visibility refetches.
   'housekeeping-rooms':         2400,
+  // Plan v4 manager Rooms-tab writes (tile cycling). 600/hr per
+  // (user, property) — 10 taps/min sustained, well above real-world use.
+  'housekeeping-room-action':    600,
 };
 
 /**
