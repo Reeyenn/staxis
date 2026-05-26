@@ -56,7 +56,17 @@ import { AutoAssignBoard } from './AutoAssignBoard';
 // housekeeper's day on a horizontal time axis. Same data model as the board,
 // richer payload via /api/housekeeping/timeline (lifecycle timestamps).
 import { TimelineView } from './TimelineView';
+// Forecast View — third optional sub-view below the legacy schedule.
+// Renders forward-looking demand vs supply across 1 / 7 / 14 day ranges
+// so the GM can spot understaffed days before the day-of fire drill.
+import { ForecastView } from './ForecastView';
 import { NoticeBoardPoster } from './NoticeBoardPoster';
+
+// Persisted view choice. Three states — see the toggle below the
+// existing PMS strip. Stored in localStorage so a tab refresh lands
+// the manager on the same view they last looked at.
+type ScheduleView = 'kanban' | 'timeline' | 'forecast';
+const VIEW_STORAGE_KEY = 'staxis.schedule.view';
 
 type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
@@ -137,6 +147,28 @@ export function ScheduleTab() {
   // PMS strip surfaces an "overnight" badge with the +/− counts so
   // she knows to re-run auto-assign.
   const [savedCsvSnapshot, setSavedCsvSnapshot] = useState<CsvRoomSnapshot[]>([]);
+
+  // View toggle — Kanban (auto-assign board) / Timeline (gantt strip) /
+  // Forecast (1-7-14 day forward view). Defaults to 'kanban' on first
+  // load — that matches the auto-assign board being the historical
+  // primary view; managers who switch to timeline or forecast have
+  // their choice persisted so it sticks across refreshes.
+  const [scheduleView, setScheduleView] = useState<ScheduleView>('kanban');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+      if (stored === 'kanban' || stored === 'timeline' || stored === 'forecast') {
+        setScheduleView(stored);
+      }
+    } catch {
+      // private-browsing modes can throw on localStorage — ignore
+    }
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { window.localStorage.setItem(VIEW_STORAGE_KEY, scheduleView); } catch { /* ignore */ }
+  }, [scheduleView]);
 
   // Prediction Settings modal — lets the user tune per-property cleaning
   // minutes (checkout / stayover Day 1 / stayover Day 2 / prep) and the
@@ -1406,12 +1438,37 @@ export function ScheduleTab() {
         </div>
       </div>
 
+      {/* VIEW TOGGLE — Kanban / Timeline / Forecast. Only the chosen
+          view renders; the unselected sub-views unmount entirely so
+          they don't keep their subscriptions live in the background.
+          Defaults to Kanban (the historical primary view). */}
+      {pid && (
+        <div style={{
+          marginTop: 24, marginBottom: 12,
+          display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+        }}>
+          <Caps>{lang === 'es' ? 'Vista' : 'View'}</Caps>
+          <div role="tablist" aria-label={lang === 'es' ? 'Vista del horario' : 'Schedule view'}
+            style={{ display: 'inline-flex', gap: 4, marginLeft: 6 }}>
+            <Btn variant={scheduleView === 'kanban'   ? 'paper' : 'ghost'} size="sm" onClick={() => setScheduleView('kanban')}>
+              {lang === 'es' ? 'Kanban' : 'Kanban'}
+            </Btn>
+            <Btn variant={scheduleView === 'timeline' ? 'paper' : 'ghost'} size="sm" onClick={() => setScheduleView('timeline')}>
+              {lang === 'es' ? 'Línea de tiempo' : 'Timeline'}
+            </Btn>
+            <Btn variant={scheduleView === 'forecast' ? 'paper' : 'ghost'} size="sm" onClick={() => setScheduleView('forecast')}>
+              {lang === 'es' ? 'Pronóstico' : 'Forecast'}
+            </Btn>
+          </div>
+        </div>
+      )}
+
       {/* AUTO-ASSIGN BOARD — new cleaning_tasks + hk_assignments system.
           Renders below the existing legacy schedule. Only shows when there's
           a property + date in context, so the rest of the tab works the same
           when the manager hasn't selected a property yet. */}
-      {pid && (
-        <div style={{ marginTop: 24 }}>
+      {pid && scheduleView === 'kanban' && (
+        <div style={{ marginTop: 12 }}>
           <AutoAssignBoard
             propertyId={pid}
             shiftDate={shiftDate}
@@ -1423,9 +1480,18 @@ export function ScheduleTab() {
 
       {/* TIMELINE VIEW — horizontal time-axis strip beneath the board.
           Board = place work; timeline = watch it unfold. */}
-      {pid && (
-        <div style={{ marginTop: 24 }}>
+      {pid && scheduleView === 'timeline' && (
+        <div style={{ marginTop: 12 }}>
           <TimelineView propertyId={pid} shiftDate={shiftDate} lang={lang} />
+        </div>
+      )}
+
+      {/* FORECAST VIEW — forward-looking demand vs supply across
+          today / 7-day / 14-day ranges. Lets the GM spot understaffed
+          days early enough to adjust schedules. */}
+      {pid && scheduleView === 'forecast' && (
+        <div style={{ marginTop: 12 }}>
+          <ForecastView propertyId={pid} lang={lang} />
         </div>
       )}
 

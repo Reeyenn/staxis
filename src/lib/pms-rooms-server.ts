@@ -275,9 +275,11 @@ interface StaffNameRow {
 }
 
 // Type-narrowing helpers — Promise.allSettled doesn't preserve our row
-// types in TypeScript without a guard.
+// types in TypeScript without a guard. Supabase queries without
+// `.single()` resolve to `{ data: T[] | null; error }` — the signature
+// must reflect that or strict tsc rejects every call site.
 function fulfilledData<T>(
-  result: PromiseSettledResult<{ data: T | null; error: unknown }>,
+  result: PromiseSettledResult<{ data: T[] | null; error: unknown }>,
   tag: string,
   pid: string,
   date: string,
@@ -295,7 +297,7 @@ function fulfilledData<T>(
     });
     return [];
   }
-  return (data ?? []) as unknown as T[];
+  return data ?? [];
 }
 
 /**
