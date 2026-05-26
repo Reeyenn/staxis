@@ -178,7 +178,14 @@ export type RateLimitEndpoint =
   // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
   // room-action; keyed on (userId, propertyId). 600/hr is ~10 taps/min
   // sustained — well above realistic manual tile cycling.
-  | 'housekeeping-room-action';
+  | 'housekeeping-room-action'
+  // Schedule Forecast view — manager pulls multi-day demand/supply
+  // predictions across today / 7-day / 14-day ranges. Each call fans
+  // out to pms_reservations + demand_predictions + optimizer_results +
+  // scheduled_shifts + staff reads. Keyed on (userId, propertyId).
+  // 60/hr is "open the tab, switch ranges, leave it polling" headroom
+  // — a runaway tab or stale-link replay caps fast.
+  | 'housekeeping-forecast';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -337,6 +344,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Plan v4 manager Rooms-tab writes (tile cycling). 600/hr per
   // (user, property) — 10 taps/min sustained, well above real-world use.
   'housekeeping-room-action':    600,
+  // Schedule Forecast view — 60/hr per (user, property) covers a manager
+  // opening the tab and switching ranges all day, with headroom for
+  // realtime refetches and visibility-change refresh. Anything above
+  // this cap is a runaway useEffect or stale-link replay.
+  'housekeeping-forecast':        60,
 };
 
 /**

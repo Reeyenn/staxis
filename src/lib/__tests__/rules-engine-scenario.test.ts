@@ -60,6 +60,7 @@ describe('Room 305 — Tuesday turnaround scenario', () => {
       accessibility_needs: null,
       package_name: null,
       rate_code: null,
+      status: null,
     },
     // Mary Jones: VIP Platinum, Spanish-speaking, arriving 14:00 today.
     {
@@ -79,6 +80,7 @@ describe('Room 305 — Tuesday turnaround scenario', () => {
       accessibility_needs: null,
       package_name: null,
       rate_code: null,
+      status: null,
     },
   ];
 
