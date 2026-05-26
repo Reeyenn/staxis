@@ -340,7 +340,16 @@ export default function FrontDeskPage() {
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-              {smsMode && <SmsDryRunIndicator mode={smsMode} />}
+              {smsMode && (
+                <SmsDryRunIndicator
+                  mode={smsMode}
+                  // Per the spec, the click target points to the property
+                  // settings page — the modal that flips the mode lives
+                  // there. The modal itself is out of scope for this
+                  // branch; the badge just gets the operator there.
+                  onClick={() => router.push('/settings')}
+                />
+              )}
               {activePropertyId && (
                 <WalkInButton
                   propertyId={activePropertyId}

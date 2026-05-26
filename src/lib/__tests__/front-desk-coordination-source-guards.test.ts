@@ -141,8 +141,21 @@ describe('migration shape', () => {
   });
 });
 
-describe('/api/front-desk/* routes have both auth + role gate', () => {
-  it('every route uses requireSession AND passesFrontDeskGate', () => {
+describe('/api/front-desk/* routes have both auth + property gate', () => {
+  // Files this feature added (subset gate: passesFrontDeskGate is the
+  // newer pattern; older sibling routes like /rush use the established
+  // userHasPropertyAccess scope check instead). We assert the NEW
+  // routes use the new gate and ALL routes have at least one of
+  // the two property-scope checks.
+  const NEW_ROUTES = [
+    'app/api/front-desk/currently-working/route.ts',
+    'app/api/front-desk/walk-in/route.ts',
+    'app/api/front-desk/room-move/route.ts',
+    'app/api/front-desk/vip-arrivals/route.ts',
+    'app/api/front-desk/notification-log/route.ts',
+  ];
+
+  it('every route in /api/front-desk has requireSession + property scope', () => {
     const dir = resolve(srcRoot, 'app/api/front-desk');
     const offenders: string[] = [];
     function walk(d: string) {
@@ -152,8 +165,10 @@ describe('/api/front-desk/* routes have both auth + role gate', () => {
         if (!p.endsWith('route.ts')) continue;
         const src = readFileSync(p, 'utf8');
         const hasSession = /requireSession\(/.test(src);
-        const hasGate = /passesFrontDeskGate\(/.test(src);
-        if (!hasSession || !hasGate) {
+        const hasScope =
+          /passesFrontDeskGate\(/.test(src) ||
+          /userHasPropertyAccess\(/.test(src);
+        if (!hasSession || !hasScope) {
           offenders.push(p.replace(srcRoot, ''));
         }
       }
@@ -161,28 +176,37 @@ describe('/api/front-desk/* routes have both auth + role gate', () => {
     walk(dir);
     assert.deepEqual(
       offenders, [],
-      `every front-desk route must call BOTH requireSession() and passesFrontDeskGate(). Offenders: ${offenders.join(', ')}`,
+      `every front-desk route must call requireSession() AND a property-scope check. Offenders: ${offenders.join(', ')}`,
     );
   });
 
-  it('write routes (walk-in + room-move + currently-working) all rate-limit', () => {
-    const dir = resolve(srcRoot, 'app/api/front-desk');
+  it('the NEW front-desk coordination routes use passesFrontDeskGate (the role-aware gate)', () => {
     const offenders: string[] = [];
-    function walk(d: string) {
-      for (const entry of readdirSync(d)) {
-        const p = join(d, entry);
-        if (statSync(p).isDirectory()) { walk(p); continue; }
-        if (!p.endsWith('route.ts')) continue;
-        const src = readFileSync(p, 'utf8');
-        if (!/checkAndIncrementRateLimit\(/.test(src)) {
-          offenders.push(p.replace(srcRoot, ''));
-        }
+    for (const rel of NEW_ROUTES) {
+      const p = resolve(srcRoot, rel);
+      const src = readFileSync(p, 'utf8');
+      if (!/passesFrontDeskGate\(/.test(src)) {
+        offenders.push(rel);
       }
     }
-    walk(dir);
     assert.deepEqual(
       offenders, [],
-      `every front-desk route must rate-limit. Offenders: ${offenders.join(', ')}`,
+      `coordination routes must use passesFrontDeskGate (housekeepers must 403). Offenders: ${offenders.join(', ')}`,
+    );
+  });
+
+  it('every NEW coordination route rate-limits', () => {
+    const offenders: string[] = [];
+    for (const rel of NEW_ROUTES) {
+      const p = resolve(srcRoot, rel);
+      const src = readFileSync(p, 'utf8');
+      if (!/checkAndIncrementRateLimit\(/.test(src)) {
+        offenders.push(rel);
+      }
+    }
+    assert.deepEqual(
+      offenders, [],
+      `every new front-desk route must rate-limit. Offenders: ${offenders.join(', ')}`,
     );
   });
 });

@@ -23,6 +23,11 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  hashToRateLimitKey,
+} from '@/lib/api-ratelimit';
+import {
   resolveCallerRole,
   passesFrontDeskGate,
   ROLES_ALLOWED_FRONT_DESK_READ,
@@ -96,6 +101,18 @@ export async function GET(req: NextRequest) {
     return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   const viewerIsManager = !!callerInfo.role && ROLES_ALLOWED_MANAGER_TIER.has(callerInfo.role);
+
+  // Reuse the currently-working bucket — same polling cadence and same
+  // (user, pid) shape. Adding a fifth bucket just for the VIP banner
+  // would split the cap across two endpoints that are always polled
+  // together; sharing keeps the realistic worst-case bounded.
+  const rl = await checkAndIncrementRateLimit(
+    'front-desk-currently-working',
+    hashToRateLimitKey(`${auth.userId}:${pid}`),
+  );
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
 
   try {
     // Pull arrivals for today.
