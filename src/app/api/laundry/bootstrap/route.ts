@@ -2,22 +2,20 @@
  * Laundry person bootstrap — single round-trip server-side data fetch for
  * the public /laundry/[id] page.
  *
- * Why this exists:
- *   /laundry/[id] is publicly-linkable by design (the laundry worker opens
- *   it on their phone with no Staxis login). The page used to call three
- *   separate functions — getPublicAreas, getLaundryConfig, subscribeToRooms
- *   — all of which went through the supabase browser client. With no
- *   auth session every SELECT silently filtered to zero rows under RLS,
- *   and the page just sat on its loading spinner / empty state forever.
- *   Same bug class as the housekeeper "no rooms" issue from earlier today.
+ * Round 1 (2026-04-30):
+ *   /laundry/[id] is publicly-linkable. Browser supabase client filtered
+ *   reads to zero rows under RLS. Fixed via supabaseAdmin server route
+ *   reading public_areas + laundry_config + the legacy `rooms` table.
  *
- *   This route runs server-side with supabaseAdmin (service-role,
- *   RLS-bypass), validates the (pid, staffId) capability tuple, and
- *   returns everything the page needs in one shot. Mirrors the security
- *   posture of /api/staff-list and /api/housekeeper/rooms.
+ * Round 2 (2026-05-25, Plan v4 follow-up):
+ *   The legacy `rooms` table was dropped (migration 0204) / re-created as
+ *   an empty stub (0205). Laundry workers saw empty checkout/stayover
+ *   counts. Fix: read rooms from the new pms_* schema via
+ *   `mergePmsRoomsForDate(pid, date)` — the same helper the manager Rooms
+ *   tab uses.
  *
- * Response shape:
- *   { ok, requestId, data: { publicAreas, laundryConfig, rooms } }
+ * Response shape (unchanged):
+ *   { ok, requestId, data: { publicAreas, laundryConfig, rooms, date } }
  */
 
 import { NextRequest } from 'next/server';
@@ -29,8 +27,8 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import {
   fromPublicAreaRow,
   fromLaundryRow,
-  fromRoomRow,
 } from '@/lib/db-mappers';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -53,7 +51,6 @@ export async function GET(req: NextRequest) {
     return err(staffV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const date = (searchParams.get('date') || '').slice(0, 10);
-  // Light validation — date is YYYY-MM-DD or empty (server picks today below).
   if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return err('date must be YYYY-MM-DD', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
@@ -63,9 +60,7 @@ export async function GET(req: NextRequest) {
   const pid = pidV.value!;
   const staffId = staffV.value!;
 
-  // 2026-05-20 audit M3 — rate-limit per property. The laundry page has
-  // no per-staff identity worth tracking (the laundry worker is logically
-  // one role per property), so keying on pid is the right granularity.
+  // 2026-05-20 audit M3 — rate-limit per property.
   const rl = await checkAndIncrementRateLimit('laundry-bootstrap', pid);
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -88,13 +83,8 @@ export async function GET(req: NextRequest) {
   }
 
   // Pick the date in Houston / America-Chicago — matches the rest of the app.
-  // (Workers occasionally leave the page open across midnight; the laundry
-  // page itself flips its `today` reactively, so we just need a sensible
-  // default for the URL-omitted case.)
   const targetDate = date || (() => {
     try {
-      // Lazy compute via Intl in the property's TZ — keeps deps light and
-      // avoids pulling date-fns-tz server-side.
       const now = new Date();
       const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' });
       return fmt.format(now); // YYYY-MM-DD
@@ -103,29 +93,38 @@ export async function GET(req: NextRequest) {
     }
   })();
 
-  // Fan out the three queries concurrently. Each is bypass-RLS via service-
-  // role; the pid scoping is done in the WHERE clause.
-  const [areasRes, configRes, roomsRes] = await Promise.all([
-    supabaseAdmin.from('public_areas').select('*').eq('property_id', pid),
-    supabaseAdmin.from('laundry_config').select('*').eq('property_id', pid),
-    supabaseAdmin.from('rooms').select('*').eq('property_id', pid).eq('date', targetDate),
-  ]);
+  // public_areas + laundry_config are still on legacy tables (manager-
+  // configured, not CUA-extracted) — read those directly. Rooms come
+  // from the new pms_* schema via the merge helper.
+  try {
+    const [areasRes, configRes, rooms] = await Promise.all([
+      supabaseAdmin.from('public_areas').select('*').eq('property_id', pid),
+      supabaseAdmin.from('laundry_config').select('*').eq('property_id', pid),
+      mergePmsRoomsForDate(pid, targetDate),
+    ]);
 
-  if (areasRes.error || configRes.error || roomsRes.error) {
-    log.error('[laundry/bootstrap] query failed', {
-      requestId,
-      msg: errToString(areasRes.error || configRes.error || roomsRes.error),
-      pid,
-      staffId,
+    if (areasRes.error || configRes.error) {
+      log.error('[laundry/bootstrap] static query failed', {
+        requestId,
+        msg: errToString(areasRes.error || configRes.error),
+        pid,
+        staffId,
+      });
+      return err('Internal server error', {
+        requestId, status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
+
+    const publicAreas = (areasRes.data ?? []).map(fromPublicAreaRow);
+    const laundryConfig = (configRes.data ?? []).map(fromLaundryRow);
+
+    return ok({ publicAreas, laundryConfig, rooms, date: targetDate }, { requestId });
+  } catch (e: unknown) {
+    log.error('[laundry/bootstrap] rooms merge failed', {
+      requestId, pid, staffId, targetDate, msg: errToString(e),
     });
     return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
-
-  const publicAreas = (areasRes.data ?? []).map(fromPublicAreaRow);
-  const laundryConfig = (configRes.data ?? []).map(fromLaundryRow);
-  const rooms = (roomsRes.data ?? []).map(fromRoomRow);
-
-  return ok({ publicAreas, laundryConfig, rooms, date: targetDate }, { requestId });
 }

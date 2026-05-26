@@ -152,7 +152,12 @@ export type RateLimitEndpoint =
   | 'callout-manager'
   | 'callout-sms'
   | 'callout-revert'
-  | 'callout-status';
+  | 'callout-status'
+  // Plan v4 manager Rooms-tab writes (tile-cycling, add/delete). The
+  // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
+  // room-action; keying on (userId, propertyId). 600/hr is "ten taps
+  // per minute for an hour" — well above realistic manual tile cycling.
+  | 'housekeeping-room-action';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -291,6 +296,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'callout-sms':                  20,
   'callout-revert':               30,
   'callout-status':              600,
+  // Plan v4 manager Rooms-tab writes — see RateLimitEndpoint comment.
+  'housekeeping-room-action':    600,
 };
 
 /**

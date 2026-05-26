@@ -24,14 +24,18 @@
 //   don't burn requests, and an immediate refetch on visibility return
 //   so a foregrounded tab catches up instantly.
 //
-// Writes are stubbed (see addRoom etc. below) — write-back into the new
-// pms_* schema ships on a separate branch.
+// Writes (addRoom / updateRoom / deleteRoom / bulkAddRooms) all go
+// through POST /api/housekeeping/room-action → applyRoom* helpers in
+// src/lib/pms-rooms-writes.ts, which upsert into pms_housekeeping_assignments
+// (and pms_rooms_inventory for new rooms). Server bypasses RLS via
+// supabaseAdmin; the route gates on requireSession + property access.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room } from '@/types';
 import { logErr } from './_common';
 import { fetchWithAuth } from '../api-fetch';
 import { toDate } from '../db-mappers';
+import { todayStr } from '../utils';
 
 // 6 seconds — see header comment for the rationale.
 const POLL_INTERVAL_MS = 6_000;
@@ -156,12 +160,18 @@ export function subscribeToAllRooms(
   // property. The new schema has no "rows per date" concept — the room
   // status is the latest row in pms_room_status_log, the HK assignment is
   // indexed by date. For "today's view across dates" the only meaningful
-  // date is today, so anchor here. Consumers that need a historical scan
-  // can call getRoomsForDate with explicit dates.
-  const today = new Date().toISOString().slice(0, 10);
+  // date is today.
+  //
+  // Codex Major #10: compute today inside the doFetch closure (so a long-
+  // running tab crossing midnight rolls to the new day automatically),
+  // and use the app TZ helper (so "today" matches useTodayStr's idea of
+  // today instead of UTC).
   return subscribeViaPolling(
     `rooms-all:${pid}`,
-    () => fetchRoomsForDate(pid, today),
+    async () => {
+      const today = todayStr();
+      return fetchRoomsForDate(pid, today);
+    },
     callback,
   );
 }
@@ -176,46 +186,85 @@ export async function getRoomsForDate(_uid: string, pid: string, date: string): 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Write functions — stubbed during the Plan v4 cutover.
+// Write functions — wired into /api/housekeeping/room-action (pms_*).
 // ═══════════════════════════════════════════════════════════════════════════
-// These used to update the legacy `rooms` table directly via the supabase
-// anon client. That table is dropped (migration 0204). The new write path
-// must land status/assignment changes into the appropriate pms_* table(s)
-// via a server route using supabaseAdmin — same pattern as the read.
+// All writes go through the server route which uses supabaseAdmin to
+// bypass RLS on the new pms_* tables. The route:
+//   - validates the session + property access
+//   - rate-limits per (user, property)
+//   - hands off to pms-rooms-writes helpers that upsert into
+//     pms_housekeeping_assignments (and pms_rooms_inventory for adds)
 //
-// Ships on a separate branch. Callers that hit these in the meantime
-// surface a clear "write path not yet wired" error rather than silently
-// no-op'ing (which would look like the action worked and then revert on
-// the next poll).
+// Date handling: when a write doesn't carry an explicit date (e.g.
+// updates from RoomsTab where the Room.id already encodes the date),
+// the server defaults to today's UTC date — matches what useTodayStr
+// emits on the client.
+//
+// Errors: any non-OK response from the server is logged and rethrown
+// so the caller (RoomsTab.handleToggle) can show feedback. We do NOT
+// silently swallow — that was the legacy bug that made writes look
+// successful while RLS filtered the UPDATE to zero rows.
 
-function unsupportedWriteError(op: string): Error {
-  return new Error(
-    `${op}: room writes are not yet wired into the new pms_* schema (Plan v4 cutover in progress). ` +
-    `The Rooms tab is read-only against live CUA data on this branch.`,
-  );
+async function postRoomAction<T>(
+  action: 'update' | 'add' | 'delete' | 'bulk-add',
+  body: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetchWithAuth('/api/housekeeping/room-action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...body }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`/api/housekeeping/room-action ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const json = (await res.json().catch(() => null)) as
+    | { ok?: boolean; data?: T; error?: string }
+    | null;
+  if (!json?.ok) {
+    throw new Error(`/api/housekeeping/room-action: ${json?.error ?? 'unknown error'}`);
+  }
+  return json.data as T;
 }
 
-export async function addRoom(_uid: string, _pid: string, _room: Omit<Room, 'id'>): Promise<string> {
-  // TODO(plan-v4-writes): land row into pms_housekeeping_assignments
-  // (for the date) and emit a pms_room_status_log entry with source='manual'.
-  throw unsupportedWriteError('addRoom');
+export async function addRoom(_uid: string, pid: string, room: Omit<Room, 'id'>): Promise<string> {
+  try {
+    const data = await postRoomAction<{ id: string }>('add', { pid, room });
+    return data.id;
+  } catch (err) {
+    logErr('addRoom', err);
+    throw err;
+  }
 }
 
-export async function updateRoom(_uid: string, _pid: string, _rid: string, _data: Partial<Room>): Promise<void> {
-  // TODO(plan-v4-writes): map Room.status changes to a new
-  // pms_room_status_log row (source='manual') and map assignment fields
-  // into pms_housekeeping_assignments.
-  throw unsupportedWriteError('updateRoom');
+export async function updateRoom(
+  _uid: string, pid: string, rid: string, data: Partial<Room>,
+): Promise<void> {
+  try {
+    await postRoomAction('update', { pid, rid, room: data });
+  } catch (err) {
+    logErr('updateRoom', err);
+    throw err;
+  }
 }
 
-export async function deleteRoom(_uid: string, _pid: string, _rid: string): Promise<void> {
-  // TODO(plan-v4-writes): not clear deleteRoom has a meaningful target
-  // in the new schema — rooms are sourced from PMS inventory, not
-  // user-created. May end up no-op or "remove today's assignment."
-  throw unsupportedWriteError('deleteRoom');
+export async function deleteRoom(_uid: string, pid: string, rid: string): Promise<void> {
+  try {
+    await postRoomAction('delete', { pid, rid });
+  } catch (err) {
+    logErr('deleteRoom', err);
+    throw err;
+  }
 }
 
-export async function bulkAddRooms(_uid: string, _pid: string, _rooms: Omit<Room, 'id'>[]): Promise<void> {
-  // TODO(plan-v4-writes): batch the addRoom semantics above.
-  throw unsupportedWriteError('bulkAddRooms');
+export async function bulkAddRooms(
+  _uid: string, pid: string, rooms: Omit<Room, 'id'>[],
+): Promise<void> {
+  if (rooms.length === 0) return;
+  try {
+    await postRoomAction('bulk-add', { pid, rooms });
+  } catch (err) {
+    logErr('bulkAddRooms', err);
+    throw err;
+  }
 }
