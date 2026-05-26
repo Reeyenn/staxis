@@ -234,11 +234,31 @@ export async function dispatchSMS(input: DispatchSMSInput): Promise<DispatchSMSR
     }
 
     // live mode below.
+
+    // Critical safety gate (Codex adversarial finding): if the audit
+    // insert failed, NEVER fall through to Twilio in live mode. The
+    // audit row is the receipt — sending a real text without one
+    // breaks the "every dispatch has a paper trail" guarantee and
+    // makes after-the-fact forensics impossible.
+    if (!auditId) {
+      outcomes.push({
+        auditId: '',
+        mode,
+        sent: false,
+        recipientStaffId: recipient.staffId,
+        recipientPhone: recipient.phone,
+        recipientName: recipient.name,
+        providerId: null,
+        errorText: 'audit_insert_failed',
+      });
+      continue;
+    }
+
     if (!recipient.phone) {
       const err = 'recipient_missing_phone';
-      if (auditId) await patchAudit(auditId, { error_text: err, provider_status: 'skipped' });
+      await patchAudit(auditId, { error_text: err, provider_status: 'skipped' });
       outcomes.push({
-        auditId: auditId ?? '',
+        auditId,
         mode,
         sent: false,
         recipientStaffId: recipient.staffId,
@@ -252,13 +272,46 @@ export async function dispatchSMS(input: DispatchSMSInput): Promise<DispatchSMSR
 
     if (!isSmsConfigured()) {
       const err = 'twilio_not_configured';
-      if (auditId) await patchAudit(auditId, { error_text: err, provider_status: 'skipped' });
+      await patchAudit(auditId, { error_text: err, provider_status: 'skipped' });
       log.warn('[dispatch-sms] live mode requested but Twilio env missing — audited as skipped', {
         propertyId: input.propertyId,
         eventType: input.eventType,
       });
       outcomes.push({
-        auditId: auditId ?? '',
+        auditId,
+        mode,
+        sent: false,
+        recipientStaffId: recipient.staffId,
+        recipientPhone: recipient.phone,
+        recipientName: recipient.name,
+        providerId: null,
+        errorText: err,
+      });
+      continue;
+    }
+
+    // Race-window safety (Codex adversarial finding): re-read the
+    // property mode IMMEDIATELY before the Twilio call. If an admin
+    // flipped the property from live → dry_run between our initial
+    // mode resolution and now, we MUST NOT send. The audit row was
+    // already inserted with the snapshotted mode at the top — patch
+    // it to record the cancellation so a manager spot-debugging won't
+    // see a stale "live" row that was never sent.
+    const modeAtSendTime = await resolveSmsNotificationMode(input.propertyId);
+    if (modeAtSendTime !== 'live') {
+      const err = 'mode_flipped_to_dry_run_mid_send';
+      await patchAudit(auditId, {
+        error_text: err,
+        provider_status: 'cancelled',
+      });
+      log.warn('[dispatch-sms] property mode changed mid-dispatch — cancelling Twilio call', {
+        propertyId: input.propertyId,
+        eventType: input.eventType,
+        snapshotMode: mode,
+        currentMode: modeAtSendTime,
+      });
+      outcomes.push({
+        auditId,
         mode,
         sent: false,
         recipientStaffId: recipient.staffId,
@@ -272,9 +325,9 @@ export async function dispatchSMS(input: DispatchSMSInput): Promise<DispatchSMSR
 
     try {
       await sendSms(recipient.phone, input.body);
-      if (auditId) await patchAudit(auditId, { provider_status: 'sent' });
+      await patchAudit(auditId, { provider_status: 'sent' });
       outcomes.push({
-        auditId: auditId ?? '',
+        auditId,
         mode,
         sent: true,
         recipientStaffId: recipient.staffId,
@@ -285,9 +338,9 @@ export async function dispatchSMS(input: DispatchSMSInput): Promise<DispatchSMSR
       });
     } catch (sendErr) {
       const errText = sendErr instanceof Error ? sendErr.message : String(sendErr);
-      if (auditId) await patchAudit(auditId, { provider_status: 'failed', error_text: errText });
+      await patchAudit(auditId, { provider_status: 'failed', error_text: errText });
       outcomes.push({
-        auditId: auditId ?? '',
+        auditId,
         mode,
         sent: false,
         recipientStaffId: recipient.staffId,

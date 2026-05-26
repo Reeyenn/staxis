@@ -58,9 +58,36 @@ function initialsOnly(name: string): string {
     .join(' ');
 }
 
+/**
+ * Returns true if any of the supplied free-text fields look like they
+ * affirmatively flag a reservation as VIP.
+ *
+ * Codex adversarial fix: a naive `\bvip\b` match overmatches notes like
+ * "not VIP", "no VIP amenity", "VIP parking not included". For those,
+ * the operator does NOT want a banner. We add a small negation-prefix
+ * filter — if any "VIP" occurrence in the text is immediately preceded
+ * by a clear negation token (no / not / non / never / without / minus a
+ * couple of phrase fragments like "not a"), it doesn't count as a VIP
+ * affirmation. Any unambiguous "VIP arrival", "VIP guest", "Platinum
+ * VIP" etc. still passes through.
+ *
+ * This is intentionally conservative — when in doubt we err on showing
+ * the banner (a false positive is "manager looks at a non-VIP" which is
+ * cheap; a false negative is "manager misses a real VIP" which is
+ * customer-impacting).
+ */
 function looksVipText(...fields: Array<string | null | undefined>): boolean {
+  const negationsBefore = /(?:^|[^a-z])(?:not|no|non[-\s]?|never|without|minus|excluding|no longer|n['’]t\s+a)\s*$/i;
   for (const f of fields) {
-    if (typeof f === 'string' && /\bvip\b/i.test(f)) return true;
+    if (typeof f !== 'string') continue;
+    // Walk every match. A field counts as VIP-affirmative if at least
+    // ONE occurrence isn't immediately preceded by a negation token.
+    const rx = /\bvip\b/gi;
+    let m: RegExpExecArray | null;
+    while ((m = rx.exec(f)) !== null) {
+      const lookBehind = f.slice(Math.max(0, m.index - 20), m.index);
+      if (!negationsBefore.test(lookBehind)) return true;
+    }
   }
   return false;
 }

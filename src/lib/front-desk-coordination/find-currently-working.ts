@@ -119,9 +119,27 @@ export function isTimeInShiftWindow(
 }
 
 /**
+ * YYYY-MM-DD for the day BEFORE `dateStr` (interpreted as a calendar date,
+ * not a UTC instant — so it survives DST without needing a tz argument).
+ */
+function previousDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map((s) => parseInt(s, 10));
+  // Use UTC math (date math doesn't care about tz) and shift back one day.
+  const t = Date.UTC(y, m - 1, d);
+  const prev = new Date(t - 24 * 60 * 60 * 1000);
+  return prev.toISOString().slice(0, 10);
+}
+
+/**
  * Returns staff currently on a front-desk shift, ordered by shift start.
  * Empty array on any read error (the caller's UI surfaces "no one is
  * currently scheduled" — same shape as an empty result).
+ *
+ * Overnight shifts: a shift stored on shift_date=YESTERDAY with
+ * end_time < start_time (e.g. 22:00 → 06:00) is still active at 02:00
+ * TODAY local. We query BOTH `clock.date` and the previous local date,
+ * then evaluate each row against its own date+window so a night-audit
+ * shift stays "currently working" past midnight.
  */
 export async function findCurrentlyWorkingFrontDesk(
   propertyId: string,
@@ -130,19 +148,26 @@ export async function findCurrentlyWorkingFrontDesk(
   try {
     const tz = await resolvePropertyTimezone(propertyId);
     const clock = clockInTimezone(now, tz);
+    const prevDate = previousDate(clock.date);
 
-    // Pull today's published+ front-desk shifts. We don't filter by
-    // start/end in SQL because the lexicographic comparison + overnight
-    // wraparound is cleaner to express in TS. Worst case is ~10 rows.
+    // Pull today's + yesterday's published+ front-desk shifts. The TS
+    // filter below handles the wraparound (yesterday's row only counts
+    // if its window wraps midnight AND we're inside the post-midnight
+    // half). Worst case is ~20 rows total.
+    //
+    // Column names: `start_time` / `end_time` per migration 0147 (NOT
+    // `shift_start_time` / `shift_end_time` — Codex caught the earlier
+    // mismatch). Aliased here so the rest of the module's shape stays
+    // intuitive.
     const { data, error } = await supabaseAdmin
       .from('scheduled_shifts')
-      .select('id, staff_id, shift_start_time, shift_end_time')
+      .select('id, staff_id, shift_date, start_time, end_time')
       .eq('property_id', propertyId)
       .eq('department', 'front_desk')
       .eq('kind', 'shift')
       .in('status', ['published', 'sent', 'confirmed'])
-      .eq('shift_date', clock.date)
-      .order('shift_start_time', { ascending: true });
+      .in('shift_date', [clock.date, prevDate])
+      .order('start_time', { ascending: true });
 
     if (error) {
       log.warn('[find-currently-working] scheduled_shifts read failed', {
@@ -152,10 +177,27 @@ export async function findCurrentlyWorkingFrontDesk(
     }
     const rows = data ?? [];
     const matching = rows.filter((r) => {
-      const start = (r as { shift_start_time?: string }).shift_start_time;
-      const end = (r as { shift_end_time?: string }).shift_end_time;
-      if (typeof start !== 'string' || typeof end !== 'string') return false;
-      return isTimeInShiftWindow(clock.time, start, end);
+      const start = (r as { start_time?: string }).start_time;
+      const end = (r as { end_time?: string }).end_time;
+      const sd = (r as { shift_date?: string }).shift_date;
+      if (typeof start !== 'string' || typeof end !== 'string' || typeof sd !== 'string') return false;
+
+      // Same-day shift (not wrapping midnight): row must be on
+      // `clock.date` and the wall-clock must fall in [start, end].
+      const wraps = end < start;
+      if (!wraps) {
+        if (sd !== clock.date) return false;
+        return isTimeInShiftWindow(clock.time, start, end);
+      }
+
+      // Wrapping shift (overnight): two valid cases.
+      //   (a) Row is on `clock.date`: clock.time >= start (we're still
+      //       in the pre-midnight half).
+      //   (b) Row is on `prevDate`: clock.time <= end (we're in the
+      //       post-midnight half — yesterday's shift bleeds into today).
+      if (sd === clock.date && clock.time >= start) return true;
+      if (sd === prevDate && clock.time <= end) return true;
+      return false;
     });
 
     if (matching.length === 0) return [];
@@ -191,8 +233,8 @@ export async function findCurrentlyWorkingFrontDesk(
       const r = row as {
         id: string;
         staff_id: string | null;
-        shift_start_time: string;
-        shift_end_time: string;
+        start_time: string;
+        end_time: string;
       };
       if (!r.staff_id) continue;
       const staff = byId.get(r.staff_id);
@@ -201,8 +243,8 @@ export async function findCurrentlyWorkingFrontDesk(
         staffId: r.staff_id,
         name: staff.name,
         phone: staff.phone,
-        shiftStartTime: r.shift_start_time,
-        shiftEndTime: r.shift_end_time,
+        shiftStartTime: r.start_time,
+        shiftEndTime: r.end_time,
         shiftId: r.id,
       });
     }

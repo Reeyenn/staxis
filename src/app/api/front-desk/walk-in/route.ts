@@ -134,7 +134,39 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ── 2. Insert pms_room_status_log → 'occupied'.
+    // ── 2. Race-guard before claiming the room (Codex adversarial
+    // finding): two concurrent walk-ins of the same type could both
+    // pick the same room. After picking, re-read the candidate's
+    // current PMS status — if a competing walk-in already flipped it
+    // to 'occupied' (or anything non-ready) in the small window since
+    // findNextReadyRoom ran, fall back to the NEXT candidate (or 409
+    // if no others exist). This is a best-effort optimistic guard,
+    // not a true transaction, but it shrinks the race window from
+    // "the whole route" down to a single round-trip.
+    const READY_STATUSES = new Set(['inspected', 'vacant_clean']);
+    const { data: latestStatus } = await supabaseAdmin
+      .from('pms_room_status_log')
+      .select('status, changed_at')
+      .eq('property_id', pid)
+      .eq('room_number', candidate.roomNumber)
+      .order('changed_at', { ascending: false })
+      .limit(1);
+    const latest = (latestStatus ?? [])[0] as { status?: string } | undefined;
+    // The candidate's readiness came from the same log, so the latest
+    // status should still be ready. If it isn't, a competing walk-in
+    // (or a CUA-pulled PMS change) won; surface a 409 so the operator
+    // retries with the next free room.
+    if (latest && latest.status && !READY_STATUSES.has(latest.status)) {
+      log.warn('[front-desk/walk-in] candidate room status flipped under us', {
+        requestId, pid, roomNumber: candidate.roomNumber, latestStatus: latest.status,
+      });
+      return err(
+        `Room ${candidate.roomNumber} just got claimed by another walk-in. Try again.`,
+        { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+
+    // ── 3. Insert pms_room_status_log → 'occupied'.
     const { error: logErr } = await supabaseAdmin
       .from('pms_room_status_log')
       .insert({
@@ -247,9 +279,16 @@ async function listHousekeepingManagersOnShift(propertyId: string) {
   // than parameterizing the public helper (the public helper signals
   // intent in its name; making it generic muddies the call site).
   try {
+    // Column names per migration 0147 are `start_time` / `end_time`
+    // (NOT `shift_start_time` / `shift_end_time`). We only need staff_id
+    // here — the full shift-window check is owned by find-currently-
+    // working for the front-desk side; housekeeping recipients are
+    // "anyone scheduled to work today" which is a coarser filter
+    // intentionally (a manager who clocks in at 4pm should still be
+    // notified about a walk-in at 2pm in case they're on call).
     const { data, error } = await supabaseAdmin
       .from('scheduled_shifts')
-      .select('staff_id, shift_start_time, shift_end_time, shift_date')
+      .select('staff_id')
       .eq('property_id', propertyId)
       .eq('department', 'housekeeping')
       .eq('kind', 'shift')

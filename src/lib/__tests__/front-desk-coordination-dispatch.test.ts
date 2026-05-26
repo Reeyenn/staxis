@@ -274,4 +274,111 @@ describe('dispatchSMS — live mode', () => {
     const failedUpdate = mockCfg.updates.find((u) => u.fields.provider_status === 'failed');
     assert.ok(failedUpdate, 'expected provider_status=failed update on live failure');
   });
+
+  // ── Codex adversarial regression tests ──────────────────────────────────
+
+  test('Codex Critical fix: audit insert failure in live mode does NOT call Twilio', async () => {
+    mockCfg.smsMode = 'live';
+    // Override the audit insert to return an error so insertAudit() → null.
+    mock.restoreAll();
+    const fromBroken = (table: string): unknown => {
+      if (table === 'properties') {
+        return {
+          select: () => ({
+            eq: () => ({ maybeSingle: async () => ({ data: { sms_notifications_mode: 'live' }, error: null }) }),
+          }),
+        };
+      }
+      if (table === 'notification_events') {
+        return {
+          insert: () => ({
+            select: () => ({
+              single: async () => ({ data: null, error: { message: 'DB write failed' } }),
+            }),
+          }),
+          update: () => ({ eq: async () => ({ error: null }) }),
+        };
+      }
+      throw new Error(`Unexpected from(${table})`);
+    };
+    mock.method(supabaseAdmin, 'from', fromBroken);
+
+    const result = await dispatchSMS({
+      propertyId: '00000000-0000-0000-0000-000000000001',
+      eventType: 'room_ready',
+      body: 'Room 305 is ready.',
+      payload: {},
+      recipients: [{ staffId: 's1', name: 'Alice', phone: '+15125550100' }],
+    });
+    assert.equal(result.outcomes[0].sent, false);
+    assert.equal(result.outcomes[0].errorText, 'audit_insert_failed');
+    assert.equal(
+      fetchCalls.length, 0,
+      'live mode + audit insert failure must NOT fire Twilio',
+    );
+  });
+
+  test('Codex Major fix: property flipped to dry_run mid-send cancels the Twilio call', async () => {
+    // First mode read returns 'live', second read (right before send)
+    // returns 'dry_run'. We expect: audit row written with mode='live'
+    // (snapshot), Twilio NOT called, audit patched with cancelled status.
+    let propertyReads = 0;
+    mock.restoreAll();
+    const fromFlipping = (table: string): unknown => {
+      if (table === 'properties') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => {
+                propertyReads += 1;
+                return {
+                  data: { sms_notifications_mode: propertyReads === 1 ? 'live' : 'dry_run' },
+                  error: null,
+                };
+              },
+            }),
+          }),
+        };
+      }
+      if (table === 'notification_events') {
+        return {
+          insert: (row: Record<string, unknown>) => {
+            mockCfg.inserts.push(row);
+            return {
+              select: () => ({
+                single: async () => ({
+                  data: { id: `audit-${mockCfg.inserts.length}` },
+                  error: null,
+                }),
+              }),
+            };
+          },
+          update: (fields: Record<string, unknown>) => ({
+            eq: async (_col: string, id: string) => {
+              mockCfg.updates.push({ where: id, fields });
+              return { error: null };
+            },
+          }),
+        };
+      }
+      throw new Error(`Unexpected from(${table})`);
+    };
+    mock.method(supabaseAdmin, 'from', fromFlipping);
+
+    await dispatchSMS({
+      propertyId: '00000000-0000-0000-0000-000000000001',
+      eventType: 'vip_arrival',
+      body: 'VIP arriving.',
+      payload: {},
+      recipients: [{ staffId: 's1', name: 'Alice', phone: '+15125550100' }],
+    });
+    assert.equal(fetchCalls.length, 0, 'mode-flip mid-send must cancel the Twilio call');
+    const cancelledUpdate = mockCfg.updates.find(
+      (u) => u.fields.provider_status === 'cancelled',
+    );
+    assert.ok(cancelledUpdate, 'expected provider_status=cancelled patch on the audit row');
+    // The audit row's snapshotted mode is still 'live' (intentional —
+    // historical record of what the route believed at dispatch time).
+    assert.equal(mockCfg.inserts[0].mode, 'live');
+  });
 });

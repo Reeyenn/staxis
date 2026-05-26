@@ -224,6 +224,9 @@ export async function POST(req: NextRequest) {
 
 async function listHousekeepingManagersOnShift(propertyId: string) {
   try {
+    // Column names per migration 0147: scheduled_shifts has start_time /
+    // end_time, not shift_start_time / shift_end_time. We only need
+    // staff_id here — same coarse filter as the walk-in helper above.
     const { data, error } = await supabaseAdmin
       .from('scheduled_shifts')
       .select('staff_id')

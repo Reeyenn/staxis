@@ -115,8 +115,23 @@ export async function executeRoomMove(input: RoomMoveInput): Promise<RoomMoveRes
   }
 
   // ── 3. pms_reservations: today's reservation in fromRoom → point at toRoom
+  //
+  // Codex adversarial fix: only proceed when the FROM room rebuild
+  // succeeded (i.e. the housekeeping side reflects "needs turnaround
+  // clean"). Without this guard, a failed from-room update would
+  // leave 305 marked clean while the guest is conceptually in 312,
+  // and the reservation flip would lock in that inconsistent state.
   let reservationUpdated = false;
-  try {
+  if (!fromRoomsUpdated) {
+    errors.push(
+      'reservation_update_skipped: from_room rebuild failed — aborting before pms_reservations to avoid an inconsistent move',
+    );
+    log.warn('[room-move] aborting reservation update because from-room rebuild failed', {
+      propertyId: input.propertyId,
+      fromRoom: input.fromRoom,
+      toRoom: input.toRoom,
+    });
+  } else try {
     // Look up the in-house reservation (arrival_date <= today,
     // departure_date > today) that's currently in fromRoom. There can
     // be at most one — pick the most recent if data drift produced

@@ -120,3 +120,53 @@ describe('clockInTimezone — IANA rendering', () => {
     assert.equal(isTimeInShiftWindow(time, '08:00:00', '17:00:00'), true);
   });
 });
+
+// Codex adversarial fix #6: the VIP free-text matcher used to overmatch
+// "not VIP" / "no VIP" notes. These tests live next to the other pure-
+// helper tests because they assert behavior that's reachable through
+// `looksVipText` — kept inline rather than imported because that helper
+// is private to the route file. We grep the route source to assert the
+// shape, then sanity-check the regex separately.
+describe('VIP text matcher — false-positive guard', () => {
+  // The negation prefix used in vip-arrivals/route.ts. Keep this regex
+  // in sync with `negationsBefore` there — if they drift, the source
+  // grep below catches the rename.
+  const NEGATION_RX = /(?:^|[^a-z])(?:not|no|non[-\s]?|never|without|minus|excluding|no longer|n['’]t\s+a)\s*$/i;
+  const VIP_RX = /\bvip\b/gi;
+
+  function looksVipReplica(text: string): boolean {
+    let m: RegExpExecArray | null;
+    const rx = new RegExp(VIP_RX.source, VIP_RX.flags);
+    while ((m = rx.exec(text)) !== null) {
+      const lookBehind = text.slice(Math.max(0, m.index - 20), m.index);
+      if (!NEGATION_RX.test(lookBehind)) return true;
+    }
+    return false;
+  }
+
+  it('positive: "VIP arrival" matches', () => {
+    assert.equal(looksVipReplica('VIP arrival, welcome basket please'), true);
+  });
+
+  it('positive: "Platinum VIP guest" matches', () => {
+    assert.equal(looksVipReplica('Platinum VIP guest — quiet floor'), true);
+  });
+
+  it('negative: "not VIP" does NOT match (was the Codex finding)', () => {
+    assert.equal(looksVipReplica('not VIP'), false);
+  });
+
+  it('negative: "no VIP amenity" does NOT match', () => {
+    assert.equal(looksVipReplica('no VIP amenity needed'), false);
+  });
+
+  it('negative: "no longer VIP" does NOT match', () => {
+    assert.equal(looksVipReplica('no longer VIP — downgraded'), false);
+  });
+
+  it('mixed: "not VIP, but VIP guest list applies" still flags as VIP', () => {
+    // First VIP is negated, second isn't — the affirmative wins.
+    assert.equal(looksVipReplica('not VIP, but VIP guest list applies'), true);
+  });
+});
+
