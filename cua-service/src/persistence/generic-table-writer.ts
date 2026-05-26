@@ -35,6 +35,11 @@ import { supabase } from '../supabase.js';
 import { log } from '../log.js';
 import { env } from '../env.js';
 import { getValidator } from '../validators-phase2.js';
+import { RECONCILE_ON_MISSING, type OnMissingBehavior } from './reconcile-config.js';
+
+// Re-export for backward compatibility with any external importer.
+export { RECONCILE_ON_MISSING };
+export type { OnMissingBehavior };
 
 // ─── Descriptor cache ────────────────────────────────────────────────────
 // The descriptor table is read-mostly (admins rarely edit). Cache for the
@@ -88,14 +93,9 @@ async function loadDescriptor(tableName: string): Promise<TableSchemaDescriptor 
 // future migration could move this into the descriptor as a jsonb field
 // if the list grows.
 
-interface OnMissingBehavior {
-  column: string;
-  value: string;
-}
-const RECONCILE_ON_MISSING: Record<string, OnMissingBehavior> = {
-  pms_work_orders_v2: { column: 'status', value: 'resolved' },
-  pms_lost_and_found: { column: 'status', value: 'disposed' },
-};
+// RECONCILE_ON_MISSING + OnMissingBehavior moved to ./reconcile-config.ts
+// (re-exported above) so the test suite can pin the configuration without
+// transitively constructing the Supabase client.
 
 // ─── Validation ─────────────────────────────────────────────────────────
 
@@ -362,11 +362,23 @@ async function writeReconcile(
       // computed column lists, so we use untyped-then-cast.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const selectCols = `id, ${reconcileKey}, ${onMissing.column}` as any;
-      const { data: existingRaw, error: selErr } = await supabase
+      let selectBuilder = supabase
         .from(tableName)
         .select(selectCols)
         .eq('property_id', propertyId)
         .neq(onMissing.column, onMissing.value);  // skip already-resolved rows
+
+      // Migration 0225 / feature #11 follow-up: scope auto-resolve to rows
+      // produced by the PMS feed. Without this, a voice-issue ticket
+      // (source='housekeeper_voice') with no PMS counterpart gets resolved
+      // 30s after creation. The filter is applied on BOTH the SELECT here
+      // and the UPDATE below — belt-and-braces against a future code path
+      // that forgets one of the two.
+      if (onMissing.sourceFilter) {
+        selectBuilder = selectBuilder.eq(onMissing.sourceFilter.column, onMissing.sourceFilter.value);
+      }
+
+      const { data: existingRaw, error: selErr } = await selectBuilder;
       if (selErr) throw selErr;
 
       const existing = (existingRaw ?? []) as unknown as Array<Record<string, unknown>>;
@@ -376,10 +388,14 @@ async function writeReconcile(
         autoResolved = 0;
       } else {
         const idsToResolve = toResolve.map((r) => r.id);
-        const { error: updErr } = await supabase
+        let updateBuilder = supabase
           .from(tableName)
           .update({ [onMissing.column]: onMissing.value })
           .in('id', idsToResolve);
+        if (onMissing.sourceFilter) {
+          updateBuilder = updateBuilder.eq(onMissing.sourceFilter.column, onMissing.sourceFilter.value);
+        }
+        const { error: updErr } = await updateBuilder;
         if (updErr) throw updErr;
         autoResolved = toResolve.length;
       }
