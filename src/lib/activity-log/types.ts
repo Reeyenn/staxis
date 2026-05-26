@@ -3,7 +3,7 @@
  *
  * One row per meaningful event from any source table (housekeeping,
  * maintenance, staff, system). Populated by AFTER INSERT/UPDATE triggers
- * defined in supabase/migrations/0225_activity_log.sql.
+ * defined in supabase/migrations/0228_activity_log.sql.
  *
  * The browser never reads activity_log directly. Reads go through
  * /api/settings/activity-log/* with supabaseAdmin (service-role only).
