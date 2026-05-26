@@ -1,7 +1,7 @@
 /**
  * Activity log — migration shape tests.
  *
- * Parses 0225_activity_log.sql as text and pins the invariants that
+ * Parses 0228_activity_log.sql as text and pins the invariants that
  * downstream code depends on, without booting a Postgres instance.
  *
  * Catches the regressions that bit us in earlier migrations:
@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const RAW_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0225_activity_log.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0228_activity_log.sql'),
   'utf-8',
 );
 
@@ -29,7 +29,7 @@ const SQL = RAW_SQL
   .replace(/--[^\n]*/g, '')
   .replace(/\/\*[\s\S]*?\*\//g, '');
 
-describe('migration 0225 — activity_log', () => {
+describe('migration 0228 — activity_log', () => {
   test('creates the activity_log table with the service-role-only marker', () => {
     // The marker lives in a SQL comment, so check the raw text — the
     // comment-stripped SQL below would lose it.

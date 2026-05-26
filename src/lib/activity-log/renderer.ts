@@ -1,7 +1,7 @@
 /**
  * Activity log description renderer.
  *
- * The trigger functions in migration 0225 already pre-render an English
+ * The trigger functions in migration 0228 already pre-render an English
  * `description` for every row. That string is what we display by default
  * in the timeline + exports.
  *

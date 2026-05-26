@@ -1800,3 +1800,17 @@ on conflict (property_id, event_type, source_event_id, occurred_at)
 -- 8. PostgREST schema reload — so the API sees the new table immediately.
 -- ═══════════════════════════════════════════════════════════════════════════
 notify pgrst, 'reload schema';
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 9. Bookkeeping row for the applied_migrations registry. This file was
+-- renumbered 0225 → 0228 at merge time when 0226 (voice issues unified)
+-- and 0227 (housekeeper mobile rebuild B+C) landed in the same window.
+-- The migration-bookkeeping test enforces that every numbered migration
+-- self-registers — without this row it fails with "drift from convention".
+-- ═══════════════════════════════════════════════════════════════════════════
+insert into public.applied_migrations (version, description)
+values (
+  '0228',
+  'Cross-department Activity Log (feature #18): activity_log table + audit-write triggers on cleaning_events, cleaning_tasks, hk_assignments, inspections, callout_events, pms_work_orders_v2, pms_room_status_log, accounts, role_changes, staff_breaks, room_pause_events. 90-day backfill. Service-role-only RLS. Settings -> Activity Log page reads through /api/settings/activity-log/* with role gate.'
+)
+on conflict (version) do nothing;
