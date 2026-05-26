@@ -1,8 +1,8 @@
 /**
  * Tests for cua-service/src/rules-engine-pinger.ts.
  *
- * Pins the three invariants that make the pinger safe to wire into
- * every PMS write:
+ * Pins the invariants that make the pinger safe to wire into every PMS
+ * write:
  *
  *   1. Idempotency under burst — a flood of high-priority writes for one
  *      property must collapse to exactly ONE network call per debounce
@@ -14,9 +14,18 @@
  *      staxis web app is down, slow, or returning 5xx. The 5-min cron
  *      is the safety net; we just want the fast path.
  *
- *   3. Predicate selectivity — low-signal rows (cancelled reservation
- *      with no VIP marker, status='occupied') must NOT trigger pings.
- *      Only the rows the user listed in the spec do.
+ *   3. Predicate selectivity — `status='occupied'` and similar
+ *      neutral states must NOT trigger pings. Status transitions
+ *      that change what housekeeping should be doing right now
+ *      DO trigger, including terminal states (`cancelled`,
+ *      `no_show`) — the engine has to retract any task tied to
+ *      a cancelled or no-show booking, so these are intentionally
+ *      high-priority.
+ *
+ *   4. Diff-signal correctness — unchanged rows re-upserted on every
+ *      CUA poll must NOT fire (Codex follow-up Major #1 + #2). Only
+ *      a material change in reservation status or snapshot counts
+ *      arms a new window.
  *
  * Pure-function tests — no Supabase, no real HTTP, no real timers.
  * Time is controlled via injected setTimeout/clearTimeout stubs.
@@ -406,6 +415,166 @@ describe('rules-engine-pinger — bearer + URL shape', () => {
       url,
       `https://hotelops-ai.test/api/cron/run-rules-engine?propertyId=${PROP_A}`,
     );
+  });
+});
+
+describe('rules-engine-pinger — diff-signal (Codex follow-up Major #1 + #2)', () => {
+  let timers: ManualTimers;
+  let mockFetch: MockFetch;
+  let pinger: RulesEnginePinger;
+
+  beforeEach(() => {
+    timers = new ManualTimers();
+    mockFetch = new MockFetch();
+    pinger = newPinger({ timers, mockFetch });
+  });
+
+  test('pms_in_house_snapshot: identical re-upsert does NOT fire', () => {
+    const row = {
+      total_guests_in_house: 42,
+      total_occupied_rooms: 30,
+      total_vacant_clean: 20,
+      total_vacant_dirty: 5,
+      total_ooo: 2,
+      arrivals_remaining_today: 3,
+      departures_remaining_today: 7,
+      checked_in_today_count: 1,
+      checked_out_today_count: 4,
+    };
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [row]);
+    assert.equal(pinger.isPending(PROP_A), true);
+
+    // Fire and clear.
+    timers.fireNext();
+
+    // Same exact row re-upserted → no new fire.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [row]);
+    assert.equal(pinger.isPending(PROP_A), false);
+  });
+
+  test('pms_in_house_snapshot: changed total_occupied_rooms fires', () => {
+    const baseline = {
+      total_guests_in_house: 42,
+      total_occupied_rooms: 30,
+      total_vacant_clean: 20,
+      total_vacant_dirty: 5,
+      total_ooo: 2,
+      arrivals_remaining_today: 3,
+      departures_remaining_today: 7,
+      checked_in_today_count: 1,
+      checked_out_today_count: 4,
+    };
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [baseline]);
+    timers.fireNext();
+
+    // Bump occupied count → new fire.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [
+      { ...baseline, total_occupied_rooms: 31 },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_reservations: identical batch re-upsert does NOT fire', () => {
+    const batch = [
+      { pms_reservation_id: 'r1', status: 'checked_in', notes: null },
+      { pms_reservation_id: 'r2', status: 'checked_out', notes: null },
+    ];
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', batch);
+    assert.equal(pinger.isPending(PROP_A), true);
+    timers.fireNext();
+
+    // Same batch again — no change, no fire.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', batch);
+    assert.equal(pinger.isPending(PROP_A), false);
+  });
+
+  test('pms_reservations: r1 flips from booked → checked_in fires', () => {
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'booked' },
+    ]);
+    // 'booked' doesn't pass the predicate, so no fire from this call.
+    assert.equal(pinger.isPending(PROP_A), false);
+
+    // Now r1 transitions to checked_in.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_reservations: new reservation_id in mid-day batch fires', () => {
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in' },
+    ]);
+    timers.fireNext();
+
+    // Next poll includes r2 (a NEW row). r1 unchanged.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in' }, // unchanged
+      { pms_reservation_id: 'r2', status: 'checked_in' }, // new
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_room_status_log: no diff applied (append-only — every write is a change)', () => {
+    // Two identical inserts in a row — both fire (well, the second one
+    // coalesces into the existing window, but both pass the diff check).
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_room_status_log', [
+      { status: 'vacant_dirty', room_number: '305' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+    timers.fireNext();
+
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_room_status_log', [
+      { status: 'vacant_dirty', room_number: '305' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('different properties keep independent diff state', () => {
+    const sameRow = {
+      total_guests_in_house: 1,
+      total_occupied_rooms: 1,
+      total_vacant_clean: 0,
+      total_vacant_dirty: 0,
+      total_ooo: 0,
+      arrivals_remaining_today: 0,
+      departures_remaining_today: 0,
+      checked_in_today_count: 0,
+      checked_out_today_count: 0,
+    };
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [sameRow]);
+    pinger.notifyHighPriorityChange(PROP_B, 'pms_in_house_snapshot', [sameRow]);
+    // Both fire on first sight even though the row content matches.
+    assert.equal(pinger.isPending(PROP_A), true);
+    assert.equal(pinger.isPending(PROP_B), true);
+  });
+});
+
+describe('rules-engine-pinger — firePing setup is inside try/catch (Codex follow-up Major #3)', () => {
+  test('synchronous throw inside firePing setup is swallowed, no unhandled rejection', async () => {
+    const timers = new ManualTimers();
+    const mockFetch = new MockFetch();
+    // Force fetchImpl to throw SYNCHRONOUSLY (not return a rejected promise).
+    mockFetch.fn = (() => {
+      throw new TypeError('synthetic sync error during fetch setup');
+    }) as typeof fetch;
+
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', handler);
+
+    try {
+      const pinger = newPinger({ timers, mockFetch });
+      pinger.notifyHighPriorityChange(PROP_A, 'pms_room_status_log', [{ status: 'vacant_dirty' }]);
+      timers.fireNext();
+      // Drain microtasks so any rejection would have a chance to be unhandled.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      assert.equal(unhandled.length, 0);
+    } finally {
+      process.off('unhandledRejection', handler);
+    }
   });
 });
 

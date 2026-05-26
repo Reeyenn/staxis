@@ -113,6 +113,18 @@ export class RulesEnginePinger {
    *  network call so events arriving during the fetch start a fresh window. */
   private readonly pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  /** Per-property last-seen signature for `pms_in_house_snapshot`. Without
+   *  this, an unchanged snapshot upserted every ~30s poll arms a fresh
+   *  debounce window every cycle. (Codex follow-up Major #2.) */
+  private readonly lastSnapshotSignature = new Map<string, string>();
+
+  /** Per-property map of pms_reservation_id → status. Without this, the
+   *  upserter reports every poll's rows as `inserted`, so an unchanged
+   *  reservation in any high-priority state fires every cycle. We only
+   *  fire when ≥1 reservation_id has a status that differs from what we
+   *  last saw. (Codex follow-up Major #1.) */
+  private readonly lastReservationStatus = new Map<string, Map<string, string>>();
+
   /** Counter exposed for tests — how many fetches have actually fired. */
   private firedCount = 0;
 
@@ -124,6 +136,22 @@ export class RulesEnginePinger {
     this.fetchImpl = opts.fetchImpl ?? ((...args) => fetch(...args));
     this.setTimeoutImpl = opts.setTimeoutImpl ?? setTimeout;
     this.clearTimeoutImpl = opts.clearTimeoutImpl ?? clearTimeout;
+
+    // Startup signal — names the pinger state so operators tailing Fly
+    // logs catch partial env config (e.g. CRON_SECRET set on Vercel but
+    // missing on Fly) on the FIRST line of the worker, not 5 minutes
+    // later when nothing got faster. (Codex follow-up Major #4.)
+    if (!this.baseUrl) {
+      log.warn('rules-engine-pinger: DISABLED (RULES_ENGINE_BASE_URL unset) — only the 5-min cron will run the engine');
+    } else if (!this.cronSecret) {
+      log.warn('rules-engine-pinger: DISABLED (CRON_SECRET unset) — only the 5-min cron will run the engine');
+    } else {
+      log.info('rules-engine-pinger: ENABLED', {
+        baseUrl: this.baseUrl,
+        debounceMs: this.debounceMs,
+        timeoutMs: this.timeoutMs,
+      });
+    }
   }
 
   /** Whether the pinger has the env config it needs to actually fire.
@@ -147,6 +175,14 @@ export class RulesEnginePinger {
       const predicate = HIGH_PRIORITY_PREDICATES[tableName];
       if (!predicate) return;
 
+      // Diff-signal check (Codex follow-up Major #1 + #2). Without this,
+      // the CUA polling cadence (~30s) re-upserts the same reservation
+      // and snapshot rows, the generic-table-writer reports them as
+      // inserts, and every poll fires a ping — drowning the engine in
+      // no-op work. Compare incoming state to what we last saw for this
+      // property; if nothing material changed, return early.
+      if (!this.hasMaterialChange(propertyId, tableName, rows)) return;
+
       // Any matching row in the batch is enough — we only need a single
       // signal to fire one ping for the property.
       let hit = false;
@@ -169,7 +205,15 @@ export class RulesEnginePinger {
       const timer = this.setTimeoutImpl(() => {
         // Clear BEFORE firing so events during the fetch arm a fresh window.
         this.pendingTimers.delete(propertyId);
-        void this.firePing(propertyId);
+        // .catch() on the call site closes the unhandled-rejection
+        // window for any sync throw inside firePing that escapes its
+        // own try/catch. (Codex follow-up Major #3.)
+        this.firePing(propertyId).catch((err) => {
+          log.warn('rules-engine-pinger: firePing rejected (fail-quiet)', {
+            propertyId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
       }, this.debounceMs);
 
       this.pendingTimers.set(propertyId, timer);
@@ -182,17 +226,23 @@ export class RulesEnginePinger {
     }
   }
 
-  /** Actually fire one POST. Fail-quiet — never throws. */
+  /** Actually fire one POST. Fail-quiet — never throws.
+   *
+   *  ALL setup (URL construction, AbortController, setTimeout) is inside
+   *  the try/catch so a sync throw from any of them is swallowed instead
+   *  of escaping as an unhandled rejection in the long-running worker
+   *  process. (Codex follow-up Major #3.) */
   private async firePing(propertyId: string): Promise<void> {
-    // Guard against being called when baseUrl/cronSecret were unset between
-    // construction and now (env vars are immutable in practice, but the
-    // null check makes TS happy and future-proofs).
-    if (!this.baseUrl || !this.cronSecret) return;
-
-    const url = `${this.baseUrl.replace(/\/+$/, '')}/api/cron/run-rules-engine?propertyId=${encodeURIComponent(propertyId)}`;
-    const ctrl = new AbortController();
-    const timeoutHandle = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Guard against being called when baseUrl/cronSecret were unset between
+      // construction and now (env vars are immutable in practice, but the
+      // null check makes TS happy and future-proofs).
+      if (!this.baseUrl || !this.cronSecret) return;
+
+      const url = `${this.baseUrl.replace(/\/+$/, '')}/api/cron/run-rules-engine?propertyId=${encodeURIComponent(propertyId)}`;
+      const ctrl = new AbortController();
+      timeoutHandle = setTimeout(() => ctrl.abort(), this.timeoutMs);
       const res = await this.fetchImpl(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.cronSecret}` },
@@ -213,8 +263,79 @@ export class RulesEnginePinger {
         err: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      clearTimeout(timeoutHandle);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
+  }
+
+  /** Compare incoming rows to last-seen state for this (property, table).
+   *  Returns false when nothing material changed (skip the ping). Returns
+   *  true when at least one row's signature differs (proceed to predicate
+   *  check). Per-table heuristics — only tables where the CUA writer
+   *  re-upserts identical data every poll need this. */
+  private hasMaterialChange(
+    propertyId: string,
+    tableName: string,
+    rows: ReadonlyArray<Record<string, unknown>>,
+  ): boolean {
+    if (tableName === 'pms_in_house_snapshot') {
+      // 1-row upsert per poll. Hash the count fields the engine cares
+      // about; if identical to last seen, skip.
+      const firstRow = rows[0];
+      if (!firstRow) return false;
+      const sig = JSON.stringify({
+        total_guests_in_house: firstRow.total_guests_in_house ?? null,
+        total_occupied_rooms: firstRow.total_occupied_rooms ?? null,
+        total_vacant_clean: firstRow.total_vacant_clean ?? null,
+        total_vacant_dirty: firstRow.total_vacant_dirty ?? null,
+        total_ooo: firstRow.total_ooo ?? null,
+        arrivals_remaining_today: firstRow.arrivals_remaining_today ?? null,
+        departures_remaining_today: firstRow.departures_remaining_today ?? null,
+        checked_in_today_count: firstRow.checked_in_today_count ?? null,
+        checked_out_today_count: firstRow.checked_out_today_count ?? null,
+      });
+      const last = this.lastSnapshotSignature.get(propertyId);
+      this.lastSnapshotSignature.set(propertyId, sig);
+      return last !== sig;
+    }
+
+    if (tableName === 'pms_reservations') {
+      // Per-row diff against last-seen status. Build the new map first
+      // so we can store it unconditionally — the engine reading stale
+      // last-state on the next call would over-fire, but never under-fire.
+      //
+      // Bias toward over-firing on the unusual cases:
+      //   - Any row missing pms_reservation_id → we can't dedup, return
+      //     true so the predicate gets a chance to fire (e.g. ad-hoc
+      //     test fixtures, future PMSes that don't always expose IDs).
+      //   - Fewer rows in the new batch than the last batch → a
+      //     reservation disappeared (cancellation, move, etc.) — material.
+      const newMap = new Map<string, string>();
+      let changed = false;
+      const prevMap = this.lastReservationStatus.get(propertyId);
+      for (const row of rows) {
+        const id = row.pms_reservation_id;
+        if (typeof id !== 'string' || id.length === 0) {
+          // Unkeyed row — can't dedup, over-fire and skip caching.
+          return true;
+        }
+        const status = typeof row.status === 'string' ? row.status : '';
+        newMap.set(id, status);
+        if (prevMap?.get(id) !== status) changed = true;
+      }
+      // Detect disappeared rows: any prevMap key missing from newMap.
+      if (prevMap) {
+        for (const prevId of prevMap.keys()) {
+          if (!newMap.has(prevId)) { changed = true; break; }
+        }
+      }
+      this.lastReservationStatus.set(propertyId, newMap);
+      return changed;
+    }
+
+    // pms_room_status_log is append-only — every write IS a state change.
+    // Other tables aren't in HIGH_PRIORITY_PREDICATES, so this branch is
+    // effectively only reached for room_status_log. Allow all.
+    return true;
   }
 
   // ─── Test-only inspection / control ────────────────────────────────
@@ -234,12 +355,15 @@ export class RulesEnginePinger {
     return this.firedCount;
   }
 
-  /** Cancel all pending timers. Tests call between cases. */
+  /** Cancel all pending timers + reset diff-signal state. Tests call
+   *  between cases. */
   resetForTests(): void {
     for (const timer of this.pendingTimers.values()) {
       this.clearTimeoutImpl(timer);
     }
     this.pendingTimers.clear();
+    this.lastSnapshotSignature.clear();
+    this.lastReservationStatus.clear();
     this.firedCount = 0;
   }
 }
