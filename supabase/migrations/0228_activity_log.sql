@@ -1800,3 +1800,12 @@ on conflict (property_id, event_type, source_event_id, occurred_at)
 -- 8. PostgREST schema reload — so the API sees the new table immediately.
 -- ═══════════════════════════════════════════════════════════════════════════
 notify pgrst, 'reload schema';
+
+-- ─── Track the migration ─────────────────────────────────────────────────
+
+insert into public.applied_migrations (version, description)
+values (
+  '0228',
+  'Cross-department activity log: unified timeline table, database triggers for all event sources, 90-day backfill, service-role-only RLS.'
+)
+on conflict (version) do nothing;
