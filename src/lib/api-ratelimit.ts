@@ -170,13 +170,10 @@ export type RateLimitEndpoint =
   | 'housekeeper-save-language-loc'  // language-switcher save (locale-wide)
   | 'housekeeper-offline-replay'     // service worker replay-batch handler
   // Cross-department activity log export (feature #18, 2026-05-25).
-  // Settings → Activity Log page lets a GM/owner/admin download a
-  // filtered range as CSV/Excel/PDF. Each call streams up to ~10k rows
-  // through the lambda — not billing-impacting, but a runaway client or
-  // a curious user re-clicking "Export" doesn't need to hammer the
-  // backend. Keyed on (pid, userId). 30/hr is "narrow filter, refine,
-  // re-export a handful of times" headroom with a hard cap on abuse.
-  | 'settings-activity-log-export';
+  | 'settings-activity-log-export'
+  // Post-merge sweep (Plan v4 cutover) — manager-facing Rooms board read
+  // endpoint. RoomsTab polls every 6s when foregrounded.
+  | 'housekeeping-rooms';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -317,17 +314,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'callout-status':              600,
   // Piece B/C caps. Manager posts (notices, room notes) are deliberate
   // actions — 60/hr is "manager spamming the notice board" headroom.
-  // Reads are polled by the housekeeper page; 600/hr handles 4 open tabs.
-  // Rush is "decision per room" — 60/hr per (pid, staffId) keyed pair.
-  // Structured issue + photo presign are per-housekeeper write paths;
-  // 200/hr matches the existing housekeeper-room-action cap shape.
-  // Offline replay is a fan-out endpoint — 300/hr per device.
   'housekeeping-notices-post':     60,
   'housekeeping-notices-read':    600,
   'housekeeping-notice-dismiss':  100,
   'housekeeping-room-notes-post':  60,
   'housekeeping-room-notes-read': 600,
-  // 'front-desk-rush' cap already declared in piece A.
   'housekeeper-structured-issue': 200,
   'housekeeper-photo-presign':    200,
   'housekeeper-add-note':         200,
@@ -336,6 +327,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-offline-replay':   300,
   // Cross-department activity log export.
   'settings-activity-log-export':  30,
+  // Plan v4 manager Rooms board — 6s polling + visibility refetches.
+  'housekeeping-rooms':         2400,
 };
 
 /**

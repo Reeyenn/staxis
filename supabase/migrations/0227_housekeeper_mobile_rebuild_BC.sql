@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0225 — Housekeeper mobile rebuild pieces B + C
+-- 0227 — Housekeeper mobile rebuild pieces B + C
 --
 -- Adds the persistence layer for the back half of the housekeeper mobile
 -- rebuild — pieces B (photos, structured issue reporting, notice board,
@@ -82,7 +82,7 @@ alter table public.staff
 alter table public.rooms
   add column if not exists rush_requested_by_account_id uuid,
   add column if not exists rush_duration_label text,
-  -- 0222 already added `manager_notes` (plural). 0225 adds metadata
+  -- 0222 already added `manager_notes` (plural). 0227 adds metadata
   -- columns alongside it so the room-notes POST route can record who
   -- posted the latest note and when, without breaking JobCard which
   -- already reads `manager_notes`.
@@ -392,7 +392,7 @@ revoke all on function public.staxis_create_structured_issue(uuid, text, uuid, t
 grant execute on function public.staxis_create_structured_issue(uuid, text, uuid, text, text, text, text, text) to service_role;
 
 comment on function public.staxis_create_structured_issue(uuid, text, uuid, text, text, text, text, text) is
-  'Creates a pms_work_orders_v2 row from a housekeeper structured issue. Returns the work-order id for the optional photo upload. Added 0225.';
+  'Creates a pms_work_orders_v2 row from a housekeeper structured issue. Returns the work-order id for the optional photo upload. Added 0227.';
 
 -- ─── K. RPC — staxis_post_notice ──────────────────────────────────────────
 --
@@ -442,13 +442,13 @@ revoke all on function public.staxis_post_notice(uuid, text, text, text, text, t
 grant execute on function public.staxis_post_notice(uuid, text, text, text, text, text, boolean, timestamptz, uuid) to service_role;
 
 comment on function public.staxis_post_notice(uuid, text, text, text, text, text, boolean, timestamptz, uuid) is
-  'Atomic notice post that enforces "one pinned notice per property at a time". Added 0225.';
+  'Atomic notice post that enforces "one pinned notice per property at a time". Added 0227.';
 
 -- ─── Track the migration ─────────────────────────────────────────────────
 
 insert into public.applied_migrations (version, description)
 values (
-  '0225',
+  '0227',
   'Housekeeper mobile rebuild pieces B + C: notice board, manager notes, component rooms, audit log, offline-replay idempotency, housekeeping-issue-photos storage bucket, structured-issue + notice RPCs, staff.language expanded to ht/tl/vi.'
 )
 on conflict (version) do nothing;

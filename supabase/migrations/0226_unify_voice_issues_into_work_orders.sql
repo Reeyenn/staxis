@@ -1,4 +1,4 @@
--- Migration 0225: unify staxis_voice_issues into pms_work_orders_v2
+-- Migration 0226: unify staxis_voice_issues into pms_work_orders_v2
 --
 -- Closes the "two lists for the maintenance team" gap. Feature #11 (voice
 -- issue reporting, migration 0218) wrote tickets into a separate
@@ -164,7 +164,7 @@ create index if not exists pms_work_orders_v2_voice_recent_idx
 -- ── 6. Migration record ───────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
 values (
-  '0225',
+  '0226',
   'unify-voice-issues: pms_work_orders_v2.source + voice_session_id + voice_metadata + backfill from staxis_voice_issues + drop legacy table. Feature #11 follow-up.'
 )
 on conflict (version) do nothing;

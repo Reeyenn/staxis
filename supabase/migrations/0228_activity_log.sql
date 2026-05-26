@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Staxis / HotelOps AI — Cross-department Activity Log (Migration 0225)
+-- Staxis / HotelOps AI — Cross-department Activity Log (Migration 0228)
 --
 -- A unified "everything that happened" timeline for the property. Every
 -- meaningful event written by any other table (cleanings, inspections,
