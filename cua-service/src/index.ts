@@ -33,6 +33,7 @@ import { env } from './env.js';
 import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
 import { runMappingJob, type MappingJobInput } from './mapping-driver.js';
+import { getPingerSingleton } from './rules-engine-pinger.js';
 
 const WORKER_ID = makeWorkerId();
 
@@ -128,6 +129,17 @@ async function main(): Promise<void> {
     flyMachineId: env.FLY_MACHINE_ID,
     flyRegion: env.FLY_REGION,
   });
+
+  // Eagerly construct the rules-engine pinger singleton so its
+  // ENABLED/DISABLED state lands in the boot log every time, not
+  // only on the first PMS write. Without this, the constructor (and
+  // therefore the diagnostic log line) is deferred until the first
+  // generic-table-writer call — which on an established hotel with no
+  // active onboarding jobs can be many minutes after boot, leaving
+  // operators with no way to confirm the Fly env wiring from logs
+  // alone. Output is fire-and-forget — the singleton lives on the
+  // module and the call has no side effects beyond the log line.
+  getPingerSingleton();
 
   // Keep alive forever. Signal handlers drive shutdown.
   await new Promise<void>(() => {});
