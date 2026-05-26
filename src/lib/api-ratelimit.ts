@@ -185,7 +185,13 @@ export type RateLimitEndpoint =
   // scheduled_shifts + staff reads. Keyed on (userId, propertyId).
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
-  | 'housekeeping-forecast';
+  | 'housekeeping-forecast'
+  // Portfolio layer (feature #36) — multi-property landing for owners.
+  // Each endpoint keyed on the auth user id (hashed) — one bucket per
+  // owner across all their hotels. See HOURLY_CAPS for tuning notes.
+  | 'portfolio-properties'
+  | 'portfolio-tiles'
+  | 'portfolio-anomalies';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -349,6 +355,23 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
+  // Portfolio layer (feature #36) — multi-property landing for owners.
+  // Each endpoint keyed on the auth user id (hashed) — a single owner
+  // hitting the portfolio across all their hotels shares one bucket,
+  // which is the unit we want to bound (a runaway tab in one hotel
+  // shouldn't degrade reads for another).
+  //
+  // properties:   light list read. 600/hr is "page open + polling +
+  //               occasional visibility refetch" headroom.
+  // tiles:        heavy batched fan-out (one read per property × ~5
+  //               queries). Cap tighter so a runaway tab doesn't fan
+  //               out to N properties × Y queries × repeated hits. 120
+  //               is "two open tabs polling every 60s for an hour".
+  // anomalies:    focused read off the tile aggregator. 240 = polled
+  //               more aggressively than tiles for the indicator chip.
+  'portfolio-properties':        600,
+  'portfolio-tiles':             120,
+  'portfolio-anomalies':         240,
 };
 
 /**

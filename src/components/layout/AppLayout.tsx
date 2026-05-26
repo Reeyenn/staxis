@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { Header } from './Header';
+import { BackToPortfolioBreadcrumb } from '@/app/portfolio/_components/BackToPortfolioBreadcrumb';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { FloatingChatButton } from '@/components/agent/FloatingChatButton';
@@ -21,7 +23,26 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const { isOnline, pendingCount, isSyncing } = useSyncContext();
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const pathname = usePathname();
   const voiceSurfaceAvailable = Boolean(user && activePropertyId);
+
+  // Derive the breadcrumb section name from the pathname so every page
+  // gets the right "Portfolio › Property › Section" label without each
+  // page wiring it manually. The breadcrumb component hides itself for
+  // single-property users so this is a no-op on single-hotel accounts.
+  // Pages outside the main-tab set (e.g. /admin/*, /onboarding) get a
+  // generic "Operations" label — they're still navigable back to the
+  // portfolio, which is the only thing the breadcrumb owns.
+  const breadcrumbSection = (() => {
+    if (!pathname) return null;
+    if (pathname.startsWith('/housekeeping')) return { en: 'Housekeeping', es: 'Limpieza' };
+    if (pathname.startsWith('/maintenance'))  return { en: 'Maintenance',  es: 'Mantenimiento' };
+    if (pathname.startsWith('/inventory'))    return { en: 'Inventory',    es: 'Inventario' };
+    if (pathname.startsWith('/staff'))        return { en: 'Staff',        es: 'Personal' };
+    if (pathname.startsWith('/front-desk'))   return { en: 'Front Desk',   es: 'Recepción' };
+    if (pathname.startsWith('/dashboard'))    return { en: 'Dashboard',    es: 'Panel' };
+    return null;   // unknown sub-page → omit breadcrumb (settings, admin, etc.)
+  })();
 
   /* ── Determine which banner (if any) to show ── */
   const showOffline  = !isOnline;
@@ -52,6 +73,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <VoicePanelProvider>
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <Header />
+      {breadcrumbSection && (
+        <BackToPortfolioBreadcrumb sectionLabel={breadcrumbSection} />
+      )}
       <ActivityTracker />
 
       {/* ── Status banner ── */}

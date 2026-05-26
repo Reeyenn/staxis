@@ -4,6 +4,7 @@ import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
+import { PortfolioProvider } from '@/contexts/PortfolioContext';
 import { SyncProvider } from '@/contexts/SyncContext';
 import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
 
@@ -94,11 +95,13 @@ export default function RootLayout({
           <AuthProvider>
             <LanguageProvider>
               <PropertyProvider>
-                {children}
-                {/* Mounted at the root so the loop survives page navigations
-                    (AppLayout is per-page and unmounts when the URL changes,
-                    which would kill an in-flight multi-step walkthrough). */}
-                <WalkthroughOverlay />
+                <PortfolioProvider>
+                  {children}
+                  {/* Mounted at the root so the loop survives page navigations
+                      (AppLayout is per-page and unmounts when the URL changes,
+                      which would kill an in-flight multi-step walkthrough). */}
+                  <WalkthroughOverlay />
+                </PortfolioProvider>
               </PropertyProvider>
             </LanguageProvider>
           </AuthProvider>

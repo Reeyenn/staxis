@@ -36,7 +36,12 @@ export function Header() {
   const pathname = usePathname();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
+  // Portfolio link only renders for users with access to 2+ properties —
+  // single-property accounts see no clutter. Placed LEFT of Dashboard
+  // because it's the higher-altitude view (cross-property cockpit).
+  const isMultiProperty = properties.length >= 2;
   const baseNavLinks = [
+    ...(isMultiProperty ? [{ href: '/portfolio', label: lang === 'es' ? 'Portafolio' : 'Portfolio' }] : []),
     { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/housekeeping', label: lang === 'es' ? 'Limpieza' : 'Housekeeping' },
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
@@ -218,6 +223,28 @@ export function Header() {
                         {user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : ''}
                       </div>
                     </div>
+
+                    {/* Back-to-Portfolio shortcut — only when 2+ properties */}
+                    {isMultiProperty && (
+                      <button
+                        onClick={() => {
+                          setShowUserMenu(false);
+                          router.push('/portfolio');
+                        }}
+                        style={{
+                          width: '100%', padding: '10px 16px', textAlign: 'left',
+                          background: 'transparent',
+                          color: 'var(--snow-sage-deep)',
+                          fontSize: '12px', fontWeight: 600,
+                          letterSpacing: '0.04em', textTransform: 'uppercase',
+                          cursor: 'pointer', border: 'none',
+                          borderBottom: `1px solid var(--snow-rule-soft)`,
+                          fontFamily: sansFont,
+                        }}
+                      >
+                        ← {lang === 'es' ? 'Portafolio' : 'Back to Portfolio'}
+                      </button>
+                    )}
 
                     {/* Property selector inside dropdown */}
                     {properties.length > 0 && properties.map(p => (

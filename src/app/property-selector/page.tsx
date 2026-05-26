@@ -23,13 +23,23 @@ export default function PropertySelectorPage() {
     }
   }, [user, authLoading, router]);
 
-  // Auto-select when exactly 1 property
+  // Routing fork once auth + properties have loaded:
+  //   • 0 properties → stay here and show the empty-state card below
+  //   • 1 property   → auto-select + redirect to /dashboard (legacy flow)
+  //   • 2+           → redirect to /portfolio (the new cross-property
+  //                    landing — the per-property list shown below is
+  //                    redundant once the portfolio grid exists, and
+  //                    the brief flicker through /property-selector is
+  //                    cheap relative to introducing a separate
+  //                    "did the user pick a property?" gate at signin.
   useEffect(() => {
     if (authLoading || propLoading || !user) return;
     if (properties.length === 1) {
       setActivePropertyId(properties[0].id);
       sessionStorage.setItem('hotelops-session-selected', '1');
       router.replace('/dashboard');
+    } else if (properties.length >= 2) {
+      router.replace('/portfolio');
     }
   }, [authLoading, propLoading, user, properties, setActivePropertyId, router]);
 
