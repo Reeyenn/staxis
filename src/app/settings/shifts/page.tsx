@@ -94,7 +94,8 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
   const groups = useMemo(() => {
     const map: Record<StaffDepartment, DraftPreset[]> = {
-      housekeeping: [], front_desk: [], maintenance: [], other: [],
+      housekeeping: [], front_desk: [], maintenance: [],
+      breakfast: [], houseman: [], other: [],
     };
     for (const d of drafts) map[d.department].push(d);
     return map;
@@ -229,7 +230,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           </div>
         ) : (
           <>
-            {(['housekeeping', 'front_desk', 'maintenance'] as StaffDepartment[]).map(dept => {
+            {(['housekeeping', 'front_desk', 'maintenance', 'breakfast', 'houseman'] as StaffDepartment[]).map(dept => {
               const m = deptMeta[dept];
               const list = groups[dept];
               return (

@@ -275,9 +275,13 @@ interface StaffNameRow {
 }
 
 // Type-narrowing helpers — Promise.allSettled doesn't preserve our row
-// types in TypeScript without a guard.
+// types in TypeScript without a guard. We accept `unknown` for data
+// because each call site passes a Supabase select result whose typed
+// generic varies (single-row vs array, with or without our generated
+// Database type). The body coerces to T[] at the end after error/null
+// handling; runtime behavior is identical for any caller.
 function fulfilledData<T>(
-  result: PromiseSettledResult<{ data: T | null; error: unknown }>,
+  result: PromiseSettledResult<{ data: unknown; error: unknown }>,
   tag: string,
   pid: string,
   date: string,

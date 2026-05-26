@@ -127,6 +127,22 @@ const Schema = z.object({
   // 5-min cron is the safety net.
   RULES_ENGINE_PING_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
 
+  // ── Schedule reactivity ping (feature #21 — 2026-05-26) ──────────────
+  //
+  // When the CUA worker writes a demand-shaping PMS change (cancellation
+  // wave, arrival surge, VIP added, OOO flip), it POSTs to
+  // /api/internal/pms-changed?propertyId=<uuid> on the staxis web app so
+  // the manager's schedule gap alerts refresh within ~30s instead of
+  // waiting for tomorrow's nightly schedule-auto-fill cron.
+  //
+  // SCHEDULE_REACTIVITY_BASE_URL — defaults to RULES_ENGINE_BASE_URL when
+  // unset (same staxis origin), so most deploys only need to set the
+  // rules-engine base. Defined separately so a future cua-fly-only
+  // workload (e.g. an isolated demand engine) can split it.
+  SCHEDULE_REACTIVITY_BASE_URL: z.string().url().optional(),
+  SCHEDULE_REACTIVITY_PING_DEBOUNCE_MS: z.coerce.number().int().positive().default(10_000),
+  SCHEDULE_REACTIVITY_PING_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),

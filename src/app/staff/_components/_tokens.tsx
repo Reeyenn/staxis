@@ -39,6 +39,8 @@ export const deptMeta = {
   housekeeping: { label: 'Housekeeping', short: 'HK', tone: '#5C7A60', dim: 'rgba(92,122,96,0.10)' },
   front_desk:   { label: 'Front desk',   short: 'FD', tone: '#3A5670', dim: 'rgba(58,86,112,0.10)' },
   maintenance:  { label: 'Maintenance',  short: 'MT', tone: '#B85C3D', dim: 'rgba(184,92,61,0.10)' },
+  breakfast:    { label: 'Breakfast',    short: 'BK', tone: '#C99644', dim: 'rgba(201,150,68,0.10)' },
+  houseman:     { label: 'Houseman',     short: 'HM', tone: '#8E7A4F', dim: 'rgba(142,122,79,0.10)' },
   other:        { label: 'Other',        short: 'OT', tone: '#7B6A97', dim: 'rgba(123,106,151,0.10)' },
 } as const;
 

@@ -178,7 +178,14 @@ export type RateLimitEndpoint =
   // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
   // room-action; keyed on (userId, propertyId). 600/hr is ~10 taps/min
   // sustained — well above realistic manual tile cycling.
-  | 'housekeeping-room-action';
+  | 'housekeeping-room-action'
+  // Feature #21 (2026-05-26) — manager-facing schedule alerts CRUD. Read
+  // endpoint is polled by ManagerSchedule when banner is mounted; write
+  // endpoint fires per click. Both keyed on the propertyId. Read is
+  // generous (banner refetch each schedule rerender), write is tight
+  // (one click should suffice; abuse would be auto-clicking dismiss).
+  | 'schedule-alerts-read'
+  | 'schedule-alerts-write';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -337,6 +344,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Plan v4 manager Rooms-tab writes (tile cycling). 600/hr per
   // (user, property) — 10 taps/min sustained, well above real-world use.
   'housekeeping-room-action':    600,
+  // Feature #21 — schedule alerts. Reads polled (incl. realtime refetch
+  // bursts on every alert update) → 2400/hr is "40/min" headroom. Writes
+  // are one-click-per-banner-button; 200/hr is generous.
+  'schedule-alerts-read':       2400,
+  'schedule-alerts-write':       200,
 };
 
 /**

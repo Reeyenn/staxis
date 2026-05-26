@@ -53,7 +53,13 @@ export interface Property {
 
 // ─── Staff ─────────────────────────────────────────────────────────────────
 
-export type StaffDepartment = 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
+export type StaffDepartment =
+  | 'housekeeping'
+  | 'front_desk'
+  | 'maintenance'
+  | 'breakfast'
+  | 'houseman'
+  | 'other';
 
 export type SchedulePriority = 'priority' | 'normal' | 'excluded';
 

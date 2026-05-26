@@ -12,12 +12,23 @@ import React, { useMemo, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { ScheduledShift, StaffMember, TimeOffRequest } from '@/types';
-import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
+import { T, fonts, deptMeta, asDeptKey, Btn, Caps, type DeptKey } from './_tokens';
 import { StaffAvatar, SMTag, PageHeader } from './_people';
 import { useWeekShifts, mondayOf, addDays } from './useWeekShifts';
+import { ScheduleAlertsBanner } from './ScheduleAlertsBanner';
 
-const DEPT_ORDER: ('housekeeping' | 'front_desk' | 'maintenance')[] = [
-  'housekeeping', 'front_desk', 'maintenance',
+const DEPT_ORDER: DeptKey[] = [
+  'housekeeping', 'front_desk', 'maintenance', 'breakfast', 'houseman', 'other',
+];
+
+type DeptFilter = 'all' | DeptKey;
+const FILTER_CHIPS: { key: DeptFilter; label: string }[] = [
+  { key: 'all',          label: 'All' },
+  { key: 'housekeeping', label: deptMeta.housekeeping.label },
+  { key: 'front_desk',   label: deptMeta.front_desk.label },
+  { key: 'maintenance',  label: deptMeta.maintenance.label },
+  { key: 'breakfast',    label: deptMeta.breakfast.label },
+  { key: 'houseman',     label: deptMeta.houseman.label },
 ];
 
 // 'HH:MM' → 8a / 8:30a / 12p / 4p / 11p
@@ -39,17 +50,28 @@ export function ManagerSchedule() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<'publish' | 'copy' | null>(null);
+  const [deptFilter, setDeptFilter] = useState<DeptFilter>('all');
+  // Drag-to-move state. Only one shift is in flight at a time; we
+  // capture the source shift id + meta when the manager starts a drag.
+  // Cells fire onDragOver/onDrop to commit moves. Resizing isn't a drag
+  // gesture here — the cell shows a fixed-width time range, not a
+  // proportional bar, so resize lives in the CellEditor modal where the
+  // manager edits start/end times directly.
+  const [draggingShift, setDraggingShift] = useState<ScheduledShift | null>(null);
 
   const { days, byStaff, openShifts, torPending, publishedDates, presets, loading } =
     useWeekShifts(activePropertyId, weekStart);
 
-  // Roster ordered HK → FD → MT, alpha within group, active only.
+  // Roster ordered HK → FD → MT → BK → HM → OT, alpha within group, active only.
   const rows = useMemo(() => {
-    const ord: Record<string, number> = { housekeeping: 0, front_desk: 1, maintenance: 2, other: 3 };
+    const ord: Record<string, number> = {
+      housekeeping: 0, front_desk: 1, maintenance: 2,
+      breakfast: 3, houseman: 4, other: 5,
+    };
     return [...staff].filter(s => s.isActive !== false)
       .sort((a, b) => {
-        const oa = ord[asDeptKey(a.department)] ?? 3;
-        const ob = ord[asDeptKey(b.department)] ?? 3;
+        const oa = ord[asDeptKey(a.department)] ?? 5;
+        const ob = ord[asDeptKey(b.department)] ?? 5;
         if (oa !== ob) return oa - ob;
         return a.name.localeCompare(b.name);
       });
@@ -107,6 +129,87 @@ export function ManagerSchedule() {
     } finally { setActionBusy(null); }
   };
 
+  // ── Drag-to-move handlers ────────────────────────────────────────────
+  // A move is allowed only when:
+  //   • source cell is an existing shift (kind='shift')
+  //   • target (staffId, date) currently has no assigned shift
+  //   • target staff member's department matches the source (cross-dept
+  //     moves require the manager to use the modal so dept presets +
+  //     coverage assumptions stay consistent — we'd otherwise route an HK
+  //     row into the FD coverage budget without intent)
+  // If any of those fail, we no-op with an inline toast in actionMsg.
+  const onShiftDragStart = (shift: ScheduledShift) => (e: React.DragEvent) => {
+    setDraggingShift(shift);
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      // Body content doesn't matter — the source is in React state — but
+      // some browsers require *something* be set or the drag aborts.
+      e.dataTransfer.setData('text/plain', shift.id);
+    } catch {
+      // Some test envs (jsdom) don't expose dataTransfer; ignore.
+    }
+  };
+  const onShiftDragEnd = () => {
+    setDraggingShift(null);
+  };
+  const onCellDragOver = (canDrop: boolean) => (e: React.DragEvent) => {
+    if (!canDrop) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+  const onCellDrop = (
+    targetStaffId: string | null,
+    targetStaffDept: ReturnType<typeof asDeptKey>,
+    targetDate: string,
+    targetCellKind: 'shift' | 'off',
+  ) => async (e: React.DragEvent) => {
+    e.preventDefault();
+    const source = draggingShift;
+    setDraggingShift(null);
+    if (!source || !activePropertyId) return;
+    if (!targetStaffId) {
+      setActionMsg("Can't drop on an open slot — use 'Post as open' from the cell editor.");
+      return;
+    }
+    if (targetCellKind !== 'off') {
+      setActionMsg('That cell already has a shift — remove it first or pick another day.');
+      return;
+    }
+    if (source.staffId === targetStaffId && source.shiftDate === targetDate) return;
+    if (asDeptKey(source.department) !== targetStaffDept) {
+      setActionMsg('Cross-department moves: open the cell editor (department presets differ).');
+      return;
+    }
+    try {
+      const res = await fetchWithAuth('/api/staff-schedule/shifts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hotelId: activePropertyId,
+          shift: {
+            id: source.id,
+            staffId: targetStaffId,
+            department: source.department,
+            shiftDate: targetDate,
+            startTime: source.startTime,
+            endTime: source.endTime,
+            kind: 'shift',
+            presetId: source.presetId ?? null,
+            note: source.note ?? null,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setActionMsg(b?.error || 'Move failed.');
+        return;
+      }
+      setActionMsg('Shift moved.');
+    } catch (err) {
+      setActionMsg(err instanceof Error ? err.message : 'Move failed.');
+    }
+  };
+
   const handleCopy = async () => {
     if (!activePropertyId || actionBusy) return;
     if (!window.confirm('Copy last week\'s shifts into this week? Existing shifts here will be overwritten.')) return;
@@ -150,6 +253,38 @@ export function ManagerSchedule() {
         eyebrow={`Schedule · Week of ${startLabel}`}
         sub="Click any cell to assign someone, post the slot as open, or change a shift. Publish when you’re happy with the week."
       />
+
+      <ScheduleAlertsBanner hotelId={activePropertyId} />
+
+      {/* Department filter — applies to the grid below. 'All' keeps the
+          original grouped roster behavior; picking a single dept hides the
+          other dept blocks so the manager can focus on one. */}
+      <div
+        role="tablist"
+        aria-label="Filter schedule by department"
+        style={{
+          display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center',
+        }}
+      >
+        {FILTER_CHIPS.map(chip => {
+          const selected = deptFilter === chip.key;
+          return (
+            <button
+              key={chip.key}
+              role="tab"
+              aria-selected={selected}
+              onClick={() => setDeptFilter(chip.key)}
+              style={{
+                padding: '6px 12px', borderRadius: 999,
+                border: selected ? `1px solid ${T.ink}` : `1px solid ${T.rule}`,
+                background: selected ? T.ink : 'transparent',
+                color: selected ? T.bg : T.ink2,
+                fontFamily: fonts.sans, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+              }}
+            >{chip.label}</button>
+          );
+        })}
+      </div>
 
       <div style={{
         display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap',
@@ -210,6 +345,8 @@ export function ManagerSchedule() {
           </div>
 
           {DEPT_ORDER.map(dept => {
+            // Filter by the active department chip — 'all' keeps every dept block.
+            if (deptFilter !== 'all' && dept !== deptFilter) return null;
             const m = deptMeta[dept];
             const list = rows.filter(r => asDeptKey(r.department) === dept);
             if (list.length === 0 && Object.keys(openByDayDept).every(k => !k.endsWith(dept))) return null;
@@ -272,12 +409,22 @@ export function ManagerSchedule() {
                       {days.map((d, di) => {
                         const cell = byStaff[s.id]?.[di] ?? { kind: 'off' as const };
                         const tor  = torPending[`${s.id}:${d.date}`] ?? null;
+                        const canAcceptDrop = !!draggingShift && cell.kind === 'off';
+                        const isDropHighlight = canAcceptDrop && asDeptKey(s.department) === dept;
                         return (
-                          <div key={d.key} style={{
-                            borderLeft: `1px solid ${T.ruleSoft}`,
-                            background: d.today ? 'rgba(201,150,68,0.04)' : d.tomorrow ? 'rgba(92,122,96,0.04)' : 'transparent',
-                            position: 'relative',
-                          }}>
+                          <div
+                            key={d.key}
+                            style={{
+                              borderLeft: `1px solid ${T.ruleSoft}`,
+                              background: isDropHighlight
+                                ? 'rgba(92,122,96,0.10)'
+                                : d.today ? 'rgba(201,150,68,0.04)' : d.tomorrow ? 'rgba(92,122,96,0.04)' : 'transparent',
+                              position: 'relative',
+                              outline: isDropHighlight ? '1px dashed rgba(92,122,96,0.45)' : undefined,
+                            }}
+                            onDragOver={onCellDragOver(canAcceptDrop)}
+                            onDrop={onCellDrop(s.id, asDeptKey(s.department), d.date, cell.kind)}
+                          >
                             <ScheduleCell
                               cell={cell} tone={m.tone} past={d.past} tor={tor}
                               onClick={() => setEditor({
@@ -287,6 +434,8 @@ export function ManagerSchedule() {
                                 existing: cell.kind === 'shift' ? cell.shift : null,
                                 tor,
                               })}
+                              onDragStart={cell.kind === 'shift' ? onShiftDragStart(cell.shift) : undefined}
+                              onDragEnd={onShiftDragEnd}
                             />
                           </div>
                         );
@@ -463,13 +612,15 @@ export function ManagerSchedule() {
 // ────────────────────────────────────────────────────────────────────────────
 
 function ScheduleCell({
-  cell, tone, past, tor, onClick,
+  cell, tone, past, tor, onClick, onDragStart, onDragEnd,
 }: {
   cell: { kind: 'shift'; shift: ScheduledShift } | { kind: 'off' };
   tone: string;
   past: boolean;
   tor: TimeOffRequest | null;
   onClick: () => void;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragEnd?: (e: React.DragEvent) => void;
 }) {
   if (cell.kind === 'shift') {
     const s = cell.shift;
@@ -478,11 +629,24 @@ function ScheduleCell({
     const fg = isDraft ? '#8C6A33' : isPending ? '#8C6A33' : tone;
     const bg = isDraft ? 'rgba(201,150,68,0.14)' : isPending ? 'rgba(201,150,68,0.14)' : `${tone}1A`;
     const br = isDraft ? '1px dashed rgba(140,106,51,0.45)' : isPending ? '1px solid rgba(140,106,51,0.32)' : `1px solid ${tone}33`;
+    // Drag-to-move handle. Wrapping a div (not a button) keeps the
+    // native HTML5 drag gesture intact — buttons that are also draggable
+    // misbehave in Safari.
     return (
-      <button className="schedule-cell" onClick={onClick} style={{
-        all: 'unset', cursor: 'pointer', display: 'block',
-        padding: 6, minHeight: 34, width: '100%', boxSizing: 'border-box', position: 'relative',
-      }}>
+      <div
+        className="schedule-cell"
+        role="button"
+        tabIndex={0}
+        draggable={!!onDragStart}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        onClick={onClick}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+        style={{
+          cursor: onDragStart ? 'grab' : 'pointer', display: 'block',
+          padding: 6, minHeight: 34, width: '100%', boxSizing: 'border-box', position: 'relative',
+        }}
+      >
         <div style={{
           padding: '5px 8px', borderRadius: 6,
           background: bg, border: br,
@@ -491,7 +655,7 @@ function ScheduleCell({
           opacity: past ? 0.55 : 1,
         }}>{fmtRange(s.startTime, s.endTime)}</div>
         {tor && <TorPin/>}
-      </button>
+      </div>
     );
   }
   return (
@@ -534,7 +698,7 @@ type EditorState =
   | {
       kind: 'cell';
       staff: StaffMember;
-      dept: 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
+      dept: DeptKey;
       date: string;
       dayLabel: string;
       existing: ScheduledShift | null;
@@ -542,14 +706,14 @@ type EditorState =
     }
   | {
       kind: 'open';
-      dept: 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
+      dept: DeptKey;
       date: string;
       dayLabel: string;
       existing: ScheduledShift;
     }
   | {
       kind: 'open-new';
-      dept: 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
+      dept: DeptKey;
       date: string;
       dayLabel: string;
       existing: null;

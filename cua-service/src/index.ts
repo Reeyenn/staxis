@@ -34,6 +34,7 @@ import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
 import { runMappingJob, type MappingJobInput } from './mapping-driver.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
+import { getSchedulePingerSingleton } from './schedule-reactivity-pinger.js';
 
 const WORKER_ID = makeWorkerId();
 
@@ -140,6 +141,11 @@ async function main(): Promise<void> {
   // alone. Output is fire-and-forget — the singleton lives on the
   // module and the call has no side effects beyond the log line.
   getPingerSingleton();
+
+  // Same shape for the schedule-reactivity pinger — its ENABLED/DISABLED
+  // line documents whether feature #21's sub-30s schedule-gap response
+  // is wired through, separately from the rules engine. Fire-and-forget.
+  getSchedulePingerSingleton();
 
   // Keep alive forever. Signal handlers drive shutdown.
   await new Promise<void>(() => {});

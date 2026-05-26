@@ -92,6 +92,160 @@ interface PerPropertyResult {
   detail?: string;
   roomsAssigned?: number;
   crewSize?: number;
+  /** Cross-dept extension: open slots inserted for non-HK depts. Counts
+   *  how many `scheduled_shifts` rows were inserted per dept (or 0 when
+   *  the dept already had any shift for the date — we don't overwrite). */
+  crossDeptSeeded?: Record<string, number>;
+}
+
+/** Cross-dept open-slot seeding (feature #21 — 2026-05-26).
+ *
+ *  For each non-HK dept that has a configured demand in the property
+ *  config, ensure there's at least one open slot (kind='open', status=
+ *  'draft', staff_id=null) on the target date. If any shift (open or
+ *  assigned) already exists for the dept on that date, we leave it alone
+ *  — the manager has already started on this dept. Times come from the
+ *  property's first preset for the dept, falling back to 08:00–16:00.
+ *
+ *  Idempotent: re-running this for the same (property, date) is a no-op
+ *  once the seed has landed.
+ *
+ *  HK is intentionally excluded — schedule_assignments (above) is the
+ *  HK source of truth, not scheduled_shifts; scheduling rooms via the
+ *  separate atomic RPC + the manager's UI building the week-grid keeps
+ *  them coherent. */
+const CROSS_DEPT_DEMAND_KEYS: ReadonlyArray<{
+  dept: 'front_desk' | 'maintenance' | 'breakfast' | 'houseman';
+  hasDemand: (cfg: CrossDeptConfigRow) => boolean;
+  shiftCount: (cfg: CrossDeptConfigRow) => number;
+  fallback: { start: string; end: string };
+}> = [
+  {
+    dept: 'front_desk',
+    hasDemand: (c) => typeof c.front_desk_coverage_hours === 'number' && c.front_desk_coverage_hours > 0,
+    // 24/7 → 3 shifts; <=12 → 1; else 2.
+    shiftCount: (c) => {
+      const h = c.front_desk_coverage_hours ?? 0;
+      if (h >= 22) return 3;
+      if (h >= 12) return 2;
+      return 1;
+    },
+    fallback: { start: '08:00', end: '16:00' },
+  },
+  {
+    dept: 'maintenance',
+    hasDemand: (c) => typeof c.maintenance_shifts_per_day === 'number' && c.maintenance_shifts_per_day > 0,
+    shiftCount: (c) => c.maintenance_shifts_per_day ?? 0,
+    fallback: { start: '09:00', end: '17:00' },
+  },
+  {
+    dept: 'breakfast',
+    hasDemand: (c) => Boolean(c.breakfast_window_start && c.breakfast_window_end),
+    shiftCount: () => 1,
+    fallback: { start: '06:00', end: '10:30' },
+  },
+  {
+    dept: 'houseman',
+    hasDemand: (c) => typeof c.houseman_shifts_per_day === 'number' && c.houseman_shifts_per_day > 0,
+    shiftCount: (c) => c.houseman_shifts_per_day ?? 0,
+    fallback: { start: '08:00', end: '16:00' },
+  },
+];
+
+interface CrossDeptConfigRow {
+  front_desk_coverage_hours: number | null;
+  maintenance_shifts_per_day: number | null;
+  houseman_shifts_per_day: number | null;
+  breakfast_window_start: string | null;
+  breakfast_window_end: string | null;
+}
+
+async function seedNonHkOpenSlots(
+  propertyId: string,
+  targetDate: string,
+  requestId: string,
+): Promise<Record<string, number>> {
+  const summary: Record<string, number> = {};
+
+  // Load coverage config + dept presets in parallel.
+  const [cfgRes, presetsRes] = await Promise.all([
+    supabaseAdmin
+      .from('properties')
+      .select(
+        'front_desk_coverage_hours, maintenance_shifts_per_day, ' +
+          'houseman_shifts_per_day, breakfast_window_start, breakfast_window_end',
+      )
+      .eq('id', propertyId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('property_shift_presets')
+      .select('department, start_time, end_time, sort_order')
+      .eq('property_id', propertyId)
+      .order('sort_order', { ascending: true }),
+  ]);
+  if (cfgRes.error || !cfgRes.data) return summary;
+  const cfg = cfgRes.data as unknown as CrossDeptConfigRow;
+  const presetsByDept = new Map<string, { start: string; end: string }>();
+  for (const p of (presetsRes.data ?? []) as Array<{
+    department: string; start_time: string; end_time: string;
+  }>) {
+    if (!presetsByDept.has(p.department)) {
+      presetsByDept.set(p.department, {
+        start: String(p.start_time).slice(0, 5),
+        end: String(p.end_time).slice(0, 5),
+      });
+    }
+  }
+
+  // Bulk-load existing shifts per dept for the date so each insert can
+  // skip work without an extra round-trip.
+  const { data: existingShifts, error: shiftErr } = await supabaseAdmin
+    .from('scheduled_shifts')
+    .select('department, kind')
+    .eq('property_id', propertyId)
+    .eq('shift_date', targetDate);
+  if (shiftErr) {
+    log.warn('[schedule-auto-fill] seed: existing shifts query failed', {
+      requestId, propertyId, targetDate, err: shiftErr.message,
+    });
+    return summary;
+  }
+  const deptsWithShifts = new Set<string>();
+  for (const row of (existingShifts ?? []) as Array<{ department: string }>) {
+    deptsWithShifts.add(row.department);
+  }
+
+  for (const spec of CROSS_DEPT_DEMAND_KEYS) {
+    summary[spec.dept] = 0;
+    if (!spec.hasDemand(cfg)) continue;
+    if (deptsWithShifts.has(spec.dept)) continue;  // manager already touched it
+    const count = Math.max(0, Math.min(8, Math.floor(spec.shiftCount(cfg))));
+    if (count === 0) continue;
+    const times = presetsByDept.get(spec.dept) ?? spec.fallback;
+    const rows = Array.from({ length: count }, () => ({
+      property_id: propertyId,
+      staff_id: null,
+      department: spec.dept,
+      shift_date: targetDate,
+      start_time: times.start,
+      end_time: times.end,
+      kind: 'open',
+      status: 'draft',
+      reason: 'auto-seeded by schedule-auto-fill cron',
+    }));
+    const { error: insErr } = await supabaseAdmin
+      .from('scheduled_shifts')
+      .insert(rows);
+    if (insErr) {
+      log.warn('[schedule-auto-fill] seed insert failed', {
+        requestId, propertyId, dept: spec.dept,
+        err: insErr.message,
+      });
+      continue;
+    }
+    summary[spec.dept] = rows.length;
+  }
+  return summary;
 }
 
 async function autoFillForProperty(
@@ -209,10 +363,23 @@ async function autoFillForProperty(
       stayover_day: r.stayover_day,
     }));
   if (assignable.length === 0) {
+    // Even on an all-vacant day, non-HK departments still need to work
+    // (front-desk staffs the lobby, breakfast still serves, etc.). Seed
+    // open slots for those depts even though HK has nothing to do.
+    let crossDeptSeeded: Record<string, number> | undefined;
+    try {
+      crossDeptSeeded = await seedNonHkOpenSlots(property.id, targetDate, requestId);
+    } catch (e) {
+      log.warn('[schedule-auto-fill] seedNonHkOpenSlots threw on no_rooms (swallowed)', {
+        requestId, propertyId: property.id,
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
     return {
       propertyId: property.id, propertyName: property.name, date: targetDate,
       outcome: 'skipped_no_rooms',
       detail: `No assignable rooms for ${targetDate}. Either seed-rooms-daily hasn't run yet, or it's an all-vacant day.`,
+      crossDeptSeeded,
     };
   }
 
@@ -323,11 +490,25 @@ async function autoFillForProperty(
       detail: 'Concurrent writer (manager save or sibling cron) inserted first — leaving it alone.',
     };
   }
+  // Cross-dept open-slot seed (feature #21). Independent of the HK
+  // assignment outcome — even if HK skipped (e.g. all-vacant day),
+  // non-HK depts may still want shifts on the books.
+  let crossDeptSeeded: Record<string, number> | undefined;
+  try {
+    crossDeptSeeded = await seedNonHkOpenSlots(property.id, targetDate, requestId);
+  } catch (e) {
+    log.warn('[schedule-auto-fill] seedNonHkOpenSlots threw (swallowed)', {
+      requestId, propertyId: property.id,
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+
   return {
     propertyId: property.id, propertyName: property.name, date: targetDate,
     outcome: 'auto_filled',
     roomsAssigned: assignedRoomCount,
     crewSize: activeCrew.length,
+    crossDeptSeeded,
   };
 }
 

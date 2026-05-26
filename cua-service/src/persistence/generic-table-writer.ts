@@ -37,6 +37,7 @@ import { env } from '../env.js';
 import { getValidator } from '../validators-phase2.js';
 import { RECONCILE_ON_MISSING, type OnMissingBehavior } from './reconcile-config.js';
 import { notifyHighPriorityChange } from '../rules-engine-pinger.js';
+import { notifyScheduleHighPriorityChange } from '../schedule-reactivity-pinger.js';
 
 // Re-export for backward compatibility with any external importer.
 export { RECONCILE_ON_MISSING };
@@ -308,6 +309,13 @@ export async function saveGenericTable(
   // not targetTable.
   if (result.ok && (result.inserted > 0 || result.updated > 0 || result.autoResolved > 0)) {
     notifyHighPriorityChange(propertyId, tableName, validation.valid);
+    // Feature #21 — also notify the schedule-reactivity pinger so demand-
+    // shaping PMS changes (arrival surge, cancellation wave, VIP added,
+    // status flip) drive a fresh gap-alert recompute within ~30s. Same
+    // fire-and-forget contract: any error inside notifyScheduleHighPriority-
+    // Change is logged + swallowed and MUST NOT propagate into the
+    // write path.
+    notifyScheduleHighPriorityChange(propertyId, tableName, validation.valid);
   }
   return result;
 }
