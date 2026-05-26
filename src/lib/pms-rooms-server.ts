@@ -276,8 +276,14 @@ interface StaffNameRow {
 
 // Type-narrowing helpers — Promise.allSettled doesn't preserve our row
 // types in TypeScript without a guard.
+//
+// Supabase's typed select returns PostgrestSingleResponse<T[]> for a
+// multi-row select. The shape compatible with `result.value` destructuring
+// is `{ data: T[] | null; error: unknown }` — using `T | null` confuses
+// TS into rejecting the call site (regression caught in the cost-tracking
+// branch build pass, 2026-05-26).
 function fulfilledData<T>(
-  result: PromiseSettledResult<{ data: T | null; error: unknown }>,
+  result: PromiseSettledResult<{ data: T[] | null; error: unknown }>,
   tag: string,
   pid: string,
   date: string,
@@ -295,7 +301,7 @@ function fulfilledData<T>(
     });
     return [];
   }
-  return (data ?? []) as unknown as T[];
+  return (data ?? []) as T[];
 }
 
 /**

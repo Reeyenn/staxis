@@ -31,6 +31,8 @@ import {
   Caps, Pill, Btn, HousekeeperDot,
 } from './_snow';
 import type { StaffMember } from '@/types';
+import { LaborCostSection } from './LaborCostSection';
+import { canManageTeam } from '@/lib/roles';
 
 type ViewMode = 'live' | '7d' | '30d' | '3mo' | '1yr';
 const VIEW_DAYS: Record<ViewMode, number> = { live: 1, '7d': 7, '30d': 30, '3mo': 90, '1yr': 365 };
@@ -543,6 +545,20 @@ export function PerformanceTab() {
           </div>
         </div>
       </div>
+
+      {/* LABOR COST — owner/GM/admin only. Sits below the main grid so
+          it doesn't compete with the leaderboard for the eye but is
+          still on the same screen. Manager+ gate matches the wage edit
+          gate elsewhere. */}
+      {user && canManageTeam(user.role) && (
+        <div style={{ marginTop: 18 }}>
+          <LaborCostSection
+            propertyId={activePropertyId}
+            today={today}
+            lang={lang}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -57,6 +57,8 @@ import { AutoAssignBoard } from './AutoAssignBoard';
 // richer payload via /api/housekeeping/timeline (lifecycle timestamps).
 import { TimelineView } from './TimelineView';
 import { NoticeBoardPoster } from './NoticeBoardPoster';
+import { LaborCostBanner } from './LaborCostBanner';
+import { AutoAssignBoardCostOverlay } from './AutoAssignBoardCostOverlay';
 
 type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
@@ -754,6 +756,8 @@ export function ScheduleTab() {
 
       <NoticeBoardPoster />
 
+      <LaborCostBanner propertyId={activePropertyId} businessDate={shiftDate} lang={lang} />
+
       {/* DATE STEPPER */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
@@ -1418,6 +1422,7 @@ export function ScheduleTab() {
             shiftMinutes={SHIFT_MINS}
             lang={lang}
           />
+          <AutoAssignBoardCostOverlay propertyId={pid} businessDate={shiftDate} lang={lang} />
         </div>
       )}
 

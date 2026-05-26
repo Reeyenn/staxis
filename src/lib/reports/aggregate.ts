@@ -86,6 +86,14 @@ export interface StaffRow {
   id: string;
   name: string;
   hourly_wage: number | null;
+  /**
+   * Hourly wage in cents (migration 0229). Source of truth as of
+   * 2026-05-26; the legacy hourly_wage dollar column is kept for
+   * back-compat with rows whose wage was last set via the bulk-
+   * update path. buildLaborBlock prefers cents; falls back to
+   * dollars × 100; treats both null as "wage unknown."
+   */
+  hourly_wage_cents?: number | null;
 }
 
 export interface CalloutRow {
@@ -285,14 +293,25 @@ export function buildLaborBlock(args: {
     totalMinutes += minutes;
     const ot = Math.max(0, minutes - STANDARD_SHIFT_MINUTES_BEFORE_OT);
     totalOtMinutes += ot;
-    const wage = staffById.get(staffId)?.hourly_wage;
-    if (wage !== null && wage !== undefined && wage > 0) {
+    // Wage resolution (2026-05-26): prefer hourly_wage_cents (set
+    // through /api/staff/wage, audit-logged). Fall back to the legacy
+    // hourly_wage dollar column for rows whose wage was last touched
+    // before migration 0229. Both null → skip cost contribution for
+    // this staff member.
+    const staffRow = staffById.get(staffId);
+    let wageCents: number | null = null;
+    if (staffRow?.hourly_wage_cents !== null && staffRow?.hourly_wage_cents !== undefined && staffRow.hourly_wage_cents > 0) {
+      wageCents = staffRow.hourly_wage_cents;
+    } else if (staffRow?.hourly_wage !== null && staffRow?.hourly_wage !== undefined && staffRow.hourly_wage > 0) {
+      wageCents = Math.round(staffRow.hourly_wage * 100);
+    }
+    if (wageCents !== null) {
       const regularHours = (minutes - ot) / 60;
       const otHours = ot / 60;
       // OT pay is 1.5x. The federal rule is "over 40/week", but until
       // we have a weekly timeclock we approximate at the daily level.
-      laborCostCents += Math.round(regularHours * wage * 100);
-      laborCostCents += Math.round(otHours * wage * 1.5 * 100);
+      laborCostCents += Math.round((regularHours * wageCents));
+      laborCostCents += Math.round((otHours * wageCents * 1.5));
     }
   }
 

@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, DollarSign } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -45,6 +45,14 @@ export default function SettingsPage() {
             icon:Bell,
             label: lang === 'es' ? 'Notificaciones' : 'Notifications',
             desc: lang === 'es' ? 'Cuándo y cómo recibir el reporte diario y semanal' : 'When and how to receive the daily and weekly report',
+          },
+          {
+            href:'/settings/labor-budget',
+            icon: DollarSign,
+            label: lang === 'es' ? 'Presupuesto de personal' : 'Labor budget',
+            desc: lang === 'es'
+              ? 'Presupuesto diario/semanal y umbral de horas extras'
+              : 'Daily/weekly labor budget and overtime threshold',
           },
           {
             href:'/settings/shifts',

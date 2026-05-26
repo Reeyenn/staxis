@@ -6,6 +6,13 @@
 // swap guard, same delete confirm, same write-timeout protection. The
 // modal additionally now has a "Linked login" picker that maps an account
 // to this staff row (writes `accounts.staff_id` via /api/auth/team).
+//
+// 2026-05-26 (cost-tracking): Hourly wage moved to the dedicated cost-
+// tracking write path. The wage input is now visible only to owner/GM/
+// admin roles, reads via GET /api/staff/wage on modal open, and writes
+// via PATCH /api/staff/wage on save. Wage no longer travels in the bulk
+// updateStaffMember payload — this gates the audit trail and lets us
+// keep the wage field out of the browser-side staff broadcast.
 
 'use client';
 
@@ -27,6 +34,15 @@ interface StaffFormData {
   language: 'en' | 'es';
   department: StaffDepartment;
   isSenior: boolean;
+  /**
+   * Hourly wage in DOLLARS (e.g. 14.50). The dedicated /api/staff/wage
+   * endpoint receives this as integer cents on save; the form holds
+   * dollars because that's how the owner thinks about wages.
+   *
+   * Set via the wage-fetch effect below — not from the staff row that
+   * came through PropertyContext, since the staff broadcast does NOT
+   * carry wage data (security: housekeepers must not see wages).
+   */
   hourlyWage?: number;
   maxWeeklyHours: number;
   maxDaysPerWeek: number;
@@ -40,6 +56,18 @@ const EMPTY_FORM: StaffFormData = {
   isSenior: false, maxWeeklyHours: 40, maxDaysPerWeek: 5,
   vacationDates: '', isActive: true, isSchedulingManager: false,
 };
+
+/**
+ * Roles allowed to view/edit hourly wages. Mirrors canEditWages on the
+ * /api/staff/wage route. Kept as its own predicate (not canManageTeam)
+ * so a future expansion of canManageTeam doesn't accidentally widen the
+ * wage gate. The /staff page itself is already canManageTeam-gated, so
+ * housekeepers can't reach this code path — this guard is belt-and-
+ * suspenders for the day the page surface expands.
+ */
+function canSeeWages(role: string | undefined): boolean {
+  return role === 'admin' || role === 'owner' || role === 'general_manager';
+}
 
 // Team-member shape returned by GET /api/auth/team (with our new staffId field).
 interface TeamMember {
@@ -76,6 +104,13 @@ export function ManagerDirectory() {
   >(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
 
+  // Track the wage that came back from /api/staff/wage on modal open so
+  // we know whether the form's wage changed at save time (only PATCH if
+  // it actually changed — avoids appending a no-op audit row).
+  const [originalWageCents, setOriginalWageCents] = useState<number | null>(null);
+  // Toggle whether the modal renders the Hourly Wage field at all.
+  const showWageField = canSeeWages(user?.role);
+
   // Fetch team list once per modal open (so newly-added staff see the latest
   // accounts list without a full page reload).
   useEffect(() => {
@@ -100,6 +135,7 @@ export function ManagerDirectory() {
     setSaveError(null);
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
+    setOriginalWageCents(null);
   };
 
   /* ── Open handlers ── */
@@ -121,7 +157,11 @@ export function ManagerDirectory() {
       language: member.language,
       department: asDeptKey(member.department) as StaffDepartment,
       isSenior: member.isSenior,
-      hourlyWage: member.hourlyWage,
+      // Wage is intentionally left undefined here — the wage-fetch
+      // effect below populates it from /api/staff/wage so the form
+      // never reflects stale data from the staff broadcast (which
+      // does not carry wages anyway, as of cost-tracking 2026-05-26).
+      hourlyWage: undefined,
       maxWeeklyHours: member.maxWeeklyHours,
       maxDaysPerWeek: member.maxDaysPerWeek ?? 5,
       vacationDates: (member.vacationDates ?? []).join('\n'),
@@ -132,10 +172,40 @@ export function ManagerDirectory() {
     // account whose staff_id matches this member.id.
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
+    setOriginalWageCents(null);
     setSaveError(null);
     setSaving(false);
     setShowModal(true);
   };
+
+  // Once the modal opens on an existing staff record AND the caller is
+  // permitted to see wages, fetch the current wage_cents + recent audit
+  // history from /api/staff/wage. The browser-side staff broadcast does
+  // NOT include wages, so this is the only path that populates the form.
+  useEffect(() => {
+    if (!showModal || !editMember || !pid) return;
+    if (!showWageField) return;
+    let active = true;
+    fetchWithAuth(`/api/staff/wage?propertyId=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(editMember.id)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then((body: { ok?: boolean; data?: { wageCents: number | null; legacyWageDollars?: number | null } } | null) => {
+        if (!active) return;
+        if (!body?.ok || !body.data) return;
+        // Prefer the new cents column; fall back to the legacy dollar
+        // column for rows backfilled before migration 0229 reached prod.
+        let cents = body.data.wageCents;
+        if (cents === null && typeof body.data.legacyWageDollars === 'number') {
+          cents = Math.round(body.data.legacyWageDollars * 100);
+        }
+        setOriginalWageCents(cents);
+        setForm(f => ({
+          ...f,
+          hourlyWage: cents === null || cents === undefined ? undefined : cents / 100,
+        }));
+      })
+      .catch(err => console.warn('[ManagerDirectory] wage fetch failed', err));
+    return () => { active = false; };
+  }, [showModal, editMember, pid, showWageField]);
 
   // Once the team list arrives, fill in linkedAccountId from whichever
   // account (if any) is currently pointing at this staff row.
@@ -156,13 +226,18 @@ export function ManagerDirectory() {
       const vacationDates = form.vacationDates
         .split('\n').map(s => s.trim())
         .filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
+      // hourlyWage is intentionally NOT in this payload — wage changes
+      // travel through the dedicated /api/staff/wage endpoint below so
+      // they get audit-logged and role-gated independently of the bulk
+      // update path. The bulk save still touches the legacy hourly_wage
+      // column when nobody passes wage; that's harmless and stays out
+      // of scope here.
       const data = {
         name: form.name.trim(),
         phone: form.phone?.trim() ?? '',
         language: form.language,
         department: form.department,
         isSenior: form.isSenior,
-        ...(form.hourlyWage !== undefined && { hourlyWage: form.hourlyWage }),
         maxWeeklyHours: form.maxWeeklyHours,
         maxDaysPerWeek: form.maxDaysPerWeek,
         vacationDates,
@@ -186,6 +261,40 @@ export function ManagerDirectory() {
       });
       try { await Promise.race([writePromise, timeoutPromise]); }
       finally { if (timeoutId) clearTimeout(timeoutId); }
+
+      // ── Hourly wage write ──────────────────────────────────────────────
+      // Lives outside the bulk update so every edit lands an audit row
+      // and the role gate is enforced server-side. Skips entirely when
+      // the caller isn't permitted to edit wages.
+      if (showWageField && savedStaffId) {
+        const desiredCents =
+          form.hourlyWage === undefined || form.hourlyWage === null
+            ? null
+            : Math.round(form.hourlyWage * 100);
+        const wageChanged = desiredCents !== originalWageCents;
+        if (wageChanged) {
+          const wageRes = await fetchWithAuth('/api/staff/wage', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              propertyId: pid,
+              staffId: savedStaffId,
+              newWageCents: desiredCents,
+            }),
+          });
+          if (!wageRes.ok) {
+            const errBody = await wageRes.json().catch(() => ({}));
+            // Surface the wage failure but DO NOT roll back the bulk
+            // save — the rest of the edit (name, dept, etc.) already
+            // landed. The owner can retry the wage from the modal.
+            throw new Error(
+              (errBody && typeof errBody === 'object' && 'error' in errBody && typeof (errBody as { error?: unknown }).error === 'string')
+                ? `Wage update failed: ${(errBody as { error: string }).error}`
+                : 'Wage update failed. The rest of the staff record was saved.',
+            );
+          }
+        }
+      }
 
       // ── Account link writes ────────────────────────────────────────────
       // Two cases:
@@ -441,6 +550,7 @@ export function ManagerDirectory() {
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
           lang={lang}
+          showWageField={showWageField}
         />
       )}
 
@@ -506,7 +616,7 @@ function formatPhone(p: string): string {
 // ── Modal ────────────────────────────────────────────────────────────────
 function StaffEditModal({
   editMember, form, setForm, saving, saveError, onClose, onSave, onDelete,
-  linkableAccounts, linkedAccountId, setLinkedAccountId, lang,
+  linkableAccounts, linkedAccountId, setLinkedAccountId, lang, showWageField,
 }: {
   editMember: StaffMember | null;
   form: StaffFormData;
@@ -520,6 +630,12 @@ function StaffEditModal({
   linkedAccountId: string | null;
   setLinkedAccountId: (id: string | null) => void;
   lang: 'en' | 'es';
+  /**
+   * When false, the Hourly Wage field is omitted entirely. Mirrors
+   * canSeeWages() at the page level — defense-in-depth so a future
+   * caller can't render this modal with the wage field by accident.
+   */
+  showWageField: boolean;
 }) {
   const departments: StaffDepartment[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
   return (
@@ -624,18 +740,27 @@ function StaffEditModal({
             </div>
           </Field>
 
-          {/* Hourly wage */}
-          <Field label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}>
-            <input
-              type="number" value={form.hourlyWage ?? ''} step="0.50" min="0"
-              onChange={e => setForm(f => ({
-                ...f,
-                hourlyWage: e.target.value ? parseFloat(e.target.value) : undefined,
-              }))}
-              placeholder="15.00"
-              style={{ ...inputStyle, fontFamily: fonts.mono }}
-            />
-          </Field>
+          {/* Hourly wage — owner/GM/admin only. Writes through the
+              dedicated /api/staff/wage endpoint on save; not visible
+              to other roles. */}
+          {showWageField && (
+            <Field
+              label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}
+              hint={lang === 'es'
+                ? 'En dólares por hora. Cambios registrados en el historial.'
+                : 'In dollars per hour. Changes are recorded in the audit log.'}
+            >
+              <input
+                type="number" value={form.hourlyWage ?? ''} step="0.25" min="0"
+                onChange={e => setForm(f => ({
+                  ...f,
+                  hourlyWage: e.target.value ? parseFloat(e.target.value) : undefined,
+                }))}
+                placeholder="15.00"
+                style={{ ...inputStyle, fontFamily: fonts.mono }}
+              />
+            </Field>
+          )}
 
           {/* Max hours + days grid */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

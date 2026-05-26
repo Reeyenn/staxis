@@ -70,23 +70,29 @@ interface PropertyContext {
 }
 
 async function loadProperty(propertyId: string): Promise<PropertyContext | null> {
+  // Prefer the cents column (migration 0229); fall back to the legacy
+  // weekly_budget dollar column. Same logic as daily-report's loadProperty.
   const { data, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone, total_rooms, weekly_budget')
+    .select('id, name, timezone, total_rooms, weekly_budget, weekly_labor_budget_cents')
     .eq('id', propertyId)
     .maybeSingle();
   if (error || !data) {
     log.error('[weekly-report] property load failed', { propertyId, err: error?.message });
     return null;
   }
+  let weeklyBudgetCents: number | null = null;
+  if (data.weekly_labor_budget_cents !== null && data.weekly_labor_budget_cents !== undefined) {
+    weeklyBudgetCents = Number(data.weekly_labor_budget_cents);
+  } else if (data.weekly_budget !== null && data.weekly_budget !== undefined) {
+    weeklyBudgetCents = Math.round(Number(data.weekly_budget) * 100);
+  }
   return {
     id: data.id,
     name: data.name,
     timezone: data.timezone ?? 'UTC',
     totalRooms: Number(data.total_rooms ?? 0),
-    weeklyBudgetCents: data.weekly_budget !== null && data.weekly_budget !== undefined
-      ? Math.round(Number(data.weekly_budget) * 100)
-      : null,
+    weeklyBudgetCents,
   };
 }
 
@@ -300,7 +306,7 @@ export async function buildWeeklyReport(args: {
       .lt('started_at', localMidnightToUtc(addDaysIso(reportDate, 1), property.timezone)),
     supabaseAdmin
       .from('staff')
-      .select('id, name, hourly_wage')
+      .select('id, name, hourly_wage, hourly_wage_cents')
       .eq('property_id', propertyId),
   ]);
 

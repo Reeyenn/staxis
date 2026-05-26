@@ -24,8 +24,17 @@ export const MAX_STAFF_LIMIT = 1000;
 // including server-internal admin fields and any new columns added later
 // that the UI doesn't read. Update both this constant and fromStaffRow
 // when adding a column the UI needs.
+//
+// 2026-05-26 (cost-tracking): hourly_wage is intentionally OMITTED.
+// Wages are sensitive and only the owner/GM/admin should see them; the
+// dedicated /api/staff/wage endpoint enforces that gate. If we left
+// hourly_wage in the browser broadcast, RLS on `staff` would still let
+// housekeepers read their own row (and the default $15 backfill from
+// migration 0229 would leak a realistic wage). Server-side report
+// queries do their own select string and pull both wage columns
+// directly via supabaseAdmin.
 export const STAFF_COLS =
-  'id, name, phone, language, is_senior, department, hourly_wage, ' +
+  'id, name, phone, language, is_senior, department, ' +
   'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
   'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
   'is_scheduling_manager, last_paired_at';

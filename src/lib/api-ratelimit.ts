@@ -178,7 +178,17 @@ export type RateLimitEndpoint =
   // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
   // room-action; keyed on (userId, propertyId). 600/hr is ~10 taps/min
   // sustained — well above realistic manual tile cycling.
-  | 'housekeeping-room-action';
+  | 'housekeeping-room-action'
+  // Cost-per-job + labor-budget feature (2026-05-26). Three PATCH
+  // endpoints + two GET endpoints. Caps tuned for "owner is setting
+  // wages on the staff directory" — much lower than tap-driven flows.
+  // Read endpoints are polled by the LaborCostBanner every 30s, so
+  // 600/hr per property = ~20 polls per minute, well clear of normal
+  // multi-tab use.
+  | 'staff-wage-write'            // PATCH /api/staff/wage
+  | 'properties-labor-budget'     // PATCH /api/properties/labor-budget
+  | 'housekeeping-labor-cost'     // GET /api/housekeeping/labor-cost
+  | 'housekeeping-overtime-status'; // GET /api/housekeeping/overtime-status
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -337,6 +347,20 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Plan v4 manager Rooms-tab writes (tile cycling). 600/hr per
   // (user, property) — 10 taps/min sustained, well above real-world use.
   'housekeeping-room-action':    600,
+  // Cost-per-job + labor-budget (2026-05-26).
+  // staff-wage-write: owner edits a wage. Real use is "a few wages set
+  // per onboarding session"; 30/hr per property leaves room for typo
+  // fixes without enabling a runaway script.
+  'staff-wage-write':              30,
+  // properties-labor-budget: owner sets daily/weekly budget. Same
+  // shape as wage edits but even rarer.
+  'properties-labor-budget':       30,
+  // labor-cost / overtime-status: the LaborCostBanner polls every 30s
+  // when foregrounded. 600/hr per (user, property) = one poll per 6s
+  // sustained — generous headroom for multiple open tabs while still
+  // bounding a runaway loop. Keyed on (userId, propertyId).
+  'housekeeping-labor-cost':      600,
+  'housekeeping-overtime-status': 600,
 };
 
 /**
