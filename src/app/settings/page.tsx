@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -51,6 +51,14 @@ export default function SettingsPage() {
             icon:Clock,
             label: lang === 'es' ? 'Turnos' : 'Shifts',
             desc: lang === 'es' ? 'Plantillas de turnos por departamento (8a–4p, 7a–3p, etc.)' : 'Shift presets by department (8a–4p, 7a–3p, etc.)',
+          },
+          {
+            href:'/settings/activity-log',
+            icon:ScrollText,
+            label: lang === 'es' ? 'Registro de actividad' : 'Activity Log',
+            desc: lang === 'es'
+              ? 'Cada limpieza, inspección, ausencia y cambio en una sola lista buscable y exportable.'
+              : 'Every cleaning, inspection, callout, and change in one searchable, exportable timeline.',
           },
         ]
       : []),

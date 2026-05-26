@@ -168,7 +168,15 @@ export type RateLimitEndpoint =
   | 'housekeeper-add-note'           // quick note from housekeeper page
   | 'housekeeper-mark-inspection'    // tap to flag ready for inspection
   | 'housekeeper-save-language-loc'  // language-switcher save (locale-wide)
-  | 'housekeeper-offline-replay';    // service worker replay-batch handler
+  | 'housekeeper-offline-replay'     // service worker replay-batch handler
+  // Cross-department activity log export (feature #18, 2026-05-25).
+  // Settings → Activity Log page lets a GM/owner/admin download a
+  // filtered range as CSV/Excel/PDF. Each call streams up to ~10k rows
+  // through the lambda — not billing-impacting, but a runaway client or
+  // a curious user re-clicking "Export" doesn't need to hammer the
+  // backend. Keyed on (pid, userId). 30/hr is "narrow filter, refine,
+  // re-export a handful of times" headroom with a hard cap on abuse.
+  | 'settings-activity-log-export';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -326,6 +334,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-mark-inspection':  200,
   'housekeeper-save-language-loc': 10,
   'housekeeper-offline-replay':   300,
+  // Cross-department activity log export.
+  'settings-activity-log-export':  30,
 };
 
 /**
