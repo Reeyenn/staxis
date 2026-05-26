@@ -28,7 +28,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { validateUuid, isValidEmail } from '@/lib/api-validate';
+import { validateUuid, isValidEmail, validateFutureTimestamp } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -186,21 +186,22 @@ export async function PUT(req: NextRequest) {
   if (body.pausedUntil !== undefined) {
     if (body.pausedUntil === null) {
       updates.paused_until = null;
-    } else if (typeof body.pausedUntil === 'string') {
-      const ms = Date.parse(body.pausedUntil);
-      if (!Number.isFinite(ms)) {
-        return err('pausedUntil must be ISO date string or null', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      }
-      // Cap at +6 months — accidental "pause until 2099" caught here.
-      const sixMonthsMs = 1000 * 60 * 60 * 24 * 180;
-      if (ms - Date.now() > sixMonthsMs) {
-        return err('pausedUntil cannot be more than 6 months in the future', {
-          requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-        });
-      }
-      updates.paused_until = new Date(ms).toISOString();
     } else {
-      return err('pausedUntil must be ISO date string or null', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      // Reject past timestamps + cap at +6 months. Centralised in
+      // validateFutureTimestamp so other "pause/snooze" surfaces inherit
+      // the same UX (no more silent "Pause until last Tuesday" = no-op).
+      // 60s of slack absorbs client-to-server round-trip when the user
+      // picks "now-ish" — keeps the form forgiving without making the
+      // validator's default contract murky.
+      const checked = validateFutureTimestamp(body.pausedUntil, {
+        label: 'pausedUntil',
+        maxFutureDays: 180,
+        clockSkewSlackMs: 60_000,
+      });
+      if (checked.error) {
+        return err(checked.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      }
+      updates.paused_until = checked.value!;
     }
   }
 

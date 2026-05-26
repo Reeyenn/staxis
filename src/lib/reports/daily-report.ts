@@ -213,6 +213,18 @@ async function loadBaseline(args: {
 export async function buildDailyReport(args: {
   propertyId: string;
   reportDate: string;       // YYYY-MM-DD property-local
+  /**
+   * Skip the 14-day baseline load (used only for anomaly detection).
+   * The weekly-report's inline fallback passes this — it does its own
+   * anomaly pass at the week level, so the per-day baseline isn't
+   * needed and skipping it shaves ~1 round-trip from the Sunday
+   * weekly hot path (which is already under a 45s send budget).
+   * Anomalies still get computed but with an empty baseline, which
+   * means the baseline-dependent checks (pass-rate-drop, work-order-
+   * spike) silently skip — exactly the silence-when-too-little-data
+   * behavior the detector already supports.
+   */
+  skipBaseline?: boolean;
 }): Promise<DailyReportPayload | null> {
   const { propertyId, reportDate } = args;
   const property = await loadProperty(propertyId);
@@ -326,10 +338,12 @@ export async function buildDailyReport(args: {
   // Anomaly pass. perStaffRoomsToday is derived from the same ranker
   // the weekly report uses.
   let baseline: DailyBaselineSlice[] = [];
-  try {
-    baseline = await loadBaseline({ propertyId, reportDate });
-  } catch (e) {
-    captureException(e, { subsystem: 'daily-report', failure_mode: 'baseline_load_failed', propertyId });
+  if (!args.skipBaseline) {
+    try {
+      baseline = await loadBaseline({ propertyId, reportDate });
+    } catch (e) {
+      captureException(e, { subsystem: 'daily-report', failure_mode: 'baseline_load_failed', propertyId });
+    }
   }
   const ranked = rankStaffPerformance({ tasks, inspections, staff });
   payload.anomalies = detectAnomalies({
