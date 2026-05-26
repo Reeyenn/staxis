@@ -23,9 +23,13 @@ import assert from 'node:assert/strict';
 import {
   mapStatus,
   mapType,
+  reverseMapType,
   formatArrivalMDY,
   daysBetween,
   normalizeName,
+  composeRoomId,
+  parseRoomId,
+  buildStaffLookup,
 } from '@/lib/pms-rooms-server';
 
 // Minimal AssignmentRow shape — mirrors the interface inside
@@ -184,13 +188,16 @@ describe('normalizeName — cross-source matching', () => {
     assert.equal(normalizeName('Rosa\tMartinez'), 'rosa martinez');
   });
 
-  it('preserves diacritics via NFC', () => {
-    // "María" with composed character should match "María" with composed
-    // character. We do NOT strip diacritics — staff entry should also
-    // store the diacritic form. This is the safest match strategy.
-    assert.equal(normalizeName('María'), 'maría');
-    // Composed (NFC) and decomposed (NFD) forms reduce to the same key.
-    assert.equal(normalizeName('Marı́a'), normalizeName('María'));
+  it('strips diacritics so María matches Maria', () => {
+    // PMS entry rarely preserves accents while Staxis-side staff records
+    // often do. Stripping diacritics gives the most reliable cross-source
+    // match.
+    assert.equal(normalizeName('María'), 'maria');
+    assert.equal(normalizeName('Maria'), 'maria');
+    assert.equal(normalizeName('JOSÉ'), 'jose');
+    // Common Spanish names all reduce to ASCII equivalents.
+    assert.equal(normalizeName('Rosa Pérez'), 'rosa perez');
+    assert.equal(normalizeName('Núñez'), 'nunez');
   });
 
   it('returns empty string for null/undefined/empty', () => {
@@ -200,11 +207,95 @@ describe('normalizeName — cross-source matching', () => {
     assert.equal(normalizeName('   '), '');
   });
 
-  it('produces same key for two equivalent inputs (the whole point)', () => {
-    // The PMS housekeeper name + the staff record name should match
-    // after normalization, even with whitespace / casing drift.
-    const pms = 'Maria  Smith';
-    const staff = 'maria smith';
-    assert.equal(normalizeName(pms), normalizeName(staff));
+  it('produces same key for PMS-vs-staff drift', () => {
+    assert.equal(normalizeName('Maria  Smith'), normalizeName('maria smith'));
+    assert.equal(normalizeName('María'), normalizeName('Maria'));
+    assert.equal(normalizeName('  Rosa Pérez '), normalizeName('rosa perez'));
+  });
+});
+
+describe('reverseMapType — RoomType → cleaning_type', () => {
+  it('checkout → departure', () => {
+    assert.equal(reverseMapType('checkout'), 'departure');
+  });
+  it('stayover → stayover', () => {
+    assert.equal(reverseMapType('stayover'), 'stayover');
+  });
+  it('vacant / null / undefined → null (no cleaning planned)', () => {
+    assert.equal(reverseMapType('vacant'), null);
+    assert.equal(reverseMapType(null), null);
+    assert.equal(reverseMapType(undefined), null);
+  });
+});
+
+describe('composeRoomId + parseRoomId — Room.id round-trip', () => {
+  it('round-trips a typical (date, room_number) tuple', () => {
+    const id = composeRoomId('2026-05-25', '201');
+    assert.equal(id, '2026-05-25:201');
+    assert.deepEqual(parseRoomId(id), { date: '2026-05-25', roomNumber: '201' });
+  });
+
+  it('handles alphanumeric room numbers', () => {
+    const id = composeRoomId('2026-05-25', '201A');
+    assert.deepEqual(parseRoomId(id), { date: '2026-05-25', roomNumber: '201A' });
+  });
+
+  it('rejects shapes that do not match', () => {
+    assert.equal(parseRoomId('phantom-201'), null);
+    assert.equal(parseRoomId('not-a-composite'), null);
+    assert.equal(parseRoomId(''), null);
+    assert.equal(parseRoomId('not-a-date:201'), null);
+    // UUIDs (used by mergePmsRoomsForDate) are rejected — the write
+    // path uses a separate UUID lookup branch for those.
+    assert.equal(parseRoomId('00000000-0000-0000-0000-000000000000'), null);
+  });
+
+  it('preserves room numbers that contain colons after the first split', () => {
+    const id = composeRoomId('2026-05-25', '201:wing-A');
+    assert.deepEqual(parseRoomId(id), { date: '2026-05-25', roomNumber: '201:wing-A' });
+  });
+});
+
+describe('buildStaffLookup — collision-aware first-name fallback', () => {
+  it('matches on exact normalized full name', () => {
+    const lookup = buildStaffLookup([
+      { id: 'staff-1', name: 'Maria Smith' },
+      { id: 'staff-2', name: 'Rosa Pérez' },
+    ]);
+    assert.equal(lookup.resolve('Maria Smith'), 'staff-1');
+    assert.equal(lookup.resolve('maria smith'), 'staff-1');
+    assert.equal(lookup.resolve('Rosa Perez'), 'staff-2'); // diacritic-stripped
+  });
+
+  it('falls back to first-name match when unique', () => {
+    const lookup = buildStaffLookup([
+      { id: 'staff-1', name: 'Maria Smith' },
+      { id: 'staff-2', name: 'Rosa Pérez' },
+    ]);
+    // "Maria S." (PMS) → matches staff-1's "Maria Smith" via first-name
+    assert.equal(lookup.resolve('Maria S.'), 'staff-1');
+    assert.equal(lookup.resolve('Maria'), 'staff-1');
+  });
+
+  it('REJECTS first-name fallback when ambiguous (Codex Critical #4)', () => {
+    const lookup = buildStaffLookup([
+      { id: 'staff-1', name: 'Maria Smith' },
+      { id: 'staff-2', name: 'Maria Torres' },
+    ]);
+    // Bare "Maria" or "Maria T." is ambiguous — return undefined
+    // rather than misroute every Maria assignment to one of them.
+    assert.equal(lookup.resolve('Maria'), undefined);
+    assert.equal(lookup.resolve('Maria X'), undefined);
+    // Exact full match still works for both.
+    assert.equal(lookup.resolve('Maria Smith'), 'staff-1');
+    assert.equal(lookup.resolve('Maria Torres'), 'staff-2');
+  });
+
+  it('returns undefined for empty / null / unknown names', () => {
+    const lookup = buildStaffLookup([{ id: 'staff-1', name: 'Maria' }]);
+    assert.equal(lookup.resolve(''), undefined);
+    assert.equal(lookup.resolve(null), undefined);
+    assert.equal(lookup.resolve(undefined), undefined);
+    assert.equal(lookup.resolve('NoSuchPerson'), undefined);
   });
 });

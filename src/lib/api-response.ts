@@ -125,6 +125,9 @@ export const ApiErrorCode = {
   IdempotencyConflict: 'idempotency_conflict',
   UpstreamFailure: 'upstream_failure',
   InternalError: 'internal_error',
+  // Partial failure — some sub-operations succeeded, some didn't.
+  // Paired with HTTP 207; `details` carries per-item outcome.
+  PartialFailure: 'partial_failure',
 } as const;
 
 export type ApiErrorCodeValue = typeof ApiErrorCode[keyof typeof ApiErrorCode];

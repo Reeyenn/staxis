@@ -142,19 +142,103 @@ export function daysBetween(fromIso: string, toIso: string): number {
   return Math.floor((b - a) / 86_400_000);
 }
 
-// Normalize a name for cross-source matching: NFC unicode form, lower-cased,
-// internal whitespace collapsed, trimmed. M7 fix — "María" vs "Maria",
-// "Maria  Smith" (double space) vs "Maria Smith", and "  Maria " all
-// reduce to the same key. Does NOT strip diacritics (NFC keeps them);
-// caller-side staff entry should also be normalized consistently.
+// Normalize a name for cross-source matching:
+//   NFD decompose → strip combining diacritics → NFC recompose →
+//   lower-case + trim + collapse internal whitespace.
+//
+// "María" and "Maria" both → "maria". "Maria  Smith  " → "maria smith".
+// Diacritics ARE stripped (not just NFC-normalized) — PMS entry rarely
+// preserves accents while Staxis-side staff records often do, so this
+// gives the most reliable cross-source match.
 export function normalizeName(raw: string | null | undefined): string {
   if (!raw) return '';
-  return raw.normalize('NFC').trim().toLowerCase().replace(/\s+/g, ' ');
+  return raw
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // strip combining diacritical marks (U+0300–U+036F)
+    .normalize('NFC')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
 }
 
 // Re-export for tests + readability where the assignment-first rule is
 // referenced. mapStatus is the entry point for status derivation.
 export const mapStatus = deriveStatus;
+
+// Reverse: legacy RoomType → cleaning_type, for the write path that lands
+// a tile-cycle into pms_housekeeping_assignments.cleaning_type.
+export function reverseMapType(
+  type: RoomType | null | undefined,
+): string | null {
+  if (type === 'stayover') return 'stayover';
+  if (type === 'checkout') return 'departure';
+  return null;
+}
+
+// ── Cross-date Room.id format ──────────────────────────────────────────────
+// The housekeeper SMS link page (mergePmsRoomsForStaff below) returns rooms
+// across multiple dates. Room.id needs to be unique per (date, room_number);
+// the inventory UUID alone doesn't carry the date. Compose / parse helpers
+// keep the format consistent and parseable on the write side.
+
+export function composeRoomId(date: string, roomNumber: string): string {
+  return `${date}:${roomNumber}`;
+}
+
+export function parseRoomId(
+  rid: string,
+): { date: string; roomNumber: string } | null {
+  if (!rid || !rid.includes(':')) return null;
+  const idx = rid.indexOf(':');
+  const date = rid.slice(0, idx);
+  const roomNumber = rid.slice(idx + 1);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !roomNumber) return null;
+  return { date, roomNumber };
+}
+
+// ── Staff lookup (collision-aware first-name fallback) ─────────────────────
+// Two-tier match:
+//   1. Exact normalized full-name match (NFC + strip diacritics + lower +
+//      collapse whitespace).
+//   2. First-name fallback — ONLY when the first name is unique among
+//      this property's staff. Two housekeepers named "Maria" disable the
+//      first-name fallback for both, so neither gets the other's rooms.
+
+export interface StaffLookup {
+  /** Look up a staff id by housekeeper name string. Returns undefined on no match. */
+  resolve(name: string | null | undefined): string | undefined;
+}
+
+export function buildStaffLookup(
+  rows: Array<{ id: string; name: string | null }>,
+): StaffLookup {
+  const byFullName = new Map<string, string>();
+  const firstNameCounts = new Map<string, number>();
+  const firstNameIds = new Map<string, string>();
+  for (const row of rows) {
+    const full = normalizeName(row.name);
+    if (!full) continue;
+    if (!byFullName.has(full)) byFullName.set(full, row.id);
+    const firstName = full.split(' ')[0];
+    if (firstName) {
+      firstNameCounts.set(firstName, (firstNameCounts.get(firstName) ?? 0) + 1);
+      if (!firstNameIds.has(firstName)) firstNameIds.set(firstName, row.id);
+    }
+  }
+  return {
+    resolve(rawName) {
+      const full = normalizeName(rawName);
+      if (!full) return undefined;
+      const exact = byFullName.get(full);
+      if (exact) return exact;
+      const firstName = full.split(' ')[0];
+      if (!firstName) return undefined;
+      // Collision-aware: only fall back when the first name is unique.
+      if ((firstNameCounts.get(firstName) ?? 0) !== 1) return undefined;
+      return firstNameIds.get(firstName);
+    },
+  };
+}
 
 interface InventoryRow {
   id: string;
@@ -320,13 +404,10 @@ export async function mergePmsRoomsForDate(
     });
   }
 
-  // Staff name → id lookup with normalization (M7). Hotel rarely has > 50
-  // active staff, so the linear lookup cost is trivial.
-  const staffIdByNormName = new Map<string, string>();
-  for (const row of staffRows) {
-    const nm = normalizeName(row.name);
-    if (nm && !staffIdByNormName.has(nm)) staffIdByNormName.set(nm, row.id);
-  }
+  // Staff name → id lookup with collision-aware fuzzy match. Two staff
+  // sharing a first name disable the first-name fallback for both, so
+  // a bare "Maria" assignment doesn't get routed to the wrong Maria.
+  const staffLookup = buildStaffLookup(staffRows);
 
   // 6. Compose Room[] — one per inventory row.
   const rooms: Room[] = [];
@@ -340,9 +421,7 @@ export async function mergePmsRoomsForDate(
     const type = mapType(assignment?.cleaning_type);
 
     const assignedNameRaw = assignment?.housekeeper_name?.trim() || undefined;
-    const assignedTo = assignedNameRaw
-      ? staffIdByNormName.get(normalizeName(assignedNameRaw))
-      : undefined;
+    const assignedTo = staffLookup.resolve(assignedNameRaw);
 
     let arrival: string | undefined;
     let stayoverDay: number | undefined;
@@ -358,7 +437,13 @@ export async function mergePmsRoomsForDate(
     }
 
     const room: Room = {
-      id: String(inv.id),
+      // Composite "${date}:${room_number}" id (Codex Major #2). The previous
+      // version used inv.id (a UUID with no date encoded), which made the
+      // write path ambiguous when a manager edited a non-today view —
+      // resolveRoomKey would default to today on a UUID rid even when the
+      // tile actually belonged to yesterday. Composite ids carry the
+      // viewed date through, so writes land on the right assignment row.
+      id: composeRoomId(date, num),
       number: num,
       type,
       priority: 'standard',
@@ -381,4 +466,198 @@ export async function mergePmsRoomsForDate(
   }
 
   return rooms;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// mergePmsRoomsForStaff — housekeeper SMS link (cross-date)
+// ═══════════════════════════════════════════════════════════════════════════
+// /api/housekeeper/rooms historically returned ALL rooms ever assigned to
+// one housekeeper across dates (the page picks today/next-future/last-past
+// client-side via byDate.get(today)). We need the same shape here.
+//
+// Differences from mergePmsRoomsForDate:
+//   - Cross-date: returns one Room per (assignment date, room_number)
+//   - Room.id format: "${date}:${room_number}" so the React keys + the
+//     page's byDate grouping stay unique across dates
+//   - Window: assignments [today-30d, today+30d] — generous on both sides
+//     so a HK returning to the page after a few days off still sees their
+//     last-worked date, and tomorrow's prebooked work shows up too
+//   - Match: staff resolved by canonical name via StaffLookup; collision-
+//     aware first-name fallback means "Maria S." matches "Maria Smith"
+//     only if she's the only Maria on the property
+//   - Reservations: queried for the full assignment window so per-date
+//     arrival/stayoverDay flags are correct on past/future cards too
+//   - Assignments: hard-required (Codex Major #13 — silent empty when the
+//     assignments query fails would render every shift as "no work")
+
+export async function mergePmsRoomsForStaff(
+  pid: string,
+  staffId: string,
+): Promise<Room[]> {
+  // 1. Resolve the staff record — canonical name to filter assignments by.
+  const { data: staffRow, error: staffErr } = await supabaseAdmin
+    .from('staff')
+    .select('id, name')
+    .eq('id', staffId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  if (staffErr) {
+    log.error('[pms-rooms-server] staff lookup failed', {
+      pid, staffId, msg: staffErr.message,
+    });
+    throw staffErr;
+  }
+  if (!staffRow || !staffRow.name) return [];
+
+  // 2. Date window + assignments + full staff roster (for collision-aware
+  //    fallback) in parallel.
+  //
+  // Codex Major #7: a 60-day window (-30/+30) returned every assignment
+  // for the property — ~3,600 rows for a 60-room hotel before TS-side
+  // filtering to this staff. Tightened to -14/+14 days (29-day window,
+  // ~1,700 rows worst-case). The housekeeper page realistically needs
+  // today + yesterday's overflow + tomorrow's pre-load; 14 days each
+  // side is generous.
+  const today = new Date().toISOString().slice(0, 10);
+  const windowBack = new Date(Date.now() - 14 * 86_400_000)
+    .toISOString().slice(0, 10);
+  const windowAhead = new Date(Date.now() + 14 * 86_400_000)
+    .toISOString().slice(0, 10);
+
+  const [assignRes, staffListRes] = await Promise.allSettled([
+    supabaseAdmin
+      .from('pms_housekeeping_assignments')
+      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active')
+      .eq('property_id', pid)
+      .gte('date', windowBack)
+      .lte('date', windowAhead),
+    supabaseAdmin
+      .from('staff')
+      .select('id, name')
+      .eq('property_id', pid),
+  ]);
+
+  // Assignments — hard requirement. Fail closed; silent empty would render
+  // every HK shift as "no work."
+  if (assignRes.status === 'rejected') {
+    log.error('[pms-rooms-server] assignments-for-staff query rejected', {
+      pid, staffId, msg: String(assignRes.reason),
+    });
+    throw new Error('assignments query failed');
+  }
+  if (assignRes.value.error) {
+    log.error('[pms-rooms-server] assignments-for-staff query failed', {
+      pid, staffId, msg: assignRes.value.error.message,
+    });
+    throw assignRes.value.error;
+  }
+  const allAssignments = (assignRes.value.data ?? []) as (AssignmentRow & { date: string })[];
+  const staffListRows = fulfilledData<StaffNameRow>(staffListRes, 'staff', pid, today);
+
+  // 3. Filter assignments to THIS staff member via the StaffLookup
+  //    (collision-aware first-name fallback).
+  const staffLookup = buildStaffLookup(staffListRows);
+  const matching = allAssignments.filter(a => {
+    const resolved = staffLookup.resolve(a.housekeeper_name);
+    return resolved === staffId;
+  });
+  if (matching.length === 0) return [];
+
+  // 4. Supporting feeds for the matching room-numbers / date-window.
+  //    Status log: 90-day window, latest per room.
+  //    Reservations: full assignment window, per-(date,room) lookup.
+  const [statusRes, resRes] = await Promise.allSettled([
+    supabaseAdmin
+      .from('pms_room_status_log')
+      .select('room_number, status, changed_at')
+      .eq('property_id', pid)
+      .gte('changed_at', new Date(Date.now() - 90 * 86_400_000).toISOString())
+      .order('changed_at', { ascending: false }),
+    supabaseAdmin
+      .from('pms_reservations')
+      .select('room_number, arrival_date, departure_date, status')
+      .eq('property_id', pid)
+      .lte('arrival_date', windowAhead)
+      .gt('departure_date', windowBack)
+      .in('status', ['booked', 'checked_in'])
+      .order('arrival_date', { ascending: true }),
+  ]);
+
+  const statusRows = fulfilledData<StatusLogRow>(statusRes, 'status_log', pid, today);
+  const reservationRows = fulfilledData<ReservationRow>(resRes, 'reservations', pid, today);
+
+  const latestStatusByRoom = new Map<string, string>();
+  for (const row of statusRows) {
+    const num = String(row.room_number ?? '');
+    if (!num || latestStatusByRoom.has(num)) continue;
+    latestStatusByRoom.set(num, String(row.status ?? 'unknown'));
+  }
+
+  // Per-(date, room) reservation lookup so future/past assignment cards
+  // get the right arrival/stayover flags.
+  const reservationByDateRoom = new Map<string, Map<string, ReservationRow>>();
+  for (const r of reservationRows) {
+    const num = String(r.room_number ?? '');
+    if (!num || !r.arrival_date || !r.departure_date) continue;
+    const start = r.arrival_date > windowBack ? r.arrival_date : windowBack;
+    const endExclusive = r.departure_date < windowAhead ? r.departure_date : windowAhead;
+    const startMs = Date.parse(start + 'T00:00:00Z');
+    const endMs = Date.parse(endExclusive + 'T00:00:00Z');
+    if (isNaN(startMs) || isNaN(endMs) || startMs >= endMs) continue;
+    for (let t = startMs; t < endMs; t += 86_400_000) {
+      const d = new Date(t).toISOString().slice(0, 10);
+      let perDate = reservationByDateRoom.get(d);
+      if (!perDate) {
+        perDate = new Map();
+        reservationByDateRoom.set(d, perDate);
+      }
+      if (!perDate.has(num)) perDate.set(num, r);
+    }
+  }
+
+  // 5. Compose one Room per assignment row.
+  const out: Room[] = [];
+  for (const a of matching) {
+    const num = String(a.room_number);
+    const assignment = a;
+    const reservation = reservationByDateRoom.get(a.date)?.get(num);
+    const rawStatus = latestStatusByRoom.get(num) ?? null;
+
+    const status = deriveStatus(assignment, rawStatus);
+    const type = mapType(assignment.cleaning_type);
+
+    const assignedNameRaw = assignment.housekeeper_name?.trim() || undefined;
+    const assignedTo = staffLookup.resolve(assignedNameRaw);
+
+    let arrival: string | undefined;
+    let stayoverDay: number | undefined;
+    if (reservation?.arrival_date) {
+      if (reservation.arrival_date === a.date) {
+        arrival = formatArrivalMDY(reservation.arrival_date);
+      } else if (
+        reservation.arrival_date < a.date &&
+        (reservation.departure_date ?? '') > a.date
+      ) {
+        stayoverDay = daysBetween(reservation.arrival_date, a.date);
+      }
+    }
+
+    out.push({
+      id: composeRoomId(a.date, num),
+      number: num,
+      type,
+      priority: 'standard',
+      status,
+      date: a.date,
+      propertyId: pid,
+      ...(assignedTo ? { assignedTo } : {}),
+      ...(assignedNameRaw ? { assignedName: assignedNameRaw } : {}),
+      ...(assignment.started_at ? { startedAt: new Date(assignment.started_at) } : {}),
+      ...(assignment.completed_at ? { completedAt: new Date(assignment.completed_at) } : {}),
+      ...(assignment.dnd_active === true ? { isDnd: true } : {}),
+      ...(arrival ? { arrival } : {}),
+      ...(stayoverDay !== undefined ? { stayoverDay } : {}),
+    });
+  }
+  return out;
 }
