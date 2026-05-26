@@ -49,8 +49,23 @@ export function Header() {
   // Server-side gates on /api/admin/* and /admin/* pages still enforce
   // admin-only access independently.
   const isAdmin = user?.role === 'admin';
+
+  // Front Desk tab is role-gated. Housekeepers and maintenance staff
+  // don't see it (and the page itself would still reject them — server
+  // routes under /api/front-desk/* enforce the same gate independently).
+  const FRONT_DESK_ROLES: ReadonlySet<string> = new Set([
+    'admin', 'owner', 'general_manager', 'front_desk',
+  ]);
+  const canSeeFrontDesk = !!user && FRONT_DESK_ROLES.has(user.role);
+
+  // Insert Front Desk between Housekeeping and Maintenance — logical
+  // room-status workflow order: clean → ready → guest in seat.
   const navLinks = [
-    ...baseNavLinks,
+    ...baseNavLinks.slice(0, 2),
+    ...(canSeeFrontDesk
+      ? [{ href: '/front-desk', label: lang === 'es' ? 'Recepción' : 'Front Desk' }]
+      : []),
+    ...baseNavLinks.slice(2),
     ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
 

@@ -178,7 +178,17 @@ export type RateLimitEndpoint =
   // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
   // room-action; keyed on (userId, propertyId). 600/hr is ~10 taps/min
   // sustained — well above realistic manual tile cycling.
-  | 'housekeeping-room-action';
+  | 'housekeeping-room-action'
+  // Front-desk coordination (feature #25 — front-desk-coordination-and-nav).
+  // All keyed on (userId, propertyId). The notification-log read is polled
+  // every 10s by NotificationLogPanel so its cap is wide (360/hr per tab
+  // ≈ 4 tabs of headroom). The walk-in / room-move writes are deliberate
+  // operator actions — tight caps stop a stolen-link replay loop and a
+  // runaway useEffect dead.
+  | 'front-desk-currently-working'
+  | 'front-desk-walk-in'
+  | 'front-desk-room-move'
+  | 'front-desk-notification-log';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -337,6 +347,21 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Plan v4 manager Rooms-tab writes (tile cycling). 600/hr per
   // (user, property) — 10 taps/min sustained, well above real-world use.
   'housekeeping-room-action':    600,
+  // Front-desk coordination (feature #25).
+  //
+  // currently-working: bootstrap of CurrentlyWorkingStrip on page load
+  //   plus occasional refetches when shifts roll over. 600/hr is "open
+  //   five tabs and reload aggressively" headroom.
+  // notification-log: panel polls every 10s = 360/hr per open tab. Cap
+  //   at 1200/hr per (user, property) to absorb 3 tabs plus an
+  //   accidental retry loop without 429ing real users.
+  // walk-in / room-move: deliberate operator actions. 60/hr per
+  //   (user, property) covers a busy lobby — one walk-in per minute
+  //   sustained — while bounding any replay loop fast.
+  'front-desk-currently-working':  600,
+  'front-desk-walk-in':             60,
+  'front-desk-room-move':           60,
+  'front-desk-notification-log':  1200,
 };
 
 /**

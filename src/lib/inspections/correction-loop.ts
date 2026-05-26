@@ -37,6 +37,7 @@ import type {
   InspectionFailedItem,
 } from '@/types/inspections';
 import { ESCALATION_THRESHOLD } from '@/types/inspections';
+import { notifyFrontDeskRoomReady } from './notify-front-desk-room-ready';
 
 export interface CompleteInspectionInput {
   inspectionId: string;
@@ -120,6 +121,14 @@ export async function finalizeInspection(
   });
 
   if (atomic.ok) {
+    // Notify front-desk staff currently on shift that the room is now
+    // guest-ready. dispatch goes through the dry-run SMS layer — see
+    // src/lib/front-desk-coordination/dispatch-sms.ts. Never throws and
+    // never blocks: a failure here is logged but doesn't reverse the
+    // inspection.
+    if (input.result === 'pass') {
+      await notifyFrontDeskRoomReady(atomic.inspection);
+    }
     return {
       inspection: atomic.inspection,
       correctionNoticeSent: input.result === 'fail',
@@ -185,6 +194,7 @@ export async function finalizeInspection(
 
   if (input.result === 'pass') {
     await applyPassSideEffects(finalized);
+    await notifyFrontDeskRoomReady(finalized);
   } else {
     await applyFailSideEffects(finalized);
   }

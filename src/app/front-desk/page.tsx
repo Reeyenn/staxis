@@ -11,8 +11,19 @@ import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/db';
 import { RushButton } from './_components/RushButton';
+import { CurrentlyWorkingStrip } from './_components/CurrentlyWorkingStrip';
+import { WalkInButton } from './_components/WalkInButton';
+import { RoomMoveButton } from './_components/RoomMoveButton';
+import { VipArrivalBanner } from './_components/VipArrivalBanner';
+import { SmsDryRunIndicator } from './_components/SmsDryRunIndicator';
+import { NotificationLogPanel } from './_components/NotificationLogPanel';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
+
+// Roles that get the manager-level view (phone numbers, log panel, etc.).
+const MANAGER_TIER_ROLES: ReadonlySet<string> = new Set([
+  'admin', 'owner', 'general_manager',
+]);
 
 /* ════════════════════════════════════════════════════════════════════════════
    HELPERS
@@ -125,6 +136,12 @@ export default function FrontDeskPage() {
   const [processing, setProcessing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  // Coordination layer state. smsMode is the property's notification
+  // mode reported by /api/front-desk/notification-log; null until first
+  // fetch so the SmsDryRunIndicator stays hidden during boot.
+  const [smsMode, setSmsMode] = useState<'dry_run' | 'live' | null>(null);
+
+  const viewerIsManager = !!user?.role && MANAGER_TIER_ROLES.has(user.role);
 
   // Material Symbols font is loaded globally via globals.css
 
@@ -159,6 +176,20 @@ export default function FrontDeskPage() {
     }
     return rooms.filter(r => r.status === statusFilter);
   }, [rooms, statusFilter]);
+
+  // Room types available for the walk-in picker. We derive from the
+  // rooms board because pms_rooms_inventory may or may not be wired up
+  // yet; assignedName / number gives us nothing usable for type. As a
+  // safety net the walk-in modal falls back to a static type list when
+  // this set is empty.
+  const availableRoomTypes = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    for (const r of rooms) {
+      const t = (r as { roomType?: string | null }).roomType;
+      if (typeof t === 'string' && t.length > 0) set.add(t);
+    }
+    return Array.from(set).sort();
+  }, [rooms]);
 
   const roomsByFloor = useMemo(() => groupRoomsByFloor(filteredRooms), [filteredRooms]);
 
@@ -277,24 +308,46 @@ export default function FrontDeskPage() {
             </p>
           </div>
 
-          {/* ── AI Insight Card ── */}
+          {/* ── Front-desk coordination layer ── */}
+          {activePropertyId && (
+            <>
+              <CurrentlyWorkingStrip
+                propertyId={activePropertyId}
+                viewerIsManager={viewerIsManager}
+              />
+              <VipArrivalBanner propertyId={activePropertyId} today={today} />
+            </>
+          )}
+
+          {/* ── AI Insight Card + SMS mode badge + Walk-in CTA row ── */}
           <div style={{
             margin: '20px 0 24px',
             padding: '20px 24px',
             background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
             border: '1px solid #d5d2ca', borderRadius: '24px',
             display: 'flex', alignItems: 'flex-start', gap: '14px',
+            flexWrap: 'wrap',
           }}>
             <span className="material-symbols-outlined" style={{ fontSize: '24px', color: '#006565', flexShrink: 0, marginTop: '1px' }}>
               concierge
             </span>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '1 1 320px', minWidth: '240px' }}>
               <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#006565', fontFamily: 'Inter, sans-serif', marginBottom: '4px' }}>
                 {lang === 'es' ? 'Resumen de Recepción' : 'AI Concierge Insight'}
               </p>
               <p style={{ margin: 0, fontSize: '15px', color: '#1b1c19', fontFamily: 'Inter, sans-serif', lineHeight: 1.5 }}>
                 {aiInsight}
               </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+              {smsMode && <SmsDryRunIndicator mode={smsMode} />}
+              {activePropertyId && (
+                <WalkInButton
+                  propertyId={activePropertyId}
+                  today={today}
+                  availableRoomTypes={availableRoomTypes}
+                />
+              )}
             </div>
           </div>
 
@@ -700,6 +753,24 @@ export default function FrontDeskPage() {
 
                 <RushButton roomNumber={selectedRoom.number} isAlreadyRush={!!(selectedRoom as { isRush?: boolean }).isRush} />
 
+                {/* Move guest available for any room that's currently
+                    holding a guest (type=stayover) — the orchestrator
+                    handles the data side; the UI lets the front desk
+                    surface the action wherever the room is on-page. */}
+                {selectedRoom.type === 'stayover' && activePropertyId && (
+                  <RoomMoveButton
+                    propertyId={activePropertyId}
+                    today={today}
+                    fromRoom={selectedRoom}
+                    allRooms={rooms}
+                    onMoved={() => {
+                      setSelectedRoom(null);
+                      setToast(lang === 'es' ? 'Huésped movido' : 'Guest moved');
+                      setTimeout(() => setToast(null), 2500);
+                    }}
+                  />
+                )}
+
                 <button
                   onClick={() => setSelectedRoom(null)}
                   style={{
@@ -715,6 +786,17 @@ export default function FrontDeskPage() {
               </div>
             </div>
           </>
+        )}
+
+        {/* Notification log: manager-tier only (the API returns 403 for
+            non-managers and the panel renders nothing in that case). */}
+        {activePropertyId && viewerIsManager && (
+          <div style={{ padding: '0 28px 80px', maxWidth: '1200px', margin: '0 auto' }}>
+            <NotificationLogPanel
+              propertyId={activePropertyId}
+              onModeChange={setSmsMode}
+            />
+          </div>
         )}
       </div>
     </AppLayout>
