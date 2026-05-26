@@ -1,17 +1,21 @@
 /**
- * GET /api/cron/run-rules-engine
+ * GET | POST /api/cron/run-rules-engine
  *
  * Runs the cleaning-rules engine: reads the live pms_* tables, fires
  * the configured rules, and upserts the resulting tasks into
  * cleaning_tasks. Idempotent — re-running on the same PMS state
  * produces no observable change.
  *
- * Cadence: every 5 minutes via Vercel cron (see vercel.json). For
- * tighter latency on important state changes (e.g. departure flip,
- * new VIP arrival), the CUA worker can hit this endpoint with
- * `?propertyId=<uuid>` on demand — that's the entry point for the
- * sub-30s response path. Wiring up the CUA-side call is a separate
- * branch.
+ * Two callers:
+ *   - GET every 5 minutes via Vercel cron (vercel.json) — safety net
+ *     that catches any state the event-ping missed.
+ *   - POST from cua-service after high-priority PMS writes (see
+ *     cua-service/src/rules-engine-pinger.ts) — sub-30s response on
+ *     the events that matter (departures, arrivals, OOO flips, VIP
+ *     reservations).
+ *
+ * GET and POST share the same handler. Same auth (CRON_SECRET bearer),
+ * same query params, same response.
  *
  * Query params:
  *   propertyId (optional, uuid)  — run only this property
@@ -138,4 +142,10 @@ export async function GET(req: NextRequest) {
       code: ApiErrorCode.InternalError,
     });
   }
+}
+
+/** POST entry point used by the cua-service pinger after high-priority
+ *  PMS writes. Aliases GET so both verbs share auth + behavior. */
+export async function POST(req: NextRequest) {
+  return GET(req);
 }

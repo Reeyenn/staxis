@@ -101,6 +101,32 @@ const Schema = z.object({
   // env if a region's resolver is consistently slower.
   CUA_DNS_PREFLIGHT_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
 
+  // ── Rules-engine event ping (feature/cua-to-rules-engine-event-ping) ──
+  //
+  // When the CUA worker writes a high-priority PMS change (departure
+  // checkout, new arrival, OOO flip, etc.), it POSTs to the staxis
+  // /api/cron/run-rules-engine?propertyId=<uuid> so housekeeping gets
+  // the resulting cleaning task within ~10s instead of waiting for the
+  // 5-min cron. See cua-service/src/rules-engine-pinger.ts.
+  //
+  // RULES_ENGINE_BASE_URL — origin of the staxis web app (no trailing
+  // slash, e.g. https://hotelops-ai.vercel.app). When unset, the pinger
+  // returns immediately — the 5-min cron remains the only signal. That's
+  // intentional for local dev: tests/dev workers don't fire cross-network.
+  RULES_ENGINE_BASE_URL: z.string().url().optional(),
+  // CRON_SECRET — bearer token matching the staxis web app's CRON_SECRET.
+  // Already used elsewhere for cron auth; same value via `fly secrets set
+  // CRON_SECRET=... -a staxis-cua`. Optional here so a worker can boot
+  // without it (ping disables instead).
+  CRON_SECRET: z.string().min(16).optional(),
+  // Debounce window for the pinger. A burst of high-priority writes for
+  // one property collapses to a single ping. 10s default — "sub-30s
+  // response" target with comfortable margin.
+  RULES_ENGINE_PING_DEBOUNCE_MS: z.coerce.number().int().positive().default(10_000),
+  // Per-ping fetch timeout. The pinger fails quiet on timeout; the
+  // 5-min cron is the safety net.
+  RULES_ENGINE_PING_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),

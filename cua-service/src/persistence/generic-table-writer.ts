@@ -36,6 +36,7 @@ import { log } from '../log.js';
 import { env } from '../env.js';
 import { getValidator } from '../validators-phase2.js';
 import { RECONCILE_ON_MISSING, type OnMissingBehavior } from './reconcile-config.js';
+import { notifyHighPriorityChange } from '../rules-engine-pinger.js';
 
 // Re-export for backward compatibility with any external importer.
 export { RECONCILE_ON_MISSING };
@@ -268,17 +269,21 @@ export async function saveGenericTable(
   }
 
   // ── Dispatch ──
+  let result: SaveGenericTableResult;
   try {
     switch (descriptor.write_strategy) {
       case 'append':
-        return await writeAppend(targetTable, validation.valid, validation.rejected.length);
+        result = await writeAppend(targetTable, validation.valid, validation.rejected.length);
+        break;
       case 'upsert':
-        return await writeUpsert(targetTable, validation.valid, descriptor, validation.rejected.length);
+        result = await writeUpsert(targetTable, validation.valid, descriptor, validation.rejected.length);
+        break;
       case 'reconcile':
-        return await writeReconcile(
+        result = await writeReconcile(
           targetTable, validation.valid, descriptor, snapshotScope,
           propertyId, validation.rejected.length,
         );
+        break;
     }
   } catch (err) {
     log.error('generic-table-writer: write failed', {
@@ -291,6 +296,20 @@ export async function saveGenericTable(
       errors: [(err as Error).message],
     };
   }
+
+  // After a successful write, notify the rules-engine pinger so high-
+  // priority PMS changes (departures, arrivals, OOO flips, etc.) get a
+  // sub-30s response from the rules engine instead of waiting up to 5
+  // minutes for the next cron tick. Fire-and-forget: any pinger error
+  // is logged + swallowed inside notifyHighPriorityChange — it must NOT
+  // propagate into the write path.
+  //
+  // tableName (logical) is what the pinger's predicate map is keyed on,
+  // not targetTable.
+  if (result.ok && (result.inserted > 0 || result.updated > 0 || result.autoResolved > 0)) {
+    notifyHighPriorityChange(propertyId, tableName, validation.valid);
+  }
+  return result;
 }
 
 async function writeAppend(
