@@ -168,7 +168,9 @@ export interface Room {
   floor?: string;
   checklistTemplateId?: string | null;
   checklistProgress?: string[]; // array of completed checklist item IDs
-  managerNotes?: string | null; // display-side; posting comes in piece B
+  managerNotes?: string | null; // display-side; mirrored from manager_room_notes by piece B
+  housekeeperNote?: string | null; // quick note the housekeeper attached
+  componentParentNumber?: string | null; // if non-null, this room is a sub-room of a multi-room suite
   isRush?: boolean;
   rushDueBy?: Date | null;
   markedForInspectionAt?: Date | null;

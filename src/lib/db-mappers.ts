@@ -347,6 +347,9 @@ export function fromRoomRow(r: Record<string, unknown>): Room {
     checklistTemplateId: parseStringField(r.checklist_template_id) ?? null,
     checklistProgress: parseStringArrayField(r.checklist_progress),
     managerNotes: parseStringField(r.manager_notes) ?? null,
+    // Piece B/C (migration 0225)
+    housekeeperNote: parseStringField(r.housekeeper_note) ?? null,
+    componentParentNumber: parseStringField(r.component_parent_number) ?? null,
     isRush: r.is_rush == null ? undefined : Boolean(r.is_rush),
     rushDueBy: toDate(r.rush_due_by),
     markedForInspectionAt: toDate(r.marked_for_inspection_at),

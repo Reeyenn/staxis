@@ -27,6 +27,7 @@ import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, RoomTileBase, HousekeeperDot,
 } from './_snow';
+import { ManagerNotesEditor } from './ManagerNotesEditor';
 
 // Internal "floor" extracted from a room number — first char for now,
 // matches what `_shared.tsx` does. Inlined to avoid pulling in the
@@ -544,6 +545,7 @@ export function RoomsTab() {
                 : actionRoom.status === 'clean'       ? (lang === 'es' ? 'Reiniciar a sucia'      : 'Reset to dirty')
                 : (lang === 'es' ? 'Inspeccionada (bloqueada)' : 'Inspected (locked)')}
             </Btn>
+            <ManagerNotesEditor roomNumber={actionRoom.number} />
           </div>
         </>
       )}

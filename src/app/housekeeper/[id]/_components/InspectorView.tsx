@@ -38,7 +38,7 @@ interface ItemDraft {
   uploading: boolean;
 }
 
-function tr(lang: 'en' | 'es', en: string, es: string): string {
+function tr(lang: 'en' | 'es' | 'ht' | 'tl' | 'vi', en: string, es: string): string {
   return lang === 'es' ? es : en;
 }
 
@@ -49,7 +49,7 @@ export default function InspectorView({
 }: {
   pid: string;
   staffId: string;
-  lang: 'en' | 'es';
+  lang: 'en' | 'es' | 'ht' | 'tl' | 'vi';
 }) {
   const today = useTodayStr();
   const [canInspect, setCanInspect] = useState<boolean | null>(null);
@@ -351,7 +351,7 @@ export default function InspectorView({
 function MobileQueueRow({
   row, lang, onInspect,
 }: {
-  row: InspectionQueueRoom; lang: 'en' | 'es'; onInspect: () => void;
+  row: InspectionQueueRoom; lang: 'en' | 'es' | 'ht' | 'tl' | 'vi'; onInspect: () => void;
 }) {
   const recheck = row.reason === 'pending_recheck';
   return (
@@ -404,7 +404,7 @@ function MobileChecklistBody({
 }: {
   checklist: InspectionChecklist;
   drafts: Map<string, ItemDraft>;
-  lang: 'en' | 'es';
+  lang: 'en' | 'es' | 'ht' | 'tl' | 'vi';
   onState: (id: string, st: SeverityValue) => void;
   onNote: (id: string, n: string) => void;
   onUpload: (id: string, file: File) => void;
@@ -453,7 +453,7 @@ function MobileChecklistRow({
 }: {
   item: InspectionChecklistItem;
   draft: ItemDraft;
-  lang: 'en' | 'es';
+  lang: 'en' | 'es' | 'ht' | 'tl' | 'vi';
   onState: (st: SeverityValue) => void;
   onNote: (n: string) => void;
   onFile: (f: File) => void;
@@ -582,7 +582,7 @@ function MobileSubmitBar({
 }: {
   active: { drafts: Map<string, ItemDraft>; checklist: InspectionChecklist };
   submitting: boolean;
-  lang: 'en' | 'es';
+  lang: 'en' | 'es' | 'ht' | 'tl' | 'vi';
   onSubmit: (r: 'pass' | 'fail') => void;
 }) {
   const allDecided = active.checklist.items.every((it) => active.drafts.get(it.id)?.state != null);
@@ -659,7 +659,7 @@ function Toast({ text, onDismiss }: { text: string; onDismiss: () => void }) {
   );
 }
 
-function categoryLabel(cat: string, lang: 'en' | 'es'): string {
+function categoryLabel(cat: string, lang: 'en' | 'es' | 'ht' | 'tl' | 'vi'): string {
   const map: Record<string, [string, string]> = {
     bathroom: ['Bathroom', 'Baño'],
     bedroom:  ['Bedroom', 'Dormitorio'],

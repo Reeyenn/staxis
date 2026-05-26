@@ -152,7 +152,23 @@ export type RateLimitEndpoint =
   | 'callout-manager'
   | 'callout-sms'
   | 'callout-revert'
-  | 'callout-status';
+  | 'callout-status'
+  // Housekeeper mobile rebuild B/C (2026-05-25). Each endpoint gets its
+  // own bucket so a runaway in one flow can't lock out the others. Caps
+  // tuned for "person tapping a button" — generous enough that real use
+  // never hits them, tight enough to stop a stolen SMS-link replay.
+  | 'housekeeping-notices-post'      // manager posts to the notice board
+  | 'housekeeping-notices-read'      // housekeeper page polls notices
+  | 'housekeeping-notice-dismiss'    // per-user dismissal
+  | 'housekeeping-room-notes-post'   // manager adds a note from RoomsTab
+  | 'housekeeping-room-notes-read'   // housekeeper page reads manager notes
+  // 'front-desk-rush' was already added in piece A — re-using that bucket.
+  | 'housekeeper-structured-issue'   // structured issue → work order
+  | 'housekeeper-photo-presign'      // request signed-upload URL
+  | 'housekeeper-add-note'           // quick note from housekeeper page
+  | 'housekeeper-mark-inspection'    // tap to flag ready for inspection
+  | 'housekeeper-save-language-loc'  // language-switcher save (locale-wide)
+  | 'housekeeper-offline-replay';    // service worker replay-batch handler
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -291,6 +307,25 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'callout-sms':                  20,
   'callout-revert':               30,
   'callout-status':              600,
+  // Piece B/C caps. Manager posts (notices, room notes) are deliberate
+  // actions — 60/hr is "manager spamming the notice board" headroom.
+  // Reads are polled by the housekeeper page; 600/hr handles 4 open tabs.
+  // Rush is "decision per room" — 60/hr per (pid, staffId) keyed pair.
+  // Structured issue + photo presign are per-housekeeper write paths;
+  // 200/hr matches the existing housekeeper-room-action cap shape.
+  // Offline replay is a fan-out endpoint — 300/hr per device.
+  'housekeeping-notices-post':     60,
+  'housekeeping-notices-read':    600,
+  'housekeeping-notice-dismiss':  100,
+  'housekeeping-room-notes-post':  60,
+  'housekeeping-room-notes-read': 600,
+  // 'front-desk-rush' cap already declared in piece A.
+  'housekeeper-structured-issue': 200,
+  'housekeeper-photo-presign':    200,
+  'housekeeper-add-note':         200,
+  'housekeeper-mark-inspection':  200,
+  'housekeeper-save-language-loc': 10,
+  'housekeeper-offline-replay':   300,
 };
 
 /**

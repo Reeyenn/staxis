@@ -14,7 +14,9 @@ import {
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
 import type { Room, RoomReservationContext } from '@/types';
-import type { Language } from '@/lib/translations';
+import type { HousekeeperLocale } from '@/lib/translations';
+// Locally aliased so piece-A code keeps reading `lang: Language` everywhere.
+type Language = HousekeeperLocale;
 import { t } from '@/lib/translations';
 
 /**
@@ -61,6 +63,12 @@ export interface JobCardProps {
   onOpenChecklist: () => void;
   onOpenException: () => void;
   onReportIssue: () => void;
+  /** Optional extra UI rendered above the workflow buttons — used by the
+   *  housekeeper page to drop in "Add Note", "Mark for Inspection", and
+   *  the component-room "Suite" badge without bloating this component's
+   *  prop surface. */
+  extraTopSlot?: React.ReactNode;
+  extraActionsSlot?: React.ReactNode;
 }
 
 export function JobCard(props: JobCardProps) {
@@ -84,6 +92,8 @@ export function JobCard(props: JobCardProps) {
     onOpenChecklist,
     onOpenException,
     onReportIssue,
+    extraTopSlot,
+    extraActionsSlot,
   } = props;
 
   const isDone = room.status === 'clean' || room.status === 'inspected';
@@ -414,6 +424,21 @@ export function JobCard(props: JobCardProps) {
           >
             {issueNote}
           </span>
+        </div>
+      )}
+
+      {extraTopSlot}
+
+      {extraActionsSlot && !isDone && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+            marginBottom: 10,
+          }}
+        >
+          {extraActionsSlot}
         </div>
       )}
 

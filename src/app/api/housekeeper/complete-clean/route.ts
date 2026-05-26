@@ -172,6 +172,57 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
+  // ─── Component-room fanout (migration 0225) ─────────────────────────────
+  // If the just-completed room is the parent of a multi-room suite, mark
+  // every child as clean too. The spec's promise was "one Done tap
+  // completes everything"; without this fanout, the manager dashboard
+  // would show the parent clean and the children still dirty.
+  //
+  // Best-effort — a child UPDATE failure logs a warning but doesn't roll
+  // back the parent. The housekeeper isn't standing in the suite running
+  // separate clocks per sub-room, so the audit row on the parent is the
+  // source of truth.
+  if (room.number) {
+    try {
+      type CompRow = { child_room_numbers: unknown };
+      const { data: comp } = await supabaseAdmin
+        .from('component_rooms')
+        .select('child_room_numbers')
+        .eq('property_id', gate.pid)
+        .eq('parent_room_number', room.number)
+        .maybeSingle();
+      const children = Array.isArray((comp as CompRow | null)?.child_room_numbers)
+        ? ((comp as CompRow).child_room_numbers as unknown[]).filter(
+            (x): x is string => typeof x === 'string',
+          )
+        : [];
+      if (children.length > 0 && room.date) {
+        await supabaseAdmin
+          .from('rooms')
+          .update({
+            status: 'clean',
+            started_at: startedAt,
+            completed_at: completedAt,
+            is_paused: false,
+            paused_at: null,
+          })
+          .eq('property_id', gate.pid)
+          .eq('date', room.date)
+          .in('number', children)
+          // Only flip rooms that are still dirty/in-progress — don't
+          // accidentally re-clean a sub-room someone already inspected.
+          .in('status', ['dirty', 'in_progress']);
+      }
+    } catch (fanoutErr) {
+      log.warn('complete-clean: component-room fanout failed (non-fatal)', {
+        requestId: gate.requestId,
+        pid: gate.pid,
+        parentRoom: room.number,
+        err: errToString(fanoutErr),
+      });
+    }
+  }
+
   // ─── Close any open pause audit row ────────────────────────────────────
   // If the user went paused → done without Resume, the audit row is still
   // open. Tag it resumed_at=now so the audit doesn't claim the room is

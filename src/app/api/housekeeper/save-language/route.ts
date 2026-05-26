@@ -54,8 +54,19 @@ export async function POST(req: NextRequest) {
   if (staffV.error) {
     return err(staffV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (body.language !== 'en' && body.language !== 'es') {
-    return err("language must be 'en' or 'es'", {
+  // Piece C (2026-05-25) — the housekeeper page now offers five locales
+  // via the globe-icon language switcher. Keep the existing 'en'|'es'
+  // shape for any older client bundles that haven't roll-deployed yet,
+  // and accept the three new ones. The DB constraint on staff.language
+  // (extended in migration 0225) gates anything else.
+  if (
+    body.language !== 'en' &&
+    body.language !== 'es' &&
+    body.language !== 'ht' &&
+    body.language !== 'tl' &&
+    body.language !== 'vi'
+  ) {
+    return err("language must be one of en/es/ht/tl/vi", {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }

@@ -47,6 +47,13 @@ const EXEMPT = new Set([
   // + the no-op anon-deny that 0214 retains as a documentation marker.
   'objects:mapping_screenshots_admin_select',
   'objects:mapping_screenshots_anon_deny',
+  // Housekeeping-issue-photos bucket (migration 0225). The "anon deny"
+  // policy is a documentation marker — same idiom as the
+  // mapping_screenshots_anon_deny entry above. Uploads + reads go through
+  // service-role helpers; no authenticated browser role ever touches the
+  // bucket. The deny policy applies to anon, not to a 2FA-gated surface,
+  // so the mfa_verified_or_grace() check doesn't apply.
+  'objects:anon deny housekeeping-issue-photos',
 ]);
 
 // Regex matches `create policy NAME on TABLE` or `alter policy NAME on TABLE`.

@@ -1,4 +1,89 @@
+// Bilingual base type — every manager / admin / dashboard string ships in
+// EN + ES. Stays narrow at `'en' | 'es'` so the rest of the codebase keeps
+// type-checking against its inline `{en, es}` lookup objects unchanged.
 export type Language = 'en' | 'es';
+
+// Housekeeper-facing locales (piece C of the housekeeper mobile rebuild,
+// 2026-05-25). HT/TL/VI ship with the housekeeper-facing subset of
+// strings translated and fall back to EN via t() for everything else
+// (admin / dashboard / config strings managers never see).
+//
+// Why two types: widening `Language` to five values would force every
+// existing `{ en: '...', es: '...' }[lang]` literal across the manager
+// dashboard / front-desk / settings pages to add three new branches.
+// Most of those screens are never used by housekeepers and don't need
+// the extra languages — keeping `Language` narrow lets the type system
+// surface accidental "we just rendered Vietnamese in the admin console"
+// bugs rather than silently undefined-indexing those literals.
+export type HousekeeperLocale = 'en' | 'es' | 'ht' | 'tl' | 'vi';
+
+// Per-locale metadata: display name (English), native name in the
+// language's own script, and whether the translations should be treated as
+// machine-seeded (UI warns the user "translations may not be exact"
+// until human review). EN + ES are fully reviewed; the three new locales
+// are best-effort hand translations of the housekeeper subset and need
+// review by a fluent speaker.
+export interface LocaleMeta {
+  code: HousekeeperLocale;
+  englishName: string;
+  nativeName: string;
+  machineTranslated: boolean;
+  /** Searchable aliases — the language picker lets the user type any of
+   *  these and find their language. Includes endonyms, exonyms, and the
+   *  ISO-639-1 code itself so typing "ht" or "creole" both work. */
+  searchAliases: string[];
+}
+
+export const LOCALE_META: Record<HousekeeperLocale, LocaleMeta> = {
+  en: {
+    code: 'en',
+    englishName: 'English',
+    nativeName: 'English',
+    machineTranslated: false,
+    searchAliases: ['english', 'en'],
+  },
+  es: {
+    code: 'es',
+    englishName: 'Spanish',
+    nativeName: 'Español',
+    machineTranslated: false,
+    searchAliases: ['spanish', 'español', 'espanol', 'es', 'castellano'],
+  },
+  ht: {
+    code: 'ht',
+    englishName: 'Haitian Creole',
+    nativeName: 'Kreyòl Ayisyen',
+    machineTranslated: true,
+    searchAliases: ['haitian', 'creole', 'kreyol', 'kreyòl', 'ayisyen', 'ht'],
+  },
+  tl: {
+    code: 'tl',
+    englishName: 'Tagalog',
+    nativeName: 'Tagalog',
+    machineTranslated: true,
+    searchAliases: ['tagalog', 'filipino', 'pilipino', 'tl', 'fil'],
+  },
+  vi: {
+    code: 'vi',
+    englishName: 'Vietnamese',
+    nativeName: 'Tiếng Việt',
+    machineTranslated: true,
+    searchAliases: ['vietnamese', 'tiếng việt', 'tieng viet', 'vi', 'việt'],
+  },
+};
+
+export const SUPPORTED_LOCALES: readonly HousekeeperLocale[] = ['en', 'es', 'ht', 'tl', 'vi'] as const;
+
+/**
+ * Narrow any value coming off `staff.language` (which the DB allows to be
+ * any of the five locales) down to the legacy bilingual Language type
+ * that the manager-side codebase expects. HT/TL/VI degrade to EN —
+ * which is what those manager screens render anyway since they only ship
+ * EN + ES strings.
+ */
+export function toBilingual(locale: string | null | undefined): Language {
+  return locale === 'es' ? 'es' : 'en';
+}
 
 type TranslationKey =
   // Navigation
@@ -132,6 +217,47 @@ type TranslationKey =
   | 'hkErrCouldntStart' | 'hkErrCouldntPause' | 'hkErrCouldntResume'
   | 'hkErrCouldntComplete' | 'hkErrCouldntSaveException'
   | 'hkCriticalItem' | 'hkChecklistOptional'
+  // Housekeeper mobile rebuild pieces B + C (2026-05-25)
+  // Notice board (manager → housekeeper announcement banner)
+  | 'hkNotice' | 'hkNoticePinned' | 'hkNoticeDismiss' | 'hkNoticeExpired'
+  | 'hkNoticePostTitle' | 'hkNoticePostBody' | 'hkNoticePostPin'
+  | 'hkNoticePostExpires' | 'hkNoticePostSubmit' | 'hkNoticePostNoExpiry'
+  | 'hkNoticePostExpires1h' | 'hkNoticePostExpires1d' | 'hkNoticePostExpires3d'
+  | 'hkNoticePostExpires1w' | 'hkNoticePostExpires1m'
+  | 'hkNoticeEmpty' | 'hkNoticePosted' | 'hkNoticeReviewWarning'
+  // Structured issue reporting + photo
+  | 'hkIssueAction' | 'hkIssueActionReplace' | 'hkIssueActionRepair'
+  | 'hkIssueActionClean' | 'hkIssueActionReport'
+  | 'hkIssueItem' | 'hkIssueItemPlaceholder'
+  | 'hkIssueLocation' | 'hkIssueLocationPlaceholder'
+  | 'hkIssueSeverity' | 'hkIssueSeverityMinor' | 'hkIssueSeverityMajor' | 'hkIssueSeverityUrgent'
+  | 'hkIssueNote' | 'hkIssueNotePlaceholder'
+  | 'hkIssuePhotoAdd' | 'hkIssuePhotoReplace' | 'hkIssuePhotoRemove'
+  | 'hkIssueSubmit' | 'hkIssueRoutedToMaintenance'
+  | 'hkErrPhotoTooBig' | 'hkErrPhotoUpload'
+  // Manager notes (display)
+  | 'hkManagerNoteBadge'
+  // Manager notes (posting from Rooms tab)
+  | 'mgrNotesTitle' | 'mgrNotesPlaceholder' | 'mgrNotesAdd' | 'mgrNotesEmpty'
+  | 'mgrNotesExpires' | 'mgrNotesPostedBy' | 'mgrNotesDelete' | 'mgrNotesSaved'
+  // Rush flag (front desk → housekeeper)
+  | 'rushTitle' | 'rushPrompt' | 'rush15min' | 'rush30min' | 'rush1hr'
+  | 'rushSubmit' | 'rushAlreadyActive' | 'rushCleared' | 'rushClearButton'
+  | 'rushNotifySent' | 'rushButton'
+  // Add Note (housekeeper-facing on job card)
+  | 'hkAddNote' | 'hkAddNoteTitle' | 'hkAddNotePlaceholder' | 'hkAddNoteSubmit'
+  | 'hkAddNoteSaved' | 'hkAddNoteClear'
+  // Mark for inspection
+  | 'hkMarkForInspection' | 'hkMarkedForInspection' | 'hkErrMarkInspection'
+  // Language switcher (globe)
+  | 'langPickerTitle' | 'langPickerSearchPlaceholder' | 'langPickerNoResults'
+  | 'langMachineTranslatedNotice'
+  // Offline + sync (extension of existing hkOffline)
+  | 'hkOfflineQueueCount' | 'hkOfflineSyncing' | 'hkOfflineSynced'
+  | 'hkOfflineQueueFailed'
+  // Component rooms
+  | 'componentRoomLabel' | 'componentRoomChildPrefix' | 'componentRoomAllAreas'
+  | 'componentRoomSubAreaDone'
   | 'lndLoadingTasks' | 'lndLaundryLoadsHeading' | 'lndLoadsUnit'
   | 'lndProgressOf' | 'lndProgressDone' | 'lndNoTasksToday'
   // Guest requests
@@ -252,7 +378,19 @@ type TranslationKey =
   | 'voiceIssueMicBlocked' | 'voiceIssueCapped' | 'voiceIssueError'
   | 'voiceIssueHint' | 'voiceIssueTapToStop';
 
-const translations: Record<Language, Record<TranslationKey, string>> = {
+// EN and ES carry every TranslationKey; HT/TL/VI carry the housekeeper-
+// facing subset and fall back to EN via t() for anything missing. The
+// `Partial<>` on the three new locales keeps the type honest — no need to
+// type-stub admin strings nobody on the housekeeper side will ever read.
+interface TranslationMaps {
+  en: Record<TranslationKey, string>;
+  es: Record<TranslationKey, string>;
+  ht: Partial<Record<TranslationKey, string>>;
+  tl: Partial<Record<TranslationKey, string>>;
+  vi: Partial<Record<TranslationKey, string>>;
+}
+
+const translations: TranslationMaps = {
   en: {
     // ── Navigation ──
     dashboard: 'Dashboard',
@@ -600,6 +738,88 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     hkErrCouldntResume: "Couldn't resume.",
     hkErrCouldntComplete: "Couldn't mark Done.",
     hkErrCouldntSaveException: "Couldn't save exception.",
+    // Piece B/C — added 2026-05-25 by feature/housekeeper-mobile-rebuild-BC
+    hkNotice: 'Notice',
+    hkNoticePinned: 'Pinned',
+    hkNoticeDismiss: 'Dismiss',
+    hkNoticeExpired: 'Expired',
+    hkNoticePostTitle: 'Post a notice',
+    hkNoticePostBody: 'Write the announcement',
+    hkNoticePostPin: 'Pin to the top until it expires',
+    hkNoticePostExpires: 'Expires',
+    hkNoticePostSubmit: 'Post notice',
+    hkNoticePostNoExpiry: 'No expiry',
+    hkNoticePostExpires1h: 'In 1 hour',
+    hkNoticePostExpires1d: 'In 1 day',
+    hkNoticePostExpires3d: 'In 3 days',
+    hkNoticePostExpires1w: 'In 1 week',
+    hkNoticePostExpires1m: 'In 1 month',
+    hkNoticeEmpty: 'No active notices',
+    hkNoticePosted: 'Notice posted',
+    hkNoticeReviewWarning: 'Reviewed by manager — translations may not be exact',
+    hkIssueAction: 'What needs to happen?',
+    hkIssueActionReplace: 'Replace',
+    hkIssueActionRepair: 'Repair',
+    hkIssueActionClean: 'Clean',
+    hkIssueActionReport: 'Report',
+    hkIssueItem: 'What item?',
+    hkIssueItemPlaceholder: 'Lightbulb, sink, TV…',
+    hkIssueLocation: 'Where in the room?',
+    hkIssueLocationPlaceholder: 'Near the sink, on the wall…',
+    hkIssueSeverity: 'How urgent?',
+    hkIssueSeverityMinor: 'Minor',
+    hkIssueSeverityMajor: 'Major',
+    hkIssueSeverityUrgent: 'Urgent',
+    hkIssueNote: 'Anything else?',
+    hkIssueNotePlaceholder: 'Optional details',
+    hkIssuePhotoAdd: 'Add a photo',
+    hkIssuePhotoReplace: 'Replace photo',
+    hkIssuePhotoRemove: 'Remove photo',
+    hkIssueSubmit: 'Send to maintenance',
+    hkIssueRoutedToMaintenance: 'Sent to maintenance',
+    hkErrPhotoTooBig: 'Photo is too big — try a smaller one.',
+    hkErrPhotoUpload: "Couldn't upload the photo. Try again.",
+    hkManagerNoteBadge: 'Manager note',
+    mgrNotesTitle: 'Manager notes',
+    mgrNotesPlaceholder: 'Add a note for the housekeeper',
+    mgrNotesAdd: 'Add note',
+    mgrNotesEmpty: 'No notes for this room today',
+    mgrNotesExpires: 'Visible until',
+    mgrNotesPostedBy: 'Posted by',
+    mgrNotesDelete: 'Delete',
+    mgrNotesSaved: 'Note saved',
+    rushTitle: 'Mark as rush',
+    rushPrompt: 'How urgent?',
+    rush15min: 'In 15 min',
+    rush30min: 'In 30 min',
+    rush1hr: 'In 1 hour',
+    rushSubmit: 'Send rush',
+    rushAlreadyActive: 'This room is already marked rush',
+    rushCleared: 'Rush cleared',
+    rushClearButton: 'Clear rush',
+    rushNotifySent: 'Housekeeper notified',
+    rushButton: 'Rush',
+    hkAddNote: 'Add note',
+    hkAddNoteTitle: 'Quick note',
+    hkAddNotePlaceholder: 'Note for the manager',
+    hkAddNoteSubmit: 'Save note',
+    hkAddNoteSaved: 'Note saved',
+    hkAddNoteClear: 'Clear note',
+    hkMarkForInspection: 'Mark for inspection',
+    hkMarkedForInspection: 'Marked for inspection',
+    hkErrMarkInspection: "Couldn't mark for inspection.",
+    langPickerTitle: 'Choose your language',
+    langPickerSearchPlaceholder: 'Search for your language',
+    langPickerNoResults: 'No language matches',
+    langMachineTranslatedNotice: 'Some text may not be fully translated yet',
+    hkOfflineQueueCount: 'Will sync when you reconnect',
+    hkOfflineSyncing: 'Syncing your changes',
+    hkOfflineSynced: 'Changes synced',
+    hkOfflineQueueFailed: 'Some changes did not sync — tap to retry',
+    componentRoomLabel: 'Suite',
+    componentRoomChildPrefix: 'Includes',
+    componentRoomAllAreas: 'All areas',
+    componentRoomSubAreaDone: 'Done',
     lndLoadingTasks: 'Loading tasks...',
     lndLaundryLoadsHeading: 'Laundry Loads',
     lndLoadsUnit: 'loads',
@@ -1303,6 +1523,88 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     hkErrCouldntResume: 'No se pudo reanudar.',
     hkErrCouldntComplete: 'No se pudo marcar como Lista.',
     hkErrCouldntSaveException: 'No se pudo guardar la excepción.',
+    // Piece B/C — added 2026-05-25
+    hkNotice: 'Aviso',
+    hkNoticePinned: 'Fijado',
+    hkNoticeDismiss: 'Cerrar',
+    hkNoticeExpired: 'Expirado',
+    hkNoticePostTitle: 'Publicar un aviso',
+    hkNoticePostBody: 'Escribe el anuncio',
+    hkNoticePostPin: 'Fijar arriba hasta que expire',
+    hkNoticePostExpires: 'Expira',
+    hkNoticePostSubmit: 'Publicar aviso',
+    hkNoticePostNoExpiry: 'Sin expiración',
+    hkNoticePostExpires1h: 'En 1 hora',
+    hkNoticePostExpires1d: 'En 1 día',
+    hkNoticePostExpires3d: 'En 3 días',
+    hkNoticePostExpires1w: 'En 1 semana',
+    hkNoticePostExpires1m: 'En 1 mes',
+    hkNoticeEmpty: 'No hay avisos activos',
+    hkNoticePosted: 'Aviso publicado',
+    hkNoticeReviewWarning: 'Revisado por gerente — traducciones pueden no ser exactas',
+    hkIssueAction: '¿Qué se necesita hacer?',
+    hkIssueActionReplace: 'Reemplazar',
+    hkIssueActionRepair: 'Reparar',
+    hkIssueActionClean: 'Limpiar',
+    hkIssueActionReport: 'Reportar',
+    hkIssueItem: '¿Qué cosa?',
+    hkIssueItemPlaceholder: 'Bombilla, lavabo, TV…',
+    hkIssueLocation: '¿Dónde en la habitación?',
+    hkIssueLocationPlaceholder: 'Cerca del lavabo, en la pared…',
+    hkIssueSeverity: '¿Qué tan urgente?',
+    hkIssueSeverityMinor: 'Menor',
+    hkIssueSeverityMajor: 'Mayor',
+    hkIssueSeverityUrgent: 'Urgente',
+    hkIssueNote: '¿Algo más?',
+    hkIssueNotePlaceholder: 'Detalles opcionales',
+    hkIssuePhotoAdd: 'Agregar foto',
+    hkIssuePhotoReplace: 'Reemplazar foto',
+    hkIssuePhotoRemove: 'Quitar foto',
+    hkIssueSubmit: 'Enviar a mantenimiento',
+    hkIssueRoutedToMaintenance: 'Enviado a mantenimiento',
+    hkErrPhotoTooBig: 'La foto es muy grande — usa una más pequeña.',
+    hkErrPhotoUpload: 'No se pudo subir la foto. Intenta otra vez.',
+    hkManagerNoteBadge: 'Nota del gerente',
+    mgrNotesTitle: 'Notas del gerente',
+    mgrNotesPlaceholder: 'Agregar nota para la camarista',
+    mgrNotesAdd: 'Agregar nota',
+    mgrNotesEmpty: 'No hay notas para esta habitación hoy',
+    mgrNotesExpires: 'Visible hasta',
+    mgrNotesPostedBy: 'Publicado por',
+    mgrNotesDelete: 'Borrar',
+    mgrNotesSaved: 'Nota guardada',
+    rushTitle: 'Marcar como urgente',
+    rushPrompt: '¿Qué tan urgente?',
+    rush15min: 'En 15 min',
+    rush30min: 'En 30 min',
+    rush1hr: 'En 1 hora',
+    rushSubmit: 'Enviar urgente',
+    rushAlreadyActive: 'Esta habitación ya está marcada urgente',
+    rushCleared: 'Urgencia quitada',
+    rushClearButton: 'Quitar urgencia',
+    rushNotifySent: 'Camarista notificada',
+    rushButton: 'Urgente',
+    hkAddNote: 'Agregar nota',
+    hkAddNoteTitle: 'Nota rápida',
+    hkAddNotePlaceholder: 'Nota para el gerente',
+    hkAddNoteSubmit: 'Guardar nota',
+    hkAddNoteSaved: 'Nota guardada',
+    hkAddNoteClear: 'Quitar nota',
+    hkMarkForInspection: 'Marcar para inspección',
+    hkMarkedForInspection: 'Marcada para inspección',
+    hkErrMarkInspection: 'No se pudo marcar para inspección.',
+    langPickerTitle: 'Elige tu idioma',
+    langPickerSearchPlaceholder: 'Busca tu idioma',
+    langPickerNoResults: 'No coincide ningún idioma',
+    langMachineTranslatedNotice: 'Algunos textos aún no están traducidos por completo',
+    hkOfflineQueueCount: 'Se sincronizará cuando regrese la conexión',
+    hkOfflineSyncing: 'Sincronizando tus cambios',
+    hkOfflineSynced: 'Cambios sincronizados',
+    hkOfflineQueueFailed: 'Algunos cambios no se sincronizaron — toca para reintentar',
+    componentRoomLabel: 'Suite',
+    componentRoomChildPrefix: 'Incluye',
+    componentRoomAllAreas: 'Todas las áreas',
+    componentRoomSubAreaDone: 'Listo',
     lndLoadingTasks: 'Cargando tareas...',
     lndLaundryLoadsHeading: 'Cargas de Lavandería',
     lndLoadsUnit: 'cargas',
@@ -1656,10 +1958,509 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     voiceIssueError:      'La voz no funcionó. Puedes escribir el problema en su lugar.',
     voiceIssueHint:       'O escribe abajo',
   },
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Haitian Creole (Kreyòl Ayisyen)
+  // ─────────────────────────────────────────────────────────────────────
+  // Hand-translated subset covering the housekeeper-facing UI. Every
+  // other key falls back to English via t(). LANGUAGE_META marks this as
+  // machine_translated so the UI shows the "translations may not be
+  // exact" notice until a fluent speaker reviews.
+  ht: {
+    // Header / shell
+    cxHelloPrefix: 'Bonjou',
+    cxIncompleteLink: 'Lyen ki pa konplè',
+    cxIncompleteLinkHelp: 'Mande manadjè w lyen konplè a. Gen paramèt ki manke.',
+    cxGreatWorkToday: 'Bon travay jodi a',
+    // Shift
+    hkStartShift: 'Kòmanse Travay',
+    hkShiftStarted: 'Travay kòmanse',
+    hkNextShiftPrefix: 'Pwochen travay: ',
+    hkLastShiftPrefix: 'Dènye travay: ',
+    // Rooms
+    hkRoomShort: 'Chanm',
+    hkTypeCheckout: 'CHEK-OUT',
+    hkTypeStayover: 'RETE',
+    hkTypeVacant: 'VID',
+    hkFloorPrefix: 'Etaj',
+    hkGroupByFloor: 'Pa etaj',
+    hkGroupByRoom: 'Pa nimewo',
+    // Actions
+    hkActionStart: 'Kòmanse',
+    hkActionPause: 'Kanpe',
+    hkActionResume: 'Kontinye',
+    hkActionDone: 'Fini',
+    hkPaused: 'Kanpe',
+    hkCompleteShort: 'Fini',
+    hkResetShort: 'Refè',
+    hkUndoShort: 'Anile',
+    // Checklist
+    hkOpenChecklist: 'Ouvri lis',
+    hkChecklistTitle: 'Lis netwayaj',
+    hkChecklistChecked: 'tcheke',
+    hkChecklistOptional: 'Lis la opsyonèl — ou ka fini san tcheke tout bagay.',
+    hkCriticalItem: 'Enpòtan',
+    hkAreaBathroom: 'Twalèt',
+    hkAreaBedroom: 'Chanm a kouche',
+    hkAreaLiving: 'Sal',
+    hkAreaKitchen: 'Kwizin',
+    hkAreaEntry: 'Antre',
+    hkAreaAmenities: 'Pwodwi',
+    hkAreaFinal: 'Tchekap final',
+    // Exceptions
+    hkException: 'Eksepsyon',
+    hkExceptionDnd: 'Pa Deranje',
+    hkExceptionNsr: 'Pa Bezwen Sèvis',
+    hkExceptionDla: 'Pòt Doub-Kloure',
+    hkExceptionSleepOut: 'Pa Vini',
+    hkExceptionSkipped: 'Sote',
+    hkExceptionLabel: 'Make chanm sa a kòm',
+    hkExceptionAddNoteOptional: 'Ajoute yon nòt (opsyonèl)',
+    hkExceptionConfirm: 'Konfime',
+    hkExceptionClear: 'Retire eksepsyon',
+    hkExceptionDndDescription: 'Klyen mande pou pa deranje',
+    hkExceptionNsrDescription: 'Klyen pa vle sèvis jodi a',
+    hkExceptionDlaDescription: 'Pòt doub-kloure pa anndan',
+    hkExceptionSleepOutDescription: 'Klyen peye men pa janm rive',
+    hkExceptionSkippedDescription: 'Pa kapab netwaye — bezwen sipèvizè',
+    // Issue (legacy)
+    hkIssueShort: 'Pwoblèm',
+    hkReportIssueAria: 'Rapòte yon pwoblèm',
+    // Guest context
+    hkGuestNameLabel: 'Klyen',
+    hkETALabel: 'Ap rive',
+    hkNightsLabel: 'Nwit',
+    hkNightsUnit: 'nwit',
+    hkManagerNotesLabel: 'Nòt manadjè',
+    hkManagerNoteBadge: 'Nòt manadjè',
+    // Rush
+    hkRushBanner: 'IJAN',
+    hkRushDueIn: 'Pou',
+    // Lunch + summary
+    hkLunchStart: 'Kòmanse manje',
+    hkLunchEnd: 'Fin manje',
+    hkLunchOnBreak: 'Ap manje',
+    hkLunchMinutesSuffix: 'min',
+    hkSummaryTitle: 'Rezime jodi a',
+    hkSummaryRoomsCleaned: 'Chanm netwaye',
+    hkSummaryActiveMinutes: 'Tan netwayaj',
+    hkSummaryAveragePerRoom: 'Mwayèn pa chanm',
+    hkSummaryLunchMinutes: 'Tan manje',
+    hkSummaryShiftHours: 'Èdtravay',
+    hkSummaryStillToGo: 'Ki rete pou netwaye',
+    hkSummaryShowDailySummary: 'Wè rezime',
+    // Offline + sync
+    hkOffline: 'Ou òfline. Chanjman yo p ap sove jiskaske ou rekonekte.',
+    hkOfflineQueueCount: 'Ap senkronize lè konnektivite tounen',
+    hkOfflineSyncing: 'Ap senkronize chanjman ou yo',
+    hkOfflineSynced: 'Chanjman senkronize',
+    hkOfflineQueueFailed: 'Kèk chanjman pa senkronize — tape pou eseye ankò',
+    // Error toasts
+    hkErrCouldntMarkClean: 'Pa kapab make kòm Pwòp. Tcheke koneksyon w ak eseye ankò.',
+    hkErrCouldntToggleDnd: 'Pa kapab chanje Pa Deranje.',
+    hkErrCouldntSaveIssue: 'Pa kapab sove pwoblèm nan. Eseye ankò.',
+    hkErrCouldntResetRoom: 'Pa kapab refè chanm nan.',
+    hkErrCouldntStart: 'Pa kapab kòmanse chanm nan.',
+    hkErrCouldntPause: 'Pa kapab kanpe.',
+    hkErrCouldntResume: 'Pa kapab kontinye.',
+    hkErrCouldntComplete: 'Pa kapab make Fini.',
+    hkErrCouldntSaveException: 'Pa kapab sove eksepsyon.',
+    hkErrMarkInspection: 'Pa kapab make pou enspeksyon.',
+    hkErrPhotoTooBig: 'Foto a twò gwo — eseye yon pi piti.',
+    hkErrPhotoUpload: 'Pa kapab voye foto a. Eseye ankò.',
+    // Notice board (housekeeper side)
+    hkNotice: 'Avi',
+    hkNoticePinned: 'Klouwe',
+    hkNoticeDismiss: 'Fèmen',
+    hkNoticeExpired: 'Ekspire',
+    hkNoticeReviewWarning: 'Revize pa manadjè — tradiksyon ka pa egzak',
+    // Structured issue (housekeeper)
+    hkIssueAction: 'Kisa ki bezwen rive?',
+    hkIssueActionReplace: 'Ranplase',
+    hkIssueActionRepair: 'Repare',
+    hkIssueActionClean: 'Netwaye',
+    hkIssueActionReport: 'Rapòte',
+    hkIssueItem: 'Ki bagay?',
+    hkIssueItemPlaceholder: 'Anpoul, lavabo, TV…',
+    hkIssueLocation: 'Ki kote nan chanm nan?',
+    hkIssueLocationPlaceholder: 'Bò lavabo a, sou mi…',
+    hkIssueSeverity: 'Konbyen ijan?',
+    hkIssueSeverityMinor: 'Piti',
+    hkIssueSeverityMajor: 'Gwo',
+    hkIssueSeverityUrgent: 'Ijan',
+    hkIssueNote: 'Lòt bagay?',
+    hkIssueNotePlaceholder: 'Detay opsyonèl',
+    hkIssuePhotoAdd: 'Ajoute foto',
+    hkIssuePhotoReplace: 'Ranplase foto',
+    hkIssuePhotoRemove: 'Retire foto',
+    hkIssueSubmit: 'Voye nan antretyen',
+    hkIssueRoutedToMaintenance: 'Voye nan antretyen',
+    // Add note + mark for inspection (housekeeper)
+    hkAddNote: 'Ajoute nòt',
+    hkAddNoteTitle: 'Nòt rapid',
+    hkAddNotePlaceholder: 'Nòt pou manadjè a',
+    hkAddNoteSubmit: 'Sove nòt',
+    hkAddNoteSaved: 'Nòt sove',
+    hkAddNoteClear: 'Retire nòt',
+    hkMarkForInspection: 'Make pou enspeksyon',
+    hkMarkedForInspection: 'Make pou enspeksyon',
+    // Language picker
+    langPickerTitle: 'Chwazi lang ou',
+    langPickerSearchPlaceholder: 'Chèche lang ou',
+    langPickerNoResults: 'Pa gen lang ki matche',
+    langMachineTranslatedNotice: 'Kèk tèks ka pa konplètman tradwi ankò',
+    // Component rooms
+    componentRoomLabel: 'Swit',
+    componentRoomChildPrefix: 'Genyen',
+    componentRoomAllAreas: 'Tout zòn yo',
+    componentRoomSubAreaDone: 'Fini',
+    // Common
+    cancel: 'Anile',
+    submit: 'Voye',
+    savingDots: 'Ap sove...',
+    loadingRooms: 'Ap chaje chanm yo...',
+    inProgress: 'Ap fèt',
+    earlyCheckin: 'Antre bonè',
+    done: 'Fini',
+    allDone: 'Tout bagay fini!',
+    noRoomsAssigned: 'Ou pa gen chanm jodi a',
+    checkBackSoon: 'Retounen pita',
+    reportIssue: 'Rapòte yon pwoblèm',
+    describeIssue: 'Dekri pwoblèm nan',
+    doNotDisturb: 'Pa Deranje',
+    markDnd: 'Make Pa Deranje',
+    removeDnd: 'Retire Pa Deranje',
+    // Laundry strings (laundry page is also housekeeper-facing)
+    lndLoadingTasks: 'Ap chaje travay yo...',
+    lndLaundryLoadsHeading: 'Chaj Lave',
+    lndLoadsUnit: 'chaj',
+    lndProgressOf: 'sou',
+    lndProgressDone: 'fini',
+    lndNoTasksToday: 'Pa gen travay lave jodi a. Retounen pita!',
+  },
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Tagalog
+  // ─────────────────────────────────────────────────────────────────────
+  tl: {
+    cxHelloPrefix: 'Kumusta',
+    cxIncompleteLink: 'Hindi kumpleto ang link',
+    cxIncompleteLinkHelp: 'Hingin sa manager ang kumpletong link. May kulang na detalye.',
+    cxGreatWorkToday: 'Magaling na trabaho ngayong araw',
+    hkStartShift: 'Simulan ang Shift',
+    hkShiftStarted: 'Nagsimula na ang shift',
+    hkNextShiftPrefix: 'Susunod na shift: ',
+    hkLastShiftPrefix: 'Huling shift: ',
+    hkRoomShort: 'Kwarto',
+    hkTypeCheckout: 'CHECKOUT',
+    hkTypeStayover: 'STAYOVER',
+    hkTypeVacant: 'WALA',
+    hkFloorPrefix: 'Palapag',
+    hkGroupByFloor: 'Sa palapag',
+    hkGroupByRoom: 'Sa numero',
+    hkActionStart: 'Simulan',
+    hkActionPause: 'I-pause',
+    hkActionResume: 'Ituloy',
+    hkActionDone: 'Tapos na',
+    hkPaused: 'Naka-pause',
+    hkCompleteShort: 'Tapos',
+    hkResetShort: 'I-reset',
+    hkUndoShort: 'Bawiin',
+    hkOpenChecklist: 'Buksan ang listahan',
+    hkChecklistTitle: 'Listahan ng paglilinis',
+    hkChecklistChecked: 'na-check',
+    hkChecklistOptional: 'Opsyonal ang listahan — pwede mong tapusin nang hindi nila-lahat.',
+    hkCriticalItem: 'Mahalaga',
+    hkAreaBathroom: 'Banyo',
+    hkAreaBedroom: 'Tulugan',
+    hkAreaLiving: 'Sala',
+    hkAreaKitchen: 'Kusina',
+    hkAreaEntry: 'Pasukan',
+    hkAreaAmenities: 'Mga supply',
+    hkAreaFinal: 'Huling tsek',
+    hkException: 'Eksepsiyon',
+    hkExceptionDnd: 'Huwag Istorbohin',
+    hkExceptionNsr: 'Walang Serbisyo',
+    hkExceptionDla: 'Doble-Kandado',
+    hkExceptionSleepOut: 'Hindi Dumating',
+    hkExceptionSkipped: 'Nilaktawan',
+    hkExceptionLabel: 'Markahan ang kwartong ito bilang',
+    hkExceptionAddNoteOptional: 'Magdagdag ng nota (opsyonal)',
+    hkExceptionConfirm: 'Kumpirmahin',
+    hkExceptionClear: 'Alisin ang eksepsiyon',
+    hkExceptionDndDescription: 'Humingi ang bisita na huwag istorbohin',
+    hkExceptionNsrDescription: 'Hindi gusto ng bisita ang serbisyo ngayong araw',
+    hkExceptionDlaDescription: 'Doble-kandado ang pinto mula sa loob',
+    hkExceptionSleepOutDescription: 'Nagbayad ang bisita pero hindi dumating',
+    hkExceptionSkippedDescription: 'Hindi nalinis — kailangan ng supervisor',
+    hkIssueShort: 'Problema',
+    hkReportIssueAria: 'Mag-report ng problema',
+    hkGuestNameLabel: 'Bisita',
+    hkETALabel: 'Darating',
+    hkNightsLabel: 'Mga gabi',
+    hkNightsUnit: 'na gabi',
+    hkManagerNotesLabel: 'Nota ng manager',
+    hkManagerNoteBadge: 'Nota ng manager',
+    hkRushBanner: 'URGENT',
+    hkRushDueIn: 'Dapat tapos',
+    hkLunchStart: 'Simulan ang tanghalian',
+    hkLunchEnd: 'Tapusin ang tanghalian',
+    hkLunchOnBreak: 'Nag-tatanghalian',
+    hkLunchMinutesSuffix: 'min',
+    hkSummaryTitle: 'Buod ng araw',
+    hkSummaryRoomsCleaned: 'Mga nalinisang kwarto',
+    hkSummaryActiveMinutes: 'Oras ng paglilinis',
+    hkSummaryAveragePerRoom: 'Karaniwan kada kwarto',
+    hkSummaryLunchMinutes: 'Oras ng tanghalian',
+    hkSummaryShiftHours: 'Oras ng shift',
+    hkSummaryStillToGo: 'Dapat pang linisin',
+    hkSummaryShowDailySummary: 'Tignan ang buod',
+    hkOffline: 'Wala kang koneksyon. Hindi mase-save ang mga pagbabago hanggang bumalik ka online.',
+    hkOfflineQueueCount: 'Magsisync kapag bumalik ang koneksyon',
+    hkOfflineSyncing: 'Sini-sync ang iyong mga pagbabago',
+    hkOfflineSynced: 'Na-sync na ang mga pagbabago',
+    hkOfflineQueueFailed: 'Hindi nag-sync ang ilang pagbabago — pindutin para subukan ulit',
+    hkErrCouldntMarkClean: 'Hindi nai-mark na malinis. Tingnan ang koneksyon at subukan ulit.',
+    hkErrCouldntToggleDnd: 'Hindi nai-toggle ang Huwag Istorbohin.',
+    hkErrCouldntSaveIssue: 'Hindi na-save ang problema. Subukan ulit.',
+    hkErrCouldntResetRoom: 'Hindi na-reset ang kwarto.',
+    hkErrCouldntStart: 'Hindi nasimulan ang kwarto.',
+    hkErrCouldntPause: 'Hindi na-pause.',
+    hkErrCouldntResume: 'Hindi naituloy.',
+    hkErrCouldntComplete: 'Hindi nai-mark na Tapos.',
+    hkErrCouldntSaveException: 'Hindi na-save ang eksepsiyon.',
+    hkErrMarkInspection: 'Hindi nai-mark para sa inspeksyon.',
+    hkErrPhotoTooBig: 'Masyadong malaki ang larawan — subukan ang mas maliit.',
+    hkErrPhotoUpload: 'Hindi nai-upload ang larawan. Subukan ulit.',
+    hkNotice: 'Paunawa',
+    hkNoticePinned: 'Naka-pin',
+    hkNoticeDismiss: 'Isara',
+    hkNoticeExpired: 'Expired na',
+    hkNoticeReviewWarning: 'Sinuri ng manager — maaaring hindi eksakto ang pagsasalin',
+    hkIssueAction: 'Ano ang dapat gawin?',
+    hkIssueActionReplace: 'Palitan',
+    hkIssueActionRepair: 'Ayusin',
+    hkIssueActionClean: 'Linisin',
+    hkIssueActionReport: 'I-report',
+    hkIssueItem: 'Anong bagay?',
+    hkIssueItemPlaceholder: 'Bombilya, lababo, TV…',
+    hkIssueLocation: 'Saan sa kwarto?',
+    hkIssueLocationPlaceholder: 'Malapit sa lababo, sa dingding…',
+    hkIssueSeverity: 'Gaano kaurgent?',
+    hkIssueSeverityMinor: 'Maliit',
+    hkIssueSeverityMajor: 'Malaki',
+    hkIssueSeverityUrgent: 'Urgent',
+    hkIssueNote: 'May iba pa ba?',
+    hkIssueNotePlaceholder: 'Opsyonal na detalye',
+    hkIssuePhotoAdd: 'Magdagdag ng larawan',
+    hkIssuePhotoReplace: 'Palitan ang larawan',
+    hkIssuePhotoRemove: 'Tanggalin ang larawan',
+    hkIssueSubmit: 'Ipadala sa maintenance',
+    hkIssueRoutedToMaintenance: 'Naipadala sa maintenance',
+    hkAddNote: 'Magdagdag ng nota',
+    hkAddNoteTitle: 'Mabilis na nota',
+    hkAddNotePlaceholder: 'Nota para sa manager',
+    hkAddNoteSubmit: 'I-save ang nota',
+    hkAddNoteSaved: 'Na-save ang nota',
+    hkAddNoteClear: 'Alisin ang nota',
+    hkMarkForInspection: 'I-mark para sa inspeksyon',
+    hkMarkedForInspection: 'Na-mark para sa inspeksyon',
+    langPickerTitle: 'Piliin ang iyong wika',
+    langPickerSearchPlaceholder: 'Hanapin ang iyong wika',
+    langPickerNoResults: 'Walang tugmang wika',
+    langMachineTranslatedNotice: 'May ilang teksto na maaaring hindi pa lubos na naisalin',
+    componentRoomLabel: 'Suite',
+    componentRoomChildPrefix: 'Kasama ang',
+    componentRoomAllAreas: 'Lahat ng lugar',
+    componentRoomSubAreaDone: 'Tapos',
+    cancel: 'Kanselahin',
+    submit: 'Isumite',
+    savingDots: 'Sine-save...',
+    loadingRooms: 'Niloload ang mga kwarto...',
+    inProgress: 'Ginagawa',
+    earlyCheckin: 'Maagang check-in',
+    done: 'Tapos',
+    allDone: 'Tapos na lahat!',
+    noRoomsAssigned: 'Wala kang kwarto ngayong araw',
+    checkBackSoon: 'Bumalik mamaya',
+    reportIssue: 'Mag-report ng problema',
+    describeIssue: 'Ilarawan ang problema',
+    doNotDisturb: 'Huwag Istorbohin',
+    markDnd: 'I-mark na Huwag Istorbohin',
+    removeDnd: 'Alisin ang Huwag Istorbohin',
+    lndLoadingTasks: 'Niloload ang mga gawain...',
+    lndLaundryLoadsHeading: 'Mga Labada',
+    lndLoadsUnit: 'load',
+    lndProgressOf: 'sa',
+    lndProgressDone: 'tapos na',
+    lndNoTasksToday: 'Walang gawaing labada ngayong araw. Bumalik mamaya!',
+  },
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Vietnamese (Tiếng Việt)
+  // ─────────────────────────────────────────────────────────────────────
+  vi: {
+    cxHelloPrefix: 'Xin chào',
+    cxIncompleteLink: 'Liên kết không đầy đủ',
+    cxIncompleteLinkHelp: 'Yêu cầu quản lý gửi liên kết đầy đủ. Thiếu thông số.',
+    cxGreatWorkToday: 'Làm việc tốt hôm nay',
+    hkStartShift: 'Bắt đầu ca',
+    hkShiftStarted: 'Ca đã bắt đầu',
+    hkNextShiftPrefix: 'Ca tiếp theo: ',
+    hkLastShiftPrefix: 'Ca cuối: ',
+    hkRoomShort: 'Phòng',
+    hkTypeCheckout: 'TRẢ PHÒNG',
+    hkTypeStayover: 'Ở LẠI',
+    hkTypeVacant: 'TRỐNG',
+    hkFloorPrefix: 'Tầng',
+    hkGroupByFloor: 'Theo tầng',
+    hkGroupByRoom: 'Theo số',
+    hkActionStart: 'Bắt đầu',
+    hkActionPause: 'Tạm dừng',
+    hkActionResume: 'Tiếp tục',
+    hkActionDone: 'Xong',
+    hkPaused: 'Đang dừng',
+    hkCompleteShort: 'Hoàn tất',
+    hkResetShort: 'Đặt lại',
+    hkUndoShort: 'Hoàn tác',
+    hkOpenChecklist: 'Mở danh sách',
+    hkChecklistTitle: 'Danh sách làm sạch',
+    hkChecklistChecked: 'đã đánh dấu',
+    hkChecklistOptional: 'Danh sách là tùy chọn — bạn có thể hoàn thành mà không cần đánh dấu tất cả.',
+    hkCriticalItem: 'Quan trọng',
+    hkAreaBathroom: 'Phòng tắm',
+    hkAreaBedroom: 'Phòng ngủ',
+    hkAreaLiving: 'Phòng khách',
+    hkAreaKitchen: 'Nhà bếp',
+    hkAreaEntry: 'Lối vào',
+    hkAreaAmenities: 'Tiện nghi',
+    hkAreaFinal: 'Kiểm tra cuối',
+    hkException: 'Ngoại lệ',
+    hkExceptionDnd: 'Đừng Làm Phiền',
+    hkExceptionNsr: 'Không Cần Dịch Vụ',
+    hkExceptionDla: 'Khóa Đôi',
+    hkExceptionSleepOut: 'Không Đến',
+    hkExceptionSkipped: 'Bỏ Qua',
+    hkExceptionLabel: 'Đánh dấu phòng này là',
+    hkExceptionAddNoteOptional: 'Thêm ghi chú (tùy chọn)',
+    hkExceptionConfirm: 'Xác nhận',
+    hkExceptionClear: 'Xóa ngoại lệ',
+    hkExceptionDndDescription: 'Khách yêu cầu không làm phiền',
+    hkExceptionNsrDescription: 'Khách không muốn dọn dẹp hôm nay',
+    hkExceptionDlaDescription: 'Cửa bị khóa đôi từ bên trong',
+    hkExceptionSleepOutDescription: 'Khách đã trả tiền nhưng không đến',
+    hkExceptionSkippedDescription: 'Không thể dọn — cần giám sát',
+    hkIssueShort: 'Vấn đề',
+    hkReportIssueAria: 'Báo cáo vấn đề',
+    hkGuestNameLabel: 'Khách',
+    hkETALabel: 'Sẽ đến',
+    hkNightsLabel: 'Đêm',
+    hkNightsUnit: 'đêm',
+    hkManagerNotesLabel: 'Ghi chú quản lý',
+    hkManagerNoteBadge: 'Ghi chú quản lý',
+    hkRushBanner: 'KHẨN',
+    hkRushDueIn: 'Hạn',
+    hkLunchStart: 'Bắt đầu ăn trưa',
+    hkLunchEnd: 'Kết thúc ăn trưa',
+    hkLunchOnBreak: 'Đang ăn trưa',
+    hkLunchMinutesSuffix: 'phút',
+    hkSummaryTitle: 'Tóm tắt hôm nay',
+    hkSummaryRoomsCleaned: 'Phòng đã dọn',
+    hkSummaryActiveMinutes: 'Thời gian dọn dẹp',
+    hkSummaryAveragePerRoom: 'Trung bình mỗi phòng',
+    hkSummaryLunchMinutes: 'Thời gian ăn trưa',
+    hkSummaryShiftHours: 'Giờ làm việc',
+    hkSummaryStillToGo: 'Còn lại để dọn',
+    hkSummaryShowDailySummary: 'Xem tóm tắt',
+    hkOffline: 'Bạn đang ngoại tuyến. Thay đổi sẽ không lưu cho đến khi có kết nối.',
+    hkOfflineQueueCount: 'Sẽ đồng bộ khi có kết nối',
+    hkOfflineSyncing: 'Đang đồng bộ các thay đổi',
+    hkOfflineSynced: 'Đã đồng bộ thay đổi',
+    hkOfflineQueueFailed: 'Một số thay đổi không đồng bộ — chạm để thử lại',
+    hkErrCouldntMarkClean: 'Không thể đánh dấu Sạch. Kiểm tra kết nối và thử lại.',
+    hkErrCouldntToggleDnd: 'Không thể chuyển Đừng Làm Phiền.',
+    hkErrCouldntSaveIssue: 'Không thể lưu vấn đề. Thử lại.',
+    hkErrCouldntResetRoom: 'Không thể đặt lại phòng.',
+    hkErrCouldntStart: 'Không thể bắt đầu phòng.',
+    hkErrCouldntPause: 'Không thể tạm dừng.',
+    hkErrCouldntResume: 'Không thể tiếp tục.',
+    hkErrCouldntComplete: 'Không thể đánh dấu Xong.',
+    hkErrCouldntSaveException: 'Không thể lưu ngoại lệ.',
+    hkErrMarkInspection: 'Không thể đánh dấu để kiểm tra.',
+    hkErrPhotoTooBig: 'Ảnh quá lớn — thử ảnh nhỏ hơn.',
+    hkErrPhotoUpload: 'Không thể tải ảnh lên. Thử lại.',
+    hkNotice: 'Thông báo',
+    hkNoticePinned: 'Đã ghim',
+    hkNoticeDismiss: 'Đóng',
+    hkNoticeExpired: 'Hết hạn',
+    hkNoticeReviewWarning: 'Đã quản lý xem — bản dịch có thể không chính xác',
+    hkIssueAction: 'Cần làm gì?',
+    hkIssueActionReplace: 'Thay thế',
+    hkIssueActionRepair: 'Sửa chữa',
+    hkIssueActionClean: 'Làm sạch',
+    hkIssueActionReport: 'Báo cáo',
+    hkIssueItem: 'Vật gì?',
+    hkIssueItemPlaceholder: 'Bóng đèn, bồn rửa, TV…',
+    hkIssueLocation: 'Ở đâu trong phòng?',
+    hkIssueLocationPlaceholder: 'Gần bồn rửa, trên tường…',
+    hkIssueSeverity: 'Khẩn cấp đến mức nào?',
+    hkIssueSeverityMinor: 'Nhỏ',
+    hkIssueSeverityMajor: 'Lớn',
+    hkIssueSeverityUrgent: 'Khẩn',
+    hkIssueNote: 'Còn gì khác không?',
+    hkIssueNotePlaceholder: 'Chi tiết tùy chọn',
+    hkIssuePhotoAdd: 'Thêm ảnh',
+    hkIssuePhotoReplace: 'Thay ảnh',
+    hkIssuePhotoRemove: 'Xóa ảnh',
+    hkIssueSubmit: 'Gửi cho bảo trì',
+    hkIssueRoutedToMaintenance: 'Đã gửi cho bảo trì',
+    hkAddNote: 'Thêm ghi chú',
+    hkAddNoteTitle: 'Ghi chú nhanh',
+    hkAddNotePlaceholder: 'Ghi chú cho quản lý',
+    hkAddNoteSubmit: 'Lưu ghi chú',
+    hkAddNoteSaved: 'Đã lưu ghi chú',
+    hkAddNoteClear: 'Xóa ghi chú',
+    hkMarkForInspection: 'Đánh dấu để kiểm tra',
+    hkMarkedForInspection: 'Đã đánh dấu để kiểm tra',
+    langPickerTitle: 'Chọn ngôn ngữ của bạn',
+    langPickerSearchPlaceholder: 'Tìm ngôn ngữ',
+    langPickerNoResults: 'Không tìm thấy ngôn ngữ',
+    langMachineTranslatedNotice: 'Một số văn bản có thể chưa được dịch hoàn toàn',
+    componentRoomLabel: 'Suite',
+    componentRoomChildPrefix: 'Bao gồm',
+    componentRoomAllAreas: 'Tất cả khu vực',
+    componentRoomSubAreaDone: 'Xong',
+    cancel: 'Hủy',
+    submit: 'Gửi',
+    savingDots: 'Đang lưu...',
+    loadingRooms: 'Đang tải phòng...',
+    inProgress: 'Đang làm',
+    earlyCheckin: 'Nhận phòng sớm',
+    done: 'Xong',
+    allDone: 'Đã xong hết!',
+    noRoomsAssigned: 'Bạn không có phòng hôm nay',
+    checkBackSoon: 'Quay lại sau',
+    reportIssue: 'Báo cáo vấn đề',
+    describeIssue: 'Mô tả vấn đề',
+    doNotDisturb: 'Đừng Làm Phiền',
+    markDnd: 'Đánh dấu Đừng Làm Phiền',
+    removeDnd: 'Xóa Đừng Làm Phiền',
+    lndLoadingTasks: 'Đang tải nhiệm vụ...',
+    lndLaundryLoadsHeading: 'Tải giặt',
+    lndLoadsUnit: 'tải',
+    lndProgressOf: 'trên',
+    lndProgressDone: 'xong',
+    lndNoTasksToday: 'Không có nhiệm vụ giặt hôm nay. Quay lại sau!',
+  },
 };
 
-export function t(key: TranslationKey, lang: Language = 'en'): string {
-  return translations[lang][key] ?? translations['en'][key] ?? key;
+/**
+ * Look up a translation. Accepts either the narrow Language ('en' | 'es')
+ * — what most of the codebase uses — or the wider HousekeeperLocale that
+ * the housekeeper page now supports. Missing keys fall back to EN.
+ */
+export function t(key: TranslationKey, lang: HousekeeperLocale = 'en'): string {
+  return translations[lang]?.[key] ?? translations.en[key] ?? key;
 }
 
 export default translations;

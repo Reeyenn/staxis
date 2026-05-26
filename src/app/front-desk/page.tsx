@@ -10,6 +10,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/db';
+import { RushButton } from './_components/RushButton';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
 
@@ -696,6 +697,8 @@ export default function FrontDeskPage() {
                     }
                   </button>
                 )}
+
+                <RushButton roomNumber={selectedRoom.number} isAlreadyRush={!!(selectedRoom as { isRush?: boolean }).isRush} />
 
                 <button
                   onClick={() => setSelectedRoom(null)}

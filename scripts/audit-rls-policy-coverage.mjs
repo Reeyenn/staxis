@@ -182,6 +182,18 @@ const SERVICE_ROLE_ONLY = new Set([
   'cleaning_checklist_templates',
   'cleaning_checklist_items',
   'staff_breaks',
+  // ─── Migration 0225 — housekeeper mobile rebuild pieces B + C. ──────
+  // Notice board, manager room notes, component rooms, audit log,
+  // offline-replay idempotency. All deny-all-browser via service-role-only
+  // policies. Reads/writes go through /api/* with supabaseAdmin and the
+  // (pid, staffId) capability check pattern (housekeeper-side) or
+  // requireSession + userHasPropertyAccess (manager-side).
+  'housekeeping_notices',
+  'housekeeper_dismissed_notices',
+  'manager_room_notes',
+  'component_rooms',
+  'housekeeper_audit_log',
+  'offline_action_replays',
 ]);
 
 function listMigrations() {
