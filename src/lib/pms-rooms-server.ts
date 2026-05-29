@@ -277,7 +277,7 @@ interface StaffNameRow {
 // Type-narrowing helpers — Promise.allSettled doesn't preserve our row
 // types in TypeScript without a guard.
 function fulfilledData<T>(
-  result: PromiseSettledResult<{ data: T | null; error: unknown }>,
+  result: PromiseSettledResult<{ data: T[] | null; error: unknown }>,
   tag: string,
   pid: string,
   date: string,
