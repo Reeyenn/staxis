@@ -19,6 +19,7 @@
 'use client';
 
 import React from 'react';
+import { NotebookPen } from 'lucide-react';
 import type { StaffMember, Room } from '@/types';
 
 // ───────────────────────────────────────────────────────────────────────
@@ -282,16 +283,19 @@ function statusLetter(r: Room): 'd' | 'p' | 'c' | 'i' | 'v' | 'b' {
 }
 
 export function RoomTileBase({
-  r, hasWorkOrder, lang, onClick,
+  r, hasWorkOrder, lang, onClick, onNote,
 }: {
   r: Room;
   hasWorkOrder?: boolean;
   lang: 'en' | 'es';
   onClick?: () => void;
+  /** When provided, renders a small note button in the bottom-right corner. */
+  onNote?: () => void;
 }) {
   const s = statusLetter(r);
   const tone = tileTone(s);
   const label = (lang === 'es' ? STATUS_LABEL_ES : STATUS_LABEL)[s];
+  const noteLabel = lang === 'es' ? 'Agregar nota' : 'Add note';
   // Safely coerce startedAt — Supabase returns ISO strings, but legacy
   // Firestore-style rows may still come through with a `.toDate()` method.
   // Inlined so this file stays free of _shared.tsx imports.
@@ -314,62 +318,86 @@ export function RoomTileBase({
   const overTime = elapsed != null && elapsed > 30;
 
   return (
-    <button
-      onClick={onClick}
-      style={{
-        position: 'relative', width: 76, height: 82,
-        background: tone.bg, border: `1px solid ${tone.stroke}`, borderRadius: 10,
-        padding: '8px 9px', cursor: onClick ? 'pointer' : 'default',
-        display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-        textAlign: 'left',
-        boxShadow: s === 'p' ? '0 0 0 2px rgba(140,106,51,0.18)' : 'none',
-      }}
-      aria-label={`Room ${r.number} — ${label}`}
-    >
-      {/* left status bar */}
-      <span style={{
-        position: 'absolute', left: 0, top: 6, bottom: 6,
-        width: 2.5, borderRadius: 2, background: tone.bar,
-      }} />
-
-      {/* top: room number + type icon */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingLeft: 5 }}>
+    <div style={{ position: 'relative', width: 76, height: 82, flexShrink: 0 }}>
+      <button
+        onClick={onClick}
+        style={{
+          position: 'relative', width: '100%', height: '100%',
+          background: tone.bg, border: `1px solid ${tone.stroke}`, borderRadius: 10,
+          padding: '8px 9px', cursor: onClick ? 'pointer' : 'default',
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+          textAlign: 'left',
+          boxShadow: s === 'p' ? '0 0 0 2px rgba(140,106,51,0.18)' : 'none',
+        }}
+        aria-label={`Room ${r.number} — ${label}`}
+      >
+        {/* left status bar */}
         <span style={{
-          fontFamily: FONT_SERIF, fontSize: 22, color: tone.label,
-          lineHeight: 0.9, fontWeight: 400, letterSpacing: '-0.02em',
-        }}>{r.number}</span>
-        <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3 }}>
-          {TYPE_ICON[r.type] || ''}
-        </span>
-      </div>
+          position: 'absolute', left: 0, top: 6, bottom: 6,
+          width: 2.5, borderRadius: 2, background: tone.bar,
+        }} />
 
-      {/* bottom: status + elapsed/owner */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        paddingLeft: 5, gap: 4,
-      }}>
-        <span style={{
-          fontFamily: FONT_MONO, fontSize: 8, color: tone.label,
-          letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600,
-        }}>{label}</span>
-        {s === 'p' && elapsed != null && (
+        {/* top: room number + type icon */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingLeft: 5 }}>
           <span style={{
-            fontFamily: FONT_MONO, fontSize: 9, fontWeight: 600,
-            color: overTime ? T.warm : T.caramelDeep,
-          }}>{elapsed}m{overTime ? '!' : ''}</span>
-        )}
-      </div>
+            fontFamily: FONT_SERIF, fontSize: 22, color: tone.label,
+            lineHeight: 0.9, fontWeight: 400, letterSpacing: '-0.02em',
+          }}>{r.number}</span>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3 }}>
+            {TYPE_ICON[r.type] || ''}
+          </span>
+        </div>
 
-      {/* flags */}
-      {hasWorkOrder && (
-        <span style={{
-          position: 'absolute', top: -4, right: -4,
-          width: 12, height: 12, borderRadius: '50%',
-          background: T.warm, color: '#fff',
-          fontFamily: FONT_SANS, fontSize: 8, fontWeight: 700,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>!</span>
+        {/* bottom: status + elapsed/owner. paddingRight (when a note button is
+            present) keeps the elapsed badge clear of the corner note button. */}
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          paddingLeft: 5, paddingRight: onNote ? 14 : 0, gap: 4,
+        }}>
+          <span style={{
+            fontFamily: FONT_MONO, fontSize: 8, color: tone.label,
+            letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600,
+          }}>{label}</span>
+          {s === 'p' && elapsed != null && (
+            <span style={{
+              fontFamily: FONT_MONO, fontSize: 9, fontWeight: 600,
+              color: overTime ? T.warm : T.caramelDeep,
+            }}>{elapsed}m{overTime ? '!' : ''}</span>
+          )}
+        </div>
+
+        {/* flags */}
+        {hasWorkOrder && (
+          <span style={{
+            position: 'absolute', top: -4, right: -4,
+            width: 12, height: 12, borderRadius: '50%',
+            background: T.warm, color: '#fff',
+            fontFamily: FONT_SANS, fontSize: 8, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>!</span>
+        )}
+      </button>
+
+      {/* Note button — bottom-right corner. Sits OUTSIDE the status <button>
+          (sibling, not nested) so we never put a button inside a button.
+          Tapping it opens the parent's note popup for this room. */}
+      {onNote && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onNote(); }}
+          title={noteLabel}
+          aria-label={`${noteLabel} — ${r.number}`}
+          style={{
+            position: 'absolute', right: -5, bottom: -5, zIndex: 2,
+            width: 21, height: 21, borderRadius: 7,
+            background: T.bg, border: `1px solid ${tone.stroke}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', padding: 0,
+            boxShadow: '0 1px 3px rgba(31,35,28,0.14)',
+          }}
+        >
+          <NotebookPen size={11} color={tone.label} />
+        </button>
       )}
-    </button>
+    </div>
   );
 }

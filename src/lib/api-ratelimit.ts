@@ -114,11 +114,6 @@ export type RateLimitEndpoint =
   // the page's legacy branch. IP-keyed; 30/hr is generous because real
   // legitimate redemptions are bounded by SMS volume.
   | 'housekeeper-log-legacy-token'
-  // Plan v2 F-AI-8 — Mario's "Load Rooms" button. Triggers Railway
-  // scraper /scrape/hk-center, which talks to Choice Advantage. Two
-  // open browser tabs + a power-user clicking refresh shouldn't burn
-  // through the CA session quota. Keyed on (userId, propertyId).
-  | 'refresh-from-pms'
   // Comms-voice audit P4 (2026-05-22) — /api/agent/speak walkthrough
   // narration. ElevenLabs Turbo v2.5 costs ~$0.10/1k chars; a runaway
   // client or compromised session can burn the $5 daily budget cap in
@@ -302,12 +297,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // redemptions and decide when the in-flight SMS drain is complete.
   // 30/hr per IP — well above any single phone's realistic re-tap rate.
   'housekeeper-log-legacy-token': 30,
-  // refresh-from-pms — Rooms tab "Load Rooms" button. Triggers a CA
-  // scrape on Railway; the Choice Advantage account is a single shared
-  // session that we don't want to burn. 30/hr per (user, property) is
-  // "click roughly every 2 minutes for an hour" which is enough for any
-  // legitimate troubleshooting and stops a runaway script dead.
-  'refresh-from-pms':            30,
   // Comms-voice audit P4 (2026-05-22) — TTS narration cap per user/hour.
   // Real walkthroughs play 5–15 narrations; 30/hr is "do the full
   // walkthrough twice with retries" headroom. Catches runaway clients
