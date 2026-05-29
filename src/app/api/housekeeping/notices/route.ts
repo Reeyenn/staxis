@@ -20,6 +20,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { translateNoticeToSpanish } from '@/lib/notice-translate';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -28,7 +29,11 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 10;
+// 20s: the POST handler now makes a one-shot Haiku call to translate the
+// notice into Spanish (8s client timeout) on top of the auth + rate-limit +
+// RPC work. Translation falls back to English on timeout, so this ceiling is
+// headroom, not a hard dependency.
+export const maxDuration = 20;
 
 // ── GET /api/housekeeping/notices?pid=...&staffId=... ───────────────────
 // Returns active (non-expired) notices for the property, with the caller's
@@ -110,15 +115,14 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 // ── POST /api/housekeeping/notices ──────────────────────────────────────
-// Manager posts a notice. Body: { pid, body_en, body_es?, body_ht?,
-// body_tl?, body_vi?, pinned?, expires_at? }.
+// Manager posts a notice. Body: { pid, body_en, pinned?, expires_at? }.
+// The manager only types English; we auto-translate to Spanish server-side
+// (translateNoticeToSpanish) so the cleaning staff see their language without
+// the manager hand-typing it. The other locale columns (ht/tl/vi) are left
+// null and fall back to English at render time.
 interface PostBody {
   pid?: string;
   body_en?: string;
-  body_es?: string;
-  body_ht?: string;
-  body_tl?: string;
-  body_vi?: string;
   pinned?: boolean;
   expires_at?: string | null;
 }
@@ -158,15 +162,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Cap each translation to 1000 chars too; trim whitespace; treat empty
-  // strings as missing (so we don't blot out an existing translation with "").
-  const clamp = (s?: string): string | null => {
-    if (typeof s !== 'string') return null;
-    const t = s.trim();
-    if (!t) return null;
-    return t.slice(0, 1000);
-  };
-
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) {
     return err('property access denied', {
@@ -198,14 +193,20 @@ export async function POST(req: NextRequest): Promise<Response> {
     expiresAt = new Date(ms).toISOString();
   }
 
+  // Auto-translate the English body into Spanish before storing. Best-effort:
+  // returns null on timeout / API failure / missing key, in which case the
+  // notice posts English-only and the housekeeper banner falls back to EN.
+  const bodyEs = await translateNoticeToSpanish(bodyEn);
+
   try {
     const { data, error: rpcErr } = await supabaseAdmin.rpc('staxis_post_notice', {
       p_property_id: pid,
       p_body_en: bodyEn,
-      p_body_es: clamp(body.body_es),
-      p_body_ht: clamp(body.body_ht),
-      p_body_tl: clamp(body.body_tl),
-      p_body_vi: clamp(body.body_vi),
+      p_body_es: bodyEs,
+      // ht/tl/vi are no longer hand-entered; they fall back to EN at render.
+      p_body_ht: null,
+      p_body_tl: null,
+      p_body_vi: null,
       p_pinned: body.pinned === true,
       p_expires_at: expiresAt,
       p_posted_by_account_id: session.userId,
