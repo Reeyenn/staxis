@@ -21,15 +21,20 @@ name: ML cron
 # scraper's heartbeat row).
 
 on:
-  schedule:
-    # cron is UTC. CDT is UTC-5; CST is UTC-6.
-    - cron: '0 8 * * 0'    # Sunday 03:00 CDT — train/demand
-    - cron: '30 8 * * 0'   # Sunday 03:30 CDT — train/supply
-    - cron: '0 9 * * 0'    # Sunday 04:00 CDT — train/inventory-rate
-    - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference (housekeeping)
-    - cron: '0 11 * * *'   # Daily 06:00 CDT — predict/inventory-rate
-    - cron: '45 11 * * *'  # Daily 06:45 CDT — auto-rollback pipeline (Phase 7 v2: backfill + check + execute)
-    - cron: '0 12 * * *'   # Daily 07:00 CDT — aggregate cohort priors
+  # Scheduled run(s) DISABLED 2026-05-30 — the ML service has no incoming
+  # data since the scraper was removed, so each run hit a dead endpoint,
+  # failed, and emailed a 'workflow failed' notification. Jobs + all ML
+  # code are KEPT; re-enable by uncommenting. Manual runs still work via
+  # the Actions tab (workflow_dispatch).
+  # schedule:
+  # # cron is UTC. CDT is UTC-5; CST is UTC-6.
+  # - cron: '0 8 * * 0'    # Sunday 03:00 CDT — train/demand
+  # - cron: '30 8 * * 0'   # Sunday 03:30 CDT — train/supply
+  # - cron: '0 9 * * 0'    # Sunday 04:00 CDT — train/inventory-rate
+  # - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference (housekeeping)
+  # - cron: '0 11 * * *'   # Daily 06:00 CDT — predict/inventory-rate
+  # - cron: '45 11 * * *'  # Daily 06:45 CDT — auto-rollback pipeline (Phase 7 v2: backfill + check + execute)
+  # - cron: '0 12 * * *'   # Daily 07:00 CDT — aggregate cohort priors
   workflow_dispatch: {}    # manual trigger from the Actions UI
 
 jobs:

@@ -16,9 +16,14 @@
 name: ML smoke (nightly)
 
 on:
-  schedule:
-    # 02:00 UTC daily (~9pm Central). After all daily ML crons have run.
-    - cron: "0 2 * * *"
+  # Scheduled run(s) DISABLED 2026-05-30 — the ML service has no incoming
+  # data since the scraper was removed, so each run hit a dead endpoint,
+  # failed, and emailed a 'workflow failed' notification. Jobs + all ML
+  # code are KEPT; re-enable by uncommenting. Manual runs still work via
+  # the Actions tab (workflow_dispatch).
+  # schedule:
+  # # 02:00 UTC daily (~9pm Central). After all daily ML crons have run.
+  # - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:
