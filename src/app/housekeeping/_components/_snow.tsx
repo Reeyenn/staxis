@@ -247,11 +247,11 @@ export function HousekeeperDot({
 // ───────────────────────────────────────────────────────────────────────
 
 const STATUS_LABEL: Record<string, string> = {
-  d: 'Dirty', p: 'Cleaning', c: 'Ready', i: 'Inspected', v: 'Vacant', b: 'Blocked',
+  d: 'Dirty', p: 'Cleaning', c: 'Clean', i: 'Inspected', v: 'Vacant', b: 'Blocked',
 };
 
 const STATUS_LABEL_ES: Record<string, string> = {
-  d: 'Sucia', p: 'Limpiando', c: 'Lista', i: 'Inspeccionada', v: 'Vacía', b: 'Bloqueada',
+  d: 'Sucia', p: 'Limpiando', c: 'Limpia', i: 'Inspeccionada', v: 'Vacía', b: 'Bloqueada',
 };
 
 function tileTone(s: string) {

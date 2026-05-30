@@ -52,6 +52,14 @@ export function RoomsTab() {
   const [filter, setFilter] = useState<'all' | 'toturn' | 'cleaning' | 'ready' | 'dnd'>('all');
   const [search, setSearch] = useState('');
   const [, setNowMs] = useState(Date.now());
+  // Optimistic status overlay, keyed by room NUMBER (survives the
+  // phantom→real id swap on the next poll). The board has no realtime — it
+  // polls every 6s — so without this a tap shows nothing until the next
+  // poll lands (the 4-8s lag managers complained about). We flip the tile
+  // instantly here, fire the write in the background, and clear the entry
+  // once a poll confirms the server agrees (or a safety timeout elapses).
+  const [pending, setPending] = useState<Map<string, { status: RoomStatus; at: number }>>(() => new Map());
+  const [toast, setToast] = useState<string | null>(null);
 
   // Subscribe to today's rooms (canonical live source — see the long
   // comment in the previous version for the full rationale).
@@ -83,32 +91,61 @@ export function RoomsTab() {
   const displayRooms = useMemo<Room[]>(() => {
     if (!activePropertyId) return [];
     const inventory = activeProperty?.roomInventory ?? [];
-    if (inventory.length === 0) return rooms;
 
-    const byNumber = new Map<string, Room>();
-    for (const r of rooms) byNumber.set(r.number, r);
+    let base: Room[];
+    if (inventory.length === 0) {
+      base = rooms;
+    } else {
+      const byNumber = new Map<string, Room>();
+      for (const r of rooms) byNumber.set(r.number, r);
 
-    const out: Room[] = [];
-    for (const num of inventory) {
-      const existing = byNumber.get(num);
-      if (existing) out.push(existing);
-      else {
-        out.push({
-          id: `phantom-${num}`,
-          number: num,
-          type: 'vacant',
-          priority: 'standard',
-          status: 'clean',
-          date: today,
-          propertyId: activePropertyId,
-        });
+      const out: Room[] = [];
+      for (const num of inventory) {
+        const existing = byNumber.get(num);
+        if (existing) out.push(existing);
+        else {
+          out.push({
+            id: `phantom-${num}`,
+            number: num,
+            type: 'vacant',
+            priority: 'standard',
+            status: 'clean',
+            date: today,
+            propertyId: activePropertyId,
+          });
+        }
       }
+      for (const r of rooms) {
+        if (!inventory.includes(r.number)) out.push(r);
+      }
+      base = out;
     }
-    for (const r of rooms) {
-      if (!inventory.includes(r.number)) out.push(r);
-    }
-    return out;
-  }, [rooms, activeProperty?.roomInventory, activePropertyId, today]);
+
+    // Apply the optimistic overlay so a just-tapped tile reflects its new
+    // status immediately, before the next 6s poll confirms it server-side.
+    if (pending.size === 0) return base;
+    return base.map(r => {
+      const p = pending.get(r.number);
+      return p ? { ...r, status: p.status } : r;
+    });
+  }, [rooms, activeProperty?.roomInventory, activePropertyId, today, pending]);
+
+  // Reconcile the optimistic overlay whenever a fresh poll lands. Drop an
+  // entry once the server agrees with it (confirmed), or after a 15s safety
+  // window so a failed/lost write can't pin a tile to the wrong status.
+  useEffect(() => {
+    setPending(prev => {
+      if (prev.size === 0) return prev;
+      const serverByNumber = new Map(rooms.map(r => [r.number, r.status] as const));
+      const now = Date.now();
+      const next = new Map(prev);
+      for (const [num, p] of prev) {
+        if (serverByNumber.get(num) === p.status) next.delete(num);
+        else if (now - p.at > 15_000) next.delete(num);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rooms]);
 
   // Open-WO set keyed by room number, used to flag tiles with a red dot.
   // After the May-2026 maintenance simplification (migration 0131),
@@ -149,28 +186,49 @@ export function RoomsTab() {
   // There's no manual "cleaning" step from the manager tap anymore —
   // housekeepers still set in_progress from their own flow. Inspected rooms
   // are locked. Phantom rooms are materialized into a real DB row on tap.
+  //
+  // The tile flips INSTANTLY via the optimistic overlay; the write runs in
+  // the background and is reconciled against the next poll. On failure we
+  // roll the overlay back and surface a toast so the manager knows to retry.
   const handleToggle = async (room: Room) => {
     if (!user || !activePropertyId || room.status === 'inspected') return;
     const newStatus: RoomStatus = room.status === 'clean' ? 'dirty' : 'clean';
+
+    // Optimistic flip — instant feedback, keyed by room number.
+    setPending(prev => {
+      const next = new Map(prev);
+      next.set(room.number, { status: newStatus, at: Date.now() });
+      return next;
+    });
     if (!navigator.onLine) recordOfflineAction();
 
-    if (room.id.startsWith('phantom-')) {
-      const completedAt = newStatus === 'clean' ? new Date() : undefined;
-      await addRoom(user.uid, activePropertyId, {
-        number: room.number,
-        type: 'vacant',
-        priority: 'standard',
-        status: newStatus,
-        date: today,
-        propertyId: activePropertyId,
-        ...(completedAt ? { completedAt } : {}),
+    try {
+      if (room.id.startsWith('phantom-')) {
+        const completedAt = newStatus === 'clean' ? new Date() : undefined;
+        await addRoom(user.uid, activePropertyId, {
+          number: room.number,
+          type: 'vacant',
+          priority: 'standard',
+          status: newStatus,
+          date: today,
+          propertyId: activePropertyId,
+          ...(completedAt ? { completedAt } : {}),
+        });
+      } else {
+        const updates: Partial<Room> = { status: newStatus };
+        if (newStatus === 'clean') updates.completedAt = new Date();
+        await updateRoom(user.uid, activePropertyId, room.id, updates);
+      }
+    } catch {
+      // Roll back the optimistic flip and tell the manager.
+      setPending(prev => {
+        const next = new Map(prev);
+        next.delete(room.number);
+        return next;
       });
-      return;
+      setToast(lang === 'es' ? 'No se pudo guardar — intenta de nuevo' : "Couldn't save — try again");
+      window.setTimeout(() => setToast(null), 2800);
     }
-
-    const updates: Partial<Room> = { status: newStatus };
-    if (newStatus === 'clean') updates.completedAt = new Date();
-    await updateRoom(user.uid, activePropertyId, room.id, updates);
   };
 
 
@@ -210,7 +268,7 @@ export function RoomsTab() {
     { key: 'all',      label: lang === 'es' ? 'Todas'        : 'All',             n: counts.total },
     { key: 'toturn',   label: lang === 'es' ? 'A limpiar'    : 'To turn',         n: counts.dirty },
     { key: 'cleaning', label: lang === 'es' ? 'Limpiando'    : 'Cleaning',        n: counts.cleaning },
-    { key: 'ready',    label: lang === 'es' ? 'Listas'       : 'Ready',           n: counts.ready },
+    { key: 'ready',    label: lang === 'es' ? 'Limpias'      : 'Clean',           n: counts.ready },
     { key: 'dnd',      label: lang === 'es' ? 'DND / Bloq.'  : 'DND / blocked',   n: counts.dnd + counts.blocked },
   ];
 
@@ -282,7 +340,7 @@ export function RoomsTab() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
               <strong style={{ color: T.ink, fontWeight: 600 }}>{counts.ready} of {counts.total}</strong>
-              {lang === 'es' ? ' listas' : ' ready'}
+              {lang === 'es' ? ' limpias' : ' clean'}
             </span>
             <span style={{
               fontFamily: FONT_SERIF, fontSize: 24, fontStyle: 'italic',
@@ -298,7 +356,7 @@ export function RoomsTab() {
         <span style={{ width: 1, height: 34, background: T.rule }} />
         <div style={{ display: 'flex', gap: 18 }}>
           {[
-            { l: lang === 'es' ? 'Listas'    : 'Ready',    v: counts.ready,    c: T.sageDeep },
+            { l: lang === 'es' ? 'Limpias'   : 'Clean',    v: counts.ready,    c: T.sageDeep },
             { l: lang === 'es' ? 'Limpiando' : 'Cleaning', v: counts.cleaning, c: T.caramelDeep },
             { l: lang === 'es' ? 'Sucias'    : 'Dirty',    v: counts.dirty,    c: T.warm },
             { l: 'DND',                                     v: counts.dnd + counts.blocked, c: T.ink2 },
@@ -400,7 +458,7 @@ export function RoomsTab() {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <Pill tone="warm">{fc.d} {lang === 'es' ? 'sucias' : 'dirty'}</Pill>
                   <Pill tone="caramel">{fc.p} {lang === 'es' ? 'limpiando' : 'cleaning'}</Pill>
-                  <Pill tone="sage">{fc.c} {lang === 'es' ? 'listas' : 'ready'}</Pill>
+                  <Pill tone="sage">{fc.c} {lang === 'es' ? 'limpias' : 'clean'}</Pill>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
