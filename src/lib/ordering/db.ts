@@ -224,6 +224,9 @@ export async function listCatalogItems(): Promise<CatalogItem[]> {
 
 // Idempotent: seeds inventory rows from the global catalog, skipping any item
 // whose (name, category) already exists for the property. Returns counts.
+// (Read-then-insert; two SIMULTANEOUS imports for the same fresh property could
+// both pass the skip check and double-insert — acceptable: import is a single
+// deliberate one-click onboarding action, and a re-run skips the dupes.)
 export async function importCatalog(
   pid: string,
 ): Promise<{ imported: number; skipped: number }> {
@@ -582,6 +585,13 @@ export async function receivePurchaseOrder(
   const po = await getPurchaseOrder(pid, id);
   if (!po) return { ok: false, reason: 'not_found' };
   if (po.status === 'cancelled') return { ok: false, reason: 'order is cancelled' };
+  // Pro-mode approval gate: a 'pending_approval' order must be APPROVED before
+  // goods can be received against it — otherwise receiving would silently bypass
+  // the approval step that Pro mode exists to enforce. (Server-side enforcement;
+  // the Orders UI only offers Receive on approved/sent/partially_received.)
+  if (po.status === 'pending_approval') {
+    return { ok: false, reason: 'order must be approved before receiving' };
+  }
 
   const lineById = new Map(po.lines.map((l) => [l.id, l]));
   const targets = new Map<string, number>();
@@ -621,8 +631,13 @@ export async function receivePurchaseOrder(
 
     // 2) Bump the item's stock — SCOPED BY property_id so a line can never touch
     //    another property's row (create-time validation already rejects foreign
-    //    ids; this is defense-in-depth). Read-modify-write within this single
-    //    deliberate request; the line CAS above is what prevents double-counting.
+    //    ids; this is defense-in-depth). Read-modify-write; the line CAS above
+    //    prevents the SAME line applying twice (no inflation). Within one request
+    //    lines run sequentially (awaited), so two lines on the same item are
+    //    correct. Residual: two CONCURRENT receive REQUESTS on the same item via
+    //    different lines could lose one increment (under-count, never inflation)
+    //    — same non-atomic posture as Count Mode; recoverable by a recount. A
+    //    fully-atomic fix would need an increment RPC (deferred).
     if (line.itemId) {
       const { data: itemRow } = await supabaseAdmin
         .from('inventory')
