@@ -15,6 +15,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
 import { WifiOff, RefreshCw } from 'lucide-react';
+import { GlobalAutoTranslate } from '@/components/i18n/GlobalAutoTranslate';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { lang } = useLang();
@@ -53,6 +54,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <Header />
       <ActivityTracker />
+      <GlobalAutoTranslate />
 
       {/* ── Status banner ── */}
       {showBanner && (

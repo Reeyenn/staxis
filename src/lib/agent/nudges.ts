@@ -170,6 +170,24 @@ async function checkComplianceAlerts(propertyId: string): Promise<NudgeDraft[]> 
       dedupeKey: `compliance_pm_overdue:${day}`,
     });
   }
+
+  // v2: leak/spike anomaly alerts (a reading trending abnormal vs its baseline).
+  const anomalies = overview.readings.map((r) => r.anomaly).filter((a): a is NonNullable<typeof a> => a != null);
+  if (anomalies.length > 0) {
+    const day = new Date().toISOString().slice(0, 10);
+    const hasCritical = anomalies.some((a) => a.severity === 'critical');
+    const top = anomalies.slice(0, 3).map((a) => a.reason).join(' ');
+    drafts.push({
+      severity: hasCritical ? 'urgent' : 'warning',
+      payload: {
+        summary: `${anomalies.length} reading${anomalies.length === 1 ? '' : 's'} trending abnormal — ${top}`,
+        type: 'compliance_anomaly',
+        anomalyCount: anomalies.length,
+        critical: hasCritical,
+      },
+      dedupeKey: `compliance_anomaly:${day}`,
+    });
+  }
   return drafts;
 }
 

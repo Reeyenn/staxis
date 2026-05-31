@@ -2074,6 +2074,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron)' },
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   { name: 'compliance-reminders',          cadenceHours: 1,     description: 'hourly engineering-compliance reminders + GM overdue escalation by SMS (Vercel native cron) — feature #19' },
+  { name: 'compliance-anomaly-sweep',      cadenceHours: 30/60, description: 'every-30-min leak/spike anomaly sweep — slow-trend + stuck-meter detection + AI phrasing (Vercel native cron) — feature #19 v2' },
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
@@ -2139,7 +2140,10 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // runs early. Cadence is 30/60 because the heartbeat lands every tick
   // regardless of whether a property got mailed.
   { name: 'run-weekly-report',             cadenceHours: 30/60, description: 'Sunday-only logic, 30-min cron — same per-property time-window check as run-daily-report; emits the Mon–Sun digest with a Claude-generated AI insight at the top' },
+  // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity escalation.
+  { name: 'send-complaint-nudges',         cadenceHours: 15/60, description: '15-min Vercel cron — texts the property alert phone when a satisfaction callback is due or a high-severity complaint sits unresolved (idempotent via callback_nudged_at / escalation_nudged_at)' },
   { name: 'lost-found-disposal-check',     cadenceHours: 24, description: 'Daily Lost & Found disposal sweep — auto-expires found items past their 90-day hold and nudges owners/GMs about items nearing the deadline' },
+  { name: 'financials-alert-sweep',        cadenceHours: 24, description: 'Daily financials sweep — projects month-end overspend per department (occupancy-adjusted) + flags spend anomalies, texts the property alert phone ONLY when financials_alerts_sms_enabled. Idempotent/no-spam via app_events dedup; SMS billing-gated on raw pid' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

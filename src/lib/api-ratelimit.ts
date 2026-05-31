@@ -186,6 +186,22 @@ export type RateLimitEndpoint =
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
   | 'housekeeping-forecast'
+  // Complaints / service recovery (2026-05-30). log = create a complaint
+  // (manager UI or agent/voice); update = assign / status / resolve /
+  // callback; draft = Claude service-recovery text (billing); sms = assignee
+  // notify + satisfaction-callback nudges (billing).
+  | 'complaints-log'
+  | 'complaints-update'
+  | 'complaints-draft'
+  | 'complaints-sms'
+  // Financials — GM/owner finance suite (2026-05-31). ALL keyed on the RAW
+  // property id (api_limits.property_id has an FK to properties(id), so a hashed
+  // pid:user pseudo-UUID FK-violates → the RPC errors → billing endpoints fail
+  // CLOSED). scan-invoice / scan-quote run Claude Vision; sms = overspend /
+  // anomaly alert fan-out. All three are billing-impacting → fail closed.
+  | 'financials-scan-invoice'
+  | 'financials-scan-quote'
+  | 'financials-sms'
   // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
   // property id (a real properties.id) — api_limits.property_id has an FK to
   // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
@@ -204,6 +220,7 @@ export type RateLimitEndpoint =
   | 'compliance-setup'        // one-line AI setup (Claude)
   | 'compliance-vision'       // manager snap-to-log (Claude Vision)
   | 'send-engineer-links'     // SMS the compliance magic-link to maintenance staff
+  | 'compliance-anomaly-phrase' // v2: AI-sharpen anomaly alert wording (sweep cron; Claude; raw pid)
   // Lost & Found (feature, 2026-05-30). Front-desk register + AI features +
   // housekeeper "Found an item". Reads keyed on pid; writes/AI/SMS too.
   | 'lost-found-read'
@@ -213,7 +230,27 @@ export type RateLimitEndpoint =
   | 'lost-found-notify-guest'
   | 'lost-found-photo-presign'
   | 'housekeeper-report-found-item'
-  | 'housekeeper-found-item-photo-presign';
+  | 'housekeeper-found-item-photo-presign'
+  // ── Communications (built-in staff messaging) ────────────────────────
+  // AI endpoints key on the RAW property UUID (a real properties.id) — NOT a
+  // hashToRateLimitKey pseudo-UUID. api_limits.property_id has an FK to
+  // properties(id) (migration 0142), so a pseudo-UUID FK-violates → the RPC
+  // errors → billing endpoints fail CLOSED. RAW pid avoids that. Cached.
+  | 'comms-translate'        // per-message + UI-string auto-translate (cache-miss only)
+  | 'comms-assistant'        // @Staxis in-chat assistant
+  | 'comms-detect-action'    // message → work-order/complaint detection
+  | 'comms-summary'          // "what did I miss" unread summary
+  | 'comms-polish'           // AI-polished announcements
+  | 'comms-transcribe'       // voice message → text (Whisper)
+  // Non-AI comms endpoints — keyed per-user ((pid,userId)/(pid,staffId)
+  // composite via hashToRateLimitKey; fail-open like the other public
+  // composite-key endpoints), so one person's polling can't 429 the property.
+  | 'comms-send'
+  | 'comms-read'
+  | 'comms-task'
+  | 'comms-action'
+  | 'comms-photo-presign'
+  | 'comms-save-language';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -373,6 +410,20 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
+  // Complaints. log: a busy front desk might file several at check-out rush;
+  // 100/hr per (pid,user) is generous. update: assign/resolve/callback taps,
+  // 300/hr. draft: Claude call, 30/hr. sms: assignee notify + callback nudges
+  // (billing), 60/hr per property.
+  'complaints-log':              100,
+  'complaints-update':           300,
+  'complaints-draft':             30,
+  'complaints-sms':               60,
+  // Financials — GM/owner finance suite. Per-property (raw pid). scan-* are
+  // Claude-Vision-cost-bounded (a manager scanning a stack of invoices); sms is
+  // the overspend/anomaly alert fan-out, same shape as complaints-sms.
+  'financials-scan-invoice':      50,
+  'financials-scan-quote':        50,
+  'financials-sms':               60,
   // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
   // Read/log caps sized for several engineers polling one property at once
   // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
@@ -388,6 +439,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'compliance-setup':             20,
   'compliance-vision':            50,
   'send-engineer-links':          10,
+  // v2 anomaly AI phrasing — at most one Claude batch per property per sweep.
+  'compliance-anomaly-phrase':    20,
   // Lost & Found (2026-05-30). Register read is polled (~30s/tab) + the
   // dashboard tile polls counts — 3600/hr per property absorbs several
   // terminals. Writes are deliberate desk actions. AI + SMS endpoints cost
@@ -400,6 +453,22 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'lost-found-photo-presign':    200,
   'housekeeper-report-found-item': 200,
   'housekeeper-found-item-photo-presign': 200,
+  // ── Communications ───────────────────────────────────────────────────
+  // Translation is cache-first: only cache MISSES hit the model + counter.
+  'comms-translate':           1500,
+  'comms-assistant':             80,
+  'comms-detect-action':        400,
+  'comms-summary':               80,
+  'comms-polish':                80,
+  'comms-transcribe':           150,
+  // Non-AI, per-user composite key (fail-open). comms-read is polled
+  // (~3s open chat / ~8s list); 3600/hr = 1/sec/user gives wide headroom.
+  'comms-send':                 400,
+  'comms-read':                3600,
+  'comms-task':                 400,
+  'comms-action':               200,
+  'comms-photo-presign':        300,
+  'comms-save-language':         20,
 };
 
 /**
@@ -492,6 +561,13 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
+  // Complaints — Claude service-recovery draft (token cost) + Twilio
+  // assignee-notify / satisfaction-callback nudges (per-message charge).
+  // Fail CLOSED so a Supabase blip can't uncap spend. complaints-log is here
+  // too: it runs a Claude classify on every call (Codex review #6).
+  'complaints-log',
+  'complaints-draft',
+  'complaints-sms',
   // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
   // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
   'engineer-vision',
@@ -499,11 +575,28 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'compliance-setup',
   'compliance-vision',
   'send-engineer-links',
+  'compliance-anomaly-phrase',
   // Lost & Found — vision (describe), Claude (auto-match), Twilio (notify).
   // Each call costs money, so fail CLOSED if the rate-limit RPC errors.
   'lost-found-describe-photo',
   'lost-found-auto-match',
   'lost-found-notify-guest',
+  // Communications AI endpoints — each call costs Claude/OpenAI credit.
+  // Keyed on the RAW property UUID (real properties.id), so failing closed
+  // is never triggered by an FK violation. Clients degrade gracefully on 429
+  // (translate → original text; assistant → "try again").
+  'comms-translate',
+  'comms-assistant',
+  'comms-detect-action',
+  'comms-summary',
+  'comms-polish',
+  'comms-transcribe',
+  // Financials — Claude Vision (scan invoice / contractor quote) + Twilio
+  // overspend/anomaly alert fan-out. Fail CLOSED so a DB blip can't uncap
+  // Anthropic / Twilio spend.
+  'financials-scan-invoice',
+  'financials-scan-quote',
+  'financials-sms',
 ]);
 
 /**

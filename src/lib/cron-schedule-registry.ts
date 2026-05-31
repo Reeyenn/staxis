@@ -40,6 +40,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // its replacement.
   { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
   { heartbeatName: 'compliance-reminders',              source: { kind: 'vercel', cronPath: '/api/cron/compliance-reminders' },             cronExpr: '0 * * * *' },
+  { heartbeatName: 'compliance-anomaly-sweep',          source: { kind: 'vercel', cronPath: '/api/cron/compliance-anomaly-sweep' },          cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'doctor-check',                      source: { kind: 'vercel', cronPath: '/api/cron/doctor-check' },                       cronExpr: '0 * * * *' },
@@ -119,4 +120,10 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // shape — the route itself skips non-Sunday runs early.
   { heartbeatName: 'run-daily-report',         source: { kind: 'vercel', cronPath: '/api/cron/run-daily-report' },               cronExpr: '*/30 * * * *' },
   { heartbeatName: 'run-weekly-report',        source: { kind: 'vercel', cronPath: '/api/cron/run-weekly-report' },              cronExpr: '*/30 * * * *' },
+  // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity
+  // escalation SMS. Idempotent via callback_nudged_at / escalation_nudged_at.
+  { heartbeatName: 'send-complaint-nudges',    source: { kind: 'vercel', cronPath: '/api/cron/send-complaint-nudges' },          cronExpr: '*/15 * * * *' },
+  // 2026-05-31: financials — daily overspend-forecast + spend-anomaly sweep.
+  // Texts the property alert phone; idempotent/no-spam via app_events dedup.
+  { heartbeatName: 'financials-alert-sweep',   source: { kind: 'vercel', cronPath: '/api/cron/financials-alert-sweep' },          cronExpr: '0 14 * * *' },
 ];

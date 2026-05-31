@@ -28,6 +28,7 @@ import VoiceIssueButton from './_components/VoiceIssueButton';
 import { SickReportButton } from './SickReportButton';
 import { JobCard } from './_components/JobCard';
 import { LanguageSwitcher } from './_components/LanguageSwitcher';
+import { HousekeeperMessages } from './_components/HousekeeperMessages';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
 import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
 import { AddNoteButton, MarkForInspectionButton } from './_components/RoomCardActionButtons';
@@ -910,6 +911,9 @@ export default function HousekeeperRoomPage({
                 }
               }}
             />
+            {pid && (
+              <HousekeeperMessages pid={pid} staffId={housekeeperId} lang={lang} />
+            )}
           </div>
 
           {total > 0 && (

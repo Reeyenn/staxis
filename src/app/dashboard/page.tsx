@@ -21,15 +21,18 @@ import {
   subscribeToWorkOrders,
   subscribeToHandoffLogs,
   subscribeToDashboardNumbers,
+  subscribeToComplaints,
   fetchComplianceSummary,
   subscribeLostFoundCounts,
   type DashboardNumbers,
   type LostFoundCounts,
 } from '@/lib/db';
+import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
 import type { ComplianceSummary } from '@/lib/compliance/types';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
 import StaleDataBanner from '@/components/StaleDataBanner';
+import { FinancialsDashboardCard } from '@/app/financials/_components/FinancialsDashboardCard';
 import type { Room, WorkOrder, HandoffEntry } from '@/types';
 import { canManageTeam } from '@/lib/roles';
 
@@ -304,6 +307,12 @@ export default function DashboardPage() {
     return () => { alive = false; clearInterval(iv); };
   }, [user, activePropertyId]);
 
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
+  }, [user, activePropertyId]);
+
   const openOrders   = workOrders.filter(o => o.status === 'open');
   const urgentOrders = openOrders.filter(o => o.priority === 'urgent');
   const cleanRooms   = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
@@ -312,6 +321,12 @@ export default function DashboardPage() {
   const arrivals     = dashboardNums?.arrivals ?? 0;
   const departures   = dashboardNums?.departures ?? 0;
   const readyPct     = totalRooms > 0 ? Math.round((cleanRooms / totalRooms) * 100) : 0;
+
+  // Complaints tile counts (open / aging-overdue / satisfaction-callbacks due).
+  const nowD = new Date();
+  const openComplaints    = complaints.filter(c => isOpenStatus(c.status)).length;
+  const overdueComplaints = complaints.filter(c => isOverdue(c, nowD)).length;
+  const callbacksDueCount = complaints.filter(c => isCallbackDue(c, nowD)).length;
 
   const avgTurnover = useMemo(() => {
     const toMs = (v: unknown): number | null => {
@@ -665,6 +680,36 @@ export default function DashboardPage() {
                 </div>
               </div>
 
+              {/* Complaints */}
+              <div style={{
+                background: 'rgba(255,255,255,0.78)',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255,255,255,0.75)',
+                borderRadius: 16, padding: '16px 18px',
+              }}>
+                <div style={LABEL}>{lang === 'es' ? 'Quejas' : 'Complaints'}</div>
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {([
+                    [lang === 'es' ? 'Abiertas' : 'Open', openComplaints, openComplaints > 0 ? C.caramel : C.sage],
+                    [lang === 'es' ? 'Atrasadas' : 'Overdue', overdueComplaints, overdueComplaints > 0 ? C.warm : C.ink],
+                    [lang === 'es' ? 'Llamadas hoy' : 'Callbacks due', callbacksDueCount, callbacksDueCount > 0 ? C.caramel : C.ink],
+                  ] as [string, number, string][]).map(([k, v, color]) => (
+                    <div key={k} style={{
+                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
+                    }}>
+                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
+                      <span style={{
+                        fontFamily: FONT_SERIF, fontStyle: 'italic',
+                        fontSize: 22, fontWeight: 500, color,
+                        letterSpacing: '-0.025em', lineHeight: 1,
+                      }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               {/* Avg turnover */}
               <div style={{
                 background: 'rgba(255,255,255,0.78)',
@@ -708,6 +753,11 @@ export default function DashboardPage() {
                       lang === 'es' ? 'Vencidas' : 'Overdue checks',
                       compliance ? String(compliance.pmOverdueCount) : '—',
                       compliance && compliance.pmOverdueCount > 0 ? C.warm : C.ink,
+                    ],
+                    [
+                      lang === 'es' ? 'Anomalías' : 'Anomalies',
+                      compliance ? String(compliance.anomalyCount) : '—',
+                      compliance && compliance.anomalyCount > 0 ? C.warm : C.ink,
                     ],
                   ] as [string, string, string][]).map(([k, v, color]) => (
                     <div key={k} style={{
@@ -761,6 +811,11 @@ export default function DashboardPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Financials — manager-only; reads the same /api/financials/summary
+                  as the Financials page so revenue/profit always match. Renders
+                  null for non-owner/GM/admin. */}
+              <FinancialsDashboardCard />
             </div>
           </div>
 

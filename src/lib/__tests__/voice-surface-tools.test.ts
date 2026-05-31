@@ -36,19 +36,20 @@ import '@/lib/agent/tools/index';
 const ROLES = ['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance', 'staff'] as const;
 
 describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => {
-  // log_found_item (Lost & Found, 2026-05-30) is the first tool to opt into the
-  // GENERAL voice mode: hands-free found-item logging ("Hey Staxis, found a pair
-  // of glasses in 214"). Audited before adding to this snapshot: property-scoped
-  // (executeTool enforces ctx.propertyId), role-gated, description capped at 500
-  // chars, writes no guest PII, and cannot reach another tenant's data. It
-  // declares voiceModes:['general'] so it stays OUT of the housekeeper_issue
-  // flow (that snapshot below is unchanged). createMaintenanceWorkOrder stays
-  // hidden here via voiceModes:['housekeeper_issue'].
-  const LOG_FOUND_ROLES = new Set(['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance']);
+  // Two tools opt into GENERAL voice mode (voiceModes: ['general']):
+  //   • log_complaint  (Complaints)   — "Hey Staxis, log a complaint, room 214 AC not cooling"
+  //   • log_found_item (Lost & Found) — "Hey Staxis, found a pair of glasses in 214"
+  // Both audited before updating this snapshot: property-scoped via ctx.propertyId,
+  // role-gated (exclude 'staff'), length-clamped, non-destructive (write a tracked
+  // row, no cross-tenant reach). Engineering-compliance tools declare
+  // voiceModes:['compliance'] so they stay OUT of general mode; and
+  // createMaintenanceWorkOrder stays hidden via voiceModes:['housekeeper_issue'].
+  const GENERAL_VOICE_ROLES = new Set(['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance']);
   for (const role of ROLES) {
     test(`role=${role} general voice mode catalog`, () => {
       const tools = getToolsForRole(role as never, 'voice', 'general');
-      const expected = LOG_FOUND_ROLES.has(role) ? ['log_found_item'] : [];
+      // sorted: 'log_complaint' < 'log_found_item'
+      const expected = GENERAL_VOICE_ROLES.has(role) ? ['log_complaint', 'log_found_item'] : [];
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
         expected,
@@ -89,9 +90,13 @@ describe('voice surface tool catalog — surface omitted (no-mode call)', () => 
   // refactor that flips the default doesn't silently expose tools.
   test('no-mode lookup sees the voice-mode-gated tools (executor still refuses)', () => {
     const tools = getToolsForRole('housekeeping' as never, 'voice');
+    // housekeeping is in allowedRoles for createMaintenanceWorkOrder
+    // (voiceModes:['housekeeper_issue']), log_complaint and log_found_item
+    // (both voiceModes:['general']); with no mode the voiceModes filter no-ops
+    // so all three surface. (Compliance tools exclude the housekeeping role.)
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['createMaintenanceWorkOrder', 'log_found_item'],
+      ['createMaintenanceWorkOrder', 'log_complaint', 'log_found_item'],
       'No-mode getToolsForRole bypasses voiceModes filter — this is fine because executeTool re-checks mode.',
     );
   });

@@ -90,6 +90,10 @@ const KNOWN_GUARDS = [
   // rate limit before any supabaseAdmin access.
   'gateFrontDeskRead',
   'gateFrontDeskWrite',
+  // Financials gate (src/lib/financials/api-gate.ts) — wraps requireSession +
+  // canViewFinancials (owner/GM/admin) role check + userHasPropertyAccess.
+  // Every /api/financials/* route calls this before any supabaseAdmin access.
+  'requireFinanceAccess',
 ];
 
 // Inline capability-check patterns. If a file contains any of these
