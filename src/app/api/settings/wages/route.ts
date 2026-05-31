@@ -29,13 +29,12 @@ import {
   isLaborRole,
   LABOR_ROLE_DEPARTMENTS,
   DEFAULT_HOURLY_WAGE_CENTS,
+  MAX_HOURLY_WAGE_CENTS,
   type LaborRole,
 } from '@/lib/labor-cost';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const MAX_WAGE_CENTS = 200_000; // $2,000/hr ceiling — matches the table CHECK.
 
 interface StaffRosterRow {
   id: string;
@@ -181,16 +180,20 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
     if (!authz.ok) return authz.response;
     const propertyId = authz.propertyId;
 
+    // Build the full desired row set (jsonb for the atomic replace RPC). Each
+    // row is { scope, role|null, staff_id|null, hourly_wage_cents }; the RPC
+    // stamps property_id + updated_by.
+    const rows: Array<{ scope: 'role' | 'person'; role: string | null; staff_id: string | null; hourly_wage_cents: number }> = [];
+
     // ── Validate role defaults ────────────────────────────────────────
-    const roleRows: Array<{ property_id: string; scope: string; role: LaborRole; hourly_wage_cents: number; updated_by: string }> = [];
     const roleDefaults = (body.roleDefaults ?? {}) as Record<string, unknown>;
     if (roleDefaults && typeof roleDefaults === 'object') {
       for (const dept of LABOR_ROLE_DEPARTMENTS) {
         const raw = roleDefaults[dept];
         if (raw == null) continue; // omitted / null → clear this role default
-        const v = validateInt(raw, { min: 1, max: MAX_WAGE_CENTS, label: `roleDefaults.${dept}` });
+        const v = validateInt(raw, { min: 1, max: MAX_HOURLY_WAGE_CENTS, label: `roleDefaults.${dept}` });
         if (v.error) return err(v.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-        roleRows.push({ property_id: propertyId, scope: 'role', role: dept, hourly_wage_cents: v.value!, updated_by: auth.userId });
+        rows.push({ scope: 'role', role: dept, staff_id: null, hourly_wage_cents: v.value! });
       }
     }
 
@@ -208,7 +211,6 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
     }
     const validStaffIds = new Set((staffIdRows ?? []).map((r) => r.id));
 
-    const personRows: Array<{ property_id: string; scope: string; staff_id: string; hourly_wage_cents: number; updated_by: string }> = [];
     const seenStaff = new Set<string>();
     const overrides = Array.isArray(body.overrides) ? body.overrides : [];
     for (const o of overrides) {
@@ -221,26 +223,20 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
       if (!validStaffIds.has(staffId)) {
         return err('override references a staff member not on this property', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
-      if (seenStaff.has(staffId)) continue; // dedupe — last one wins would also work; skip extras
+      if (seenStaff.has(staffId)) continue; // dedupe extras for the same person
       seenStaff.add(staffId);
-      const v = validateInt(row.hourlyWageCents, { min: 1, max: MAX_WAGE_CENTS, label: 'overrides.hourlyWageCents' });
+      const v = validateInt(row.hourlyWageCents, { min: 1, max: MAX_HOURLY_WAGE_CENTS, label: 'overrides.hourlyWageCents' });
       if (v.error) return err(v.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      personRows.push({ property_id: propertyId, scope: 'person', staff_id: staffId, hourly_wage_cents: v.value!, updated_by: auth.userId });
+      rows.push({ scope: 'person', role: null, staff_id: staffId, hourly_wage_cents: v.value! });
     }
 
-    // ── Bulk replace per scope ────────────────────────────────────────
-    const delRole = await supabaseAdmin.from('labor_wage_settings').delete().eq('property_id', propertyId).eq('scope', 'role');
-    if (delRole.error) return upstream(delRole.error, requestId);
-    if (roleRows.length) {
-      const insRole = await supabaseAdmin.from('labor_wage_settings').insert(roleRows);
-      if (insRole.error) return upstream(insRole.error, requestId);
-    }
-    const delPerson = await supabaseAdmin.from('labor_wage_settings').delete().eq('property_id', propertyId).eq('scope', 'person');
-    if (delPerson.error) return upstream(delPerson.error, requestId);
-    if (personRows.length) {
-      const insPerson = await supabaseAdmin.from('labor_wage_settings').insert(personRows);
-      if (insPerson.error) return upstream(insPerson.error, requestId);
-    }
+    // ── Atomic replace (single transaction — see migration 0245) ──────
+    const { error: rpcErr } = await supabaseAdmin.rpc('replace_labor_wage_settings', {
+      p_property_id: propertyId,
+      p_updated_by: auth.userId,
+      p_rows: rows,
+    });
+    if (rpcErr) return upstream(rpcErr, requestId);
 
     const data = await loadWageData(propertyId, requestId);
     return ok(data, { requestId });
