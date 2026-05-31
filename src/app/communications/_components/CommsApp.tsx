@@ -5,14 +5,15 @@ import React from 'react';
 import {
   Send, Mic, Square, Image as ImageIcon, Megaphone, ListTodo, MessageSquare,
   Sparkles, Check, CheckCheck, Plus, X, Users, Loader2, Wrench, AlertCircle, ClipboardList,
+  ShieldCheck, ChevronDown, ChevronRight, Building2,
 } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost, apiPatch, uploadToSignedUrl } from '@/lib/comms/client';
-import type { ConversationDTO, MessageDTO, TaskDTO, StaffLite } from '@/lib/comms/types';
+import type { ConversationDTO, MessageDTO, TaskDTO, StaffLite, AckStatusDTO, CampaignStatusDTO } from '@/lib/comms/types';
 
 type BootstrapData = {
-  me: { staffId: string; role: string; isManager: boolean; dept: string | null; lang: string; displayName: string };
+  me: { staffId: string; role: string; isManager: boolean; dept: string | null; lang: string; displayName: string; canOrgWide?: boolean };
   conversations: ConversationDTO[];
   staff: StaffLite[];
   unreadTotal: number;
@@ -42,6 +43,10 @@ export function CommsApp() {
   const [actionOffer, setActionOffer] = React.useState<null | { kind: 'work_order' | 'complaint'; description: string; roomNumber: string | null; severity: string | null }>(null);
   const [missBrief, setMissBrief] = React.useState<string | null>(null);
   const [handoffMode, setHandoffMode] = React.useState(false);
+  // Announcement composer toggles (managers only).
+  const [requireAck, setRequireAck] = React.useState(false);
+  const [orgWide, setOrgWide] = React.useState(false);
+  const [orgNotice, setOrgNotice] = React.useState<null | { postedCount: number; propertyCount: number; failedCount: number }>(null);
   const [recording, setRecording] = React.useState(false);
   const recorderRef = React.useRef<MediaRecorder | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
@@ -99,7 +104,16 @@ export function CommsApp() {
     setBusy(true);
     try {
       if (canPostAnnouncement) {
-        await apiPost('/api/comms/announce', { pid, body });
+        const effOrgWide = orgWide && !!boot?.me.canOrgWide;
+        const r = await apiPost<{ orgWide?: boolean; postedCount?: number; propertyCount?: number; failedCount?: number }>(
+          '/api/comms/announce',
+          { pid, body, requiresAck: requireAck || effOrgWide, orgWide: effOrgWide },
+        );
+        if (effOrgWide && r.data?.orgWide) {
+          setOrgNotice({ postedCount: r.data.postedCount ?? 0, propertyCount: r.data.propertyCount ?? 0, failedCount: r.data.failedCount ?? 0 });
+        }
+        setRequireAck(false);
+        setOrgWide(false);
       } else if (handoffMode) {
         await apiPost('/api/comms/send', { pid, conversationId: selId, body, msgType: 'handoff', handoffShift: currentShift(), handoffOutstanding: body });
       } else {
@@ -266,7 +280,7 @@ export function CommsApp() {
 
             <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {messages.map((m) => (
-                <MessageBubble key={m.id} m={m} showOriginal={!!showOriginal[m.id]} onToggleOriginal={() => setShowOriginal((s) => ({ ...s, [m.id]: !s[m.id] }))} onTurnIntoTask={() => turnIntoTask(m)} L={L} />
+                <MessageBubble key={m.id} m={m} pid={pid} isManager={!!boot?.me.isManager} showOriginal={!!showOriginal[m.id]} onToggleOriginal={() => setShowOriginal((s) => ({ ...s, [m.id]: !s[m.id] }))} onTurnIntoTask={() => turnIntoTask(m)} onChanged={async () => { await loadThread(); await loadBoot(); }} L={L} />
               ))}
               {messages.length === 0 && <div style={{ color: SNOW.ink3, fontSize: 13, textAlign: 'center', marginTop: 40 }}>{L('No messages yet.', 'Sin mensajes aún.')}</div>}
             </div>
@@ -280,8 +294,41 @@ export function CommsApp() {
               </div>
             )}
 
+            {orgNotice && (
+              <div style={{ margin: '0 20px 8px', padding: 12, background: 'var(--snow-sage-dim)', borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                <Building2 size={16} color={SNOW.sageDeep} />
+                <span style={{ flex: 1 }}>
+                  {L(`Mandatory read posted to ${orgNotice.postedCount} of ${orgNotice.propertyCount} properties. Open the announcement below to track who has read it.`,
+                     `Lectura obligatoria enviada a ${orgNotice.postedCount} de ${orgNotice.propertyCount} propiedades. Abre el anuncio para ver quién la leyó.`)}
+                  {orgNotice.failedCount > 0 && ' ' + L(`(${orgNotice.failedCount} failed)`, `(${orgNotice.failedCount} fallaron)`)}
+                </span>
+                <button onClick={() => setOrgNotice(null)} style={iconBtn}><X size={14} /></button>
+              </div>
+            )}
+
             {(!isAnnouncement || canPostAnnouncement) ? (
               <div style={{ borderTop: `1px solid ${SNOW.rule}`, padding: 12 }}>
+                {canPostAnnouncement && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14, marginBottom: 10 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: (requireAck || orgWide) ? 700 : 500, color: (requireAck || orgWide) ? SNOW.sageDeep : SNOW.ink2 }}>
+                      <input type="checkbox" checked={requireAck || orgWide} disabled={orgWide} onChange={(e) => setRequireAck(e.target.checked)} style={{ accentColor: 'var(--snow-sage-deep)' }} />
+                      <ShieldCheck size={14} /> {L('Require acknowledgement', 'Requerir confirmación')}
+                    </label>
+                    {boot?.me.canOrgWide && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: orgWide ? 700 : 500, color: orgWide ? SNOW.sageDeep : SNOW.ink2 }}>
+                        <input type="checkbox" checked={orgWide} onChange={(e) => setOrgWide(e.target.checked)} style={{ accentColor: 'var(--snow-sage-deep)' }} />
+                        <Building2 size={14} /> {L('Send to all my properties', 'Enviar a todas mis propiedades')}
+                      </label>
+                    )}
+                    {(requireAck || orgWide) && (
+                      <span style={{ fontSize: 11.5, color: SNOW.ink3 }}>
+                        {orgWide
+                          ? L('Everyone at every property must tap “I read & understand”.', 'Todos en cada propiedad deben tocar “Leí y entiendo”.')
+                          : L('Everyone must tap “I read & understand”.', 'Todos deben tocar “Leí y entiendo”.')}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {handoffMode && <div style={{ fontSize: 11, color: SNOW.sageDeep, marginBottom: 6, fontWeight: 600 }}>{L('Shift hand-off post', 'Publicación de relevo')} · {currentShift()}</div>}
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
                   {canPostAnnouncement && (
@@ -341,6 +388,10 @@ const iconBtn: React.CSSProperties = { background: 'transparent', border: 'none'
 const primaryBtn: React.CSSProperties = { background: 'var(--snow-sage-deep)', color: '#fff', border: 'none', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' };
 const primaryBtnSm: React.CSSProperties = { background: 'var(--snow-warm)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: SANS };
 const pill: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 5, background: 'var(--snow-sage-dim)', color: 'var(--snow-sage-deep)', border: 'none', borderRadius: 999, padding: '5px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: SANS };
+const ackBtn: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, background: 'var(--snow-sage-deep)', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: SANS };
+const actionRequiredPill: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, background: 'var(--snow-warm-dim)', color: 'var(--snow-warm)', borderRadius: 999, padding: '3px 9px', fontSize: 11.5, fontWeight: 700, fontFamily: SANS };
+const trackerToggle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--snow-ink2)', padding: 0, fontFamily: SANS };
+const trackerLink: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11.5, fontWeight: 600, color: 'var(--snow-sage-deep)', padding: '2px 0', fontFamily: SANS };
 
 function Tab({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
   return (
@@ -355,19 +406,27 @@ function Section({ label }: { label: string }) {
 }
 
 function ConvoRow({ c, active, onClick, icon }: { c: ConversationDTO; active: boolean; onClick: () => void; icon?: React.ReactNode }) {
+  const pendingAck = c.pendingAck ?? 0;
+  const needsAttention = c.unread > 0 || pendingAck > 0;
   return (
     <button onClick={onClick} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 18px', background: active ? 'var(--snow-sage-dim)' : 'transparent', border: 'none', borderLeft: active ? '2px solid var(--snow-sage-deep)' : '2px solid transparent', cursor: 'pointer', fontFamily: SANS }}>
       {icon && <span style={{ color: 'var(--snow-ink2)', flexShrink: 0 }}>{icon}</span>}
       <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: 'block', fontSize: 13.5, fontWeight: c.unread > 0 ? 700 : 500, color: 'var(--snow-ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
+        <span style={{ display: 'block', fontSize: 13.5, fontWeight: needsAttention ? 700 : 500, color: 'var(--snow-ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
         {c.lastMessagePreview && <span style={{ display: 'block', fontSize: 12, color: 'var(--snow-ink3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.lastMessagePreview}</span>}
       </span>
+      {/* Un-acked required announcement(s): amber "needs action" pill, distinct from the unread count. */}
+      {pendingAck > 0 && (
+        <span title="Action required" style={{ display: 'flex', alignItems: 'center', gap: 3, background: 'var(--snow-warm-dim)', color: 'var(--snow-warm)', fontSize: 11, fontWeight: 700, borderRadius: 999, height: 18, padding: '0 6px', flexShrink: 0 }}>
+          <ShieldCheck size={11} />{pendingAck}
+        </span>
+      )}
       {c.unread > 0 && <span style={{ background: 'var(--snow-sage-deep)', color: '#fff', fontSize: 11, fontWeight: 700, borderRadius: 999, minWidth: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', flexShrink: 0 }}>{c.unread}</span>}
     </button>
   );
 }
 
-function MessageBubble({ m, showOriginal, onToggleOriginal, onTurnIntoTask, L }: { m: MessageDTO; showOriginal: boolean; onToggleOriginal: () => void; onTurnIntoTask: () => void; L: (en: string, es: string) => string }) {
+function MessageBubble({ m, pid, isManager, showOriginal, onToggleOriginal, onTurnIntoTask, onChanged, L }: { m: MessageDTO; pid: string; isManager: boolean; showOriginal: boolean; onToggleOriginal: () => void; onTurnIntoTask: () => void; onChanged: () => void | Promise<void>; L: (en: string, es: string) => string }) {
   const isStaxis = m.senderKind === 'staxis';
   const isSystem = m.senderKind === 'system';
   if (isSystem) {
@@ -388,6 +447,115 @@ function MessageBubble({ m, showOriginal, onToggleOriginal, onTurnIntoTask, L }:
         {m.mine && m.seenBy && m.seenBy.length > 0 && <span style={{ fontSize: 11, color: 'var(--snow-sage-deep)', display: 'flex', alignItems: 'center', gap: 2 }} title={m.seenBy.map((s) => s.name).join(', ')}><CheckCheck size={12} /> {m.seenBy.length}</span>}
         {m.mine && (!m.seenBy || m.seenBy.length === 0) && <Check size={12} color="var(--snow-ink3)" />}
       </div>
+      {m.requiresAck && (
+        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 5, alignItems: m.mine ? 'flex-end' : 'flex-start' }}>
+          {/* Recipient: must confirm until they tap the button. */}
+          {!m.mine && !m.acked && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={actionRequiredPill}><AlertCircle size={12} /> {L('Action required', 'Acción requerida')}</span>
+              <AckButton pid={pid} m={m} onChanged={onChanged} L={L} />
+            </div>
+          )}
+          {!m.mine && m.acked && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--snow-sage-deep)', fontWeight: 600 }}><ShieldCheck size={13} /> {L('Acknowledged', 'Confirmado')}</span>
+          )}
+          {/* Author / any manager: live who-has / who-hasn't tracker. */}
+          {(m.mine || isManager) && <AckTracker pid={pid} m={m} L={L} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Acknowledgement: recipient button + manager tracker + campaign roll-up ──
+
+function AckButton({ pid, m, onChanged, L }: { pid: string; m: MessageDTO; onChanged: () => void | Promise<void>; L: (en: string, es: string) => string }) {
+  const [busy, setBusy] = React.useState(false);
+  const ack = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await apiPost('/api/comms/acknowledge', { pid, messageId: m.id }); await onChanged(); }
+    finally { setBusy(false); }
+  };
+  return (
+    <button onClick={ack} disabled={busy} style={{ ...ackBtn, opacity: busy ? 0.6 : 1 }}>
+      {busy ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />} {L('I read & understand', 'Leí y entiendo')}
+    </button>
+  );
+}
+
+function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: (en: string, es: string) => string }) {
+  const [open, setOpen] = React.useState(false);
+  const [status, setStatus] = React.useState<AckStatusDTO | null>(null);
+  const [campaign, setCampaign] = React.useState<CampaignStatusDTO | null>(null);
+  const [showCampaign, setShowCampaign] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    const r = await apiGet<AckStatusDTO>(`/api/comms/acknowledge/status?pid=${encodeURIComponent(pid)}&messageId=${encodeURIComponent(m.id)}`);
+    if (r.ok && r.data) setStatus(r.data);
+  }, [pid, m.id]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    void load();
+    const iv = setInterval(() => { if (!document.hidden) void load(); }, 5000);
+    return () => clearInterval(iv);
+  }, [open, load]);
+
+  const loadCampaign = async () => {
+    if (!m.ackCampaignId) return;
+    const r = await apiGet<CampaignStatusDTO>(`/api/comms/acknowledge/campaign?pid=${encodeURIComponent(pid)}&campaignId=${encodeURIComponent(m.ackCampaignId)}`);
+    if (r.ok && r.data) { setCampaign(r.data); setShowCampaign(true); }
+  };
+
+  const total = status?.total ?? 0;
+  const acked = status?.acked ?? 0;
+  const pct = total ? Math.round((acked / total) * 100) : 0;
+
+  return (
+    <div style={{ width: '100%', maxWidth: 280 }}>
+      <button onClick={() => setOpen((v) => !v)} style={trackerToggle}>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <ShieldCheck size={13} color="var(--snow-sage-deep)" />
+        {status ? L(`${acked} of ${total} acknowledged`, `${acked} de ${total} confirmaron`) : L('Acknowledgement tracker', 'Seguimiento de confirmación')}
+      </button>
+      {open && status && (
+        <div style={{ marginTop: 6, padding: 10, background: 'var(--snow-sage-dim)', borderRadius: 10, fontSize: 12, color: 'var(--snow-ink2)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ height: 6, background: 'var(--snow-rule-soft)', borderRadius: 999, overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: 'var(--snow-sage-deep)' }} />
+          </div>
+          {status.pending.length > 0 ? (
+            <div><strong style={{ color: 'var(--snow-ink)' }}>{L('Waiting on', 'Falta')}:</strong> {status.pending.map((p) => p.name).join(', ')}</div>
+          ) : (
+            <div style={{ color: 'var(--snow-sage-deep)', fontWeight: 600 }}>{L('Everyone has acknowledged ✓', 'Todos confirmaron ✓')}</div>
+          )}
+          {status.ackedList.length > 0 && (
+            <div style={{ color: 'var(--snow-ink3)' }}><strong style={{ color: 'var(--snow-ink2)' }}>{L('Read', 'Leyeron')}:</strong> {status.ackedList.map((a) => a.name).join(', ')}</div>
+          )}
+          {m.ackCampaignId && !showCampaign && (
+            <button onClick={loadCampaign} style={trackerLink}><Building2 size={12} /> {L('View all-property completion', 'Ver avance de todas las propiedades')}</button>
+          )}
+          {showCampaign && campaign && <CampaignPanel campaign={campaign} L={L} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CampaignPanel({ campaign, L }: { campaign: CampaignStatusDTO; L: (en: string, es: string) => string }) {
+  const pct = campaign.total ? Math.round((campaign.acked / campaign.total) * 100) : 0;
+  return (
+    <div style={{ marginTop: 4, padding: 8, background: 'var(--snow-bg)', border: '1px solid var(--snow-rule-soft)', borderRadius: 8 }}>
+      <div style={{ fontWeight: 700, color: 'var(--snow-sage-deep)', marginBottom: 5, fontSize: 12 }}>
+        {L(`${campaign.acked} of ${campaign.total} acknowledged · ${campaign.properties.length} properties · ${pct}%`,
+           `${campaign.acked} de ${campaign.total} confirmaron · ${campaign.properties.length} propiedades · ${pct}%`)}
+      </div>
+      {campaign.properties.map((p) => (
+        <div key={p.propertyId} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5, color: 'var(--snow-ink2)', padding: '2px 0' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.propertyName}</span>
+          <span style={{ flexShrink: 0, color: p.acked >= p.total ? 'var(--snow-sage-deep)' : 'var(--snow-ink3)' }}>{p.acked}/{p.total}</span>
+        </div>
+      ))}
     </div>
   );
 }

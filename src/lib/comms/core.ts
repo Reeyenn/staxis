@@ -12,6 +12,7 @@ import { log } from '@/lib/log';
 import { translateMessagesForReader } from './translate';
 import type {
   ChannelKey, CommsLang, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
+  AckStatusDTO, CampaignStatusDTO,
 } from './types';
 import { CHANNEL_LABELS } from './types';
 
@@ -88,11 +89,11 @@ async function staffNameMap(pid: string, ids: string[]): Promise<Map<string, str
 /** Resolve an authenticated account → its staff identity + role for messaging. */
 export async function resolveAccount(userId: string): Promise<{
   accountId: string; role: string; staffId: string | null; displayName: string;
-  preferredLanguage: CommsLang;
+  preferredLanguage: CommsLang; propertyAccess: string[];
 } | null> {
   const { data } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, staff_id, display_name, preferred_language')
+    .select('id, role, staff_id, display_name, preferred_language, property_access')
     .eq('data_user_id', userId)
     .maybeSingle();
   if (!data) return null;
@@ -102,6 +103,7 @@ export async function resolveAccount(userId: string): Promise<{
     staffId: (data.staff_id as string | null) ?? null,
     displayName: (data.display_name as string) ?? 'Manager',
     preferredLanguage: normalizeLang(data.preferred_language),
+    propertyAccess: (data.property_access as string[] | null) ?? [],
   };
 }
 
@@ -335,6 +337,10 @@ export interface PostMessageInput {
   handoffShift?: string | null;
   handoffOutstanding?: string | null;
   meta?: Record<string, unknown>;
+  /** Announcements only: demand an explicit "I read & understand" from recipients. */
+  requiresAck?: boolean;
+  /** Set on the per-property copies of an org-wide mandatory-read campaign. */
+  ackCampaignId?: string | null;
 }
 
 export async function postMessage(
@@ -357,6 +363,8 @@ export async function postMessage(
       handoff_shift: input.handoffShift ?? null,
       handoff_outstanding: input.handoffOutstanding ?? null,
       meta: input.meta ?? {},
+      requires_ack: input.requiresAck ?? false,
+      ack_campaign_id: input.ackCampaignId ?? null,
       created_at: now,
     })
     .select('id, created_at')
@@ -380,6 +388,7 @@ interface MessageRow {
   body: string; source_lang: string | null; msg_type: string; attachment_path: string | null;
   attachment_kind: string | null; voice_duration_ms: number | null; handoff_shift: string | null;
   handoff_outstanding: string | null; meta: Record<string, unknown> | null; created_at: string;
+  requires_ack: boolean | null; ack_campaign_id: string | null;
 }
 
 /**
@@ -482,6 +491,12 @@ export async function listConversationsForStaff(
       title = CHANNEL_LABELS[c.channelKey as ChannelKey] ?? c.channelKey;
     }
 
+    // Require-ack announcements keep demanding attention until the reader has
+    // explicitly acknowledged — distinct from passive last_read_at "seen".
+    const pendingAck = c.kind === 'announcement'
+      ? await pendingAcksForStaff(pid, c.id, staffId)
+      : 0;
+
     out.push({
       id: c.id,
       kind: c.kind,
@@ -490,16 +505,46 @@ export async function listConversationsForStaff(
       lastMessageAt: c.lastAt,
       lastMessagePreview: lastMsg ? previewOf(lastMsg.body, lastMsg.msg_type) : null,
       unread,
+      pendingAck,
       otherStaffId,
     });
   }
 
-  // Sort: unread first, then most recent activity.
+  // Sort: anything needing attention (unread OR a pending acknowledgement)
+  // first, then most recent activity.
+  const needsAttention = (c: ConversationDTO) => (c.unread > 0 || (c.pendingAck ?? 0) > 0) ? 1 : 0;
   out.sort((x, y) => {
-    if ((y.unread > 0 ? 1 : 0) !== (x.unread > 0 ? 1 : 0)) return (y.unread > 0 ? 1 : 0) - (x.unread > 0 ? 1 : 0);
+    if (needsAttention(y) !== needsAttention(x)) return needsAttention(y) - needsAttention(x);
     return (y.lastMessageAt ?? '').localeCompare(x.lastMessageAt ?? '');
   });
   return out;
+}
+
+/**
+ * Count require-ack announcements in a conversation that `staffId` has NOT yet
+ * acknowledged (never counting the author's own posts). Used to keep a
+ * mandatory read lit in the unread/badge logic even after last_read_at clears
+ * the passive unread count.
+ */
+async function pendingAcksForStaff(pid: string, conversationId: string, staffId: string): Promise<number> {
+  const { data: reqRows } = await supabaseAdmin
+    .from('comms_messages')
+    .select('id, sender_staff_id')
+    .eq('property_id', pid)
+    .eq('conversation_id', conversationId)
+    .eq('requires_ack', true)
+    .limit(500);
+  const required = ((reqRows ?? []) as { id: string; sender_staff_id: string | null }[])
+    .filter((r) => r.sender_staff_id !== staffId); // never nag the author of their own post
+  if (required.length === 0) return 0;
+  const ids = required.map((r) => r.id);
+  const { data: ackRows } = await supabaseAdmin
+    .from('comms_acknowledgements')
+    .select('message_id')
+    .eq('staff_id', staffId)
+    .in('message_id', ids);
+  const acked = new Set(((ackRows ?? []) as { message_id: string }[]).map((r) => r.message_id));
+  return required.reduce((n, r) => n + (acked.has(r.id) ? 0 : 1), 0);
 }
 
 function previewOf(body: string, msgType: string): string {
@@ -514,7 +559,9 @@ export async function totalUnread(
   pid: string, staffId: string, ctx: { isManager: boolean; dept: string | null; floorMode: boolean },
 ): Promise<number> {
   const convos = await listConversationsForStaff(pid, staffId, ctx);
-  return convos.reduce((sum, c) => sum + c.unread, 0);
+  // max(): a fully-read-but-unacked required announcement (unread=0, pendingAck>0)
+  // still lights the badge, without double-counting a brand-new one.
+  return convos.reduce((sum, c) => sum + Math.max(c.unread, c.pendingAck ?? 0), 0);
 }
 
 // ── Reading: messages in a conversation (translated for the reader) ──────────
@@ -529,13 +576,26 @@ export async function getMessages(
   const limit = Math.min(opts.limit ?? 80, 200);
   const { data } = await supabaseAdmin
     .from('comms_messages')
-    .select('id, conversation_id, sender_staff_id, sender_kind, body, source_lang, msg_type, attachment_path, attachment_kind, voice_duration_ms, handoff_shift, handoff_outstanding, meta, created_at')
+    .select('id, conversation_id, sender_staff_id, sender_kind, body, source_lang, msg_type, attachment_path, attachment_kind, voice_duration_ms, handoff_shift, handoff_outstanding, meta, created_at, requires_ack, ack_campaign_id')
     .eq('conversation_id', conversationId)
     .eq('property_id', pid)
     .order('created_at', { ascending: false })
     .limit(limit);
   const rows = ((data ?? []) as MessageRow[]).reverse(); // chronological
   if (rows.length === 0) return [];
+
+  // Which require-ack messages has THIS reader already confirmed? (One batched
+  // lookup; empty when the thread has no required announcements.)
+  const requiredIds = rows.filter((r) => r.requires_ack).map((r) => r.id);
+  let ackedByReader = new Set<string>();
+  if (requiredIds.length > 0) {
+    const { data: ackRows } = await supabaseAdmin
+      .from('comms_acknowledgements')
+      .select('message_id')
+      .eq('staff_id', readerStaffId)
+      .in('message_id', requiredIds);
+    ackedByReader = new Set(((ackRows ?? []) as { message_id: string }[]).map((r) => r.message_id));
+  }
 
   // Translate bodies into the reader's language (cache-first, best-effort).
   const translated = await translateMessagesForReader(
@@ -594,6 +654,9 @@ export async function getMessages(
       meta: r.meta ?? {},
       createdAt: r.created_at,
       mine,
+      requiresAck: !!r.requires_ack,
+      acked: r.requires_ack ? ackedByReader.has(r.id) : false,
+      ackCampaignId: (r.ack_campaign_id as string | null) ?? null,
     };
     if (opts.withReceipts && mine) {
       dto.seenBy = receiptsByTime
@@ -675,7 +738,11 @@ export async function attachmentSignedUrl(path: string): Promise<string | null> 
  */
 export async function postAnnouncement(
   pid: string,
-  opts: { body: string; sourceLang: string; senderStaffId: string | null; senderAccountId: string | null; bodyEs?: string | null },
+  opts: {
+    body: string; sourceLang: string; senderStaffId: string | null;
+    senderAccountId: string | null; bodyEs?: string | null;
+    requiresAck?: boolean; ackCampaignId?: string | null;
+  },
 ): Promise<{ id: string }> {
   const convoId = await ensureAnnouncementConversation(pid);
   const msg = await postMessage(pid, convoId, {
@@ -684,6 +751,8 @@ export async function postAnnouncement(
     body: opts.body,
     sourceLang: opts.sourceLang,
     msgType: 'announcement',
+    requiresAck: opts.requiresAck ?? false,
+    ackCampaignId: opts.ackCampaignId ?? null,
   });
   // Mirror to the legacy housekeeping_notices banner (best-effort).
   try {
@@ -704,6 +773,183 @@ export async function postAnnouncement(
     });
   }
   return { id: msg.id };
+}
+
+// ── Require-acknowledgement: hard read-confirm + manager tracker + campaigns ──
+//
+// A require-ack announcement (requires_ack=true) demands an explicit
+// "I read & understand" from every recipient — distinct from the passive
+// last_read_at "seen" receipt. The set of people expected to acknowledge is the
+// property's CURRENT active staff roster, minus the author (a manager never has
+// to ack their own post). An org-wide blast posts one announcement copy per
+// property under a single comms_ack_campaigns row so completion aggregates
+// across properties.
+
+/** Active staff expected to acknowledge: the live roster minus the author. */
+async function getActiveAckRecipients(
+  pid: string, excludeStaffId: string | null,
+): Promise<{ id: string; name: string }[]> {
+  const { data } = await supabaseAdmin
+    .from('staff')
+    .select('id, name, is_active')
+    .eq('property_id', pid)
+    .order('name', { ascending: true });
+  return ((data ?? []) as { id: string; name: string; is_active: boolean | null }[])
+    .filter((s) => s.is_active !== false && s.id !== excludeStaffId)
+    .map((s) => ({ id: s.id, name: s.name }));
+}
+
+/** Create the grouping row for an org-wide mandatory-read blast. Returns its id. */
+export async function createAckCampaign(accountId: string | null, title: string | null): Promise<string> {
+  const { data, error } = await supabaseAdmin
+    .from('comms_ack_campaigns')
+    .insert({ created_by_account: accountId, title: title ? title.slice(0, 200) : null })
+    .select('id')
+    .single();
+  if (error) { log.error('createAckCampaign failed', { err: error.message }); throw error; }
+  return data.id as string;
+}
+
+export interface AckMessageRow {
+  id: string; property_id: string; conversation_id: string;
+  sender_staff_id: string | null; requires_ack: boolean | null; ack_campaign_id: string | null;
+}
+
+/** Fetch an announcement message scoped to `pid` (null if it isn't in this property). */
+export async function getAckMessage(pid: string, messageId: string): Promise<AckMessageRow | null> {
+  const { data } = await supabaseAdmin
+    .from('comms_messages')
+    .select('id, property_id, conversation_id, sender_staff_id, requires_ack, ack_campaign_id')
+    .eq('id', messageId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  return (data as AckMessageRow | null) ?? null;
+}
+
+/**
+ * Record `staffId`'s acknowledgement of a require-ack announcement. Idempotent:
+ * the unique(message_id, staff_id) constraint means a double-tap / replay can
+ * never double-count — a unique violation is reported back as `already: true`.
+ */
+export async function acknowledgeMessage(
+  pid: string, messageId: string, staffId: string,
+): Promise<{ ok: boolean; already: boolean; reason?: 'not_found' | 'not_required' }> {
+  const msg = await getAckMessage(pid, messageId);
+  if (!msg) return { ok: false, already: false, reason: 'not_found' };
+  if (!msg.requires_ack) return { ok: false, already: false, reason: 'not_required' };
+
+  const { error } = await supabaseAdmin
+    .from('comms_acknowledgements')
+    .insert({ message_id: messageId, property_id: pid, staff_id: staffId });
+  if (error) {
+    // 23505 = unique_violation → this person already acknowledged. Idempotent success.
+    if ((error as { code?: string }).code === '23505') return { ok: true, already: true };
+    log.error('acknowledgeMessage failed', { err: error.message });
+    throw error;
+  }
+  return { ok: true, already: false };
+}
+
+/**
+ * Live who-has / who-hasn't tracker for one require-ack announcement.
+ * Denominator = the property's current active roster minus the author, so
+ * "X of Y" is always coherent (X ≤ Y). Manager-gated at the route layer.
+ */
+export async function getAckStatus(pid: string, messageId: string): Promise<AckStatusDTO | null> {
+  const msg = await getAckMessage(pid, messageId);
+  if (!msg) return null;
+
+  const recipients = await getActiveAckRecipients(pid, msg.sender_staff_id);
+  const { data: ackRows } = await supabaseAdmin
+    .from('comms_acknowledgements')
+    .select('staff_id, acknowledged_at')
+    .eq('message_id', messageId);
+  const ackMap = new Map(
+    ((ackRows ?? []) as { staff_id: string; acknowledged_at: string }[]).map((r) => [r.staff_id, r.acknowledged_at]),
+  );
+
+  const ackedList: { staffId: string; name: string; at: string }[] = [];
+  const pending: { staffId: string; name: string }[] = [];
+  for (const r of recipients) {
+    const at = ackMap.get(r.id);
+    if (at) ackedList.push({ staffId: r.id, name: r.name, at });
+    else pending.push({ staffId: r.id, name: r.name });
+  }
+  ackedList.sort((a, b) => a.at.localeCompare(b.at));
+
+  return {
+    messageId,
+    requiresAck: !!msg.requires_ack,
+    total: recipients.length,
+    acked: ackedList.length,
+    ackedList,
+    pending,
+    campaignId: msg.ack_campaign_id ?? null,
+  };
+}
+
+/**
+ * Aggregate completion of an org-wide mandatory-read campaign across the
+ * properties the caller is allowed to see. Each property's copy contributes its
+ * own active-roster denominator; the totals sum across properties.
+ */
+export async function getCampaignStatus(
+  campaignId: string, allowedPropertyIds: string[],
+): Promise<CampaignStatusDTO | null> {
+  const { data: campaign } = await supabaseAdmin
+    .from('comms_ack_campaigns')
+    .select('id, title')
+    .eq('id', campaignId)
+    .maybeSingle();
+  if (!campaign) return null;
+
+  const title = (campaign.title as string | null) ?? null;
+  if (allowedPropertyIds.length === 0) {
+    return { campaignId, title, total: 0, acked: 0, properties: [] };
+  }
+
+  // Only this campaign's copies that live in a property the caller may see —
+  // never leak acknowledgement data from a hotel they don't have access to.
+  const { data: msgRows } = await supabaseAdmin
+    .from('comms_messages')
+    .select('id, property_id, sender_staff_id')
+    .eq('ack_campaign_id', campaignId)
+    .in('property_id', allowedPropertyIds);
+  const msgs = (msgRows ?? []) as { id: string; property_id: string; sender_staff_id: string | null }[];
+
+  const propIds = Array.from(new Set(msgs.map((m) => m.property_id)));
+  const { data: propRows } = propIds.length
+    ? await supabaseAdmin.from('properties').select('id, name').in('id', propIds)
+    : { data: [] as { id: string; name: string | null }[] };
+  const propName = new Map(
+    ((propRows ?? []) as { id: string; name: string | null }[]).map((p) => [p.id, p.name ?? 'Property']),
+  );
+
+  const properties: CampaignStatusDTO['properties'] = [];
+  let total = 0;
+  let acked = 0;
+  for (const m of msgs) {
+    const recipients = await getActiveAckRecipients(m.property_id, m.sender_staff_id);
+    const recipientIds = new Set(recipients.map((r) => r.id));
+    const { data: ackRows } = await supabaseAdmin
+      .from('comms_acknowledgements')
+      .select('staff_id')
+      .eq('message_id', m.id);
+    const ackedHere = ((ackRows ?? []) as { staff_id: string }[])
+      .filter((a) => recipientIds.has(a.staff_id)).length;
+    total += recipients.length;
+    acked += ackedHere;
+    properties.push({
+      propertyId: m.property_id,
+      propertyName: propName.get(m.property_id) ?? 'Property',
+      messageId: m.id,
+      total: recipients.length,
+      acked: ackedHere,
+    });
+  }
+  properties.sort((a, b) => a.propertyName.localeCompare(b.propertyName));
+
+  return { campaignId, title, total, acked, properties };
 }
 
 // ── To-do list ──────────────────────────────────────────────────────────────
