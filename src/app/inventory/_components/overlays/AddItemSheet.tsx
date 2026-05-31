@@ -3,17 +3,20 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import {
   addInventoryItem,
   updateInventoryItem,
   deleteInventoryItem,
 } from '@/lib/db';
 import type { InventoryItem, InventoryCategory } from '@/types';
+import type { Vendor } from '@/lib/ordering/types';
 
 import { T, fonts, catLabel, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
+import { apiListVendors } from '../ordering-api';
 
 interface AddItemSheetProps {
   open: boolean;
@@ -26,6 +29,8 @@ const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const { lang } = useLang();
+  const otherLabel = { en: '— Other (type below) —', es: '— Otro (escribe abajo) —' }[lang === 'es' ? 'es' : 'en'];
   const isEdit = item != null;
 
   const [name, setName] = useState('');
@@ -35,9 +40,23 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
   const [unit, setUnit] = useState('each');
   const [unitCost, setUnitCost] = useState<string>('');
   const [vendor, setVendor] = useState('');
+  const [vendorId, setVendorId] = useState<string | null>(null);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
   const [leadDays, setLeadDays] = useState<string>('3');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Load real vendor records so an item can link to one (vendor_name stays as
+  // the free-text fallback). Management-gated API → non-managers just get the
+  // free-text field (empty list, no dropdown).
+  useEffect(() => {
+    if (!open || !activePropertyId) return;
+    let cancelled = false;
+    void apiListVendors(activePropertyId)
+      .then((vs) => { if (!cancelled) setVendors(vs); })
+      .catch(() => { if (!cancelled) setVendors([]); });
+    return () => { cancelled = true; };
+  }, [open, activePropertyId]);
 
   useEffect(() => {
     if (!open) return;
@@ -49,6 +68,7 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
       setUnit(item.unit || 'each');
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
       setVendor(item.vendorName || '');
+      setVendorId(item.vendorId ?? null);
       setLeadDays(String(item.reorderLeadDays ?? 3));
       setNotes(item.notes || '');
     } else {
@@ -59,6 +79,7 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
       setUnit('each');
       setUnitCost('');
       setVendor('');
+      setVendorId(null);
       setLeadDays('3');
       setNotes('');
     }
@@ -77,6 +98,7 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
         unit: unit.trim() || 'each',
         unitCost: unitCost ? Number(unitCost) : undefined,
         vendorName: vendor.trim() || undefined,
+        vendorId: vendorId ?? null,
         reorderLeadDays: leadDays ? Number(leadDays) : undefined,
         notes: notes.trim() || undefined,
       };
@@ -222,10 +244,29 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
             />
           </Field>
           <Field label="Vendor">
+            {vendors.length > 0 && (
+              <select
+                value={vendorId ?? ''}
+                onChange={(e) => {
+                  const id = e.target.value || null;
+                  setVendorId(id);
+                  if (id) {
+                    const v = vendors.find((x) => x.id === id);
+                    if (v) setVendor(v.name);
+                  }
+                }}
+                style={{ ...inputStyle, marginBottom: 6 }}
+              >
+                <option value="">{otherLabel}</option>
+                {vendors.map((v) => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+            )}
             <input
               type="text"
               value={vendor}
-              onChange={(e) => setVendor(e.target.value)}
+              onChange={(e) => { setVendor(e.target.value); setVendorId(null); }}
               placeholder="Supplier"
               style={inputStyle}
             />
