@@ -69,8 +69,15 @@ export interface MessageDTO {
   /** For the sender's own messages: who has seen it (read receipts). */
   seenBy?: { staffId: string; name: string }[];
   // ── Require-acknowledgement (announcements only) ──────────────────────────
-  /** true → this announcement demands an explicit "I read & understand". */
+  /** true → this announcement demands an explicit "I read & understand" (intrinsic flag; drives the manager tracker). */
   requiresAck?: boolean;
+  /**
+   * true → THIS reader actually owes an acknowledgement (a recipient: not the
+   * author, employed when it was posted). Drives the recipient button. Separate
+   * from requiresAck so a new hire isn't prompted for a pre-tenure read whose ack
+   * the tracker would ignore anyway.
+   */
+  mustAck?: boolean;
   /** Whether the *reader* has already acknowledged it (drives button vs. ✓). */
   acked?: boolean;
   /** Set on the per-property copies of an org-wide mandatory-read campaign. */
