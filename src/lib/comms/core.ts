@@ -391,6 +391,9 @@ interface MessageRow {
   requires_ack: boolean | null; ack_campaign_id: string | null;
 }
 
+const MESSAGE_COLUMNS =
+  'id, conversation_id, sender_staff_id, sender_kind, body, source_lang, msg_type, attachment_path, attachment_kind, voice_duration_ms, handoff_shift, handoff_outstanding, meta, created_at, requires_ack, ack_campaign_id';
+
 /**
  * List the conversations a staff member can see (DMs they're in + visible
  * channels + announcements), each with unread count + last-message preview.
@@ -527,15 +530,27 @@ export async function listConversationsForStaff(
  * the passive unread count.
  */
 async function pendingAcksForStaff(pid: string, conversationId: string, staffId: string): Promise<number> {
-  const { data: reqRows } = await supabaseAdmin
+  // You only owe announcements posted at/after you joined (point-in-time bound,
+  // server-side so it survives any timestamp formatting).
+  const { data: meRow } = await supabaseAdmin
+    .from('staff').select('created_at').eq('id', staffId).maybeSingle();
+  const since = (meRow?.created_at as string | null) ?? null;
+
+  let q = supabaseAdmin
     .from('comms_messages')
     .select('id, sender_staff_id')
     .eq('property_id', pid)
     .eq('conversation_id', conversationId)
     .eq('requires_ack', true)
+    .order('created_at', { ascending: false }) // deterministic newest-first under the cap
     .limit(500);
+  if (since) q = q.gte('created_at', since);
+  const { data: reqRows } = await q;
+
+  // Author-exclusion via JS filter (NOT .neq) so org-wide posts — which have a
+  // null per-property author — are still counted for everyone.
   const required = ((reqRows ?? []) as { id: string; sender_staff_id: string | null }[])
-    .filter((r) => r.sender_staff_id !== staffId); // never nag the author of their own post
+    .filter((r) => r.sender_staff_id !== staffId);
   if (required.length === 0) return 0;
   const ids = required.map((r) => r.id);
   const { data: ackRows } = await supabaseAdmin
@@ -576,25 +591,60 @@ export async function getMessages(
   const limit = Math.min(opts.limit ?? 80, 200);
   const { data } = await supabaseAdmin
     .from('comms_messages')
-    .select('id, conversation_id, sender_staff_id, sender_kind, body, source_lang, msg_type, attachment_path, attachment_kind, voice_duration_ms, handoff_shift, handoff_outstanding, meta, created_at, requires_ack, ack_campaign_id')
+    .select(MESSAGE_COLUMNS)
     .eq('conversation_id', conversationId)
     .eq('property_id', pid)
     .order('created_at', { ascending: false })
     .limit(limit);
-  const rows = ((data ?? []) as MessageRow[]).reverse(); // chronological
+  const rows = ((data ?? []) as unknown as MessageRow[]).reverse(); // chronological
   if (rows.length === 0) return [];
 
-  // Which require-ack messages has THIS reader already confirmed? (One batched
-  // lookup; empty when the thread has no required announcements.)
-  const requiredIds = rows.filter((r) => r.requires_ack).map((r) => r.id);
+  // ── Require-ack reachability + the reader's own ack state ───────────────────
+  // The badge counts unacked required announcements across the whole feed, but
+  // this window is only the newest `limit`. If the window is full, a pending
+  // mandatory read could be older than it — pull those in so the "I read &
+  // understand" button is always rendered (never a stuck, un-clearable badge).
+  const windowIds = new Set(rows.map((r) => r.id));
   let ackedByReader = new Set<string>();
-  if (requiredIds.length > 0) {
-    const { data: ackRows } = await supabaseAdmin
-      .from('comms_acknowledgements')
-      .select('message_id')
-      .eq('staff_id', readerStaffId)
-      .in('message_id', requiredIds);
-    ackedByReader = new Set(((ackRows ?? []) as { message_id: string }[]).map((r) => r.message_id));
+  if (rows.length >= limit) {
+    // Possibly-truncated window → scan the whole conversation for required msgs.
+    const { data: reqRows } = await supabaseAdmin
+      .from('comms_messages')
+      .select('id')
+      .eq('property_id', pid)
+      .eq('conversation_id', conversationId)
+      .eq('requires_ack', true)
+      .order('created_at', { ascending: false })
+      .limit(500);
+    const allRequiredIds = ((reqRows ?? []) as { id: string }[]).map((r) => r.id);
+    if (allRequiredIds.length > 0) {
+      const { data: ackRows } = await supabaseAdmin
+        .from('comms_acknowledgements')
+        .select('message_id')
+        .eq('staff_id', readerStaffId)
+        .in('message_id', allRequiredIds);
+      ackedByReader = new Set(((ackRows ?? []) as { message_id: string }[]).map((r) => r.message_id));
+      const missingIds = allRequiredIds.filter((id) => !ackedByReader.has(id) && !windowIds.has(id));
+      if (missingIds.length > 0) {
+        const { data: extra } = await supabaseAdmin
+          .from('comms_messages')
+          .select(MESSAGE_COLUMNS)
+          .in('id', missingIds);
+        rows.push(...((extra ?? []) as unknown as MessageRow[]));
+        rows.sort((a, b) => a.created_at.localeCompare(b.created_at)); // chronological
+      }
+    }
+  } else {
+    // Window holds the whole conversation → just look up acks for in-window reqs.
+    const requiredIds = rows.filter((r) => r.requires_ack).map((r) => r.id);
+    if (requiredIds.length > 0) {
+      const { data: ackRows } = await supabaseAdmin
+        .from('comms_acknowledgements')
+        .select('message_id')
+        .eq('staff_id', readerStaffId)
+        .in('message_id', requiredIds);
+      ackedByReader = new Set(((ackRows ?? []) as { message_id: string }[]).map((r) => r.message_id));
+    }
   }
 
   // Translate bodies into the reader's language (cache-first, best-effort).
@@ -785,14 +835,21 @@ export async function postAnnouncement(
 // property under a single comms_ack_campaigns row so completion aggregates
 // across properties.
 
-/** Active staff expected to acknowledge: the live roster minus the author. */
+/**
+ * Active staff expected to acknowledge a required announcement: the active roster
+ * minus the author, bounded to people already employed when it was posted
+ * (`created_at <= postedAt`). The point-in-time bound means a new hire never
+ * retroactively "owes" an old mandatory read and a campaign that read "12 of 12"
+ * doesn't silently regress to "12 of 13" the next time someone is hired.
+ */
 async function getActiveAckRecipients(
-  pid: string, excludeStaffId: string | null,
+  pid: string, excludeStaffId: string | null, postedAt: string,
 ): Promise<{ id: string; name: string }[]> {
   const { data } = await supabaseAdmin
     .from('staff')
-    .select('id, name, is_active')
+    .select('id, name, is_active, created_at')
     .eq('property_id', pid)
+    .lte('created_at', postedAt)
     .order('name', { ascending: true });
   return ((data ?? []) as { id: string; name: string; is_active: boolean | null }[])
     .filter((s) => s.is_active !== false && s.id !== excludeStaffId)
@@ -813,13 +870,14 @@ export async function createAckCampaign(accountId: string | null, title: string 
 export interface AckMessageRow {
   id: string; property_id: string; conversation_id: string;
   sender_staff_id: string | null; requires_ack: boolean | null; ack_campaign_id: string | null;
+  created_at: string;
 }
 
 /** Fetch an announcement message scoped to `pid` (null if it isn't in this property). */
 export async function getAckMessage(pid: string, messageId: string): Promise<AckMessageRow | null> {
   const { data } = await supabaseAdmin
     .from('comms_messages')
-    .select('id, property_id, conversation_id, sender_staff_id, requires_ack, ack_campaign_id')
+    .select('id, property_id, conversation_id, sender_staff_id, requires_ack, ack_campaign_id, created_at')
     .eq('id', messageId)
     .eq('property_id', pid)
     .maybeSingle();
@@ -859,7 +917,7 @@ export async function getAckStatus(pid: string, messageId: string): Promise<AckS
   const msg = await getAckMessage(pid, messageId);
   if (!msg) return null;
 
-  const recipients = await getActiveAckRecipients(pid, msg.sender_staff_id);
+  const recipients = await getActiveAckRecipients(pid, msg.sender_staff_id, msg.created_at);
   const { data: ackRows } = await supabaseAdmin
     .from('comms_acknowledgements')
     .select('staff_id, acknowledged_at')
@@ -912,10 +970,10 @@ export async function getCampaignStatus(
   // never leak acknowledgement data from a hotel they don't have access to.
   const { data: msgRows } = await supabaseAdmin
     .from('comms_messages')
-    .select('id, property_id, sender_staff_id')
+    .select('id, property_id, sender_staff_id, created_at')
     .eq('ack_campaign_id', campaignId)
     .in('property_id', allowedPropertyIds);
-  const msgs = (msgRows ?? []) as { id: string; property_id: string; sender_staff_id: string | null }[];
+  const msgs = (msgRows ?? []) as { id: string; property_id: string; sender_staff_id: string | null; created_at: string }[];
 
   const propIds = Array.from(new Set(msgs.map((m) => m.property_id)));
   const { data: propRows } = propIds.length
@@ -925,11 +983,9 @@ export async function getCampaignStatus(
     ((propRows ?? []) as { id: string; name: string | null }[]).map((p) => [p.id, p.name ?? 'Property']),
   );
 
-  const properties: CampaignStatusDTO['properties'] = [];
-  let total = 0;
-  let acked = 0;
-  for (const m of msgs) {
-    const recipients = await getActiveAckRecipients(m.property_id, m.sender_staff_id);
+  // Per-property completion, fetched concurrently (one roster + one ack query each).
+  const properties = await Promise.all(msgs.map(async (m): Promise<CampaignStatusDTO['properties'][number]> => {
+    const recipients = await getActiveAckRecipients(m.property_id, m.sender_staff_id, m.created_at);
     const recipientIds = new Set(recipients.map((r) => r.id));
     const { data: ackRows } = await supabaseAdmin
       .from('comms_acknowledgements')
@@ -937,18 +993,18 @@ export async function getCampaignStatus(
       .eq('message_id', m.id);
     const ackedHere = ((ackRows ?? []) as { staff_id: string }[])
       .filter((a) => recipientIds.has(a.staff_id)).length;
-    total += recipients.length;
-    acked += ackedHere;
-    properties.push({
+    return {
       propertyId: m.property_id,
       propertyName: propName.get(m.property_id) ?? 'Property',
       messageId: m.id,
       total: recipients.length,
       acked: ackedHere,
-    });
-  }
+    };
+  }));
   properties.sort((a, b) => a.propertyName.localeCompare(b.propertyName));
 
+  const total = properties.reduce((s, p) => s + p.total, 0);
+  const acked = properties.reduce((s, p) => s + p.acked, 0);
   return { campaignId, title, total, acked, properties };
 }
 

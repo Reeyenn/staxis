@@ -16,7 +16,7 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext, listAccessiblePropertyIds } from '@/lib/comms/route-helpers';
-import { postAnnouncement, createAckCampaign, resolveAccount, resolveStaffIdForAccount } from '@/lib/comms/core';
+import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
 
 export const runtime = 'nodejs';
@@ -65,30 +65,29 @@ export async function POST(req: NextRequest): Promise<Response> {
       return err('no properties to broadcast to', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     }
 
-    const account = await resolveAccount(ctx.userId);
-    if (!account) {
-      return err('no account', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
-    }
-
     const campaignId = await createAckCampaign(ctx.accountId, text.slice(0, 120));
 
+    // Post one copy per property. senderStaffId is null ON PURPOSE: the author is
+    // an account, not a per-property staff member. Resolving a staff id per
+    // property would create phantom "active staff" rows at hotels they don't work
+    // at, permanently inflating those properties' acknowledgement denominators.
     const results = await Promise.allSettled(
-      targets.map(async (targetPid) => {
-        // The author's staff identity differs per property (resolve/create it there).
-        const senderStaffId = await resolveStaffIdForAccount(targetPid, account);
-        return postAnnouncement(targetPid, {
-          body: text,
-          sourceLang: ctx.lang,
-          senderStaffId,
-          senderAccountId: ctx.accountId,
-          bodyEs,
-          requiresAck: true,
-          ackCampaignId: campaignId,
-        });
-      }),
+      targets.map((targetPid) => postAnnouncement(targetPid, {
+        body: text,
+        sourceLang: ctx.lang,
+        senderStaffId: null,
+        senderAccountId: ctx.accountId,
+        bodyEs,
+        requiresAck: true,
+        ackCampaignId: campaignId,
+      })),
     );
     const postedCount = results.filter((r) => r.status === 'fulfilled').length;
     const failedCount = results.length - postedCount;
+
+    if (postedCount === 0) {
+      return err('failed to post the campaign to any property', { requestId: ctx.requestId, status: 502, code: ApiErrorCode.UpstreamFailure, headers: ctx.headers });
+    }
 
     return ok(
       { orgWide: true, campaignId, requiresAck: true, postedCount, failedCount, propertyCount: targets.length },

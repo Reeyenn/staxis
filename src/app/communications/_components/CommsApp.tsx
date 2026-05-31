@@ -47,6 +47,7 @@ export function CommsApp() {
   const [requireAck, setRequireAck] = React.useState(false);
   const [orgWide, setOrgWide] = React.useState(false);
   const [orgNotice, setOrgNotice] = React.useState<null | { postedCount: number; propertyCount: number; failedCount: number }>(null);
+  const [composerError, setComposerError] = React.useState<string | null>(null);
   const [recording, setRecording] = React.useState(false);
   const recorderRef = React.useRef<MediaRecorder | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
@@ -102,6 +103,7 @@ export function CommsApp() {
     const body = text.trim();
     if (!body || busy) return;
     setBusy(true);
+    setComposerError(null);
     try {
       if (canPostAnnouncement) {
         const effOrgWide = orgWide && !!boot?.me.canOrgWide;
@@ -109,6 +111,13 @@ export function CommsApp() {
           '/api/comms/announce',
           { pid, body, requiresAck: requireAck || effOrgWide, orgWide: effOrgWide },
         );
+        if (!r.ok) {
+          // Keep the typed text + toggles so nothing the manager wrote is lost.
+          setComposerError(r.status === 429
+            ? L('Too many posts right now — wait a minute and try again.', 'Demasiadas publicaciones — espera un minuto e inténtalo de nuevo.')
+            : L('Could not post the announcement. Please try again.', 'No se pudo publicar el anuncio. Inténtalo de nuevo.'));
+          return;
+        }
         if (effOrgWide && r.data?.orgWide) {
           setOrgNotice({ postedCount: r.data.postedCount ?? 0, propertyCount: r.data.propertyCount ?? 0, failedCount: r.data.failedCount ?? 0 });
         }
@@ -357,6 +366,7 @@ export function CommsApp() {
                   </button>
                 </div>
                 {recording && <div style={{ fontSize: 12, color: SNOW.warm, marginTop: 6 }}>● {L('Recording… tap stop to send', 'Grabando… toca detener para enviar')}</div>}
+                {composerError && <div style={{ fontSize: 12, color: SNOW.warm, marginTop: 6 }}>{composerError}</div>}
               </div>
             ) : (
               <div style={{ borderTop: `1px solid ${SNOW.rule}`, padding: 16, fontSize: 12.5, color: SNOW.ink3, textAlign: 'center' }}>
