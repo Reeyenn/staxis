@@ -2137,6 +2137,8 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // runs early. Cadence is 30/60 because the heartbeat lands every tick
   // regardless of whether a property got mailed.
   { name: 'run-weekly-report',             cadenceHours: 30/60, description: 'Sunday-only logic, 30-min cron — same per-property time-window check as run-daily-report; emits the Mon–Sun digest with a Claude-generated AI insight at the top' },
+  // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity escalation.
+  { name: 'send-complaint-nudges',         cadenceHours: 15/60, description: '15-min Vercel cron — texts the property alert phone when a satisfaction callback is due or a high-severity complaint sits unresolved (idempotent via callback_nudged_at / escalation_nudged_at)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
