@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0229 — lost_and_found_items (app-side Lost & Found register)
+-- 0230 — lost_and_found_items (app-side Lost & Found register)
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- The first feature to actually surface Lost & Found. Two data sources feed
@@ -163,7 +163,7 @@ create policy "anon deny lost-found-item-photos"
 -- ─── Track the migration ─────────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
 values (
-  '0229',
+  '0230',
   'lost_and_found_items: app-side Lost & Found register (found items + lost reports), '
   'UNIONed with pms_lost_and_found for the Front-Desk view. Service-role only + '
   'lost-found-item-photos storage bucket.'
