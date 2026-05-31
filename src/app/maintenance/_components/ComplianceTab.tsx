@@ -26,6 +26,7 @@ import {
   fetchComplianceTemplates,
   sendEngineerLinks,
   managerVisionReading,
+  acknowledgeAnomaly,
 } from '@/lib/db/compliance';
 import type { ComplianceOverview, ReadingTypeStatus, PmTaskStatus, ComplianceReport } from '@/lib/compliance/types';
 
@@ -156,6 +157,12 @@ export function ComplianceTab() {
               sub={`${tr(lang, 'of', 'de')} ${overview.pmTotal} ${tr(lang, 'life-safety', 'seguridad')}`}
               color={overdue === 0 ? T.sageDeep : overdue >= 3 ? T.warm : T.caramel}
             />
+            <StatCard
+              label={tr(lang, 'Anomalies', 'Anomalías')}
+              value={String(overview.anomalyCount)}
+              sub={tr(lang, 'trending abnormal', 'tendencia anormal')}
+              color={overview.anomalyCount === 0 ? T.sageDeep : T.warm}
+            />
           </div>
 
           {/* Readings */}
@@ -163,7 +170,11 @@ export function ComplianceTab() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
             {overview.readings.length === 0 && <Muted>{tr(lang, 'No readings configured.', 'Sin lecturas configuradas.')}</Muted>}
             {overview.readings.map((r) => (
-              <ReadingRow key={r.type.id} r={r} lang={lang} onLog={() => setLogTarget(r)} />
+              <ReadingRow key={r.type.id} r={r} lang={lang} onLog={() => setLogTarget(r)}
+                onDismiss={async (alertId) => {
+                  const res = await acknowledgeAnomaly(pid, alertId);
+                  if (res.ok) { flash(tr(lang, 'Alert dismissed', 'Alerta descartada')); void load(); }
+                }} />
             ))}
           </div>
 
@@ -237,27 +248,43 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
   );
 }
 
-function ReadingRow({ r, lang, onLog }: { r: ReadingTypeStatus; lang: string; onLog: () => void }) {
+function ReadingRow({ r, lang, onLog, onDismiss }: { r: ReadingTypeStatus; lang: string; onLog: () => void; onDismiss: (alertId: string) => void }) {
   const latest = r.latest;
   let pill: React.ReactNode;
-  if (r.latestOutOfRange) pill = <Pill tone="warm">{tr(lang, 'Out of range', 'Fuera de rango')}</Pill>;
+  if (r.anomaly) pill = <Pill tone="warm">⚠️ {tr(lang, 'Anomaly', 'Anomalía')}</Pill>;
+  else if (r.latestOutOfRange) pill = <Pill tone="warm">{tr(lang, 'Out of range', 'Fuera de rango')}</Pill>;
+  else if (r.learning) pill = <Pill tone="neutral">{tr(lang, 'Learning…', 'Aprendiendo…')}</Pill>;
   else if (r.doneThisPeriod) pill = <Pill tone="sage">{tr(lang, 'Logged', 'Registrada')}</Pill>;
   else pill = <Pill tone="caramel">{tr(lang, 'Due', 'Pendiente')}</Pill>;
   const range = (r.type.minValue !== null || r.type.maxValue !== null)
     ? `${r.type.minValue ?? '–'}–${r.type.maxValue ?? '–'}${r.type.unit}` : null;
+  const reason = r.anomaly ? (lang === 'es' && r.anomaly.reasonEs ? r.anomaly.reasonEs : r.anomaly.reason) : null;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '12px 14px' }}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: T.ink }}>{r.type.name}</div>
-        <div style={{ fontSize: 12, color: T.ink3, marginTop: 2 }}>
-          {r.periodLabel}{range ? ` · ${tr(lang, 'safe', 'seguro')} ${range}` : ''}
-          {latest && latest.value !== null ? ` · ${tr(lang, 'last', 'últ.')} ${latest.value}${latest.unit}` : ''}
+    <div style={{ display: 'flex', flexDirection: 'column', background: T.paper, border: `1px solid ${r.anomaly ? 'rgba(184,92,61,0.45)' : T.rule}`, borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: T.ink }}>{r.type.name}</div>
+          <div style={{ fontSize: 12, color: T.ink3, marginTop: 2 }}>
+            {r.periodLabel}{range ? ` · ${tr(lang, 'safe', 'seguro')} ${range}` : ''}
+            {latest && latest.value !== null ? ` · ${tr(lang, 'last', 'últ.')} ${latest.value}${latest.unit}` : ''}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          {pill}
+          <Btn variant="paper" size="sm" onClick={onLog}>{tr(lang, 'Log', 'Registrar')}</Btn>
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-        {pill}
-        <Btn variant="paper" size="sm" onClick={onLog}>{tr(lang, 'Log', 'Registrar')}</Btn>
-      </div>
+      {r.anomaly && reason && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, padding: '8px 14px', background: T.warmDim, borderTop: `1px solid ${T.rule}` }}>
+          <span style={{ fontSize: 12.5, color: T.warm, lineHeight: 1.4 }}>
+            ⚠️ {reason}{r.anomaly.workOrderId ? ` · ${tr(lang, 'work order opened', 'orden de trabajo creada')}` : ''}
+          </span>
+          <button onClick={() => r.anomaly && onDismiss(r.anomaly.id)} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer', color: T.ink3,
+            fontFamily: FONT_SANS, fontSize: 12, textDecoration: 'underline', padding: 0, flexShrink: 0,
+          }}>{tr(lang, 'Dismiss', 'Descartar')}</button>
+        </div>
+      )}
     </div>
   );
 }

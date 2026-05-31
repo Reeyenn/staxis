@@ -20,6 +20,8 @@ import {
   autoActOnOutOfRangeReading,
   autoActOnFailedPmCheck,
 } from './autoact';
+import { checkReadingForAnomaly, getActiveAnomalies } from './anomaly-engine';
+import { MIN_POINT_HISTORY, MIN_METER_INTERVALS } from './anomaly';
 import type {
   ReadingType,
   PmTask,
@@ -37,6 +39,7 @@ import type {
   PmTaskStatus,
   ComplianceReport,
   ComplianceReportRow,
+  AnomalyAlert,
 } from './types';
 import type { ReadingTypeSeed, PmTaskSeed } from './templates';
 
@@ -179,11 +182,28 @@ export async function getOverview(pid: string, now: Date = new Date()): Promise<
     checksByTask.set(c.pmTaskId, arr);
   }
 
+  // v2: active anomaly alerts, most-severe-then-newest per reading type.
+  const activeAlerts = await getActiveAnomalies(pid);
+  const sevRank: Record<string, number> = { critical: 3, warn: 2, info: 1 };
+  const anomalyByType = new Map<string, AnomalyAlert>();
+  for (const a of activeAlerts) {
+    const cur = anomalyByType.get(a.readingTypeId);
+    // activeAlerts is newest-first; keep the highest severity, ties → newest (first seen).
+    if (!cur || (sevRank[a.severity] ?? 0) > (sevRank[cur.severity] ?? 0)) {
+      anomalyByType.set(a.readingTypeId, a);
+    }
+  }
+
   const readings: ReadingTypeStatus[] = types.map((type) => {
     const group = readingsByType.get(type.id) ?? [];
     const currentKey = currentReadingPeriodKey(type.cadence, now);
     const latest = group[0] ?? null;
     const doneThisPeriod = group.some((r) => r.periodKey === currentKey);
+    const anomaly = anomalyByType.get(type.id) ?? null;
+    // Cold-start: not enough history yet → "learning" (no false alarms). An
+    // active alert means the engine HAD enough history, so it overrides.
+    const minHist = type.category === 'utility_meter' ? MIN_METER_INTERVALS + 1 : MIN_POINT_HISTORY;
+    const learning = !anomaly && group.length < minHist;
     return {
       type,
       latest,
@@ -191,6 +211,8 @@ export async function getOverview(pid: string, now: Date = new Date()): Promise<
       currentPeriodKey: currentKey,
       periodLabel: readingPeriodLabel(type.cadence, now),
       latestOutOfRange: latest?.outOfRange ?? false,
+      anomaly,
+      learning,
     };
   });
 
@@ -222,6 +244,7 @@ export async function getOverview(pid: string, now: Date = new Date()): Promise<
   const readingsDone = readings.filter((r) => r.doneThisPeriod).length;
   const readingsCompletePct = readingsTotal > 0 ? Math.round((readingsDone / readingsTotal) * 100) : 100;
   const pmOverdueCount = pmStatuses.filter((p) => p.overdue).length;
+  const anomalyCount = readings.filter((r) => r.anomaly).length;
 
   return {
     readings,
@@ -231,6 +254,7 @@ export async function getOverview(pid: string, now: Date = new Date()): Promise<
     readingsTotal,
     pmOverdueCount,
     pmTotal: pmStatuses.length,
+    anomalyCount,
   };
 }
 
@@ -241,12 +265,15 @@ export async function getSummary(pid: string, now: Date = new Date()): Promise<C
   let status = ratioToStatus(readingRatio);
   if (o.pmOverdueCount > 0 && status === 'good') status = 'low';
   if (o.pmOverdueCount >= 3) status = 'critical';
+  // v2: an active anomaly nudges the tile off "green" so leadership notices.
+  if (o.anomalyCount > 0 && status === 'good') status = 'low';
   return {
     readingsCompletePct: o.readingsCompletePct,
     readingsDone: o.readingsDone,
     readingsTotal: o.readingsTotal,
     pmOverdueCount: o.pmOverdueCount,
     pmTotal: o.pmTotal,
+    anomalyCount: o.anomalyCount,
     status,
   };
 }
@@ -423,13 +450,14 @@ export async function logReading(input: LogReadingInput): Promise<LogReadingResu
   const reading = mapReading(inserted);
 
   // ════════════════════════════════════════════════════════════════════════
-  // v2 SEAM — leak/spike ANOMALY DETECTION on reading trends goes HERE.
-  // Out of scope for v1 (explicitly deferred). A future version will compare
-  // `value` against the recent trend for `type` and flag anomalies even when
-  // the value is inside its static min/max band. Do NOT add anomaly logic in
-  // v1 — only the static threshold check above is in scope.
-  //   TODO(v2-anomaly): const anomaly = await detectReadingAnomaly(type, reading);
+  // v2 — leak/spike ANOMALY DETECTION on the reading trend. Compares `value`
+  // against the recent baseline for `type` and flags spikes / drifts / stuck
+  // sensors EVEN WHEN inside the static min/max band — the differentiator over
+  // Quore (which only records). Cold-start-safe (no alert until enough history;
+  // see anomaly.ts) and fully best-effort: any failure is swallowed inside the
+  // engine and must never block the reading from being recorded.
   // ════════════════════════════════════════════════════════════════════════
+  await checkReadingForAnomaly(input.pid, type, { id: reading.id, value: reading.value, loggedAt: reading.loggedAt });
 
   // AI feature #3 — auto-act on out-of-range.
   let workOrderId: string | null = null;
