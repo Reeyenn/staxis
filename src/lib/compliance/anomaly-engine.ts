@@ -158,10 +158,15 @@ async function recordAndNotify(
   }
   const alert = mapAlert(data);
 
-  // ── Notify (best-effort) ─────────────────────────────────────────────────
+  // ── Side effects (best-effort) ───────────────────────────────────────────
+  // SMS is gated by ONE per-property switch, default OFF (owner rule: "route any
+  // SMS through me first" — migration 0238). When off, the alert record above,
+  // the in-app ⚠️, and the auto-work-order below still run — ONLY the texts are
+  // skipped. This is the single gate; do not add SMS anywhere else in the engine.
   const idem = `anomaly:${dedupeKey}`;
+  const smsEnabled = await isAnomalySmsEnabled(pid);
   try {
-    if (result.severity === 'warn' || result.severity === 'critical') {
+    if (smsEnabled && (result.severity === 'warn' || result.severity === 'critical')) {
       await smsMaintenance(pid, `⚠️ ${result.reasonEn}`, idem);
     }
     if (result.highConfidenceLeak) {
@@ -175,13 +180,30 @@ async function recordAndNotify(
         alert.workOrderId = woId;
       }
     }
-    if (result.severity === 'critical') {
+    if (smsEnabled && result.severity === 'critical') {
       await smsGm(pid, `⚠️ Compliance anomaly: ${result.reasonEn} Maintenance has been notified.`, idem);
     }
   } catch (e) {
     log.error('[compliance/anomaly] notify failed', { pid, alertId: alert.id, err: e instanceof Error ? e : new Error(String(e)) });
   }
   return alert;
+}
+
+/** Per-property gate: may the anomaly engine SEND SMS? Default FALSE (owner
+ *  rule — record + in-app + auto-work-order only, no texting). Fail-safe to
+ *  FALSE on any error so an outage can never auto-text. Migration 0238. */
+async function isAnomalySmsEnabled(pid: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('properties')
+      .select('compliance_anomaly_sms_enabled')
+      .eq('id', pid)
+      .maybeSingle();
+    if (error || !data) return false;
+    return data.compliance_anomaly_sms_enabled === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Real-time hook — called from store.ts logReading after a reading is inserted. */
