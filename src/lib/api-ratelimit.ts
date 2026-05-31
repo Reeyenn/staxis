@@ -216,7 +216,27 @@ export type RateLimitEndpoint =
   | 'lost-found-notify-guest'
   | 'lost-found-photo-presign'
   | 'housekeeper-report-found-item'
-  | 'housekeeper-found-item-photo-presign';
+  | 'housekeeper-found-item-photo-presign'
+  // ── Communications (built-in staff messaging) ────────────────────────
+  // AI endpoints key on the RAW property UUID (a real properties.id) — NOT a
+  // hashToRateLimitKey pseudo-UUID. api_limits.property_id has an FK to
+  // properties(id) (migration 0142), so a pseudo-UUID FK-violates → the RPC
+  // errors → billing endpoints fail CLOSED. RAW pid avoids that. Cached.
+  | 'comms-translate'        // per-message + UI-string auto-translate (cache-miss only)
+  | 'comms-assistant'        // @Staxis in-chat assistant
+  | 'comms-detect-action'    // message → work-order/complaint detection
+  | 'comms-summary'          // "what did I miss" unread summary
+  | 'comms-polish'           // AI-polished announcements
+  | 'comms-transcribe'       // voice message → text (Whisper)
+  // Non-AI comms endpoints — keyed per-user ((pid,userId)/(pid,staffId)
+  // composite via hashToRateLimitKey; fail-open like the other public
+  // composite-key endpoints), so one person's polling can't 429 the property.
+  | 'comms-send'
+  | 'comms-read'
+  | 'comms-task'
+  | 'comms-action'
+  | 'comms-photo-presign'
+  | 'comms-save-language';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -409,6 +429,22 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'lost-found-photo-presign':    200,
   'housekeeper-report-found-item': 200,
   'housekeeper-found-item-photo-presign': 200,
+  // ── Communications ───────────────────────────────────────────────────
+  // Translation is cache-first: only cache MISSES hit the model + counter.
+  'comms-translate':           1500,
+  'comms-assistant':             80,
+  'comms-detect-action':        400,
+  'comms-summary':               80,
+  'comms-polish':                80,
+  'comms-transcribe':           150,
+  // Non-AI, per-user composite key (fail-open). comms-read is polled
+  // (~3s open chat / ~8s list); 3600/hr = 1/sec/user gives wide headroom.
+  'comms-send':                 400,
+  'comms-read':                3600,
+  'comms-task':                 400,
+  'comms-action':               200,
+  'comms-photo-presign':        300,
+  'comms-save-language':         20,
 };
 
 /**
@@ -519,6 +555,16 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'lost-found-describe-photo',
   'lost-found-auto-match',
   'lost-found-notify-guest',
+  // Communications AI endpoints — each call costs Claude/OpenAI credit.
+  // Keyed on the RAW property UUID (real properties.id), so failing closed
+  // is never triggered by an FK violation. Clients degrade gracefully on 429
+  // (translate → original text; assistant → "try again").
+  'comms-translate',
+  'comms-assistant',
+  'comms-detect-action',
+  'comms-summary',
+  'comms-polish',
+  'comms-transcribe',
 ]);
 
 /**

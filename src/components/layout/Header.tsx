@@ -9,6 +9,7 @@ import { t } from '@/lib/translations';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LogOut, Globe, Settings, Bell } from 'lucide-react';
+import { LanguageMenu } from '@/components/i18n/LanguageMenu';
 
 // Snow design system — chevron mark from the locked Dashboard
 // Explorations design. Drawn in a 64x64 viewBox so the strokes scale
@@ -39,6 +40,7 @@ export function Header() {
   const baseNavLinks = [
     { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/housekeeping', label: lang === 'es' ? 'Limpieza' : 'Housekeeping' },
+    { href: '/communications', label: lang === 'es' ? 'Comunicación' : 'Communications' },
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory' },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
@@ -149,24 +151,8 @@ export function Header() {
             <Bell size={18} color={ink2} />
           </button>
 
-          {/* Language toggle */}
-          <button
-            onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
-            title={lang === 'en' ? 'Switch to Español' : 'Cambiar a English'}
-            aria-label={lang === 'en' ? 'Switch language to Spanish' : 'Switch language to English'}
-            style={{
-              padding: '6px 10px', borderRadius: '8px', border: 'none',
-              background: 'transparent', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px',
-              fontFamily: sansFont,
-              fontWeight: 600, fontSize: '11px', color: ink2,
-              letterSpacing: '0.04em',
-              transition: 'background 0.15s',
-            }}
-          >
-            <Globe size={16} color={ink2} />
-            {lang === 'en' ? 'EN' : 'ES'}
-          </button>
+          {/* Language menu — app-wide 5-language switcher */}
+          <LanguageMenu compact />
 
           {/* Settings gear */}
           <button
