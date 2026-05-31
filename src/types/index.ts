@@ -443,6 +443,9 @@ export interface WorkOrder {
   completionPhotoPath?: string;
   completedAt: Date | null;     // null until status === 'done'
 
+  equipmentId?: string | null;  // optional link to an equipment asset (registry 0249)
+  repairCost?: number | null;   // optional $ spent resolving — summed per-asset (0249)
+
   createdAt: Date | null;
   updatedAt: Date | null;
 }
@@ -459,6 +462,7 @@ export interface PreventiveTask {
   lastCompletedBy?: string;     // display name of who completed it last
   notes?: string;
   completionPhotoPath?: string;
+  equipmentId?: string | null;  // optional link to an equipment asset (registry 0249)
   createdAt: Date | null;
 }
 
