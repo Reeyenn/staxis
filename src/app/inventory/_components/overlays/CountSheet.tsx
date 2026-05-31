@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import {
@@ -9,6 +9,13 @@ import {
   updateInventoryItem,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { resizeImageForVision } from '@/lib/image-resize';
+import {
+  buildNameToIdMap,
+  mergePhotoCounts,
+  type PhotoCount,
+  type MergedFill,
+} from '@/lib/photo-count-merge';
 import type { InventoryItem, InventoryCount } from '@/types';
 import type { AutoFillItem } from '@/lib/db/ml-inventory-cockpit';
 
@@ -28,7 +35,12 @@ interface CountSheetProps {
   aiMode: 'off' | 'auto' | 'always-on';
 }
 
-type Entry = { value: string; autoFilled: boolean };
+// A count entry and where its value came from. `manual` = typed by the user
+// (or untouched); `ai` = prefilled from the ML prediction; `photo` = filled
+// from a shelf photo (carries the model's confidence for visual flagging).
+// Precedence on display: manual edit > photo > ai.
+type FillSource = 'manual' | 'ai' | 'photo';
+type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium' | 'low' };
 
 export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: CountSheetProps) {
   const { user } = useAuth();
@@ -87,13 +99,22 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
           auto = true;
         }
       }
-      next[d.id] = { value: prefill, autoFilled: auto };
+      next[d.id] = { value: prefill, source: auto ? 'ai' : 'manual' };
     }
     setEntries(next);
   }, [open, display, autoFillById, aiMode]);
 
   const setEntry = (id: string, val: string) =>
-    setEntries((prev) => ({ ...prev, [id]: { value: val, autoFilled: false } }));
+    setEntries((prev) => ({ ...prev, [id]: { value: val, source: 'manual' } }));
+
+  // Apply shelf-photo counts onto the entries. Photo overrides an AI prefill on
+  // the items it covers; items the photo didn't return are left untouched.
+  const applyPhotoFills = (fills: MergedFill[]) =>
+    setEntries((prev) => {
+      const next: Record<string, Entry> = { ...prev };
+      for (const f of fills) next[f.itemId] = { value: f.value, source: 'photo', confidence: f.confidence };
+      return next;
+    });
 
   if (!open) return null;
 
@@ -102,7 +123,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
     const e = entries[d.id];
     return e && e.value !== '' && !Number.isNaN(Number(e.value));
   }).length;
-  const auto = display.filter((d) => entries[d.id]?.autoFilled).length;
+  const auto = display.filter((d) => entries[d.id]?.source === 'ai').length;
   const pct = total > 0 ? Math.round((100 * filled) / total) : 0;
 
   const cats: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
@@ -308,6 +329,8 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '24px 48px 80px' }}>
+        <PhotoCountPanel display={display} pid={activePropertyId} onFills={applyPhotoFills} />
+
         {auto > 0 && (
           <div
             style={{
@@ -376,7 +399,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
                   <CountRow
                     key={d.id}
                     d={d}
-                    entry={entries[d.id] || { value: '', autoFilled: false }}
+                    entry={entries[d.id] || { value: '', source: 'manual' }}
                     onChange={(v) => setEntry(d.id, v)}
                     autoFill={autoFillById.get(d.id)}
                   />
@@ -410,6 +433,7 @@ function CountRow({
     entry.value !== '' && Number.isFinite(valNum) && expected !== null
       ? valNum - expected
       : null;
+  const fill = fillStyle(entry);
   return (
     <div
       style={{
@@ -482,8 +506,8 @@ function CountRow({
               padding: '0 14px',
               borderRadius: 10,
               boxSizing: 'border-box',
-              background: entry.autoFilled ? T.purpleDim : T.bg,
-              border: `1px solid ${entry.autoFilled ? `${T.purple}44` : T.rule}`,
+              background: fill.bg,
+              border: `1px solid ${fill.border}`,
               fontFamily: fonts.serif,
               fontSize: 20,
               fontStyle: 'italic',
@@ -492,7 +516,7 @@ function CountRow({
               outline: 'none',
             }}
           />
-          {entry.autoFilled && (
+          {fill.badge && (
             <span
               style={{
                 position: 'absolute',
@@ -502,14 +526,14 @@ function CountRow({
                 fontFamily: fonts.mono,
                 fontSize: 9,
                 fontWeight: 600,
-                color: T.purple,
-                background: `${T.purple}22`,
+                color: fill.badge.color,
+                background: `${fill.badge.color}22`,
                 padding: '2px 6px',
                 borderRadius: 4,
                 letterSpacing: '0.08em',
               }}
             >
-              AUTO
+              {fill.badge.text}
             </span>
           )}
         </div>
@@ -535,6 +559,170 @@ function CountRow({
       >
         Skip
       </Btn>
+    </div>
+  );
+}
+
+type FillVisual = { bg: string; border: string; badge: { text: string; color: string } | null };
+
+// Maps an entry's source + confidence to its input styling + corner badge.
+// AI = purple AUTO; photo = sage/caramel/warm by confidence, with low
+// deliberately loud (warm + ⚠) so a shaky guess is never quietly trusted.
+function fillStyle(entry: Entry): FillVisual {
+  if (entry.source === 'ai') {
+    return { bg: T.purpleDim, border: `${T.purple}44`, badge: { text: 'AUTO', color: T.purple } };
+  }
+  if (entry.source === 'photo') {
+    if (entry.confidence === 'high') return { bg: T.sageDim, border: `${T.sageDeep}44`, badge: { text: 'PHOTO', color: T.sageDeep } };
+    if (entry.confidence === 'medium') return { bg: `${T.caramel}14`, border: `${T.caramel}55`, badge: { text: 'PHOTO', color: T.caramelDeep } };
+    return { bg: T.warmDim, border: `${T.warm}55`, badge: { text: 'PHOTO ⚠', color: T.warm } };
+  }
+  return { bg: T.bg, border: T.rule, badge: null };
+}
+
+function photoCountErrorFor(status: number, detail?: string): string {
+  if (status === 422) return 'Too many items for one photo — scan one shelf or category at a time.';
+  if (status === 400) return 'Couldn’t read that image. Try a clearer, well-lit photo.';
+  if (status === 429) return 'Too many photo scans this hour — please try again shortly.';
+  if (status === 503) return 'Photo counting is briefly unavailable — enter counts manually for now.';
+  return detail || 'Couldn’t count that photo. Please try again.';
+}
+
+function PhotoCountPanel({
+  display,
+  pid,
+  onFills,
+}: {
+  display: DisplayItem[];
+  pid: string | null;
+  onFills: (fills: MergedFill[]) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const cats = useMemo(
+    () => (['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).filter((c) => display.some((d) => d.cat === c)),
+    [display],
+  );
+  const [scope, setScope] = useState<InvCat | 'all'>(cats[0] ?? 'all');
+  const [status, setStatus] = useState<'idle' | 'reading' | 'done' | 'error'>('idle');
+  const [message, setMessage] = useState('');
+  const [lowCount, setLowCount] = useState(0);
+
+  const scoped = scope === 'all' ? display : display.filter((d) => d.cat === scope);
+
+  const handleFile = async (file: File) => {
+    if (!pid) return;
+    if (scoped.length === 0) {
+      setStatus('error');
+      setMessage('No items in this group to count.');
+      return;
+    }
+    setStatus('reading');
+    setMessage('');
+    setLowCount(0);
+    try {
+      // Scope the item list to the chosen category so we stay well within the
+      // route's input budget and keep the Vision cost down (one shelf ≈ one category).
+      const resized = await resizeImageForVision(file);
+      const res = await fetchWithAuth('/api/inventory/photo-count', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, imageBase64: resized.base64, mediaType: resized.mediaType, itemNames: scoped.map((d) => d.name) }),
+      });
+      const json = (await res.json()) as { ok?: boolean; counts?: PhotoCount[]; error?: string; detail?: string };
+      if (!res.ok || !json.ok) {
+        setStatus('error');
+        setMessage(photoCountErrorFor(res.status, json.detail || json.error));
+        return;
+      }
+      const { filled, unmatched } = mergePhotoCounts(json.counts ?? [], buildNameToIdMap(scoped));
+      onFills(filled);
+      const low = filled.filter((f) => f.confidence === 'low').length;
+      setLowCount(low);
+      setStatus('done');
+      setMessage(
+        `Filled ${filled.length} of ${scoped.length} item${scoped.length === 1 ? '' : 's'}` +
+          (unmatched.length > 0 ? ` · ${unmatched.length} not recognized` : '') +
+          '. Review the numbers and Save.',
+      );
+    } catch (err) {
+      console.error('[photo-count] failed', err);
+      setStatus('error');
+      setMessage('Couldn’t read that photo — try a clearer, well-lit shot.');
+    }
+  };
+
+  return (
+    <div
+      style={{
+        background: T.paper,
+        border: `1px solid ${T.rule}`,
+        borderRadius: 12,
+        padding: '12px 16px',
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 12,
+        marginBottom: 22,
+      }}
+    >
+      <span style={{ fontFamily: fonts.serif, fontSize: 17, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
+        Count by photo
+      </span>
+      <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, flex: '1 1 200px', minWidth: 0 }}>
+        Snap a shelf — we&apos;ll fill the counts for you to review. Nothing saves until you hit Save count.
+      </span>
+      {cats.length > 1 && (
+        <select
+          value={scope}
+          onChange={(e) => setScope(e.target.value as InvCat | 'all')}
+          style={{
+            height: 34,
+            padding: '0 10px',
+            borderRadius: 8,
+            background: T.bg,
+            border: `1px solid ${T.rule}`,
+            fontFamily: fonts.sans,
+            fontSize: 13,
+            color: T.ink,
+            cursor: 'pointer',
+          }}
+        >
+          <option value="all">All visible</option>
+          {cats.map((c) => (
+            <option key={c} value={c}>
+              {catLabel[c]}
+            </option>
+          ))}
+        </select>
+      )}
+      <Btn variant="ghost" size="md" onClick={() => fileRef.current?.click()} disabled={status === 'reading'}>
+        {status === 'reading' ? 'Reading…' : '📷 Choose photo'}
+      </Btn>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void handleFile(f);
+          e.target.value = '';
+        }}
+      />
+      {status !== 'idle' && message && (
+        <div
+          style={{
+            flexBasis: '100%',
+            fontFamily: fonts.sans,
+            fontSize: 12.5,
+            color: status === 'error' ? T.warm : lowCount > 0 ? T.caramelDeep : '#3F5A43',
+          }}
+        >
+          {message}
+          {lowCount > 0 && status === 'done' ? ` ${lowCount} low-confidence — please verify (flagged in red).` : ''}
+        </div>
+      )}
     </div>
   );
 }

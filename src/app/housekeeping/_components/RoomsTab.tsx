@@ -9,14 +9,15 @@
 //   • crew-on-the-floor strip at the bottom
 //   • AI Intelligence Recommendation card removed per design lock
 //
-// Click a room → popup with status-cycle actions, same as before.
+// Tap a room → flips its status directly (dirty ↔ clean), no popup. Each
+// tile has a small note icon in its bottom-right corner that opens a
+// viewport-centered popup for adding/reviewing that room's notes.
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
-import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   subscribeToRooms, updateRoom, addRoom,
   subscribeToWorkOrders,
@@ -47,18 +48,18 @@ export function RoomsTab() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [loading, setLoading] = useState(true);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  // Single tracked timer so a slow toast can't get hidden by a faster one
-  // landing right after, and so an unmounted component can't race-fire
-  // setToastMessage(null). Cleared on unmount via the effect below.
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
-  const [actionRoom, setActionRoom] = useState<Room | null>(null);
-  const [populating, setPopulating] = useState(false);
-  const [pulledAt, setPulledAt] = useState<Date | null>(null);
+  const [noteRoom, setNoteRoom] = useState<Room | null>(null);
   const [filter, setFilter] = useState<'all' | 'toturn' | 'cleaning' | 'ready' | 'dnd'>('all');
   const [search, setSearch] = useState('');
   const [, setNowMs] = useState(Date.now());
+  // Optimistic status overlay, keyed by room NUMBER (survives the
+  // phantom→real id swap on the next poll). The board has no realtime — it
+  // polls every 6s — so without this a tap shows nothing until the next
+  // poll lands (the 4-8s lag managers complained about). We flip the tile
+  // instantly here, fire the write in the background, and clear the entry
+  // once a poll confirms the server agrees (or a safety timeout elapses).
+  const [pending, setPending] = useState<Map<string, { status: RoomStatus; at: number }>>(() => new Map());
+  const [toast, setToast] = useState<string | null>(null);
 
   // Subscribe to today's rooms (canonical live source — see the long
   // comment in the previous version for the full rationale).
@@ -85,37 +86,66 @@ export function RoomsTab() {
   }, []);
 
   // Merge today's rooms with property inventory so all rooms render even
-  // before "Refresh from PMS" has been clicked. Phantom rows have an id
+  // before any live PMS data has landed for them. Phantom rows have an id
   // prefixed `phantom-` so handleToggle can lazily materialize them.
   const displayRooms = useMemo<Room[]>(() => {
     if (!activePropertyId) return [];
     const inventory = activeProperty?.roomInventory ?? [];
-    if (inventory.length === 0) return rooms;
 
-    const byNumber = new Map<string, Room>();
-    for (const r of rooms) byNumber.set(r.number, r);
+    let base: Room[];
+    if (inventory.length === 0) {
+      base = rooms;
+    } else {
+      const byNumber = new Map<string, Room>();
+      for (const r of rooms) byNumber.set(r.number, r);
 
-    const out: Room[] = [];
-    for (const num of inventory) {
-      const existing = byNumber.get(num);
-      if (existing) out.push(existing);
-      else {
-        out.push({
-          id: `phantom-${num}`,
-          number: num,
-          type: 'vacant',
-          priority: 'standard',
-          status: 'clean',
-          date: today,
-          propertyId: activePropertyId,
-        });
+      const out: Room[] = [];
+      for (const num of inventory) {
+        const existing = byNumber.get(num);
+        if (existing) out.push(existing);
+        else {
+          out.push({
+            id: `phantom-${num}`,
+            number: num,
+            type: 'vacant',
+            priority: 'standard',
+            status: 'clean',
+            date: today,
+            propertyId: activePropertyId,
+          });
+        }
       }
+      for (const r of rooms) {
+        if (!inventory.includes(r.number)) out.push(r);
+      }
+      base = out;
     }
-    for (const r of rooms) {
-      if (!inventory.includes(r.number)) out.push(r);
-    }
-    return out;
-  }, [rooms, activeProperty?.roomInventory, activePropertyId, today]);
+
+    // Apply the optimistic overlay so a just-tapped tile reflects its new
+    // status immediately, before the next 6s poll confirms it server-side.
+    if (pending.size === 0) return base;
+    return base.map(r => {
+      const p = pending.get(r.number);
+      return p ? { ...r, status: p.status } : r;
+    });
+  }, [rooms, activeProperty?.roomInventory, activePropertyId, today, pending]);
+
+  // Reconcile the optimistic overlay whenever a fresh poll lands. Drop an
+  // entry once the server agrees with it (confirmed), or after a 15s safety
+  // window so a failed/lost write can't pin a tile to the wrong status.
+  useEffect(() => {
+    setPending(prev => {
+      if (prev.size === 0) return prev;
+      const serverByNumber = new Map(rooms.map(r => [r.number, r.status] as const));
+      const now = Date.now();
+      const next = new Map(prev);
+      for (const [num, p] of prev) {
+        if (serverByNumber.get(num) === p.status) next.delete(num);
+        else if (now - p.at > 15_000) next.delete(num);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rooms]);
 
   // Open-WO set keyed by room number, used to flag tiles with a red dot.
   // After the May-2026 maintenance simplification (migration 0131),
@@ -152,79 +182,53 @@ export function RoomsTab() {
 
   const pct = counts.total > 0 ? Math.round((counts.ready / counts.total) * 100) : 0;
 
-  // "Refresh from PMS" — pulls live state from Choice Advantage via the
-  // Railway scraper. ~5–15s round-trip typically. Same handler as before,
-  // just renamed in the UI to match the design.
-  const handlePopulateFromCsv = useCallback(async () => {
-    if (!user || !activePropertyId || populating) return;
-    setPopulating(true);
-    try {
-      const res = await fetchWithAuth('/api/refresh-from-pms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid: activePropertyId, date: today }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (j?.ok) {
-        const data = j.data || {};
-        const msg = lang === 'es'
-          ? `Cargados ${data.totalFromHkCenter ?? '?'} cuartos del PMS`
-          : `Loaded ${data.totalFromHkCenter ?? '?'} rooms from PMS`;
-        setToastKind('success');
-        setToastMessage(msg);
-        setPulledAt(new Date());
-      } else {
-        setToastKind('error');
-        setToastMessage(lang === 'es' ? 'No se pudo cargar del PMS' : 'Could not load from PMS');
-      }
-    } catch {
-      setToastKind('error');
-      setToastMessage(lang === 'es' ? 'Error al conectar con PMS' : 'PMS connection error');
-    } finally {
-      setPopulating(false);
-      if (toastTimer.current) clearTimeout(toastTimer.current);
-      toastTimer.current = setTimeout(() => setToastMessage(null), 3000);
-    }
-  }, [user, activePropertyId, populating, today, lang]);
-
-  // Clean up the toast timer on unmount so a delayed setToastMessage(null)
-  // can't fire after the component is gone (causes a React warning + leaks).
-  useEffect(() => () => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-  }, []);
-
-  // Cycle a room's status: dirty → in_progress → clean → dirty. Phantom
-  // rooms are materialized into a real DB row on first click.
+  // Tap a room to flip its status: clean → dirty, anything else → clean.
+  // There's no manual "cleaning" step from the manager tap anymore —
+  // housekeepers still set in_progress from their own flow. Inspected rooms
+  // are locked. Phantom rooms are materialized into a real DB row on tap.
+  //
+  // The tile flips INSTANTLY via the optimistic overlay; the write runs in
+  // the background and is reconciled against the next poll. On failure we
+  // roll the overlay back and surface a toast so the manager knows to retry.
   const handleToggle = async (room: Room) => {
     if (!user || !activePropertyId || room.status === 'inspected') return;
-    let newStatus: RoomStatus;
-    if (room.status === 'dirty') newStatus = 'in_progress';
-    else if (room.status === 'in_progress') newStatus = 'clean';
-    else newStatus = 'dirty';
+    const newStatus: RoomStatus = room.status === 'clean' ? 'dirty' : 'clean';
+
+    // Optimistic flip — instant feedback, keyed by room number.
+    setPending(prev => {
+      const next = new Map(prev);
+      next.set(room.number, { status: newStatus, at: Date.now() });
+      return next;
+    });
     if (!navigator.onLine) recordOfflineAction();
 
-    if (room.id.startsWith('phantom-')) {
-      const startedAt   = newStatus === 'in_progress' ? new Date() : undefined;
-      const completedAt = newStatus === 'clean'       ? new Date() : undefined;
-      await addRoom(user.uid, activePropertyId, {
-        number: room.number,
-        type: 'vacant',
-        priority: 'standard',
-        status: newStatus,
-        date: today,
-        propertyId: activePropertyId,
-        ...(startedAt ? { startedAt } : {}),
-        ...(completedAt ? { completedAt } : {}),
+    try {
+      if (room.id.startsWith('phantom-')) {
+        const completedAt = newStatus === 'clean' ? new Date() : undefined;
+        await addRoom(user.uid, activePropertyId, {
+          number: room.number,
+          type: 'vacant',
+          priority: 'standard',
+          status: newStatus,
+          date: today,
+          propertyId: activePropertyId,
+          ...(completedAt ? { completedAt } : {}),
+        });
+      } else {
+        const updates: Partial<Room> = { status: newStatus };
+        if (newStatus === 'clean') updates.completedAt = new Date();
+        await updateRoom(user.uid, activePropertyId, room.id, updates);
+      }
+    } catch {
+      // Roll back the optimistic flip and tell the manager.
+      setPending(prev => {
+        const next = new Map(prev);
+        next.delete(room.number);
+        return next;
       });
-      setActionRoom(null);
-      return;
+      setToast(lang === 'es' ? 'No se pudo guardar — intenta de nuevo' : "Couldn't save — try again");
+      window.setTimeout(() => setToast(null), 2800);
     }
-
-    const updates: Partial<Room> = { status: newStatus };
-    if (newStatus === 'in_progress') updates.startedAt   = new Date();
-    if (newStatus === 'clean')       updates.completedAt = new Date();
-    await updateRoom(user.uid, activePropertyId, room.id, updates);
-    setActionRoom(null);
   };
 
 
@@ -264,7 +268,7 @@ export function RoomsTab() {
     { key: 'all',      label: lang === 'es' ? 'Todas'        : 'All',             n: counts.total },
     { key: 'toturn',   label: lang === 'es' ? 'A limpiar'    : 'To turn',         n: counts.dirty },
     { key: 'cleaning', label: lang === 'es' ? 'Limpiando'    : 'Cleaning',        n: counts.cleaning },
-    { key: 'ready',    label: lang === 'es' ? 'Listas'       : 'Ready',           n: counts.ready },
+    { key: 'ready',    label: lang === 'es' ? 'Limpias'      : 'Clean',           n: counts.ready },
     { key: 'dnd',      label: lang === 'es' ? 'DND / Bloq.'  : 'DND / blocked',   n: counts.dnd + counts.blocked },
   ];
 
@@ -306,7 +310,7 @@ export function RoomsTab() {
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
 
-      {/* HERO ROW — title + refresh-from-PMS button */}
+      {/* HERO ROW — title */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
         marginBottom: 20, gap: 24, flexWrap: 'wrap',
@@ -324,19 +328,6 @@ export function RoomsTab() {
             </span>
           </h1>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          {pulledAt && (
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, whiteSpace: 'nowrap' }}>
-              <span style={{ color: T.ink3 }}>{lang === 'es' ? 'Última carga PMS · ' : 'Last PMS pull · '}</span>
-              <strong style={{ color: T.ink }}>{pulledAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
-            </span>
-          )}
-          <Btn variant="primary" onClick={handlePopulateFromCsv} disabled={populating}>
-            {populating
-              ? (lang === 'es' ? 'Cargando…' : 'Loading…')
-              : (lang === 'es' ? '↻ Cargar del PMS' : '↻ Refresh from PMS')}
-          </Btn>
-        </div>
       </div>
 
       {/* PROGRESS STRIP — overall % + per-status counts */}
@@ -349,7 +340,7 @@ export function RoomsTab() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
               <strong style={{ color: T.ink, fontWeight: 600 }}>{counts.ready} of {counts.total}</strong>
-              {lang === 'es' ? ' listas' : ' ready'}
+              {lang === 'es' ? ' limpias' : ' clean'}
             </span>
             <span style={{
               fontFamily: FONT_SERIF, fontSize: 24, fontStyle: 'italic',
@@ -365,7 +356,7 @@ export function RoomsTab() {
         <span style={{ width: 1, height: 34, background: T.rule }} />
         <div style={{ display: 'flex', gap: 18 }}>
           {[
-            { l: lang === 'es' ? 'Listas'    : 'Ready',    v: counts.ready,    c: T.sageDeep },
+            { l: lang === 'es' ? 'Limpias'   : 'Clean',    v: counts.ready,    c: T.sageDeep },
             { l: lang === 'es' ? 'Limpiando' : 'Cleaning', v: counts.cleaning, c: T.caramelDeep },
             { l: lang === 'es' ? 'Sucias'    : 'Dirty',    v: counts.dirty,    c: T.warm },
             { l: 'DND',                                     v: counts.dnd + counts.blocked, c: T.ink2 },
@@ -467,7 +458,7 @@ export function RoomsTab() {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <Pill tone="warm">{fc.d} {lang === 'es' ? 'sucias' : 'dirty'}</Pill>
                   <Pill tone="caramel">{fc.p} {lang === 'es' ? 'limpiando' : 'cleaning'}</Pill>
-                  <Pill tone="sage">{fc.c} {lang === 'es' ? 'listas' : 'ready'}</Pill>
+                  <Pill tone="sage">{fc.c} {lang === 'es' ? 'limpias' : 'clean'}</Pill>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -477,7 +468,8 @@ export function RoomsTab() {
                     r={r}
                     lang={lang}
                     hasWorkOrder={openWoRooms.has(r.number)}
-                    onClick={() => setActionRoom(r)}
+                    onClick={() => { void handleToggle(r); }}
+                    onNote={() => setNoteRoom(r)}
                   />
                 ))}
               </div>
@@ -512,56 +504,36 @@ export function RoomsTab() {
         </div>
       )}
 
-      {/* ACTION POPUP — click a tile to cycle its status */}
-      {actionRoom && (
+      {/* NOTE POPUP — tap a tile's note icon to add or review that room's
+          notes. Fixed + viewport-centered so it lands in the middle of the
+          screen no matter how far the board is scrolled. */}
+      {noteRoom && (
         <>
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(31,35,28,0.32)' }}
-            onClick={() => setActionRoom(null)}
+            onClick={() => setNoteRoom(null)}
           />
           <div style={{
             position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
             zIndex: 61, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-            padding: '20px 22px', minWidth: 320, boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
-            display: 'flex', flexDirection: 'column', gap: 16,
+            padding: '20px 22px', width: 360, maxWidth: 'calc(100vw - 32px)',
+            maxHeight: 'calc(100dvh - 64px)', overflowY: 'auto',
+            boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
+            display: 'flex', flexDirection: 'column', gap: 14,
           }}>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <div>
-                <Caps>{lang === 'es' ? 'Cuarto' : 'Room'}</Caps>
+                <Caps>{lang === 'es' ? 'Nota del cuarto' : 'Room note'}</Caps>
                 <h3 style={{
                   fontFamily: FONT_SERIF, fontSize: 32, color: T.ink, margin: '2px 0 0',
                   fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1,
-                }}>{actionRoom.number}</h3>
+                }}>{noteRoom.number}</h3>
               </div>
-              <Btn variant="ghost" size="sm" onClick={() => setActionRoom(null)}>{lang === 'es' ? 'Cerrar' : 'Close'}</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => setNoteRoom(null)}>{lang === 'es' ? 'Cerrar' : 'Close'}</Btn>
             </div>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: 0 }}>
-              {lang === 'es' ? 'Estado actual:' : 'Current status:'}{' '}
-              <strong style={{ color: T.ink }}>{actionRoom.status}</strong>
-            </p>
-            <Btn variant="primary" size="md" onClick={() => handleToggle(actionRoom)}>
-              {actionRoom.status === 'dirty'       ? (lang === 'es' ? 'Marcar como limpiando' : 'Mark as cleaning')
-                : actionRoom.status === 'in_progress' ? (lang === 'es' ? 'Marcar como lista'      : 'Mark as ready')
-                : actionRoom.status === 'clean'       ? (lang === 'es' ? 'Reiniciar a sucia'      : 'Reset to dirty')
-                : (lang === 'es' ? 'Inspeccionada (bloqueada)' : 'Inspected (locked)')}
-            </Btn>
-            <ManagerNotesEditor roomNumber={actionRoom.number} />
+            <ManagerNotesEditor roomNumber={noteRoom.number} />
           </div>
         </>
-      )}
-
-      {/* TOAST */}
-      {toastMessage && (
-        <div style={{
-          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 70, padding: '12px 18px',
-          background: toastKind === 'success' ? T.sageDim : T.warmDim,
-          color: toastKind === 'success' ? T.sageDeep : T.warm,
-          border: `1px solid ${toastKind === 'success' ? 'rgba(104,131,114,0.3)' : 'rgba(184,92,61,0.3)'}`,
-          borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        }}>
-          {toastMessage}
-        </div>
       )}
     </div>
   );

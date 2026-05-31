@@ -85,9 +85,9 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // The session caller must have access to this property — same scope
-  // check refresh-from-pms applies. Without it any signed-in user could
-  // enumerate any hotel's room board by spraying pids.
+  // The session caller must have access to this property — without this
+  // check any signed-in user could enumerate any hotel's room board by
+  // spraying pids.
   const hasAccess = await userHasPropertyAccess(auth.userId, pid);
   if (!hasAccess) {
     log.warn('[housekeeping/rooms] forbidden — user lacks property access', {
