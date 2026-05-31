@@ -110,9 +110,13 @@ export async function getOrderingMode(pid: string): Promise<OrderingMode> {
     .select('ordering_mode')
     .eq('id', pid)
     .maybeSingle();
+  // Fail CLOSED: a transient read error must NOT silently downgrade a 'pro'
+  // property to 'simple' at order-create time (that would let the approval step
+  // be skipped). Throw so the create aborts; the GET route + UI default to a
+  // safe display value via their own catch.
   if (error) {
     log.error('[ordering] getOrderingMode failed', { pid, err: error.message });
-    return 'simple';
+    throw error;
   }
   return (data?.ordering_mode as OrderingMode) === 'pro' ? 'pro' : 'simple';
 }
@@ -380,7 +384,7 @@ async function insertPoHeader(
 // Stamp each ordered item's last_ordered_at (+ vendor / unit cost) so the
 // reorder UI shows "ordered N days ago" — mirrors addInventoryOrder's stamp.
 // Non-fatal: a failed stamp never blocks the order.
-async function stampOrderedItems(lines: CartLineInput[], vendorName: string | null): Promise<void> {
+async function stampOrderedItems(pid: string, lines: CartLineInput[], vendorName: string | null): Promise<void> {
   const nowIso = new Date().toISOString();
   await Promise.all(
     lines
@@ -389,7 +393,13 @@ async function stampOrderedItems(lines: CartLineInput[], vendorName: string | nu
         const stamp: Record<string, unknown> = { last_ordered_at: nowIso };
         if (vendorName) stamp.vendor_name = vendorName;
         if (l.unitCostCents > 0) stamp.unit_cost = l.unitCostCents / 100; // cents → dollars
-        const { error } = await supabaseAdmin.from('inventory').update(stamp).eq('id', l.itemId!);
+        // SCOPED BY property_id — a stale/foreign item id can never stamp another
+        // property's row (create-time validation already rejects foreign ids).
+        const { error } = await supabaseAdmin
+          .from('inventory')
+          .update(stamp)
+          .eq('id', l.itemId!)
+          .eq('property_id', pid);
         if (error) {
           log.error('[ordering] stampOrderedItems failed (non-fatal)', {
             itemId: l.itemId,
@@ -414,6 +424,26 @@ export async function createPurchaseOrders(
   const mode = await getOrderingMode(pid);
   const status: OrderStatus = mode === 'pro' ? 'pending_approval' : 'draft';
 
+  // SECURITY: every line's itemId comes from the client cart. Reject any id that
+  // doesn't belong to THIS property before it gets persisted to a PO line and
+  // later used to mutate inventory (stamp / receive). Without this, a manager of
+  // property A could target property B's inventory row. The inventory UPDATEs are
+  // also property-scoped (defense-in-depth), but we fail the whole create here so
+  // a bad id surfaces instead of silently no-op'ing.
+  const itemIds = [...new Set(lines.map((l) => l.itemId).filter((x): x is string => !!x))];
+  if (itemIds.length > 0) {
+    const { data: owned, error: ownErr } = await supabaseAdmin
+      .from('inventory')
+      .select('id')
+      .eq('property_id', pid)
+      .in('id', itemIds);
+    if (ownErr) throw ownErr;
+    const ownedSet = new Set((owned ?? []).map((r) => String((r as { id: string }).id)));
+    if (itemIds.some((id) => !ownedSet.has(id))) {
+      throw new Error('foreign_item_id: a cart line references an item from another property');
+    }
+  }
+
   // Resolve vendor records once for the whole property (id + name → record).
   const vendors = await listVendors(pid, true);
   const vendorById = new Map(vendors.map((v) => [v.id, v]));
@@ -437,8 +467,10 @@ export async function createPurchaseOrders(
 
   const created: PurchaseOrder[] = [];
   for (const g of groups.values()) {
+    // Round the PER-LINE product so a fractional qty (gallons/cases) can't
+    // produce a non-integer subtotal that Postgres would silently round.
     const subtotalCents = g.lines.reduce(
-      (s, l) => s + Math.round(l.unitCostCents) * l.qtyOrdered,
+      (s, l) => s + Math.round(l.unitCostCents * l.qtyOrdered),
       0,
     );
     const header = await insertPoHeader(pid, {
@@ -464,7 +496,7 @@ export async function createPurchaseOrders(
       throw lineErr;
     }
 
-    await stampOrderedItems(g.lines, g.nameSnapshot);
+    await stampOrderedItems(pid, g.lines, g.nameSnapshot);
 
     const full = await getPurchaseOrder(pid, poId);
     if (full) created.push(full);
@@ -560,34 +592,56 @@ export async function receivePurchaseOrder(
     targets.set(rl.lineId, clamped);
   }
 
-  // Pre-read current_stock for items that will receive a positive delta.
-  const itemDeltas = new Map<string, number>(); // itemId → total delta to add
   const ledgerWrites: Promise<unknown>[] = [];
   const nowIso = new Date().toISOString();
 
   for (const [lineId, target] of targets) {
     const line = lineById.get(lineId)!;
-    const delta = target - line.qtyReceived;
+    const prev = line.qtyReceived;
+    const delta = target - prev;
     if (delta <= 0) continue;
 
-    // 1) bump the line's cumulative received total
-    const { error: upErr } = await supabaseAdmin
+    // 1) Optimistic-concurrency transition: only advance qty_received if it is
+    //    STILL `prev`. A concurrent receive (double-tap / mobile retry) that
+    //    already moved this line loses the compare-and-set and is skipped — so
+    //    the same delta can never be applied to stock twice.
+    const { data: won, error: upErr } = await supabaseAdmin
       .from('purchase_order_lines')
       .update({ qty_received: target })
       .eq('id', lineId)
-      .eq('purchase_order_id', id);
+      .eq('purchase_order_id', id)
+      .eq('qty_received', prev)
+      .select('id');
     if (upErr) {
       log.error('[ordering] receive: line update failed', { lineId, err: upErr.message });
       throw upErr;
     }
+    if (!won || won.length === 0) continue; // lost the race — another receive moved this line
     line.qtyReceived = target; // keep local copy current for status calc
 
-    // 2) accumulate the stock delta for the item
+    // 2) Bump the item's stock — SCOPED BY property_id so a line can never touch
+    //    another property's row (create-time validation already rejects foreign
+    //    ids; this is defense-in-depth). Read-modify-write within this single
+    //    deliberate request; the line CAS above is what prevents double-counting.
     if (line.itemId) {
-      itemDeltas.set(line.itemId, (itemDeltas.get(line.itemId) ?? 0) + delta);
+      const { data: itemRow } = await supabaseAdmin
+        .from('inventory')
+        .select('current_stock')
+        .eq('id', line.itemId)
+        .eq('property_id', pid)
+        .maybeSingle();
+      if (itemRow) {
+        const next = Number((itemRow as { current_stock: number }).current_stock ?? 0) + delta;
+        const { error: stkErr } = await supabaseAdmin
+          .from('inventory')
+          .update({ current_stock: next, last_ordered_at: nowIso })
+          .eq('id', line.itemId)
+          .eq('property_id', pid);
+        if (stkErr) log.error('[ordering] receive: stock update failed', { itemId: line.itemId, err: stkErr.message });
+      }
     }
 
-    // 3) write the dollars-based inventory_orders restock-log row (reuse
+    // 3) Write the dollars-based inventory_orders restock-log row (reuse
     //    addInventoryOrder's row shape so spend metrics keep working).
     const unitCostDollars = line.unitCostCents > 0 ? line.unitCostCents / 100 : undefined;
     const totalCostDollars =
@@ -613,34 +667,21 @@ export async function receivePurchaseOrder(
     );
   }
 
-  // Apply stock deltas (read-modify-write; receiving is a deliberate single-
-  // actor action so the small race window is acceptable, like Count Mode).
-  if (itemDeltas.size > 0) {
-    const itemIds = [...itemDeltas.keys()];
-    const { data: items } = await supabaseAdmin
-      .from('inventory')
-      .select('id, current_stock')
-      .in('id', itemIds);
-    const stockById = new Map(
-      (items ?? []).map((r) => [String((r as { id: string }).id), Number((r as { current_stock: number }).current_stock ?? 0)]),
-    );
-    await Promise.all(
-      [...itemDeltas.entries()].map(async ([itemId, delta]) => {
-        const next = (stockById.get(itemId) ?? 0) + delta;
-        const { error } = await supabaseAdmin
-          .from('inventory')
-          .update({ current_stock: next, last_ordered_at: nowIso })
-          .eq('id', itemId);
-        if (error) log.error('[ordering] receive: stock update failed', { itemId, err: error.message });
-      }),
-    );
-  }
-
   await Promise.all(ledgerWrites);
 
-  // Recompute status from the (locally-updated) lines.
-  const allReceived = po.lines.every((l) => l.qtyReceived >= l.qtyOrdered);
-  const anyReceived = po.lines.some((l) => l.qtyReceived > 0);
+  // Recompute status from a FRESH read of the lines so concurrent receives
+  // converge on the correct status (not a stale local snapshot, which could
+  // leave a fully-received PO stuck at 'partially_received').
+  const { data: freshLines } = await supabaseAdmin
+    .from('purchase_order_lines')
+    .select('id, qty_ordered, qty_received')
+    .eq('purchase_order_id', id);
+  const fresh = (freshLines ?? []).map((r) => {
+    const row = r as { id: string; qty_ordered: number; qty_received: number };
+    return { id: String(row.id), ordered: Number(row.qty_ordered ?? 0), received: Number(row.qty_received ?? 0) };
+  });
+  const allReceived = fresh.length > 0 && fresh.every((l) => l.received >= l.ordered);
+  const anyReceived = fresh.some((l) => l.received > 0);
   const newStatus: OrderStatus = allReceived
     ? 'received'
     : anyReceived
@@ -658,9 +699,9 @@ export async function receivePurchaseOrder(
     throw stErr;
   }
 
-  const shortLines = po.lines
-    .filter((l) => l.qtyReceived < l.qtyOrdered)
-    .map((l) => ({ lineId: l.id, ordered: l.qtyOrdered, received: l.qtyReceived }));
+  const shortLines = fresh
+    .filter((l) => l.received < l.ordered)
+    .map((l) => ({ lineId: l.id, ordered: l.ordered, received: l.received }));
 
   const order = await getPurchaseOrder(pid, id);
   return order ? { ok: true, order, shortLines } : { ok: false, reason: 'not_found' };

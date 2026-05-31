@@ -74,7 +74,7 @@ export function renderPurchaseOrderEmail(args: {
         <td style="padding:8px 10px;border-bottom:1px solid #eee;">${esc(l.description)}</td>
         <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;">${l.qtyOrdered}</td>
         <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;">${money(l.unitCostCents)}</td>
-        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;">${money(Math.round(l.unitCostCents) * l.qtyOrdered)}</td>
+        <td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;">${money(Math.round(l.unitCostCents * l.qtyOrdered))}</td>
       </tr>`,
     )
     .join('');
@@ -111,7 +111,7 @@ export function renderPurchaseOrderEmail(args: {
 </body></html>`;
 
   const textLines = po.lines.map(
-    (l) => `  ${l.qtyOrdered} x ${l.description} @ ${money(l.unitCostCents)} = ${money(Math.round(l.unitCostCents) * l.qtyOrdered)}`,
+    (l) => `  ${l.qtyOrdered} x ${l.description} @ ${money(l.unitCostCents)} = ${money(Math.round(l.unitCostCents * l.qtyOrdered))}`,
   );
   const text = [
     `${t.poLabel} ${po.poNumber} — ${propertyName}`,

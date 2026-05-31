@@ -70,7 +70,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     const { orders, mode } = await createPurchaseOrders(pid, gate.accountId, lines);
     return ok({ orders, mode }, { requestId, status: 201 });
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('foreign_item_id')) {
+      return err('a cart line references an item from another property', {
+        requestId, status: 400, code: 'foreign_item_id',
+      });
+    }
     return err('failed to create purchase orders', { requestId, status: 500, code: 'create_failed' });
   }
 }
