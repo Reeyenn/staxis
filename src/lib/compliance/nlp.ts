@@ -87,7 +87,9 @@ export async function parseReadingsFromText(text: string): Promise<ParsedReading
     const rows = Array.isArray(out.readings) ? out.readings : [];
     return rows
       .map((r) => ({ metric: String(r.metric ?? '').trim(), value: Number(r.value) }))
-      .filter((r) => r.metric.length > 0 && Number.isFinite(r.value));
+      // Same numeric bound the manual routes enforce — a model emitting 1e300
+      // must not reach logReading / the work-order description.
+      .filter((r) => r.metric.length > 0 && Number.isFinite(r.value) && Math.abs(r.value) <= 1e9);
   } catch (e) {
     log.error('[compliance/nlp] parseReadingsFromText failed', { err: e instanceof Error ? e : new Error(String(e)) });
     return [];

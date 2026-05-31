@@ -47,8 +47,8 @@ registerTool<{ metric: string; value: number }>({
   voiceModes: ['compliance'],
   mutates: true,
   handler: async ({ metric, value }, ctx): Promise<ToolResult> => {
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      return { ok: false, error: 'value must be a finite number.' };
+    if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1e9) {
+      return { ok: false, error: 'value must be a finite number within ±1e9.' };
     }
     const type = await findReadingTypeByName(ctx.propertyId, String(metric || ''));
     if (!type) {

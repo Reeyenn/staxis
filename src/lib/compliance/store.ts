@@ -10,9 +10,10 @@ import { APP_TIMEZONE, todayStr } from '@/lib/utils';
 import {
   currentReadingPeriodKey,
   currentPmPeriodKey,
+  previousPmPeriodKey,
+  pmNextDueISO,
   readingPeriodLabel,
   pmPeriodLabel,
-  pmOverdue,
   ratioToStatus,
 } from './periods';
 import {
@@ -196,20 +197,24 @@ export async function getOverview(pid: string, now: Date = new Date()): Promise<
   const pmStatuses: PmTaskStatus[] = tasks.map((task) => {
     const group = checksByTask.get(task.id) ?? [];
     const currentKey = currentPmPeriodKey(task.cadence, now);
+    const prevKey = previousPmPeriodKey(task.cadence, now);
     const latest = group[0] ?? null;
-    const lastPass = group.find((c) => c.status === 'pass') ?? null;
-    const doneThisPeriod = group.some((c) => c.periodKey === currentKey && c.status === 'pass');
-    const { overdue, nextDueISO } = pmOverdue(task.cadence, lastPass?.checkedAt ?? null, latest?.checkedAt ?? null, now);
-    // Never-checked tasks read as overdue immediately so they surface on day 1.
+    const passKeys = new Set(group.filter((c) => c.status === 'pass').map((c) => c.periodKey));
+    const doneThisPeriod = passKeys.has(currentKey);
     const neverChecked = group.length === 0;
+    // Calendar-based overdue: not passed THIS period AND (never checked OR the
+    // PREVIOUS period was also missed → at least one full period has lapsed).
+    // This flips to overdue promptly at the period rollover rather than a
+    // variable rolling window after the last check.
+    const overdue = !doneThisPeriod && (neverChecked || !passKeys.has(prevKey));
     return {
       task,
       latest,
       doneThisPeriod,
       currentPeriodKey: currentKey,
       periodLabel: pmPeriodLabel(task.cadence),
-      overdue: neverChecked ? true : overdue && !doneThisPeriod,
-      nextDueISO,
+      overdue,
+      nextDueISO: pmNextDueISO(task.cadence, now),
     };
   });
 
@@ -256,20 +261,26 @@ export async function getReport(pid: string, fromDate: string, toDate: string): 
   const fromISO = `${fromDate}T00:00:00Z`;
   const toISO = `${toDate}T23:59:59Z`;
 
+  // Explicit row cap so PostgREST's default ~1000-row limit can't silently
+  // truncate an inspector-facing artifact without a signal.
+  const REPORT_ROW_CAP = 5000;
   const { data: readingRows } = await supabaseAdmin
     .from('compliance_readings')
     .select('*')
     .eq('property_id', pid)
     .gte('logged_at', fromISO)
     .lte('logged_at', toISO)
-    .order('logged_at', { ascending: true });
+    .order('logged_at', { ascending: true })
+    .limit(REPORT_ROW_CAP);
   const { data: checkRows } = await supabaseAdmin
     .from('compliance_pm_checks')
     .select('*')
     .eq('property_id', pid)
     .gte('checked_at', fromISO)
     .lte('checked_at', toISO)
-    .order('checked_at', { ascending: true });
+    .order('checked_at', { ascending: true })
+    .limit(REPORT_ROW_CAP);
+  const truncated = (readingRows ?? []).length >= REPORT_ROW_CAP || (checkRows ?? []).length >= REPORT_ROW_CAP;
 
   const readingGroups = new Map<string, ComplianceReportRow>();
   let outOfRangeCount = 0;
@@ -319,6 +330,7 @@ export async function getReport(pid: string, fromDate: string, toDate: string): 
       pmCheckCount: (checkRows ?? []).length,
       pmFailCount,
     },
+    truncated,
   };
 }
 

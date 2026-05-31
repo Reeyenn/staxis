@@ -34,16 +34,19 @@ export async function GET(req: NextRequest) {
   const fromDefault = new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString().slice(0, 10);
   let from = fromDefault, to = toDefault;
   if (searchParams.get('from')) {
-    const v = validateDateStr(searchParams.get('from'), { label: 'from' });
+    const v = validateDateStr(searchParams.get('from'), { label: 'from', allowPastDays: 1825, allowFutureDays: 2 });
     if (v.error) return err(v.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     from = v.value!;
   }
   if (searchParams.get('to')) {
-    const v = validateDateStr(searchParams.get('to'), { label: 'to' });
+    const v = validateDateStr(searchParams.get('to'), { label: 'to', allowPastDays: 1825, allowFutureDays: 2 });
     if (v.error) return err(v.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     to = v.value!;
   }
   if (from > to) return err('from must be on or before to', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  // Bound the span so the report stays within the single-query row cap.
+  const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+  if (spanDays > 400) return err('date range too large (max 400 days)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
   const rl = await checkAndIncrementRateLimit('compliance-read', hashToRateLimitKey(`${pid}:${session.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

@@ -37,7 +37,7 @@
 --
 -- v2 SEAM — leak/spike anomaly detection on reading trends is explicitly OUT
 -- of v1. The extension point is the per-reading insert in
--- src/lib/compliance/logging.ts (clearly-marked TODO). No anomaly columns or
+-- src/lib/compliance/store.ts (clearly-marked TODO). No anomaly columns or
 -- logic are added here; a future migration can add a derived `anomaly_*`
 -- column without touching the v1 write path.
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -240,7 +240,7 @@ create trigger set_updated_at before update on public.compliance_pm_checks
 insert into public.applied_migrations (version, description)
 values (
   '0229',
-  'Engineering Compliance (feature #19): compliance_reading_types + compliance_readings + compliance_pm_tasks + compliance_pm_checks. Service-role-only RLS. Engineer mobile page /engineer/[id] reads/writes via /api/engineer/*; manager Compliance tab + Dashboard tile via /api/compliance/*. AI: snap-to-log vision, voice/agent log_reading + log_pm_check tools, auto-act work order + SMS on out-of-range, never-miss nudges + GM escalation, one-line AI setup + brand template library, inspector-ready report. v2 anomaly seam left in src/lib/compliance/logging.ts.'
+  'Engineering Compliance (feature #19): compliance_reading_types + compliance_readings + compliance_pm_tasks + compliance_pm_checks. Service-role-only RLS. Engineer mobile page /engineer/[id] reads/writes via /api/engineer/*; manager Compliance tab + Dashboard tile via /api/compliance/*. AI: snap-to-log vision, voice/agent log_reading + log_pm_check tools, auto-act work order + SMS on out-of-range, never-miss nudges + GM escalation, one-line AI setup + brand template library, inspector-ready report. v2 anomaly seam left in src/lib/compliance/store.ts.'
 )
 on conflict (version) do nothing;
 

@@ -12,6 +12,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { enqueueSms } from '@/lib/sms-jobs';
 import { sanitizeForSms } from '@/lib/api-validate';
+import { todayStr, APP_TIMEZONE } from '@/lib/utils';
 import { log } from '@/lib/log';
 import type { WorkOrderPriority } from '@/types';
 
@@ -133,10 +134,13 @@ export async function autoActOnOutOfRangeReading(opts: {
     description: desc,
     priority: 'urgent',
   });
+  // Idempotency base carries the local date so a recurring out-of-range at the
+  // same value on a later day re-texts maintenance (the urgent channel must not
+  // be silently deduped across days). Same value same day → one text.
   await smsMaintenance(
     pid,
     `⚠️ Compliance alert: ${typeName} = ${value}${unit} (${bound}). Work order created — please check the pool/equipment.`,
-    `oor:${pid}:${typeName}:${value}`,
+    `oor:${pid}:${typeName}:${value}:${todayStr(APP_TIMEZONE)}`,
   );
   return workOrderId;
 }
@@ -159,7 +163,7 @@ export async function autoActOnFailedPmCheck(opts: {
   await smsMaintenance(
     pid,
     `⚠️ Compliance alert: ${taskName} check FAILED. Work order created — please remediate.`,
-    `pmfail:${pid}:${taskName}`,
+    `pmfail:${pid}:${taskName}:${todayStr(APP_TIMEZONE)}`,
   );
   return workOrderId;
 }

@@ -25,7 +25,7 @@ import {
   type VisionMediaType,
   type VisionUsageReport,
 } from '@/lib/vision-extract';
-import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
   const mediaV = validateEnum(body.mediaType, MEDIA_TYPES, 'mediaType');
   if (mediaV.error) return err(mediaV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = pidV.value!, staffId = staffV.value!, readingTypeId = typeV.value!;
-  if (typeof body.imageBase64 !== 'string' || body.imageBase64.length < 100) {
+  if (typeof body.imageBase64 !== 'string' || body.imageBase64.length < 100 || body.imageBase64.length > 8_000_000) {
     return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
@@ -69,6 +69,15 @@ export async function POST(req: NextRequest) {
     .eq('property_id', pid)
     .maybeSingle();
   if (!typeRow) return err('Reading type not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+
+  // Per-day budget cap. The engineer has no account, so attribute spend to a
+  // property owner/GM account and gate on the same $/day cap the manager twin
+  // enforces — a leaked magic link otherwise drives unbounded Claude Vision.
+  const accountId = await resolveCostAccount(pid);
+  if (accountId) {
+    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
+    if (!budget.ok) return err(budget.message, { requestId, status: 429, code: budget.reason });
+  }
 
   let usage: VisionUsageReport | null = null;
   try {
@@ -87,19 +96,16 @@ export async function POST(req: NextRequest) {
     log.error('[engineer/vision-reading] vision failed', { requestId, pid, staffId, msg });
     return err(status === 503 ? 'vision_unavailable' : 'vision_failed', { requestId, status, code: ApiErrorCode.UpstreamFailure });
   } finally {
-    // Best-effort cost attribution to a property owner/GM account.
-    if (usage) {
+    // Best-effort cost attribution to the property owner/GM account resolved above.
+    if (usage && accountId) {
       const u = usage as VisionUsageReport;
       try {
-        const accountId = await resolveCostAccount(pid);
-        if (accountId) {
-          await recordNonRequestCost({
-            userId: accountId, propertyId: pid, conversationId: null,
-            model: u.model, modelId: u.modelId,
-            tokensIn: u.inputTokens, tokensOut: u.outputTokens,
-            costUsd: u.costUsd, kind: 'vision',
-          });
-        }
+        await recordNonRequestCost({
+          userId: accountId, propertyId: pid, conversationId: null,
+          model: u.model, modelId: u.modelId,
+          tokensIn: u.inputTokens, tokensOut: u.outputTokens,
+          costUsd: u.costUsd, kind: 'vision',
+        });
       } catch { /* cost ledger best-effort */ }
     }
   }

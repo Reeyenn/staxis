@@ -495,6 +495,11 @@ function ReportModal({ report, lang, onClose }: { report: ComplianceReport; lang
         <Pill tone="ink">{report.totals.pmCheckCount} {tr(lang, 'checks', 'revisiones')}</Pill>
         <Pill tone={report.totals.pmFailCount > 0 ? 'warm' : 'sage'}>{report.totals.pmFailCount} {tr(lang, 'fails', 'fallas')}</Pill>
       </div>
+      {report.truncated && (
+        <div style={{ marginBottom: 14, padding: '8px 12px', borderRadius: 10, background: T.warmDim, color: T.warm, fontSize: 12.5, fontFamily: FONT_SANS }}>
+          {tr(lang, '⚠ This range has too many entries to show in full — narrow the dates for a complete pack.', '⚠ Demasiados registros — reduce el rango para un paquete completo.')}
+        </div>
+      )}
       {[...report.readings, ...report.pmChecks].length === 0 && <Muted>{tr(lang, 'No entries in this range.', 'Sin registros en este rango.')}</Muted>}
       {[...report.readings, ...report.pmChecks].map((row, i) => (
         <div key={i} style={{ marginBottom: 14 }}>

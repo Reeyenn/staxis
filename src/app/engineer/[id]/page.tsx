@@ -319,6 +319,7 @@ function PmCard({ pid, staffId, p, lang, onSaved }: {
   pid: string; staffId: string; p: PmTaskStatus; lang: Lang; onSaved: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [override, setOverride] = useState(false);
   let pill: React.ReactNode;
   if (p.overdue) pill = <Pill tone="warm">{tr(lang, 'Overdue', 'Vencida')}</Pill>;
   else if (p.doneThisPeriod) pill = <Pill tone="sage">{tr(lang, 'Done', 'Hecho')}</Pill>;
@@ -345,7 +346,7 @@ function PmCard({ pid, staffId, p, lang, onSaved }: {
         </div>
         {pill}
       </div>
-      {!p.doneThisPeriod && (
+      {(!p.doneThisPeriod || override) && (
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <Btn variant="sage" size="lg" onClick={() => submit('pass')} disabled={busy} style={{ flex: 1, justifyContent: 'center', height: 46 }}>
             {tr(lang, 'All good ✓', 'Todo bien ✓')}
@@ -354,6 +355,11 @@ function PmCard({ pid, staffId, p, lang, onSaved }: {
             {tr(lang, 'Problem', 'Problema')}
           </Btn>
         </div>
+      )}
+      {p.doneThisPeriod && !override && (
+        <button onClick={() => setOverride(true)} style={{ marginTop: 10, background: 'transparent', border: 'none', cursor: 'pointer', color: T.ink3, fontFamily: FONT_SANS, fontSize: 12.5, textDecoration: 'underline', padding: 0 }}>
+          {tr(lang, 'Re-check / fix this', 'Volver a revisar')}
+        </button>
       )}
     </div>
   );

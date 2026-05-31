@@ -151,6 +151,8 @@ export interface ComplianceReport {
   readings: ComplianceReportRow[];
   pmChecks: ComplianceReportRow[];
   totals: { readingCount: number; outOfRangeCount: number; pmCheckCount: number; pmFailCount: number };
+  /** True when a query hit the row cap — the pack is partial (UI must warn). */
+  truncated: boolean;
 }
 
 /** Lightweight payload for the owner Dashboard tile. */

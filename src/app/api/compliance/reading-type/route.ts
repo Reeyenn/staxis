@@ -111,6 +111,9 @@ export async function POST(req: NextRequest) {
     }
     const minV = numOrNull(body.minValue);
     const maxV = numOrNull(body.maxValue);
+    if (typeof minV === 'number' && typeof maxV === 'number' && minV > maxV) {
+      return err('minValue cannot exceed maxValue', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
     if (minV !== undefined) patch.minValue = minV;
     if (maxV !== undefined) patch.maxValue = maxV;
     await updateReadingType(pid, idV.value!, patch);

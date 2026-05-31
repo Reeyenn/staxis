@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
 
   try {
     let photoPath: string | null = null;
-    if (typeof body.photoBase64 === 'string' && body.photoBase64.length > 100 &&
+    if (typeof body.photoBase64 === 'string' && body.photoBase64.length > 100 && body.photoBase64.length < 8_000_000 &&
         typeof body.mediaType === 'string' && (MEDIA_TYPES as readonly string[]).includes(body.mediaType)) {
       photoPath = await uploadCompliancePhoto(pid, body.photoBase64, body.mediaType);
     }

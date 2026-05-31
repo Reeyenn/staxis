@@ -93,36 +93,56 @@ export function pmPeriodLabel(cadence: PmCadence): string {
   return 'this year';
 }
 
-/** Days in the cadence interval — used for PM next-due / overdue math. */
-function pmIntervalDays(cadence: PmCadence): number {
-  if (cadence === 'monthly') return 31;
-  if (cadence === 'quarterly') return 92;
-  return 366;
+/**
+ * The period_key for the period immediately BEFORE the current one. Used for
+ * calendar-based overdue: a task is overdue when the current period has no pass
+ * AND the previous period was also missed (i.e. ≥1 full period has lapsed).
+ *
+ * Calendar-based — NOT a rolling "last check + N days" interval. A monthly
+ * check done Jan 31 is "due" through February (current period = Feb, prev =
+ * Jan = done) and flips to "overdue" at the March rollover (prev = Feb =
+ * missed). The rolling model used to hide a fully-lapsed period for a variable
+ * extra window depending on the day-of-month of the last check.
+ */
+export function previousPmPeriodKey(
+  cadence: PmCadence,
+  now: Date = new Date(),
+  tz: string = APP_TIMEZONE,
+): string {
+  const { y, m } = tzParts(now, tz);
+  if (cadence === 'monthly') {
+    const pm = m === 1 ? 12 : m - 1;
+    const py = m === 1 ? y - 1 : y;
+    return `${py}-${pad(pm)}`;
+  }
+  if (cadence === 'quarterly') {
+    const q = Math.floor((m - 1) / 3) + 1;
+    const pq = q === 1 ? 4 : q - 1;
+    const py = q === 1 ? y - 1 : y;
+    return `${py}-Q${pq}`;
+  }
+  return `${y - 1}`; // annual
 }
 
-/**
- * Compute PM overdue state.
- *
- *   - Never checked → overdue once the grace window (one cadence interval
- *     from the task's creation) has passed.
- *   - Otherwise → overdue when more than one cadence interval has elapsed
- *     since the last PASS check.
- *
- * `lastPassAt` is the most recent passing check (fails don't reset the clock).
- */
-export function pmOverdue(
+/** ISO timestamp of when the NEXT period begins (informational next-due). */
+export function pmNextDueISO(
   cadence: PmCadence,
-  lastPassAt: string | null,
-  createdAt: string | null,
   now: Date = new Date(),
-): { overdue: boolean; nextDueISO: string | null } {
-  const intervalMs = pmIntervalDays(cadence) * 24 * 3600 * 1000;
-  const anchor = lastPassAt ?? createdAt;
-  if (!anchor) return { overdue: false, nextDueISO: null };
-  const anchorMs = new Date(anchor).getTime();
-  if (!Number.isFinite(anchorMs)) return { overdue: false, nextDueISO: null };
-  const nextDue = anchorMs + intervalMs;
-  return { overdue: now.getTime() > nextDue, nextDueISO: new Date(nextDue).toISOString() };
+  tz: string = APP_TIMEZONE,
+): string {
+  const { y, m } = tzParts(now, tz);
+  if (cadence === 'monthly') {
+    const ny = m === 12 ? y + 1 : y;
+    const nm = m === 12 ? 1 : m + 1;
+    return `${ny}-${pad(nm)}-01T00:00:00Z`;
+  }
+  if (cadence === 'quarterly') {
+    const q = Math.floor((m - 1) / 3) + 1;
+    const nextStartMonth = q === 4 ? 1 : q * 3 + 1;
+    const ny = q === 4 ? y + 1 : y;
+    return `${ny}-${pad(nextStartMonth)}-01T00:00:00Z`;
+  }
+  return `${y + 1}-01-01T00:00:00Z`; // annual
 }
 
 /** Map a completion ratio (0-1) to the app's 70/30 Good/Low/Critical status. */

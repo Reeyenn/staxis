@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   const mediaV = validateEnum(body.mediaType, MEDIA_TYPES, 'mediaType');
   if (mediaV.error) return err(mediaV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = pidV.value!, readingTypeId = typeV.value!;
-  if (typeof body.imageBase64 !== 'string' || body.imageBase64.length < 100) {
+  if (typeof body.imageBase64 !== 'string' || body.imageBase64.length < 100 || body.imageBase64.length > 8_000_000) {
     return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
