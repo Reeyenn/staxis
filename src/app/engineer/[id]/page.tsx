@@ -235,7 +235,9 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
   const fileRef = useRef<HTMLInputElement>(null);
 
   let pill: React.ReactNode;
-  if (r.latestOutOfRange) pill = <Pill tone="warm">{tr(lang, 'Out of range', 'Fuera de rango')}</Pill>;
+  if (r.anomaly) pill = <Pill tone="warm">⚠️ {tr(lang, 'Anomaly', 'Anomalía')}</Pill>;
+  else if (r.latestOutOfRange) pill = <Pill tone="warm">{tr(lang, 'Out of range', 'Fuera de rango')}</Pill>;
+  else if (r.learning) pill = <Pill tone="neutral">{tr(lang, 'Learning…', 'Aprendiendo…')}</Pill>;
   else if (r.doneThisPeriod) pill = <Pill tone="sage">{tr(lang, 'Done', 'Hecho')}</Pill>;
   else pill = <Pill tone="caramel">{tr(lang, 'Due', 'Pendiente')}</Pill>;
 
@@ -285,6 +287,11 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
           <span style={{ display: 'block', fontSize: 12, color: T.ink3, marginTop: 2 }}>
             {r.periodLabel}{range ? ` · ${tr(lang, 'safe', 'seguro')} ${range}` : ''}
           </span>
+          {r.anomaly && (
+            <span style={{ display: 'block', fontSize: 12, color: T.warm, marginTop: 3, lineHeight: 1.35 }}>
+              ⚠️ {lang === 'es' && r.anomaly.reasonEs ? r.anomaly.reasonEs : r.anomaly.reason}
+            </span>
+          )}
         </span>
         {pill}
       </button>

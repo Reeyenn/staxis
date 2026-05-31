@@ -61,6 +61,8 @@ export const runComplianceSetup = (pid: string, text?: string) => postManager<{ 
 export const loadComplianceTemplate = (pid: string, templateKey: string) => postManager<{ readingsCreated: number; pmCreated: number }>(`/api/compliance/load-template`, { pid, templateKey });
 export const sendEngineerLinks = (pid: string, baseUrl?: string) => postManager<{ sent: number; skipped: number; failed: number; perStaff: Array<{ name: string; status: string; reason?: string }> }>(`/api/send-engineer-links`, { pid, baseUrl });
 export const managerVisionReading = (body: unknown) => postManager<{ value: number | null; unit: string | null; confidence: string; note: string | null }>(`/api/compliance/vision-reading`, body);
+// v2: dismiss an active leak/spike anomaly alert.
+export const acknowledgeAnomaly = (pid: string, alertId: string) => postManager<{ alertId: string }>(`/api/compliance/anomaly-ack`, { pid, alertId });
 
 export async function fetchComplianceTemplates(): Promise<Array<{ key: string; label: string; readingCount: number; pmCount: number }>> {
   const res = await fetchWithAuth(`/api/compliance/load-template`);

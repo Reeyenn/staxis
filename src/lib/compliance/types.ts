@@ -92,6 +92,30 @@ export interface PmCheck {
   workOrderId: string | null;
 }
 
+// ─── v2 anomaly detection ────────────────────────────────────────────────────
+
+/** A recorded leak/spike/drift/flatline anomaly alert (migration 0236). */
+export interface AnomalyAlert {
+  id: string;
+  propertyId: string;
+  readingTypeId: string;
+  readingId: string | null;
+  kind: 'spike' | 'drift' | 'flatline';
+  severity: 'info' | 'warn' | 'critical';
+  baselineMean: number | null;
+  baselineStddev: number | null;
+  observedValue: number | null;
+  score: number | null;
+  confidence: number | null;
+  reason: string;            // plain-English
+  reasonEs: string | null;   // plain-Spanish
+  aiPhrased: boolean;
+  detectedBy: 'reading' | 'sweep';
+  status: 'active' | 'acknowledged' | 'resolved';
+  workOrderId: string | null;
+  createdAt: string;
+}
+
 // ─── Derived view models (computed server-side, sent to the UI) ──────────────
 
 /** A reading type plus its current-period status. */
@@ -107,6 +131,11 @@ export interface ReadingTypeStatus {
   periodLabel: string;
   /** True when the latest reading is out of its safe range. */
   latestOutOfRange: boolean;
+  /** v2: active anomaly alert for this type, if any (most severe/recent). */
+  anomaly: AnomalyAlert | null;
+  /** v2: true when there isn't enough history yet for anomaly detection
+   *  (cold-start) — the UI shows a "learning" badge, never a false alarm. */
+  learning: boolean;
 }
 
 /** A PM task plus its current-period / overdue status. */
@@ -133,6 +162,8 @@ export interface ComplianceOverview {
   /** # of active PM tasks currently overdue. */
   pmOverdueCount: number;
   pmTotal: number;
+  /** v2: # of reading types with an active anomaly alert. */
+  anomalyCount: number;
 }
 
 // ─── Inspector-ready report ──────────────────────────────────────────────────
@@ -162,6 +193,8 @@ export interface ComplianceSummary {
   readingsTotal: number;
   pmOverdueCount: number;
   pmTotal: number;
+  /** v2: # of reading types with an active anomaly alert. */
+  anomalyCount: number;
   /** 70/30 status color the tile renders. */
   status: 'good' | 'low' | 'critical';
 }

@@ -734,6 +734,11 @@ export default function DashboardPage() {
                       compliance ? String(compliance.pmOverdueCount) : '—',
                       compliance && compliance.pmOverdueCount > 0 ? C.warm : C.ink,
                     ],
+                    [
+                      lang === 'es' ? 'Anomalías' : 'Anomalies',
+                      compliance ? String(compliance.anomalyCount) : '—',
+                      compliance && compliance.anomalyCount > 0 ? C.warm : C.ink,
+                    ],
                   ] as [string, string, string][]).map(([k, v, color]) => (
                     <div key={k} style={{
                       display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',

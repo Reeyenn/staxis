@@ -153,6 +153,17 @@ async function applyStubs(pg: PGlite): Promise<void> {
       raw_app_meta_data jsonb default '{}'::jsonb,
       created_at timestamptz default now()
     );
+
+    -- Real Supabase grants anon + authenticated USAGE on the auth schema and
+    -- EXECUTE on auth.uid()/auth.jwt()/auth.role() by default. Mirror that so
+    -- RLS policies that inline a NON-security-definer helper (e.g.
+    -- public.mfa_verified_or_grace() → auth.jwt()) evaluate as the
+    -- authenticated role instead of erroring "permission denied for schema
+    -- auth". user_owns_property() is SECURITY DEFINER so it never hit this,
+    -- which is why only MFA-gated tables (0161+, e.g. complaints/
+    -- guest_requests) tripped the cross-tenant SELECT loop.
+    grant usage on schema auth to anon, authenticated;
+    grant execute on function auth.uid(), auth.jwt(), auth.role() to anon, authenticated;
   `);
 
   // Stub the supabase_realtime publication so migrations that ALTER it
