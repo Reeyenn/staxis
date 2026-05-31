@@ -36,6 +36,7 @@ const PUBLIC_EXACT = new Set<string>([
   // SMS-linked staff pages — auth via URL params (uid+pid+staffId), not session
   '/housekeeper',
   '/laundry',
+  '/engineer',
 ]);
 
 const PUBLIC_PREFIXES = [
@@ -44,6 +45,7 @@ const PUBLIC_PREFIXES = [
   '/invite/',        // /invite/[token]
   '/housekeeper/',   // /housekeeper/[id]
   '/laundry/',       // /laundry/[id]
+  '/engineer/',      // /engineer/[id] — engineering-compliance mobile page
   '/api/',           // every API route does its own auth
 ];
 

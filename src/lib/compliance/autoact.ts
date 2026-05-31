@@ -10,7 +10,6 @@
 // block the underlying reading/check from being recorded (audit integrity).
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { toWorkOrderRow } from '@/lib/db-mappers';
 import { enqueueSms } from '@/lib/sms-jobs';
 import { sanitizeForSms } from '@/lib/api-validate';
 import { log } from '@/lib/log';
@@ -26,29 +25,30 @@ export function toE164(raw: string): string | null {
 }
 
 /**
- * Create a work order on the manager-facing `work_orders` table via the same
- * row mapper the UI uses. Returns the new id, or null on failure (logged).
+ * Create a work order on the manager-facing `work_orders` table (the table the
+ * Maintenance > Work Orders tab + owner Dashboard read). Inserts only the
+ * columns that table actually has — `toWorkOrderRow` is stale (it still maps
+ * dropped columns like submitter_role/completion_*; existing callers only dodge
+ * that because dropUndefined removes the unset fields). status 'submitted'
+ * reads back as "open" via STATUS_FROM_DB. Returns the new id, or null (logged).
  */
 export async function createComplianceWorkOrder(
   pid: string,
   opts: { location: string; description: string; priority: WorkOrderPriority },
 ): Promise<string | null> {
   try {
-    const row = {
-      ...toWorkOrderRow({
-        propertyId: pid,
-        location: opts.location,
-        description: opts.description.slice(0, 1000),
-        priority: opts.priority,
-        status: 'open',
-        submittedByName: 'Staxis Compliance',
-        submitterRole: 'Engineering Compliance (auto)',
-      }),
-      property_id: pid,
-    };
+    const severity = opts.priority === 'urgent' ? 'urgent' : opts.priority === 'low' ? 'low' : 'medium';
     const { data, error } = await supabaseAdmin
       .from('work_orders')
-      .insert(row)
+      .insert({
+        property_id: pid,
+        room_number: opts.location.slice(0, 120),
+        description: opts.description.slice(0, 1000),
+        severity,
+        status: 'submitted',
+        submitted_by_name: 'Staxis Compliance',
+        source: 'compliance',
+      })
       .select('id')
       .single();
     if (error) {
