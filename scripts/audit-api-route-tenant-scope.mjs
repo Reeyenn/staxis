@@ -85,6 +85,11 @@ const KNOWN_GUARDS = [
   // the staff member belongs to the property. Same trust model as the
   // legacy room-action route, just factored into one helper.
   'gateHousekeeperRequest',
+  // Lost & Found front-desk gates (src/lib/lost-and-found/api-gate.ts) — each
+  // wraps requireSession + management-role check + userHasPropertyAccess +
+  // rate limit before any supabaseAdmin access.
+  'gateFrontDeskRead',
+  'gateFrontDeskWrite',
 ];
 
 // Inline capability-check patterns. If a file contains any of these

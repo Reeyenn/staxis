@@ -14,6 +14,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/compliance-reminders",
+      "schedule": "0 * * * *"
+    },
+    {
       "path": "/api/cron/agent-sweep-reservations",
       "schedule": "*/5 * * * *"
     },
@@ -88,6 +92,10 @@
     {
       "path": "/api/cron/run-weekly-report",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/lost-found-disposal-check",
+      "schedule": "0 16 * * *"
     },
     {
       "path": "/api/cron/send-complaint-nudges",

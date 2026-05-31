@@ -38,6 +38,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
   // its replacement.
   { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'compliance-reminders',              source: { kind: 'vercel', cronPath: '/api/cron/compliance-reminders' },             cronExpr: '0 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'doctor-check',                      source: { kind: 'vercel', cronPath: '/api/cron/doctor-check' },                       cronExpr: '0 * * * *' },
@@ -50,6 +51,9 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Hourly per-property seal-daily. Reads today_property_counts_v1
   // (Plan v4 bridge → pms_in_house_snapshot + pms_reservations).
   { heartbeatName: 'seal-daily', source: { kind: 'vercel', cronPath: '/api/cron/seal-daily' }, cronExpr: '5 * * * *' },
+  // Daily Lost & Found disposal sweep — auto-expires items past their 90-day
+  // hold and nudges GMs about items nearing disposal.
+  { heartbeatName: 'lost-found-disposal-check', source: { kind: 'vercel', cronPath: '/api/cron/lost-found-disposal-check' }, cronExpr: '0 16 * * *' },
   // Daily — most live in ml-cron.yml's multi-cron list
   { heartbeatName: 'ml-run-inference',      source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 10 * * *' },
   { heartbeatName: 'ml-predict-inventory',  source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 11 * * *' },

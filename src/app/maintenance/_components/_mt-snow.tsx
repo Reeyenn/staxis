@@ -357,8 +357,8 @@ export function daysBetween(a: Date, b: Date): number {
   return Math.round((bb.getTime() - aa.getTime()) / (24 * 60 * 60 * 1000));
 }
 
-// ── Maintenance sub-tab bar — two tabs only ────────────────────────────────
-export type MaintenanceTabKey = 'work' | 'preventive';
+// ── Maintenance sub-tab bar ────────────────────────────────────────────────
+export type MaintenanceTabKey = 'work' | 'preventive' | 'compliance';
 
 export function MTSubTabBar({
   tab, onTab,
@@ -369,6 +369,7 @@ export function MTSubTabBar({
   const tabs: { key: MaintenanceTabKey; label: string }[] = [
     { key: 'work',       label: 'Work orders' },
     { key: 'preventive', label: 'Preventive'  },
+    { key: 'compliance', label: 'Compliance'  },
   ];
   return (
     <div style={{

@@ -307,3 +307,71 @@ export async function buildHousekeeperLink(
     `&code=${encodeURIComponent(code)}`
   );
 }
+
+/**
+ * Mint a one-time magic-link for an ENGINEERING / MAINTENANCE staff member —
+ * the Engineering Compliance feature's mobile surface (/engineer/[id]).
+ *
+ * Byte-for-byte the same security model as buildHousekeeperLink: cross-tenant
+ * gate via ensureStaffAuthUser(staffId, pid), Supabase magic-link hashed_token
+ * stored server-side in staff_magic_codes, only the short opaque CODE in the
+ * URL. The page exchanges the code via /api/housekeeper/exchange-code (that
+ * route is department-agnostic — it keys on staff_magic_codes by code+staff+
+ * property). The ONLY difference is the URL path: /engineer/ instead of
+ * /housekeeper/.
+ *
+ * Returned URL shape:
+ *   https://getstaxis.com/engineer/{staffId}?pid={pid}&code={short_code}
+ */
+export async function buildEngineerLink(
+  staffId: string,
+  pid: string,
+  baseUrl: string = 'https://getstaxis.com',
+): Promise<string> {
+  const { email } = await ensureStaffAuthUser(staffId, pid);
+
+  const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+    type: 'magiclink',
+    email,
+  });
+  if (error) {
+    throw new Error(`[staff-auth] generateLink failed: ${errToString(error)}`);
+  }
+  const tokenHash = data?.properties?.hashed_token;
+  if (!tokenHash) {
+    // FAIL CLOSED — same rationale as buildHousekeeperLink: never fall back to
+    // action_link (would leak the credential in the URL).
+    throw new Error(
+      '[staff-auth] generateLink: hashed_token absent — refusing to fall back to action_link (would leak credential in URL)',
+    );
+  }
+
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  let code: string | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = generateMagicCode();
+    const { error: insErr } = await supabaseAdmin
+      .from('staff_magic_codes')
+      .insert({
+        code: candidate,
+        staff_id: staffId,
+        property_id: pid,
+        hashed_token: tokenHash,
+        expires_at: expiresAt,
+      });
+    if (!insErr) { code = candidate; break; }
+    if (insErr.code !== '23505') {
+      throw new Error(`[staff-auth] staff_magic_codes insert failed: ${errToString(insErr)}`);
+    }
+  }
+  if (!code) {
+    throw new Error('[staff-auth] staff_magic_codes insert: 5 collisions in a row — PRNG broken?');
+  }
+
+  const cleanBase = baseUrl.replace(/\/$/, '');
+  return (
+    `${cleanBase}/engineer/${encodeURIComponent(staffId)}` +
+    `?pid=${encodeURIComponent(pid)}` +
+    `&code=${encodeURIComponent(code)}`
+  );
+}

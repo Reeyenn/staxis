@@ -22,9 +22,13 @@ import {
   subscribeToHandoffLogs,
   subscribeToDashboardNumbers,
   subscribeToComplaints,
+  fetchComplianceSummary,
+  subscribeLostFoundCounts,
   type DashboardNumbers,
+  type LostFoundCounts,
 } from '@/lib/db';
 import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
+import type { ComplianceSummary } from '@/lib/compliance/types';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
 import StaleDataBanner from '@/components/StaleDataBanner';
@@ -270,11 +274,17 @@ export default function DashboardPage() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [, setHandoffs] = useState<HandoffEntry[]>([]);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
+  const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
+  const [lostFound, setLostFound] = useState<LostFoundCounts | null>(null);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
   }, [user, activePropertyId, today]);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeLostFoundCounts(activePropertyId, setLostFound);
+  }, [user, activePropertyId]);
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
@@ -284,6 +294,16 @@ export default function DashboardPage() {
     return subscribeToHandoffLogs(user.uid, activePropertyId, setHandoffs);
   }, [user, activePropertyId]);
   useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
+  // Compliance tile — service-role tables, so fetch through /api (refetch on a
+  // poll; the compliance surfaces refetch-on-write, not realtime).
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    let alive = true;
+    const load = () => { void fetchComplianceSummary(activePropertyId).then((s) => { if (alive) setCompliance(s); }); };
+    load();
+    const iv = setInterval(load, 60_000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [user, activePropertyId]);
 
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   useEffect(() => {
@@ -690,6 +710,80 @@ export default function DashboardPage() {
                 </div>
                 <div style={{ marginTop: 6, fontSize: 11.5, color: C.ink3, fontFamily: FONT_MONO, letterSpacing: '0.04em' }}>
                   {lang === 'es' ? "por habitación · promedio de hoy" : "per room · today's average"}
+                </div>
+              </div>
+
+              {/* Compliance — engineering readings + life-safety checks (feature #19) */}
+              <div style={{
+                background: 'rgba(255,255,255,0.78)',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255,255,255,0.75)',
+                borderRadius: 16, padding: '16px 18px',
+              }}>
+                <div style={LABEL}>{lang === 'es' ? 'Cumplimiento' : 'Compliance'}</div>
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {([
+                    [
+                      lang === 'es' ? 'Lecturas hoy' : 'Readings today',
+                      compliance ? `${compliance.readingsCompletePct}%` : '—',
+                      compliance ? (compliance.readingsCompletePct >= 70 ? C.sage : compliance.readingsCompletePct >= 30 ? '#B8853A' : C.warm) : C.ink3,
+                    ],
+                    [
+                      lang === 'es' ? 'Vencidas' : 'Overdue checks',
+                      compliance ? String(compliance.pmOverdueCount) : '—',
+                      compliance && compliance.pmOverdueCount > 0 ? C.warm : C.ink,
+                    ],
+                  ] as [string, string, string][]).map(([k, v, color]) => (
+                    <div key={k} style={{
+                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
+                    }}>
+                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
+                      <span style={{
+                        fontFamily: FONT_SERIF, fontStyle: 'italic',
+                        fontSize: 22, fontWeight: 500, color,
+                        letterSpacing: '-0.025em', lineHeight: 1,
+                      }}>{v}</span>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11.5, color: C.ink3 }}>
+                    {lang === 'es' ? 'Mantenimiento → Cumplimiento' : 'Maintenance → Compliance'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Lost & Found */}
+              <div style={{
+                background: 'rgba(255,255,255,0.78)',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255,255,255,0.75)',
+                borderRadius: 16, padding: '16px 18px',
+              }}>
+                <div style={LABEL}>{lang === 'es' ? 'Objetos perdidos' : 'Lost & Found'}</div>
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {([
+                    [lang === 'es' ? 'Abiertos'    : 'Open',            lostFound?.open ?? 0,            C.ink],
+                    [lang === 'es' ? 'Por devolver' : 'Awaiting return', lostFound?.awaitingReturn ?? 0,  C.caramel],
+                    [lang === 'es' ? 'Por desechar' : 'Nearing disposal', lostFound?.nearingDisposal ?? 0,
+                      (lostFound?.nearingDisposal ?? 0) > 0 ? C.warm : C.ink3],
+                  ] as [string, number, string][]).map(([k, v, color]) => (
+                    <div key={k} style={{
+                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
+                    }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13.5, color: C.ink2 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
+                        {k}
+                      </span>
+                      <span style={{
+                        fontFamily: FONT_SERIF, fontStyle: 'italic',
+                        fontSize: 22, fontWeight: 500, color,
+                        letterSpacing: '-0.025em', lineHeight: 1,
+                      }}>{v}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

@@ -188,7 +188,35 @@ export type RateLimitEndpoint =
   | 'complaints-log'
   | 'complaints-update'
   | 'complaints-draft'
-  | 'complaints-sms';
+  | 'complaints-sms'
+  // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
+  // property id (a real properties.id) — api_limits.property_id has an FK to
+  // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
+  // FK-violates → the RPC errors → billing endpoints fail CLOSED (429 on every
+  // call). So these are per-property caps, like laundry-bootstrap / send-shift-
+  // confirmations. Vision + voice + setup + link-send are billing-impacting
+  // (Claude / Twilio) and fail closed.
+  | 'engineer-bootstrap'      // polled read of due readings + PM checks
+  | 'engineer-log'            // tap-to-log a reading or PM check
+  | 'engineer-vision'         // snap-to-log: Claude Vision reads a gauge/strip
+  | 'engineer-voice'          // voice/typed natural-language reading log (Claude)
+  | 'engineer-save-language'  // language switcher
+  | 'compliance-read'         // manager overview / summary / report reads
+  | 'compliance-config'       // manager create/edit reading types + PM tasks + templates
+  | 'compliance-log'          // manager logs a reading / PM check from desktop
+  | 'compliance-setup'        // one-line AI setup (Claude)
+  | 'compliance-vision'       // manager snap-to-log (Claude Vision)
+  | 'send-engineer-links'     // SMS the compliance magic-link to maintenance staff
+  // Lost & Found (feature, 2026-05-30). Front-desk register + AI features +
+  // housekeeper "Found an item". Reads keyed on pid; writes/AI/SMS too.
+  | 'lost-found-read'
+  | 'lost-found-write'
+  | 'lost-found-describe-photo'
+  | 'lost-found-auto-match'
+  | 'lost-found-notify-guest'
+  | 'lost-found-photo-presign'
+  | 'housekeeper-report-found-item'
+  | 'housekeeper-found-item-photo-presign';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -354,6 +382,33 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'complaints-update':           300,
   'complaints-draft':             30,
   'complaints-sms':               60,
+  // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
+  // Read/log caps sized for several engineers polling one property at once
+  // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
+  // send-engineer-links matches the SMS-fan-out cap shape.
+  'engineer-bootstrap':         1200,
+  'engineer-log':                600,
+  'engineer-vision':              50,
+  'engineer-voice':               60,
+  'engineer-save-language':       30,
+  'compliance-read':            1800,
+  'compliance-config':           100,
+  'compliance-log':              200,
+  'compliance-setup':             20,
+  'compliance-vision':            50,
+  'send-engineer-links':          10,
+  // Lost & Found (2026-05-30). Register read is polled (~30s/tab) + the
+  // dashboard tile polls counts — 3600/hr per property absorbs several
+  // terminals. Writes are deliberate desk actions. AI + SMS endpoints cost
+  // money so they're tighter (and fail-closed below).
+  'lost-found-read':            3600,
+  'lost-found-write':            300,
+  'lost-found-describe-photo':    50,
+  'lost-found-auto-match':        60,
+  'lost-found-notify-guest':      30,
+  'lost-found-photo-presign':    200,
+  'housekeeper-report-found-item': 200,
+  'housekeeper-found-item-photo-presign': 200,
 };
 
 /**
@@ -445,6 +500,7 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
+<<<<<<< HEAD
   // Complaints — Claude service-recovery draft (token cost) + Twilio
   // assignee-notify / satisfaction-callback nudges (per-message charge).
   // Fail CLOSED so a Supabase blip can't uncap spend. complaints-log is here
@@ -452,6 +508,19 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'complaints-log',
   'complaints-draft',
   'complaints-sms',
+=======
+  // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
+  // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
+  'engineer-vision',
+  'engineer-voice',
+  'compliance-setup',
+  'compliance-vision',
+  'send-engineer-links',
+  // Lost & Found — vision (describe), Claude (auto-match), Twilio (notify).
+  // Each call costs money, so fail CLOSED if the rate-limit RPC errors.
+  'lost-found-describe-photo',
+  'lost-found-auto-match',
+  'lost-found-notify-guest',
 ]);
 
 /**
