@@ -2142,6 +2142,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity escalation.
   { name: 'send-complaint-nudges',         cadenceHours: 15/60, description: '15-min Vercel cron — texts the property alert phone when a satisfaction callback is due or a high-severity complaint sits unresolved (idempotent via callback_nudged_at / escalation_nudged_at)' },
   { name: 'lost-found-disposal-check',     cadenceHours: 24, description: 'Daily Lost & Found disposal sweep — auto-expires found items past their 90-day hold and nudges owners/GMs about items nearing the deadline' },
+  { name: 'financials-alert-sweep',        cadenceHours: 24, description: 'Daily financials sweep — projects month-end overspend per department (occupancy-adjusted) + flags spend anomalies, texts the property alert phone ONLY when financials_alerts_sms_enabled. Idempotent/no-spam via app_events dedup; SMS billing-gated on raw pid' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

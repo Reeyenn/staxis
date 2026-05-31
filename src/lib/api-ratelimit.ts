@@ -189,6 +189,14 @@ export type RateLimitEndpoint =
   | 'complaints-update'
   | 'complaints-draft'
   | 'complaints-sms'
+  // Financials — GM/owner finance suite (2026-05-31). ALL keyed on the RAW
+  // property id (api_limits.property_id has an FK to properties(id), so a hashed
+  // pid:user pseudo-UUID FK-violates → the RPC errors → billing endpoints fail
+  // CLOSED). scan-invoice / scan-quote run Claude Vision; sms = overspend /
+  // anomaly alert fan-out. All three are billing-impacting → fail closed.
+  | 'financials-scan-invoice'
+  | 'financials-scan-quote'
+  | 'financials-sms'
   // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
   // property id (a real properties.id) — api_limits.property_id has an FK to
   // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
@@ -403,6 +411,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'complaints-update':           300,
   'complaints-draft':             30,
   'complaints-sms':               60,
+  // Financials — GM/owner finance suite. Per-property (raw pid). scan-* are
+  // Claude-Vision-cost-bounded (a manager scanning a stack of invoices); sms is
+  // the overspend/anomaly alert fan-out, same shape as complaints-sms.
+  'financials-scan-invoice':      50,
+  'financials-scan-quote':        50,
+  'financials-sms':               60,
   // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
   // Read/log caps sized for several engineers polling one property at once
   // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
@@ -569,6 +583,12 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'comms-summary',
   'comms-polish',
   'comms-transcribe',
+  // Financials — Claude Vision (scan invoice / contractor quote) + Twilio
+  // overspend/anomaly alert fan-out. Fail CLOSED so a DB blip can't uncap
+  // Anthropic / Twilio spend.
+  'financials-scan-invoice',
+  'financials-scan-quote',
+  'financials-sms',
 ]);
 
 /**

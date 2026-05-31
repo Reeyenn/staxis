@@ -6,9 +6,10 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { canViewFinancials } from '@/lib/roles';
 import {
   LayoutDashboard, BedDouble, Wrench, Package, Users,
-  Bell, Settings, LogOut, Globe,
+  Bell, Settings, LogOut, Globe, DollarSign,
 } from 'lucide-react';
 
 export function Sidebar() {
@@ -23,6 +24,10 @@ export function Sidebar() {
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance', icon: Wrench },
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory',   icon: Package },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff',         icon: Users },
+    // Financials — owner/GM/admin only (sensitive); same gate as the Header nav.
+    ...(user && canViewFinancials(user.role)
+      ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials', icon: DollarSign }]
+      : []),
   ];
 
   return (

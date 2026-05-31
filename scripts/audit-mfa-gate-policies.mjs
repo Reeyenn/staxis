@@ -59,6 +59,11 @@ const EXEMPT = new Set([
   // service-role signed-URL helpers; no authenticated browser role touches
   // the bucket. The deny policy applies to anon, not a 2FA-gated surface.
   'objects:anon deny lost-found-item-photos',
+  // Capex-attachments bucket (migration 0239). Same idiom: uploads + views go
+  // through /api/financials/capex/attachment (service-role, behind the owner/GM
+  // finance gate). No authenticated browser role touches the bucket; the deny
+  // policy applies to anon, not a 2FA-gated surface.
+  'objects:anon deny capex-attachments',
 ]);
 
 // Regex matches `create policy NAME on TABLE` or `alter policy NAME on TABLE`.

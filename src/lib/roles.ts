@@ -38,6 +38,15 @@ export function canManageTeam(role: AppRole): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager';
 }
 
+// Roles that can see the Financials suite (Checkbook / Budget / CapEx, revenue,
+// profit). Finance is sensitive — front_desk / housekeeping / maintenance / staff
+// must NOT reach the tab or any /api/financials/* route. Same trio as
+// canManageTeam today, but kept as its own predicate so the finance gate can
+// diverge from team-management without a security regression.
+export function canViewFinancials(role: AppRole): boolean {
+  return role === 'admin' || role === 'owner' || role === 'general_manager';
+}
+
 // Display label for the role (English). Spanish translations live in the UI.
 export function roleLabel(role: AppRole): string {
   switch (role) {
