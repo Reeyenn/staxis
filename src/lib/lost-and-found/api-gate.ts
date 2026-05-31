@@ -9,6 +9,10 @@
 // client-side, but a housekeeper who happens to have property access must not be
 // able to POST to the register (which carries guest PII) by calling the API
 // directly. admin/owner/general_manager/front_desk only.
+//
+// Rate limit is keyed on the bare property UUID (not pid:userId) ON PURPOSE: for
+// the billing-impacting AI/SMS endpoints a per-property cap bounds spend
+// regardless of how many staff accounts are involved. Don't "fix" it to per-user.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { NextRequest } from 'next/server';

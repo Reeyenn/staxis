@@ -27,7 +27,10 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
+// Match the photo bucket / presign allow-list (no gif — L&F photos are camera
+// stills). describe-photo uses inline base64 so nothing is stored, but keeping
+// the lists aligned avoids a latent "describe accepts it, upload rejects it" trap.
+const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 
 interface Body {
   pid?: string;
@@ -43,7 +46,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (typeof body.imageBase64 !== 'string' || body.imageBase64.length < 100) {
     return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!SUPPORTED_MEDIA_TYPES.includes(body.mediaType as VisionMediaType)) {
+  if (!(SUPPORTED_MEDIA_TYPES as readonly string[]).includes(body.mediaType ?? '')) {
     return err('unsupported_media_type', {
       requestId,
       status: 400,

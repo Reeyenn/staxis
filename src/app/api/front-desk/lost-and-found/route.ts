@@ -31,6 +31,7 @@ import {
   updateAppItem,
   matchItems,
   signItemPhotos,
+  isValidItemPhotoPath,
 } from '@/lib/lost-and-found/store';
 import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
 
@@ -152,15 +153,12 @@ export async function POST(req: NextRequest): Promise<Response> {
         const notesV = optStr(body.notes, 1000, 'notes');
         if (notesV.error) return bad(notesV.error);
 
-        // Photo path must belong to THIS property's storage scope — never
-        // accept an arbitrary or cross-tenant key.
+        // Photo path must match the EXACT shape our presign route mints under
+        // this property — never an arbitrary, traversal, or cross-tenant key.
         let photoPath: string | null = null;
         if (body.photoPath) {
-          const p = String(body.photoPath);
-          if (p.length > 200 || !p.startsWith(`${pid}/`) || !/^[A-Za-z0-9/_.-]+$/.test(p)) {
-            return bad('invalid photoPath');
-          }
-          photoPath = p;
+          if (!isValidItemPhotoPath(pid, body.photoPath)) return bad('invalid photoPath');
+          photoPath = String(body.photoPath);
         }
 
         let occurredAt: string | null = null;

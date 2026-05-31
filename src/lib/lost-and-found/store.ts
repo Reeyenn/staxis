@@ -50,6 +50,25 @@ function asJsonb(v: unknown): Record<string, unknown> | null {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
+/**
+ * Validate a stored photo path against the EXACT shape our presign routes mint:
+ *   <pid>/<fd|hk>/<scopeKey>/<uuid>.<ext>
+ * Rejects path traversal (`..`), wrong property prefix, extra segments, and any
+ * arbitrary same-prefix key — so signItemPhotos can never sign something a
+ * caller hand-crafted to point elsewhere. Used by both the front-desk log route
+ * and the housekeeper report route.
+ */
+export function isValidItemPhotoPath(pid: string, path: unknown): boolean {
+  if (typeof path !== 'string' || path.length === 0 || path.length > 200) return false;
+  if (path.includes('..')) return false;
+  const parts = path.split('/');
+  if (parts.length !== 4) return false;
+  if (parts[0] !== pid) return false;
+  if (parts[1] !== 'fd' && parts[1] !== 'hk') return false;
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(parts[2])) return false;
+  return /^[0-9a-f-]{36}\.(jpg|jpeg|png|webp|heic|heif)$/i.test(parts[3]);
+}
+
 // ─── Normalizers ────────────────────────────────────────────────────────────
 
 function normalizeAppRow(r: Record<string, unknown>): LostFoundItem {
@@ -129,7 +148,14 @@ export async function fetchRegister(propertyId: string): Promise<LostFoundItem[]
       .limit(2000),
   ]);
 
-  if (appRes.error) logErr('lost-and-found.fetchRegister(app)', appRes.error);
+  // The app table is the primary source — fail CLOSED so the route returns an
+  // error rather than computing silently-wrong counts from partial data. The
+  // PMS table is supplementary (empty in Phase 1); a transient CUA-side error
+  // degrades to app-only data (logged) instead of breaking the whole register.
+  if (appRes.error) {
+    logErr('lost-and-found.fetchRegister(app)', appRes.error);
+    throw new Error('lost_and_found read failed');
+  }
   if (pmsRes.error) logErr('lost-and-found.fetchRegister(pms)', pmsRes.error);
 
   const app = asRecordRows(appRes.data).map(normalizeAppRow);
@@ -178,7 +204,10 @@ export function computeCounts(items: LostFoundItem[], nowMs: number = Date.now()
   let nearingDisposal = 0;
   for (const it of items) {
     if (it.status === 'open') open += 1;
-    if (it.status === 'matched') awaitingReturn += 1;
+    // A match flips BOTH the lost report and the found item to 'matched'.
+    // Count only the FOUND side so one logical match = one "awaiting return"
+    // (the physical item to hand back), not two.
+    if (it.type === 'found' && it.status === 'matched') awaitingReturn += 1;
     if (it.type === 'found' && it.status === 'open' && it.holdUntil) {
       const ms = Date.parse(it.holdUntil);
       if (Number.isFinite(ms) && ms <= nearingCutoff) nearingDisposal += 1;
@@ -355,19 +384,44 @@ export async function matchItems(
     return { ok: false, error: 'already_resolved' };
   }
 
-  const a = await updateAppItem(propertyId, lostId, {
-    matchedItemId: foundId,
-    status: 'matched',
-  });
-  if (!a.ok) return a;
-  const b = await updateAppItem(propertyId, foundId, {
-    matchedItemId: lostId,
-    status: 'matched',
-  });
-  if (!b.ok) {
-    // Best-effort rollback of the first leg so we don't leave a half-match.
-    await updateAppItem(propertyId, lostId, { matchedItemId: null, status: 'open' });
-    return b;
+  // Conditional updates guard against a concurrent match (the pre-checks above
+  // only give friendly errors; the WHERE clauses are the real race guard).
+  // Each leg flips ONLY a row that is still its type + open + unmatched. If the
+  // lost leg matches 0 rows, someone matched it first → abort. If the found leg
+  // matches 0 rows, roll the lost leg back so we never leave a half-match.
+  const { data: lostUpd, error: lostErr } = await supabaseAdmin
+    .from('lost_and_found_items')
+    .update({ matched_item_id: foundId, status: 'matched' })
+    .eq('property_id', propertyId)
+    .eq('id', lostId)
+    .eq('type', 'lost')
+    .eq('status', 'open')
+    .is('matched_item_id', null)
+    .select('id');
+  if (lostErr) {
+    logErr('lost-and-found.matchItems(lost)', lostErr);
+    return { ok: false, error: 'update_failed' };
+  }
+  if (!lostUpd || lostUpd.length === 0) return { ok: false, error: 'already_resolved' };
+
+  const { data: foundUpd, error: foundErr } = await supabaseAdmin
+    .from('lost_and_found_items')
+    .update({ matched_item_id: lostId, status: 'matched' })
+    .eq('property_id', propertyId)
+    .eq('id', foundId)
+    .eq('type', 'found')
+    .eq('status', 'open')
+    .is('matched_item_id', null)
+    .select('id');
+  if (foundErr || !foundUpd || foundUpd.length === 0) {
+    if (foundErr) logErr('lost-and-found.matchItems(found)', foundErr);
+    // Roll the lost leg back to open/unmatched.
+    await supabaseAdmin
+      .from('lost_and_found_items')
+      .update({ matched_item_id: null, status: 'open' })
+      .eq('property_id', propertyId)
+      .eq('id', lostId);
+    return { ok: false, error: foundErr ? 'update_failed' : 'already_resolved' };
   }
   return { ok: true };
 }

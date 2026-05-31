@@ -65,7 +65,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     const expiredIds: string[] = [];
     const perProperty = new Map<string, { expired: number; nearing: number }>();
     for (const r of rows) {
-      const isExpired = !!r.hold_until && r.hold_until <= nowIso;
+      // Parse to epoch ms rather than comparing ISO strings (offset/fractional
+      // formats from PostgREST would make a string compare unreliable).
+      const holdMs = r.hold_until ? Date.parse(r.hold_until) : NaN;
+      const isExpired = Number.isFinite(holdMs) && holdMs <= now;
       const bucket = perProperty.get(r.property_id) ?? { expired: 0, nearing: 0 };
       if (isExpired) {
         expiredIds.push(r.id);
@@ -76,12 +79,17 @@ export async function GET(req: NextRequest): Promise<Response> {
       perProperty.set(r.property_id, bucket);
     }
 
-    // Auto-expire in one bulk update.
+    // Auto-expire in one bulk update. Re-assert the predicates (type/open/past
+    // hold) so an item a staffer returned/shipped/disposed between our SELECT
+    // and this UPDATE is never clobbered back to 'expired'.
     if (expiredIds.length > 0) {
       const { error: updErr } = await supabaseAdmin
         .from('lost_and_found_items')
         .update({ status: 'expired' })
-        .in('id', expiredIds);
+        .in('id', expiredIds)
+        .eq('type', 'found')
+        .eq('status', 'open')
+        .lte('hold_until', nowIso);
       if (updErr) {
         log.error('lost-found disposal: expire update failed', {
           requestId,

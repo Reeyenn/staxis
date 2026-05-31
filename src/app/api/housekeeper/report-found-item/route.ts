@@ -21,7 +21,7 @@ import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateString, validateEnum } from '@/lib/api-validate';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
-import { createItem } from '@/lib/lost-and-found/store';
+import { createItem, isValidItemPhotoPath } from '@/lib/lost-and-found/store';
 import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
 
 export const runtime = 'nodejs';
@@ -87,11 +87,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     category = c.value!;
   }
 
-  // Photo path must be scoped to this property's storage prefix.
+  // Photo path must match the EXACT shape the presign route mints under this
+  // property — never an arbitrary, traversal, or cross-tenant key.
   let photoPath: string | null = null;
   if (body.photoPath) {
-    const p = String(body.photoPath);
-    if (p.length > 200 || !p.startsWith(`${gate.pid}/`) || !/^[A-Za-z0-9/_.-]+$/.test(p)) {
+    if (!isValidItemPhotoPath(gate.pid, body.photoPath)) {
       return err('invalid photoPath', {
         requestId: gate.requestId,
         status: 400,
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         headers: gate.headers,
       });
     }
-    photoPath = p;
+    photoPath = String(body.photoPath);
   }
 
   // Idempotency — insert-first pattern (mirrors add-note).
@@ -128,6 +128,20 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
+  // Release the idempotency claim so a retry of a failed write isn't deduped
+  // into an empty success (the claim was inserted with an empty payload above).
+  const releaseClaim = async () => {
+    if (!body.actionId) return;
+    try {
+      await supabaseAdmin
+        .from('offline_action_replays')
+        .delete()
+        .eq('action_id', body.actionId);
+    } catch {
+      /* best effort */
+    }
+  };
+
   try {
     const created = await createItem(gate.pid, {
       type: 'found',
@@ -141,6 +155,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       source: 'housekeeper',
     });
     if (!created.ok) {
+      await releaseClaim();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -185,6 +200,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     return ok(result, { requestId: gate.requestId, headers: gate.headers });
   } catch (caughtErr) {
+    await releaseClaim();
     log.error('report-found-item: threw', {
       requestId: gate.requestId,
       err: errToString(caughtErr),

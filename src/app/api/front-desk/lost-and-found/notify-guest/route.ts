@@ -82,23 +82,25 @@ export async function POST(req: NextRequest): Promise<Response> {
       .maybeSingle();
     const propertyName = typeof prop?.name === 'string' && prop.name ? prop.name : 'the hotel';
 
-    // Build the body. A custom message (sanitized) overrides the default.
-    let smsBody: string;
+    // ALWAYS frame the SMS as a hotel Lost & Found message (server template).
+    // An optional custom note is APPENDED (sanitized + capped at 200), never
+    // replaces the body — so this can't be used to send arbitrary SMS content
+    // to an arbitrary number. Item description is the hotel's own data, also
+    // sanitized below.
+    const hi = guestName ? `Hi ${guestName},` : 'Hello,';
+    const descPart = item.itemDescription ? ` (${item.itemDescription})` : '';
+    let smsBody =
+      `${hi} this is ${propertyName}. We believe we found an item that may be yours${descPart}. ` +
+      `Reply to this message to arrange pickup or shipping.`;
     if (body.message) {
-      const m = validateString(body.message, { max: 480, label: 'message' });
+      const m = validateString(body.message, { max: 200, label: 'message' });
       if (m.error) {
         return err(m.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
-      smsBody = sanitizeForSms(m.value!);
-    } else {
-      const hi = guestName ? `Hi ${guestName},` : 'Hello,';
-      const desc = item.itemDescription ? ` (${item.itemDescription})` : '';
-      smsBody = sanitizeForSms(
-        `${hi} this is ${propertyName}. We believe we found an item that may be yours${desc}. ` +
-          `Reply to this message to arrange pickup or shipping. Thank you!`,
-      );
+      const note = sanitizeForSms(m.value!);
+      if (note) smsBody += ` Note: ${note}`;
     }
-    smsBody = smsBody.slice(0, 480);
+    smsBody = sanitizeForSms(smsBody).slice(0, 480);
 
     // Per-day idempotency: a double-click within the same UTC day dedupes; a
     // genuine follow-up next day sends again.
