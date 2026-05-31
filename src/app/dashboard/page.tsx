@@ -31,6 +31,7 @@ import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
 import StaleDataBanner from '@/components/StaleDataBanner';
 import type { Room, WorkOrder, HandoffEntry } from '@/types';
+import { canManageTeam } from '@/lib/roles';
 
 // ─── Palette + per-metric color maps (verbatim from design source) ────
 
@@ -382,6 +383,24 @@ export default function DashboardPage() {
               data is >90 min stale or the watchdog SMS path is degraded.
               Self-hides in the steady state. */}
           <StaleDataBanner />
+
+          {/* Reports — managers/owners/admins jump to the self-serve report hub. */}
+          {user && canManageTeam(user.role) && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+              <button
+                type="button"
+                onClick={() => router.push('/settings/reports')}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '8px 16px', borderRadius: 999,
+                  border: '1px solid #E7E8E2', background: C.panel, color: C.ink,
+                  fontFamily: FONT_SANS, fontSize: 14, fontWeight: 500, cursor: 'pointer',
+                }}
+              >
+                {lang === 'es' ? 'Reportes' : 'Reports'} →
+              </button>
+            </div>
+          )}
 
           {/* Chart card — card padding removed on the chart's row so the
               SVG goes truly edge-to-edge of the card; the top row keeps
