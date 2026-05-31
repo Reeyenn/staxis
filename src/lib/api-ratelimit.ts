@@ -185,7 +185,22 @@ export type RateLimitEndpoint =
   // scheduled_shifts + staff reads. Keyed on (userId, propertyId).
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
-  | 'housekeeping-forecast';
+  | 'housekeeping-forecast'
+  // Engineering Compliance (feature #19, 2026-05-30). Engineer mobile page
+  // (/engineer/[id]) is a public SMS-link surface keyed on `${pid}:${staffId}`;
+  // manager endpoints keyed on `${pid}:${userId}`. Vision + voice + setup +
+  // link-send are billing-impacting (Claude / Twilio) and fail closed.
+  | 'engineer-bootstrap'      // polled read of due readings + PM checks
+  | 'engineer-log'            // tap-to-log a reading or PM check
+  | 'engineer-vision'         // snap-to-log: Claude Vision reads a gauge/strip
+  | 'engineer-voice'          // voice/typed natural-language reading log (Claude)
+  | 'engineer-save-language'  // language switcher
+  | 'compliance-read'         // manager overview / summary / report reads
+  | 'compliance-config'       // manager create/edit reading types + PM tasks + templates
+  | 'compliance-log'          // manager logs a reading / PM check from desktop
+  | 'compliance-setup'        // one-line AI setup (Claude)
+  | 'compliance-vision'       // manager snap-to-log (Claude Vision)
+  | 'send-engineer-links';    // SMS the compliance magic-link to maintenance staff
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -349,6 +364,21 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
+  // Engineering Compliance (feature #19). Engineer bootstrap polls every
+  // ~45s = 80/hr; 600 gives headroom for refetch-after-log. Log/config
+  // caps are "person tapping a button"; vision/voice/setup are Claude-cost
+  // bounded; send-engineer-links matches the SMS-fan-out cap shape.
+  'engineer-bootstrap':          600,
+  'engineer-log':                200,
+  'engineer-vision':              50,
+  'engineer-voice':               60,
+  'engineer-save-language':       10,
+  'compliance-read':             600,
+  'compliance-config':           100,
+  'compliance-log':              200,
+  'compliance-setup':             20,
+  'compliance-vision':            50,
+  'send-engineer-links':          10,
 };
 
 /**
@@ -440,6 +470,13 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
+  // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
+  // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
+  'engineer-vision',
+  'engineer-voice',
+  'compliance-setup',
+  'compliance-vision',
+  'send-engineer-links',
 ]);
 
 /**

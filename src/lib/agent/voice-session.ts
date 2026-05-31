@@ -38,8 +38,12 @@ export const VOICE_SESSION_DYNVAR_KEY = 'staxis_voice_session_id';
  *   'housekeeper_issue' — locked to createMaintenanceWorkOrder + a specialized
  *                         prompt. Used by the mic button on the housekeeper
  *                         room card.
+ *   'compliance'        — engineering-compliance logging tools (log_reading,
+ *                         log_pm_check, get_compliance_status). Feature #19;
+ *                         kept off the general voice catalog so the secure
+ *                         empty-default posture is preserved.
  */
-export type VoiceMode = 'general' | 'housekeeper_issue';
+export type VoiceMode = 'general' | 'housekeeper_issue' | 'compliance';
 
 export interface VoiceSessionMintArgs {
   accountId: string;

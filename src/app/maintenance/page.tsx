@@ -19,9 +19,10 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { T, FONT_SANS, MTSubTabBar, type MaintenanceTabKey } from './_components/_mt-snow';
 import { WorkOrdersTab } from './_components/WorkOrdersTab';
 import { PreventiveTab } from './_components/PreventiveTab';
+import { ComplianceTab } from './_components/ComplianceTab';
 
 const STORAGE_KEY = 'mt-tab';
-const VALID_TABS: MaintenanceTabKey[] = ['work', 'preventive'];
+const VALID_TABS: MaintenanceTabKey[] = ['work', 'preventive', 'compliance'];
 
 export default function MaintenancePage() {
   const [tab, setTabState] = useState<MaintenanceTabKey>('work');
@@ -68,6 +69,7 @@ export default function MaintenancePage() {
       <div key={tab} className="animate-in stagger-1">
         {tab === 'work'       && <WorkOrdersTab />}
         {tab === 'preventive' && <PreventiveTab />}
+        {tab === 'compliance' && <ComplianceTab />}
       </div>
     </AppLayout>
   );

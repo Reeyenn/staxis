@@ -21,8 +21,10 @@ import {
   subscribeToWorkOrders,
   subscribeToHandoffLogs,
   subscribeToDashboardNumbers,
+  fetchComplianceSummary,
   type DashboardNumbers,
 } from '@/lib/db';
+import type { ComplianceSummary } from '@/lib/compliance/types';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
 import StaleDataBanner from '@/components/StaleDataBanner';
@@ -268,6 +270,7 @@ export default function DashboardPage() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [, setHandoffs] = useState<HandoffEntry[]>([]);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
+  const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -282,6 +285,16 @@ export default function DashboardPage() {
     return subscribeToHandoffLogs(user.uid, activePropertyId, setHandoffs);
   }, [user, activePropertyId]);
   useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
+  // Compliance tile — service-role tables, so fetch through /api (refetch on a
+  // poll; the compliance surfaces refetch-on-write, not realtime).
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    let alive = true;
+    const load = () => { void fetchComplianceSummary(activePropertyId).then((s) => { if (alive) setCompliance(s); }); };
+    load();
+    const iv = setInterval(load, 60_000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [user, activePropertyId]);
 
   const openOrders   = workOrders.filter(o => o.status === 'open');
   const urgentOrders = openOrders.filter(o => o.priority === 'urgent');
@@ -646,6 +659,46 @@ export default function DashboardPage() {
                 </div>
                 <div style={{ marginTop: 6, fontSize: 11.5, color: C.ink3, fontFamily: FONT_MONO, letterSpacing: '0.04em' }}>
                   {lang === 'es' ? "por habitación · promedio de hoy" : "per room · today's average"}
+                </div>
+              </div>
+
+              {/* Compliance — engineering readings + life-safety checks (feature #19) */}
+              <div style={{
+                background: 'rgba(255,255,255,0.78)',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255,255,255,0.75)',
+                borderRadius: 16, padding: '16px 18px',
+              }}>
+                <div style={LABEL}>{lang === 'es' ? 'Cumplimiento' : 'Compliance'}</div>
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {([
+                    [
+                      lang === 'es' ? 'Lecturas hoy' : 'Readings today',
+                      compliance ? `${compliance.readingsCompletePct}%` : '—',
+                      compliance ? (compliance.readingsCompletePct >= 70 ? C.sage : compliance.readingsCompletePct >= 30 ? '#B8853A' : C.warm) : C.ink3,
+                    ],
+                    [
+                      lang === 'es' ? 'Vencidas' : 'Overdue checks',
+                      compliance ? String(compliance.pmOverdueCount) : '—',
+                      compliance && compliance.pmOverdueCount > 0 ? C.warm : C.ink,
+                    ],
+                  ] as [string, string, string][]).map(([k, v, color]) => (
+                    <div key={k} style={{
+                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
+                    }}>
+                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
+                      <span style={{
+                        fontFamily: FONT_SERIF, fontStyle: 'italic',
+                        fontSize: 22, fontWeight: 500, color,
+                        letterSpacing: '-0.025em', lineHeight: 1,
+                      }}>{v}</span>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11.5, color: C.ink3 }}>
+                    {lang === 'es' ? 'Mantenimiento → Cumplimiento' : 'Maintenance → Compliance'}
+                  </div>
                 </div>
               </div>
             </div>

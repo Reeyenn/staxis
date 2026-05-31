@@ -2072,6 +2072,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // bottom) replaces it.
   { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron)' },
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
+  { name: 'compliance-reminders',          cadenceHours: 1,     description: 'hourly engineering-compliance reminders + GM overdue escalation by SMS (Vercel native cron) — feature #19' },
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
