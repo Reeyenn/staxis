@@ -96,6 +96,10 @@
     {
       "path": "/api/cron/lost-found-disposal-check",
       "schedule": "0 16 * * *"
+    },
+    {
+      "path": "/api/cron/run-scheduled-reports",
+      "schedule": "0 * * * *"
     }
   ]
 }

@@ -22,6 +22,11 @@ import { log } from '@/lib/log';
 
 /** Endpoint identifier — keep these short and stable. */
 export type RateLimitEndpoint =
+  // ── Reports (self-serve report hub) ──────────────────────────────────────
+  // reports-run can call Claude for the AI summary (billing-impacting); keyed
+  // on the RAW property id, never a hashed composite (api_limits FK trap).
+  | 'reports-run'
+  | 'reports-export'
   | 'send-shift-confirmations'
   | 'morning-resend'
   | 'sms-reply-resend'
@@ -212,6 +217,8 @@ export type RateLimitEndpoint =
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
+  'reports-run':                 120,
+  'reports-export':              120,
   // PMS onboarding — testing creds is cheap so 30/hr handles a GM
   // typo-fixing iteratively. Onboard kicks off a real CUA mapping
   // run that costs $1-3, so 5/hr is plenty (one onboarding usually
@@ -455,6 +462,7 @@ export const NO_PROPERTY_RATE_LIMIT_KEY = '00000000-0000-0000-0000-000000000000'
  * caller hits the fail-closed branch.
  */
 const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<RateLimitEndpoint>([
+  'reports-run',
   // Each pms-onboard burns $1-3 of Anthropic credit on the Fly worker.
   'pms-onboard',
   // Recipe regeneration is the same shape as pms-onboard.

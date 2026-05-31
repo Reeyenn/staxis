@@ -1,0 +1,190 @@
+/**
+ * Report catalog — shared query/date helpers.
+ *
+ * All report definitions run server-side with supabaseAdmin and are scoped to
+ * one property. These helpers handle the property-local ↔ UTC date math (so a
+ * "last 7 days" window lines up with the property's calendar, not the server's)
+ * plus a few aggregation primitives.
+ */
+
+import { supabaseAdmin } from '@/lib/supabase-admin';
+
+/** Add `n` days to a YYYY-MM-DD string (pure, UTC-safe). */
+export function dateAddDays(dateIso: string, n: number): string {
+  const [y, m, d] = dateIso.split('-').map(Number);
+  const t = Date.UTC(y, m - 1, d) + n * 86_400_000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+/**
+ * Offset (ms) between `timeZone` wall-clock and UTC at the given instant.
+ * Positive east of UTC. Uses Intl so it's DST-correct.
+ */
+function tzOffsetMs(date: Date, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const parts = dtf.formatToParts(date);
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+  const asUTC = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second),
+  );
+  return asUTC - date.getTime();
+}
+
+/** The UTC instant of property-local midnight for a YYYY-MM-DD date. */
+export function localMidnightUtc(dateIso: string, timeZone: string): string {
+  const guess = new Date(`${dateIso}T00:00:00Z`).getTime();
+  const offset = tzOffsetMs(new Date(guess), timeZone);
+  return new Date(guess - offset).toISOString();
+}
+
+/**
+ * UTC half-open bounds [fromUtc, toUtcExclusive) for a property-local
+ * inclusive date range [from, to]. Use for filtering timestamptz columns.
+ */
+export function utcBoundsForLocalRange(
+  from: string,
+  to: string,
+  timeZone: string,
+): { fromUtc: string; toUtcExclusive: string } {
+  return {
+    fromUtc: localMidnightUtc(from, timeZone),
+    toUtcExclusive: localMidnightUtc(dateAddDays(to, 1), timeZone),
+  };
+}
+
+/** First-of-month UTC Date for the month containing a YYYY-MM-DD date. */
+export function monthStartUtc(dateIso: string): Date {
+  const [y, m] = dateIso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, 1));
+}
+
+/** The property-local "today" (YYYY-MM-DD) for a given instant. */
+export function localToday(timeZone: string, now: Date = new Date()): string {
+  const dtf = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  // en-CA formats as YYYY-MM-DD.
+  return dtf.format(now);
+}
+
+/** Property-local now broken into the parts a schedule's due-check needs. */
+export function localNowParts(
+  timeZone: string,
+  now: Date = new Date(),
+): { date: string; hour: number; dow: number; dom: number } {
+  const dtf = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const map: Record<string, string> = {};
+  for (const p of dtf.formatToParts(now)) map[p.type] = p.value;
+  const date = `${map.year}-${map.month}-${map.day}`;
+  const hour = Number(map.hour) % 24; // some engines emit "24" at midnight
+  const dom = Number(map.day);
+  // Day-of-week of a calendar date is timezone-independent.
+  const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
+  return { date, hour, dow, dom };
+}
+
+/** Resolve a scheduled report's data window (YYYY-MM-DD) relative to today. */
+export function scheduleDateRange(
+  kind: 'last7' | 'last30' | 'mtd' | 'prev_month',
+  today: string,
+): { from: string; to: string } {
+  if (kind === 'last7') return { from: dateAddDays(today, -6), to: today };
+  if (kind === 'last30') return { from: dateAddDays(today, -29), to: today };
+  if (kind === 'mtd') return { from: `${today.slice(0, 7)}-01`, to: today };
+  // prev_month — first..last of the previous calendar month.
+  const [y, m] = today.split('-').map(Number);
+  const firstThis = new Date(Date.UTC(y, m - 1, 1));
+  const lastPrev = new Date(firstThis.getTime() - 86_400_000).toISOString().slice(0, 10);
+  return { from: `${lastPrev.slice(0, 7)}-01`, to: lastPrev };
+}
+
+// ─── tiny aggregation primitives ─────────────────────────────────────────────
+
+export function sum(xs: number[]): number {
+  let s = 0;
+  for (const x of xs) s += x;
+  return s;
+}
+
+export function avg(xs: number[]): number | null {
+  if (xs.length === 0) return null;
+  return sum(xs) / xs.length;
+}
+
+export function round(n: number, dp = 0): number {
+  const f = 10 ** dp;
+  return Math.round(n * f) / f;
+}
+
+/** Group rows by a string key. */
+export function groupBy<T>(rows: T[], keyOf: (r: T) => string): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const r of rows) {
+    const k = keyOf(r);
+    const arr = m.get(k);
+    if (arr) arr.push(r);
+    else m.set(k, [r]);
+  }
+  return m;
+}
+
+/**
+ * Resolve a property's staff id → display name. One query per report run.
+ * Names survive even if a staff row is later deactivated (we read all rows).
+ */
+export async function getStaffNameMap(propertyId: string): Promise<Map<string, string>> {
+  const { data, error } = await supabaseAdmin
+    .from('staff')
+    .select('id, name')
+    .eq('property_id', propertyId);
+  if (error) throw error;
+  const m = new Map<string, string>();
+  for (const r of (data ?? []) as Array<{ id: string; name: string | null }>) {
+    m.set(r.id, r.name ?? 'Unknown');
+  }
+  return m;
+}
+
+/** Resolve a property's timezone (defaults to UTC). */
+export async function getPropertyMeta(
+  propertyId: string,
+): Promise<{ timezone: string; totalRooms: number; name: string }> {
+  const { data, error } = await supabaseAdmin
+    .from('properties')
+    .select('name, timezone, total_rooms')
+    .eq('id', propertyId)
+    .maybeSingle();
+  if (error) throw error;
+  const row = (data ?? {}) as { name?: string; timezone?: string; total_rooms?: number };
+  return {
+    timezone: row.timezone || 'UTC',
+    totalRooms: Number(row.total_rooms ?? 0),
+    name: row.name ?? 'Property',
+  };
+}
