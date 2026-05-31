@@ -126,6 +126,18 @@ drop trigger if exists set_updated_at on public.lost_and_found_items;
 create trigger set_updated_at before update on public.lost_and_found_items
   for each row execute function public._pms_set_updated_at();
 
+-- ─── Extend the housekeeper audit-log event_type allow-list ──────────────────
+-- The housekeeper "Found an item" flow writes a 'report_found_item' audit row
+-- (mirrors add_note). Additive: every value from 0227 is preserved.
+alter table public.housekeeper_audit_log
+  drop constraint if exists housekeeper_audit_log_event_type_check;
+alter table public.housekeeper_audit_log
+  add constraint housekeeper_audit_log_event_type_check
+  check (event_type = any (array[
+    'add_note', 'mark_for_inspection', 'structured_issue_filed', 'photo_attached',
+    'notice_dismissed', 'language_changed', 'report_found_item'
+  ]));
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Storage bucket — lost-found-item-photos
 -- ═══════════════════════════════════════════════════════════════════════════
