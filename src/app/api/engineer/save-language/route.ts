@@ -15,6 +15,7 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
+import { checkStaffCapability } from '@/lib/compliance/api-helpers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,6 +41,11 @@ export async function POST(req: NextRequest) {
 
   const rl = await checkAndIncrementRateLimit('engineer-save-language', hashToRateLimitKey(`${pid}:${staffId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+
+  // Capability gate also rejects inactive staff (stale-link), matching the
+  // other /api/engineer/* routes.
+  const staff = await checkStaffCapability(pid, staffId);
+  if (!staff) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
 
   const { data, error: updErr } = await supabaseAdmin
     .from('staff')

@@ -29,6 +29,10 @@ export async function checkStaffCapability(pid: string, staffId: string): Promis
     .eq('property_id', pid)
     .maybeSingle();
   if (error || !data) return null;
+  // Fail closed for deactivated staff: a fired employee's leaked SMS link must
+  // stop working even though the staff row still exists (Codex adversarial
+  // finding — stale-link replay). `is_active` is null-as-active per app convention.
+  if (data.is_active === false) return null;
   return {
     id: String(data.id),
     name: String(data.name ?? ''),

@@ -16,9 +16,10 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
-import { checkStaffCapability } from '@/lib/compliance/api-helpers';
-import { parseReadingsFromText } from '@/lib/compliance/nlp';
+import { checkStaffCapability, resolveCostAccount } from '@/lib/compliance/api-helpers';
+import { parseReadingsFromText, type NlpUsage } from '@/lib/compliance/nlp';
 import { findReadingTypeByName, logReading } from '@/lib/compliance/store';
+import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,8 +47,18 @@ export async function POST(req: NextRequest) {
   const staff = await checkStaffCapability(pid, staffId);
   if (!staff) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
 
+  // Budget gate: this is an ACCOUNTLESS public surface that makes a Claude call.
+  // Attribute spend to a property owner/GM account and fail closed when over
+  // the daily AI budget (Codex finding — voice parsing bypassed the ledger).
+  const accountId = await resolveCostAccount(pid);
+  if (accountId) {
+    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
+    if (!budget.ok) return err(budget.message, { requestId, status: 429, code: budget.reason });
+  }
+
+  let usage: NlpUsage | null = null;
   try {
-    const parsed = await parseReadingsFromText(text);
+    const parsed = await parseReadingsFromText(text, (u) => { usage = u; });
     const logged: Array<{ name: string; value: number; outOfRange: boolean }> = [];
     const unmatched: string[] = [];
     for (const p of parsed) {
@@ -64,5 +75,18 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     log.error('[engineer/voice-log] failed', { requestId, pid, staffId, msg: errToString(e) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  } finally {
+    // Record the Claude parse cost against the resolved account.
+    if (usage && accountId) {
+      const u = usage as NlpUsage;
+      try {
+        await recordNonRequestCost({
+          userId: accountId, propertyId: pid, conversationId: null,
+          model: u.model, modelId: u.modelId,
+          tokensIn: u.inputTokens, tokensOut: u.outputTokens,
+          costUsd: u.costUsd, kind: 'audio',
+        });
+      } catch { /* cost ledger best-effort */ }
+    }
   }
 }

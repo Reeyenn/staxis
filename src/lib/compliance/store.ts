@@ -482,10 +482,12 @@ export async function logPmCheck(input: LogPmCheckInput): Promise<LogPmCheckResu
 
   const periodKey = currentPmPeriodKey(task.cadence, now);
 
-  // UPSERT on (pm_task_id, period_key) — re-checking a period overwrites the
-  // row rather than creating a duplicate (audit integrity; defends against
-  // double-logging a period).
-  const upsertRow = {
+  // APPEND-ONLY: every check is a new immutable row. A later pass NEVER
+  // overwrites an earlier fail — the failed life-safety check stays in the
+  // audit history (Codex adversarial finding). Current-period completion is
+  // derived in getOverview ("a pass exists for the period"), so duplicates are
+  // harmless for counts.
+  const insertRow = {
     property_id: input.pid,
     pm_task_id: task.id,
     period_key: periodKey,
@@ -498,14 +500,14 @@ export async function logPmCheck(input: LogPmCheckInput): Promise<LogPmCheckResu
     checked_at: now.toISOString(),
   };
 
-  const { data: upserted, error: upErr } = await supabaseAdmin
+  const { data: inserted, error: insErr } = await supabaseAdmin
     .from('compliance_pm_checks')
-    .upsert(upsertRow, { onConflict: 'pm_task_id,period_key' })
+    .insert(insertRow)
     .select('*')
     .single();
-  if (upErr) throw new Error(`pm check upsert failed: ${upErr.message}`);
+  if (insErr) throw new Error(`pm check insert failed: ${insErr.message}`);
 
-  const check = mapPmCheck(upserted);
+  const check = mapPmCheck(inserted);
 
   let workOrderId: string | null = null;
   if (input.status === 'fail') {

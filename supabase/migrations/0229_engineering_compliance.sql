@@ -171,21 +171,27 @@ create table if not exists public.compliance_pm_checks (
   work_order_id       uuid references public.work_orders(id) on delete set null,  -- auto-act on fail
 
   created_at          timestamptz not null default now(),
-  updated_at          timestamptz not null default now(),
-
-  -- One check-off per (task, period). Re-checking the same period UPSERTs the
-  -- row rather than creating a duplicate — defends audit integrity against
-  -- double-logging a period.
-  constraint compliance_pm_checks_task_period_uq unique (pm_task_id, period_key)
+  updated_at          timestamptz not null default now()
 );
 
+-- APPEND-ONLY audit log. Every check attempt is a new immutable row — a later
+-- pass NEVER overwrites an earlier fail (Codex adversarial review: a
+-- last-writer-wins upsert would erase a failed life-safety check from history).
+-- Current-period completion is DERIVED ("a pass exists for the period") in
+-- src/lib/compliance/store.ts, not enforced by a unique constraint. The
+-- original UNIQUE(task, period) is dropped below so corrections/re-checks
+-- accumulate as history rather than mutating the record.
+alter table public.compliance_pm_checks drop constraint if exists compliance_pm_checks_task_period_uq;
+
 comment on table public.compliance_pm_checks is
-  'Per-period preventive-maintenance check-off log. UNIQUE(task, period) prevents double-logging a period. Rolling 12-month+ audit history. Created 0229.';
+  'Append-only per-period preventive-maintenance check-off log. Every check is an immutable row (no overwrite). Current-period completion is derived (a pass exists). Rolling 12-month+ audit history. Created 0229.';
 
 create index if not exists compliance_pm_checks_prop_checked_idx
   on public.compliance_pm_checks (property_id, checked_at desc);
 create index if not exists compliance_pm_checks_task_idx
   on public.compliance_pm_checks (pm_task_id, checked_at desc);
+create index if not exists compliance_pm_checks_task_period_idx
+  on public.compliance_pm_checks (pm_task_id, period_key);
 
 -- ── 5. RLS — service-role only; anon + authenticated deny-all ───────────────
 alter table public.compliance_reading_types enable row level security;

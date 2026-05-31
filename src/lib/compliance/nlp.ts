@@ -18,6 +18,18 @@ import type { ComplianceTemplate, ReadingTypeSeed, PmTaskSeed } from './template
 
 const MODEL = 'claude-sonnet-4-6';
 const TIMEOUT_MS = 20_000;
+// Sonnet pricing per Mtok (matches vision-extract).
+const PRICE_IN_PER_MTOK = 3.0;
+const PRICE_OUT_PER_MTOK = 15.0;
+
+/** Token usage for cost-ledger attribution. */
+export interface NlpUsage {
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  modelId: string | null;
+  costUsd: number;
+}
 
 let _client: Anthropic | null = null;
 function client(): Anthropic {
@@ -29,13 +41,29 @@ function client(): Anthropic {
 }
 
 /** One-shot Claude call that returns parsed JSON. Throws on non-JSON. */
-async function callClaudeJSON<T>(system: string, userText: string, maxTokens = 1024): Promise<T> {
+async function callClaudeJSON<T>(
+  system: string,
+  userText: string,
+  maxTokens = 1024,
+  onUsage?: (u: NlpUsage) => void,
+): Promise<T> {
   const resp = await client().messages.create({
     model: MODEL,
     max_tokens: maxTokens,
     system,
     messages: [{ role: 'user', content: userText }],
   });
+  if (onUsage) {
+    const i = resp.usage?.input_tokens ?? 0;
+    const o = resp.usage?.output_tokens ?? 0;
+    onUsage({
+      inputTokens: i,
+      outputTokens: o,
+      model: MODEL,
+      modelId: resp.model ?? null,
+      costUsd: (i / 1_000_000) * PRICE_IN_PER_MTOK + (o / 1_000_000) * PRICE_OUT_PER_MTOK,
+    });
+  }
   const text = resp.content
     .filter((b) => b.type === 'text')
     .map((b) => (b as { type: 'text'; text: string }).text)
@@ -76,13 +104,14 @@ Rules:
 - Only include readings that have a clear numeric value. Skip anything ambiguous.
 - If there are no clear readings, return { "readings": [] }.`;
 
-export async function parseReadingsFromText(text: string): Promise<ParsedReading[]> {
+export async function parseReadingsFromText(text: string, onUsage?: (u: NlpUsage) => void): Promise<ParsedReading[]> {
   const clean = text.slice(0, 600);
   try {
     const out = await callClaudeJSON<{ readings?: Array<{ metric?: unknown; value?: unknown }> }>(
       READINGS_SYSTEM,
       clean,
       512,
+      onUsage,
     );
     const rows = Array.isArray(out.readings) ? out.readings : [];
     return rows
