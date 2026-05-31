@@ -23,3 +23,11 @@ alter table public.pms_room_status_log
   alter column changed_at set default now();
 
 notify pgrst, 'reload schema';
+
+-- Self-register so the doctor's applied-migrations check + the
+-- migration-bookkeeping drift test see this version. (Pre-existing drift:
+-- this file shipped via main without the INSERT; added here so the suite
+-- and a fresh rebuild stay in sync. Safe on prod — on conflict do nothing.)
+insert into public.applied_migrations (version, description)
+values ('0234', 'pms_room_status_log.changed_at default now()')
+on conflict (version) do nothing;
