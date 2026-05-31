@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0239 — Self-serve reports: report_favorites + report_schedules
+-- 0240 — Self-serve reports: report_favorites + report_schedules
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- Powers the Reports hub at /settings/reports. Managers browse a catalog of
@@ -45,7 +45,7 @@ create table if not exists public.report_favorites (
 comment on table public.report_favorites is
   'Per-user starred catalog reports, scoped to a property. Favorites pin to the '
   'top of the Reports library. Service-role only; access via /api/settings/reports/*. '
-  'Created 0239.';
+  'Created 0240.';
 
 create index if not exists report_favorites_account_property_idx
   on public.report_favorites (account_id, property_id);
@@ -97,7 +97,7 @@ create table if not exists public.report_schedules (
 comment on table public.report_schedules is
   'Catalog reports set to auto-email on a cadence to chosen recipients. The '
   'run-scheduled-reports cron fires due schedules through the Resend report-email '
-  'infra. Service-role only; access via /api/settings/reports/*. Created 0239.';
+  'infra. Service-role only; access via /api/settings/reports/*. Created 0240.';
 
 -- Cron sweep scans enabled schedules per property.
 create index if not exists report_schedules_enabled_idx
@@ -113,7 +113,7 @@ create policy report_favorites_deny_browser on public.report_favorites
   for all to anon, authenticated using (false) with check (false);
 comment on policy report_favorites_deny_browser on public.report_favorites is
   'Service-role only. Managers star reports via /api/settings/reports/favorite '
-  'with supabaseAdmin. Created 0239.';
+  'with supabaseAdmin. Created 0240.';
 
 alter table public.report_schedules enable row level security;
 revoke all on public.report_schedules from public, anon, authenticated;
@@ -124,7 +124,7 @@ create policy report_schedules_deny_browser on public.report_schedules
 comment on policy report_schedules_deny_browser on public.report_schedules is
   'Service-role only. Managers manage schedules via /api/settings/reports/schedules '
   'with supabaseAdmin; the run-scheduled-reports cron reads with supabaseAdmin. '
-  'Created 0239.';
+  'Created 0240.';
 
 -- ─── updated_at trigger (reuse the shared pms helper from 0202) ──────────────
 drop trigger if exists set_updated_at on public.report_schedules;
@@ -134,7 +134,7 @@ create trigger set_updated_at before update on public.report_schedules
 -- ─── Track the migration ─────────────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
 values (
-  '0239',
+  '0240',
   'Self-serve reports: report_favorites + report_schedules (favorites + scheduled '
   'auto-email of catalog reports). Service-role only.'
 )
