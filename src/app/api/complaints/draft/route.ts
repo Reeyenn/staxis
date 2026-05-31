@@ -15,7 +15,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { draftServiceRecovery } from '@/lib/complaints-ai';
 import { fromComplaintRow } from '@/lib/complaints-shared';
 
@@ -53,7 +53,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
 
-  const rl = await checkAndIncrementRateLimit('complaints-draft', hashToRateLimitKey(`${pid}:${session.userId}`));
+  // Per-PROPERTY billing bucket — key must be a real properties.id (FK), not a
+  // hashed composite, or the fail-closed limiter 429s every call. See log/route.
+  const rl = await checkAndIncrementRateLimit('complaints-draft', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {

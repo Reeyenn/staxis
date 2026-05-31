@@ -14,7 +14,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { createComplaint } from '@/lib/complaints-create';
 import { COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES } from '@/lib/complaints-shared';
 
@@ -80,7 +80,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
 
-  const rl = await checkAndIncrementRateLimit('complaints-log', hashToRateLimitKey(`${pid}:${session.userId}`));
+  // Rate-limit per PROPERTY. The key MUST be a real properties.id — api_limits
+  // .property_id has an FK to properties(id) (0142), so a hashed `${pid}:${uid}`
+  // composite would FK-violate the staxis_api_limit_hit insert; since this is a
+  // BILLING_IMPACTING endpoint that fails CLOSED, that would 429 every call.
+  const rl = await checkAndIncrementRateLimit('complaints-log', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {

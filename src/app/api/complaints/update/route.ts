@@ -19,7 +19,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { sendSms } from '@/lib/sms';
 import { COMPLAINT_STATUSES, COMPLAINT_DEPTS } from '@/lib/complaints-shared';
 
@@ -74,7 +74,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
 
-  const rl = await checkAndIncrementRateLimit('complaints-update', hashToRateLimitKey(`${pid}:${session.userId}`));
+  // Per-PROPERTY bucket — key must be a real properties.id (api_limits FK).
+  // (Not billing, so a hashed composite here fails OPEN, silently disabling the
+  // limit rather than 429ing — same root cause as log/draft; fix it too.)
+  const rl = await checkAndIncrementRateLimit('complaints-update', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {
