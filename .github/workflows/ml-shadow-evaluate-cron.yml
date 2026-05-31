@@ -12,11 +12,16 @@
 name: ML shadow evaluate
 
 on:
-  schedule:
-    # 11:30 UTC daily — well after the weekly retrain crons (Sunday 08:00 UTC)
-    # so any shadow from the latest retrain has the freshest soak start
-    # timestamp before today's evaluation pass runs.
-    - cron: "30 11 * * *"
+  # Scheduled run(s) DISABLED 2026-05-30 — the ML service has no incoming
+  # data since the scraper was removed, so each run hit a dead endpoint,
+  # failed, and emailed a 'workflow failed' notification. Jobs + all ML
+  # code are KEPT; re-enable by uncommenting. Manual runs still work via
+  # the Actions tab (workflow_dispatch).
+  # schedule:
+  # # 11:30 UTC daily — well after the weekly retrain crons (Sunday 08:00 UTC)
+  # # so any shadow from the latest retrain has the freshest soak start
+  # # timestamp before today's evaluation pass runs.
+  # - cron: "30 11 * * *"
   workflow_dispatch:
 
 permissions:

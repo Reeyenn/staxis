@@ -1,56 +1,46 @@
 'use client';
 
-// Snow / simplified Schedule from the Claude Design housekeeping handoff
-// (May 2026). The previous version was a 1500-line monolith with public
-// areas, drag-to-assign, swap modals, prediction settings, and a Staff
-// Priority modal. The user explicitly asked to strip Schedule down to:
-//   • PMS pull strip with morning/evening toggle and 5 numbers visible
-//   • crew rows with capacity bars + auto-assigned room pills
-//   • action band at the bottom: Reset / Auto-assign / Send links
+// Schedule tab — a single board with a Kanban / Timeline / Forecast view
+// toggle near the top (May 2026 combine). The legacy manual board (crew
+// rows, drag-to-assign, swap menus, the "Auto-assign" + "Send links"
+// action band, and the staff-priority modal) was removed: it duplicated
+// the Kanban board and ran on the retired schedule_assignments data layer.
+// Auto-assignment now happens server-side (the run-auto-assign cron) and
+// surfaces in the Kanban (AutoAssignBoard) + Timeline views, which read
+// cleaning_tasks / hk_assignments. "Send the crew their rooms" and "pick
+// who's working today" will be rebuilt on the new board once the PMS room
+// feed is live end-to-end.
 //
-// Everything that backs the simpler UI — PlanSnapshot, ShiftConfirmations,
-// ScheduleAssignments persistence, work-order blocking, the actual
-// /api/send-shift-confirmations POST flow — is preserved. The dropped
-// features (public areas, drag-to-assign, swap modals, prediction
-// settings, priority modal) are gone from the JSX but their underlying
-// data layer is untouched, so we can wire them back into a settings
-// modal later if the user misses them.
+// What stays here: the date stepper, the PMS pull strip (live counts) with
+// its cleaning-time settings modal, the "tomorrow's confidence" ML tile,
+// and the three sub-views.
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   subscribeToPlanSnapshot,
-  subscribeToShiftConfirmations,
-  subscribeToScheduleAssignments,
-  saveScheduleAssignments,
   subscribeToDashboardByDate,
-  updateStaffMember,
   updateProperty,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers, CsvRoomSnapshot } from '@/lib/db';
-import { autoAssignRooms } from '@/lib/calculations';
-import { captureException } from '@/lib/sentry';
-import type { ShiftConfirmation, StaffMember, SchedulePriority } from '@/types';
+import type { PlanSnapshot, DashboardNumbers } from '@/lib/db';
 import {
   defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms, formatPulledAt,
 } from './_shared';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
-  Caps, Pill, Btn, HousekeeperDot,
+  Caps, Btn,
 } from './_snow';
 import { CalloutBanner } from './CalloutBanner';
 import {
   getActiveOptimizerForTomorrow,
   getActiveDemandForTomorrow,
 } from '@/lib/ml-schedule-helpers';
-// Auto-Assign Board — manager view of the new cleaning_tasks + hk_assignments
-// system. Renders below the existing PMS strip / crew rows / action band and
-// degrades to an empty-state when the rules engine hasn't produced tasks for
-// today yet, so it's safe to ship before the rules-engine cron is enabled.
+// Auto-Assign Board — the Kanban view. Manager view of the cleaning_tasks +
+// hk_assignments system; degrades to an empty-state when the rules engine
+// hasn't produced tasks for today yet.
 import { AutoAssignBoard } from './AutoAssignBoard';
 // Timeline View — Gantt-style strip below the Auto-Assign Board. Shows each
 // housekeeper's day on a horizontal time axis. Same data model as the board,
@@ -68,11 +58,9 @@ import { NoticeBoardPoster } from './NoticeBoardPoster';
 type ScheduleView = 'kanban' | 'timeline' | 'forecast';
 const VIEW_STORAGE_KEY = 'staxis.schedule.view';
 
-type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
-
 export function ScheduleTab() {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId, staff, refreshProperty } = useProperty();
+  const { activeProperty, activePropertyId, refreshProperty } = useProperty();
   const { lang } = useLang();
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
@@ -86,73 +74,9 @@ export function ScheduleTab() {
   // refreshes on its own cadence and has its own loaded flag.
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
-  const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
-  const [assignments, setAssignments] = useState<Record<string, string>>({});
-  const [crewIds, setCrewIds] = useState<string[]>([]);
-  // `crewExplicit` distinguishes "user has actively set the crew (even
-  // to empty)" from "no saved crew yet, fall back to all housekeeping
-  // staff." Without this flag, a user who removes everyone via the
-  // Remove buttons would have their empty list silently overridden
-  // with the full default crew on the next render — the "manager can't
-  // clear everyone" regression.
-  const [crewExplicit, setCrewExplicit] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Track which date our local state has been hydrated for. Without this,
-  // the debounced persist effect can fire while we're mid-date-switch and
-  // overwrite the new date's saved doc with the previous date's
-  // assignments. Same class of bug as the 2026-05-07 "Maria's rooms
-  // reshuffled" incident — re-introduced when the tab was rewritten, now
-  // re-fixed.
-  const hydratedDate = useRef<string | null>(null);
-
-  // Tracks the (assignments, crew) snapshot we last persisted. Realtime
-  // echoes our own writes back through the subscription, which without
-  // this guard would re-trigger the persist effect and create a save
-  // loop — the cause of the "Auto-assign is laggy / kind of works" bug.
-  // Compared as JSON strings since both are plain objects/arrays.
-  const lastWrittenRef = useRef<{ a: string; c: string } | null>(null);
-
-  // Click-to-move + drag-to-move. floatingRoomId is the picked-up room
-  // (a tap or a drag on a pill sets it). cursorPos drives the floating
-  // ghost that follows the pointer so Maria sees what she's holding.
-  // dragStartRef tracks the press so we can distinguish a tap (no move)
-  // from a drag (>8px move) — taps stay floating until the next tap on
-  // a target; drags commit at the element under the cursor on release.
-  const [floatingRoomId, setFloatingRoomId] = useState<string | null>(null);
-  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
-  const [floatingRoomMeta, setFloatingRoomMeta] = useState<{ number: string; type: string } | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number; roomId: string; meta: { number: string; type: string }; crossed: boolean } | null>(null);
-  // Set immediately after a drag-and-drop commit so the synthesized
-  // click that follows pointerup is treated as a no-op. Without this,
-  // the click would bubble to the pill / card the cursor was over and
-  // re-toggle floating or re-commit on top of the drop.
-  const wasDragRef = useRef(false);
-
-  // Staff Priority modal — frozen order captured at open so re-saving
-  // doesn't re-sort the list under the user's cursor.
-  const [showPriority, setShowPriority] = useState(false);
-  const frozenStaffOrder = useRef<string[]>([]);
-
-  // Swap dropdown: which housekeeper's name was clicked to open the
-  // "swap with..." menu. Keyed by staff ID.
-  const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
-
-  // Frozen room snapshot from the last save. Used to detect overnight
-  // CSV changes — if today's planSnapshot.rooms differs from what was
-  // captured when Maria last saved (typically yesterday at 7pm), the
-  // PMS strip surfaces an "overnight" badge with the +/− counts so
-  // she knows to re-run auto-assign.
-  const [savedCsvSnapshot, setSavedCsvSnapshot] = useState<CsvRoomSnapshot[]>([]);
-
-  // View toggle — Kanban (auto-assign board) / Timeline (gantt strip) /
-  // Forecast (1-7-14 day forward view). Defaults to 'kanban' on first
-  // load — that matches the auto-assign board being the historical
-  // primary view; managers who switch to timeline or forecast have
-  // their choice persisted so it sticks across refreshes.
   const [scheduleView, setScheduleView] = useState<ScheduleView>('kanban');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -188,24 +112,6 @@ export function ScheduleTab() {
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
-  // Switching dates: clear local state immediately and mark un-hydrated
-  // so the persist guard below skips the next debounced save until the
-  // subscription callback re-fires for the new date.
-  useEffect(() => {
-    hydratedDate.current = null;
-    lastWrittenRef.current = null;
-    setAssignments({});
-    setCrewIds([]);
-    setCrewExplicit(false);
-    setSendResults(new Map());
-    setFloatingRoomId(null);
-    setFloatingRoomMeta(null);
-    setCursorPos(null);
-    setSwapOpenFor(null);
-    setSavedCsvSnapshot([]);
-  }, [shiftDate]);
-
-  // ── Subscriptions ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!pid) return;
     setDashboardLoaded(false);
@@ -224,64 +130,6 @@ export function ScheduleTab() {
     });
   }, [uid, pid, shiftDate]);
 
-  // Hydrate from saved doc inside the subscription callback so we know
-  // exactly when the doc for the current date has loaded — required by
-  // the persist guard above.
-  //
-  // Anti-echo: realtime fires after our own writes, delivering the same
-  // data we just saved with a brand-new object reference. Without the
-  // JSON-key compare below, setAssignments(newRef) re-renders → persist
-  // effect re-fires → another save → another echo → save loop ("Auto-
-  // assign laggy" bug). The setState callback form lets React bail out
-  // when the payload hasn't actually changed.
-  useEffect(() => {
-    if (!uid || !pid) return;
-    return subscribeToScheduleAssignments(uid, pid, shiftDate, (doc) => {
-      const newAssignments = doc?.roomAssignments ?? {};
-      const newCrew = doc?.crew ?? [];
-      const newSnapshot = doc?.csvRoomSnapshot ?? [];
-
-      setAssignments(prev => {
-        const prevKey = JSON.stringify(prev);
-        const nextKey = JSON.stringify(newAssignments);
-        return prevKey === nextKey ? prev : newAssignments;
-      });
-      setCrewIds(prev => {
-        const prevKey = JSON.stringify(prev);
-        const nextKey = JSON.stringify(newCrew);
-        return prevKey === nextKey ? prev : newCrew;
-      });
-      setSavedCsvSnapshot(prev => {
-        const prevKey = JSON.stringify(prev);
-        const nextKey = JSON.stringify(newSnapshot);
-        return prevKey === nextKey ? prev : newSnapshot;
-      });
-      // A saved doc is by definition an explicit choice — respect the
-      // crew list even when it's empty.
-      setCrewExplicit(!!doc);
-
-      // Seed lastWrittenRef so the persist effect doesn't immediately
-      // try to save what we just hydrated.
-      lastWrittenRef.current = {
-        a: JSON.stringify(newAssignments),
-        c: JSON.stringify(newCrew),
-      };
-      hydratedDate.current = shiftDate;
-    });
-  }, [uid, pid, shiftDate]);
-
-  useEffect(() => {
-    if (!uid || !pid) return;
-    return subscribeToShiftConfirmations(uid, pid, shiftDate, setConfirmations);
-  }, [uid, pid, shiftDate]);
-
-  // ── Phase M3.1 (2026-05-14): ML confidence panel data ────────────────
-  // Fetches the optimizer's recommended_headcount + completion_probability_curve
-  // for tomorrow, plus demand p80/p95 headcount boundaries. Both helpers exist
-  // at src/lib/ml-schedule-helpers.ts and were dormant (zero callers) waiting
-  // for a UI consumer — this is it. Returns null when the optimizer cron
-  // hasn't written a row yet (e.g. brand-new property before its first
-  // post-onboard run) — panel hides itself in that case.
   const [optimizerPanel, setOptimizerPanel] = useState<{
     recommendedHeadcount: number;
     completionProbabilityCurve: Array<{ headcount: number; p: number }>;
@@ -354,70 +202,6 @@ export function ScheduleTab() {
   const LAUNDRY_STAFF = 1;
   const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS)) + LAUNDRY_STAFF;
 
-  // Crew = the staff IDs we're scheduling today. Default to active
-  // housekeeping staff if no override has been saved yet. Using
-  // `s.isActive !== false` (rather than `=== true`) and a permissive
-  // department check means seeded rows with undefined fields still
-  // appear — matches the historical behavior on the staff page.
-  const housekeepingStaff = useMemo(
-    () => staff.filter(s => s.isActive !== false && (!s.department || s.department === 'housekeeping')),
-    [staff],
-  );
-
-  const activeCrew: StaffMember[] = useMemo(() => {
-    // Use the user's explicit crew list once they've made any change
-    // (including emptying it). Otherwise fall back to the default.
-    const ids = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
-    return ids.map(id => staff.find(s => s.id === id)).filter((s): s is StaffMember => Boolean(s));
-  }, [crewIds, crewExplicit, housekeepingStaff, staff]);
-
-  const offCrew = useMemo(
-    () => housekeepingStaff.filter(s => !activeCrew.some(c => c.id === s.id)),
-    [housekeepingStaff, activeCrew],
-  );
-
-  // Overnight diff. Compares the room list from the current planSnapshot
-  // against the snapshot Maria captured the last time she saved (typically
-  // the prior evening's plan). Returns null when there's nothing to flag —
-  // either no saved snapshot exists yet, or the lists are identical — so
-  // the strip stays clean on a normal day.
-  const morningDiff = useMemo(() => {
-    if (!planSnapshot || savedCsvSnapshot.length === 0) return null;
-    const current = new Map<string, 'checkout' | 'stayover'>(
-      planSnapshot.rooms.map(r => [
-        r.number,
-        r.stayType === 'C/O' ? 'checkout' : 'stayover',
-      ]),
-    );
-    const saved = new Map<string, 'checkout' | 'stayover'>(
-      savedCsvSnapshot.map(r => [r.number, r.type]),
-    );
-    const added: string[] = [];
-    const removed: string[] = [];
-    const changed: string[] = [];
-    for (const [num] of current) if (!saved.has(num)) added.push(num);
-    for (const [num] of saved) if (!current.has(num)) removed.push(num);
-    for (const [num, t] of current) {
-      const prev = saved.get(num);
-      if (prev && prev !== t) changed.push(num);
-    }
-    if (added.length === 0 && removed.length === 0 && changed.length === 0) return null;
-    return { added, removed, changed };
-  }, [planSnapshot, savedCsvSnapshot]);
-
-  // Rooms not currently assigned to a member of the active crew. Catches
-  // both genuinely unassigned rooms (assignments[id] is undefined) and
-  // orphaned rooms whose previously-assigned housekeeper has been
-  // removed from today's roster — both flavours need to show up in the
-  // "Unassigned" strip so the user can re-place them.
-  const unassignedRooms = useMemo(() => {
-    const activeIds = new Set(activeCrew.map(s => s.id));
-    return assignableRooms.filter(r => {
-      const assigned = assignments[r.id];
-      return !assigned || !activeIds.has(assigned);
-    });
-  }, [assignableRooms, assignments, activeCrew]);
-
   const fmtTime = (mins: number) => {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
@@ -425,310 +209,11 @@ export function ScheduleTab() {
   };
 
   // ── Persist (debounced) ───────────────────────────────────────────────
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const persist = useCallback(() => {
-    if (!uid || !pid) return;
-    // Only save once we've confirmed the saved doc for the current date
-    // has loaded. Without this, the initial-mount empty state would
-    // clobber an existing doc within 500ms of opening the tab.
-    if (hydratedDate.current !== shiftDate) return;
-
-    // Skip if state hasn't changed since the last save. Realtime echoes
-    // our own writes back through the subscription; without this check
-    // we'd save → echo → setState → persist effect re-fires → save…
-    // (the "Auto-assign laggy" infinite loop).
-    const crewIdList = activeCrew.map(s => s.id);
-    const aKey = JSON.stringify(assignments);
-    const cKey = JSON.stringify(crewIdList);
-    if (lastWrittenRef.current?.a === aKey && lastWrittenRef.current?.c === cKey) return;
-
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      const staffNames: Record<string, string> = {};
-      activeCrew.forEach(s => { staffNames[s.id] = s.name; });
-      // Capture the room list at save time so the next morning's diff
-      // can detect which rooms were added/removed/type-flipped between
-      // last night's plan and the morning's fresh CSV pull. Map from
-      // PlanSnapshot's `stayType` field to the CsvRoomSnapshot enum
-      // the schedule_assignments table expects.
-      const csvSnapshot: CsvRoomSnapshot[] = (planSnapshot?.rooms ?? []).map(r => ({
-        number: r.number,
-        type: r.stayType === 'C/O' ? 'checkout' : 'stayover',
-      }));
-      const csvPulledAtIso = planSnapshot?.pulledAt
-        ? (planSnapshot.pulledAt instanceof Date
-            ? planSnapshot.pulledAt.toISOString()
-            : String(planSnapshot.pulledAt))
-        : null;
-      lastWrittenRef.current = { a: aKey, c: cKey };
-      saveScheduleAssignments(uid, pid, shiftDate, {
-        roomAssignments: assignments,
-        crew: crewIdList,
-        staffNames,
-        csvRoomSnapshot: csvSnapshot,
-        csvPulledAt: csvPulledAtIso,
-      }).catch(err => captureException(err, { route: 'housekeeping/schedule', op: 'saveScheduleAssignments', pid }));
-    }, 500);
-    // planSnapshot IS in the dep array — when the CSV refreshes mid-edit
-    // we want a subsequent save (triggered by an assignment change) to
-    // capture the latest room list. The lastWrittenRef check above
-    // means a CSV-only refresh (no assignment change) re-creates this
-    // callback but bails out at save time, so no spurious writes.
-  }, [uid, pid, shiftDate, assignments, activeCrew, planSnapshot]);
-
-  useEffect(() => {
-    persist();
-    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [persist]);
-
-  // ── Handlers ──────────────────────────────────────────────────────────
-  // Once-loaded gate: assignment-mutating handlers are disabled (and
-  // refuse to fire) until the saved doc for the current date has
-  // finished hydrating. Without this, a click on Auto-assign or Reset
-  // immediately after switching dates can be silently overwritten by
-  // the in-flight subscription callback that arrives a moment later.
-  const ready = hydratedDate.current === shiftDate;
-
-  const handleAutoAssign = () => {
-    if (!ready) return;
-    // Pass the SAME shift cap the UI uses for capacity bars / recommended-HK
-    // math. Hardcoding 420 here while the UI reads activeProperty.shiftMinutes
-    // would produce bars that disagree with what the algorithm actually
-    // distributed (audit finding #1).
-    const config = {
-      checkoutMinutes:    ckMin,
-      stayoverDay1Minutes: so1Min,
-      stayoverDay2Minutes: so2Min,
-      stayoverMinutes:     activeProperty?.stayoverMinutes      ?? 20,
-      prepMinutesPerActivity: activeProperty?.prepMinutesPerActivity ?? 5,
-      shiftMinutes:        SHIFT_MINS,
-    };
-    const next = autoAssignRooms(assignableRooms, activeCrew, config);
-    setAssignments(next);
-    flashToast(lang === 'es' ? 'Cuartos auto-asignados' : 'Rooms auto-assigned');
-  };
-
-  const handleReset = () => {
-    if (!ready) return;
-    setAssignments({});
-    flashToast(lang === 'es' ? 'Asignaciones reseteadas' : 'Assignments reset');
-  };
-
-  const handleSend = async () => {
-    if (sending || !uid || !pid) return;
-    setSending(true);
-    try {
-      const baseUrl = window.location.origin;
-      const staffPayload = activeCrew.map(s => ({
-        staffId: s.id,
-        name: s.name,
-        phone: s.phone ?? '',
-        language: s.language,
-        assignedRooms: assignableRooms.filter(r => assignments[r.id] === s.id).map(r => r.number),
-        assignedAreas: [] as string[],
-      }));
-      const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : `send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-      const res = await fetchWithAuth('/api/send-shift-confirmations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
-      });
-      const body = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        data?: {
-          sent?: number; failed?: number; skipped?: number; updated?: number; fresh?: number;
-          perStaff?: Array<{ staffId: string; status: 'sent' | 'skipped' | 'failed'; reason?: string }>;
-        };
-      };
-      const data = body?.data ?? {};
-      if (data.perStaff) {
-        const m = new Map<string, SendResult>();
-        data.perStaff.forEach(r => m.set(r.staffId, { status: r.status, reason: r.reason }));
-        setSendResults(m);
-      }
-      const parts: string[] = [];
-      if ((data.fresh ?? 0)   > 0) parts.push(`${data.fresh} ${lang === 'es' ? 'enlaces' : 'links'}`);
-      if ((data.updated ?? 0) > 0) parts.push(`${data.updated} ${lang === 'es' ? 'actualizados' : 'updates'}`);
-      if ((data.skipped ?? 0) > 0) parts.push(`${data.skipped} ${lang === 'es' ? 'omitidos' : 'skipped'}`);
-      if ((data.failed ?? 0)  > 0) parts.push(`${data.failed} ${lang === 'es' ? 'fallaron' : 'failed'}`);
-      flashToast(parts.length
-        ? `${lang === 'es' ? 'Enviado' : 'Sent'}: ${parts.join(' · ')}`
-        : (lang === 'es' ? 'Enviado' : 'Sent'));
-    } catch (err) {
-      console.error('[Schedule] send failed:', err);
-      flashToast(lang === 'es' ? 'Error al enviar' : 'Send failed');
-    } finally {
-      setSending(false);
-    }
-  };
-
   const flashToast = (msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(msg);
     toastTimer.current = setTimeout(() => setToast(null), 4000);
   };
-
-  // Mint a single-use magic-link URL for a housekeeper. Goes through the
-  // /api/staff-link endpoint so the URL carries a fresh token. Falls
-  // back to the tokenless route if the API fails — Maria can still open
-  // the page on a signed-in device.
-  const mintLink = useCallback(async (staffId: string): Promise<string> => {
-    try {
-      const res = await fetchWithAuth('/api/staff-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ staffId, pid }),
-      });
-      const json = (await res.json().catch(() => null)) as { ok?: boolean; data?: { url?: string } } | null;
-      if (json?.data?.url) return json.data.url;
-    } catch (err) {
-      console.error('[Schedule] mintLink failed:', err);
-    }
-    return `${window.location.origin}/housekeeper/${staffId}?pid=${pid}`;
-  }, [pid]);
-
-  // Click-to-move handlers. The floating room is the one the user just
-  // tapped or started dragging; the next tap on a housekeeper card or
-  // the unassigned strip (or releasing a drag over one) commits the
-  // move. Tapping the same pill again cancels; ESC also cancels.
-  const moveRoomTo = useCallback((roomId: string, targetStaffId: string | null) => {
-    setAssignments(prev => {
-      const next = { ...prev };
-      if (targetStaffId) next[roomId] = targetStaffId;
-      else delete next[roomId];
-      return next;
-    });
-    setFloatingRoomId(null);
-    setFloatingRoomMeta(null);
-    setCursorPos(null);
-  }, []);
-
-  // Swap one housekeeper for another. ALL of A's rooms transfer to B,
-  // and B replaces A in the crew list. If B was off-crew today they
-  // join the crew automatically.
-  const swapStaff = useCallback((oldId: string, newId: string) => {
-    setAssignments(prev => {
-      const next: Record<string, string> = {};
-      for (const [roomId, staffId] of Object.entries(prev)) {
-        next[roomId] = staffId === oldId ? newId : staffId;
-      }
-      return next;
-    });
-    const baseline = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
-    const swapped = baseline.includes(newId)
-      ? baseline.filter(id => id !== oldId)
-      : baseline.map(id => id === oldId ? newId : id);
-    setCrewIds(swapped);
-    setCrewExplicit(true);
-    setSwapOpenFor(null);
-  }, [crewExplicit, crewIds, housekeepingStaff]);
-
-  // ESC cancels a floating room, closes the swap dropdown, and closes
-  // the priority modal — keyboard escape hatch out of any open overlay.
-  useEffect(() => {
-    if (!floatingRoomId && !swapOpenFor && !showPriority) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      setFloatingRoomId(null);
-      setFloatingRoomMeta(null);
-      setCursorPos(null);
-      setSwapOpenFor(null);
-      setShowPriority(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [floatingRoomId, swapOpenFor, showPriority]);
-
-  // Document-level pointer tracking. Drives the floating ghost (so the
-  // pill follows the cursor while held / floating) AND the drag-and-drop
-  // commit (release over a target hands the room off; release over
-  // empty space leaves it floating for a click-to-drop). Watches for
-  // both the in-progress drag (dragStartRef) and the standing floating
-  // state (when the user just clicked a pill).
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      // While floating (after a click), keep the ghost glued to the cursor.
-      if (floatingRoomId) {
-        setCursorPos({ x: e.clientX, y: e.clientY });
-      }
-      // While a press is in progress, watch for the threshold crossing —
-      // 8px of movement promotes the press into a drag, which seeds the
-      // floating state and lights up the ghost without waiting for the
-      // user to release.
-      const start = dragStartRef.current;
-      if (!start) return;
-      if (!start.crossed) {
-        const dx = e.clientX - start.x;
-        const dy = e.clientY - start.y;
-        if (Math.hypot(dx, dy) > 8) {
-          start.crossed = true;
-          setFloatingRoomId(start.roomId);
-          setFloatingRoomMeta(start.meta);
-          setCursorPos({ x: e.clientX, y: e.clientY });
-        }
-      } else {
-        setCursorPos({ x: e.clientX, y: e.clientY });
-      }
-    };
-
-    const onUp = (e: PointerEvent) => {
-      const start = dragStartRef.current;
-      dragStartRef.current = null;
-      // Pure-click case is handled by the pill's own onClick handler
-      // (synthesized after pointerup). The document handler is only
-      // responsible for resolving drag drops.
-      if (!start || !start.crossed) return;
-
-      // Drag end. Resolve the drop target via what the cursor is over.
-      // We tag valid targets with data-drop-target=<staffId> (or the
-      // sentinel "__unassigned__") so this lookup needs no React refs.
-      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-      const dropEl = el?.closest('[data-drop-target]') as HTMLElement | null;
-      const targetAttr = dropEl?.getAttribute('data-drop-target') ?? null;
-      if (targetAttr) {
-        const targetId = targetAttr === '__unassigned__' ? null : targetAttr;
-        moveRoomTo(start.roomId, targetId);
-        flashToast(targetId === null
-          ? (lang === 'es' ? 'Cuarto sin asignar' : 'Room moved to Unassigned')
-          : (lang === 'es' ? 'Cuarto movido' : 'Room moved'));
-      }
-      // else: dropped on empty space — keep floating so the next
-      // tap on a card commits.
-
-      // Suppress the synthesized click that's about to fire on
-      // whatever element the cursor is over (otherwise it'd re-toggle
-      // floating on a pill, or re-commit via a card's onClick).
-      wasDragRef.current = true;
-      window.setTimeout(() => { wasDragRef.current = false; }, 120);
-    };
-
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
-    return () => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-    };
-  }, [floatingRoomId, moveRoomTo, lang]);
-
-  // Click outside the open swap dropdown closes it. Detected by walking
-  // the event target's ancestors looking for `data-swap-dropdown` (the
-  // dropdown itself) or `data-swap-trigger` (the name button — that
-  // button toggles via its own onClick, so we must let it through).
-  useEffect(() => {
-    if (!swapOpenFor) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest('[data-swap-dropdown]')) return;
-      if (target.closest('[data-swap-trigger]')) return;
-      setSwapOpenFor(null);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [swapOpenFor]);
 
   // Clear any pending toast timer on unmount so a delayed setToast(null)
   // can't fire after the component is gone (React warns + leaks state).
@@ -754,29 +239,6 @@ export function ScheduleTab() {
   const pulledAtLabel = pulledAtIso
     ? formatPulledAt(pulledAtIso, lang)
     : (lang === 'es' ? 'sin datos' : 'no data');
-
-  // Confirmation status pill helper. Returns null when the status is
-  // unknown / no confirmation row exists — the old "No reply" fallback
-  // was a defensive pill that just added visual noise (Reeyen never wants
-  // to see it).
-  const confPill = (staffId: string) => {
-    const conf = confirmations.find(c => c.staffId === staffId);
-    if (!conf) return null;
-    if (conf.status === 'confirmed') return <Pill tone="sage">✓ {lang === 'es' ? 'Confirmado' : 'Confirmed'}</Pill>;
-    if (conf.status === 'declined')  return <Pill tone="warm">{lang === 'es' ? 'Rechazado' : 'Declined'}</Pill>;
-    if (conf.status === 'pending')   return <Pill tone="neutral">{lang === 'es' ? 'Pendiente' : 'Pending'}</Pill>;
-    return null;
-  };
-
-  // Send result badge
-  const sendBadge = (staffId: string) => {
-    const r = sendResults.get(staffId);
-    if (!r) return null;
-    if (r.status === 'sent')    return <Pill tone="sage">→ {lang === 'es' ? 'Enviado' : 'Link sent'}</Pill>;
-    if (r.status === 'skipped') return <Pill tone="caramel">{lang === 'es' ? 'Omitido' : 'Skipped'}{r.reason ? ` · ${r.reason}` : ''}</Pill>;
-    if (r.status === 'failed')  return <Pill tone="warm">{lang === 'es' ? 'Falló' : 'Failed'}</Pill>;
-    return null;
-  };
 
   return (
     <div style={{
@@ -893,31 +355,6 @@ export function ScheduleTab() {
               }}>{n.loaded && n.v != null ? n.v : '—'}</span>
             </div>
           ))}
-          {/* Overnight diff — only renders when today's CSV differs from
-              the room list captured at last save. Shows compact +/− counts
-              with a hover-tooltip listing the affected room numbers, so
-              Maria knows whether to re-run auto-assign without scanning
-              the rooms by eye. Stays absent on a normal day. */}
-          {morningDiff && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 110 }}>
-              <Caps size={9}>{lang === 'es' ? 'Cambio nocturno' : 'Overnight'}</Caps>
-              <span
-                title={[
-                  morningDiff.added.length   ? `+${morningDiff.added.length}: ${morningDiff.added.join(', ')}` : null,
-                  morningDiff.removed.length ? `−${morningDiff.removed.length}: ${morningDiff.removed.join(', ')}` : null,
-                  morningDiff.changed.length ? `↔${morningDiff.changed.length}: ${morningDiff.changed.join(', ')}` : null,
-                ].filter(Boolean).join('   ')}
-                style={{
-                  fontFamily: FONT_SANS, fontSize: 14, color: T.caramelDeep,
-                  fontWeight: 600, whiteSpace: 'nowrap', marginTop: 6,
-                }}
-              >
-                {morningDiff.added.length   > 0 && <span>+{morningDiff.added.length}</span>}
-                {morningDiff.removed.length > 0 && <span style={{ marginLeft: morningDiff.added.length ? 8 : 0 }}>−{morningDiff.removed.length}</span>}
-                {morningDiff.changed.length > 0 && <span style={{ marginLeft: 8 }}>↔{morningDiff.changed.length}</span>}
-              </span>
-            </div>
-          )}
         </div>
       </div>
 
@@ -1007,437 +444,6 @@ export function ScheduleTab() {
         );
       })()}
 
-      {/* UNASSIGNED STRIP — sits between the PMS strip and the crew so
-          rooms that come off Reset, or rooms whose previously-assigned
-          housekeeper got removed from today's crew, always have a
-          visible home. Also acts as a drop zone when a room is floating:
-          tapping it returns the floating room to the pool. Hidden when
-          there's nothing unassigned AND no room is floating (so the page
-          stays clean for the common case). */}
-      {(unassignedRooms.length > 0 || floatingRoomId) && (
-        <div
-          data-drop-target="__unassigned__"
-          onClick={() => {
-            if (floatingRoomId) {
-              moveRoomTo(floatingRoomId, null);
-              flashToast(lang === 'es' ? 'Cuarto sin asignar' : 'Room moved to Unassigned');
-            }
-          }}
-          style={{
-            background: floatingRoomId ? T.sageDim : T.paper,
-            border: `${floatingRoomId ? 2 : 1}px solid ${floatingRoomId ? T.sageDeep : T.rule}`,
-            borderRadius: 16, padding: '14px 22px', marginBottom: 10,
-            display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
-            cursor: floatingRoomId ? 'pointer' : 'default',
-            transition: 'background 120ms ease, border-color 120ms ease',
-          }}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 140 }}>
-            <Caps size={9}>{lang === 'es' ? 'Sin asignar' : 'Unassigned'}</Caps>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>
-              {unassignedRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', flex: 1 }}>
-            {unassignedRooms.length === 0 ? (
-              <span style={{ fontFamily: FONT_SERIF, fontSize: 14, color: T.ink2, fontStyle: 'italic' }}>
-                {lang === 'es'
-                  ? 'Toca aquí para devolver el cuarto al grupo.'
-                  : 'Tap here to drop the room back to the pool.'}
-              </span>
-            ) : unassignedRooms.map(r => {
-              const floating = floatingRoomId === r.id;
-              return (
-                <button
-                  key={r.id}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    // No preventDefault — the browser needs to synthesize
-                    // the click event from this pointer interaction, and
-                    // we handle the tap-to-toggle path in onClick below.
-                    dragStartRef.current = {
-                      x: e.clientX, y: e.clientY,
-                      roomId: r.id,
-                      meta: { number: r.number, type: r.type },
-                      crossed: false,
-                    };
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation(); // don't let the click bubble to the strip's onClick
-                    if (wasDragRef.current) return; // ignore the click that follows a drag
-                    setFloatingRoomId(prev => {
-                      if (prev === r.id) {
-                        setFloatingRoomMeta(null);
-                        setCursorPos(null);
-                        return null;
-                      }
-                      setFloatingRoomMeta({ number: r.number, type: r.type });
-                      setCursorPos({ x: e.clientX, y: e.clientY });
-                      return r.id;
-                    });
-                  }}
-                  style={{
-                    padding: '5px 11px', borderRadius: 8,
-                    background: floating ? T.sageDim : T.bg,
-                    border: `${floating ? 2 : 1}px solid ${floating ? T.sageDeep : T.rule}`,
-                    color: T.ink, fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
-                    letterSpacing: '-0.02em', whiteSpace: 'nowrap',
-                    cursor: floating ? 'grabbing' : 'grab',
-                    opacity: floating ? 0.4 : 1,
-                    touchAction: 'none',
-                    transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease',
-                  }}
-                  title={floating
-                    ? (lang === 'es' ? 'Toca un destino o suelta sobre uno para mover' : 'Tap or drop on a target to move')
-                    : (lang === 'es' ? 'Toca o arrastra para mover' : 'Tap or drag to move')}
-                >
-                  {r.number}
-                  {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
-                  {r.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* CREW ROWS */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {activeCrew.map(c => {
-          const myRooms = assignableRooms.filter(r => assignments[r.id] === c.id);
-          const minsLoaded = myRooms.reduce((sum, r) => {
-            if (r.type === 'checkout') return sum + ckMin;
-            if (r.type === 'stayover') return sum + (r.stayoverDay === 1 ? so1Min : so2Min);
-            return sum;
-          }, 0);
-          const pct = Math.min(100, (minsLoaded / SHIFT_MINS) * 100);
-          const isOver = minsLoaded > SHIFT_MINS;
-          const isNear = !isOver && minsLoaded > SHIFT_MINS * 0.85;
-          const status = myRooms.length === 0 ? 'available' : isOver ? 'over' : isNear ? 'near' : 'assigned';
-          const dotColor = status === 'over' ? T.warm : status === 'near' ? T.caramelDeep : status === 'available' ? T.sageDeep : T.ink2;
-          const isDropTarget = !!floatingRoomId;
-          const swapOpen = swapOpenFor === c.id;
-
-          return (
-            <div
-              key={c.id}
-              data-drop-target={c.id}
-              onClick={() => {
-                if (floatingRoomId) {
-                  moveRoomTo(floatingRoomId, c.id);
-                  flashToast(lang === 'es' ? `Cuarto movido a ${c.name}` : `Room moved to ${c.name}`);
-                }
-              }}
-              style={{
-                background: isDropTarget ? T.sageDim : T.paper,
-                border: `${isDropTarget ? 2 : 1}px solid ${isDropTarget ? T.sageDeep : T.rule}`,
-                borderRadius: 16, padding: '18px 22px', display: 'grid',
-                gridTemplateColumns: 'auto 1fr auto', gap: 20, alignItems: 'center',
-                cursor: isDropTarget ? 'pointer' : 'default',
-                position: 'relative',
-                transition: 'background 120ms ease, border-color 120ms ease',
-              }}
-            >
-              {/* Avatar + name + capacity */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ position: 'relative' }}>
-                  <HousekeeperDot staff={c} size={48} />
-                  <span style={{
-                    position: 'absolute', bottom: -2, right: -2,
-                    width: 12, height: 12, borderRadius: '50%',
-                    background: dotColor, border: `2px solid ${T.paper}`,
-                  }} />
-                </span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative' }}>
-                    {/* Name button — click to open the swap dropdown.
-                        Tap the same name again (or anywhere outside the
-                        dropdown) to close it. */}
-                    <button
-                      data-swap-trigger
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        // If a room is currently held, prefer dropping
-                        // it on this housekeeper over opening the swap
-                        // dropdown. Clicking a name is the most obvious
-                        // "give the room to this person" affordance, so
-                        // it would be surprising to instead get a
-                        // staff-swap menu while you're holding a room.
-                        if (floatingRoomId) {
-                          moveRoomTo(floatingRoomId, c.id);
-                          flashToast(lang === 'es' ? `Cuarto movido a ${c.name}` : `Room moved to ${c.name}`);
-                          return;
-                        }
-                        setSwapOpenFor(prev => prev === c.id ? null : c.id);
-                      }}
-                      title={lang === 'es' ? 'Cambiar por otro' : 'Swap with another'}
-                      style={{
-                        background: 'transparent', border: 'none', cursor: 'pointer',
-                        padding: 0, fontFamily: FONT_SANS, fontSize: 15, color: T.ink,
-                        fontWeight: 600, textAlign: 'left',
-                      }}
-                    >
-                      {c.name}
-                    </button>
-                    {/* Open the housekeeper's personal page in a new tab.
-                        Uses the per-staff magic link if /api/staff-link
-                        is healthy, otherwise falls back to the tokenless
-                        route. */}
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        const url = await mintLink(c.id);
-                        window.open(url, '_blank', 'noopener,noreferrer');
-                      }}
-                      title={lang === 'es' ? 'Abrir página personal' : 'Open personal page'}
-                      style={{
-                        background: 'transparent', border: 'none', cursor: 'pointer',
-                        padding: 2, borderRadius: 4, color: T.ink3,
-                        display: 'inline-flex', alignItems: 'center',
-                      }}
-                    >
-                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                      </svg>
-                    </button>
-
-                    {/* Swap dropdown — anchored to the name. Lists every
-                        housekeeping staff member NOT already on the
-                        crew. Picking one transfers all of c's rooms to
-                        the new person and replaces them in the crew. */}
-                    {swapOpen && (
-                      <div
-                        data-swap-dropdown
-                        onClick={(e) => e.stopPropagation()}
-                        style={{
-                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
-                          background: T.paper, border: `1px solid ${T.rule}`,
-                          borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
-                          padding: 6, zIndex: 60, minWidth: 220, maxHeight: 280, overflow: 'auto',
-                        }}
-                      >
-                        <div style={{ padding: '6px 10px 4px' }}>
-                          <Caps size={9}>{lang === 'es' ? 'Cambiar por' : 'Swap with'}</Caps>
-                        </div>
-                        {offCrew.length === 0 ? (
-                          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: 0, padding: '8px 10px' }}>
-                            {lang === 'es' ? 'No hay personal disponible.' : 'No staff available.'}
-                          </p>
-                        ) : offCrew.map(s => (
-                          <button
-                            key={s.id}
-                            onClick={() => {
-                              swapStaff(c.id, s.id);
-                              flashToast(lang === 'es' ? `${c.name} → ${s.name}` : `${c.name} → ${s.name}`);
-                            }}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 10,
-                              width: '100%', padding: '6px 10px', border: 'none',
-                              background: 'transparent', cursor: 'pointer', borderRadius: 8,
-                              fontFamily: FONT_SANS, fontSize: 13, color: T.ink,
-                            }}
-                            onMouseEnter={e => { e.currentTarget.style.background = T.bg; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                          >
-                            <HousekeeperDot staff={s} size={24} />
-                            <span>{s.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, whiteSpace: 'nowrap' }}>
-                      {myRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'} · {fmtTime(minsLoaded)} / {Math.floor(SHIFT_MINS / 60)}h
-                    </span>
-                    {status === 'over'      && <Pill tone="warm">{lang === 'es' ? 'Sobre cupo' : 'Over cap'}</Pill>}
-                    {status === 'near'      && <Pill tone="caramel">{lang === 'es' ? 'Casi lleno' : 'Near full'}</Pill>}
-                    {status === 'available' && <Pill tone="sage">{lang === 'es' ? 'Disponible' : 'Available'}</Pill>}
-                  </div>
-                  <div style={{ width: 200, height: 4, background: T.ruleSoft, borderRadius: 2, overflow: 'hidden' }}>
-                    <span style={{
-                      display: 'block', height: '100%', width: `${pct}%`,
-                      background: status === 'over' ? T.warm : status === 'near' ? T.caramelDeep : T.sageDeep,
-                    }} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Room pills — tap to pick up, tap again to cancel. */}
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                {myRooms.length === 0 ? (
-                  <span style={{ fontFamily: FONT_SERIF, fontSize: 14, color: T.ink2, fontStyle: 'italic' }}>
-                    {lang === 'es'
-                      ? 'Sin asignar — toca Auto-asignar.'
-                      : 'No rooms assigned yet — tap Auto-assign.'}
-                  </span>
-                ) : myRooms.map(r => {
-                  const floating = floatingRoomId === r.id;
-                  return (
-                    <button
-                      key={r.id}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        // No preventDefault — see the unassigned-pill
-                        // handler above for the rationale.
-                        dragStartRef.current = {
-                          x: e.clientX, y: e.clientY,
-                          roomId: r.id,
-                          meta: { number: r.number, type: r.type },
-                          crossed: false,
-                        };
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation(); // don't let the click bubble to the card's onClick
-                        if (wasDragRef.current) return; // ignore the click that follows a drag
-                        setFloatingRoomId(prev => {
-                          if (prev === r.id) {
-                            setFloatingRoomMeta(null);
-                            setCursorPos(null);
-                            return null;
-                          }
-                          setFloatingRoomMeta({ number: r.number, type: r.type });
-                          setCursorPos({ x: e.clientX, y: e.clientY });
-                          return r.id;
-                        });
-                      }}
-                      title={floating
-                        ? (lang === 'es' ? 'Toca un destino o suelta sobre uno para mover' : 'Tap or drop on a target to move')
-                        : (lang === 'es' ? 'Toca o arrastra para mover' : 'Tap or drag to move')}
-                      style={{
-                        padding: '5px 11px', borderRadius: 8,
-                        background: floating ? T.sageDim : T.bg,
-                        border: `${floating ? 2 : 1}px solid ${floating ? T.sageDeep : T.rule}`,
-                        color: T.ink, fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
-                        letterSpacing: '-0.02em', whiteSpace: 'nowrap',
-                        cursor: floating ? 'grabbing' : 'grab',
-                        opacity: floating ? 0.4 : 1,
-                        touchAction: 'none',
-                        transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease',
-                      }}
-                    >
-                      {r.number}
-                      {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
-                      {r.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Status pills + per-row actions */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-                {sendBadge(c.id) ?? confPill(c.id)}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const baseline = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
-                    setCrewIds(baseline.filter(id => id !== c.id));
-                    setCrewExplicit(true);
-                    // Drop their assignments too — otherwise they'd persist
-                    // pinned to a person no longer on today's roster.
-                    setAssignments(prev => {
-                      const next: Record<string, string> = {};
-                      for (const [roomId, staffId] of Object.entries(prev)) {
-                        if (staffId !== c.id) next[roomId] = staffId;
-                      }
-                      return next;
-                    });
-                  }}
-                  title={lang === 'es' ? 'Quitar de hoy' : 'Remove from today'}
-                  style={{
-                    background: 'transparent', border: 'none', cursor: 'pointer',
-                    padding: '2px 6px', borderRadius: 4,
-                    fontFamily: FONT_SANS, fontSize: 11, color: T.ink3,
-                  }}
-                >
-                  {lang === 'es' ? 'Quitar' : 'Remove'}
-                </button>
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Off-today crew strip — keeps recently-removed staff one tap away */}
-        {offCrew.length > 0 && (
-          <div style={{
-            marginTop: 4, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-            padding: '10px 14px', background: T.bg,
-          }}>
-            <Caps>{lang === 'es' ? 'Disponibles hoy' : 'Available today'}</Caps>
-            {offCrew.map(s => (
-              <button
-                key={s.id}
-                onClick={() => {
-                  // First add: seed crewIds from the implicit default
-                  // (housekeepingStaff) so we don't lose the others.
-                  const baseline = crewExplicit ? crewIds : housekeepingStaff.map(x => x.id);
-                  setCrewIds([...baseline, s.id]);
-                  setCrewExplicit(true);
-                }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '4px 12px 4px 4px', borderRadius: 999,
-                  background: 'transparent', border: `1px dashed ${T.rule}`, cursor: 'pointer',
-                  fontFamily: FONT_SANS, fontSize: 12, color: T.ink2,
-                }}
-              >
-                <HousekeeperDot staff={s} size={22} />
-                <span>{s.name}</span>
-                <span style={{ color: T.ink3 }}>+ {lang === 'es' ? 'añadir' : 'add'}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ACTION BAND — bottom */}
-      <div style={{
-        marginTop: 18,
-        background: `linear-gradient(135deg, ${T.sageDim}, rgba(201,150,68,0.06))`,
-        border: '1px solid rgba(92,122,96,0.18)', borderRadius: 18,
-        padding: '14px 22px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        gap: 18, flexWrap: 'wrap',
-      }}>
-        <div>
-          <Caps c={T.sageDeep}>{lang === 'es' ? 'Listo para asignar' : 'Ready to assign'}</Caps>
-          <p style={{
-            fontFamily: FONT_SERIF, fontSize: 22, color: T.ink,
-            margin: '4px 0 0', lineHeight: 1.3, fontWeight: 400,
-          }}>
-            <span style={{ fontStyle: 'italic' }}>
-              {assignableRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
-            </span>
-            {' '}{lang === 'es' ? 'entre' : 'across'} {activeCrew.length} {lang === 'es' ? 'limpiadoras activas' : 'active housekeepers'}.
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="ghost" size="md" onClick={() => {
-            // Freeze the current sort order so the list doesn't shuffle
-            // when the user toggles a priority level mid-modal.
-            frozenStaffOrder.current = [...housekeepingStaff]
-              .sort((a, b) => {
-                const order: Record<string, number> = { priority: 0, normal: 1, excluded: 2 };
-                return (order[a.schedulePriority ?? 'normal'] ?? 1) - (order[b.schedulePriority ?? 'normal'] ?? 1);
-              })
-              .map(s => s.id);
-            setShowPriority(true);
-          }}>
-            ★ {lang === 'es' ? 'Prioridad' : 'Priority'}
-          </Btn>
-          <Btn variant="ghost" size="md" onClick={handleReset} disabled={!ready}>
-            {lang === 'es' ? 'Resetear todo' : 'Reset all'}
-          </Btn>
-          <Btn variant="primary" size="md" onClick={handleAutoAssign} disabled={!ready || activeCrew.length === 0}>
-            ↻ {lang === 'es' ? 'Auto-asignar' : 'Auto-assign'} {assignableRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
-          </Btn>
-          <Btn variant="sage" size="md" onClick={handleSend} disabled={sending || activeCrew.length === 0}>
-            → {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : `${lang === 'es' ? 'Enviar' : 'Send'} ${activeCrew.length} ${lang === 'es' ? 'enlaces' : 'links'}`}
-          </Btn>
-        </div>
-      </div>
-
       {/* VIEW TOGGLE — Kanban / Timeline / Forecast. Only the chosen
           view renders; the unselected sub-views unmount entirely so
           they don't keep their subscriptions live in the background.
@@ -1493,38 +499,6 @@ export function ScheduleTab() {
         <div style={{ marginTop: 12 }}>
           <ForecastView propertyId={pid} lang={lang} />
         </div>
-      )}
-
-      {/* FLOATING GHOST — follows the cursor while a room is held.
-          pointerEvents: 'none' so the cursor still hits drop targets
-          underneath; positioned via fixed coords from cursorPos. Only
-          renders when both the room is floating AND we have a cursor
-          position (set by either the click-pick or the drag threshold). */}
-      {floatingRoomId && floatingRoomMeta && cursorPos && typeof document !== 'undefined' && createPortal(
-        <div
-          style={{
-            position: 'fixed',
-            top: cursorPos.y,
-            left: cursorPos.x,
-            transform: 'translate(-50%, -50%)',
-            pointerEvents: 'none',
-            zIndex: 9999,
-          }}
-        >
-          <span style={{
-            padding: '5px 11px', borderRadius: 8,
-            background: T.paper, border: `2px solid ${T.sageDeep}`, color: T.ink,
-            fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
-            letterSpacing: '-0.02em', whiteSpace: 'nowrap',
-            boxShadow: '0 6px 18px rgba(0,0,0,0.15)',
-            display: 'inline-block',
-          }}>
-            {floatingRoomMeta.number}
-            {floatingRoomMeta.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
-            {floatingRoomMeta.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
-          </span>
-        </div>,
-        document.body,
       )}
 
       {/* TOAST */}
@@ -1666,106 +640,6 @@ export function ScheduleTab() {
                   ? (lang === 'es' ? 'Guardando…' : 'Saving…')
                   : (lang === 'es' ? 'Guardar' : 'Save')}
               </Btn>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
-
-      {/* STAFF PRIORITY MODAL — rendered via portal so it always sits
-          above the rest of the page. Tap each level to update the
-          housekeeper's schedulePriority on the staff record; the auto-
-          assign algorithm reads this field directly to gate who gets
-          rooms first ('priority'), who's backup ('normal'), and who
-          shouldn't be auto-assigned at all ('excluded'). */}
-      {showPriority && typeof document !== 'undefined' && createPortal(
-        <div
-          onClick={() => setShowPriority(false)}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
-            zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 20,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-              padding: '20px 24px', maxWidth: 560, width: '100%',
-              maxHeight: '80vh', overflow: 'auto',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
-                <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Prioridad del Personal' : 'Staff Priority'}</span>
-              </h2>
-              <button
-                onClick={() => setShowPriority(false)}
-                style={{
-                  background: 'transparent', border: 'none', cursor: 'pointer',
-                  fontSize: 20, color: T.ink3, padding: '0 6px',
-                }}
-                aria-label="Close"
-              >
-                ×
-              </button>
-            </div>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 14px' }}>
-              {lang === 'es'
-                ? 'Prioridad = se asigna primero. Normal = respaldo. Excluido = nunca se asigna automáticamente.'
-                : 'Priority = auto-assigned first. Normal = backup. Excluded = never auto-assigned.'}
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {frozenStaffOrder.current.map(id => {
-                const s = staff.find(x => x.id === id);
-                if (!s) return null;
-                const level: SchedulePriority = s.schedulePriority ?? 'normal';
-                const levels: Array<{ value: SchedulePriority; label: string }> = [
-                  { value: 'priority', label: lang === 'es' ? 'Prioridad' : 'Priority' },
-                  { value: 'normal',   label: lang === 'es' ? 'Normal'    : 'Normal' },
-                  { value: 'excluded', label: lang === 'es' ? 'Excluido'  : 'Excluded' },
-                ];
-                return (
-                  <div key={s.id} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '12px 0', borderTop: `1px solid ${T.rule}`,
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <HousekeeperDot staff={s} size={32} />
-                      <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, fontWeight: 500 }}>{s.name}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      {levels.map(lvl => {
-                        const active = level === lvl.value;
-                        return (
-                          <button
-                            key={lvl.value}
-                            onClick={async () => {
-                              if (!uid || !pid) return;
-                              try {
-                                await updateStaffMember(uid, pid, s.id, { schedulePriority: lvl.value });
-                              } catch (err) {
-                                console.error('[Schedule] priority update failed:', err);
-                                flashToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
-                              }
-                            }}
-                            style={{
-                              padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
-                              fontFamily: FONT_SANS, fontSize: 11, fontWeight: 500,
-                              background: active ? T.sageDeep : 'transparent',
-                              color: active ? '#fff' : T.ink2,
-                              border: `1px solid ${active ? T.sageDeep : T.rule}`,
-                            }}
-                          >
-                            {lvl.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
             </div>
           </div>
         </div>,

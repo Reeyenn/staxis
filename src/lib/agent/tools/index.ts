@@ -14,6 +14,7 @@ import './reports';
 import './walkthrough';
 import './voice-issue';
 import './compliance';
+import './lost-found';
 
 // Future cross-feature tool modules (registered from other branches/chats)
 // can be added by importing from agent/index.ts at the top level — this

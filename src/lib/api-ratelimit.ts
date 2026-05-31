@@ -114,11 +114,6 @@ export type RateLimitEndpoint =
   // the page's legacy branch. IP-keyed; 30/hr is generous because real
   // legitimate redemptions are bounded by SMS volume.
   | 'housekeeper-log-legacy-token'
-  // Plan v2 F-AI-8 — Mario's "Load Rooms" button. Triggers Railway
-  // scraper /scrape/hk-center, which talks to Choice Advantage. Two
-  // open browser tabs + a power-user clicking refresh shouldn't burn
-  // through the CA session quota. Keyed on (userId, propertyId).
-  | 'refresh-from-pms'
   // Comms-voice audit P4 (2026-05-22) — /api/agent/speak walkthrough
   // narration. ElevenLabs Turbo v2.5 costs ~$0.10/1k chars; a runaway
   // client or compromised session can burn the $5 daily budget cap in
@@ -203,7 +198,17 @@ export type RateLimitEndpoint =
   | 'compliance-log'          // manager logs a reading / PM check from desktop
   | 'compliance-setup'        // one-line AI setup (Claude)
   | 'compliance-vision'       // manager snap-to-log (Claude Vision)
-  | 'send-engineer-links';    // SMS the compliance magic-link to maintenance staff
+  | 'send-engineer-links'     // SMS the compliance magic-link to maintenance staff
+  // Lost & Found (feature, 2026-05-30). Front-desk register + AI features +
+  // housekeeper "Found an item". Reads keyed on pid; writes/AI/SMS too.
+  | 'lost-found-read'
+  | 'lost-found-write'
+  | 'lost-found-describe-photo'
+  | 'lost-found-auto-match'
+  | 'lost-found-notify-guest'
+  | 'lost-found-photo-presign'
+  | 'housekeeper-report-found-item'
+  | 'housekeeper-found-item-photo-presign';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -320,12 +325,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // redemptions and decide when the in-flight SMS drain is complete.
   // 30/hr per IP — well above any single phone's realistic re-tap rate.
   'housekeeper-log-legacy-token': 30,
-  // refresh-from-pms — Rooms tab "Load Rooms" button. Triggers a CA
-  // scrape on Railway; the Choice Advantage account is a single shared
-  // session that we don't want to burn. 30/hr per (user, property) is
-  // "click roughly every 2 minutes for an hour" which is enough for any
-  // legitimate troubleshooting and stops a runaway script dead.
-  'refresh-from-pms':            30,
   // Comms-voice audit P4 (2026-05-22) — TTS narration cap per user/hour.
   // Real walkthroughs play 5–15 narrations; 30/hr is "do the full
   // walkthrough twice with retries" headroom. Catches runaway clients
@@ -382,6 +381,18 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'compliance-setup':             20,
   'compliance-vision':            50,
   'send-engineer-links':          10,
+  // Lost & Found (2026-05-30). Register read is polled (~30s/tab) + the
+  // dashboard tile polls counts — 3600/hr per property absorbs several
+  // terminals. Writes are deliberate desk actions. AI + SMS endpoints cost
+  // money so they're tighter (and fail-closed below).
+  'lost-found-read':            3600,
+  'lost-found-write':            300,
+  'lost-found-describe-photo':    50,
+  'lost-found-auto-match':        60,
+  'lost-found-notify-guest':      30,
+  'lost-found-photo-presign':    200,
+  'housekeeper-report-found-item': 200,
+  'housekeeper-found-item-photo-presign': 200,
 };
 
 /**
@@ -480,6 +491,11 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'compliance-setup',
   'compliance-vision',
   'send-engineer-links',
+  // Lost & Found — vision (describe), Claude (auto-match), Twilio (notify).
+  // Each call costs money, so fail CLOSED if the rate-limit RPC errors.
+  'lost-found-describe-photo',
+  'lost-found-auto-match',
+  'lost-found-notify-guest',
 ]);
 
 /**

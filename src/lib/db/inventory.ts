@@ -27,12 +27,16 @@ export async function addInventoryItem(
   _uid: string, pid: string,
   item: Omit<InventoryItem, 'id' | 'updatedAt'>,
 ): Promise<string> {
-  // Stamp last_counted_at on insert iff a positive currentStock was provided —
-  // means the user is recording an actual count at item creation time. Defaults
-  // (currentStock=0) leave last_counted_at null so the UI shows "Never" instead
-  // of "Just now" right after seeding.
+  // Anchor the estimate window via last_counted_at. Honor an explicit
+  // lastCountedAt when the caller provides one (e.g. an invoice scan seeding a
+  // new item at its DELIVERY date, not "now"). Otherwise stamp now iff a
+  // positive currentStock was given — recording an actual count at creation.
+  // Defaults (currentStock=0, no lastCountedAt) leave it null so the UI shows
+  // "Never" instead of "Just now" right after seeding.
   const row: Record<string, unknown> = { ...toInventoryRow({ ...item, propertyId: pid }), property_id: pid };
-  if (typeof item.currentStock === 'number' && item.currentStock > 0) {
+  if (item.lastCountedAt instanceof Date) {
+    row.last_counted_at = item.lastCountedAt.toISOString();
+  } else if (typeof item.currentStock === 'number' && item.currentStock > 0) {
     row.last_counted_at = new Date().toISOString();
   }
   const { data: inserted, error } = await supabase
@@ -42,7 +46,7 @@ export async function addInventoryItem(
 }
 
 export async function updateInventoryItem(
-  _uid: string, _pid: string, iid: string, data: Partial<InventoryItem>,
+  _uid: string, pid: string, iid: string, data: Partial<InventoryItem>,
 ): Promise<void> {
   // Server-side guarantee: if the caller is changing current_stock, they're
   // recording a count, so stamp last_counted_at. Metadata edits (vendor, lead
@@ -57,11 +61,13 @@ export async function updateInventoryItem(
   if ('currentStock' in data && data.currentStock !== undefined && !('lastCountedAt' in data)) {
     patch.lastCountedAt = new Date();
   }
-  const { error } = await supabase.from('inventory').update(toInventoryRow(patch)).eq('id', iid);
+  // Scope writes by property_id too (defense-in-depth alongside RLS): a stale
+  // item id can't update a row from another property.
+  const { error } = await supabase.from('inventory').update(toInventoryRow(patch)).eq('id', iid).eq('property_id', pid);
   if (error) { logErr('updateInventoryItem', error); throw error; }
 }
 
-export async function deleteInventoryItem(_uid: string, _pid: string, iid: string): Promise<void> {
-  const { error } = await supabase.from('inventory').delete().eq('id', iid);
+export async function deleteInventoryItem(_uid: string, pid: string, iid: string): Promise<void> {
+  const { error } = await supabase.from('inventory').delete().eq('id', iid).eq('property_id', pid);
   if (error) { logErr('deleteInventoryItem', error); throw error; }
 }

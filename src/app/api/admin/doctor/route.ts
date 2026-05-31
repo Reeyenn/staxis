@@ -2138,6 +2138,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // runs early. Cadence is 30/60 because the heartbeat lands every tick
   // regardless of whether a property got mailed.
   { name: 'run-weekly-report',             cadenceHours: 30/60, description: 'Sunday-only logic, 30-min cron — same per-property time-window check as run-daily-report; emits the Mon–Sun digest with a Claude-generated AI insight at the top' },
+  { name: 'lost-found-disposal-check',     cadenceHours: 24, description: 'Daily Lost & Found disposal sweep — auto-expires found items past their 90-day hold and nudges owners/GMs about items nearing the deadline' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

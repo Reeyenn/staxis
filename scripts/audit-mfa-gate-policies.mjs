@@ -54,6 +54,11 @@ const EXEMPT = new Set([
   // bucket. The deny policy applies to anon, not to a 2FA-gated surface,
   // so the mfa_verified_or_grace() check doesn't apply.
   'objects:anon deny housekeeping-issue-photos',
+  // Lost-found-item-photos bucket (migration 0229). Same idiom as the
+  // housekeeping-issue-photos deny above: uploads + views go through
+  // service-role signed-URL helpers; no authenticated browser role touches
+  // the bucket. The deny policy applies to anon, not a 2FA-gated surface.
+  'objects:anon deny lost-found-item-photos',
 ]);
 
 // Regex matches `create policy NAME on TABLE` or `alter policy NAME on TABLE`.

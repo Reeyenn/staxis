@@ -11,8 +11,14 @@ import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/db';
 import { RushButton } from './_components/RushButton';
+import { FrontDeskTabBar, type FrontDeskTabKey } from './_components/TabBar';
+import { LostFoundTab } from './_components/LostFoundTab';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
+
+const FD_TAB_KEY = 'fd-tab';
+// Roles that may use the Lost & Found surface (management home).
+const FD_MANAGEMENT_ROLES = ['admin', 'owner', 'general_manager', 'front_desk'];
 
 /* ════════════════════════════════════════════════════════════════════════════
    HELPERS
@@ -125,6 +131,11 @@ export default function FrontDeskPage() {
   const [processing, setProcessing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [tab, setTabState] = useState<FrontDeskTabKey>('rooms');
+
+  // Lost & Found is a management surface; housekeeping/maintenance see only the
+  // Rooms tab (existing access is unchanged — we don't redirect them away).
+  const isManagement = !!user && FD_MANAGEMENT_ROLES.includes(user.role);
 
   // Material Symbols font is loaded globally via globals.css
 
@@ -132,6 +143,21 @@ export default function FrontDeskPage() {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
     if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
   }, [user, authLoading, propLoading, activePropertyId, router]);
+
+  // Restore the saved tab; force back to Rooms if a non-manager somehow has
+  // 'lost-and-found' persisted.
+  useEffect(() => {
+    const saved = localStorage.getItem(FD_TAB_KEY);
+    if (saved === 'lost-and-found' || saved === 'rooms') setTabState(saved);
+  }, []);
+  useEffect(() => {
+    if (tab === 'lost-and-found' && !isManagement) setTabState('rooms');
+  }, [tab, isManagement]);
+
+  const setTab = (t: FrontDeskTabKey) => {
+    setTabState(t);
+    localStorage.setItem(FD_TAB_KEY, t);
+  };
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -258,6 +284,13 @@ export default function FrontDeskPage() {
         .fd-filter-pill:hover { background: rgba(54,66,98,0.06); }
       `}</style>
 
+      <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={isManagement} />
+
+      {tab === 'lost-and-found' && isManagement && activePropertyId && (
+        <LostFoundTab pid={activePropertyId} lang={lang} />
+      )}
+
+      {tab === 'rooms' && (
       <div style={{ minHeight: '100dvh', background: '#fbf9f4' }}>
 
         {/* ── Stitch Hero Section ── */}
@@ -717,6 +750,7 @@ export default function FrontDeskPage() {
           </>
         )}
       </div>
+      )}
     </AppLayout>
   );
 }

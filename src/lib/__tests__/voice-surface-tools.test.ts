@@ -36,16 +36,23 @@ import '@/lib/agent/tools/index';
 const ROLES = ['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance', 'staff'] as const;
 
 describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => {
+  // log_found_item (Lost & Found, 2026-05-30) is the first tool to opt into the
+  // GENERAL voice mode: hands-free found-item logging ("Hey Staxis, found a pair
+  // of glasses in 214"). Audited before adding to this snapshot: property-scoped
+  // (executeTool enforces ctx.propertyId), role-gated, description capped at 500
+  // chars, writes no guest PII, and cannot reach another tenant's data. It
+  // declares voiceModes:['general'] so it stays OUT of the housekeeper_issue
+  // flow (that snapshot below is unchanged). createMaintenanceWorkOrder stays
+  // hidden here via voiceModes:['housekeeper_issue'].
+  const LOG_FOUND_ROLES = new Set(['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance']);
   for (const role of ROLES) {
-    test(`role=${role} sees zero tools in general voice mode`, () => {
+    test(`role=${role} general voice mode catalog`, () => {
       const tools = getToolsForRole(role as never, 'voice', 'general');
-      // EXPECTED EMPTY. createMaintenanceWorkOrder declares
-      // `voiceModes: ['housekeeper_issue']` so it does NOT appear here —
-      // it's only callable from a session minted with mode='housekeeper_issue'.
+      const expected = LOG_FOUND_ROLES.has(role) ? ['log_found_item'] : [];
       assert.deepEqual(
-        tools.map((t) => t.name),
-        [],
-        `General voice mode gained a tool for role=${role}. ` +
+        tools.map((t) => t.name).sort(),
+        expected,
+        `General voice mode catalog changed for role=${role}. ` +
           'Stop and audit before updating this snapshot — see comment in voice-surface-tools.test.ts.',
       );
     });
@@ -80,11 +87,11 @@ describe('voice surface tool catalog — surface omitted (no-mode call)', () => 
   // belt-and-braces gate is in executeTool() which DOES receive ctx.voiceMode
   // and will refuse a mismatched call there. This test pins the shape so a
   // refactor that flips the default doesn't silently expose tools.
-  test('no-mode lookup sees the voice-mode-gated tool (executor still refuses)', () => {
+  test('no-mode lookup sees the voice-mode-gated tools (executor still refuses)', () => {
     const tools = getToolsForRole('housekeeping' as never, 'voice');
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['createMaintenanceWorkOrder'],
+      ['createMaintenanceWorkOrder', 'log_found_item'],
       'No-mode getToolsForRole bypasses voiceModes filter — this is fine because executeTool re-checks mode.',
     );
   });

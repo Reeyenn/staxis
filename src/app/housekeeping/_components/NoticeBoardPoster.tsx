@@ -11,9 +11,9 @@ import { t } from '@/lib/translations';
  * /housekeeping Schedule tab.
  *
  * Manager types an English announcement (the primary language manager
- * dashboards always render). Optional per-locale translations let the
- * manager hand-write Spanish/Haitian Creole/Tagalog/Vietnamese versions
- * directly so housekeepers see something other than the EN fallback.
+ * dashboards always render). The server auto-translates it into Spanish on
+ * post (see /api/housekeeping/notices), so Spanish-speaking housekeepers see
+ * their language without anyone hand-typing a translation.
  *
  * The active notices list shows below the composer so the manager can
  * delete or unpin existing posts.
@@ -45,11 +45,6 @@ export function NoticeBoardPoster() {
   const { activePropertyId } = useProperty();
 
   const [bodyEn, setBodyEn] = useState('');
-  const [bodyEs, setBodyEs] = useState('');
-  const [expandTranslations, setExpandTranslations] = useState(false);
-  const [bodyHt, setBodyHt] = useState('');
-  const [bodyTl, setBodyTl] = useState('');
-  const [bodyVi, setBodyVi] = useState('');
   const [pinned, setPinned] = useState(false);
   const [expiryKey, setExpiryKey] = useState<(typeof EXPIRY_OPTIONS)[number]['key']>('1d');
   const [posting, setPosting] = useState(false);
@@ -101,10 +96,6 @@ export function NoticeBoardPoster() {
         body: JSON.stringify({
           pid: activePropertyId,
           body_en: bodyEn.trim(),
-          body_es: bodyEs.trim() || null,
-          body_ht: bodyHt.trim() || null,
-          body_tl: bodyTl.trim() || null,
-          body_vi: bodyVi.trim() || null,
           pinned,
           expires_at: expiresAt,
         }),
@@ -112,10 +103,6 @@ export function NoticeBoardPoster() {
       if (!res.ok) throw new Error(`http ${res.status}`);
       showToast(t('hkNoticePosted', lang));
       setBodyEn('');
-      setBodyEs('');
-      setBodyHt('');
-      setBodyTl('');
-      setBodyVi('');
       setPinned(false);
       setExpiryKey('1d');
       void refetch();
@@ -124,7 +111,7 @@ export function NoticeBoardPoster() {
     } finally {
       setPosting(false);
     }
-  }, [activePropertyId, bodyEn, bodyEs, bodyHt, bodyTl, bodyVi, pinned, expiryKey, posting, refetch, showToast, lang]);
+  }, [activePropertyId, bodyEn, pinned, expiryKey, posting, refetch, showToast, lang]);
 
   const handleDelete = useCallback(
     async (noticeId: string) => {
@@ -179,47 +166,6 @@ export function NoticeBoardPoster() {
           boxSizing: 'border-box',
         }}
       />
-
-      <details
-        open={expandTranslations}
-        onToggle={(e) => setExpandTranslations((e.target as HTMLDetailsElement).open)}
-        style={{ fontSize: 13 }}
-      >
-        <summary style={{ cursor: 'pointer', color: '#6B7280', userSelect: 'none' }}>
-          Add translations (ES / HT / TL / VI)
-        </summary>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-          {([
-            ['es', 'Español', bodyEs, setBodyEs],
-            ['ht', 'Kreyòl Ayisyen', bodyHt, setBodyHt],
-            ['tl', 'Tagalog', bodyTl, setBodyTl],
-            ['vi', 'Tiếng Việt', bodyVi, setBodyVi],
-          ] as const).map(([code, label, value, setter]) => (
-            <div key={code} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 11, color: '#6B7280', fontWeight: 700, textTransform: 'uppercase' }}>
-                {label}
-              </label>
-              <textarea
-                value={value}
-                onChange={(e) => setter(e.target.value)}
-                rows={2}
-                maxLength={1000}
-                placeholder={`Translation for ${label}`}
-                style={{
-                  width: '100%',
-                  padding: 10,
-                  border: '1px solid #E5E7EB',
-                  borderRadius: 8,
-                  fontSize: 13,
-                  fontFamily: 'inherit',
-                  resize: 'vertical',
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-          ))}
-        </div>
-      </details>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
         <label

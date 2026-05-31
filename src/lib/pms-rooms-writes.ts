@@ -89,10 +89,27 @@ const UNSUPPORTED_UPDATE_FIELDS = [
 // assignment row. The status_log gets a row only when the room transitions
 // to a PMS-visible state (clean / dirty / inspected).
 
+// Coerce a Date | ISO-string | null | undefined into an ISO string (or null).
+//
+// LOAD-BEARING: the browser serializes Date fields to JSON strings over the
+// wire (JSON has no Date type), so partial.startedAt / partial.completedAt
+// arrive at this server module as STRINGS, not Date objects — despite the
+// `as Date` casts at the call site. Calling .toISOString() directly on a
+// string throws "TypeError: ...toISOString is not a function", which 500'd
+// the whole save. That was the manager Rooms-tab "dirty rooms never go clean"
+// bug: the clean path sends completedAt and hit the throw; the dirty path
+// writes completed_at: null (no .toISOString() call) and worked. new Date()
+// accepts both a Date and an ISO string, so this normalizes defensively.
+function toIso(v: Date | string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 function statusToAssignmentPatch(
   status: RoomStatus | undefined,
-  startedAt: Date | null | undefined,
-  completedAt: Date | null | undefined,
+  startedAt: Date | string | null | undefined,
+  completedAt: Date | string | null | undefined,
 ): {
   status?: string;
   started_at?: string | null;
@@ -100,14 +117,14 @@ function statusToAssignmentPatch(
 } {
   if (status === undefined) {
     const patch: { started_at?: string | null; completed_at?: string | null } = {};
-    if (startedAt !== undefined) patch.started_at = startedAt ? startedAt.toISOString() : null;
-    if (completedAt !== undefined) patch.completed_at = completedAt ? completedAt.toISOString() : null;
+    if (startedAt !== undefined) patch.started_at = toIso(startedAt);
+    if (completedAt !== undefined) patch.completed_at = toIso(completedAt);
     return patch;
   }
   if (status === 'in_progress') {
     return {
       status: 'in_progress',
-      started_at: (startedAt ?? new Date()).toISOString(),
+      started_at: toIso(startedAt) ?? new Date().toISOString(),
       completed_at: null,
     };
   }
@@ -116,8 +133,8 @@ function statusToAssignmentPatch(
     // completed for write purposes.
     return {
       status: 'completed',
-      completed_at: (completedAt ?? new Date()).toISOString(),
-      ...(startedAt !== undefined ? { started_at: startedAt ? startedAt.toISOString() : null } : {}),
+      completed_at: toIso(completedAt) ?? new Date().toISOString(),
+      ...(startedAt !== undefined ? { started_at: toIso(startedAt) } : {}),
     };
   }
   // 'dirty' = reset
@@ -274,8 +291,8 @@ export async function applyRoomUpdate(
 
   const statusPatch = statusToAssignmentPatch(
     partial.status,
-    partial.startedAt as Date | null | undefined,
-    partial.completedAt as Date | null | undefined,
+    partial.startedAt as Date | string | null | undefined,
+    partial.completedAt as Date | string | null | undefined,
   );
 
   // Preserve already-set started_at on a redundant in_progress write.

@@ -22,7 +22,9 @@ import {
   subscribeToHandoffLogs,
   subscribeToDashboardNumbers,
   fetchComplianceSummary,
+  subscribeLostFoundCounts,
   type DashboardNumbers,
+  type LostFoundCounts,
 } from '@/lib/db';
 import type { ComplianceSummary } from '@/lib/compliance/types';
 import { useTodayStr } from '@/lib/use-today-str';
@@ -271,11 +273,16 @@ export default function DashboardPage() {
   const [, setHandoffs] = useState<HandoffEntry[]>([]);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
+  const [lostFound, setLostFound] = useState<LostFoundCounts | null>(null);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
   }, [user, activePropertyId, today]);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeLostFoundCounts(activePropertyId, setLostFound);
+  }, [user, activePropertyId]);
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
@@ -699,6 +706,40 @@ export default function DashboardPage() {
                   <div style={{ fontSize: 11.5, color: C.ink3 }}>
                     {lang === 'es' ? 'Mantenimiento → Cumplimiento' : 'Maintenance → Compliance'}
                   </div>
+                </div>
+              </div>
+
+              {/* Lost & Found */}
+              <div style={{
+                background: 'rgba(255,255,255,0.78)',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255,255,255,0.75)',
+                borderRadius: 16, padding: '16px 18px',
+              }}>
+                <div style={LABEL}>{lang === 'es' ? 'Objetos perdidos' : 'Lost & Found'}</div>
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {([
+                    [lang === 'es' ? 'Abiertos'    : 'Open',            lostFound?.open ?? 0,            C.ink],
+                    [lang === 'es' ? 'Por devolver' : 'Awaiting return', lostFound?.awaitingReturn ?? 0,  C.caramel],
+                    [lang === 'es' ? 'Por desechar' : 'Nearing disposal', lostFound?.nearingDisposal ?? 0,
+                      (lostFound?.nearingDisposal ?? 0) > 0 ? C.warm : C.ink3],
+                  ] as [string, number, string][]).map(([k, v, color]) => (
+                    <div key={k} style={{
+                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
+                    }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13.5, color: C.ink2 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
+                        {k}
+                      </span>
+                      <span style={{
+                        fontFamily: FONT_SERIF, fontStyle: 'italic',
+                        fontSize: 22, fontWeight: 500, color,
+                        letterSpacing: '-0.025em', lineHeight: 1,
+                      }}>{v}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
