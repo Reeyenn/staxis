@@ -35,6 +35,13 @@ export interface ConversationDTO {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   unread: number;
+  /**
+   * Require-ack announcements this person still has to confirm in this
+   * conversation. Stays > 0 even after passive last_read_at clears `unread`,
+   * so a mandatory read keeps demanding attention until it's acknowledged.
+   * Only meaningful for the announcement feed; 0 elsewhere.
+   */
+  pendingAck?: number;
   /** For DMs: the other participant's staff id + name. */
   otherStaffId?: string | null;
 }
@@ -61,6 +68,39 @@ export interface MessageDTO {
   mine: boolean;
   /** For the sender's own messages: who has seen it (read receipts). */
   seenBy?: { staffId: string; name: string }[];
+  // ── Require-acknowledgement (announcements only) ──────────────────────────
+  /** true → this announcement demands an explicit "I read & understand". */
+  requiresAck?: boolean;
+  /** Whether the *reader* has already acknowledged it (drives button vs. ✓). */
+  acked?: boolean;
+  /** Set on the per-property copies of an org-wide mandatory-read campaign. */
+  ackCampaignId?: string | null;
+}
+
+/** Live who-has / who-hasn't tracker for one require-ack announcement (manager view). */
+export interface AckStatusDTO {
+  messageId: string;
+  requiresAck: boolean;
+  total: number;                                  // staff expected to acknowledge
+  acked: number;                                  // how many have
+  ackedList: { staffId: string; name: string; at: string }[];
+  pending: { staffId: string; name: string }[];   // who still hasn't
+  campaignId?: string | null;
+}
+
+/** Aggregate completion of an org-wide mandatory-read campaign (across properties). */
+export interface CampaignStatusDTO {
+  campaignId: string;
+  title: string | null;
+  total: number;                                  // expected acks across all properties
+  acked: number;                                  // received across all properties
+  properties: {
+    propertyId: string;
+    propertyName: string;
+    messageId: string | null;
+    total: number;
+    acked: number;
+  }[];
 }
 
 /** A to-do item. */

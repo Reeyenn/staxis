@@ -26,11 +26,22 @@ export async function GET(req: NextRequest): Promise<Response> {
     listConversationsForStaff(ctx.pid, ctx.staffId, { isManager: ctx.isManager, dept: ctx.dept, floorMode: false }),
     listStaff(ctx.pid),
   ]);
-  const unreadTotal = conversations.reduce((s, c) => s + c.unread, 0);
+  // An un-acked required announcement (unread=0, pendingAck>0) still lights the
+  // badge — passive "seen" doesn't clear a mandatory read.
+  const unreadTotal = conversations.reduce((s, c) => s + Math.max(c.unread, c.pendingAck ?? 0), 0);
+
+  // Can this manager launch an org-wide (all-properties) mandatory-read campaign?
+  // True for admins / '*' wildcard, or anyone scoped to more than one property.
+  const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const canOrgWide = ctx.isManager && (
+    ctx.role === 'admin'
+    || ctx.propertyAccess.includes('*')
+    || ctx.propertyAccess.filter((p) => UUID_RX.test(p)).length > 1
+  );
 
   return ok(
     {
-      me: { staffId: ctx.staffId, role: ctx.role, isManager: ctx.isManager, dept: ctx.dept, lang: ctx.lang, displayName: ctx.displayName },
+      me: { staffId: ctx.staffId, role: ctx.role, isManager: ctx.isManager, dept: ctx.dept, lang: ctx.lang, displayName: ctx.displayName, canOrgWide },
       conversations,
       staff: staff.filter((s) => s.id !== ctx.staffId),
       unreadTotal,

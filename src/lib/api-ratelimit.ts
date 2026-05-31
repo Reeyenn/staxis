@@ -250,7 +250,12 @@ export type RateLimitEndpoint =
   | 'comms-task'
   | 'comms-action'
   | 'comms-photo-presign'
-  | 'comms-save-language';
+  | 'comms-save-language'
+  // Announcement acknowledgement (migration 0248). Tapping "I read & understand"
+  // is a deliberate, idempotent action (unique(message_id,staff_id)); keyed per
+  // (pid, staffId) composite via hashToRateLimitKey, fail-open like the other
+  // non-AI comms write endpoints.
+  | 'comms-acknowledge';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -470,6 +475,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'comms-action':               200,
   'comms-photo-presign':        300,
   'comms-save-language':         20,
+  // Acknowledge: a person taps "I read & understand" once per required
+  // announcement. 200/hr per (pid,staffId) absorbs catching up on a backlog of
+  // mandatory reads + accidental double-taps, well above realistic use.
+  'comms-acknowledge':          200,
 };
 
 /**
