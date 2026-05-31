@@ -11,12 +11,8 @@ import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/db';
 import { RushButton } from './_components/RushButton';
-<<<<<<< HEAD
-import { ComplaintsTab } from './_components/ComplaintsTab';
-=======
 import { FrontDeskTabBar, type FrontDeskTabKey } from './_components/TabBar';
 import { LostFoundTab } from './_components/LostFoundTab';
->>>>>>> cbd3e7b4ee1cf5743550eb0c66319ce1c8d73bd2
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
 
@@ -119,37 +115,6 @@ function groupRoomsByFloor(rooms: Room[]): Record<string, Room[]> {
    MAIN PAGE
    ════════════════════════════════════════════════════════════════════════════ */
 
-/* ── Front Desk sub-tab bar (Rooms | Complaints). Styled to this page's
-   Inter aesthetic; same localStorage-backed pattern as Maintenance. ── */
-function FDTabBar({ tab, onTab, es }: {
-  tab: 'rooms' | 'complaints'; onTab: (t: 'rooms' | 'complaints') => void; es: boolean;
-}) {
-  const tabs: { key: 'rooms' | 'complaints'; label: string }[] = [
-    { key: 'rooms', label: es ? 'Habitaciones' : 'Rooms' },
-    { key: 'complaints', label: es ? 'Quejas' : 'Complaints' },
-  ];
-  return (
-    <div style={{
-      padding: '14px 28px 0', background: '#fbf9f4',
-      borderBottom: '1px solid #d5d2ca', position: 'sticky', top: 64, zIndex: 20,
-    }}>
-      <nav style={{ display: 'flex', gap: 28, maxWidth: 1200, margin: '0 auto' }}>
-        {tabs.map(t => {
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => onTab(t.key)} style={{
-              background: 'transparent', border: 'none', cursor: 'pointer',
-              padding: '8px 0 14px', fontFamily: 'Inter, sans-serif', fontSize: 14,
-              fontWeight: active ? 700 : 500, color: active ? '#1b1c19' : '#757684',
-              borderBottom: active ? '2px solid #364262' : '2px solid transparent', marginBottom: -1,
-            }}>{t.label}</button>
-          );
-        })}
-      </nav>
-    </div>
-  );
-}
-
 export default function FrontDeskPage() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
@@ -171,16 +136,6 @@ export default function FrontDeskPage() {
   // Lost & Found is a management surface; housekeeping/maintenance see only the
   // Rooms tab (existing access is unchanged — we don't redirect them away).
   const isManagement = !!user && FD_MANAGEMENT_ROLES.includes(user.role);
-
-  // ── Tab state (Rooms | Complaints), persisted in localStorage 'fd-tab'.
-  // Front Desk had no tabs; this mirrors the Maintenance MTSubTabBar pattern.
-  // (Additive — a parallel branch also adds a Front Desk tab; keep minimal.)
-  const [fdTab, setFdTabState] = useState<'rooms' | 'complaints'>('rooms');
-  useEffect(() => {
-    const saved = localStorage.getItem('fd-tab');
-    if (saved === 'rooms' || saved === 'complaints') setFdTabState(saved);
-  }, []);
-  const setFdTab = (tk: 'rooms' | 'complaints') => { setFdTabState(tk); localStorage.setItem('fd-tab', tk); };
 
   // Material Symbols font is loaded globally via globals.css
 
@@ -329,11 +284,6 @@ export default function FrontDeskPage() {
         .fd-filter-pill:hover { background: rgba(54,66,98,0.06); }
       `}</style>
 
-<<<<<<< HEAD
-      <FDTabBar tab={fdTab} onTab={setFdTab} es={lang === 'es'} />
-
-      {fdTab === 'complaints' ? <ComplaintsTab /> : (
-=======
       <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={isManagement} />
 
       {tab === 'lost-and-found' && isManagement && activePropertyId && (
@@ -341,7 +291,6 @@ export default function FrontDeskPage() {
       )}
 
       {tab === 'rooms' && (
->>>>>>> cbd3e7b4ee1cf5743550eb0c66319ce1c8d73bd2
       <div style={{ minHeight: '100dvh', background: '#fbf9f4' }}>
 
         {/* ── Stitch Hero Section ── */}

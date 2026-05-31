@@ -8,7 +8,7 @@
 import React from 'react';
 import { T, FONT_SANS } from '@/app/maintenance/_components/_mt-snow';
 
-export type FrontDeskTabKey = 'rooms' | 'lost-and-found';
+export type FrontDeskTabKey = 'rooms' | 'lost-and-found' | 'complaints';
 
 export function FrontDeskTabBar({
   tab,
@@ -28,6 +28,10 @@ export function FrontDeskTabBar({
           {
             key: 'lost-and-found' as const,
             label: lang === 'es' ? 'Objetos perdidos' : 'Lost & Found',
+          },
+          {
+            key: 'complaints' as const,
+            label: lang === 'es' ? 'Quejas' : 'Complaints',
           },
         ]
       : []),

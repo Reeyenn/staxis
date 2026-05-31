@@ -500,7 +500,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
-<<<<<<< HEAD
   // Complaints — Claude service-recovery draft (token cost) + Twilio
   // assignee-notify / satisfaction-callback nudges (per-message charge).
   // Fail CLOSED so a Supabase blip can't uncap spend. complaints-log is here
@@ -508,7 +507,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'complaints-log',
   'complaints-draft',
   'complaints-sms',
-=======
   // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
   // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
   'engineer-vision',
