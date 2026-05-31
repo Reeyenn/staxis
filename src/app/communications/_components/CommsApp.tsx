@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable @next/next/no-img-element -- chat photo attachments are short-lived signed URLs from a private bucket; next/image can't optimize them and would need per-URL domain config */
 
 import React from 'react';
 import {

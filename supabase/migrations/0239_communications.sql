@@ -20,6 +20,7 @@
 
 -- ── Conversations ───────────────────────────────────────────────────────
 -- One row per DM, channel, or the property's announcement feed.
+-- @rls: service-role-only — accessed only via /api/* with supabaseAdmin; RLS enabled with no anon/authenticated policies (deny-all)
 create table if not exists public.comms_conversations (
   id                uuid primary key default gen_random_uuid(),
   property_id       uuid not null references public.properties(id) on delete cascade,
@@ -55,6 +56,7 @@ create index if not exists comms_conversations_property_idx
 -- (channel *visibility* is dynamic — derived from staff.department — so we do
 -- NOT need a membership row to see a channel). last_read_at drives both the
 -- unread badge and the "seen by" read receipts.
+-- @rls: service-role-only — accessed only via /api/* with supabaseAdmin; RLS enabled with no anon/authenticated policies (deny-all)
 create table if not exists public.comms_members (
   id              uuid primary key default gen_random_uuid(),
   property_id     uuid not null references public.properties(id) on delete cascade,
@@ -68,6 +70,7 @@ create index if not exists comms_members_staff_idx
   on public.comms_members (property_id, staff_id);
 
 -- ── Messages ────────────────────────────────────────────────────────────
+-- @rls: service-role-only — accessed only via /api/* with supabaseAdmin; RLS enabled with no anon/authenticated policies (deny-all)
 create table if not exists public.comms_messages (
   id                uuid primary key default gen_random_uuid(),
   property_id       uuid not null references public.properties(id) on delete cascade,
@@ -102,6 +105,7 @@ create index if not exists comms_messages_property_idx
 
 -- ── Per-message translation cache ───────────────────────────────────────
 -- Cascades on message delete (so deleting a message removes its translations).
+-- @rls: service-role-only — accessed only via /api/* with supabaseAdmin; RLS enabled with no anon/authenticated policies (deny-all)
 create table if not exists public.comms_message_translations (
   id              uuid primary key default gen_random_uuid(),
   message_id      uuid not null references public.comms_messages(id) on delete cascade,
@@ -112,6 +116,7 @@ create table if not exists public.comms_message_translations (
 );
 
 -- ── To-do list ──────────────────────────────────────────────────────────
+-- @rls: service-role-only — accessed only via /api/* with supabaseAdmin; RLS enabled with no anon/authenticated policies (deny-all)
 create table if not exists public.comms_tasks (
   id                  uuid primary key default gen_random_uuid(),
   property_id         uuid not null references public.properties(id) on delete cascade,
@@ -140,6 +145,7 @@ create index if not exists comms_tasks_property_status_idx
 -- shared cache across properties is safe and maximizes hit rate. Message
 -- BODIES are NOT cached here — those live in comms_message_translations
 -- (message-scoped, cascades on delete).
+-- @rls: service-role-only — accessed only via /api/* with supabaseAdmin; RLS enabled with no anon/authenticated policies (deny-all)
 create table if not exists public.comms_translation_cache (
   id              uuid primary key default gen_random_uuid(),
   source_hash     text not null,
@@ -173,3 +179,9 @@ comment on table public.comms_tasks is
 
 -- PostgREST schema-cache reload (picked up by the running API).
 notify pgrst, 'reload schema';
+
+-- Self-register so the doctor's applied-migrations check + the
+-- migration-bookkeeping drift test see this version.
+insert into public.applied_migrations (version, description)
+values ('0239', 'communications: built-in staff messaging (DMs / department channels / announcements), read receipts, photo+voice attachments, shift hand-offs, to-do list, app-wide 5-language switcher + per-message auto-translate, @Staxis in-chat assistant, message->action, what-did-I-miss, voice transcription. NO SMS. comms_* tables are service-role-only.')
+on conflict (version) do nothing;

@@ -68,7 +68,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return;
     let alive = true;
-    (async () => {
+    void (async () => {
       try {
         const res = await authFetch('/api/comms/language');
         if (!res.ok) return;
