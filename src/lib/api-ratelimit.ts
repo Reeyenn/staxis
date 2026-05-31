@@ -180,7 +180,15 @@ export type RateLimitEndpoint =
   // scheduled_shifts + staff reads. Keyed on (userId, propertyId).
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
-  | 'housekeeping-forecast';
+  | 'housekeeping-forecast'
+  // Complaints / service recovery (2026-05-30). log = create a complaint
+  // (manager UI or agent/voice); update = assign / status / resolve /
+  // callback; draft = Claude service-recovery text (billing); sms = assignee
+  // notify + satisfaction-callback nudges (billing).
+  | 'complaints-log'
+  | 'complaints-update'
+  | 'complaints-draft'
+  | 'complaints-sms';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -338,6 +346,14 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
+  // Complaints. log: a busy front desk might file several at check-out rush;
+  // 100/hr per (pid,user) is generous. update: assign/resolve/callback taps,
+  // 300/hr. draft: Claude call, 30/hr. sms: assignee notify + callback nudges
+  // (billing), 60/hr per property.
+  'complaints-log':              100,
+  'complaints-update':           300,
+  'complaints-draft':             30,
+  'complaints-sms':               60,
 };
 
 /**
@@ -429,6 +445,11 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
+  // Complaints — Claude service-recovery draft (token cost) + Twilio
+  // assignee-notify / satisfaction-callback nudges (per-message charge).
+  // Fail CLOSED so a Supabase blip can't uncap spend.
+  'complaints-draft',
+  'complaints-sms',
 ]);
 
 /**

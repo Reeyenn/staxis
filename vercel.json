@@ -88,6 +88,10 @@
     {
       "path": "/api/cron/run-weekly-report",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/send-complaint-nudges",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
