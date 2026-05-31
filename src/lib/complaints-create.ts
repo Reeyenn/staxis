@@ -5,7 +5,6 @@
 // the route/tool has done its own property-access check.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { classifyComplaint } from '@/lib/complaints-ai';

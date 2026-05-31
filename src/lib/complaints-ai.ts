@@ -9,7 +9,6 @@
 // throws to the caller. Server-only (uses the secret API key).
 // ═══════════════════════════════════════════════════════════════════════════
 
-import 'server-only';
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
 import { log } from '@/lib/log';
