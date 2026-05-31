@@ -33,6 +33,7 @@ import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
 import StaleDataBanner from '@/components/StaleDataBanner';
 import { FinancialsDashboardCard } from '@/app/financials/_components/FinancialsDashboardCard';
+import { LaborCostCard } from '@/app/dashboard/_components/LaborCostCard';
 import type { Room, WorkOrder, HandoffEntry } from '@/types';
 import { canManageTeam } from '@/lib/roles';
 
@@ -811,6 +812,11 @@ export default function DashboardPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Labor cost — manager-only; today's labor $ as a % of revenue,
+                  costed from the published schedule × wages. Renders null for
+                  non-owner/GM/admin. */}
+              <LaborCostCard />
 
               {/* Financials — manager-only; reads the same /api/financials/summary
                   as the Financials page so revenue/profit always match. Renders

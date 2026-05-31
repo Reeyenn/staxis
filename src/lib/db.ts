@@ -55,3 +55,4 @@ export * from './db/cleaning-events';
 export * from './db/complaints';
 export * from './db/compliance';
 export * from './db/lost-and-found';
+export * from './db/labor-wages';

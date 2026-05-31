@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -63,6 +63,12 @@ export default function SettingsPage() {
             icon:Timer,
             label: lang === 'es' ? 'Tiempos de limpieza' : 'Clean Times',
             desc: lang === 'es' ? 'Minutos estándar por tipo de limpieza — impulsan el balanceo de carga' : 'Standard minutes per cleaning type — drive workload balancing',
+          },
+          {
+            href:'/settings/wages',
+            icon:DollarSign,
+            label: lang === 'es' ? 'Salarios' : 'Wages',
+            desc: lang === 'es' ? 'Salario por hora por rol y por persona — alimenta el % de costo laboral' : 'Hourly wage by role and per person — powers the labor cost % tile',
           },
           {
             href:'/settings/activity-log',
