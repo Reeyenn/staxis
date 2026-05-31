@@ -48,7 +48,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
+  // No maximumScale — pinch-to-zoom must stay enabled (WCAG 2.1 SC 1.4.4)
+  // so low-vision staff can enlarge room notes/guest names on shared phones.
   themeColor: '#F0F2F5',
 };
 

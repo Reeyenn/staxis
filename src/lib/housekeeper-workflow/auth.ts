@@ -126,6 +126,22 @@ export async function gateHousekeeperRequest<TBody extends { pid?: unknown; staf
         }),
       };
     }
+    // Deactivated/terminated staff keep their old SMS magic-link working,
+    // but must not be able to act on it. is_active defaults to true; only an
+    // explicit false (deactivated in Settings → Accounts) is blocked —
+    // null/true pass through, so existing staff are never locked out.
+    if (staff.is_active === false) {
+      log.warn('housekeeper-workflow: blocked deactivated staff', { requestId, endpoint, staffId });
+      return {
+        ok: false,
+        response: err('staff inactive', {
+          requestId,
+          status: 403,
+          code: ApiErrorCode.Forbidden,
+          headers,
+        }),
+      };
+    }
     return {
       ok: true,
       pid,

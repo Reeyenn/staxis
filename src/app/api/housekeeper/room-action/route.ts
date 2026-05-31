@@ -297,6 +297,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (!staff || staff.property_id !== pid) {
       return err('staff/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
+    // Deactivated/terminated staff keep their old SMS magic-link, but must
+    // not be able to mutate rooms. is_active defaults true; only an explicit
+    // false (deactivated in Settings) blocks — null/true pass through.
+    if (staff.is_active === false) {
+      return err('staff inactive', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+    }
 
     // ─── Room belongs to property AND assigned to this staff ───────────
     // 2026-05-12: previously this only checked room.property_id === pid.
