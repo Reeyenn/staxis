@@ -568,7 +568,7 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     completionPhotoPath: parseStringField(r.completion_photo_path),
     completedAt: toDate(r.resolved_at),
     equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
-    repairCost: r.repair_cost == null ? null : Number(r.repair_cost),
+    repairCost: r.repair_cost != null && Number.isFinite(Number(r.repair_cost)) ? Number(r.repair_cost) : null,
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
   };
