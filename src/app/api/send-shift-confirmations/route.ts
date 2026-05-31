@@ -107,7 +107,10 @@ export async function POST(req: NextRequest) {
   // first call's response — no duplicate SMS to housekeepers.
   // Legacy callers (no header) bypass; we still send.
   const idem = await checkIdempotency(req, 'send-shift-confirmations');
-  if (idem.kind === 'cached') {
+  // 'cached' = the prior call's response; 'in-progress' = a concurrent call
+  // holds the key (atomic claim, migration 0243) → return its 409 so a
+  // double-click / retry storm can't fire a second batch of SMS.
+  if (idem.kind === 'cached' || idem.kind === 'in-progress') {
     return idem.response;
   }
   try {
