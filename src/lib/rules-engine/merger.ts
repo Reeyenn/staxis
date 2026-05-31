@@ -29,6 +29,11 @@ import type {
 } from '@/types/cleaning-tasks';
 import { PRIORITY_RANK } from '@/types/cleaning-tasks';
 
+import {
+  resolveStandardMinutes,
+  type CleanTimeStandardsIndex,
+} from '@/lib/clean-time-standards';
+
 import { BASE_DURATION_MIN } from './constants';
 import type { RoomContext, RuleFireResult } from './types';
 
@@ -59,25 +64,46 @@ export interface MergedTaskSpec {
 export function mergePartials(
   fires: RuleFireResult[],
   ctx: RoomContext,
+  /**
+   * Per-property manager-set base minutes (Clean Times, migration 0244).
+   * When supplied, the table value for the winning cleaning_type wins over
+   * both the rule-supplied base and the static default. Omit it (e.g. in unit
+   * tests, or when a property has no standards yet) to keep the legacy
+   * rule-base / BASE_DURATION_MIN behaviour unchanged.
+   */
+  baseIndex?: CleanTimeStandardsIndex,
 ): MergedTaskSpec | null {
   if (fires.length === 0) return null;
 
   let cleaningType: CleaningType | null = null;
-  let baseMinutes: number | null = null;
+  let ruleBase: number | null = null;
 
   for (const f of fires) {
     const t = f.partial.cleaning_type;
     if (!t) continue;
     if (cleaningType === null || CLEANING_TYPE_RANK[t] > CLEANING_TYPE_RANK[cleaningType]) {
       cleaningType = t;
-      baseMinutes = f.partial.estimated_minutes_base ?? null;
+      ruleBase = f.partial.estimated_minutes_base ?? null;
     }
   }
   if (cleaningType === null) return null;
 
-  // Fallback minutes if the winning rule didn't supply a base — use the
-  // table default for the cleaning type and room size.
-  if (baseMinutes === null) {
+  // Base-minutes precedence:
+  //   1. Manager-set Clean Times standard for this cleaning_type (a
+  //      room_type-specific row wins over the all-rooms row).
+  //   2. The base the winning rule supplied (legacy behaviour).
+  //   3. The static BASE_DURATION_MIN default for the type + room size.
+  // Step 1 is skipped when no baseIndex is passed or the property has no
+  // matching row, so existing behaviour is preserved exactly.
+  const tableBase = baseIndex
+    ? resolveStandardMinutes(baseIndex, cleaningType, ctx.room_type)
+    : undefined;
+  let baseMinutes: number;
+  if (tableBase != null) {
+    baseMinutes = tableBase;
+  } else if (ruleBase != null) {
+    baseMinutes = ruleBase;
+  } else {
     const tbl = BASE_DURATION_MIN[cleaningType];
     baseMinutes = ctx.is_suite ? tbl.suite : tbl.standard;
   }

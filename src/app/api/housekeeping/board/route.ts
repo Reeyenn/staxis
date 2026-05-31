@@ -41,6 +41,7 @@ import {
   type AssignmentTask,
   type AssignmentTaskPriority,
 } from '@/lib/assignment-engine';
+import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -174,7 +175,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     //    A "shadow" AssignmentTask wrapper lets us reuse the engine's
     //    duration-resolution logic so the manager UI shows the same
     //    minute totals the engine used during assignment.
-    const cfg = { shiftMinutes: 420, baseDurations: DEFAULT_BASE_DURATIONS, weights: {} as never, urgentWindowMinutes: 60 };
+    //
+    //    baseDurations is the fallback used only when a task has no stored
+    //    estimated_minutes. We overlay the property's manager-set Clean Times
+    //    (migration 0244) on top of the static defaults so that fallback
+    //    reflects the edited minutes too. (The common path — tasks created
+    //    by the rules-engine — already carries table-derived
+    //    estimated_minutes, so this mainly matters for legacy/estimate-less
+    //    rows.) Degrades to the static defaults when no standards exist.
+    const cleanTimeBase = await fetchCleanTimeBaseDurations(propertyId);
+    const cfg = {
+      shiftMinutes: 420,
+      baseDurations: { ...DEFAULT_BASE_DURATIONS, ...cleanTimeBase },
+      weights: {} as never,
+      urgentWindowMinutes: 60,
+    };
     const tasksOut = tasks.map(t => {
       const shadow: AssignmentTask = {
         id: t.id,

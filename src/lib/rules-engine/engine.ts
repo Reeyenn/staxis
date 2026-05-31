@@ -28,6 +28,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import { fetchCleanTimeStandardsIndex } from '@/lib/clean-time-standards-server';
 
 import {
   ENGINE_MUTABLE_STATUSES,
@@ -107,6 +108,11 @@ export async function runRulesEngineForProperty(
   }
 
   const roomContexts = await buildRoomContexts(prop);
+  // Manager-set Clean Times standards (migration 0244). Fetched once per
+  // property run and handed to the merger so newly-created tasks use the
+  // property's edited base minutes. Degrades to {} (→ legacy static
+  // defaults) if the table isn't present yet or the read errors.
+  const cleanTimeIndex = await fetchCleanTimeStandardsIndex(propertyId);
   const dedupeKeys = roomContexts.map(
     (c) => `${c.room_number}::${prop.business_date}`,
   );
@@ -128,7 +134,7 @@ export async function runRulesEngineForProperty(
   for (const ctx of roomContexts) {
     try {
       const fires = evaluateRoomRules(ctx);
-      const spec = mergePartials(fires, ctx);
+      const spec = mergePartials(fires, ctx, cleanTimeIndex);
       if (!spec) {
         noTask++;
         if (verbose) {

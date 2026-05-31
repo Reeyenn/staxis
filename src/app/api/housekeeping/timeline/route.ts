@@ -61,6 +61,7 @@ import {
   type AssignmentTask,
   type AssignmentTaskPriority,
 } from '@/lib/assignment-engine';
+import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 import { localDateTimeToUtcIso } from '@/lib/timeline-layout';
 
 export const runtime = 'nodejs';
@@ -244,9 +245,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // 5. Resolve per-task minutes — reuse the engine's duration resolver
     //    so the timeline card widths match the assignment-board minutes.
+    //    baseDurations overlays the property's manager-set Clean Times
+    //    (migration 0244) on the static defaults so the fallback (used only
+    //    when a task has no stored estimated_minutes) reflects edited
+    //    minutes too. Matches /api/housekeeping/board exactly.
+    const cleanTimeBase = await fetchCleanTimeBaseDurations(propertyId);
     const cfg = {
       shiftMinutes,
-      baseDurations: DEFAULT_BASE_DURATIONS,
+      baseDurations: { ...DEFAULT_BASE_DURATIONS, ...cleanTimeBase },
       weights: {} as never,
       urgentWindowMinutes: 60,
     };

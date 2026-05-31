@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3 } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -57,6 +57,12 @@ export default function SettingsPage() {
             icon:Clock,
             label: lang === 'es' ? 'Turnos' : 'Shifts',
             desc: lang === 'es' ? 'Plantillas de turnos por departamento (8a–4p, 7a–3p, etc.)' : 'Shift presets by department (8a–4p, 7a–3p, etc.)',
+          },
+          {
+            href:'/settings/clean-times',
+            icon:Timer,
+            label: lang === 'es' ? 'Tiempos de limpieza' : 'Clean Times',
+            desc: lang === 'es' ? 'Minutos estándar por tipo de limpieza — impulsan el balanceo de carga' : 'Standard minutes per cleaning type — drive workload balancing',
           },
           {
             href:'/settings/activity-log',

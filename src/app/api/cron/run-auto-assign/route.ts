@@ -79,6 +79,7 @@ import {
   type AssignmentHousekeeper,
   type AssignmentTaskPriority,
 } from '@/lib/assignment-engine';
+import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -276,8 +277,12 @@ async function runForProperty(propertyId: string, tz: string | null): Promise<Pr
     };
   }
 
-  // 4. Run the engine.
-  const cfg = makeAssignmentConfig({});
+  // 4. Run the engine. Overlay the property's manager-set Clean Times
+  //    (migration 0244) onto the static base durations so the assignment
+  //    fallback (used only for tasks lacking a stored estimated_minutes)
+  //    matches the board/timeline. Degrades to defaults when none exist.
+  const cleanTimeBase = await fetchCleanTimeBaseDurations(propertyId);
+  const cfg = makeAssignmentConfig({ baseDurations: cleanTimeBase });
   const assignmentTasks = tasksToPlace.map(taskRowToAssignmentTask);
   const result = assignTasks(assignmentTasks, workingHks, cfg);
 
