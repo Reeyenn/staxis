@@ -19,6 +19,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { sendSms } from '@/lib/sms';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { COMPLAINT_OVERDUE_HOURS_HIGH } from '@/lib/complaints-shared';
 
 export const runtime = 'nodejs';
@@ -118,6 +119,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     }
 
     log.info('[cron/complaint-nudges] tick', { requestId, callbacksSent, escalationsSent, skippedNoPhone, rateLimited });
+    await writeCronHeartbeat('send-complaint-nudges', {
+      requestId,
+      notes: { callbacksSent, escalationsSent, skippedNoPhone, rateLimited },
+    });
     return ok({ callbacksSent, escalationsSent, skippedNoPhone, rateLimited }, { requestId });
   } catch (caughtErr) {
     log.error('[cron/complaint-nudges] failed', { requestId, err: errToString(caughtErr) });

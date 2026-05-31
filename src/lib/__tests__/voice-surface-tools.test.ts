@@ -36,16 +36,27 @@ import '@/lib/agent/tools/index';
 const ROLES = ['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance', 'staff'] as const;
 
 describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => {
+  // Complaints feature (2026-05-30): log_complaint opts into general voice
+  // (voiceModes: ['general']) so a manager / front-desk can say
+  // "Hey Staxis, log a complaint — room 214, AC not cooling, guest upset".
+  // AUDITED per this file's checklist before updating the snapshot:
+  //   • arg validation — `description` required; category/severity are coerced
+  //     to fixed enums server-side (classifyComplaint), never free-form;
+  //   • property scope — createComplaint uses ctx.propertyId, so a caller
+  //     cannot target another hotel;
+  //   • role-gated — allowedRoles excludes 'staff';
+  //   • non-destructive — it inserts a tracked complaint row (worst case a
+  //     spurious complaint staff can close), not a delete/overwrite of state.
+  // createMaintenanceWorkOrder stays hidden here (voiceModes: ['housekeeper_issue']).
+  const COMPLAINT_VOICE_ROLES = new Set(['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance']);
   for (const role of ROLES) {
-    test(`role=${role} sees zero tools in general voice mode`, () => {
+    test(`role=${role} general voice mode catalog`, () => {
       const tools = getToolsForRole(role as never, 'voice', 'general');
-      // EXPECTED EMPTY. createMaintenanceWorkOrder declares
-      // `voiceModes: ['housekeeper_issue']` so it does NOT appear here —
-      // it's only callable from a session minted with mode='housekeeper_issue'.
+      const expected = COMPLAINT_VOICE_ROLES.has(role) ? ['log_complaint'] : [];
       assert.deepEqual(
-        tools.map((t) => t.name),
-        [],
-        `General voice mode gained a tool for role=${role}. ` +
+        tools.map((t) => t.name).sort(),
+        expected,
+        `General voice mode catalog changed for role=${role}. ` +
           'Stop and audit before updating this snapshot — see comment in voice-surface-tools.test.ts.',
       );
     });
@@ -80,11 +91,14 @@ describe('voice surface tool catalog — surface omitted (no-mode call)', () => 
   // belt-and-braces gate is in executeTool() which DOES receive ctx.voiceMode
   // and will refuse a mismatched call there. This test pins the shape so a
   // refactor that flips the default doesn't silently expose tools.
-  test('no-mode lookup sees the voice-mode-gated tool (executor still refuses)', () => {
+  test('no-mode lookup sees the voice-mode-gated tools (executor still refuses)', () => {
     const tools = getToolsForRole('housekeeping' as never, 'voice');
+    // housekeeping is in allowedRoles for BOTH the maintenance-ticket tool
+    // (voiceModes: ['housekeeper_issue']) and log_complaint (voiceModes:
+    // ['general']); with no mode the voiceModes filter no-ops so both surface.
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['createMaintenanceWorkOrder'],
+      ['createMaintenanceWorkOrder', 'log_complaint'],
       'No-mode getToolsForRole bypasses voiceModes filter — this is fine because executeTool re-checks mode.',
     );
   });

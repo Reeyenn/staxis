@@ -119,3 +119,9 @@ end$$;
 
 -- PostgREST caches the schema; force a reload so the new table is queryable.
 notify pgrst, 'reload schema';
+
+-- Self-register so the doctor's applied-migrations check + the
+-- migration-bookkeeping drift test see this version.
+insert into public.applied_migrations (version, description)
+values ('0235', 'complaints / service recovery: glitch log + AI categorize/route/draft + satisfaction callbacks')
+on conflict (version) do nothing;

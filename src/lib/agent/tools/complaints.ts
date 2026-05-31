@@ -48,6 +48,9 @@ registerTool<LogComplaintArgs>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
   surfaces: ['chat', 'voice'],
+  // Voice: only the GENERAL assistant ("Hey Staxis, log a complaint…"), not the
+  // housekeeper_issue entry point. Audited in voice-surface-tools.test.ts.
+  voiceModes: ['general'],
   mutates: true,
   handler: async (args: LogComplaintArgs, ctx: ToolContext): Promise<ToolResult> => {
     const description = (args.description ?? '').trim();
