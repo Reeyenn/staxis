@@ -112,6 +112,50 @@ export async function smsMaintenance(
 }
 
 /**
+ * Escalate to the property's GM/owner by SMS (their `accounts.phone`). Used for
+ * critical anomalies. Recipient resolution is inlined (not via nudges) to avoid
+ * an import cycle autoact → nudges → store → autoact. Returns count enqueued.
+ */
+export async function smsGm(pid: string, body: string, idemBase: string): Promise<number> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('accounts')
+      .select('id, phone, role, property_access')
+      .in('role', ['owner', 'general_manager']);
+    if (error) {
+      log.error('[compliance/autoact] smsGm accounts lookup failed', { pid, msg: error.message });
+      return 0;
+    }
+    const recipients = (data ?? []).filter((a) => {
+      const access = (a.property_access as string[] | null) ?? [];
+      return (access.includes(pid) || access.includes('*')) && typeof a.phone === 'string' && a.phone.trim().length > 0;
+    });
+    let sent = 0;
+    const safeBody = sanitizeForSms(body).slice(0, 480);
+    for (const a of recipients) {
+      const phone164 = toE164(String(a.phone));
+      if (!phone164) continue;
+      try {
+        await enqueueSms({
+          propertyId: pid,
+          toPhone: phone164,
+          body: safeBody,
+          idempotencyKey: `compliance:gm:${idemBase}:${a.id}`,
+          metadata: { kind: 'compliance-gm-escalation', accountId: a.id },
+        });
+        sent += 1;
+      } catch (e) {
+        log.error('[compliance/autoact] smsGm enqueue failed', { pid, accountId: a.id, err: e instanceof Error ? e : new Error(String(e)) });
+      }
+    }
+    return sent;
+  } catch (e) {
+    log.error('[compliance/autoact] smsGm threw', { pid, err: e instanceof Error ? e : new Error(String(e)) });
+    return 0;
+  }
+}
+
+/**
  * Out-of-range reading → urgent work order + SMS. Returns the work order id
  * (so the caller can link it on the reading row), or null.
  */

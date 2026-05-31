@@ -146,7 +146,7 @@ export default function FrontDeskPage() {
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   // Restore the saved tab; force back to Rooms if a non-manager somehow has
-  // 'lost-and-found' persisted.
+  // a management-only tab ('lost-and-found' / 'complaints') persisted.
   useEffect(() => {
     const saved = localStorage.getItem(FD_TAB_KEY);
     if (saved === 'lost-and-found' || saved === 'rooms' || saved === 'complaints') setTabState(saved);
@@ -285,13 +285,15 @@ export default function FrontDeskPage() {
         .fd-filter-pill:hover { background: rgba(54,66,98,0.06); }
       `}</style>
 
-      <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={isManagement} showComplaints={isManagement} />
+      <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={isManagement} />
 
       {tab === 'lost-and-found' && isManagement && activePropertyId && (
         <LostFoundTab pid={activePropertyId} lang={lang} />
       )}
 
-      {tab === 'complaints' && isManagement && <ComplaintsTab />}
+      {tab === 'complaints' && isManagement && (
+        <ComplaintsTab />
+      )}
 
       {tab === 'rooms' && (
       <div style={{ minHeight: '100dvh', background: '#fbf9f4' }}>

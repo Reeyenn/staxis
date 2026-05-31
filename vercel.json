@@ -18,6 +18,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/compliance-anomaly-sweep",
+      "schedule": "*/30 * * * *"
+    },
+    {
       "path": "/api/cron/agent-sweep-reservations",
       "schedule": "*/5 * * * *"
     },
