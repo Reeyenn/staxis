@@ -31,6 +31,7 @@ import {
   MAX_CLEAN_MINUTES,
   isEditableCleaningType,
   isValidBaseMinutes,
+  type CleanTimeStandardRow,
 } from '@/lib/clean-time-standards';
 import {
   fetchCleanTimeStandards,
@@ -66,6 +67,29 @@ function callerHasPropertyAccess(account: CallerAccount, propertyId: string): bo
   return account.property_access.includes(propertyId);
 }
 
+/**
+ * Build the API response shape: one entry per editable cleaning_type, using
+ * the property's all-rooms (room_type NULL) row when present, else the
+ * industry default. `isDefault` is true when the property has no saved row
+ * for that type yet (the table is not pre-seeded — see migration 0244).
+ */
+function shapeStandards(rows: CleanTimeStandardRow[]) {
+  const byType = new Map<string, number>();
+  for (const r of rows) {
+    if (r.room_type == null && isEditableCleaningType(r.cleaning_type)) {
+      byType.set(r.cleaning_type, r.base_minutes);
+    }
+  }
+  return EDITABLE_CLEANING_TYPES.map((cleaningType) => {
+    const stored = byType.get(cleaningType);
+    return {
+      cleaningType,
+      baseMinutes: stored ?? CLEAN_TIME_DEFAULT_MINUTES[cleaningType],
+      isDefault: stored == null,
+    };
+  });
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const session = await requireSession(req, { requestId });
@@ -82,22 +106,7 @@ export async function GET(req: NextRequest) {
   }
 
   const rows = await fetchCleanTimeStandards(pidV.value!);
-  // All-rooms (room_type NULL) row per type, falling back to the default.
-  const byType = new Map<string, number>();
-  for (const r of rows) {
-    if (r.room_type == null && isEditableCleaningType(r.cleaning_type)) {
-      byType.set(r.cleaning_type, r.base_minutes);
-    }
-  }
-
-  const standards = EDITABLE_CLEANING_TYPES.map((cleaningType) => {
-    const stored = byType.get(cleaningType);
-    return {
-      cleaningType,
-      baseMinutes: stored ?? CLEAN_TIME_DEFAULT_MINUTES[cleaningType],
-      isDefault: stored == null,
-    };
-  });
+  const standards = shapeStandards(rows);
 
   return ok(
     {
@@ -169,22 +178,8 @@ export async function PUT(req: NextRequest) {
     return err('Failed to save cleaning times', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  // Echo the freshly-saved values (re-read so the client reflects the table).
-  const rows = await fetchCleanTimeStandards(pidV.value!);
-  const byType = new Map<string, number>();
-  for (const r of rows) {
-    if (r.room_type == null && isEditableCleaningType(r.cleaning_type)) {
-      byType.set(r.cleaning_type, r.base_minutes);
-    }
-  }
-  const standards = EDITABLE_CLEANING_TYPES.map((cleaningType) => {
-    const stored = byType.get(cleaningType);
-    return {
-      cleaningType,
-      baseMinutes: stored ?? CLEAN_TIME_DEFAULT_MINUTES[cleaningType],
-      isDefault: stored == null,
-    };
-  });
-
+  // Echo the canonical persisted state (re-read so the client reflects the
+  // table exactly, including any concurrent edit).
+  const standards = shapeStandards(await fetchCleanTimeStandards(pidV.value!));
   return ok({ standards, canEdit: true }, { requestId });
 }

@@ -155,4 +155,18 @@ describe('mergePartials honours the Clean Times base override', () => {
     );
     assert.equal(spec!.estimated_minutes, 35);
   });
+
+  test('empty index (unseeded table) ⇒ rule-supplied base wins, incl. suite premium', () => {
+    // Day-one / pre-save state: the table is NOT seeded, so the index is
+    // empty and the rule-supplied base (which already encodes the suite
+    // premium) must win — behaviour identical to before the feature.
+    const ctx = blankRoomContext({ room_type: 'King Suite', is_suite: true });
+    const emptyIdx = indexStandards([]);
+    const spec = mergePartials(
+      [fire('departure-clean', { cleaning_type: 'departure', estimated_minutes_base: 55 })],
+      ctx,
+      emptyIdx,
+    );
+    assert.equal(spec!.estimated_minutes, 55); // suite base preserved, not flattened
+  });
 });

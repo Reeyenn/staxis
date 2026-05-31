@@ -50,12 +50,13 @@ export const MAX_CLEAN_MINUTES = 240;
 /**
  * Industry-standard default minutes per editable cleaning_type.
  *
- * These mirror src/lib/rules-engine/constants.ts BASE_DURATION_MIN[*].standard
- * AND the seed rows in migration 0244 — keep all three in sync. Seeding the
- * table with these means newly-created tasks are identical to the
- * pre-feature behaviour until a manager changes a value, and this map is the
- * fallback the Settings page / API shows when a property has no rows yet
- * (e.g. before the migration is applied to that environment).
+ * These mirror src/lib/rules-engine/constants.ts BASE_DURATION_MIN[*].standard.
+ * The table is NOT pre-seeded (see migration 0244), so this map is what GET
+ * /api/settings/clean-times returns for any type a property hasn't saved yet
+ * — i.e. what the Settings page shows on day one. The actual estimate fallback
+ * when no row exists is each consumer's own static map (the rules-engine
+ * BASE_DURATION_MIN with its suite split; the assignment-engine
+ * DEFAULT_BASE_DURATIONS), so behaviour is unchanged until a manager saves.
  */
 export const CLEAN_TIME_DEFAULT_MINUTES: Record<EditableCleaningType, number> = {
   departure: 35,
@@ -156,9 +157,9 @@ export function standardsToBaseDurations(
 }
 
 /**
- * The default standards as table-shaped rows (all-rooms). Used by the GET API
- * to render the Settings page even when a property has no rows yet, and as a
- * convenient base for tests.
+ * The default standards as table-shaped rows (all-rooms). A convenience for
+ * tests and for any caller that wants the default set in row shape. (The GET
+ * API builds its response from CLEAN_TIME_DEFAULT_MINUTES directly.)
  */
 export function defaultStandardRows(): Array<{ cleaning_type: EditableCleaningType; room_type: null; base_minutes: number }> {
   return EDITABLE_CLEANING_TYPES.map((cleaning_type) => ({
