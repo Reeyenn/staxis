@@ -66,7 +66,15 @@ export async function POST(req: NextRequest): Promise<Response> {
   const nameCheck = validateString(body.name, { max: 200, label: 'name' });
   if (nameCheck.error || !nameCheck.value) return err('name is required', { requestId: gate.requestId, status: 400, code: 'invalid_name' });
 
-  const quoteCents = readCents(body, 'quoteCents', 'quoteDollars') ?? 0;
+  // Quote is optional (absent → 0), but if a value WAS supplied it must be a
+  // valid non-negative number — don't silently coerce a bad quote to $0
+  // (Codex review V4). Mirrors the PATCH validation path.
+  let quoteCents = 0;
+  if (body.quoteCents !== undefined || body.quoteDollars !== undefined) {
+    const c = readCents(body, 'quoteCents', 'quoteDollars');
+    if (c == null || c < 0) return err('quote must be a non-negative number', { requestId: gate.requestId, status: 400, code: 'invalid_amount' });
+    quoteCents = c;
+  }
   const status = isCapexStatus(body.status) ? body.status : 'planned';
 
   try {

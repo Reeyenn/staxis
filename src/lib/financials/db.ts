@@ -273,11 +273,15 @@ export async function vendorHistoryCents(
   beforeDate?: string,
   limit = 40,
 ): Promise<number[]> {
+  // Escape LIKE wildcards in OCR-derived vendor text so a vendor name
+  // containing % or _ matches literally (case-insensitively) rather than
+  // broadening the match and skewing the outlier baseline (Codex review V5).
+  const escapedVendor = vendor.replace(/[\\%_]/g, '\\$&');
   let q = supabaseAdmin
     .from('financial_expenses')
     .select('amount_cents, expense_date')
     .eq('property_id', pid)
-    .ilike('vendor', vendor)
+    .ilike('vendor', escapedVendor)
     .order('expense_date', { ascending: false })
     .limit(limit);
   if (beforeDate) q = q.lt('expense_date', beforeDate);
