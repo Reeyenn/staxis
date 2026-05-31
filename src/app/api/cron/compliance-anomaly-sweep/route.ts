@@ -58,7 +58,7 @@ async function aiPhraseForProperty(pid: string): Promise<number> {
     (u) => { usage = u; },
   );
   for (const p of phrased) {
-    await applyAiPhrasing(p.id, p.en, p.es || null);
+    await applyAiPhrasing(pid, p.id, p.en, p.es || null);
   }
   if (usage && accountId) {
     const u = usage as NlpUsage;

@@ -4,6 +4,7 @@
 // (engineer mobile + manager) call these; the browser never touches the tables
 // directly (RLS deny-all — see migration 0229 / CLAUDE.md RLS bug class).
 
+import { after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { APP_TIMEZONE, todayStr } from '@/lib/utils';
@@ -363,6 +364,22 @@ export async function getReport(pid: string, fromDate: string, toDate: string): 
 
 // ─── Logging (engineer mobile + manager + voice/agent) ───────────────────────
 
+/** Run the anomaly check after the response is sent (never block the reading).
+ *  Falls back to fire-and-forget if somehow called outside a request scope
+ *  (no current caller does — every logReading caller is an /api route). */
+function scheduleAnomalyCheck(
+  pid: string,
+  type: ReadingType,
+  reading: { id: string; value: number | null; loggedAt: string },
+): void {
+  const run = () => { void checkReadingForAnomaly(pid, type, reading); };
+  try {
+    after(run);
+  } catch {
+    run();
+  }
+}
+
 export interface LogReadingInput {
   pid: string;
   readingTypeId: string;
@@ -454,10 +471,11 @@ export async function logReading(input: LogReadingInput): Promise<LogReadingResu
   // against the recent baseline for `type` and flags spikes / drifts / stuck
   // sensors EVEN WHEN inside the static min/max band — the differentiator over
   // Quore (which only records). Cold-start-safe (no alert until enough history;
-  // see anomaly.ts) and fully best-effort: any failure is swallowed inside the
-  // engine and must never block the reading from being recorded.
+  // see anomaly.ts). Scheduled via next/server `after()` so detection + its
+  // SMS/work-order side effects run AFTER the response is sent and can NEVER
+  // delay or fail the reading write (Codex: don't hold the request hostage).
   // ════════════════════════════════════════════════════════════════════════
-  await checkReadingForAnomaly(input.pid, type, { id: reading.id, value: reading.value, loggedAt: reading.loggedAt });
+  scheduleAnomalyCheck(input.pid, type, { id: reading.id, value: reading.value, loggedAt: reading.loggedAt });
 
   // AI feature #3 — auto-act on out-of-range.
   let workOrderId: string | null = null;

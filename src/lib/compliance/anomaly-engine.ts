@@ -108,6 +108,23 @@ async function recordAndNotify(
   detectedBy: 'reading' | 'sweep',
 ): Promise<AnomalyAlert | null> {
   const dedupeKey = `${type.id}:${result.kind}:${todayStr(APP_TIMEZONE)}`;
+
+  // Suppress re-alerting (re-text, re-open work order) when an alert for this
+  // exact condition already exists TODAY in a non-resolved state — including one
+  // a manager ACKNOWLEDGED (dismissed). The partial-unique index only covers
+  // status='active', so without this pre-check an ack would let the next
+  // sweep/reading re-fire the same alert loop (Codex adversarial finding).
+  const { data: existing } = await supabaseAdmin
+    .from('compliance_anomaly_alerts')
+    .select('id')
+    .eq('property_id', pid)
+    .eq('reading_type_id', type.id)
+    .eq('dedupe_key', dedupeKey)
+    .in('status', ['active', 'acknowledged'])
+    .limit(1)
+    .maybeSingle();
+  if (existing) return null;
+
   const { data, error } = await supabaseAdmin
     .from('compliance_anomaly_alerts')
     .insert({
@@ -258,9 +275,10 @@ export async function getUnphrasedActiveAlerts(pid: string, limit = 5): Promise<
   return (data ?? []).map(mapAlert);
 }
 
-export async function applyAiPhrasing(alertId: string, en: string, es: string | null): Promise<void> {
+export async function applyAiPhrasing(pid: string, alertId: string, en: string, es: string | null): Promise<void> {
   await supabaseAdmin
     .from('compliance_anomaly_alerts')
     .update({ reason: en.slice(0, 500), reason_es: es ? es.slice(0, 500) : null, ai_phrased: true })
-    .eq('id', alertId);
+    .eq('id', alertId)
+    .eq('property_id', pid);
 }

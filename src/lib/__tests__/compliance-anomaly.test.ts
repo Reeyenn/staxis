@@ -70,4 +70,16 @@ describe('cumulative meter readings', () => {
     assert.equal(out.state, 'anomaly');
     if (out.state === 'anomaly') assert.equal(out.result.kind, 'flatline');
   });
+
+  // Codex review/adversarial regressions:
+  test('uneven spacing (3-day gap, same daily RATE) → normal, NOT a false leak', () => {
+    // 50/day baseline, then a reading 3 days late with delta 150 → rate still 50/day.
+    const out = analyzeReading(WATER, h([0, 50, 100, 150, 200, 250, 300]), after(9, 450));
+    assert.equal(out.state, 'normal');
+  });
+  test('meter reset/rollover → learning (baseline rebuilds; no bogus leak/work order)', () => {
+    // Steady 50/day, then a reset to 10, then 110 — must NOT fire a leak.
+    const out = analyzeReading(WATER, h([1000, 1050, 1100, 1150, 1200, 1250, 1300, 10]), after(8, 110));
+    assert.equal(out.state, 'learning');
+  });
 });

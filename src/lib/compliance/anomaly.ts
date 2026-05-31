@@ -212,55 +212,67 @@ function mkDrift(type: AnomalyTypeInfo, m: number, v: number, dir: 'up' | 'down'
 
 function analyzeMeter(type: AnomalyTypeInfo, history: HistoryPoint[], current: HistoryPoint): AnomalyOutcome {
   const all = [...history, current]
-    .filter((h) => Number.isFinite(h.value))
+    .filter((h) => Number.isFinite(h.value) && Number.isFinite(h.at))
     .sort((a, b) => a.at - b.at);
   if (all.length < 2) return { state: 'learning', have: 0, need: MIN_METER_INTERVALS };
 
-  // Consumption deltas between consecutive readings; drop negatives (meter
-  // rollover / reset) — they aren't real consumption.
-  const deltas: number[] = [];
+  // Per-interval consumption RATE (units/day), normalized by elapsed time so a
+  // skipped or late reading (e.g. a 3-day gap) is NOT mistaken for a spike
+  // (Codex review fix). A negative delta = meter reset / rollover / replacement
+  // → a HARD baseline break: clear the accumulated rates so a post-reset jump
+  // can't masquerade as a leak until MIN_METER_INTERVALS of clean post-reset
+  // history rebuild the baseline (Codex adversarial fix).
+  const rates: number[] = [];
   for (let i = 1; i < all.length; i++) {
-    const d = all[i].value - all[i - 1].value;
-    if (d >= 0) deltas.push(d);
-    else deltas.push(NaN); // mark rollover; excluded below
-  }
-  const cleanDeltas = deltas.filter((d) => Number.isFinite(d));
-  const currentDelta = deltas[deltas.length - 1];
-  const priorDeltas = cleanDeltas.slice(0, -1); // exclude current
-
-  if (priorDeltas.length < MIN_METER_INTERVALS || !Number.isFinite(currentDelta)) {
-    return { state: 'learning', have: priorDeltas.length, need: MIN_METER_INTERVALS };
+    const dv = all[i].value - all[i - 1].value;
+    if (dv < 0) { rates.length = 0; continue; }            // reset → rebuild baseline
+    const dtDays = (all[i].at - all[i - 1].at) / 86_400_000;
+    if (dtDays <= EPS) continue;                            // same-timestamp → can't compute a rate
+    rates.push(dv / dtDays);
   }
 
-  const baseline = mean(priorDeltas);
-  const sd = stddev(priorDeltas, baseline);
+  // The CURRENT interval must itself be assessable: not a reset, positive elapsed.
+  const prev = all[all.length - 2];
+  const cur = all[all.length - 1];
+  const lastDv = cur.value - prev.value;
+  const lastDtDays = (cur.at - prev.at) / 86_400_000;
+  if (lastDv < 0 || lastDtDays <= EPS) return { state: 'normal' };
+  const currentRate = lastDv / lastDtDays;
+  const priorRates = rates.slice(0, -1);                   // rates[last] === currentRate
+
+  if (priorRates.length < MIN_METER_INTERVALS) {
+    return { state: 'learning', have: priorRates.length, need: MIN_METER_INTERVALS };
+  }
+
+  const baseline = mean(priorRates);
+  const sd = stddev(priorRates, baseline);
   if (baseline <= EPS) {
     // Property barely consumes on this meter — can't reason about ratios.
     return { state: 'normal' };
   }
-  const ratio = currentDelta / baseline;
+  const ratio = currentRate / baseline;
 
   // ── SPIKE (possible leak) ────────────────────────────────────────────────
   if (ratio >= METER_SPIKE_WARN) {
     const highLeak = ratio >= METER_LEAK_RATIO;
     const severity: AnomalySeverity = ratio >= METER_SPIKE_CRIT ? 'critical' : 'warn';
     const x = round1(ratio);
-    return anomaly('spike', severity, baseline, sd, currentDelta, x,
+    return anomaly('spike', severity, baseline, sd, round1(currentRate), x,
       Math.min(0.95, 0.5 + ratio / 10),
-      `${type.name} usage is ${x}× its normal rate this interval — possible leak or equipment fault. Check the system.`,
-      `El uso de ${type.name} es ${x}× su tasa normal en este intervalo — posible fuga o falla del equipo. Revisa el sistema.`,
+      `${type.name} usage is ${x}× its normal daily rate — possible leak or equipment fault. Check the system.`,
+      `El uso de ${type.name} es ${x}× su tasa diaria normal — posible fuga o falla del equipo. Revisa el sistema.`,
       highLeak);
   }
 
   // ── FLATLINE (stuck / dead meter or supply off) ──────────────────────────
-  const tailFlat = cleanDeltas.slice(-METER_FLAT_RUN);
+  const tailFlat = rates.slice(-METER_FLAT_RUN);
   if (
     tailFlat.length >= METER_FLAT_RUN &&
-    tailFlat.every((d) => d <= baseline * METER_FLAT_FRACTION)
+    tailFlat.every((rt) => rt <= baseline * METER_FLAT_FRACTION)
   ) {
-    return anomaly('flatline', 'warn', baseline, sd, currentDelta, 0, 0.6,
-      `${type.name} hasn't moved across the last ${METER_FLAT_RUN} readings (normal use is ~${round1(baseline)}${type.unit}/interval) — the meter may be stuck or the supply is off.`,
-      `${type.name} no se ha movido en las últimas ${METER_FLAT_RUN} lecturas (uso normal ~${round1(baseline)}${type.unit}/intervalo) — el medidor puede estar atascado o el suministro apagado.`,
+    return anomaly('flatline', 'warn', baseline, sd, round1(currentRate), 0, 0.6,
+      `${type.name} hasn't moved across the last ${METER_FLAT_RUN} readings (normal use is ~${round1(baseline)}${type.unit}/day) — the meter may be stuck or the supply is off.`,
+      `${type.name} no se ha movido en las últimas ${METER_FLAT_RUN} lecturas (uso normal ~${round1(baseline)}${type.unit}/día) — el medidor puede estar atascado o el suministro apagado.`,
       false);
   }
 
