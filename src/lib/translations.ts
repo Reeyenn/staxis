@@ -376,7 +376,10 @@ type TranslationKey =
   | 'voiceIssueTapToSpeak' | 'voiceIssueConnecting' | 'voiceIssueListening'
   | 'voiceIssueProcessing' | 'voiceIssueSuccess' | 'voiceIssueErrorHeard'
   | 'voiceIssueMicBlocked' | 'voiceIssueCapped' | 'voiceIssueError'
-  | 'voiceIssueHint' | 'voiceIssueTapToStop';
+  | 'voiceIssueHint' | 'voiceIssueTapToStop'
+  // Lost & Found — housekeeper "Found an item" surface
+  | 'hkFoundItem' | 'hkFoundItemTitle' | 'hkFoundItemPlaceholder'
+  | 'hkFoundItemPhotoAdd' | 'hkFoundItemSubmit' | 'hkFoundItemError';
 
 // EN and ES carry every TranslationKey; HT/TL/VI carry the housekeeper-
 // facing subset and fall back to EN via t() for anything missing. The
@@ -1174,6 +1177,13 @@ const translations: TranslationMaps = {
     voiceIssueCapped:     'Voice limit reached for today. Please type the issue.',
     voiceIssueError:      "Voice didn't work. You can type the issue instead.",
     voiceIssueHint:       'Or type below',
+    // Lost & Found
+    hkFoundItem:          'Found item',
+    hkFoundItemTitle:     'Report a found item',
+    hkFoundItemPlaceholder: 'What did you find? (e.g. black jacket)',
+    hkFoundItemPhotoAdd:  'Add photo',
+    hkFoundItemSubmit:    'Log item',
+    hkFoundItemError:     "Couldn't log the item. Try again.",
   },
 
   es: {
@@ -1957,6 +1967,13 @@ const translations: TranslationMaps = {
     voiceIssueCapped:     'Límite de voz alcanzado por hoy. Por favor escribe el problema.',
     voiceIssueError:      'La voz no funcionó. Puedes escribir el problema en su lugar.',
     voiceIssueHint:       'O escribe abajo',
+    // Lost & Found
+    hkFoundItem:          'Objeto encontrado',
+    hkFoundItemTitle:     'Reportar objeto encontrado',
+    hkFoundItemPlaceholder: '¿Qué encontraste? (p. ej. chaqueta negra)',
+    hkFoundItemPhotoAdd:  'Agregar foto',
+    hkFoundItemSubmit:    'Registrar',
+    hkFoundItemError:     'No se pudo registrar. Intenta de nuevo.',
   },
 
   // ─────────────────────────────────────────────────────────────────────

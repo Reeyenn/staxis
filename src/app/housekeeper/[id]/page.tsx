@@ -31,6 +31,7 @@ import { LanguageSwitcher } from './_components/LanguageSwitcher';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
 import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
 import { AddNoteButton, MarkForInspectionButton } from './_components/RoomCardActionButtons';
+import { ReportFoundItemButton } from './_components/ReportFoundItemButton';
 import { ComponentRoomBadge } from './_components/ComponentRoomBadge';
 import {
   collapseChildComponents,
@@ -1201,6 +1202,14 @@ export default function HousekeeperRoomPage({
                                 ? new Date(room.markedForInspectionAt).toISOString()
                                 : null
                             }
+                          />
+                          <ReportFoundItemButton
+                            pid={pid}
+                            staffId={housekeeperId}
+                            roomId={room.id}
+                            lang={lang}
+                            enqueueIfOffline={offline.enqueueIfOffline}
+                            onError={showActionError}
                           />
                         </>
                       }

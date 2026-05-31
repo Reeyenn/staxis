@@ -185,7 +185,17 @@ export type RateLimitEndpoint =
   // scheduled_shifts + staff reads. Keyed on (userId, propertyId).
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
-  | 'housekeeping-forecast';
+  | 'housekeeping-forecast'
+  // Lost & Found (feature, 2026-05-30). Front-desk register + AI features +
+  // housekeeper "Found an item". Reads keyed on pid; writes/AI/SMS too.
+  | 'lost-found-read'
+  | 'lost-found-write'
+  | 'lost-found-describe-photo'
+  | 'lost-found-auto-match'
+  | 'lost-found-notify-guest'
+  | 'lost-found-photo-presign'
+  | 'housekeeper-report-found-item'
+  | 'housekeeper-found-item-photo-presign';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -349,6 +359,18 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
+  // Lost & Found (2026-05-30). Register read is polled (~30s/tab) + the
+  // dashboard tile polls counts — 3600/hr per property absorbs several
+  // terminals. Writes are deliberate desk actions. AI + SMS endpoints cost
+  // money so they're tighter (and fail-closed below).
+  'lost-found-read':            3600,
+  'lost-found-write':            300,
+  'lost-found-describe-photo':    50,
+  'lost-found-auto-match':        60,
+  'lost-found-notify-guest':      30,
+  'lost-found-photo-presign':    200,
+  'housekeeper-report-found-item': 200,
+  'housekeeper-found-item-photo-presign': 200,
 };
 
 /**
@@ -440,6 +462,11 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
+  // Lost & Found — vision (describe), Claude (auto-match), Twilio (notify).
+  // Each call costs money, so fail CLOSED if the rate-limit RPC errors.
+  'lost-found-describe-photo',
+  'lost-found-auto-match',
+  'lost-found-notify-guest',
 ]);
 
 /**
