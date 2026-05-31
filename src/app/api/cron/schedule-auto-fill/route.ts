@@ -212,7 +212,7 @@ async function autoFillForProperty(
     return {
       propertyId: property.id, propertyName: property.name, date: targetDate,
       outcome: 'skipped_no_rooms',
-      detail: `No assignable rooms for ${targetDate}. Either seed-rooms-daily hasn't run yet, or it's an all-vacant day.`,
+      detail: `No assignable rooms for ${targetDate}. Either the CUA hasn't populated today's rooms yet, or it's an all-vacant day.`,
     };
   }
 

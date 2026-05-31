@@ -4002,13 +4002,13 @@ async function checkRoomsTodaySeeded(): Promise<Omit<Check, 'name' | 'durationMs
         return {
           status: 'fail',
           detail: `${gaps.length} ${gaps.length === 1 ? 'property has' : 'properties have'} a seeding gap. Worst: ${worst.name} missing ${worst.gap} of ${worst.expected} rooms. All: ${summary}`,
-          fix: 'Hit /api/cron/seed-rooms-daily with CRON_SECRET to heal now, or check the scraper\'s plan_snapshots table for today.',
+          fix: 'Check this property\'s CUA session is live and polling at /admin/property-sessions — room counts derive from the CUA\'s latest poll into pms_room_status_log.',
         };
       }
       // Fall through to warn-level if only minor gaps.
       const gapWarn = `Minor seeding drift in ${gaps.length} ${gaps.length === 1 ? 'property' : 'properties'}: ${summary}.`;
       if (missingInventory.length === 0) {
-        return { status: 'warn', detail: `${gapWarn} The seed-rooms-daily cron will heal on its next run.` };
+        return { status: 'warn', detail: `${gapWarn} The CUA's next poll should populate the missing rooms.` };
       }
       // Continue to combine with missing-inventory warn below.
       const inv = missingInventory.map(m => `${m.name} (total_rooms=${m.totalRooms})`).join('; ');

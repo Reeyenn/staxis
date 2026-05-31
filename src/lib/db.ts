@@ -36,14 +36,10 @@ export * from './db/preventive';
 export * from './db/inventory';
 export * from './db/inventory-counts';
 export * from './db/inventory-orders';
-export * from './db/inventory-discards';
-export * from './db/inventory-reconciliations';
 export * from './db/inventory-budgets';
 export * from './db/inventory-accounting';
-export * from './db/ml-stubs';
 export * from './db/ml-inventory-cockpit';
 export * from './db/handoff-logs';
-export * from './db/guest-requests';
 // Plan v4 bridge — both files re-derive the old plan_snapshots /
 // dashboard_by_date shapes live from pms_* tables that the vision CUA
 // writes to. The UI surface (Schedule tab, etc.) is unchanged.
@@ -53,7 +49,6 @@ export * from './db/dashboard';
 export * from './db/schedule-assignments';
 export * from './db/shift-confirmations';
 export * from './db/staff-schedule';
-export * from './db/manager-notifications';
 export * from './db/deep-cleaning';
 export * from './db/housekeeper-helpers';
 export * from './db/cleaning-events';
