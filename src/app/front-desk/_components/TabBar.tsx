@@ -1,25 +1,27 @@
 'use client';
 
 // Front-desk sub-tab bar. Mirrors MTSubTabBar (maintenance) — same snow styling
-// and sticky behaviour. The Lost & Found tab only renders for management roles
-// (the page passes showLostFound); the Rooms tab is always present so existing
-// front-desk access is unchanged.
+// and sticky behaviour. The Lost & Found and Complaints tabs only render for
+// management roles (the page passes showLostFound / showComplaints); the Rooms
+// tab is always present so existing front-desk access is unchanged.
 
 import React from 'react';
 import { T, FONT_SANS } from '@/app/maintenance/_components/_mt-snow';
 
-export type FrontDeskTabKey = 'rooms' | 'lost-and-found';
+export type FrontDeskTabKey = 'rooms' | 'lost-and-found' | 'complaints';
 
 export function FrontDeskTabBar({
   tab,
   onTab,
   lang,
   showLostFound,
+  showComplaints,
 }: {
   tab: FrontDeskTabKey;
   onTab: (t: FrontDeskTabKey) => void;
   lang: 'en' | 'es';
   showLostFound: boolean;
+  showComplaints?: boolean;
 }) {
   const tabs: { key: FrontDeskTabKey; label: string }[] = [
     { key: 'rooms', label: lang === 'es' ? 'Habitaciones' : 'Rooms' },
@@ -28,6 +30,14 @@ export function FrontDeskTabBar({
           {
             key: 'lost-and-found' as const,
             label: lang === 'es' ? 'Objetos perdidos' : 'Lost & Found',
+          },
+        ]
+      : []),
+    ...(showComplaints
+      ? [
+          {
+            key: 'complaints' as const,
+            label: lang === 'es' ? 'Quejas' : 'Complaints',
           },
         ]
       : []),
