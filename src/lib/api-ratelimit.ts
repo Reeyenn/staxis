@@ -28,7 +28,6 @@ export type RateLimitEndpoint =
   | 'reports-run'
   | 'reports-export'
   | 'send-shift-confirmations'
-  | 'morning-resend'
   | 'sms-reply-resend'
   | 'test-sms-flow'
   | 'sync-room-assignments'
@@ -276,8 +275,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
   'send-shift-confirmations': 10,
-  // Cron route — one or two real calls per day max.
-  'morning-resend':             5,
   // ENGLISH/ESPAÑOL replies look like loops if abused.
   'sms-reply-resend':          30,
   'test-sms-flow':             50,
@@ -542,7 +539,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Twilio SMS fan-out (per-recipient charge).
   'send-shift-confirmations',
   'notify-housekeepers-sms',
-  'morning-resend',
   'sms-reply-resend',
   'test-sms-flow',
   // Resend transactional email (per-recipient charge).
