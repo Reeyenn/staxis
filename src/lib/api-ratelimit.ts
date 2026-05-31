@@ -250,7 +250,22 @@ export type RateLimitEndpoint =
   | 'comms-task'
   | 'comms-action'
   | 'comms-photo-presign'
-  | 'comms-save-language';
+  | 'comms-save-language'
+  // ── Inventory Ordering (2026-05-31) — GM/owner ordering suite. ALL keyed on
+  // the RAW property id (a real properties.id) — api_limits.property_id has an
+  // FK to properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
+  // would FK-violate. order-send fires Resend email → billing-impacting → fail
+  // CLOSED (in the set below). The rest are writes/reads → fail open.
+  | 'inventory-order-create'
+  | 'inventory-order-send'
+  | 'inventory-order-approve'
+  | 'inventory-order-receive'
+  | 'inventory-orders-read'
+  | 'inventory-vendors'
+  | 'inventory-catalog-read'
+  | 'inventory-catalog-import'
+  | 'inventory-ordering-mode'
+  | 'inventory-spend-rollup';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -470,6 +485,19 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'comms-action':               200,
   'comms-photo-presign':        300,
   'comms-save-language':         20,
+  // Inventory Ordering — per-property (raw pid). order-create/approve/receive
+  // are deliberate manager actions; order-send fires email (billing); reads are
+  // panel polls. Tuned to "a manager working through orders" with headroom.
+  'inventory-order-create':      60,
+  'inventory-order-send':        60,
+  'inventory-order-approve':    100,
+  'inventory-order-receive':    200,
+  'inventory-orders-read':      600,
+  'inventory-vendors':          200,
+  'inventory-catalog-read':     120,
+  'inventory-catalog-import':    20,
+  'inventory-ordering-mode':     60,
+  'inventory-spend-rollup':     120,
 };
 
 /**
@@ -597,6 +625,10 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'financials-scan-invoice',
   'financials-scan-quote',
   'financials-sms',
+  // Inventory order-send fires a Resend email to the vendor. Fail CLOSED so a
+  // Supabase blip can't uncap email spend. (The Resend wrapper also enforces a
+  // per-recipient 5/hr cap; this is the per-property guardrail.)
+  'inventory-order-send',
 ]);
 
 /**

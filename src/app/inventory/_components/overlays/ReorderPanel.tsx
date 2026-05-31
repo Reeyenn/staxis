@@ -3,9 +3,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { addInventoryOrder } from '@/lib/db';
+import { useLang } from '@/contexts/LanguageContext';
 import type { InventoryItem, InventoryBudget, InventoryCategory } from '@/types';
 import type { DailyAverages } from '@/lib/inventory-predictions';
+import type { CartLineInput, OrderingMode } from '@/lib/ordering/types';
+import { apiCreateOrders, apiSendOrder } from '../ordering-api';
 
 import { T, fonts, statusColor, catColor, catLabel, type InvCat } from '../tokens';
 import { CatIcon } from '../CatIcon';
@@ -28,6 +30,12 @@ interface ReorderPanelProps {
   spendByCat: Record<string, number>;
   averages: DailyAverages | null;
   mlRateMap: Map<string, number>;
+  /** Only management can place orders (owner/GM/admin). Non-managers see the
+   *  reorder list but the place button is disabled. */
+  canManage: boolean;
+  orderingMode: OrderingMode;
+  /** Jump to the Orders panel after placing. */
+  onViewOrders: () => void;
 }
 
 type LineState = { checked: boolean; qty: number };
@@ -56,9 +64,14 @@ export function ReorderPanel({
   spendByCat,
   averages,
   mlRateMap,
+  canManage,
+  orderingMode,
+  onViewOrders,
 }: ReorderPanelProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const { lang } = useLang();
+  const L = lang === 'es' ? 'es' : 'en';
 
   // Build recommendations once per (open, data) cycle.
   const recs: Array<ReorderRec & { display: DisplayItem }> = useMemo(() => {
@@ -97,6 +110,9 @@ export function ReorderPanel({
 
   const [state, setState] = useState<Record<string, LineState>>({});
   const [saving, setSaving] = useState(false);
+  const [placeResult, setPlaceResult] = useState<
+    { placed: number; sent: number; draft: number; errors: string[] } | null
+  >(null);
 
   // Reset state whenever recs change (e.g. panel reopens with new data).
   // Honesty-audit Phase 4: only pre-check items that have REAL signal
@@ -105,6 +121,7 @@ export function ReorderPanel({
   // auto-include in the cart — the GM should explicitly opt them in.
   useEffect(() => {
     if (!open) return;
+    setPlaceResult(null);
     const next: Record<string, LineState> = {};
     for (const r of recs) {
       const hasRealSignal = r.burnSource === 'ml' || r.burnSource === 'rule-occupancy';
@@ -135,37 +152,81 @@ export function ReorderPanel({
 
   const distinctVendors = new Set(cartItems.map((r) => r.display.vendor || '—')).size;
 
+  // Place orders: create real purchase_orders grouped BY VENDOR (server-side),
+  // then — in simple mode — auto-email each vendor that has an address on file.
+  // Pro mode stops at 'pending_approval' (approve from the Orders panel).
   const handlePlaceOrders = async () => {
-    if (!user || !activePropertyId || saving || cartItems.length === 0) return;
+    if (!user || !activePropertyId || saving || cartItems.length === 0 || !canManage) return;
     setSaving(true);
     try {
-      const now = new Date();
-      await Promise.all(
-        cartItems.map((r) => {
-          const qty = state[r.itemId]?.qty || 0;
-          const unitCost = r.display.unitCost || undefined;
-          return addInventoryOrder(user.uid, activePropertyId, {
-            propertyId: activePropertyId,
-            itemId: r.itemId,
-            itemName: r.display.name,
-            quantity: qty,
-            unitCost,
-            totalCost: unitCost ? unitCost * qty : undefined,
-            vendorName: r.display.vendor || undefined,
-            orderedAt: now,
-            receivedAt: null,
-            notes: 'Reorder list',
-          });
-        }),
-      );
-      onClose();
+      const lines: CartLineInput[] = cartItems.map((r) => ({
+        itemId: r.itemId,
+        description: r.display.name,
+        qtyOrdered: state[r.itemId]?.qty || 0,
+        // dollars → cents at the boundary
+        unitCostCents: Math.round((r.display.unitCost || 0) * 100),
+        vendorName: r.display.vendor || null,
+        vendorId: null,
+      }));
+      const { orders, mode } = await apiCreateOrders(activePropertyId, lines);
+
+      let sent = 0;
+      let draft = 0;
+      const errors: string[] = [];
+      if (mode === 'simple') {
+        // Auto-send to any vendor with an email; others stay as drafts to send
+        // from the Orders panel once an address is added.
+        for (const po of orders) {
+          if (po.vendorEmail) {
+            try {
+              await apiSendOrder(activePropertyId, po.id, undefined, L);
+              sent++;
+            } catch (e) {
+              draft++;
+              errors.push(`${po.poNumber}: ${e instanceof Error ? e.message : 'send failed'}`);
+            }
+          } else {
+            draft++;
+          }
+        }
+      }
+      // Clear the cart so re-clicking can't double-order.
+      setState((s) => {
+        const next = { ...s };
+        for (const r of cartItems) if (next[r.itemId]) next[r.itemId] = { ...next[r.itemId], checked: false };
+        return next;
+      });
+      setPlaceResult({ placed: orders.length, sent, draft, errors });
     } catch (err) {
-      console.error('[reorder] place orders failed', err);
-      alert('Placing the orders failed. Please try again.');
+      setPlaceResult({
+        placed: 0,
+        sent: 0,
+        draft: 0,
+        errors: [err instanceof Error ? err.message : 'Placing the orders failed.'],
+      });
     } finally {
       setSaving(false);
     }
   };
+
+  const TT = {
+    place: orderingMode === 'pro'
+      ? { en: 'Submit for approval →', es: 'Enviar a aprobación →' }[L]
+      : { en: 'Place & email orders →', es: 'Crear y enviar órdenes →' }[L],
+    placing: { en: 'Placing…', es: 'Creando…' }[L],
+    close: { en: 'Close', es: 'Cerrar' }[L],
+    viewOrders: { en: 'View orders →', es: 'Ver órdenes →' }[L],
+    managerOnly: { en: 'Only managers can place orders.', es: 'Solo gerentes pueden crear órdenes.' }[L],
+    proNote: { en: 'Orders will need approval before they can be sent.', es: 'Las órdenes necesitarán aprobación antes de enviarse.' }[L],
+  };
+
+  const resultMsg = placeResult
+    ? (placeResult.placed === 0
+        ? (placeResult.errors[0] ?? '—')
+        : orderingMode === 'pro'
+          ? { en: `${placeResult.placed} order(s) created — pending approval.`, es: `${placeResult.placed} orden(es) creada(s) — pendientes de aprobación.` }[L]
+          : { en: `${placeResult.placed} order(s) placed · ${placeResult.sent} emailed${placeResult.draft ? `, ${placeResult.draft} saved as draft (add a vendor email to send)` : ''}.`, es: `${placeResult.placed} orden(es) creada(s) · ${placeResult.sent} enviada(s)${placeResult.draft ? `, ${placeResult.draft} en borrador (agrega un correo del proveedor para enviar)` : ''}.` }[L])
+    : null;
 
   return (
     <Overlay
@@ -179,21 +240,50 @@ export function ReorderPanel({
       footer={
         <>
           <Btn variant="ghost" size="md" onClick={onClose}>
-            Save draft
+            {TT.close}
           </Btn>
+          {placeResult && placeResult.placed > 0 && (
+            <Btn variant="ghost" size="md" onClick={onViewOrders}>
+              {TT.viewOrders}
+            </Btn>
+          )}
           <Btn
             variant="primary"
             size="md"
-            disabled={saving || cartItems.length === 0}
+            disabled={saving || cartItems.length === 0 || !canManage}
             onClick={handlePlaceOrders}
-            style={{ opacity: cartItems.length ? 1 : 0.4 }}
+            style={{ opacity: canManage && cartItems.length ? 1 : 0.4 }}
           >
-            {saving ? 'Placing…' : 'Place orders by vendor →'}
+            {saving ? TT.placing : TT.place}
           </Btn>
         </>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+        {/* Place-orders result / manager-only / pro-mode notices */}
+        {resultMsg && (
+          <div
+            style={{
+              background: T.paper,
+              border: `1px solid ${placeResult && placeResult.placed > 0 ? statusColor.good : statusColor.critical}`,
+              borderLeft: `3px solid ${placeResult && placeResult.placed > 0 ? statusColor.good : statusColor.critical}`,
+              borderRadius: 10,
+              padding: '12px 14px',
+              fontFamily: fonts.sans,
+              fontSize: 13,
+              color: T.ink,
+            }}
+          >
+            {resultMsg}
+          </div>
+        )}
+        {!canManage && (
+          <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{TT.managerOnly}</div>
+        )}
+        {canManage && orderingMode === 'pro' && !placeResult && (
+          <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{TT.proNote}</div>
+        )}
+
         {/* Budget meters */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((cat) => {
