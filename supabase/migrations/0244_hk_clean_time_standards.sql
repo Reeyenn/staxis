@@ -42,12 +42,14 @@ create table if not exists public.hk_clean_time_standards (
   created_at    timestamptz not null default now()
 );
 
--- One standard per (property, cleaning_type, room_type). NULL room_type
--- collapses to '*' so the "applies to all room types" row is unique per
--- type — a plain UNIQUE would treat each NULL as distinct and let duplicate
--- all-rooms rows in. ON CONFLICT below infers this expression index.
+-- One standard per (property, cleaning_type, room_type). NULLS NOT DISTINCT
+-- (PG15+; prod is PG17) makes the all-rooms row (room_type NULL) unique per
+-- (property, cleaning_type) — a plain UNIQUE treats each NULL as distinct and
+-- would let duplicate all-rooms rows in. A plain column list (not a
+-- coalesce(...) expression) lets PostgREST infer this index for the atomic
+-- bulk upsert the settings API uses (clean-time-standards-server.ts).
 create unique index if not exists hk_clean_time_standards_uq
-  on public.hk_clean_time_standards (property_id, cleaning_type, coalesce(room_type, '*'));
+  on public.hk_clean_time_standards (property_id, cleaning_type, room_type) nulls not distinct;
 
 -- ── RLS: service-role only; browser clients denied. (Pattern: 0240.) ──
 alter table public.hk_clean_time_standards enable row level security;
@@ -79,7 +81,7 @@ cross join (values
   ('room_check',       5),
   ('inspection_only',  5)
 ) as d(cleaning_type, base_minutes)
-on conflict (property_id, cleaning_type, coalesce(room_type, '*')) do nothing;
+on conflict (property_id, cleaning_type, room_type) do nothing;
 
 insert into public.applied_migrations (version, description)
 values ('0244', 'Manager-editable standard cleaning-time table (hk_clean_time_standards) for housekeeping workload estimates')

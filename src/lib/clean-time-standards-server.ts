@@ -63,14 +63,14 @@ export async function fetchCleanTimeBaseDurations(
 
 /**
  * Upsert the all-rooms (room_type NULL) standard for one or more cleaning
- * types. Update-or-insert per type rather than relying on PostgREST ON
- * CONFLICT against the expression unique index (which it can't infer).
+ * types in a SINGLE bulk statement.
  *
- * Concurrency: if a concurrent save inserts the same (property, type, NULL)
- * row between our update miss and our insert, the unique expression index
- * rejects the insert with 23505 — we retry as an update so this caller's
- * value still lands (last-write-wins per type, fine for a manager settings
- * save).
+ * One `INSERT ... ON CONFLICT DO UPDATE` (targeting the
+ * (property_id, cleaning_type, room_type) NULLS NOT DISTINCT unique index
+ * from migration 0244) means the whole save is atomic: a DB error writes
+ * nothing (no partial update), and two managers saving concurrently resolve
+ * as last-write-wins at the statement level rather than interleaving per
+ * type. Both are the right behaviour for a low-frequency settings save.
  */
 export async function upsertCleanTimeStandards(
   propertyId: string,
@@ -87,50 +87,24 @@ export async function upsertCleanTimeStandards(
     }
   }
 
+  if (updates.length === 0) return { ok: true };
+
   const nowIso = new Date().toISOString();
+  const rows = updates.map((u) => ({
+    property_id: propertyId,
+    cleaning_type: u.cleaning_type,
+    room_type: null as string | null,
+    base_minutes: u.base_minutes,
+    updated_by: updatedByAccountId,
+    updated_at: nowIso,
+    // created_at intentionally omitted — on a conflict (update) the existing
+    // row keeps its original created_at; on insert the column default fills it.
+  }));
 
-  for (const u of updates) {
-    const patch = {
-      base_minutes: u.base_minutes,
-      updated_by: updatedByAccountId,
-      updated_at: nowIso,
-    };
-
-    const { data: updated, error: updErr } = await supabaseAdmin
-      .from('hk_clean_time_standards')
-      .update(patch)
-      .eq('property_id', propertyId)
-      .eq('cleaning_type', u.cleaning_type)
-      .is('room_type', null)
-      .select('id');
-    if (updErr) return { ok: false, error: updErr.message };
-    if (updated && updated.length > 0) continue;
-
-    const { error: insErr } = await supabaseAdmin
-      .from('hk_clean_time_standards')
-      .insert({
-        property_id: propertyId,
-        cleaning_type: u.cleaning_type,
-        room_type: null,
-        base_minutes: u.base_minutes,
-        updated_by: updatedByAccountId,
-        updated_at: nowIso,
-      });
-    if (insErr) {
-      const code = (insErr as { code?: string }).code ?? '';
-      if (code === '23505') {
-        const { error: retryErr } = await supabaseAdmin
-          .from('hk_clean_time_standards')
-          .update(patch)
-          .eq('property_id', propertyId)
-          .eq('cleaning_type', u.cleaning_type)
-          .is('room_type', null);
-        if (retryErr) return { ok: false, error: retryErr.message };
-        continue;
-      }
-      return { ok: false, error: insErr.message };
-    }
-  }
+  const { error } = await supabaseAdmin
+    .from('hk_clean_time_standards')
+    .upsert(rows, { onConflict: 'property_id,cleaning_type,room_type' });
+  if (error) return { ok: false, error: error.message };
 
   return { ok: true };
 }
