@@ -639,6 +639,28 @@ export class SessionDriver {
       return;
     }
 
+    // Plan v8 self-repair guard: a zero-row streak is far more often an
+    // expired PMS session (every feed returns empty) than selector drift.
+    // Before running feeds, if any action is mid-streak, re-verify login and
+    // re-login if needed — so a login expiry can't masquerade as drift and
+    // burn paid re-mapping (~$2/run). Runs only when a streak already exists,
+    // so it adds no overhead on the healthy path.
+    const hasZeroStreak = Array.from(this.consecutiveZeroRowsByAction.values()).some((c) => c > 0);
+    if (hasZeroStreak) {
+      const loggedIn = await this.ensureLoggedIn().catch(() => false);
+      if (!loggedIn) {
+        log.warn('session-driver: zero-row streak + not logged in — skipping feeds, not firing self-repair (re-login/MFA pending)', {
+          propertyId: this.propertyId,
+          pmsFamily: this.pmsFamily,
+        });
+        return;
+      }
+      // Confirmed logged in (possibly just re-logged in). Clear the streak so
+      // login-caused zeros don't count toward self-repair; genuine selector
+      // drift rebuilds the streak across later confirmed-login polls.
+      this.consecutiveZeroRowsByAction.clear();
+    }
+
     // Recipe.actions → TableTemplate[]. Each template knows its target
     // pms_* table, write strategy, sources, fields, parsers.
     const recipe: Recipe = {
