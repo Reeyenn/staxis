@@ -119,4 +119,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // shape — the route itself skips non-Sunday runs early.
   { heartbeatName: 'run-daily-report',         source: { kind: 'vercel', cronPath: '/api/cron/run-daily-report' },               cronExpr: '*/30 * * * *' },
   { heartbeatName: 'run-weekly-report',        source: { kind: 'vercel', cronPath: '/api/cron/run-weekly-report' },              cronExpr: '*/30 * * * *' },
+  // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity
+  // escalation SMS. Idempotent via callback_nudged_at / escalation_nudged_at.
+  { heartbeatName: 'send-complaint-nudges',    source: { kind: 'vercel', cronPath: '/api/cron/send-complaint-nudges' },          cronExpr: '*/15 * * * *' },
 ];

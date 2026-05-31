@@ -181,6 +181,14 @@ export type RateLimitEndpoint =
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
   | 'housekeeping-forecast'
+  // Complaints / service recovery (2026-05-30). log = create a complaint
+  // (manager UI or agent/voice); update = assign / status / resolve /
+  // callback; draft = Claude service-recovery text (billing); sms = assignee
+  // notify + satisfaction-callback nudges (billing).
+  | 'complaints-log'
+  | 'complaints-update'
+  | 'complaints-draft'
+  | 'complaints-sms'
   // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
   // property id (a real properties.id) — api_limits.property_id has an FK to
   // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
@@ -367,6 +375,14 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
+  // Complaints. log: a busy front desk might file several at check-out rush;
+  // 100/hr per (pid,user) is generous. update: assign/resolve/callback taps,
+  // 300/hr. draft: Claude call, 30/hr. sms: assignee notify + callback nudges
+  // (billing), 60/hr per property.
+  'complaints-log':              100,
+  'complaints-update':           300,
+  'complaints-draft':             30,
+  'complaints-sms':               60,
   // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
   // Read/log caps sized for several engineers polling one property at once
   // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
@@ -487,6 +503,13 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-manager',
   'callout-sms',
   'callout-revert',
+  // Complaints — Claude service-recovery draft (token cost) + Twilio
+  // assignee-notify / satisfaction-callback nudges (per-message charge).
+  // Fail CLOSED so a Supabase blip can't uncap spend. complaints-log is here
+  // too: it runs a Claude classify on every call (Codex review #6).
+  'complaints-log',
+  'complaints-draft',
+  'complaints-sms',
   // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
   // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
   'engineer-vision',
