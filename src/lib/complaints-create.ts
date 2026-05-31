@@ -137,6 +137,7 @@ export async function createComplaint(input: CreateComplaintInput): Promise<Crea
           severity: severityToWoSeverity(finalSeverity), // legacy enum: low|medium|urgent
           status: 'submitted',
           source: 'manual',
+          submitted_by_name: 'Complaint (auto)', // so the Maintenance tab shows the origin
           notes: `Auto-created from guest complaint ${complaintId}.`,
         })
         .select('id')

@@ -79,11 +79,26 @@ export async function GET(req: NextRequest): Promise<Response> {
       if (!phone) { skippedNoPhone++; continue; }
       const smsRl = await checkAndIncrementRateLimit('complaints-sms', r.property_id);
       if (!smsRl.allowed) { rateLimited++; continue; }
+      // Atomic claim BEFORE sending: stamp callback_nudged_at only if it's
+      // still unset / older than this callback. The conditional update +
+      // .select() means exactly one concurrent cron tick wins the row, so a
+      // second overlapping run can't double-text the manager (Codex review #5).
+      const { data: claimed, error: claimErr } = await supabaseAdmin
+        .from('complaints')
+        .update({ callback_nudged_at: nowIso })
+        .eq('id', r.id)
+        .eq('callback_done', false)
+        .or(`callback_nudged_at.is.null,callback_nudged_at.lt.${r.callback_at}`)
+        .select('id');
+      if (claimErr) {
+        log.warn('[cron/complaint-nudges] callback claim failed', { requestId, id: r.id, err: errToString(claimErr) });
+        continue;
+      }
+      if (!claimed || claimed.length === 0) continue; // another tick already claimed it
       try {
         const who = r.guest_name ? ` (${r.guest_name})` : '';
         const room = r.room_number ? ` Room ${r.room_number}` : '';
         await sendSms(phone, `Staxis: satisfaction callback due —${room}${who}. Please follow up with the guest.`);
-        await supabaseAdmin.from('complaints').update({ callback_nudged_at: nowIso }).eq('id', r.id);
         callbacksSent++;
       } catch (e) {
         log.warn('[cron/complaint-nudges] callback SMS failed', { requestId, id: r.id, err: errToString(e) });
@@ -107,11 +122,23 @@ export async function GET(req: NextRequest): Promise<Response> {
       if (!phone) { skippedNoPhone++; continue; }
       const smsRl = await checkAndIncrementRateLimit('complaints-sms', r.property_id);
       if (!smsRl.allowed) { rateLimited++; continue; }
+      // Atomic claim: stamp escalation_nudged_at only if still null. One tick
+      // wins; overlapping runs can't double-escalate (Codex review #5).
+      const { data: claimed, error: claimErr } = await supabaseAdmin
+        .from('complaints')
+        .update({ escalation_nudged_at: nowIso })
+        .eq('id', r.id)
+        .is('escalation_nudged_at', null)
+        .select('id');
+      if (claimErr) {
+        log.warn('[cron/complaint-nudges] escalation claim failed', { requestId, id: r.id, err: errToString(claimErr) });
+        continue;
+      }
+      if (!claimed || claimed.length === 0) continue; // another tick already claimed it
       try {
         const room = r.room_number ? ` Room ${r.room_number}:` : ':';
         const desc = String(r.description ?? '').slice(0, 120);
         await sendSms(phone, `Staxis: HIGH-severity complaint still unresolved —${room} ${desc}`);
-        await supabaseAdmin.from('complaints').update({ escalation_nudged_at: nowIso }).eq('id', r.id);
         escalationsSent++;
       } catch (e) {
         log.warn('[cron/complaint-nudges] escalation SMS failed', { requestId, id: r.id, err: errToString(e) });

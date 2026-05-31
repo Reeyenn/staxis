@@ -447,7 +447,9 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'callout-revert',
   // Complaints — Claude service-recovery draft (token cost) + Twilio
   // assignee-notify / satisfaction-callback nudges (per-message charge).
-  // Fail CLOSED so a Supabase blip can't uncap spend.
+  // Fail CLOSED so a Supabase blip can't uncap spend. complaints-log is here
+  // too: it runs a Claude classify on every call (Codex review #6).
+  'complaints-log',
   'complaints-draft',
   'complaints-sms',
 ]);

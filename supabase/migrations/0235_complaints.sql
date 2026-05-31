@@ -89,15 +89,18 @@ create trigger complaints_touch
   for each row execute function touch_updated_at();
 
 -- ── RLS ──────────────────────────────────────────────────────────────────
--- Same shape as guest_requests: owner + MFA-verified session for the browser
--- (anon/authenticated) role; service_role bypasses RLS for server writes.
+-- Browser (anon/authenticated) gets READ-ONLY access, gated on owner +
+-- MFA-verified session — enough for the realtime Complaints tab + Dashboard
+-- tile. ALL writes go through /api/complaints/* (service_role, which bypasses
+-- RLS) so the AI classify / auto-route / rate-limit / SMS pipeline always
+-- runs and can't be bypassed by a direct browser write (Codex review #3).
 alter table public.complaints enable row level security;
 
 drop policy if exists "owner rw complaints" on public.complaints;
-create policy "owner rw complaints" on public.complaints
-  for all
-  using (user_owns_property(property_id) and public.mfa_verified_or_grace())
-  with check (user_owns_property(property_id) and public.mfa_verified_or_grace());
+drop policy if exists "owner read complaints" on public.complaints;
+create policy "owner read complaints" on public.complaints
+  for select
+  using (user_owns_property(property_id) and public.mfa_verified_or_grace());
 
 -- ── Realtime ───────────────────────────────────────────────────────────────
 -- Full row image so subscribeTable's payload predicate + refetch works, and

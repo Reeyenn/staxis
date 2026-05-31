@@ -79,19 +79,20 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   try {
     // Cross-tenant guard — fetch the row and confirm it belongs to pid.
+    // Scope the read by BOTH id AND property_id so a complaint from another
+    // hotel is indistinguishable from a nonexistent one — no 403-vs-404
+    // existence oracle (Codex review #12).
     const { data: existing, error: readErr } = await supabaseAdmin
       .from('complaints')
       .select('id, property_id, status, room_number, description')
       .eq('id', complaintId)
+      .eq('property_id', pid)
       .maybeSingle();
     if (readErr) {
       log.error('complaints/update: read failed', { requestId, err: errToString(readErr) });
       return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
     }
     if (!existing) return err('complaint not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
-    if ((existing.property_id as string) !== pid) {
-      return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
-    }
 
     const patch: Record<string, unknown> = {};
     let smsTarget: { assignedTo: string } | null = null;
@@ -100,20 +101,31 @@ export async function POST(req: NextRequest): Promise<Response> {
       if (body.assignedTo != null) {
         const aV = validateUuid(body.assignedTo, 'assignedTo');
         if (aV.error) return err(aV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
-        patch.assigned_to = aV.value;
-        smsTarget = { assignedTo: aV.value! };
+        // The assignee MUST belong to this property, and name/dept are derived
+        // server-side from the staff row — never trusted from the caller — so a
+        // manager can't assign to a foreign-property staff id or spoof the
+        // displayed name (Codex review #4).
+        const { data: staff, error: staffErr } = await supabaseAdmin
+          .from('staff')
+          .select('id, name, department')
+          .eq('id', aV.value!)
+          .eq('property_id', pid)
+          .maybeSingle();
+        if (staffErr) {
+          log.error('complaints/update: staff lookup failed', { requestId, err: errToString(staffErr) });
+          return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
+        }
+        if (!staff) return err('assignee not found on this property', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+        patch.assigned_to = staff.id;
+        patch.assigned_name = (staff.name as string | null) ?? null;
+        // Map the staff department onto a complaint dept when it's one we track.
+        const dept = staff.department as string | null;
+        if (dept && (COMPLAINT_DEPTS as readonly string[]).includes(dept)) patch.assigned_dept = dept;
+        smsTarget = { assignedTo: staff.id };
       } else {
-        patch.assigned_to = null; // explicit unassign
-      }
-      if (body.assignedName != null) {
-        const nV = validateString(body.assignedName, { max: 120, label: 'assignedName', allowEmpty: true });
-        if (nV.error) return err(nV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
-        patch.assigned_name = body.assignedName.trim() || null;
-      }
-      if (body.assignedDept != null && body.assignedDept !== '') {
-        const dV = validateEnum(body.assignedDept, COMPLAINT_DEPTS, 'assignedDept');
-        if (dV.error) return err(dV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
-        patch.assigned_dept = dV.value;
+        // Explicit unassign — clear the snapshot fields too.
+        patch.assigned_to = null;
+        patch.assigned_name = null;
       }
       // Picking up an open complaint moves it into progress.
       if (existing.status === 'open') patch.status = 'in_progress';
@@ -131,7 +143,18 @@ export async function POST(req: NextRequest): Promise<Response> {
         ? new Date().toISOString()
         : null;
     } else if (action === 'schedule_callback') {
-      const ts = Date.parse(body.callbackAt ?? '');
+      // Require an explicit timezone (Z or ±HH:MM). A timezone-less string
+      // would be parsed in the server's local zone and silently schedule the
+      // callback at the wrong wall-clock time (Codex review #7). The UI sends
+      // new Date(...).toISOString() (always Z), so this only rejects raw API
+      // callers that omit the zone.
+      const cbStr = typeof body.callbackAt === 'string' ? body.callbackAt.trim() : '';
+      if (!/(?:Z|[+-]\d{2}:?\d{2})$/.test(cbStr)) {
+        return err('callbackAt must include a timezone (e.g. ...Z or +00:00)', {
+          requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
+        });
+      }
+      const ts = Date.parse(cbStr);
       if (isNaN(ts)) return err('invalid callbackAt', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
       patch.callback_at = new Date(ts).toISOString();
       patch.callback_done = false;

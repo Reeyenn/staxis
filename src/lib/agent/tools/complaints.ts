@@ -53,10 +53,14 @@ registerTool<LogComplaintArgs>({
   voiceModes: ['general'],
   mutates: true,
   handler: async (args: LogComplaintArgs, ctx: ToolContext): Promise<ToolResult> => {
-    const description = (args.description ?? '').trim();
+    // Clamp lengths to match /api/complaints/log's validators so a prompt-
+    // injected / runaway-long string can't be stored or sent to the
+    // classifier unbounded (Codex review #10).
+    const description = (args.description ?? '').trim().slice(0, 2000);
     if (!description) return { ok: false, error: 'Please include what the complaint is about.' };
 
-    const roomNumber = (args.roomNumber ?? ctx.currentRoomNumber ?? '').toString().trim() || null;
+    const roomNumber = (args.roomNumber ?? ctx.currentRoomNumber ?? '').toString().trim().slice(0, 20) || null;
+    const guestName = (args.guestName ?? '').toString().trim().slice(0, 120) || null;
 
     if (ctx.dryRun) {
       return {
@@ -73,7 +77,7 @@ registerTool<LogComplaintArgs>({
         propertyId: ctx.propertyId,
         description,
         roomNumber,
-        guestName: args.guestName ?? null,
+        guestName,
         category: args.category ?? null,
         severity: args.severity ?? null,
         source: ctx.surface === 'voice' ? 'voice' : 'front_desk',
