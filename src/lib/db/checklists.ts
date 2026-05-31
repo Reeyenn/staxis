@@ -26,6 +26,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 
 // ─── Allowed enum values (mirror the CHECK constraints in 0212 / 0222) ──────
 
@@ -172,7 +173,14 @@ export async function getEffectiveCleaningChecklist(
 }
 
 /** Replace a cleaning template's items wholesale. Delete-then-insert so the
- *  (template_id, sort_order) unique index can never collide on a reorder. */
+ *  (template_id, sort_order) unique index can never collide on a reorder.
+ *
+ *  Not wrapped in a DB transaction (supabase-js has no multi-statement tx): an
+ *  INSERT failing after the DELETE would leave the template empty. Accepted
+ *  because (a) this is an admin-only, low-concurrency save, (b) all inputs are
+ *  validated + length-capped + enum-checked upstream so a non-outage INSERT
+ *  failure is effectively impossible, and (c) the editor keeps the full item
+ *  list in client state, so the manager simply re-saves on any error. */
 async function replaceCleaningItems(templateId: string, items: CleaningItemInput[]): Promise<void> {
   const { error: delErr } = await supabaseAdmin
     .from('cleaning_checklist_items')
@@ -195,6 +203,39 @@ async function replaceCleaningItems(templateId: string, items: CleaningItemInput
   if (insErr) throw insErr;
 }
 
+/** Load the per-property override row WITHOUT an is_active filter. The
+ *  (property_id, cleaning_type) unique index covers active + inactive rows, so
+ *  a save must find any existing override to update it rather than insert a
+ *  colliding row. At most one row exists (enforced by the index). */
+async function loadCleaningOverrideRow(
+  propertyId: string,
+  cleaningType: CleaningType,
+): Promise<{ id: string; name_en: string; name_es: string } | null> {
+  const { data, error } = await supabaseAdmin
+    .from('cleaning_checklist_templates')
+    .select('id, name_en, name_es')
+    .eq('property_id', propertyId)
+    .eq('cleaning_type', cleaningType)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as { id: string; name_en: string; name_es: string } | null) ?? null;
+}
+
+/** Load the global default row for name-fallback when creating an override. */
+async function loadCleaningDefaultRow(
+  cleaningType: CleaningType,
+): Promise<{ name_en: string; name_es: string } | null> {
+  const { data, error } = await supabaseAdmin
+    .from('cleaning_checklist_templates')
+    .select('name_en, name_es')
+    .is('property_id', null)
+    .eq('cleaning_type', cleaningType)
+    .eq('is_default', true)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as { name_en: string; name_es: string } | null) ?? null;
+}
+
 export interface SaveCleaningArgs {
   nameEn?: string | null;
   nameEs?: string | null;
@@ -212,14 +253,15 @@ export async function saveCleaningOverride(
   cleaningType: CleaningType,
   args: SaveCleaningArgs,
 ): Promise<EffectiveCleaningChecklist> {
-  const { override, def } = await loadCleaningTemplates(propertyId, cleaningType);
+  const overrideRow = await loadCleaningOverrideRow(propertyId, cleaningType);
+  const defRow = overrideRow ? null : await loadCleaningDefaultRow(cleaningType);
 
-  const nameEn = (args.nameEn ?? '').trim() || override?.name_en || def?.name_en || cleaningType;
-  const nameEs = (args.nameEs ?? '').trim() || override?.name_es || def?.name_es || cleaningType;
+  const nameEn = (args.nameEn ?? '').trim() || overrideRow?.name_en || defRow?.name_en || cleaningType;
+  const nameEs = (args.nameEs ?? '').trim() || overrideRow?.name_es || defRow?.name_es || cleaningType;
 
   let templateId: string;
-  if (override) {
-    templateId = override.id;
+  if (overrideRow) {
+    templateId = overrideRow.id;
     const { error } = await supabaseAdmin
       .from('cleaning_checklist_templates')
       .update({ name_en: nameEn, name_es: nameEs, is_active: true, updated_at: new Date().toISOString() })
@@ -291,6 +333,10 @@ export interface EffectiveInspectionChecklist {
   isOverride: boolean;
   /** True when a global Staxis default inspection checklist exists. */
   hasDefault: boolean;
+  /** Count of ADDITIONAL active per-property checklists this property has beyond
+   *  the one shown. The editor manages the most-recent; >0 means others exist
+   *  (the selector may still pick them at inspection time) — surfaced as a notice. */
+  otherCount: number;
   items: InspectionItemDTO[];
 }
 
@@ -337,20 +383,18 @@ async function loadInspectionItems(checklistId: string): Promise<InspectionItemD
   return ((data ?? []) as InspectionItemRow[]).map(toInspectionItemDTO);
 }
 
-/** Most-recently-updated active per-property inspection checklist for a
- *  property, or null. This is the row the editor treats as "the property's
- *  checklist". */
-async function loadPropertyInspectionChecklist(propertyId: string): Promise<InspectionChecklistRow | null> {
+/** All active per-property inspection checklists for a property, newest first.
+ *  The editor manages the most-recent (index 0); any others are surfaced via
+ *  otherCount so the manager knows more exist and which the selector may pick. */
+async function loadPropertyInspectionChecklists(propertyId: string): Promise<InspectionChecklistRow[]> {
   const { data, error } = await supabaseAdmin
     .from('inspection_checklists')
     .select('id, property_id, name, applies_to_cleaning_types, applies_to_room_types, is_active, version, updated_at')
     .eq('property_id', propertyId)
     .eq('is_active', true)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order('updated_at', { ascending: false });
   if (error) throw error;
-  return (data as InspectionChecklistRow | null) ?? null;
+  return (data ?? []) as InspectionChecklistRow[];
 }
 
 /** Most-recently-updated active global default inspection checklist, or null. */
@@ -372,6 +416,7 @@ function toEffectiveInspection(
   items: InspectionItemDTO[],
   isOverride: boolean,
   hasDefault: boolean,
+  otherCount: number,
 ): EffectiveInspectionChecklist {
   return {
     checklistId: row.id,
@@ -380,6 +425,7 @@ function toEffectiveInspection(
     appliesToRoomTypes: row.applies_to_room_types ?? [],
     isOverride,
     hasDefault,
+    otherCount,
     items,
   };
 }
@@ -392,10 +438,11 @@ function toEffectiveInspection(
 export async function getEffectiveInspectionChecklist(
   propertyId: string,
 ): Promise<EffectiveInspectionChecklist> {
-  const [propRow, defRow] = await Promise.all([
-    loadPropertyInspectionChecklist(propertyId),
+  const [propRows, defRow] = await Promise.all([
+    loadPropertyInspectionChecklists(propertyId),
     loadDefaultInspectionChecklist(),
   ]);
+  const propRow = propRows[0] ?? null;
   const chosen = propRow ?? defRow;
   if (!chosen) {
     return {
@@ -405,14 +452,19 @@ export async function getEffectiveInspectionChecklist(
       appliesToRoomTypes: [],
       isOverride: false,
       hasDefault: false,
+      otherCount: 0,
       items: [],
     };
   }
   const items = await loadInspectionItems(chosen.id);
-  return toEffectiveInspection(chosen, items, Boolean(propRow), Boolean(defRow));
+  const otherCount = propRow ? Math.max(0, propRows.length - 1) : 0;
+  return toEffectiveInspection(chosen, items, Boolean(propRow), Boolean(defRow), otherCount);
 }
 
-/** Replace an inspection checklist's items wholesale (delete-then-insert). */
+/** Replace an inspection checklist's items wholesale (delete-then-insert). Same
+ *  non-transactional trade-off as replaceCleaningItems — admin-only, validated
+ *  inputs, client retains state for retry — so the brief failure window is
+ *  acceptable. */
 async function replaceInspectionItems(checklistId: string, items: InspectionItemInput[]): Promise<void> {
   const { error: delErr } = await supabaseAdmin
     .from('inspection_checklist_items')
@@ -439,11 +491,14 @@ async function replaceInspectionItems(checklistId: string, items: InspectionItem
 /** Find an existing per-property checklist by (property_id, name). Identity for
  *  idempotent saves + copies. Returns the row id or null. */
 async function findPropertyInspectionByName(propertyId: string, name: string): Promise<string | null> {
+  // order + limit(1) keeps this deterministic and safe even if a pre-0247 DB
+  // somehow holds two same-name rows (maybeSingle would otherwise throw).
   const { data, error } = await supabaseAdmin
     .from('inspection_checklists')
     .select('id')
     .eq('property_id', propertyId)
     .eq('name', name)
+    .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) throw error;
@@ -472,10 +527,15 @@ export async function saveInspectionChecklist(
   args: SaveInspectionArgs,
 ): Promise<EffectiveInspectionChecklist> {
   const name = args.name.trim();
-  const appliesCleaning = dedupeStrings(args.appliesToCleaningTypes);
-  const appliesRoom = dedupeStrings(args.appliesToRoomTypes);
+  const fields = {
+    name,
+    applies_to_cleaning_types: dedupeStrings(args.appliesToCleaningTypes),
+    applies_to_room_types: dedupeStrings(args.appliesToRoomTypes),
+    is_active: true,
+    updated_at: new Date().toISOString(),
+  };
 
-  // Resolve the target per-property row id.
+  // Resolve the target per-property row id (never a global default).
   let targetId: string | null = null;
   if (args.checklistId) {
     const { data, error } = await supabaseAdmin
@@ -492,31 +552,38 @@ export async function saveInspectionChecklist(
   if (targetId) {
     const { error } = await supabaseAdmin
       .from('inspection_checklists')
-      .update({
-        name,
-        applies_to_cleaning_types: appliesCleaning,
-        applies_to_room_types: appliesRoom,
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      })
+      .update(fields)
       .eq('id', targetId)
       .eq('property_id', propertyId); // guard: never the global default
     if (error) throw error;
   } else {
-    const { data, error } = await supabaseAdmin
+    const ins = await supabaseAdmin
       .from('inspection_checklists')
-      .insert({
-        property_id: propertyId,
-        name,
-        applies_to_cleaning_types: appliesCleaning,
-        applies_to_room_types: appliesRoom,
-        is_active: true,
-        version: 1,
-      })
+      .insert({ property_id: propertyId, version: 1, ...fields })
       .select('id')
       .single();
-    if (error || !data) throw error ?? new Error('inspection checklist insert returned no row');
-    targetId = (data as { id: string }).id;
+    if (ins.error) {
+      // The 0247 unique index (property_id, name) can fire if a same-name row
+      // was created concurrently. Re-resolve by name and update instead of
+      // failing the save — keeps the save idempotent under the index.
+      if ((ins.error as { code?: string }).code === '23505') {
+        const existing = await findPropertyInspectionByName(propertyId, name);
+        if (!existing) throw ins.error;
+        targetId = existing;
+        const { error: updErr } = await supabaseAdmin
+          .from('inspection_checklists')
+          .update(fields)
+          .eq('id', targetId)
+          .eq('property_id', propertyId);
+        if (updErr) throw updErr;
+      } else {
+        throw ins.error;
+      }
+    } else if (!ins.data) {
+      throw new Error('inspection checklist insert returned no row');
+    } else {
+      targetId = (ins.data as { id: string }).id;
+    }
   }
 
   await replaceInspectionItems(targetId, args.items);
@@ -584,7 +651,8 @@ export async function copyCleaningToProperties(
       });
       outcomes.push({ propertyId: targetId, ok: true });
     } catch (e) {
-      outcomes.push({ propertyId: targetId, ok: false, error: e instanceof Error ? e.message : String(e) });
+      log.error('copyCleaningToProperties: target failed', { targetId, error: e instanceof Error ? e.message : String(e) });
+      outcomes.push({ propertyId: targetId, ok: false, error: 'Could not copy to this property.' });
     }
   }
   return outcomes;
@@ -606,6 +674,7 @@ export async function loadInspectionSource(
     .from('inspection_checklists')
     .select('id, property_id, name, applies_to_cleaning_types, applies_to_room_types')
     .eq('id', checklistId)
+    .eq('is_active', true) // don't copy a retired/inactive checklist
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
@@ -663,7 +732,8 @@ export async function copyInspectionToProperties(
       });
       outcomes.push({ propertyId: targetId, ok: true });
     } catch (e) {
-      outcomes.push({ propertyId: targetId, ok: false, error: e instanceof Error ? e.message : String(e) });
+      log.error('copyInspectionToProperties: target failed', { targetId, error: e instanceof Error ? e.message : String(e) });
+      outcomes.push({ propertyId: targetId, ok: false, error: 'Could not copy to this property.' });
     }
   }
   return { outcomes, sourcePropertyId };
