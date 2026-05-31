@@ -134,10 +134,14 @@ function parseCleaningItems(raw: unknown): { error?: string; items?: CleaningIte
     if (enV.error) return { error: enV.error };
     const esV = validateString(it.itemEs, { label: `items[${i}].itemEs`, max: MAX_ITEM_TEXT_LEN });
     if (esV.error) return { error: esV.error };
+    const itemEn = enV.value!.trim();
+    const itemEs = esV.value!.trim();
+    if (!itemEn) return { error: `items[${i}].itemEn cannot be blank` };
+    if (!itemEs) return { error: `items[${i}].itemEs cannot be blank` };
     items.push({
       area: areaV.value!,
-      itemEn: enV.value!.trim(),
-      itemEs: esV.value!.trim(),
+      itemEn,
+      itemEs,
       isCritical: it.isCritical === true,
     });
   }

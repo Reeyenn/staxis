@@ -72,6 +72,7 @@ export async function PUT(req: NextRequest) {
 
     const nameV = validateString(body.name, { label: 'name', max: MAX_NAME_LEN });
     if (nameV.error) return err(nameV.error, { requestId, status: 400, code: 'validation_failed' });
+    if (!nameV.value!.trim()) return err('name cannot be blank', { requestId, status: 400, code: 'validation_failed' });
 
     // checklistId optional — the per-property row being edited (from GET).
     let checklistId: string | null = null;
@@ -166,10 +167,14 @@ function parseInspectionItems(raw: unknown): { error?: string; items?: Inspectio
     if (labelEsV.error) return { error: labelEsV.error };
     const sevV = validateEnum(it.severityDefault, INSPECTION_SEVERITIES, `items[${i}].severityDefault`);
     if (sevV.error) return { error: sevV.error };
+    const label = labelV.value!.trim();
+    const labelEs = labelEsV.value!.trim();
+    if (!label) return { error: `items[${i}].label cannot be blank` };
+    if (!labelEs) return { error: `items[${i}].labelEs cannot be blank` };
     items.push({
       category: catV.value!,
-      label: labelV.value!.trim(),
-      labelEs: labelEsV.value!.trim(),
+      label,
+      labelEs,
       severityDefault: sevV.value!,
       requiresPhotoOnFail: it.requiresPhotoOnFail === true,
     });
