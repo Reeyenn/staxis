@@ -1,5 +1,5 @@
 -- ════════════════════════════════════════════════════════════════════════
--- 0237_communications.sql — Built-in staff messaging ("Communications")
+-- 0241_communications.sql — Built-in staff messaging ("Communications")
 -- ════════════════════════════════════════════════════════════════════════
 -- A hotel-owned team-chat replacing WhatsApp/consumer apps:
 --   • 1:1 direct messages + department channels + announcements
@@ -183,5 +183,5 @@ notify pgrst, 'reload schema';
 -- Self-register so the doctor's applied-migrations check + the
 -- migration-bookkeeping drift test see this version.
 insert into public.applied_migrations (version, description)
-values ('0239', 'communications: built-in staff messaging (DMs / department channels / announcements), read receipts, photo+voice attachments, shift hand-offs, to-do list, app-wide 5-language switcher + per-message auto-translate, @Staxis in-chat assistant, message->action, what-did-I-miss, voice transcription. NO SMS. comms_* tables are service-role-only.')
+values ('0241', 'communications: built-in staff messaging (DMs / department channels / announcements), read receipts, photo+voice attachments, shift hand-offs, to-do list, app-wide 5-language switcher + per-message auto-translate, @Staxis in-chat assistant, message->action, what-did-I-miss, voice transcription. NO SMS. comms_* tables are service-role-only.')
 on conflict (version) do nothing;
