@@ -14,7 +14,8 @@ import { t, type HousekeeperLocale } from '@/lib/translations';
 interface Props {
   pid: string;
   staffId: string;
-  roomId: string;
+  /** Room number (descriptive context for the found item). */
+  roomNumber: string;
   lang: HousekeeperLocale;
   enqueueIfOffline: (opts: {
     endpoint: string;
@@ -24,7 +25,7 @@ interface Props {
   onError: (msg: string) => void;
 }
 
-export function ReportFoundItemButton({ pid, staffId, roomId, lang, enqueueIfOffline, onError }: Props) {
+export function ReportFoundItemButton({ pid, staffId, roomNumber, lang, enqueueIfOffline, onError }: Props) {
   const [open, setOpen] = useState(false);
   const [desc, setDesc] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -80,8 +81,8 @@ export function ReportFoundItemButton({ pid, staffId, roomId, lang, enqueueIfOff
 
       const res = await enqueueIfOffline({
         endpoint: '/api/housekeeper/report-found-item',
-        body: { pid, staffId, roomId, itemDescription: desc.trim(), ...(photoPath ? { photoPath } : {}) },
-        label: `Found · room ${roomId}`,
+        body: { pid, staffId, roomNumber, itemDescription: desc.trim(), ...(photoPath ? { photoPath } : {}) },
+        label: `Found · room ${roomNumber}`,
       });
       if (!res.ok && !res.queued) {
         onError(t('hkFoundItemError', lang));

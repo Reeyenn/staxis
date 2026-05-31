@@ -2,10 +2,16 @@
  * POST /api/housekeeper/report-found-item
  *
  * A housekeeper logs a found item from their room card. Mirrors
- * /api/housekeeper/add-note: gateHousekeeperRequest capability check,
- * offline-replay idempotency (actionId), audit-log row. Writes a 'found' row
- * into lost_and_found_items (the app-side L&F table), room auto-filled from the
- * job card.
+ * /api/housekeeper/add-note for auth + idempotency + audit, but writes a
+ * 'found' row into lost_and_found_items (the app-side L&F table).
+ *
+ * Unlike add-note (which mutates the rooms row and therefore needs a real
+ * rooms.id), a found item is keyed to property + room NUMBER — it doesn't
+ * touch the rooms table. The housekeeper list runs on Plan-v4 derived rooms
+ * whose id is a synthetic `date:number` string, so we take the room number as
+ * descriptive context (capability is already proven by gateHousekeeperRequest:
+ * the staff member belongs to the property). This is the same "room is
+ * optional context" model the front-desk log flow uses.
  */
 
 import type { NextRequest } from 'next/server';
@@ -14,7 +20,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateString, validateEnum } from '@/lib/api-validate';
-import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
 import { createItem } from '@/lib/lost-and-found/store';
 import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
 
@@ -25,7 +31,8 @@ export const maxDuration = 10;
 interface Body {
   pid?: string;
   staffId?: string;
-  roomId?: string;
+  /** Room number (descriptive context). The page auto-fills it from the card. */
+  roomNumber?: string;
   itemDescription?: string;
   category?: string | null;
   photoPath?: string | null;
@@ -37,15 +44,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!gate.ok) return gate.response;
   const body = gate.body;
 
-  if (!body.roomId) {
-    return err('missing roomId', {
-      requestId: gate.requestId,
-      status: 400,
-      code: ApiErrorCode.ValidationFailed,
-      headers: gate.headers,
-    });
-  }
-
   const descV = validateString(body.itemDescription, { max: 500, label: 'itemDescription' });
   if (descV.error) {
     return err(descV.error, {
@@ -54,6 +52,25 @@ export async function POST(req: NextRequest): Promise<Response> {
       code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
+  }
+
+  // Room number is optional context, capped. Tolerates the Plan-v4 synthetic
+  // "date:number" id by taking the trailing number if a colon is present.
+  let roomNumber: string | null = null;
+  if (typeof body.roomNumber === 'string' && body.roomNumber.trim()) {
+    const raw = body.roomNumber.includes(':')
+      ? body.roomNumber.split(':').pop()!.trim()
+      : body.roomNumber.trim();
+    const roomV = validateString(raw, { max: 20, label: 'roomNumber' });
+    if (roomV.error) {
+      return err(roomV.error, {
+        requestId: gate.requestId,
+        status: 400,
+        code: ApiErrorCode.ValidationFailed,
+        headers: gate.headers,
+      });
+    }
+    roomNumber = roomV.value!;
   }
 
   let category: string | null = null;
@@ -111,24 +128,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
-  // Confirm the room belongs to this property + staff, and grab its number.
-  const roomR = await loadRoomForStaff({
-    pid: gate.pid,
-    staffId: gate.staffId,
-    roomId: body.roomId,
-    requestId: gate.requestId,
-    headers: gate.headers,
-  });
-  if (!roomR.ok) return roomR.response;
-  const room = roomR.room;
-
   try {
     const created = await createItem(gate.pid, {
       type: 'found',
       itemDescription: descV.value!,
       category,
-      roomNumber: room.number,
-      location: room.number ? `Room ${room.number}` : null,
+      roomNumber,
+      location: roomNumber ? `Room ${roomNumber}` : null,
       photoPath,
       foundBy: gate.staffName,
       foundByStaffId: gate.staffId,
@@ -145,13 +151,13 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     // Audit log (non-fatal).
     try {
-      const today = room.date ?? new Date().toISOString().slice(0, 10);
+      const today = new Date().toISOString().slice(0, 10);
       await supabaseAdmin.from('housekeeper_audit_log').insert({
         property_id: gate.pid,
         staff_id: gate.staffId,
         business_date: today,
-        room_id: body.roomId,
-        room_number: room.number,
+        room_id: null,
+        room_number: roomNumber,
         event_type: 'report_found_item',
         payload: { itemId: created.id, description: descV.value, category, hasPhoto: !!photoPath },
       });

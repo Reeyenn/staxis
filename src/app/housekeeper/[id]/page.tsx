@@ -1206,7 +1206,7 @@ export default function HousekeeperRoomPage({
                           <ReportFoundItemButton
                             pid={pid}
                             staffId={housekeeperId}
-                            roomId={room.id}
+                            roomNumber={room.number}
                             lang={lang}
                             enqueueIfOffline={offline.enqueueIfOffline}
                             onError={showActionError}
