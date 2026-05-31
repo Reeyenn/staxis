@@ -23,11 +23,14 @@ import {
   type CapexProject,
   type CapexLineItem,
   type CapexStatus,
+  type RequestType,
+  type CapexCategory,
   type ExpenseSource,
   type BudgetVsActual,
   type FinanceSummary,
   budgetStatus,
   pctUsed,
+  capexEstimateCents,
   monthStartISO,
   nextMonthStartISO,
 } from './shared';
@@ -92,10 +95,21 @@ function mapProject(r: Row): CapexProject {
     name: r.name as string,
     description: str(r.description),
     quoteCents: num(r.quote_cents),
-    status: (r.status as CapexStatus) ?? 'planned',
+    estimatedCostCents: num(r.estimated_cost_cents),
+    requestType: (r.request_type as RequestType) ?? 'budgeted',
+    category: (r.category as CapexCategory | null) ?? null,
+    status: (r.status as CapexStatus) ?? 'requested',
+    pctComplete: num(r.pct_complete),
     vendor: str(r.vendor),
     startDate: str(r.start_date),
     targetDate: str(r.target_date),
+    submittedByName: str(r.submitted_by_name),
+    approvedBy: str(r.approved_by),
+    approvedByName: str(r.approved_by_name),
+    approvedAt: str(r.approved_at),
+    decidedAt: str(r.decided_at),
+    decisionNotes: str(r.decision_notes),
+    attachmentPath: str(r.attachment_path),
     createdByName: str(r.created_by_name),
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
@@ -361,6 +375,21 @@ export async function budgetVsActual(pid: string, month: string): Promise<Budget
 // CAPEX (capex_projects + capex_line_items)
 // ════════════════════════════════════════════════════════════════════════════
 
+/** Attach spentCents (sum of line items) to a list of same-property projects. */
+async function attachSpent(pid: string, projects: CapexProject[]): Promise<void> {
+  if (projects.length === 0) return;
+  const { data: lines } = await supabaseAdmin
+    .from('capex_line_items')
+    .select('capex_project_id, amount_cents')
+    .eq('property_id', pid);
+  const spentByProject = new Map<string, number>();
+  for (const l of lines ?? []) {
+    const k = (l as Row).capex_project_id as string;
+    spentByProject.set(k, (spentByProject.get(k) ?? 0) + num((l as Row).amount_cents));
+  }
+  for (const p of projects) p.spentCents = spentByProject.get(p.id) ?? 0;
+}
+
 export async function listCapexProjects(pid: string): Promise<CapexProject[]> {
   const { data, error } = await supabaseAdmin
     .from('capex_projects')
@@ -372,20 +401,123 @@ export async function listCapexProjects(pid: string): Promise<CapexProject[]> {
     throw new Error('listCapexProjects failed');
   }
   const projects = (data ?? []).map(mapProject);
-  if (projects.length === 0) return projects;
-
-  // Roll up spent-to-date per project from line items (property-scoped).
-  const { data: lines } = await supabaseAdmin
-    .from('capex_line_items')
-    .select('capex_project_id, amount_cents')
-    .eq('property_id', pid);
-  const spentByProject = new Map<string, number>();
-  for (const l of lines ?? []) {
-    const pidKey = (l as Row).capex_project_id as string;
-    spentByProject.set(pidKey, (spentByProject.get(pidKey) ?? 0) + num((l as Row).amount_cents));
-  }
-  for (const p of projects) p.spentCents = spentByProject.get(p.id) ?? 0;
+  await attachSpent(pid, projects);
   return projects;
+}
+
+/** Capex projects filtered to a set of statuses (for the Pending/Active/Closed views). */
+export async function listCapexByStatus(pid: string, statuses: readonly CapexStatus[]): Promise<CapexProject[]> {
+  const { data, error } = await supabaseAdmin
+    .from('capex_projects')
+    .select('*')
+    .eq('property_id', pid)
+    .in('status', statuses as string[])
+    .order('created_at', { ascending: false });
+  if (error) {
+    log.error('[financials/db] listCapexByStatus failed', { pid, err: new Error(error.message) });
+    throw new Error('listCapexByStatus failed');
+  }
+  const projects = (data ?? []).map(mapProject);
+  await attachSpent(pid, projects);
+  return projects;
+}
+
+export interface CapexForecastMonth {
+  month: string; // YYYY-MM
+  estimatedCents: number;
+  spentCents: number;
+  remainingCents: number; // max(0, estimate - spent)
+  projects: number;
+}
+
+/** Upcoming capital spend by target month (approved + in-progress projects). */
+export async function capexForecastByMonth(pid: string): Promise<CapexForecastMonth[]> {
+  const active = await listCapexByStatus(pid, ['approved', 'in_progress']);
+  const byMonth = new Map<string, { estimate: number; spent: number; count: number }>();
+  for (const p of active) {
+    if (!p.targetDate) continue;
+    const m = p.targetDate.slice(0, 7); // YYYY-MM
+    const cur = byMonth.get(m) ?? { estimate: 0, spent: 0, count: 0 };
+    cur.estimate += capexEstimateCents(p);
+    cur.spent += p.spentCents ?? 0;
+    cur.count += 1;
+    byMonth.set(m, cur);
+  }
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, v]) => ({
+      month,
+      estimatedCents: v.estimate,
+      spentCents: v.spent,
+      remainingCents: Math.max(0, v.estimate - v.spent),
+      projects: v.count,
+    }));
+}
+
+export interface CapexRollupRow {
+  propertyId: string;
+  propertyName: string | null;
+  projects: number;
+  pending: number;
+  active: number;
+  estimatedCents: number;
+  spentCents: number;
+}
+export interface CapexRollup {
+  properties: CapexRollupRow[];
+  totals: { projects: number; pending: number; active: number; estimatedCents: number; spentCents: number };
+}
+
+/**
+ * Multi-property CapEx rollup for an owner. propertyIds is resolved by the
+ * caller's gate (requireFinanceRollup) from their own property_access — a caller
+ * can never roll up a hotel they don't own.
+ */
+export async function capexRollup(propertyIds: string[]): Promise<CapexRollup> {
+  const empty = { properties: [], totals: { projects: 0, pending: 0, active: 0, estimatedCents: 0, spentCents: 0 } };
+  if (propertyIds.length === 0) return empty;
+  const [{ data: projects }, { data: lines }, { data: props }] = await Promise.all([
+    supabaseAdmin.from('capex_projects').select('property_id, status, estimated_cost_cents, quote_cents').in('property_id', propertyIds),
+    supabaseAdmin.from('capex_line_items').select('property_id, amount_cents').in('property_id', propertyIds),
+    supabaseAdmin.from('properties').select('id, name').in('id', propertyIds),
+  ]);
+  const nameById = new Map((props ?? []).map((p) => [(p as Row).id as string, (p as Row).name as string | null]));
+  const spentByProp = new Map<string, number>();
+  for (const l of lines ?? []) {
+    const k = (l as Row).property_id as string;
+    spentByProp.set(k, (spentByProp.get(k) ?? 0) + num((l as Row).amount_cents));
+  }
+  const agg = new Map<string, { projects: number; pending: number; active: number; estimate: number }>();
+  for (const pr of projects ?? []) {
+    const k = (pr as Row).property_id as string;
+    const a = agg.get(k) ?? { projects: 0, pending: 0, active: 0, estimate: 0 };
+    a.projects += 1;
+    const status = (pr as Row).status as CapexStatus;
+    if (status === 'requested' || status === 'revisions_needed') a.pending += 1;
+    if (status === 'approved' || status === 'in_progress') a.active += 1;
+    a.estimate += num((pr as Row).estimated_cost_cents) || num((pr as Row).quote_cents);
+    agg.set(k, a);
+  }
+  const rows: CapexRollupRow[] = [...agg.entries()].map(([pid, a]) => ({
+    propertyId: pid,
+    propertyName: nameById.get(pid) ?? null,
+    projects: a.projects,
+    pending: a.pending,
+    active: a.active,
+    estimatedCents: a.estimate,
+    spentCents: spentByProp.get(pid) ?? 0,
+  }));
+  const totals = rows.reduce(
+    (t, r) => ({
+      projects: t.projects + r.projects,
+      pending: t.pending + r.pending,
+      active: t.active + r.active,
+      estimatedCents: t.estimatedCents + r.estimatedCents,
+      spentCents: t.spentCents + r.spentCents,
+    }),
+    { projects: 0, pending: 0, active: 0, estimatedCents: 0, spentCents: 0 },
+  );
+  return { properties: rows, totals };
 }
 
 export async function getCapexProject(pid: string, id: string): Promise<CapexProject | null> {
@@ -416,17 +548,21 @@ export async function getCapexProject(pid: string, id: string): Promise<CapexPro
 export interface NewCapexProject {
   name: string;
   description?: string | null;
+  estimatedCostCents?: number;
   quoteCents?: number;
-  status?: CapexStatus;
+  requestType?: RequestType;
+  category?: CapexCategory | null;
   vendor?: string | null;
   startDate?: string | null;
   targetDate?: string | null;
+  attachmentPath?: string | null;
 }
 
+/** Submit a capital REQUEST. Always starts in 'requested' status. */
 export async function createCapexProject(
   pid: string,
-  createdBy: string | null,
-  createdByName: string | null,
+  submittedBy: string | null,
+  submittedByName: string | null,
   p: NewCapexProject,
 ): Promise<CapexProject> {
   const { data, error } = await supabaseAdmin
@@ -435,13 +571,19 @@ export async function createCapexProject(
       property_id: pid,
       name: p.name,
       description: p.description ?? null,
+      estimated_cost_cents: Math.max(0, Math.round(p.estimatedCostCents ?? 0)),
       quote_cents: Math.max(0, Math.round(p.quoteCents ?? 0)),
-      status: p.status ?? 'planned',
+      request_type: p.requestType ?? 'budgeted',
+      category: p.category ?? null,
+      status: 'requested',
       vendor: p.vendor ?? null,
       start_date: p.startDate ?? null,
       target_date: p.targetDate ?? null,
-      created_by: createdBy,
-      created_by_name: createdByName,
+      attachment_path: p.attachmentPath ?? null,
+      submitted_by: submittedBy,
+      submitted_by_name: submittedByName,
+      created_by: submittedBy,
+      created_by_name: submittedByName,
     })
     .select('*')
     .single();
@@ -455,16 +597,104 @@ export async function createCapexProject(
   return project;
 }
 
+/**
+ * Approve / reject / request revisions on a capital request. Records the
+ * decider (approved_by + name + approved_at) and decision notes. Only callable
+ * from a route that has already passed the owner/GM/admin finance gate.
+ * Property-scoped, so a forged id from another hotel matches nothing.
+ */
+export async function decideCapex(
+  pid: string,
+  id: string,
+  action: 'approve' | 'reject' | 'revisions',
+  deciderId: string | null,
+  deciderName: string | null,
+  notes: string | null,
+): Promise<CapexProject | null> {
+  const nowIso = new Date().toISOString();
+  const status: CapexStatus =
+    action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'revisions_needed';
+  const upd: Row = {
+    status,
+    decided_at: nowIso,
+    decision_notes: notes,
+    // approved_by / approved_at only meaningful on approval; record the decider
+    // either way so the binder shows who actioned it.
+    approved_by: deciderId,
+    approved_by_name: deciderName,
+    approved_at: action === 'approve' ? nowIso : null,
+  };
+  const { data, error } = await supabaseAdmin
+    .from('capex_projects')
+    .update(upd)
+    .eq('property_id', pid)
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    log.error('[financials/db] decideCapex failed', { pid, err: new Error(error.message) });
+    throw new Error('decideCapex failed');
+  }
+  if (!data) return null;
+  return getCapexProject(pid, id);
+}
+
+/** Move an approved project's progress: status (in_progress/completed) + % complete. */
+export async function updateCapexProgress(
+  pid: string,
+  id: string,
+  patch: { status?: CapexStatus; pctComplete?: number },
+): Promise<CapexProject | null> {
+  const upd: Row = {};
+  if (patch.status !== undefined) upd.status = patch.status;
+  if (patch.pctComplete !== undefined) {
+    upd.pct_complete = Math.max(0, Math.min(100, Math.round(patch.pctComplete)));
+  }
+  if (Object.keys(upd).length === 0) return getCapexProject(pid, id);
+  const { data, error } = await supabaseAdmin
+    .from('capex_projects')
+    .update(upd)
+    .eq('property_id', pid)
+    .eq('id', id)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    log.error('[financials/db] updateCapexProgress failed', { pid, err: new Error(error.message) });
+    throw new Error('updateCapexProgress failed');
+  }
+  if (!data) return null;
+  return getCapexProject(pid, id);
+}
+
+export async function setCapexAttachment(pid: string, id: string, path: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from('capex_projects')
+    .update({ attachment_path: path })
+    .eq('property_id', pid)
+    .eq('id', id)
+    .select('id');
+  if (error) {
+    log.error('[financials/db] setCapexAttachment failed', { pid, err: new Error(error.message) });
+    return false;
+  }
+  return (data ?? []).length > 0;
+}
+
 export interface CapexPatch {
   name?: string;
   description?: string | null;
+  estimatedCostCents?: number;
   quoteCents?: number;
-  status?: CapexStatus;
+  requestType?: RequestType;
+  category?: CapexCategory | null;
   vendor?: string | null;
   startDate?: string | null;
   targetDate?: string | null;
 }
 
+// NOTE: status is NOT editable here — status transitions go through decideCapex
+// (approve/reject/revisions, records the approver) and updateCapexProgress
+// (in-progress/completed). That keeps the approval audit trail un-bypassable.
 export async function updateCapexProject(
   pid: string,
   id: string,
@@ -473,8 +703,10 @@ export async function updateCapexProject(
   const upd: Row = {};
   if (patch.name !== undefined) upd.name = patch.name;
   if (patch.description !== undefined) upd.description = patch.description;
+  if (patch.estimatedCostCents !== undefined) upd.estimated_cost_cents = Math.max(0, Math.round(patch.estimatedCostCents));
   if (patch.quoteCents !== undefined) upd.quote_cents = Math.max(0, Math.round(patch.quoteCents));
-  if (patch.status !== undefined) upd.status = patch.status;
+  if (patch.requestType !== undefined) upd.request_type = patch.requestType;
+  if (patch.category !== undefined) upd.category = patch.category;
   if (patch.vendor !== undefined) upd.vendor = patch.vendor;
   if (patch.startDate !== undefined) upd.start_date = patch.startDate;
   if (patch.targetDate !== undefined) upd.target_date = patch.targetDate;

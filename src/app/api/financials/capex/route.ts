@@ -16,7 +16,7 @@ import type { NextRequest } from 'next/server';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { ok, err } from '@/lib/api-response';
 import { validateString, validateInt } from '@/lib/api-validate';
-import { isCapexStatus, parseDollarsToCents } from '@/lib/financials/shared';
+import { isRequestType, isCapexCategory, parseDollarsToCents } from '@/lib/financials/shared';
 import {
   listCapexProjects,
   getCapexProject,
@@ -66,26 +66,38 @@ export async function POST(req: NextRequest): Promise<Response> {
   const nameCheck = validateString(body.name, { max: 200, label: 'name' });
   if (nameCheck.error || !nameCheck.value) return err('name is required', { requestId: gate.requestId, status: 400, code: 'invalid_name' });
 
-  // Quote is optional (absent → 0), but if a value WAS supplied it must be a
-  // valid non-negative number — don't silently coerce a bad quote to $0
-  // (Codex review V4). Mirrors the PATCH validation path.
+  // estimated cost (the request estimate; overrun is measured against it) and
+  // the scanned-quote figure are both optional, but a present value must be a
+  // valid non-negative number — never silently coerce bad money to $0.
+  let estimatedCostCents = 0;
+  if (body.estimatedCostCents !== undefined || body.estimatedCostDollars !== undefined) {
+    const c = readCents(body, 'estimatedCostCents', 'estimatedCostDollars');
+    if (c == null || c < 0) return err('estimated cost must be a non-negative number', { requestId: gate.requestId, status: 400, code: 'invalid_amount' });
+    estimatedCostCents = c;
+  }
   let quoteCents = 0;
   if (body.quoteCents !== undefined || body.quoteDollars !== undefined) {
     const c = readCents(body, 'quoteCents', 'quoteDollars');
     if (c == null || c < 0) return err('quote must be a non-negative number', { requestId: gate.requestId, status: 400, code: 'invalid_amount' });
     quoteCents = c;
   }
-  const status = isCapexStatus(body.status) ? body.status : 'planned';
+  const requestType = isRequestType(body.requestType) ? body.requestType : 'budgeted';
+  const category = isCapexCategory(body.category) ? body.category : null;
 
   try {
-    const project = await createCapexProject(gate.pid, gate.accountId, null, {
+    // Always submitted as a 'requested' capital request; the submitter is the
+    // gated caller (name snapshotted for the binder).
+    const project = await createCapexProject(gate.pid, gate.accountId, gate.name, {
       name: nameCheck.value,
       description: optStr(body.description, 2000),
+      estimatedCostCents,
       quoteCents,
-      status,
+      requestType,
+      category,
       vendor: optStr(body.vendor, 200),
       startDate: ymdOrNull(body.startDate),
       targetDate: ymdOrNull(body.targetDate),
+      attachmentPath: optStr(body.attachmentPath, 500),
     });
     return ok({ project }, { requestId: gate.requestId });
   } catch {
@@ -108,15 +120,25 @@ export async function PATCH(req: NextRequest): Promise<Response> {
     patch.name = n.value;
   }
   if (body.description !== undefined) patch.description = optStr(body.description, 2000);
+  if (body.estimatedCostCents !== undefined || body.estimatedCostDollars !== undefined) {
+    const c = readCents(body, 'estimatedCostCents', 'estimatedCostDollars');
+    if (c == null || c < 0) return err('estimated cost must be a non-negative number', { requestId: gate.requestId, status: 400, code: 'invalid_amount' });
+    patch.estimatedCostCents = c;
+  }
   if (body.quoteCents !== undefined || body.quoteDollars !== undefined) {
     const c = readCents(body, 'quoteCents', 'quoteDollars');
     if (c == null || c < 0) return err('quote must be a non-negative number', { requestId: gate.requestId, status: 400, code: 'invalid_amount' });
     patch.quoteCents = c;
   }
-  if (body.status !== undefined) {
-    if (!isCapexStatus(body.status)) return err('status is invalid', { requestId: gate.requestId, status: 400, code: 'invalid_status' });
-    patch.status = body.status;
+  if (body.requestType !== undefined) {
+    if (!isRequestType(body.requestType)) return err('requestType is invalid', { requestId: gate.requestId, status: 400, code: 'invalid_type' });
+    patch.requestType = body.requestType;
   }
+  if (body.category !== undefined) {
+    if (body.category !== null && !isCapexCategory(body.category)) return err('category is invalid', { requestId: gate.requestId, status: 400, code: 'invalid_category' });
+    patch.category = isCapexCategory(body.category) ? body.category : null;
+  }
+  // Status is intentionally NOT patchable here — see decision/progress routes.
   if (body.vendor !== undefined) patch.vendor = optStr(body.vendor, 200);
   if (body.startDate !== undefined) patch.startDate = ymdOrNull(body.startDate);
   if (body.targetDate !== undefined) patch.targetDate = ymdOrNull(body.targetDate);

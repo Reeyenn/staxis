@@ -47,13 +47,16 @@ export function departmentLabel(d: Department): string {
   return DEPARTMENT_LABELS_EN[d] ?? d;
 }
 
-// ── Capex statuses ──────────────────────────────────────────────────────────
+// ── Capex statuses (approval workflow) ──────────────────────────────────────
+// Requested → Approved | Rejected | Revisions-Needed → In-Progress → Completed
+// (+ Cancelled).
 export const CAPEX_STATUSES = [
-  'planned',
+  'requested',
   'approved',
+  'rejected',
+  'revisions_needed',
   'in_progress',
-  'on_hold',
-  'complete',
+  'completed',
   'cancelled',
 ] as const;
 export type CapexStatus = (typeof CAPEX_STATUSES)[number];
@@ -63,13 +66,39 @@ export function isCapexStatus(s: unknown): s is CapexStatus {
 }
 
 export const CAPEX_STATUS_LABELS_EN: Record<CapexStatus, string> = {
-  planned: 'Planned',
+  requested: 'Requested',
   approved: 'Approved',
+  rejected: 'Rejected',
+  revisions_needed: 'Revisions Needed',
   in_progress: 'In Progress',
-  on_hold: 'On Hold',
-  complete: 'Complete',
+  completed: 'Completed',
   cancelled: 'Cancelled',
 };
+
+// View buckets.
+export const CAPEX_PENDING_STATUSES: readonly CapexStatus[] = ['requested', 'revisions_needed'];
+export const CAPEX_ACTIVE_STATUSES: readonly CapexStatus[] = ['approved', 'in_progress'];
+export const CAPEX_CLOSED_STATUSES: readonly CapexStatus[] = ['completed', 'rejected', 'cancelled'];
+
+export const REQUEST_TYPES = ['budgeted', 'emergency'] as const;
+export type RequestType = (typeof REQUEST_TYPES)[number];
+export function isRequestType(s: unknown): s is RequestType {
+  return s === 'budgeted' || s === 'emergency';
+}
+
+export const CAPEX_CATEGORIES = [
+  'renovation',
+  'equipment',
+  'technology',
+  'safety',
+  'exterior',
+  'furniture',
+  'other',
+] as const;
+export type CapexCategory = (typeof CAPEX_CATEGORIES)[number];
+export function isCapexCategory(s: unknown): s is CapexCategory {
+  return typeof s === 'string' && (CAPEX_CATEGORIES as readonly string[]).includes(s);
+}
 
 // ── Expense source ──────────────────────────────────────────────────────────
 export const EXPENSE_SOURCES = ['manual', 'invoice_scan'] as const;
@@ -119,17 +148,40 @@ export interface CapexProject {
   propertyId: string;
   name: string;
   description: string | null;
-  quoteCents: number;
+  quoteCents: number; // scanned-quote figure (Smart CapEx)
+  estimatedCostCents: number; // the estimate the request is approved on
+  requestType: RequestType;
+  category: CapexCategory | null;
   status: CapexStatus;
+  pctComplete: number;
   vendor: string | null;
   startDate: string | null;
   targetDate: string | null;
+  submittedByName: string | null;
+  approvedBy: string | null;
+  approvedByName: string | null;
+  approvedAt: string | null;
+  decidedAt: string | null;
+  decisionNotes: string | null;
+  attachmentPath: string | null;
   createdByName: string | null;
   createdAt: string;
   updatedAt: string;
   // Derived (filled by the API when line items are joined):
   spentCents?: number;
   lineItems?: CapexLineItem[];
+}
+
+/** The estimate overrun is measured against (the approved estimate, or the
+ *  scanned quote when no estimate was entered). */
+export function capexEstimateCents(p: { estimatedCostCents: number; quoteCents: number }): number {
+  return p.estimatedCostCents > 0 ? p.estimatedCostCents : p.quoteCents;
+}
+
+/** Overrun % of spent vs the estimate; null when there's no estimate. Positive = over. */
+export function capexOverrunPct(spentCents: number, estimateCents: number): number | null {
+  if (estimateCents <= 0) return null;
+  return ((spentCents - estimateCents) / estimateCents) * 100;
 }
 
 // ── Budget vs. actual (per department, one month) ───────────────────────────

@@ -4,7 +4,7 @@
 // that file is edited by every parallel feature, so co-locating avoids a merge
 // conflict while staying fully lang-driven via useLang().
 
-import type { Department, CapexStatus } from '@/lib/financials/shared';
+import type { Department, CapexStatus, CapexCategory, RequestType } from '@/lib/financials/shared';
 
 type Lang = 'en' | 'es';
 
@@ -35,22 +35,57 @@ export const DEPT_LABELS: Record<Lang, Record<Department, string>> = {
 
 export const CAPEX_STATUS_LABELS: Record<Lang, Record<CapexStatus, string>> = {
   en: {
-    planned: 'Planned',
+    requested: 'Requested',
     approved: 'Approved',
+    rejected: 'Rejected',
+    revisions_needed: 'Revisions Needed',
     in_progress: 'In Progress',
-    on_hold: 'On Hold',
-    complete: 'Complete',
+    completed: 'Completed',
     cancelled: 'Cancelled',
   },
   es: {
-    planned: 'Planeado',
+    requested: 'Solicitado',
     approved: 'Aprobado',
+    rejected: 'Rechazado',
+    revisions_needed: 'Requiere Cambios',
     in_progress: 'En Progreso',
-    on_hold: 'En Pausa',
-    complete: 'Completo',
+    completed: 'Completado',
     cancelled: 'Cancelado',
   },
 };
+
+export const CAPEX_CATEGORY_LABELS: Record<Lang, Record<CapexCategory, string>> = {
+  en: {
+    renovation: 'Renovation',
+    equipment: 'Equipment',
+    technology: 'Technology',
+    safety: 'Safety',
+    exterior: 'Exterior',
+    furniture: 'Furniture',
+    other: 'Other',
+  },
+  es: {
+    renovation: 'Renovación',
+    equipment: 'Equipo',
+    technology: 'Tecnología',
+    safety: 'Seguridad',
+    exterior: 'Exterior',
+    furniture: 'Muebles',
+    other: 'Otro',
+  },
+};
+
+export const REQUEST_TYPE_LABELS: Record<Lang, Record<RequestType, string>> = {
+  en: { budgeted: 'Budgeted', emergency: 'Emergency' },
+  es: { budgeted: 'Presupuestado', emergency: 'Emergencia' },
+};
+
+export function capexCategoryLabel(lang: Lang, c: CapexCategory): string {
+  return CAPEX_CATEGORY_LABELS[lang]?.[c] ?? CAPEX_CATEGORY_LABELS.en[c] ?? c;
+}
+export function requestTypeLabel(lang: Lang, t: RequestType): string {
+  return REQUEST_TYPE_LABELS[lang]?.[t] ?? REQUEST_TYPE_LABELS.en[t] ?? t;
+}
 
 const STRINGS = {
   en: {
@@ -133,6 +168,53 @@ const STRINGS = {
     confirmDeleteProject: 'Delete this project and its line items?',
     scanQuoteHint: 'Snap a contractor quote — we read the project, total, and line items.',
     back: 'Back',
+    // capex approval workflow
+    capOverview: 'Overview',
+    capPending: 'Pending',
+    capActive: 'Active',
+    capClosed: 'Closed',
+    capForecast: 'Forecast',
+    capBinder: 'Binder',
+    rollup: 'All properties',
+    newRequest: 'New request',
+    requestTitle: 'Title',
+    estimatedCost: 'Estimated cost',
+    typeLabel: 'Type',
+    budgeted: 'Budgeted',
+    emergency: 'Emergency',
+    submitRequest: 'Submit request',
+    approve: 'Approve',
+    reject: 'Reject',
+    requestRevisions: 'Request changes',
+    decisionNotes: 'Notes / reason',
+    submittedBy: 'Submitted by',
+    decidedBy: 'Decided by',
+    markInProgress: 'Start work',
+    markComplete: 'Mark complete',
+    percentComplete: '% complete',
+    estimate: 'Estimate',
+    totalRequests: 'Requests',
+    totalEstimated: 'Estimated',
+    totalSpent: 'Spent',
+    approvedPct: '% approved',
+    startedPct: '% started',
+    completedPct: '% completed',
+    budgetedVsEmergency: 'Budgeted vs. emergency',
+    binderQuote: 'Quote & estimate',
+    binderApprovals: 'Approvals',
+    binderReceipts: 'Receipts',
+    attachment: 'Attached quote / photo',
+    addAttachment: 'Attach quote / photo',
+    noAttachment: 'No attachment',
+    viewAttachment: 'View attachment',
+    upcomingByMonth: 'Upcoming capital spend',
+    awaitingApproval: 'Awaiting approval',
+    noPending: 'Nothing awaiting approval.',
+    noActive: 'No active projects.',
+    noClosed: 'Nothing closed yet.',
+    noForecastCapex: 'No upcoming capital spend scheduled.',
+    selectProject: 'Pick a project to open its binder.',
+    acrossProperties: 'Across your properties',
     // common
     loading: 'Loading…',
     errorLoading: 'Could not load. Tap to retry.',
@@ -214,6 +296,53 @@ const STRINGS = {
     confirmDeleteProject: '¿Eliminar este proyecto y sus partidas?',
     scanQuoteHint: 'Toma una foto de la cotización — leemos el proyecto, total y partidas.',
     back: 'Atrás',
+    // capex approval workflow
+    capOverview: 'Resumen',
+    capPending: 'Pendientes',
+    capActive: 'Activos',
+    capClosed: 'Cerrados',
+    capForecast: 'Pronóstico',
+    capBinder: 'Carpeta',
+    rollup: 'Todas las propiedades',
+    newRequest: 'Nueva solicitud',
+    requestTitle: 'Título',
+    estimatedCost: 'Costo estimado',
+    typeLabel: 'Tipo',
+    budgeted: 'Presupuestado',
+    emergency: 'Emergencia',
+    submitRequest: 'Enviar solicitud',
+    approve: 'Aprobar',
+    reject: 'Rechazar',
+    requestRevisions: 'Pedir cambios',
+    decisionNotes: 'Notas / motivo',
+    submittedBy: 'Enviado por',
+    decidedBy: 'Decidido por',
+    markInProgress: 'Iniciar trabajo',
+    markComplete: 'Marcar completo',
+    percentComplete: '% completado',
+    estimate: 'Estimado',
+    totalRequests: 'Solicitudes',
+    totalEstimated: 'Estimado',
+    totalSpent: 'Gastado',
+    approvedPct: '% aprobado',
+    startedPct: '% iniciado',
+    completedPct: '% completado',
+    budgetedVsEmergency: 'Presupuestado vs. emergencia',
+    binderQuote: 'Cotización y estimado',
+    binderApprovals: 'Aprobaciones',
+    binderReceipts: 'Recibos',
+    attachment: 'Cotización / foto adjunta',
+    addAttachment: 'Adjuntar cotización / foto',
+    noAttachment: 'Sin adjunto',
+    viewAttachment: 'Ver adjunto',
+    upcomingByMonth: 'Gasto de capital próximo',
+    awaitingApproval: 'Esperando aprobación',
+    noPending: 'Nada esperando aprobación.',
+    noActive: 'Sin proyectos activos.',
+    noClosed: 'Nada cerrado aún.',
+    noForecastCapex: 'Sin gasto de capital programado.',
+    selectProject: 'Elige un proyecto para abrir su carpeta.',
+    acrossProperties: 'En tus propiedades',
     loading: 'Cargando…',
     errorLoading: 'No se pudo cargar. Toca para reintentar.',
     close: 'Cerrar',

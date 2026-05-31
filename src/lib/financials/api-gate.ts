@@ -36,6 +36,7 @@ export type FinanceAccess =
       userId: string;
       accountId: string;
       role: AppRole;
+      name: string | null;
       pid: string;
       requestId: string;
     }
@@ -63,10 +64,10 @@ export async function requireFinanceAccess(
     };
   }
 
-  // 3) Load the caller's account ONCE: role + property scope + accounts PK.
+  // 3) Load the caller's account ONCE: role + property scope + accounts PK + name.
   const { data: account, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access')
+    .select('id, role, property_access, display_name')
     .eq('data_user_id', session.userId)
     .maybeSingle();
   if (error || !account) {
@@ -113,7 +114,74 @@ export async function requireFinanceAccess(
     userId: session.userId,
     accountId: account.id as string,
     role,
+    name: (account.display_name as string | null) ?? null,
     pid,
+    requestId,
+  };
+}
+
+export type FinanceMultiAccess =
+  | {
+      ok: true;
+      userId: string;
+      accountId: string;
+      role: AppRole;
+      name: string | null;
+      propertyIds: string[];
+      requestId: string;
+    }
+  | { ok: false; response: NextResponse };
+
+/**
+ * Multi-property gate for the owner CapEx rollup. Same role check as
+ * requireFinanceAccess (owner/GM/admin) but resolves the FULL set of property
+ * ids the caller may see: their property_access list, or — for an admin / '*'
+ * wildcard — every property. The caller can never roll up a hotel they don't
+ * own (admins legitimately see all). Returns [] (not all) for a non-wildcard
+ * caller with no property_access.
+ */
+export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMultiAccess> {
+  const requestId = getOrMintRequestId(req);
+
+  const session = await requireSession(req);
+  if (!session.ok) return { ok: false, response: session.response };
+
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id, role, property_access, display_name')
+    .eq('data_user_id', session.userId)
+    .maybeSingle();
+  if (error || !account) {
+    return { ok: false, response: err('account not found for session', { requestId, status: 403, code: 'no_account' }) };
+  }
+  const role = ((account.role as string) ?? 'staff') as AppRole;
+  if (!canViewFinancials(role)) {
+    return {
+      ok: false,
+      response: err('forbidden: financials are restricted to owner / general manager / admin', {
+        requestId,
+        status: 403,
+        code: 'forbidden_role',
+      }),
+    };
+  }
+
+  const access = (account.property_access ?? []) as string[];
+  let propertyIds: string[];
+  if (role === 'admin' || access.includes('*')) {
+    const { data: all } = await supabaseAdmin.from('properties').select('id').limit(1000);
+    propertyIds = (all ?? []).map((r) => (r as { id: string }).id);
+  } else {
+    propertyIds = access.filter((p) => isUuid(p));
+  }
+
+  return {
+    ok: true,
+    userId: session.userId,
+    accountId: account.id as string,
+    role,
+    name: (account.display_name as string | null) ?? null,
+    propertyIds,
     requestId,
   };
 }

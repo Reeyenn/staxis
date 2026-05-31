@@ -66,7 +66,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   const dedupSinceIso = new Date(now.getTime() - DEDUP_DAYS * 86400_000).toISOString();
 
   let propertiesChecked = 0;
+  let recorded = 0;
   let alertsSent = 0;
+  let smsDisabled = 0;
   let skippedNoPhone = 0;
   let rateLimited = 0;
   let deduped = 0;
@@ -139,13 +141,32 @@ export async function GET(req: NextRequest): Promise<Response> {
       deduped += findings.length - fresh.length;
       if (fresh.length === 0) continue;
 
-      // Need an alert phone.
-      const { data: prop } = await supabaseAdmin
+      // ALWAYS record fresh findings → app_events. This is the in-app surface
+      // (Financials page + Dashboard) AND the dedup stamp, and it happens
+      // whether or not SMS is enabled — so the owner always sees the alert.
+      await supabaseAdmin.from('app_events').insert(
+        fresh.map((f) => ({
+          property_id: pid,
+          event_type: 'financials_alert',
+          metadata: { month, department: f.department, kind: f.kind, message: f.message },
+        })),
+      );
+      recorded += fresh.length;
+
+      // SMS gate (owner rule, default OFF). Text ONLY when the per-property
+      // flag is enabled AND an alert phone is on file. Fail-safe to OFF: any
+      // error reading the flag → treat as disabled, never an unexpected text.
+      const { data: prop, error: propErr } = await supabaseAdmin
         .from('properties')
-        .select('alert_phone')
+        .select('alert_phone, financials_alerts_sms_enabled')
         .eq('id', pid)
         .maybeSingle();
+      const smsEnabled = !propErr && prop?.financials_alerts_sms_enabled === true;
       const phone = (prop?.alert_phone as string | null) ?? null;
+      if (!smsEnabled) {
+        smsDisabled++;
+        continue;
+      }
       if (!phone) {
         skippedNoPhone++;
         continue;
@@ -160,19 +181,10 @@ export async function GET(req: NextRequest): Promise<Response> {
 
       const shown = fresh.slice(0, 3).map((f) => f.message);
       const more = fresh.length - shown.length;
-      const body = `Staxis Financials alert: ${shown.join(' ')}${more > 0 ? ` (+${more} more)` : ''}`.slice(0, 600);
-
+      const smsBody = `Staxis Financials alert: ${shown.join(' ')}${more > 0 ? ` (+${more} more)` : ''}`.slice(0, 600);
       try {
-        await sendSms(phone, body);
+        await sendSms(phone, smsBody);
         alertsSent++;
-        // Record each fresh finding so it isn't re-sent for DEDUP_DAYS.
-        await supabaseAdmin.from('app_events').insert(
-          fresh.map((f) => ({
-            property_id: pid,
-            event_type: 'financials_alert',
-            metadata: { month, department: f.department, kind: f.kind, message: f.message },
-          })),
-        );
       } catch (e) {
         log.warn('[cron/financials-alert-sweep] SMS failed', { requestId, pid, err: errToString(e) });
       }
@@ -181,16 +193,18 @@ export async function GET(req: NextRequest): Promise<Response> {
     log.info('[cron/financials-alert-sweep] tick', {
       requestId,
       propertiesChecked,
+      recorded,
       alertsSent,
+      smsDisabled,
       skippedNoPhone,
       rateLimited,
       deduped,
     });
     await writeCronHeartbeat('financials-alert-sweep', {
       requestId,
-      notes: { propertiesChecked, alertsSent, skippedNoPhone, rateLimited, deduped },
+      notes: { propertiesChecked, recorded, alertsSent, smsDisabled, skippedNoPhone, rateLimited, deduped },
     });
-    return ok({ propertiesChecked, alertsSent, skippedNoPhone, rateLimited, deduped }, { requestId });
+    return ok({ propertiesChecked, recorded, alertsSent, smsDisabled, skippedNoPhone, rateLimited, deduped }, { requestId });
   } catch (caughtErr) {
     log.error('[cron/financials-alert-sweep] failed', { requestId, err: errToString(caughtErr) });
     return err('financials-alert-sweep failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
