@@ -56,7 +56,7 @@ interface RequestBody {
   currentRoomNumber?: string | null;
 }
 
-const ALLOWED_MODES: readonly VoiceMode[] = ['general', 'housekeeper_issue'];
+const ALLOWED_MODES: readonly VoiceMode[] = ['general', 'housekeeper_issue', 'compliance'];
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -125,6 +125,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     log.warn('[voice-session] housekeeper_issue mode refused for role', { requestId, role });
     return NextResponse.json(
       { ok: false, error: 'voice issue reporting is only available to floor staff', requestId },
+      { status: 403 },
+    );
+  }
+
+  // Feature #19: 'compliance' mode exposes the log_reading / log_pm_check /
+  // get_compliance_status tools. Gate at mint time to the same roles those
+  // tools allow (manager-tier + maintenance) so a front-desk/staff session
+  // can't open it. Mirrors the housekeeper_issue gate above.
+  const COMPLIANCE_ROLES: ReadonlyArray<AppRole> = ['admin', 'owner', 'general_manager', 'maintenance'];
+  if (mode === 'compliance' && !COMPLIANCE_ROLES.includes(role)) {
+    log.warn('[voice-session] compliance mode refused for role', { requestId, role });
+    return NextResponse.json(
+      { ok: false, error: 'compliance voice logging requires a manager or maintenance role', requestId },
       { status: 403 },
     );
   }

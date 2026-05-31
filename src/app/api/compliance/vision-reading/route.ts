@@ -12,7 +12,7 @@ import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { extractReadingFromImage } from '@/lib/compliance/vision';
 import {
   VisionTruncatedError,
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  const rl = await checkAndIncrementRateLimit('compliance-vision', hashToRateLimitKey(`${pid}:${session.userId}`));
+  const rl = await checkAndIncrementRateLimit('compliance-vision', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const { data: typeRow } = await supabaseAdmin

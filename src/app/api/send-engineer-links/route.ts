@@ -15,7 +15,7 @@ import { validateUuid, safeBaseUrl } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 import { buildEngineerLink, CrossTenantStaffError } from '@/lib/staff-auth';
 import { toE164 } from '@/lib/compliance/autoact';
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  const rl = await checkAndIncrementRateLimit('send-engineer-links', hashToRateLimitKey(`${pid}:${session.userId}`));
+  const rl = await checkAndIncrementRateLimit('send-engineer-links', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   // On-shift maintenance staff for this property.

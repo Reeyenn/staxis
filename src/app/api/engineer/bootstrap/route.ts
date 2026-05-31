@@ -13,7 +13,6 @@ import { errToString } from '@/lib/utils';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
-  hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
 import { checkStaffCapability } from '@/lib/compliance/api-helpers';
 import { getOverview } from '@/lib/compliance/store';
@@ -33,7 +32,7 @@ export async function GET(req: NextRequest) {
   const pid = pidV.value!;
   const staffId = staffV.value!;
 
-  const rl = await checkAndIncrementRateLimit('engineer-bootstrap', hashToRateLimitKey(`${pid}:${staffId}`));
+  const rl = await checkAndIncrementRateLimit('engineer-bootstrap', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const staff = await checkStaffCapability(pid, staffId);

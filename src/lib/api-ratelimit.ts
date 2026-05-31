@@ -186,10 +186,13 @@ export type RateLimitEndpoint =
   // 60/hr is "open the tab, switch ranges, leave it polling" headroom
   // — a runaway tab or stale-link replay caps fast.
   | 'housekeeping-forecast'
-  // Engineering Compliance (feature #19, 2026-05-30). Engineer mobile page
-  // (/engineer/[id]) is a public SMS-link surface keyed on `${pid}:${staffId}`;
-  // manager endpoints keyed on `${pid}:${userId}`. Vision + voice + setup +
-  // link-send are billing-impacting (Claude / Twilio) and fail closed.
+  // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
+  // property id (a real properties.id) — api_limits.property_id has an FK to
+  // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
+  // FK-violates → the RPC errors → billing endpoints fail CLOSED (429 on every
+  // call). So these are per-property caps, like laundry-bootstrap / send-shift-
+  // confirmations. Vision + voice + setup + link-send are billing-impacting
+  // (Claude / Twilio) and fail closed.
   | 'engineer-bootstrap'      // polled read of due readings + PM checks
   | 'engineer-log'            // tap-to-log a reading or PM check
   | 'engineer-vision'         // snap-to-log: Claude Vision reads a gauge/strip
@@ -364,16 +367,16 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // realtime refetches and visibility-change refresh. Anything above
   // this cap is a runaway useEffect or stale-link replay.
   'housekeeping-forecast':        60,
-  // Engineering Compliance (feature #19). Engineer bootstrap polls every
-  // ~45s = 80/hr; 600 gives headroom for refetch-after-log. Log/config
-  // caps are "person tapping a button"; vision/voice/setup are Claude-cost
-  // bounded; send-engineer-links matches the SMS-fan-out cap shape.
-  'engineer-bootstrap':          600,
-  'engineer-log':                200,
+  // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
+  // Read/log caps sized for several engineers polling one property at once
+  // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
+  // send-engineer-links matches the SMS-fan-out cap shape.
+  'engineer-bootstrap':         1200,
+  'engineer-log':                600,
   'engineer-vision':              50,
   'engineer-voice':               60,
-  'engineer-save-language':       10,
-  'compliance-read':             600,
+  'engineer-save-language':       30,
+  'compliance-read':            1800,
   'compliance-config':           100,
   'compliance-log':              200,
   'compliance-setup':             20,

@@ -8,7 +8,7 @@ import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { getOverview } from '@/lib/compliance/store';
 
 export const runtime = 'nodejs';
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  const rl = await checkAndIncrementRateLimit('compliance-read', hashToRateLimitKey(`${pid}:${session.userId}`));
+  const rl = await checkAndIncrementRateLimit('compliance-read', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {

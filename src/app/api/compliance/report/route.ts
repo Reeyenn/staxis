@@ -9,7 +9,7 @@ import { validateUuid, validateDateStr } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString, todayStr, APP_TIMEZONE } from '@/lib/utils';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { getReport } from '@/lib/compliance/store';
 
 export const runtime = 'nodejs';
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
   const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
   if (spanDays > 400) return err('date range too large (max 400 days)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  const rl = await checkAndIncrementRateLimit('compliance-read', hashToRateLimitKey(`${pid}:${session.userId}`));
+  const rl = await checkAndIncrementRateLimit('compliance-read', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {

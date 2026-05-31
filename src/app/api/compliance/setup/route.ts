@@ -14,7 +14,7 @@ import { validateUuid, validateString } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { isManager } from '@/lib/compliance/api-helpers';
 import { detectTemplate } from '@/lib/compliance/templates';
 import { parseSetupFromText, buildSeedsFromSpec } from '@/lib/compliance/nlp';
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
   if (!(await isManager(session.userId))) {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  const rl = await checkAndIncrementRateLimit('compliance-setup', hashToRateLimitKey(`${pid}:${session.userId}`));
+  const rl = await checkAndIncrementRateLimit('compliance-setup', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {

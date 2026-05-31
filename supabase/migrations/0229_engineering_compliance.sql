@@ -242,6 +242,17 @@ drop trigger if exists set_updated_at on public.compliance_pm_checks;
 create trigger set_updated_at before update on public.compliance_pm_checks
   for each row execute function public._pms_set_updated_at();
 
+-- ── 6b. Voice mode — allow a 'compliance' voice session ─────────────────────
+-- The agent tools log_reading / log_pm_check (src/lib/agent/tools/compliance.ts)
+-- opt into surfaces:['chat','voice'] + voiceModes:['compliance'] so they reach
+-- voice WITHOUT polluting the secure empty default of the general voice catalog
+-- (the housekeeper_issue pattern). Widen the agent_voice_sessions mode CHECK so
+-- a compliance-mode session can mint; the route gates the mode to manager /
+-- maintenance roles.
+alter table public.agent_voice_sessions drop constraint if exists agent_voice_sessions_mode_check;
+alter table public.agent_voice_sessions add constraint agent_voice_sessions_mode_check
+  check (mode is null or mode in ('general', 'housekeeper_issue', 'compliance'));
+
 -- ── 7. Bookkeeping + schema reload ──────────────────────────────────────────
 insert into public.applied_migrations (version, description)
 values (

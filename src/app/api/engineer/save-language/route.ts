@@ -13,7 +13,6 @@ import { errToString } from '@/lib/utils';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
-  hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
 import { checkStaffCapability } from '@/lib/compliance/api-helpers';
 
@@ -39,7 +38,7 @@ export async function POST(req: NextRequest) {
   }
   const pid = pidV.value!, staffId = staffV.value!, language = body.language;
 
-  const rl = await checkAndIncrementRateLimit('engineer-save-language', hashToRateLimitKey(`${pid}:${staffId}`));
+  const rl = await checkAndIncrementRateLimit('engineer-save-language', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   // Capability gate also rejects inactive staff (stale-link), matching the

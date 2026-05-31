@@ -14,7 +14,6 @@ import { errToString } from '@/lib/utils';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
-  hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
 import { checkStaffCapability, resolveCostAccount } from '@/lib/compliance/api-helpers';
 import { parseReadingsFromText, type NlpUsage } from '@/lib/compliance/nlp';
@@ -41,7 +40,7 @@ export async function POST(req: NextRequest) {
   const pid = pidV.value!, staffId = staffV.value!, text = textV.value!;
   const idemBase = typeof body.idempotencyKey === 'string' && body.idempotencyKey.length <= 80 ? body.idempotencyKey : null;
 
-  const rl = await checkAndIncrementRateLimit('engineer-voice', hashToRateLimitKey(`${pid}:${staffId}`));
+  const rl = await checkAndIncrementRateLimit('engineer-voice', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const staff = await checkStaffCapability(pid, staffId);

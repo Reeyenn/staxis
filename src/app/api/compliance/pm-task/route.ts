@@ -10,7 +10,7 @@ import { validateUuid, validateString, validateEnum, validateInt } from '@/lib/a
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { isManager } from '@/lib/compliance/api-helpers';
 import { createPmTask, updatePmTask } from '@/lib/compliance/store';
 import { PM_CATEGORIES, PM_CADENCES } from '@/lib/compliance/types';
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   if (!(await isManager(session.userId))) {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  const rl = await checkAndIncrementRateLimit('compliance-config', hashToRateLimitKey(`${pid}:${session.userId}`));
+  const rl = await checkAndIncrementRateLimit('compliance-config', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {
