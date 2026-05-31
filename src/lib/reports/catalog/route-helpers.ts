@@ -37,6 +37,16 @@ export async function resolveRunContext(req: NextRequest, requestId: string): Pr
   if (toV.error) return { ok: false, response: err(toV.error ?? 'invalid to', { requestId, status: 400, code: 'validation_failed' }) };
   const from = fromV.value!;
   const to = toV.value!;
+  // validateDateStr accepts Date rollover (2026-02-31 → Mar 3); reject impossible
+  // calendar dates by round-tripping. (Codex review.)
+  const isRealDate = (d: string) => {
+    const [y, m, dd] = d.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, dd));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === dd;
+  };
+  if (!isRealDate(from) || !isRealDate(to)) {
+    return { ok: false, response: err('Invalid calendar date.', { requestId, status: 400, code: 'validation_failed' }) };
+  }
   if (from > to) {
     return { ok: false, response: err('from must be on or before to', { requestId, status: 400, code: 'validation_failed' }) };
   }

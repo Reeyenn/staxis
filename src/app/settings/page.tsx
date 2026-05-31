@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3 } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -28,6 +28,12 @@ export default function SettingsPage() {
     },
     ...(user && canManageTeam(user.role)
       ? [
+          {
+            href:'/settings/reports',
+            icon:BarChart3,
+            label: lang === 'es' ? 'Reportes' : 'Reports',
+            desc: lang === 'es' ? 'Genera, exporta y programa reportes cuando los necesites' : 'Run, export, and schedule reports on demand',
+          },
           {
             href:'/settings/accounts',
             icon:Users,

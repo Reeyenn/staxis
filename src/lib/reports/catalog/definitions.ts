@@ -322,7 +322,8 @@ const workOrdersSummary: ReportDefinition = {
       .from('work_orders')
       .select('id', { count: 'exact', head: true })
       .eq('property_id', ctx.propertyId)
-      .is('resolved_at', null);
+      .is('resolved_at', null)
+      .not('status', 'in', '("resolved","closed","done","completed")');
 
     const bySeverity = groupBy(rows, (r) => (r.severity || 'unspecified').toLowerCase());
     const out: ReportRow[] = [];

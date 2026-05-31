@@ -87,12 +87,11 @@ export async function POST(req: NextRequest) {
 
     // Recipients — array of valid emails, deduped, capped.
     const rawRecipients = Array.isArray(body.recipients) ? body.recipients : [];
+    if (rawRecipients.some((e) => !isValidEmail(e))) {
+      return err('One or more recipient emails are invalid.', { requestId, status: 400, code: 'invalid_recipient' });
+    }
     const recipients = Array.from(
-      new Set(
-        rawRecipients
-          .filter(isValidEmail)
-          .map((e) => e.trim().toLowerCase()),
-      ),
+      new Set(rawRecipients.map((e) => (e as string).trim().toLowerCase())),
     );
     if (recipients.length === 0) {
       return err('Add at least one valid recipient email.', { requestId, status: 400, code: 'no_recipients' });

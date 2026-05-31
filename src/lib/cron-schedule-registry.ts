@@ -27,6 +27,7 @@ export interface ScheduleEntry {
 }
 
 export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
+  { heartbeatName: 'run-scheduled-reports',             source: { kind: 'vercel', cronPath: '/api/cron/run-scheduled-reports' },             cronExpr: '0 * * * *' },
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.

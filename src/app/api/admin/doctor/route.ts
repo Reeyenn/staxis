@@ -2066,6 +2066,7 @@ async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'du
 export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
 
 export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
+  { name: 'run-scheduled-reports',         cadenceHours: 1,     description: 'hourly self-serve scheduled-report delivery (Vercel native cron)' },
   // Tight cadences
   // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
   // service is gone. The new `vercel-watchdog` (5-min, listed at the
