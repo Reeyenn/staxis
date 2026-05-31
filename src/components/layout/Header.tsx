@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
+import { canViewFinancials } from '@/lib/roles';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LogOut, Globe, Settings, Bell } from 'lucide-react';
@@ -49,8 +50,12 @@ export function Header() {
   // Server-side gates on /api/admin/* and /admin/* pages still enforce
   // admin-only access independently.
   const isAdmin = user?.role === 'admin';
+  // Financials is owner/GM/admin only (sensitive). The /financials page +
+  // every /api/financials/* route enforce the same gate server-side.
+  const showFinancials = !!user && canViewFinancials(user.role);
   const navLinks = [
     ...baseNavLinks,
+    ...(showFinancials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),
     ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
 

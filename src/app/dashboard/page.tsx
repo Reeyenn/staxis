@@ -32,6 +32,7 @@ import type { ComplianceSummary } from '@/lib/compliance/types';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
 import StaleDataBanner from '@/components/StaleDataBanner';
+import { FinancialsDashboardCard } from '@/app/financials/_components/FinancialsDashboardCard';
 import type { Room, WorkOrder, HandoffEntry } from '@/types';
 
 // ─── Palette + per-metric color maps (verbatim from design source) ────
@@ -786,6 +787,11 @@ export default function DashboardPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Financials — manager-only; reads the same /api/financials/summary
+                  as the Financials page so revenue/profit always match. Renders
+                  null for non-owner/GM/admin. */}
+              <FinancialsDashboardCard />
             </div>
           </div>
 

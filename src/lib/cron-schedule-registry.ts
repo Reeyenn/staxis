@@ -121,4 +121,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity
   // escalation SMS. Idempotent via callback_nudged_at / escalation_nudged_at.
   { heartbeatName: 'send-complaint-nudges',    source: { kind: 'vercel', cronPath: '/api/cron/send-complaint-nudges' },          cronExpr: '*/15 * * * *' },
+  // 2026-05-31: financials — daily overspend-forecast + spend-anomaly sweep.
+  // Texts the property alert phone; idempotent/no-spam via app_events dedup.
+  { heartbeatName: 'financials-alert-sweep',   source: { kind: 'vercel', cronPath: '/api/cron/financials-alert-sweep' },          cronExpr: '0 14 * * *' },
 ];
