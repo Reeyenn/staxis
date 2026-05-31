@@ -40,6 +40,7 @@ export function Sidebar({
   const { lang } = useLang();
   const L = lang === 'es' ? 'es' : 'en';
   const ordersLabel = { en: 'Orders', es: 'Órdenes' }[L];
+  const settingsLabel = { en: 'Ordering settings', es: 'Ajustes de pedidos' }[L];
   return (
     <aside
       style={{
@@ -76,6 +77,9 @@ export function Sidebar({
       <SidebarItem label="History" count={historyCount} onClick={() => onAction('history')} />
       <SidebarItem label="AI Helper" onClick={() => onAction('ai')} />
       <SidebarItem label="Budgets" onClick={() => onAction('budgets')} />
+      {canManage && (
+        <SidebarItem label={settingsLabel} onClick={() => onAction('ordersettings')} />
+      )}
 
       <div style={{ height: 1, background: T.rule, margin: '10px 8px 6px' }} />
       <div style={{ padding: '8px 10px 4px' }}>
