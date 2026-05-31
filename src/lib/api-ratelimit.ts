@@ -106,6 +106,7 @@ export type RateLimitEndpoint =
   // housekeeper banner works; the posting side comes in piece B).
   | 'front-desk-rush'
   | 'laundry-bootstrap'
+  | 'laundry-complete'
   // F-NEW-02 / Batch D — public POST that swaps the SMS-link CODE for the
   // hashed_token used to verifyOtp. Code is ~40 bits; the rate limit caps
   // brute-force enumeration further. IP-keyed. 30/hr lets a real
@@ -356,6 +357,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // laundry-bootstrap is a read-only page bootstrap. Polled less often
   // than housekeeper. 600/hr per property covers heavy use.
   'laundry-bootstrap':          600,
+  // laundry-complete: one write per checklist toggle (debounced client-side).
+  // A full shift is a few dozen toggles; 240/hr per property is generous.
+  'laundry-complete':           240,
   // housekeeper-exchange-code: one-shot per SMS-link tap, IP-keyed.
   // Real housekeepers tap once; the cap exists to bound brute-force
   // enumeration of the ~40-bit code space. 30/hr leaves room for a few

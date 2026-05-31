@@ -2,7 +2,7 @@
 
 
 export const dynamic = 'force-dynamic';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTodayStr } from '@/lib/use-today-str';
 import {
@@ -39,7 +39,16 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [completedAreas, setCompletedAreas] = useState<Set<string>>(new Set());
+  // Completed laundry-load CATEGORY names (not card index) — matches the
+  // persistence keying so a checkmark survives the displayed load count
+  // shifting through the day as the CUA updates checkout/stayover rooms.
   const [completedLoads, setCompletedLoads] = useState<Set<string>>(new Set());
+  const [error, setError] = useState(false);
+  // Seed saved completion only on first load / date roll, never on the 60s
+  // poll — otherwise a poll landing between a local toggle and its save would
+  // clobber the worker's just-tapped checkmark with stale server state.
+  const seededRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Seed the page language from the staff row on mount. Goes through
   // /api/housekeeper/me (service-role) instead of getStaffMember(), because
@@ -91,48 +100,84 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // Polled every 30s instead of using realtime — anon clients don't get
   // postgres_changes events under RLS anyway, and the laundry workflow is
   // not as latency-sensitive as the per-room housekeeper actions.
-  useEffect(() => {
+  // Bootstrap fetch — public_areas + laundry_config + today's rooms + saved
+  // checklist progress in one server-side round-trip. Goes through
+  // /api/laundry/bootstrap (service-role, RLS-bypass): the laundry worker has
+  // no Staxis session, so the browser client would return [] under RLS.
+  const loadBootstrap = useCallback(async () => {
     if (!pid || !laundryPersonId) return;
-    let cancelled = false;
-
-    const loadBootstrap = async () => {
-      try {
-        const res = await fetch(
-          `/api/laundry/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(laundryPersonId)}&date=${encodeURIComponent(today)}`,
-        );
-        if (!res.ok) {
-          console.error('[laundry] bootstrap http', res.status);
-          if (!cancelled) setLoading(false);
-          return;
-        }
-        const json = (await res.json().catch(() => null)) as
-          | { ok?: boolean; data?: { publicAreas?: PublicArea[]; laundryConfig?: LaundryCategory[]; rooms?: Room[] }; error?: string }
-          | null;
-        if (!json?.ok || !json.data) {
-          console.error('[laundry] bootstrap unexpected body', json?.error || 'no data');
-          if (!cancelled) setLoading(false);
-          return;
-        }
-        if (cancelled) return;
-        setPublicAreas(json.data.publicAreas || []);
-        setLaundryConfig(json.data.laundryConfig || []);
-        setRooms(json.data.rooms || []);
+    try {
+      const res = await fetch(
+        `/api/laundry/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(laundryPersonId)}&date=${encodeURIComponent(today)}`,
+      );
+      if (!res.ok) {
+        console.error('[laundry] bootstrap http', res.status);
+        setError(true);
         setLoading(false);
-      } catch (err) {
-        console.error('[laundry] bootstrap error:', err);
-        if (!cancelled) setLoading(false);
+        return;
       }
-    };
-
-    void loadBootstrap();
-    // Cost-hotpaths audit #2: laundry bootstrap is a wide read that the
-    // laundry tech doesn't need refreshed every 30s. 60s aligns with the
-    // admin HealthBanner cadence and roughly halves request volume for
-    // every open laundry tab — Mario rarely keeps this open across many
-    // properties simultaneously but the bootstrap query is heavy.
-    const interval = setInterval(loadBootstrap, 60_000);
-    return () => { cancelled = true; clearInterval(interval); };
+      const json = (await res.json().catch(() => null)) as
+        | { ok?: boolean; data?: { publicAreas?: PublicArea[]; laundryConfig?: LaundryCategory[]; rooms?: Room[]; completedAreaIds?: string[]; completedLoadCategories?: string[] }; error?: string }
+        | null;
+      if (!json?.ok || !json.data) {
+        console.error('[laundry] bootstrap unexpected body', json?.error || 'no data');
+        setError(true);
+        setLoading(false);
+        return;
+      }
+      setPublicAreas(json.data.publicAreas || []);
+      setLaundryConfig(json.data.laundryConfig || []);
+      setRooms(json.data.rooms || []);
+      // Seed completion once (first load / date roll); routine 60s polls leave
+      // the worker's in-progress checkmarks alone (see seededRef note above).
+      if (!seededRef.current) {
+        setCompletedAreas(new Set(json.data.completedAreaIds || []));
+        setCompletedLoads(new Set(json.data.completedLoadCategories || []));
+        seededRef.current = true;
+      }
+      setError(false);
+      setLoading(false);
+    } catch (err) {
+      console.error('[laundry] bootstrap error:', err);
+      setError(true);
+      setLoading(false);
+    }
   }, [pid, laundryPersonId, today]);
+
+  // Persist checklist progress (debounced 600ms) through /api/laundry/complete
+  // (service-role + (pid, staffId) capability check). This is the fix for the
+  // "refresh / midnight / poll wipes the whole shift" bug — progress now lives
+  // server-side, not just in browser memory.
+  const persistCompletion = useCallback((areas: Set<string>, loads: Set<string>) => {
+    if (!pid || !laundryPersonId) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void fetch('/api/laundry/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid,
+          staffId: laundryPersonId,
+          date: today,
+          completedAreaIds: Array.from(areas),
+          completedLoadCategories: Array.from(loads),
+        }),
+      }).catch((err) => console.error('[laundry] save failed:', err));
+    }, 600);
+  }, [pid, laundryPersonId, today]);
+
+  useEffect(() => {
+    // Re-seed completion on (re)mount or the midnight date roll, then poll the
+    // task data every 60s (cost-hotpaths audit #2 — the bootstrap read is
+    // heavy and not latency-sensitive).
+    seededRef.current = false;
+    void loadBootstrap();
+    const interval = setInterval(() => { void loadBootstrap(); }, 60_000);
+    return () => clearInterval(interval);
+  }, [loadBootstrap]);
+
+  // Flush any pending save timer on unmount.
+  useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); }, []);
 
   // Calculate today's date for area filtering
   const todayDate = new Date();
@@ -209,6 +254,36 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           {t('lndLoadingTasks', lang)}
         </p>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  // Bootstrap failed (HTTP error / bad body / network). Show a real error +
+  // retry instead of silently falling through to the "No tasks today" empty
+  // state — a worker on a flaky shared phone must not mistake a load failure
+  // for a genuinely empty day.
+  if (error) {
+    return (
+      <div style={{
+        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexDirection: 'column', gap: '14px', padding: '24px',
+        background: 'var(--blue-dim, #F0F9FF)', fontFamily: 'system-ui, -apple-system, sans-serif',
+        textAlign: 'center',
+      }}>
+        <AlertTriangle size={32} color="var(--red, #EF4444)" />
+        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+          {t('somethingWentWrong', lang)}
+        </p>
+        <button
+          onClick={() => { setError(false); setLoading(true); void loadBootstrap(); }}
+          style={{
+            marginTop: '4px', background: 'var(--navy)', color: 'white', border: 'none',
+            borderRadius: '12px', fontWeight: 700, fontSize: '15px', padding: '12px 24px',
+            cursor: 'pointer', WebkitTapHighlightColor: 'transparent', minHeight: '44px',
+          }}
+        >
+          {t('tryAgain', lang)}
+        </button>
       </div>
     );
   }
@@ -353,6 +428,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                           newSet.add(area.id);
                         }
                         setCompletedAreas(newSet);
+                        persistCompletion(newSet, completedLoads);
                       }}
                     />
                   ))}
@@ -375,15 +451,16 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                       key={load.id}
                       load={load}
                       lang={lang}
-                      isCompleted={completedLoads.has(load.id)}
+                      isCompleted={completedLoads.has(load.category)}
                       onToggle={() => {
                         const newSet = new Set(completedLoads);
-                        if (newSet.has(load.id)) {
-                          newSet.delete(load.id);
+                        if (newSet.has(load.category)) {
+                          newSet.delete(load.category);
                         } else {
-                          newSet.add(load.id);
+                          newSet.add(load.category);
                         }
                         setCompletedLoads(newSet);
+                        persistCompletion(completedAreas, newSet);
                       }}
                     />
                   ))}

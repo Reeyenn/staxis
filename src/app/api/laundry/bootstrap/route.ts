@@ -96,10 +96,19 @@ export async function GET(req: NextRequest) {
   // public_areas + laundry_config are independent and should still render.
   // The laundry page handles `rooms: []` cleanly (renders zero
   // checkouts/stayovers counts); a 500 would blank the whole page.
-  const [areasRes, configRes, roomsRes] = await Promise.allSettled([
+  const [areasRes, configRes, roomsRes, completionRes] = await Promise.allSettled([
     supabaseAdmin.from('public_areas').select('*').eq('property_id', pid),
     supabaseAdmin.from('laundry_config').select('*').eq('property_id', pid),
     mergePmsRoomsForDate(pid, targetDate),
+    // Saved checklist progress for this worker + day (migration 0242).
+    // Degrades to "nothing checked yet" if the row is absent or this errors.
+    supabaseAdmin
+      .from('laundry_completion')
+      .select('completed_area_ids, completed_load_categories')
+      .eq('property_id', pid)
+      .eq('staff_id', staffId)
+      .eq('shift_date', targetDate)
+      .maybeSingle(),
   ]);
 
   // public_areas + laundry_config are the laundry worker's primary surface.
@@ -148,5 +157,19 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return ok({ publicAreas, laundryConfig, rooms, date: targetDate }, { requestId });
+  const completion =
+    completionRes.status === 'fulfilled' && !completionRes.value.error
+      ? completionRes.value.data
+      : null;
+  const completedAreaIds = Array.isArray(completion?.completed_area_ids)
+    ? (completion.completed_area_ids as string[])
+    : [];
+  const completedLoadCategories = Array.isArray(completion?.completed_load_categories)
+    ? (completion.completed_load_categories as string[])
+    : [];
+
+  return ok(
+    { publicAreas, laundryConfig, rooms, date: targetDate, completedAreaIds, completedLoadCategories },
+    { requestId },
+  );
 }
