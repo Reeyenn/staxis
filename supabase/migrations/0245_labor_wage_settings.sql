@@ -73,7 +73,9 @@ create table if not exists public.labor_wage_settings (
 -- One row per (property, scope, role-or-*, staff-or-zero). The coalesce keys
 -- let a single unique index cover both scopes: role rows key on the role with
 -- a zero staff_id sentinel; person rows key on the staff_id with a '*' role
--- sentinel. Matches the upsert/replace logic in /api/settings/wages.
+-- sentinel. This is a data-integrity guard (no duplicate role default / no
+-- duplicate person override); the save path replaces the whole set atomically
+-- via replace_labor_wage_settings() below rather than upserting per row.
 create unique index if not exists labor_wage_settings_unique
   on public.labor_wage_settings (
     property_id,
@@ -102,6 +104,42 @@ alter table public.labor_wage_settings enable row level security;
 -- Belt-and-braces: revoke any default table grants from the browser roles so
 -- access depends solely on RLS (which denies) + service-role (which bypasses).
 revoke all on public.labor_wage_settings from anon, authenticated;
+
+-- ── Atomic replace for the wages save path ───────────────────────────────────
+-- PUT /api/settings/wages replaces a property's ENTIRE wage-settings set in one
+-- shot. Doing the delete+insert as separate statements from the API would leave
+-- a window where a concurrent /api/dashboard/labor-cost read sees zero wages
+-- (everyone on the benchmark) and risks partial data loss if an insert fails
+-- after the delete. This function wraps the replace in a single transaction:
+-- the caller (service-role only) hands the full desired row set as jsonb and
+-- gets all-or-nothing semantics. The table CHECK constraints still validate
+-- every row, so one bad row rolls the whole save back.
+create or replace function public.replace_labor_wage_settings(
+  p_property_id uuid,
+  p_updated_by  uuid,
+  p_rows        jsonb
+) returns void
+language plpgsql
+set search_path = public, pg_catalog
+as $$
+begin
+  delete from public.labor_wage_settings where property_id = p_property_id;
+  insert into public.labor_wage_settings
+    (property_id, scope, role, staff_id, hourly_wage_cents, updated_by)
+  select
+    p_property_id,
+    r->>'scope',
+    nullif(r->>'role', '')::text,
+    nullif(r->>'staff_id', '')::uuid,
+    (r->>'hourly_wage_cents')::int,
+    p_updated_by
+  from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) as r;
+end;
+$$;
+
+-- Browser roles can neither execute this nor write the table (RLS denies them);
+-- all access is via supabaseAdmin (service_role).
+revoke all on function public.replace_labor_wage_settings(uuid, uuid, jsonb) from anon, authenticated;
 
 -- PostgREST caches the schema; force a reload so the new table is queryable.
 notify pgrst, 'reload schema';

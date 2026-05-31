@@ -18,15 +18,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { canViewLaborCost, LABOR_ROLE_DEPARTMENTS, type LaborRole } from '@/lib/labor-cost';
+import { canViewLaborCost, LABOR_ROLE_DEPARTMENTS, MAX_HOURLY_WAGE_CENTS, type LaborRole } from '@/lib/labor-cost';
 import { parseDollarsToCents, formatCents } from '@/lib/financials/shared';
 import {
   fetchWageSettings, saveWageSettings,
   type WageSettingsData, type WageStaffRow,
 } from '@/lib/db';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, Card } from '@/app/staff/_components/_tokens';
-
-const MAX_WAGE_CENTS = 200_000; // $2,000/hr — matches the table CHECK + API.
 
 export default function WagesSettingsPage() {
   const { user } = useAuth();
@@ -112,7 +110,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       const raw = roleInputs[dept]?.trim() ?? '';
       if (raw === '') { roleDefaults[dept] = null; continue; }
       const cents = parseDollarsToCents(raw);
-      if (cents == null || cents <= 0 || cents > MAX_WAGE_CENTS) {
+      if (cents == null || cents <= 0 || cents > MAX_HOURLY_WAGE_CENTS) {
         setError(es
           ? `Salario inválido para ${deptMeta[dept].label} (usa un número entre $0 y $2,000)`
           : `Invalid wage for ${deptMeta[dept].label} (use a number between $0 and $2,000)`);
@@ -127,7 +125,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       const raw = overrideInputs[s.id]?.trim() ?? '';
       if (raw === '') { overrides.push({ staffId: s.id, hourlyWageCents: null }); continue; }
       const cents = parseDollarsToCents(raw);
-      if (cents == null || cents <= 0 || cents > MAX_WAGE_CENTS) {
+      if (cents == null || cents <= 0 || cents > MAX_HOURLY_WAGE_CENTS) {
         setError(es
           ? `Salario inválido para ${s.name || 'empleado'} (usa un número entre $0 y $2,000)`
           : `Invalid wage for ${s.name || 'staff member'} (use a number between $0 and $2,000)`);

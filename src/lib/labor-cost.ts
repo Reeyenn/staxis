@@ -70,6 +70,14 @@ export const DEFAULT_LABOR_TARGET_PCT = 30;
 /** Width of the "warn" band above target, in percentage points. */
 export const LABOR_WARN_BAND_PTS = 5;
 
+/**
+ * Upper bound on an hourly wage, in cents ($2,000/hr). Single source of truth
+ * for the API validation + the settings-page client validation; the
+ * labor_wage_settings CHECK constraint (migration 0245) is the DB backstop and
+ * must stay in sync with this value.
+ */
+export const MAX_HOURLY_WAGE_CENTS = 200_000;
+
 export type LaborStatus = 'good' | 'warn' | 'over';
 
 /**
@@ -203,11 +211,11 @@ export const LABOR_OT_MULTIPLIER = 1.5;
 /**
  * Labor cost (cents) for ONE person given their total scheduled minutes for
  * the day and their hourly wage in cents. Anything over 8h/day is paid at
- * 1.5×. Mirrors src/lib/reports/aggregate.ts buildLaborBlock — the federal
- * rule is 40h/week, but without a weekly timeclock feed we approximate at the
- * daily level (>8h on a single day = OT). Rounds each component (regular / OT)
- * independently, matching buildLaborBlock so the two surfaces never drift by a
- * cent.
+ * 1.5×. Same OT model as src/lib/reports/aggregate.ts buildLaborBlock — the
+ * federal rule is 40h/week, but without a weekly timeclock feed we approximate
+ * at the daily level (>8h on a single day = OT). Rounds each component (regular
+ * / OT) independently. (buildLaborBlock multiplies dollars×100; here the wage is
+ * already integer cents, so this path is cents-first — both round identically.)
  */
 export function laborCentsForMinutes(minutes: number, hourlyWageCents: number): number {
   const m = Math.max(0, Number.isFinite(minutes) ? minutes : 0);

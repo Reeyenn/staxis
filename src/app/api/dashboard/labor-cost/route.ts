@@ -166,7 +166,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Published-shift read is the spine of the tile. A hard error here means we
     // genuinely don't know the schedule — degrade to the "not published" empty
-    // state rather than 500ing the whole dashboard.
+    // state rather than 500ing the whole dashboard, and DON'T let the
+    // week-publication fallback fabricate a $0 (see schedule_published below).
+    const shiftsOk = !shiftsRes.error;
     const shifts: ShiftRow[] = degrade(shiftsRes, 'scheduled_shifts', requestId);
     const staff: StaffRow[] = degrade(staffRes, 'staff', requestId);
     // labor_wage_settings may not exist until migration 0245 is applied — that
@@ -214,6 +216,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     let missingWages = false;
     for (const [staffId, minutes] of minutesByStaff) {
       const sRow = staffById.get(staffId);
+      // Role default follows the staff member's HOME department (staff.department),
+      // not the department of the shift they picked up — pay rate is a property
+      // of the person, not the slot. A per-person override still wins over this.
       const dept = isLaborRole(sRow?.department) ? (sRow!.department as LaborRole) : null;
       const resolved = resolveWageCents({
         personOverrideCents: personOverrideCents.get(staffId) ?? null,
@@ -229,8 +234,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // schedule_published: published shifts exist today → clearly yes. Zero
     // published shifts but the week IS published (everyone off today) → still
     // "published" with $0 labor; only when neither holds do we prompt to
-    // publish.
-    const schedulePublished = scheduledStaffCount > 0 || weekPublished;
+    // publish. The weekPublished fallback is gated on a SUCCESSFUL shift read —
+    // if the shift query errored we don't know the labor, so we must not pair a
+    // fabricated $0 with "published"; fall back to the neutral publish prompt.
+    const schedulePublished = scheduledStaffCount > 0 || (shiftsOk && weekPublished);
 
     const pct = laborCostPct(laborCostCents, revenueCents);
     const status = pct == null ? null : classifyLaborBand(pct, DEFAULT_LABOR_TARGET_PCT);
