@@ -64,6 +64,12 @@ const EXEMPT = new Set([
   // finance gate). No authenticated browser role touches the bucket; the deny
   // policy applies to anon, not a 2FA-gated surface.
   'objects:anon deny capex-attachments',
+  // Package-label-photos bucket (migration 0250). Same idiom as the
+  // lost-found-item-photos / housekeeping-issue-photos denies above: label
+  // uploads + views go through the front-desk packages presign + signLabelPhotos
+  // service-role helpers; no authenticated browser role touches the bucket. The
+  // deny policy applies to anon, not a 2FA-gated surface.
+  'objects:anon deny package-label-photos',
 ]);
 
 // Regex matches `create policy NAME on TABLE` or `alter policy NAME on TABLE`.

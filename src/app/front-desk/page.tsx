@@ -14,6 +14,7 @@ import { RushButton } from './_components/RushButton';
 import { FrontDeskTabBar, type FrontDeskTabKey } from './_components/TabBar';
 import { LostFoundTab } from './_components/LostFoundTab';
 import { ComplaintsTab } from './_components/ComplaintsTab';
+import { PackagesTab } from './_components/PackagesTab';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
 
@@ -149,7 +150,7 @@ export default function FrontDeskPage() {
   // a management-only tab ('lost-and-found' / 'complaints') persisted.
   useEffect(() => {
     const saved = localStorage.getItem(FD_TAB_KEY);
-    if (saved === 'lost-and-found' || saved === 'rooms' || saved === 'complaints') setTabState(saved);
+    if (saved === 'lost-and-found' || saved === 'rooms' || saved === 'complaints' || saved === 'packages') setTabState(saved);
   }, []);
   useEffect(() => {
     if ((tab === 'lost-and-found' || tab === 'complaints') && !isManagement) setTabState('rooms');
@@ -286,6 +287,11 @@ export default function FrontDeskPage() {
       `}</style>
 
       <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={isManagement} />
+
+      {/* Packages — all front-desk staff (no management gate), like Rooms. */}
+      {tab === 'packages' && activePropertyId && (
+        <PackagesTab pid={activePropertyId} lang={lang} />
+      )}
 
       {tab === 'lost-and-found' && isManagement && activePropertyId && (
         <LostFoundTab pid={activePropertyId} lang={lang} />

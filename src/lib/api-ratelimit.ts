@@ -273,7 +273,19 @@ export type RateLimitEndpoint =
   | 'inventory-catalog-read'
   | 'inventory-catalog-import'
   | 'inventory-ordering-mode'
-  | 'inventory-spend-rollup';
+  | 'inventory-spend-rollup'
+  // ── Packages (front-desk incoming guest-delivery log, 2026-06-01) ──────────
+  // ALL keyed on the RAW property id (a real properties.id) — NOT a
+  // hashToRateLimitKey pseudo-UUID. api_limits.property_id has an FK to
+  // properties(id) (migration 0142), so a pseudo-UUID would FK-violate → the RPC
+  // errors → the billing endpoints fail CLOSED. scan-label runs Claude Vision;
+  // notify-guest fires Twilio (both in BILLING_IMPACTING_ENDPOINTS below). The
+  // rest are reads / deliberate desk writes.
+  | 'packages-read'
+  | 'packages-write'
+  | 'packages-scan-label'
+  | 'packages-notify-guest'
+  | 'packages-photo-presign';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -512,6 +524,14 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'inventory-catalog-import':    20,
   'inventory-ordering-mode':     60,
   'inventory-spend-rollup':     120,
+  // Packages — per-property (raw pid). read = the polled list; write covers
+  // create / pickup / delete; scan-label is Claude Vision; notify-guest is
+  // Twilio; presign mints a signed upload URL. Tuned to "a busy front desk".
+  'packages-read':              600,
+  'packages-write':             300,
+  'packages-scan-label':         50,
+  'packages-notify-guest':       30,
+  'packages-photo-presign':     200,
 };
 
 /**
@@ -643,6 +663,10 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Supabase blip can't uncap email spend. (The Resend wrapper also enforces a
   // per-recipient 5/hr cap; this is the per-property guardrail.)
   'inventory-order-send',
+  // Packages — scan-label (Claude Vision) + notify-guest (Twilio SMS). Fail
+  // CLOSED so a DB blip can't uncap Anthropic / Twilio spend.
+  'packages-scan-label',
+  'packages-notify-guest',
 ]);
 
 /**

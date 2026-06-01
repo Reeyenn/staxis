@@ -8,7 +8,7 @@
 import React from 'react';
 import { T, FONT_SANS } from '@/app/maintenance/_components/_mt-snow';
 
-export type FrontDeskTabKey = 'rooms' | 'lost-and-found' | 'complaints';
+export type FrontDeskTabKey = 'rooms' | 'packages' | 'lost-and-found' | 'complaints';
 
 export function FrontDeskTabBar({
   tab,
@@ -23,6 +23,9 @@ export function FrontDeskTabBar({
 }) {
   const tabs: { key: FrontDeskTabKey; label: string }[] = [
     { key: 'rooms', label: lang === 'es' ? 'Habitaciones' : 'Rooms' },
+    // Packages is for ALL front-desk staff — always present, like Rooms (NOT
+    // gated behind showLostFound, which is the management-only flag).
+    { key: 'packages', label: lang === 'es' ? 'Paquetes' : 'Packages' },
     ...(showLostFound
       ? [
           {
