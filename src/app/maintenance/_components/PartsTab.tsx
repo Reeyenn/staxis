@@ -79,6 +79,13 @@ export function PartsTab() {
   useEffect(() => {
     if (!activePropertyId) return;
     let cancelled = false;
+    // Clear the previous property's inputs first, so a fast inventory snapshot
+    // for the NEW property is never transformed with the OLD property's
+    // occupancy/ML state during the async gap. Worst case until the fetch
+    // lands: estimate falls back to the raw count (still the correct status).
+    setOccupancy(null);
+    setAverages(null);
+    setMlRateMap(new Map());
     void (async () => {
       const since = new Date(Date.now() - 14 * 86_400_000);
       const [occ, avg, rates] = await Promise.all([
