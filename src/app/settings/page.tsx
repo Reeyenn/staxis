@@ -8,8 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign } from 'lucide-react';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, ListChecks } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {

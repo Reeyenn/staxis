@@ -13,6 +13,7 @@
 // catches accidental client imports during build (server-side modules bleed
 // secrets to the browser bundle).
 
+import 'server-only';
 import { z } from 'zod';
 
 const phoneE164 = z.string().regex(/^\+\d{10,15}$/, 'must be E.164 (e.g. +12816669887)');
