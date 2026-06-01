@@ -670,7 +670,7 @@ function MyRecognitionCard({ hotelId, lang }: { hotelId: string; lang: 'en' | 'e
               </div>
               <div style={{
                 fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic', color: T.ink,
-                lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                lineHeight: 1.45, wordBreak: 'break-word',
               }}>“{k.message}”</div>
             </div>
           );

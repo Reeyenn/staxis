@@ -70,11 +70,19 @@ export async function applyTimeOffDecision(opts: {
     update.deny_reason = denyReason.trim();
   }
 
-  const { error: upErr } = await supabaseAdmin
+  // Conditional update — re-assert status='pending' in the WHERE so only the
+  // caller that still sees a pending row wins. Closes the read-then-write race
+  // when two managers (or a manager + the agent tool) decide the same request
+  // at once: the loser matches 0 rows and is reported as already-decided
+  // instead of silently clobbering the winner's decision.
+  const { error: upErr, count } = await supabaseAdmin
     .from('time_off_requests')
-    .update(update)
-    .eq('id', requestId);
+    .update(update, { count: 'exact' })
+    .eq('id', requestId)
+    .eq('property_id', hotelId)
+    .eq('status', 'pending');
   if (upErr) return { ok: false, reason: 'update_failed' };
+  if ((count ?? 0) === 0) return { ok: false, reason: 'already_decided' };
 
   // On approve, auto-remove the scheduled shift for that staff+date. A failure
   // here does NOT fail the decision — the request is already approved and the
