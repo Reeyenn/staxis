@@ -86,11 +86,6 @@ export function ManagerDirectory() {
   // anon `staff` payload from useProperty(), so member.hourlyWage is always
   // undefined now and we read wages from this map instead.
   const [wages, setWages] = useState<Record<string, number | null>>({});
-  // Did the user actually edit the wage field this modal session? Wage writes
-  // fire ONLY when true — so a save can never clear a wage just because the
-  // modal opened before GET /api/staff/wages resolved (the field starts blank,
-  // and an untouched blank must not overwrite a real wage).
-  const [wageTouched, setWageTouched] = useState(false);
 
   // Load the wage map when the directory mounts (managers only). Refreshed
   // locally after each successful wage write in performSave().
@@ -105,17 +100,6 @@ export function ManagerDirectory() {
       .catch(err => console.error('[ManagerDirectory] wages fetch failed', err));
     return () => { active = false; };
   }, [isManager, pid]);
-
-  // Keep an open edit modal's wage field in sync with the async wages map
-  // until the user types into it. Without this, opening a member before the
-  // wages GET resolves would show a blank wage even though they have one; the
-  // wageTouched gate then means an untouched field never writes, so a save
-  // can't clear a wage just because of this load race.
-  useEffect(() => {
-    if (!showModal || !editMember || wageTouched) return;
-    const loaded = wages[editMember.id] ?? undefined;
-    setForm(f => (f.hourlyWage === loaded ? f : { ...f, hourlyWage: loaded }));
-  }, [wages, showModal, editMember, wageTouched]);
 
   // Fetch team list once per modal open (so newly-added staff see the latest
   // accounts list without a full page reload).
@@ -147,7 +131,6 @@ export function ManagerDirectory() {
   const openAdd = (dept: StaffDepartment = 'housekeeping') => {
     setEditMember(null);
     setForm({ ...EMPTY_FORM, department: dept });
-    setWageTouched(false);
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
     setSaveError(null);
@@ -172,7 +155,6 @@ export function ManagerDirectory() {
       isActive: member.isActive ?? true,
       isSchedulingManager: member.isSchedulingManager === true,
     });
-    setWageTouched(false);
     // linkedAccountId is set once the team list arrives — we look up the
     // account whose staff_id matches this member.id.
     setLinkedAccountId(null);
@@ -272,24 +254,24 @@ export function ManagerDirectory() {
       // ── Wage write (managers only, service-role) ──────────────────────────
       // Persist the wage through the management-gated route. NEVER through the
       // staff write above — that uses the anon client, which has no column-
-      // level protection on hourly_wage. Fire ONLY when the manager actually
-      // edited the wage field (wageTouched): an untouched field — including
-      // one left blank because the wages map hadn't loaded when the modal
-      // opened — must never overwrite the stored wage. A touched-then-cleared
-      // field sends null, which is an explicit clear.
-      if (isManager && savedStaffId && wageTouched) {
+      // level protection on hourly_wage. Only fire when the value actually
+      // changed (clearing the field → null is a real change).
+      if (isManager && savedStaffId) {
         const desiredWage = form.hourlyWage ?? null;
-        const wageRes = await fetchWithAuth('/api/staff/wages', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, hourlyWage: desiredWage }),
-        });
-        if (!wageRes.ok) {
-          const body = await wageRes.json().catch(() => ({}));
-          throw new Error(body?.error || 'Failed to save wage');
+        const knownWage = editMember ? (wages[editMember.id] ?? null) : null;
+        if (desiredWage !== knownWage) {
+          const wageRes = await fetchWithAuth('/api/staff/wages', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, hourlyWage: desiredWage }),
+          });
+          if (!wageRes.ok) {
+            const body = await wageRes.json().catch(() => ({}));
+            throw new Error(body?.error || 'Failed to save wage');
+          }
+          const sid = savedStaffId;
+          setWages(w => ({ ...w, [sid]: desiredWage }));
         }
-        const sid = savedStaffId;
-        setWages(w => ({ ...w, [sid]: desiredWage }));
       }
 
       try { await refreshStaff(); } catch (err) { console.warn('[ManagerDirectory] refresh failed', err); }
@@ -511,7 +493,6 @@ export function ManagerDirectory() {
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
           showWage={isManager}
-          markWageTouched={() => setWageTouched(true)}
           lang={lang}
         />
       )}
@@ -578,7 +559,7 @@ function formatPhone(p: string): string {
 // ── Modal ────────────────────────────────────────────────────────────────
 function StaffEditModal({
   editMember, form, setForm, saving, saveError, onClose, onSave, onDelete,
-  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage, markWageTouched, lang,
+  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage, lang,
 }: {
   editMember: StaffMember | null;
   form: StaffFormData;
@@ -592,7 +573,6 @@ function StaffEditModal({
   linkedAccountId: string | null;
   setLinkedAccountId: (id: string | null) => void;
   showWage: boolean;
-  markWageTouched: () => void;
   lang: 'en' | 'es';
 }) {
   const departments: StaffDepartment[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
@@ -704,13 +684,10 @@ function StaffEditModal({
             <Field label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}>
               <input
                 type="number" value={form.hourlyWage ?? ''} step="0.50" min="0"
-                onChange={e => {
-                  markWageTouched();
-                  setForm(f => ({
-                    ...f,
-                    hourlyWage: e.target.value ? parseFloat(e.target.value) : undefined,
-                  }));
-                }}
+                onChange={e => setForm(f => ({
+                  ...f,
+                  hourlyWage: e.target.value ? parseFloat(e.target.value) : undefined,
+                }))}
                 placeholder="15.00"
                 style={{ ...inputStyle, fontFamily: fonts.mono }}
               />
