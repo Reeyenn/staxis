@@ -706,13 +706,9 @@ function StaffEditModal({
                 type="number" value={form.hourlyWage ?? ''} step="0.50" min="0"
                 onChange={e => {
                   markWageTouched();
-                  // Coerce non-finite parses (e.g. a lone ".") to undefined so a
-                  // malformed entry reads as "no wage" rather than NaN — which
-                  // JSON.stringify would otherwise send as null (a silent clear).
-                  const parsed = parseFloat(e.target.value);
                   setForm(f => ({
                     ...f,
-                    hourlyWage: Number.isFinite(parsed) ? parsed : undefined,
+                    hourlyWage: e.target.value ? parseFloat(e.target.value) : undefined,
                   }));
                 }}
                 placeholder="15.00"
