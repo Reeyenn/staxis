@@ -33,7 +33,6 @@ export * from './db/daily-logs';
 export * from './db/rooms';
 export * from './db/work-orders';
 export * from './db/preventive';
-export * from './db/equipment';
 export * from './db/inventory';
 export * from './db/inventory-counts';
 export * from './db/inventory-orders';

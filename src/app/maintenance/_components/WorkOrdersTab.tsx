@@ -7,7 +7,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import {
   subscribeToWorkOrders, addWorkOrder, markWorkOrderDone,
@@ -20,7 +19,6 @@ import {
   Avatar, Modal, Field, TextInput, TextArea, ChipChoose, PhotoSlot,
   StorageImage, fmtDate, fmtDateShort, fmtSubmittedAt,
 } from './_mt-snow';
-import { EquipmentPicker } from './EquipmentPicker';
 
 // Friendlier "role" labels for the byline. AppRole is admin/staff; we map
 // to the language operators actually use.
@@ -144,24 +142,17 @@ function SubmitModal({
     description: string;
     priority: WorkOrderPriority;
     photo: File | null;
-    equipmentId?: string | null;
-    repairCost?: number | null;
   }) => Promise<void>;
 }) {
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
-  const { lang } = useLang();
   const [loc, setLoc] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<WorkOrderPriority>('normal');
   const [photo, setPhoto] = useState<File | null>(null);
-  const [equipmentId, setEquipmentId] = useState<string | null>(null);
-  const [repairCost, setRepairCost] = useState('');
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
     setLoc(''); setDescription(''); setPriority('normal'); setPhoto(null);
-    setEquipmentId(null); setRepairCost('');
   };
   const close = () => { reset(); onClose(); };
 
@@ -171,14 +162,11 @@ function SubmitModal({
     if (!canSubmit) return;
     setBusy(true);
     try {
-      const rc = repairCost.trim() === '' ? null : Number(repairCost);
       await onSubmit({
         location: loc.trim(),
         description: description.trim(),
         priority,
         photo,
-        equipmentId,
-        repairCost: rc != null && Number.isFinite(rc) ? rc : null,
       });
       reset();
       onClose();
@@ -242,24 +230,6 @@ function SubmitModal({
               </>
             )}
           />
-        </Field>
-
-        {/* equipment link (optional) */}
-        <Field
-          label={lang === 'es' ? 'Equipo (opcional)' : 'Equipment (optional)'}
-          hint={lang === 'es' ? 'El activo afectado' : 'The asset this is about'}
-        >
-          {activePropertyId && (
-            <EquipmentPicker pid={activePropertyId} value={equipmentId} onChange={setEquipmentId} lang={lang} />
-          )}
-        </Field>
-
-        {/* repair cost (optional) — powers per-asset total spend */}
-        <Field
-          label={lang === 'es' ? 'Costo de reparación ($, opcional)' : 'Repair cost ($, optional)'}
-          hint={lang === 'es' ? 'Si se conoce (cotización/proveedor)' : 'If known (quote / vendor)'}
-        >
-          <TextInput value={repairCost} onChange={setRepairCost} type="number" min={0} step="0.01" placeholder="—" />
         </Field>
 
         {/* photo */}
@@ -600,8 +570,6 @@ export function WorkOrdersTab() {
     description: string;
     priority: WorkOrderPriority;
     photo: File | null;
-    equipmentId?: string | null;
-    repairCost?: number | null;
   }) => {
     if (!user || !activePropertyId) return;
     let submitterPhotoPath: string | undefined;
@@ -618,8 +586,6 @@ export function WorkOrdersTab() {
       submittedByName: user.displayName,
       submitterRole: roleLabel(user.role),
       submitterPhotoPath,
-      equipmentId: args.equipmentId ?? null,
-      repairCost: args.repairCost ?? null,
     });
   };
 

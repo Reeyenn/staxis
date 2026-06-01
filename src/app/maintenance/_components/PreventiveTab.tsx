@@ -5,10 +5,8 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Wrench } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import {
   subscribeToPreventiveTasks, addPreventiveTask, completePreventiveTask,
@@ -20,8 +18,6 @@ import {
   Modal, Field, TextInput, TextArea, PhotoSlot,
   StorageImage, fmtDate, relTime, daysBetween,
 } from './_mt-snow';
-import { EquipmentRegistry } from './EquipmentRegistry';
-import { EquipmentPicker } from './EquipmentPicker';
 
 type Band = 'overdue' | 'due-soon' | 'fresh';
 const bandTone: Record<Band, { color: string; bg: string; bd: string; label: string }> = {
@@ -132,23 +128,19 @@ function AddModal({
     frequencyDays: number;
     lastCompletedISO: string;
     notes?: string;
-    equipmentId?: string | null;
   }) => Promise<void>;
 }) {
-  const { activePropertyId } = useProperty();
-  const { lang } = useLang();
   const [name, setName] = useState('');
   const [area, setArea] = useState('');
   const [freqN, setFreqN] = useState('90');
   const [freqUnit, setFreqUnit] = useState<'days' | 'weeks' | 'months' | 'years'>('days');
   const [lastDate, setLastDate] = useState('');
   const [notes, setNotes] = useState('');
-  const [equipmentId, setEquipmentId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
     setName(''); setArea(''); setFreqN('90'); setFreqUnit('days');
-    setLastDate(''); setNotes(''); setEquipmentId(null); setBusy(false);
+    setLastDate(''); setNotes(''); setBusy(false);
   };
   const close = () => { reset(); onClose(); };
 
@@ -179,7 +171,6 @@ function AddModal({
         frequencyDays: freqDays,
         lastCompletedISO: new Date(lastDate).toISOString(),
         notes: notes.trim() || undefined,
-        equipmentId,
       });
       reset();
       onClose();
@@ -289,15 +280,6 @@ function AddModal({
             </span>
           )}
         </div>
-
-        <Field
-          label={lang === 'es' ? 'Equipo (opcional)' : 'Equipment (optional)'}
-          hint={lang === 'es' ? 'Vincular a un activo del registro' : 'Link to an asset in the registry'}
-        >
-          {activePropertyId && (
-            <EquipmentPicker pid={activePropertyId} value={equipmentId} onChange={setEquipmentId} lang={lang} />
-          )}
-        </Field>
 
         <Field label="Notes" hint="Optional. Brand standard, what to check, anything that helps.">
           <TextArea
@@ -491,11 +473,9 @@ function DetailModal({
 export function PreventiveTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
-  const { lang } = useLang();
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [detail, setDetail] = useState<PreventiveTask | null>(null);
-  const [equipmentOpen, setEquipmentOpen] = useState(false);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -543,7 +523,6 @@ export function PreventiveTab() {
     frequencyDays: number;
     lastCompletedISO: string;
     notes?: string;
-    equipmentId?: string | null;
   }) => {
     if (!user || !activePropertyId) return;
     await addPreventiveTask(user.uid, activePropertyId, {
@@ -554,7 +533,6 @@ export function PreventiveTab() {
       lastCompletedAt: new Date(args.lastCompletedISO),
       lastCompletedBy: user.displayName,
       notes: args.notes,
-      equipmentId: args.equipmentId ?? null,
     });
   };
 
@@ -571,12 +549,6 @@ export function PreventiveTab() {
       photoPath,
     });
   };
-
-  // Equipment registry opens in-tab (NOT a 4th sub-tab). When open it replaces
-  // the PM list; "← Back to preventive" inside it restores this view unchanged.
-  if (equipmentOpen) {
-    return <EquipmentRegistry onBack={() => setEquipmentOpen(false)} />;
-  }
 
   return (
     <div style={{
@@ -596,14 +568,7 @@ export function PreventiveTab() {
             </span>
           </h1>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="ghost" size="md" onClick={() => setEquipmentOpen(true)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <Wrench size={14} /> {lang === 'es' ? 'Equipos' : 'Equipment'}
-            </span>
-          </Btn>
-          <Btn variant="primary" size="md" onClick={() => setAddOpen(true)}>＋ {lang === 'es' ? 'Agregar tarea' : 'Add task'}</Btn>
-        </div>
+        <Btn variant="primary" size="md" onClick={() => setAddOpen(true)}>＋ Add task</Btn>
       </div>
 
       {/* task list */}
