@@ -9,6 +9,7 @@
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateString } from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { presignDocument } from '@/lib/knowledge/core';
@@ -26,6 +27,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!canManageTeam(ctx.role as AppRole)) {
     return err('Only managers can upload documents', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
+  const rl = await checkAndIncrementRateLimit('knowledge-presign', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
+  if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+
   const fnameV = validateString(raw.filename, { max: KNOWLEDGE_LIMITS.DOC_FILENAME_MAX, label: 'filename' });
   if (fnameV.error) return err(fnameV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
 

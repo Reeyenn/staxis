@@ -52,6 +52,22 @@ function extOf(filename: string): string {
   return filename.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * Strip C0 control characters (keeping tab/newline/CR) before a DB write.
+ * Postgres `text` rejects NUL bytes outright, so a manager POSTing a raw
+ * NUL would otherwise turn a clean insert into an uncaught 500. Built with
+ * charCodeAt (no regex control-char escapes) on purpose.
+ */
+function clean(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 32 && c !== 9 && c !== 10 && c !== 13) continue; // drop control chars except \t \n \r
+    out += s[i];
+  }
+  return out;
+}
+
 // ── Row → DTO mappers ─────────────────────────────────────────────────────────
 
 function toArticleDTO(r: Record<string, unknown>): KnowledgeArticleDTO {
@@ -98,12 +114,13 @@ function toEventDTO(r: Record<string, unknown>): KnowledgeEventDTO {
 const ARTICLE_COLS = 'id, title, body, category, created_by_name, updated_by_name, created_at, updated_at';
 
 export async function listArticles(pid: string): Promise<KnowledgeArticleDTO[]> {
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('knowledge_articles')
     .select(ARTICLE_COLS)
     .eq('property_id', pid)
     .order('updated_at', { ascending: false })
     .limit(500);
+  if (error) log.warn('knowledge.listArticles failed', { err: error.message });
   return ((data ?? []) as Record<string, unknown>[]).map(toArticleDTO);
 }
 
@@ -116,9 +133,9 @@ export async function createArticle(
     .from('knowledge_articles')
     .insert({
       property_id: pid,
-      title: input.title,
-      body: input.body,
-      category: input.category,
+      title: clean(input.title),
+      body: clean(input.body),
+      category: input.category ? clean(input.category) : null,
       created_by: actor.accountId,
       created_by_name: actor.name,
       updated_by: actor.accountId,
@@ -139,9 +156,9 @@ export async function updateArticle(
   const { data } = await supabaseAdmin
     .from('knowledge_articles')
     .update({
-      title: input.title,
-      body: input.body,
-      category: input.category,
+      title: clean(input.title),
+      body: clean(input.body),
+      category: input.category ? clean(input.category) : null,
       updated_by: actor.accountId,
       updated_by_name: actor.name,
     })
@@ -168,12 +185,13 @@ export async function deleteArticle(pid: string, id: string): Promise<boolean> {
 const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extracted_text, uploaded_by_name, created_at';
 
 export async function listDocuments(pid: string): Promise<KnowledgeDocumentDTO[]> {
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('knowledge_documents')
     .select(DOC_COLS)
     .eq('property_id', pid)
     .order('created_at', { ascending: false })
     .limit(500);
+  if (error) log.warn('knowledge.listDocuments failed', { err: error.message });
   const rows = (data ?? []) as Record<string, unknown>[];
   // Mint a short-lived signed download URL for each file (server-side; the
   // bucket is private). Done in parallel; a failure leaves downloadUrl null.
@@ -233,8 +251,13 @@ export async function registerDocument(
   input: { title: string; path: string; mimeType: string; sizeBytes: number | null },
   actor: KnowledgeActor,
 ): Promise<{ id: string } | { error: string }> {
+  // Enforce the EXACT shape presignDocument mints: <pid>/knowledge/<uuid>.<ext>.
+  // A prefix-only check would let a manager register a row pointing at an
+  // arbitrary same-property path that never came from the presign flow (Codex
+  // review). The UUID + ext shape also subsumes the `..` traversal guard.
   const prefix = `${pid}/knowledge/`;
-  if (!input.path.startsWith(prefix) || input.path.includes('..')) {
+  const rest = input.path.startsWith(prefix) ? input.path.slice(prefix.length) : '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[.][a-z0-9]{1,12}$/i.test(rest)) {
     return { error: 'document path is not scoped to this property' };
   }
   // Only accept a mime we actually mint at presign time.
@@ -251,7 +274,7 @@ export async function registerDocument(
     .from('knowledge_documents')
     .insert({
       property_id: pid,
-      title: input.title,
+      title: clean(input.title),
       file_path: input.path,
       mime_type: input.mimeType,
       size_bytes: input.sizeBytes,
@@ -261,7 +284,13 @@ export async function registerDocument(
     })
     .select('id')
     .single();
-  if (error) { log.error('knowledge.registerDocument failed', { err: error.message }); throw error; }
+  if (error || !data) {
+    log.error('knowledge.registerDocument insert failed', { err: error?.message });
+    // Don't orphan the just-uploaded object when the metadata row can't be written.
+    try { await supabaseAdmin.storage.from(BUCKET).remove([input.path]); } catch { /* best-effort */ }
+    // 23505 = unique_violation (this file_path was already registered).
+    return { error: (error as { code?: string } | null)?.code === '23505' ? 'This file was already added.' : 'Could not save the document.' };
+  }
   return { id: data.id as string };
 }
 
@@ -307,13 +336,14 @@ export async function deleteDocument(pid: string, id: string): Promise<boolean> 
 const CONTACT_COLS = 'id, name, company, phone, email, notes, category, created_by_name, created_at';
 
 export async function listContacts(pid: string): Promise<KnowledgeContactDTO[]> {
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('knowledge_contacts')
     .select(CONTACT_COLS)
     .eq('property_id', pid)
     .order('category', { ascending: true, nullsFirst: false })
     .order('name', { ascending: true })
     .limit(500);
+  if (error) log.warn('knowledge.listContacts failed', { err: error.message });
   return ((data ?? []) as Record<string, unknown>[]).map(toContactDTO);
 }
 
@@ -327,8 +357,8 @@ export async function createContact(pid: string, input: ContactInput, actor: Kno
     .from('knowledge_contacts')
     .insert({
       property_id: pid,
-      name: input.name, company: input.company, phone: input.phone,
-      email: input.email, notes: input.notes, category: input.category,
+      name: clean(input.name), company: input.company ? clean(input.company) : null, phone: input.phone,
+      email: input.email, notes: input.notes ? clean(input.notes) : null, category: input.category,
       created_by: actor.accountId, created_by_name: actor.name,
     })
     .select('id')
@@ -341,8 +371,8 @@ export async function updateContact(pid: string, id: string, input: ContactInput
   const { data } = await supabaseAdmin
     .from('knowledge_contacts')
     .update({
-      name: input.name, company: input.company, phone: input.phone,
-      email: input.email, notes: input.notes, category: input.category,
+      name: clean(input.name), company: input.company ? clean(input.company) : null, phone: input.phone,
+      email: input.email, notes: input.notes ? clean(input.notes) : null, category: input.category,
     })
     .eq('id', id)
     .eq('property_id', pid)
@@ -367,12 +397,13 @@ export async function deleteContact(pid: string, id: string): Promise<boolean> {
 const EVENT_COLS = 'id, title, event_date, end_date, notes, created_by_name, created_at';
 
 export async function listEvents(pid: string): Promise<KnowledgeEventDTO[]> {
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('knowledge_events')
     .select(EVENT_COLS)
     .eq('property_id', pid)
     .order('event_date', { ascending: true })
     .limit(500);
+  if (error) log.warn('knowledge.listEvents failed', { err: error.message });
   return ((data ?? []) as Record<string, unknown>[]).map(toEventDTO);
 }
 
@@ -385,7 +416,7 @@ export async function createEvent(
     .from('knowledge_events')
     .insert({
       property_id: pid,
-      title: input.title, event_date: input.eventDate, end_date: input.endDate, notes: input.notes,
+      title: clean(input.title), event_date: input.eventDate, end_date: input.endDate, notes: input.notes ? clean(input.notes) : null,
       created_by: actor.accountId, created_by_name: actor.name,
     })
     .select('id')
@@ -529,14 +560,14 @@ export async function searchKnowledge(pid: string, rawQuery: string): Promise<Kn
       phone: (r.phone as string | null) ?? null,
       email: (r.email as string | null) ?? null,
       category: (r.category as string | null) ?? null,
-      notes: (r.notes as string | null) ?? null,
+      notes: makeSnippet(r.notes as string | null, term, 200),
     })),
     events: eventRows.map((r) => ({
       id: r.id as string,
       title: (r.title as string) ?? '',
       eventDate: r.event_date as string,
       endDate: (r.end_date as string | null) ?? null,
-      notes: (r.notes as string | null) ?? null,
+      notes: makeSnippet(r.notes as string | null, term, 200),
     })),
     note: baseNote,
   };
