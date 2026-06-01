@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0250 — Recognition / Kudos
+-- 0251 — Recognition / Kudos
 --
 -- A lightweight "recognition" log for the manager-only Staff page. A manager
 -- picks a staff member, writes a short kudos (optionally tagged with a
@@ -29,7 +29,7 @@ create table if not exists public.staff_kudos (
 );
 
 comment on table public.staff_kudos is
-  'Recognition/kudos a manager gives a staff member. property_id scoped, service-role-only. Read/written via /api/staff/kudos. In-app only — no SMS. Added 0250.';
+  'Recognition/kudos a manager gives a staff member. property_id scoped, service-role-only. Read/written via /api/staff/kudos. In-app only — no SMS. Added 0251.';
 comment on column public.staff_kudos.given_by_name is
   'Snapshot of the giving manager''s display name at give-time. Denormalized so the feed renders the giver even if the account is later removed.';
 comment on column public.staff_kudos.category is
@@ -53,7 +53,7 @@ create policy staff_kudos_deny_all on public.staff_kudos
 -- ── 3. Bookkeeping + schema reload ─────────────────────────────────────────
 insert into public.applied_migrations (version, description)
 values (
-  '0250',
+  '0251',
   'Recognition/Kudos: staff_kudos table (property_id + staff_id recipient + given_by accounts FK + given_by_name snapshot + message<=500 + optional category), service-role-only RLS, (property_id, staff_id, created_at desc) index. UI = manager-only Staff > Recognition tab; recipient read on My Shifts. Reads/writes via /api/staff/kudos. In-app only, no SMS.'
 )
 on conflict (version) do nothing;
