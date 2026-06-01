@@ -207,7 +207,8 @@ export interface InventoryItem {
   usagePerCheckout?: number;    // how many of this item used per checkout room
   usagePerStayover?: number;    // how many used per stayover room
   reorderLeadDays?: number;     // days before empty to trigger reorder (default 3)
-  vendorName?: string;          // supplier name
+  vendorName?: string;          // supplier name (free-text; fallback when no vendorId)
+  vendorId?: string | null;     // FK to a real vendors row (migration 0246); vendorName stays as fallback
   lastOrderedAt?: Date | null;  // when last ordered
   unitCost?: number;            // dollars per unit (drives Total Inventory Value + variance $)
   lastAlertedAt?: Date | null;  // when this item last triggered a critical SMS alert (24h dedupe)

@@ -6,10 +6,21 @@
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type {
   CartLineInput,
+  CatalogItem,
   OrderingMode,
   PurchaseOrder,
   ReceiveLineInput,
+  Vendor,
 } from '@/lib/ordering/types';
+
+export interface VendorFields {
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  accountNumber?: string | null;
+  notes?: string | null;
+  isActive?: boolean;
+}
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetchWithAuth(url, init);
@@ -80,4 +91,36 @@ export async function apiGetMode(pid: string): Promise<OrderingMode> {
 
 export async function apiSetMode(pid: string, mode: OrderingMode): Promise<void> {
   await call('/api/inventory/ordering-mode', jsonInit({ pid, mode }));
+}
+
+export async function apiListVendors(pid: string, includeInactive = false): Promise<Vendor[]> {
+  const qs = `pid=${encodeURIComponent(pid)}${includeInactive ? '&includeInactive=1' : ''}`;
+  const data = await call<{ vendors: Vendor[] }>(`/api/inventory/vendors?${qs}`, { cache: 'no-store' });
+  return data.vendors;
+}
+
+export async function apiCreateVendor(pid: string, fields: VendorFields): Promise<Vendor> {
+  const data = await call<{ vendor: Vendor }>('/api/inventory/vendors', jsonInit({ pid, ...fields }));
+  return data.vendor;
+}
+
+export async function apiUpdateVendor(pid: string, vendorId: string, fields: VendorFields): Promise<Vendor> {
+  const data = await call<{ vendor: Vendor }>('/api/inventory/vendors', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pid, vendorId, ...fields }),
+  });
+  return data.vendor;
+}
+
+export async function apiListCatalog(pid: string): Promise<CatalogItem[]> {
+  const data = await call<{ items: CatalogItem[] }>(
+    `/api/inventory/catalog?pid=${encodeURIComponent(pid)}`,
+    { cache: 'no-store' },
+  );
+  return data.items;
+}
+
+export async function apiImportCatalog(pid: string): Promise<{ imported: number; skipped: number }> {
+  return call('/api/inventory/catalog/import', jsonInit({ pid }));
 }
