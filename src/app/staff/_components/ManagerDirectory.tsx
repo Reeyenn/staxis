@@ -15,6 +15,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import type { StaffMember, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from './_tokens';
@@ -62,6 +63,11 @@ export function ManagerDirectory() {
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
+  // Wages are payroll-private and management-only. ManagerDirectory is only
+  // mounted for managers (see /staff/page.tsx), but we still gate the wage
+  // column + the wage fetch on the role so payroll can never render or be
+  // requested for a non-manager if this component is ever reused.
+  const isManager = !!user && canManageTeam(user.role);
 
   /* ── Modal state ── */
   const [showModal, setShowModal] = useState(false);
@@ -75,6 +81,41 @@ export function ManagerDirectory() {
     { currentManagerId: string; currentManagerName: string; newName: string } | null
   >(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
+  // staffId → hourly wage. Fetched from the management-gated service-role
+  // route (GET /api/staff/wages) — wages are deliberately NOT part of the
+  // anon `staff` payload from useProperty(), so member.hourlyWage is always
+  // undefined now and we read wages from this map instead.
+  const [wages, setWages] = useState<Record<string, number | null>>({});
+  // Did the user actually edit the wage field this modal session? Wage writes
+  // fire ONLY when true — so a save can never clear a wage just because the
+  // modal opened before GET /api/staff/wages resolved (the field starts blank,
+  // and an untouched blank must not overwrite a real wage).
+  const [wageTouched, setWageTouched] = useState(false);
+
+  // Load the wage map when the directory mounts (managers only). Refreshed
+  // locally after each successful wage write in performSave().
+  useEffect(() => {
+    if (!isManager || !pid) return;
+    let active = true;
+    fetchWithAuth(`/api/staff/wages?propertyId=${pid}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((body: { data?: { wages?: Record<string, number | null> } } | null) => {
+        if (active) setWages(body?.data?.wages ?? {});
+      })
+      .catch(err => console.error('[ManagerDirectory] wages fetch failed', err));
+    return () => { active = false; };
+  }, [isManager, pid]);
+
+  // Keep an open edit modal's wage field in sync with the async wages map
+  // until the user types into it. Without this, opening a member before the
+  // wages GET resolves would show a blank wage even though they have one; the
+  // wageTouched gate then means an untouched field never writes, so a save
+  // can't clear a wage just because of this load race.
+  useEffect(() => {
+    if (!showModal || !editMember || wageTouched) return;
+    const loaded = wages[editMember.id] ?? undefined;
+    setForm(f => (f.hourlyWage === loaded ? f : { ...f, hourlyWage: loaded }));
+  }, [wages, showModal, editMember, wageTouched]);
 
   // Fetch team list once per modal open (so newly-added staff see the latest
   // accounts list without a full page reload).
@@ -106,6 +147,7 @@ export function ManagerDirectory() {
   const openAdd = (dept: StaffDepartment = 'housekeeping') => {
     setEditMember(null);
     setForm({ ...EMPTY_FORM, department: dept });
+    setWageTouched(false);
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
     setSaveError(null);
@@ -121,13 +163,16 @@ export function ManagerDirectory() {
       language: member.language,
       department: asDeptKey(member.department) as StaffDepartment,
       isSenior: member.isSenior,
-      hourlyWage: member.hourlyWage,
+      // member.hourlyWage no longer arrives over the anon client — read the
+      // wage from the management-only map fetched above.
+      hourlyWage: wages[member.id] ?? undefined,
       maxWeeklyHours: member.maxWeeklyHours,
       maxDaysPerWeek: member.maxDaysPerWeek ?? 5,
       vacationDates: (member.vacationDates ?? []).join('\n'),
       isActive: member.isActive ?? true,
       isSchedulingManager: member.isSchedulingManager === true,
     });
+    setWageTouched(false);
     // linkedAccountId is set once the team list arrives — we look up the
     // account whose staff_id matches this member.id.
     setLinkedAccountId(null);
@@ -162,7 +207,9 @@ export function ManagerDirectory() {
         language: form.language,
         department: form.department,
         isSenior: form.isSenior,
-        ...(form.hourlyWage !== undefined && { hourlyWage: form.hourlyWage }),
+        // hourlyWage is intentionally NOT written here — it would travel over
+        // the anon client. It's persisted separately through the management-
+        // gated PUT /api/staff/wages below.
         maxWeeklyHours: form.maxWeeklyHours,
         maxDaysPerWeek: form.maxDaysPerWeek,
         vacationDates,
@@ -220,6 +267,29 @@ export function ManagerDirectory() {
             throw new Error(body?.error || 'Failed to link login to staff record');
           }
         }
+      }
+
+      // ── Wage write (managers only, service-role) ──────────────────────────
+      // Persist the wage through the management-gated route. NEVER through the
+      // staff write above — that uses the anon client, which has no column-
+      // level protection on hourly_wage. Fire ONLY when the manager actually
+      // edited the wage field (wageTouched): an untouched field — including
+      // one left blank because the wages map hadn't loaded when the modal
+      // opened — must never overwrite the stored wage. A touched-then-cleared
+      // field sends null, which is an explicit clear.
+      if (isManager && savedStaffId && wageTouched) {
+        const desiredWage = form.hourlyWage ?? null;
+        const wageRes = await fetchWithAuth('/api/staff/wages', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, hourlyWage: desiredWage }),
+        });
+        if (!wageRes.ok) {
+          const body = await wageRes.json().catch(() => ({}));
+          throw new Error(body?.error || 'Failed to save wage');
+        }
+        const sid = savedStaffId;
+        setWages(w => ({ ...w, [sid]: desiredWage }));
       }
 
       try { await refreshStaff(); } catch (err) { console.warn('[ManagerDirectory] refresh failed', err); }
@@ -440,6 +510,8 @@ export function ManagerDirectory() {
           linkableAccounts={linkableAccounts}
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
+          showWage={isManager}
+          markWageTouched={() => setWageTouched(true)}
           lang={lang}
         />
       )}
@@ -506,7 +578,7 @@ function formatPhone(p: string): string {
 // ── Modal ────────────────────────────────────────────────────────────────
 function StaffEditModal({
   editMember, form, setForm, saving, saveError, onClose, onSave, onDelete,
-  linkableAccounts, linkedAccountId, setLinkedAccountId, lang,
+  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage, markWageTouched, lang,
 }: {
   editMember: StaffMember | null;
   form: StaffFormData;
@@ -519,6 +591,8 @@ function StaffEditModal({
   linkableAccounts: TeamMember[];
   linkedAccountId: string | null;
   setLinkedAccountId: (id: string | null) => void;
+  showWage: boolean;
+  markWageTouched: () => void;
   lang: 'en' | 'es';
 }) {
   const departments: StaffDepartment[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
@@ -624,18 +698,28 @@ function StaffEditModal({
             </div>
           </Field>
 
-          {/* Hourly wage */}
-          <Field label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}>
-            <input
-              type="number" value={form.hourlyWage ?? ''} step="0.50" min="0"
-              onChange={e => setForm(f => ({
-                ...f,
-                hourlyWage: e.target.value ? parseFloat(e.target.value) : undefined,
-              }))}
-              placeholder="15.00"
-              style={{ ...inputStyle, fontFamily: fonts.mono }}
-            />
-          </Field>
+          {/* Hourly wage — management only (payroll-private). Hidden for any
+              non-manager; the wage also never reaches a non-manager browser. */}
+          {showWage && (
+            <Field label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}>
+              <input
+                type="number" value={form.hourlyWage ?? ''} step="0.50" min="0"
+                onChange={e => {
+                  markWageTouched();
+                  // Coerce non-finite parses (e.g. a lone ".") to undefined so a
+                  // malformed entry reads as "no wage" rather than NaN — which
+                  // JSON.stringify would otherwise send as null (a silent clear).
+                  const parsed = parseFloat(e.target.value);
+                  setForm(f => ({
+                    ...f,
+                    hourlyWage: Number.isFinite(parsed) ? parsed : undefined,
+                  }));
+                }}
+                placeholder="15.00"
+                style={{ ...inputStyle, fontFamily: fonts.mono }}
+              />
+            </Field>
+          )}
 
           {/* Max hours + days grid */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
