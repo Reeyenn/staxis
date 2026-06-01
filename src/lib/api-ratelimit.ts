@@ -221,6 +221,9 @@ export type RateLimitEndpoint =
   | 'compliance-vision'       // manager snap-to-log (Claude Vision)
   | 'send-engineer-links'     // SMS the compliance magic-link to maintenance staff
   | 'compliance-anomaly-phrase' // v2: AI-sharpen anomaly alert wording (sweep cron; Claude; raw pid)
+  // Equipment (asset) registry (0249). Manager create/edit/delete of assets,
+  // keyed on the RAW property UUID (no SMS / Claude — not billing-impacting).
+  | 'equipment-config'
   // Lost & Found (feature, 2026-05-30). Front-desk register + AI features +
   // housekeeper "Found an item". Reads keyed on pid; writes/AI/SMS too.
   | 'lost-found-read'
@@ -447,6 +450,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'send-engineer-links':          10,
   // v2 anomaly AI phrasing — at most one Claude batch per property per sweep.
   'compliance-anomaly-phrase':    20,
+  // Equipment registry writes — manager-only create/edit/delete; generous.
+  'equipment-config':            100,
   // Lost & Found (2026-05-30). Register read is polled (~30s/tab) + the
   // dashboard tile polls counts — 3600/hr per property absorbs several
   // terminals. Writes are deliberate desk actions. AI + SMS endpoints cost

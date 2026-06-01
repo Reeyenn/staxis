@@ -542,6 +542,11 @@ export function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
     completion_note: o.completionNote,
     completion_photo_path: o.completionPhotoPath,
     resolved_at: toISO(o.completedAt),
+    // Equipment registry (0249) — both optional. equipment_id is null when no
+    // asset is picked; dropUndefined keeps an explicit null (to clear a link)
+    // but omits undefined so existing write paths are untouched.
+    equipment_id: o.equipmentId,
+    repair_cost: o.repairCost,
   });
 }
 
@@ -562,6 +567,8 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     completionNote: parseStringField(r.completion_note),
     completionPhotoPath: parseStringField(r.completion_photo_path),
     completedAt: toDate(r.resolved_at),
+    equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
+    repairCost: r.repair_cost != null && Number.isFinite(Number(r.repair_cost)) ? Number(r.repair_cost) : null,
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
   };
@@ -580,6 +587,7 @@ export function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
     lastCompletedBy: parseStringField(r.last_completed_by),
     notes: parseStringField(r.notes),
     completionPhotoPath: parseStringField(r.completion_photo_path),
+    equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
     createdAt: toDate(r.created_at),
   };
 }
@@ -594,6 +602,7 @@ export function toPreventiveRow(t: Partial<PreventiveTask>): Record<string, unkn
     last_completed_by: t.lastCompletedBy,
     notes: t.notes,
     completion_photo_path: t.completionPhotoPath,
+    equipment_id: t.equipmentId,   // equipment registry (0249); undefined omitted
   });
 }
 

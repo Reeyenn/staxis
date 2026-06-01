@@ -94,6 +94,25 @@ export function validateInt(
   return { value: n };
 }
 
+/**
+ * Validate a finite (possibly fractional) number — costs, lifetimes, etc.
+ * Accepts a JS number or a numeric string. Use validateInt when you need a
+ * whole number. Rejects NaN / Infinity and out-of-range values.
+ */
+export function validateNumber(
+  v: unknown,
+  opts: { min?: number; max?: number; label: string },
+): { error?: string; value?: number } {
+  let n: number;
+  if (typeof v === 'number') n = v;
+  else if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) n = Number(v);
+  else return { error: `${opts.label} must be a number` };
+  if (!Number.isFinite(n)) return { error: `${opts.label} must be a finite number` };
+  if (opts.min !== undefined && n < opts.min) return { error: `${opts.label} must be ≥ ${opts.min}` };
+  if (opts.max !== undefined && n > opts.max) return { error: `${opts.label} must be ≤ ${opts.max}` };
+  return { value: n };
+}
+
 export function validateEnum<T extends string>(
   v: unknown,
   allowed: readonly T[],
@@ -129,6 +148,12 @@ export function validateDateStr(
   if (!DATE_RX.test(v)) return { error: `${opts.label} must be YYYY-MM-DD` };
   const d = new Date(v + 'T00:00:00Z');
   if (Number.isNaN(d.getTime())) return { error: `${opts.label} is not a real date` };
+  // Reject impossible calendar dates that Date() silently rolls forward
+  // (e.g. 2026-02-30 → Mar 2): verify the parsed components round-trip.
+  const [yr, mo, day] = v.split('-').map(Number);
+  if (d.getUTCFullYear() !== yr || d.getUTCMonth() + 1 !== mo || d.getUTCDate() !== day) {
+    return { error: `${opts.label} is not a real date` };
+  }
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   if (opts.allowFutureDays !== undefined) {
