@@ -10,6 +10,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { ScheduledShift, StaffMember, TimeOffRequest } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
@@ -19,6 +20,14 @@ import { useWeekShifts, mondayOf, addDays } from './useWeekShifts';
 const DEPT_ORDER: ('housekeeping' | 'front_desk' | 'maintenance')[] = [
   'housekeeping', 'front_desk', 'maintenance',
 ];
+
+// A single shift longer than this (hours) earns a "check the meal/rest break"
+// flag. Heuristic: our shifts are one start→end span with no modelled break,
+// so a long span implies none was scheduled. Most US states require a meal
+// break once a shift passes ~6h.
+const BREAK_RISK_HOURS = 6;
+// Weekly-hours cap fallback when a staff member has no max_weekly_hours set.
+const DEFAULT_WEEKLY_CAP = 40;
 
 // 'HH:MM' → 8a / 8:30a / 12p / 4p / 11p
 function fmtTime(t: string): string {
@@ -35,12 +44,13 @@ export function fmtRange(start: string, end: string): string {
 
 export function ManagerSchedule() {
   const { activePropertyId, staff } = useProperty();
+  const { lang } = useLang();
   const [weekStart, setWeekStart] = useState<string>(() => mondayOf(new Date()));
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<'publish' | 'copy' | null>(null);
 
-  const { days, byStaff, openShifts, torPending, publishedDates, presets, loading } =
+  const { days, byStaff, openShifts, torPending, torByStaff, publishedDates, presets, loading } =
     useWeekShifts(activePropertyId, weekStart);
 
   // Roster ordered HK → FD → MT, alpha within group, active only.
@@ -181,6 +191,15 @@ export function ManagerSchedule() {
         }}>{actionMsg}</div>
       )}
 
+      {/* Phase C: surface pending time-off requests so managers can find +
+          act on them without hunting for the per-cell ⏱ pins. */}
+      <TimeOffPanel
+        torByStaff={torByStaff}
+        staff={staff}
+        hotelId={activePropertyId ?? ''}
+        lang={lang}
+      />
+
       <div className="staff-schedule-scroll">
         <div className="staff-schedule-grid" style={{
           background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16, overflow: 'visible',
@@ -229,13 +248,27 @@ export function ManagerSchedule() {
                 </div>
 
                 {list.map(s => {
-                  const wkShifts = byStaff[s.id]?.filter(c => c.kind === 'shift').length ?? 0;
-                  // Approx hours sum across the week.
-                  const wkHrs = byStaff[s.id]?.reduce((sum, c) => {
-                    if (c.kind !== 'shift') return sum;
-                    return sum + hoursBetween(c.shift.startTime, c.shift.endTime);
-                  }, 0) ?? 0;
-                  const overCap = !!s.maxWeeklyHours && wkHrs > s.maxWeeklyHours;
+                  const cells = byStaff[s.id] ?? [];
+                  const wkShifts = cells.filter(c => c.kind === 'shift').length;
+                  // Projected weekly hours = sum of every assigned cell this week,
+                  // draft OR published. Intentional: the OT warning's whole value
+                  // is catching an over-cap week BEFORE the manager publishes it.
+                  const wkHrs = Math.round(cells.reduce((sum, c) => (
+                    c.kind === 'shift' ? sum + hoursBetween(c.shift.startTime, c.shift.endTime) : sum
+                  ), 0) * 10) / 10;
+                  const cap = s.maxWeeklyHours || DEFAULT_WEEKLY_CAP;
+                  const overCap = wkHrs > cap;
+                  // Longest single shift this week → meal/rest-break risk heuristic.
+                  const longestShift = cells.reduce((mx, c) => (
+                    c.kind === 'shift' ? Math.max(mx, hoursBetween(c.shift.startTime, c.shift.endTime)) : mx
+                  ), 0);
+                  const breakRisk = longestShift > BREAK_RISK_HOURS;
+                  const otTitle = lang === 'es'
+                    ? `Proyectado ${wkHrs}h supera el límite de ${cap}h por semana`
+                    : `Projected ${wkHrs}h exceeds the ${cap}h weekly cap`;
+                  const breakTitle = lang === 'es'
+                    ? `Un turno dura ${longestShift}h (más de ${BREAK_RISK_HOURS}h) — revisa el descanso`
+                    : `A shift runs ${longestShift}h (over ${BREAK_RISK_HOURS}h) — check the meal/rest break`;
                   return (
                     <div key={s.id} style={{
                       display: 'grid', gridTemplateColumns: '220px repeat(7, 1fr)',
@@ -256,15 +289,24 @@ export function ManagerSchedule() {
                             fontFamily: fonts.mono, fontSize: 9.5, letterSpacing: '0.04em',
                             color: overCap ? '#A04A2C' : T.ink3,
                             fontWeight: overCap ? 700 : 500,
-                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', marginTop: 1,
                           }}>
-                            {wkHrs}h · {wkShifts}d
+                            <span>{wkHrs}h · {wkShifts}d</span>
                             {overCap && (
-                              <span style={{
-                                fontSize: 8.5, fontWeight: 700, color: '#A04A2C',
-                                background: 'rgba(160,74,44,0.10)', border: '1px solid rgba(160,74,44,0.28)',
-                                padding: '0 5px', borderRadius: 999, letterSpacing: '0.06em', marginLeft: 2,
-                              }}>OT</span>
+                              <span title={otTitle} style={{
+                                fontSize: 9, fontWeight: 700, color: '#A04A2C',
+                                background: 'rgba(160,74,44,0.12)', border: '1px solid rgba(160,74,44,0.40)',
+                                padding: '1px 6px', borderRadius: 999, letterSpacing: '0.04em',
+                                display: 'inline-flex', alignItems: 'center', gap: 3,
+                              }}>⚠ OT {wkHrs}/{cap}h</span>
+                            )}
+                            {breakRisk && (
+                              <span title={breakTitle} style={{
+                                fontSize: 9, fontWeight: 700, color: '#8C6A33',
+                                background: 'rgba(201,150,68,0.16)', border: '1px solid rgba(140,106,51,0.40)',
+                                padding: '1px 6px', borderRadius: 999, letterSpacing: '0.04em',
+                                display: 'inline-flex', alignItems: 'center', gap: 3,
+                              }}>⚠ {lang === 'es' ? 'Descanso' : 'Break?'}</span>
                             )}
                           </div>
                         </div>
@@ -869,3 +911,214 @@ const inputStyle: React.CSSProperties = {
   background: T.paper, fontFamily: fonts.sans, fontSize: 13, color: T.ink,
   outline: 'none',
 };
+
+// ────────────────────────────────────────────────────────────────────────────
+// TimeOffPanel — findable list of pending time-off requests (Phase C).
+//
+// Until now, a pending TOR was only reachable by spotting the tiny ⏱ pin on
+// the exact day-cell and clicking it. This panel surfaces every pending request
+// up front with one-tap Approve / Deny (deny asks for an optional reason). It
+// reuses the realtime torByStaff already loaded by useWeekShifts, and the
+// decision goes through the existing PUT /api/staff-schedule/time-off — so the
+// subscription refreshes the list (and removes the auto-deleted shift) for free.
+// ────────────────────────────────────────────────────────────────────────────
+
+function TimeOffPanel({
+  torByStaff, staff, hotelId, lang,
+}: {
+  torByStaff: Record<string, TimeOffRequest[]>;
+  staff: StaffMember[];
+  hotelId: string;
+  lang: 'en' | 'es';
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [denyFor, setDenyFor] = useState<string | null>(null);
+  const [denyReason, setDenyReason] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const nameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of staff) m.set(s.id, s.name);
+    return m;
+  }, [staff]);
+
+  const all = useMemo(() => Object.values(torByStaff).flat(), [torByStaff]);
+  const pending = useMemo(
+    () => all.filter(r => r.status === 'pending').sort((a, b) => a.requestDate.localeCompare(b.requestDate)),
+    [all],
+  );
+  const decided = useMemo(
+    () => all.filter(r => r.status === 'approved' || r.status === 'denied')
+      .sort((a, b) => (b.decidedAt?.getTime() ?? 0) - (a.decidedAt?.getTime() ?? 0))
+      .slice(0, 6),
+    [all],
+  );
+
+  const decide = async (r: TimeOffRequest, decision: 'approve' | 'deny', reason?: string) => {
+    if (!hotelId) return;
+    setBusyId(r.id);
+    setErrorMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/staff-schedule/time-off', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId, id: r.id, decision, ...(reason ? { denyReason: reason } : {}) }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b?.error || (lang === 'es' ? 'No se pudo actualizar' : 'Update failed'));
+      }
+      setDenyFor(null);
+      setDenyReason('');
+      // Realtime subscription refreshes the list + drops the auto-removed shift.
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : (lang === 'es' ? 'No se pudo actualizar' : 'Update failed'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const hasPending = pending.length > 0;
+
+  // Always render the header so the section is discoverable even at zero.
+  return (
+    <div style={{
+      marginBottom: 14, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        borderBottom: hasPending ? `1px solid ${T.rule}` : 'none',
+        background: hasPending ? 'rgba(201,150,68,0.06)' : 'transparent',
+      }}>
+        <span style={{
+          fontFamily: fonts.mono, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.08em',
+          color: hasPending ? '#8C6A33' : T.ink3, textTransform: 'uppercase',
+        }}>⏱ {lang === 'es' ? 'Solicitudes de tiempo libre' : 'Time-off requests'}</span>
+        <span style={{
+          fontFamily: fonts.mono, fontSize: 9.5, fontWeight: 700,
+          color: hasPending ? '#8C6A33' : T.ink3,
+          background: hasPending ? 'rgba(201,150,68,0.16)' : 'rgba(31,35,28,0.04)',
+          border: `1px solid ${hasPending ? 'rgba(140,106,51,0.32)' : T.rule}`,
+          padding: '1px 8px', borderRadius: 999,
+        }}>{pending.length} {lang === 'es' ? `pendiente${pending.length === 1 ? '' : 's'}` : 'pending'}</span>
+        <span style={{ flex: 1 }} />
+        {decided.length > 0 && (
+          <button onClick={() => setShowHistory(v => !v)} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            fontFamily: fonts.mono, fontSize: 9.5, color: T.ink3, letterSpacing: '0.04em',
+          }}>{showHistory
+            ? (lang === 'es' ? 'Ocultar historial' : 'Hide history')
+            : (lang === 'es' ? 'Ver historial' : 'View history')}</button>
+        )}
+      </div>
+
+      {!hasPending ? (
+        <div style={{ padding: '12px 16px', fontFamily: fonts.sans, fontSize: 12.5, color: T.ink3 }}>
+          {lang === 'es' ? 'No hay solicitudes pendientes.' : 'No pending requests.'}
+        </div>
+      ) : (
+        <div>
+          {pending.map(r => {
+            const name = nameById.get(r.staffId) ?? (lang === 'es' ? 'Personal' : 'Staff');
+            const isDenying = denyFor === r.id;
+            const busy = busyId === r.id;
+            return (
+              <div key={r.id} style={{
+                padding: '12px 16px', borderBottom: `1px solid ${T.ruleSoft}`,
+                display: 'flex', flexDirection: 'column', gap: 8,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink }}>{name}</span>
+                  <span style={{ fontFamily: fonts.serif, fontSize: 15, fontStyle: 'italic', color: T.ink2 }}>
+                    {fmtTorDate(r.requestDate, lang)}
+                  </span>
+                  {r.reason && (
+                    <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>“{r.reason}”</span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  {!isDenying && (
+                    <>
+                      <Btn variant="ghost" size="sm" onClick={() => { setDenyFor(r.id); setDenyReason(''); }} disabled={busy}>
+                        {lang === 'es' ? 'Rechazar' : 'Deny'}
+                      </Btn>
+                      <Btn variant="sage" size="sm" onClick={() => decide(r, 'approve')} disabled={busy}>
+                        {busy ? '…' : (lang === 'es' ? '✓ Aprobar' : '✓ Approve')}
+                      </Btn>
+                    </>
+                  )}
+                </div>
+                {isDenying && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      autoFocus
+                      value={denyReason}
+                      onChange={e => setDenyReason(e.target.value)}
+                      placeholder={lang === 'es' ? 'Motivo (opcional)' : 'Reason (optional)'}
+                      style={{
+                        flex: 1, minWidth: 180, boxSizing: 'border-box',
+                        padding: '8px 12px', borderRadius: 10, border: `1px solid ${T.rule}`,
+                        background: T.paper, fontFamily: fonts.sans, fontSize: 12.5, color: T.ink, outline: 'none',
+                      }}
+                    />
+                    <Btn variant="ghost" size="sm" onClick={() => { setDenyFor(null); setDenyReason(''); }} disabled={busy}>
+                      {lang === 'es' ? 'Cancelar' : 'Cancel'}
+                    </Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => decide(r, 'deny', denyReason.trim() || undefined)} disabled={busy}
+                      style={{ color: '#A04A2C', borderColor: 'rgba(160,74,44,0.30)' }}>
+                      {busy ? '…' : (lang === 'es' ? 'Confirmar rechazo' : 'Confirm deny')}
+                    </Btn>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {showHistory && decided.length > 0 && (
+        <div style={{ borderTop: `1px solid ${T.rule}`, background: '#FCFBF8' }}>
+          {decided.map(r => {
+            const name = nameById.get(r.staffId) ?? (lang === 'es' ? 'Personal' : 'Staff');
+            const approved = r.status === 'approved';
+            return (
+              <div key={r.id} style={{
+                padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 10,
+                fontFamily: fonts.sans, fontSize: 12, color: T.ink2,
+                borderBottom: `1px solid ${T.ruleSoft}`,
+              }}>
+                <span style={{ fontWeight: 600, color: T.ink }}>{name}</span>
+                <span>{fmtTorDate(r.requestDate, lang)}</span>
+                <span style={{ flex: 1 }} />
+                <span style={{
+                  fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                  color: approved ? '#3F5A43' : '#A04A2C',
+                  background: approved ? 'rgba(92,122,96,0.12)' : 'rgba(160,74,44,0.10)',
+                  border: `1px solid ${approved ? 'rgba(92,122,96,0.30)' : 'rgba(160,74,44,0.30)'}`,
+                  padding: '1px 7px', borderRadius: 999,
+                }}>{approved
+                  ? (lang === 'es' ? 'APROBADO' : 'APPROVED')
+                  : (lang === 'es' ? 'RECHAZADO' : 'DENIED')}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div role="alert" style={{
+          padding: '8px 16px', fontFamily: fonts.sans, fontSize: 12, color: '#A04A2C',
+          background: 'rgba(160,74,44,0.08)', borderTop: `1px solid ${T.rule}`,
+        }}>{errorMsg}</div>
+      )}
+    </div>
+  );
+}
+
+const MONTH_SHORT_EN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const MONTH_SHORT_ES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function fmtTorDate(ymd: string, lang: 'en' | 'es'): string {
+  const [, m, d] = ymd.split('-').map(Number);
+  const months = lang === 'es' ? MONTH_SHORT_ES : MONTH_SHORT_EN;
+  return `${months[(m ?? 1) - 1]} ${d ?? 0}`;
+}

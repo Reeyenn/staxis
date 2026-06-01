@@ -23,6 +23,7 @@ import { requireSession } from '@/lib/api-auth';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromTimeOffRequestRow } from '@/lib/db-mappers';
+import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -104,48 +105,26 @@ export async function PUT(req: NextRequest) {
     return err('decision must be approve or deny', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // Load the request to know which (staff, date) tuple to auto-remove.
-  const { data: tor, error: torErr } = await supabaseAdmin
-    .from('time_off_requests').select('*')
-    .eq('id', idCheck.value!).eq('property_id', hotelId).maybeSingle();
-  if (torErr || !tor) {
-    return err('Request not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
-  if (tor.status !== 'pending') {
-    return err('Request already decided', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-
-  const update: Record<string, unknown> = {
-    status:      body.decision === 'approve' ? 'approved' : 'denied',
-    decided_at:  new Date().toISOString(),
-    decided_by:  caller.accountId,
-  };
-  if (body.decision === 'deny' && body.denyReason?.trim()) {
-    update.deny_reason = body.denyReason.trim();
-  }
-  const { error: upErr } = await supabaseAdmin
-    .from('time_off_requests').update(update).eq('id', idCheck.value!);
-  if (upErr) {
-    log.error('[time-off:PUT] update failed', { requestId, msg: errToString(upErr) });
-    return err('Failed to update request', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-
-  // On approve, auto-remove the scheduled shift for that staff+date.
-  let removedShift = false;
-  if (body.decision === 'approve') {
-    const { error: delErr, count } = await supabaseAdmin
-      .from('scheduled_shifts').delete({ count: 'exact' })
-      .eq('property_id', hotelId)
-      .eq('staff_id', tor.staff_id)
-      .eq('shift_date', tor.request_date)
-      .eq('kind', 'shift');
-    if (delErr) {
-      log.error('[time-off:PUT] cascade shift delete failed', { requestId, msg: errToString(delErr) });
-      // Don't fail the request — the TOR is approved; manager can manually unassign.
-    } else if ((count ?? 0) > 0) {
-      removedShift = true;
+  // Load + stamp + (on approve) auto-remove the scheduled shift. Shared with
+  // the `decide_time_off` agent tool so the two surfaces can't drift.
+  const result = await applyTimeOffDecision({
+    hotelId,
+    requestId: idCheck.value!,
+    decision: body.decision,
+    denyReason: body.denyReason,
+    decidedBy: caller.accountId,
+  });
+  if (!result.ok) {
+    switch (result.reason) {
+      case 'not_found':
+        return err('Request not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      case 'already_decided':
+        return err('Request already decided', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      default:
+        log.error('[time-off:PUT] decision failed', { requestId, reason: result.reason });
+        return err('Failed to update request', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
 
-  return ok({ ok: true, removedShift }, { requestId });
+  return ok({ ok: true, removedShift: result.removedShift }, { requestId });
 }
