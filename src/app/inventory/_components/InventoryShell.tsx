@@ -445,7 +445,6 @@ export function InventoryShell() {
         canManage={canManage}
         orderingMode={orderingMode}
         onModeChange={setOrderingMode}
-        onChanged={() => void refreshData()}
       />
 
       <ReportsPanel
