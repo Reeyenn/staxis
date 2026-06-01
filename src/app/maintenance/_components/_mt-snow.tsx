@@ -9,6 +9,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
+import { useLang } from '@/contexts/LanguageContext';
 import { T, FONT_SANS, FONT_MONO, FONT_SERIF } from '@/app/housekeeping/_components/_snow';
 
 export { T, FONT_SANS, FONT_MONO, FONT_SERIF };
@@ -358,7 +359,7 @@ export function daysBetween(a: Date, b: Date): number {
 }
 
 // ── Maintenance sub-tab bar ────────────────────────────────────────────────
-export type MaintenanceTabKey = 'work' | 'preventive' | 'compliance';
+export type MaintenanceTabKey = 'work' | 'preventive' | 'compliance' | 'parts';
 
 export function MTSubTabBar({
   tab, onTab,
@@ -366,10 +367,13 @@ export function MTSubTabBar({
   tab: MaintenanceTabKey;
   onTab: (t: MaintenanceTabKey) => void;
 }) {
+  const { lang } = useLang();
+  const es = lang === 'es';
   const tabs: { key: MaintenanceTabKey; label: string }[] = [
-    { key: 'work',       label: 'Work orders' },
-    { key: 'preventive', label: 'Preventive'  },
-    { key: 'compliance', label: 'Compliance'  },
+    { key: 'work',       label: es ? 'Órdenes de trabajo' : 'Work orders' },
+    { key: 'preventive', label: es ? 'Preventivo'         : 'Preventive'  },
+    { key: 'compliance', label: es ? 'Cumplimiento'       : 'Compliance'  },
+    { key: 'parts',      label: es ? 'Repuestos'          : 'Parts'       },
   ];
   return (
     <div style={{
