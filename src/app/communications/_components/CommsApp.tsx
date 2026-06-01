@@ -5,12 +5,13 @@ import React from 'react';
 import {
   Send, Mic, Square, Image as ImageIcon, Megaphone, ListTodo, MessageSquare,
   Sparkles, Check, CheckCheck, Plus, X, Users, Loader2, Wrench, AlertCircle, ClipboardList,
-  ShieldCheck, ChevronDown, ChevronRight, Building2,
+  ShieldCheck, ChevronDown, ChevronRight, Building2, BookOpen,
 } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost, apiPatch, uploadToSignedUrl } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO, TaskDTO, StaffLite, AckStatusDTO, CampaignStatusDTO } from '@/lib/comms/types';
+import { KnowledgePane } from './KnowledgePane';
 
 type BootstrapData = {
   me: { staffId: string; role: string; isManager: boolean; dept: string | null; lang: string; displayName: string; canOrgWide?: boolean };
@@ -34,7 +35,7 @@ export function CommsApp() {
   const [boot, setBoot] = React.useState<BootstrapData | null>(null);
   const [selId, setSelId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<MessageDTO[]>([]);
-  const [view, setView] = React.useState<'chats' | 'tasks'>('chats');
+  const [view, setView] = React.useState<'chats' | 'tasks' | 'knowledge'>('chats');
   const [tasks, setTasks] = React.useState<TaskDTO[]>([]);
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -242,12 +243,15 @@ export function CommsApp() {
           <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em' }}>{L('Communications', 'Comunicaciones')}</div>
           <button onClick={() => setShowNew(true)} title={L('New message', 'Nuevo mensaje')} style={iconBtn}><Plus size={18} color={SNOW.ink2} /></button>
         </div>
-        <div style={{ display: 'flex', gap: 6, padding: '10px 14px', borderBottom: `1px solid ${SNOW.ruleSoft}` }}>
+        <div style={{ display: 'flex', gap: 6, rowGap: 6, flexWrap: 'wrap', padding: '10px 14px', borderBottom: `1px solid ${SNOW.ruleSoft}` }}>
           <Tab active={view === 'chats'} onClick={() => setView('chats')} icon={<MessageSquare size={14} />} label={L('Chats', 'Chats')} />
           <Tab active={view === 'tasks'} onClick={() => setView('tasks')} icon={<ListTodo size={14} />} label={L('To-do', 'Tareas')} />
-          <button onClick={whatDidIMiss} style={{ ...pill, marginLeft: 'auto' }} title={L('What did I miss', 'Qué me perdí')}>
-            <Sparkles size={13} color={SNOW.sageDeep} /> {L('Catch up', 'Ponerme al día')}
-          </button>
+          <Tab active={view === 'knowledge'} onClick={() => setView('knowledge')} icon={<BookOpen size={14} />} label={L('Knowledge', 'Conocimiento')} />
+          {view === 'chats' && (
+            <button onClick={whatDidIMiss} style={{ ...pill, marginLeft: 'auto' }} title={L('What did I miss', 'Qué me perdí')}>
+              <Sparkles size={13} color={SNOW.sageDeep} /> {L('Catch up', 'Ponerme al día')}
+            </button>
+          )}
         </div>
 
         {missBrief && (
@@ -268,14 +272,22 @@ export function CommsApp() {
             {dms.length === 0 && <div style={{ padding: '6px 18px', fontSize: 12, color: SNOW.ink3 }}>{L('No conversations yet', 'Sin conversaciones')}</div>}
             {dms.map((c) => <ConvoRow key={c.id} c={c} active={c.id === selId} onClick={() => setSelId(c.id)} />)}
           </div>
-        ) : (
+        ) : view === 'tasks' ? (
           <TasksPane pid={pid} tasks={tasks} staff={boot?.staff ?? []} L={L} reload={loadTasks} />
+        ) : (
+          <div style={{ overflowY: 'auto', flex: 1, padding: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{L('Knowledge base', 'Base de conocimiento')}</div>
+            <div style={{ fontSize: 12.5, color: SNOW.ink2, lineHeight: 1.5 }}>{L('SOPs, documents, contacts, and the team calendar — all in one place.', 'Procedimientos, documentos, contactos y el calendario del equipo — todo en un solo lugar.')}</div>
+            <div style={{ fontSize: 12, color: SNOW.ink3, marginTop: 10, lineHeight: 1.5 }}>{L('Everyone can read. Managers can publish and edit.', 'Todos pueden leer. Los gerentes pueden publicar y editar.')}</div>
+          </div>
         )}
       </div>
 
       {/* ── Right pane ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        {view === 'tasks' ? (
+        {view === 'knowledge' ? (
+          <KnowledgePane pid={pid} isManager={!!boot?.me.isManager} L={L} />
+        ) : view === 'tasks' ? (
           <EmptyHint text={L('Manage your team to-do list on the left.', 'Gestiona la lista de tareas a la izquierda.')} />
         ) : !selConvo ? (
           <EmptyHint text={L('Pick a conversation, or start a new message.', 'Elige una conversación o inicia un mensaje nuevo.')} />
