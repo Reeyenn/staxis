@@ -647,17 +647,6 @@ export async function getMessages(
     }
   }
 
-  // The reader's own start date — used to tell whether they actually OWE each
-  // require-ack announcement (a pre-tenure read isn't theirs to confirm, and its
-  // ack wouldn't count in the tracker anyway). Only fetched when relevant.
-  const hasRequired = rows.some((r) => r.requires_ack);
-  let readerCreatedAt: string | null = null;
-  if (hasRequired) {
-    const { data: meRow } = await supabaseAdmin
-      .from('staff').select('created_at').eq('id', readerStaffId).maybeSingle();
-    readerCreatedAt = (meRow?.created_at as string | null) ?? null;
-  }
-
   // Translate bodies into the reader's language (cache-first, best-effort).
   const translated = await translateMessagesForReader(
     rows.map((r) => ({ id: r.id, body: r.body, source_lang: r.source_lang })),
@@ -716,9 +705,6 @@ export async function getMessages(
       createdAt: r.created_at,
       mine,
       requiresAck: !!r.requires_ack,
-      // The reader owes it iff it's required, not their own post, and it was
-      // posted at/after they joined (matches the tracker's recipient rule).
-      mustAck: !!r.requires_ack && !mine && (!readerCreatedAt || readerCreatedAt <= r.created_at),
       acked: r.requires_ack ? ackedByReader.has(r.id) : false,
       ackCampaignId: (r.ack_campaign_id as string | null) ?? null,
     };
@@ -976,8 +962,9 @@ export async function getCampaignStatus(
   if (!campaign) return null;
 
   const title = (campaign.title as string | null) ?? null;
-  // No accessible properties at all → treat as not-found (don't even leak the title).
-  if (allowedPropertyIds.length === 0) return null;
+  if (allowedPropertyIds.length === 0) {
+    return { campaignId, title, total: 0, acked: 0, properties: [] };
+  }
 
   // Only this campaign's copies that live in a property the caller may see —
   // never leak acknowledgement data from a hotel they don't have access to.
@@ -987,9 +974,6 @@ export async function getCampaignStatus(
     .eq('ack_campaign_id', campaignId)
     .in('property_id', allowedPropertyIds);
   const msgs = (msgRows ?? []) as { id: string; property_id: string; sender_staff_id: string | null; created_at: string }[];
-  // None of this campaign's copies are in the caller's scope → not-found, so a
-  // guessed campaignId can never surface another tenant's title or breakdown.
-  if (msgs.length === 0) return null;
 
   const propIds = Array.from(new Set(msgs.map((m) => m.property_id)));
   const { data: propRows } = propIds.length

@@ -459,8 +459,8 @@ function MessageBubble({ m, pid, isManager, showOriginal, onToggleOriginal, onTu
       </div>
       {m.requiresAck && (
         <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 5, alignItems: m.mine ? 'flex-end' : 'flex-start' }}>
-          {/* Recipient who actually owes it: must confirm until they tap. */}
-          {m.mustAck && !m.acked && (
+          {/* Recipient: must confirm until they tap the button. */}
+          {!m.mine && !m.acked && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={actionRequiredPill}><AlertCircle size={12} /> {L('Action required', 'Acción requerida')}</span>
               <AckButton pid={pid} m={m} onChanged={onChanged} L={L} />
