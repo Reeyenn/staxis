@@ -105,7 +105,6 @@ type TranslationKey =
   | 'start' | 'done' | 'remove'
   // Settings sections
   | 'staff' | 'publicAreas' | 'laundry' | 'property' | 'pmsConnection'
-  | 'checklistsTitle' | 'checklistsCardDesc'
   | 'addStaff' | 'addArea' | 'save' | 'cancel' | 'delete' | 'edit'
   | 'name' | 'phone' | 'language' | 'senior' | 'scheduledToday'
   | 'overtimeWarning' | 'loading' | 'signIn' | 'signOut'
@@ -454,8 +453,6 @@ const translations: TranslationMaps = {
     laundry: 'Laundry',
     property: 'Property',
     pmsConnection: 'PMS Connection',
-    checklistsTitle: 'Checklists',
-    checklistsCardDesc: 'Build and edit your cleaning & inspection checklists',
     addStaff: 'Add Staff',
     addArea: 'Add Area',
     save: 'Save',
@@ -1248,8 +1245,6 @@ const translations: TranslationMaps = {
     laundry: 'Lavandería',
     property: 'Propiedad',
     pmsConnection: 'Conexión PMS',
-    checklistsTitle: 'Listas de verificación',
-    checklistsCardDesc: 'Crea y edita tus listas de limpieza e inspección',
     addStaff: 'Agregar Personal',
     addArea: 'Agregar Área',
     save: 'Guardar',
