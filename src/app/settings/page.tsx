@@ -9,6 +9,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
 import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, ListChecks } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -33,6 +34,12 @@ export default function SettingsPage() {
             icon:BarChart3,
             label: lang === 'es' ? 'Reportes' : 'Reports',
             desc: lang === 'es' ? 'Genera, exporta y programa reportes cuando los necesites' : 'Run, export, and schedule reports on demand',
+          },
+          {
+            href:'/settings/checklists',
+            icon:ListChecks,
+            label: t('checklistsTitle', lang),
+            desc: t('checklistsCardDesc', lang),
           },
           {
             href:'/settings/accounts',
