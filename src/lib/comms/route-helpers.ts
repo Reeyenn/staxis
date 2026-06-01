@@ -12,11 +12,8 @@ import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { resolveAccount, resolveStaffIdForAccount, getStaffRow, isManagerRole } from './core';
 import type { CommsLang } from './types';
-
-const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface CommsCtx {
   ok: true;
@@ -29,24 +26,8 @@ export interface CommsCtx {
   isManager: boolean;
   dept: string | null;
   lang: CommsLang;
-  /** The caller's property scope (UUIDs, or '*' wildcard). Drives org-wide reach. */
-  propertyAccess: string[];
   requestId: string;
   headers: Record<string, string>;
-}
-
-/**
- * The full set of property ids a manager may broadcast an org-wide campaign to.
- * Admins / '*' wildcard → every property; otherwise the explicit property_access
- * list (UUIDs only). Deriving the target set FROM property_access is itself the
- * access check — a caller can never target a hotel they aren't scoped to.
- */
-export async function listAccessiblePropertyIds(role: string, propertyAccess: string[]): Promise<string[]> {
-  if (role === 'admin' || propertyAccess.includes('*')) {
-    const { data } = await supabaseAdmin.from('properties').select('id').limit(1000);
-    return ((data ?? []) as { id: string }[]).map((r) => r.id);
-  }
-  return propertyAccess.filter((p) => UUID_RX.test(p));
 }
 
 /**
@@ -93,7 +74,6 @@ export async function commsContext(
     isManager: isManagerRole(account.role),
     dept: staffRow?.department ?? null,
     lang: account.preferredLanguage,
-    propertyAccess: account.propertyAccess,
     requestId,
     headers,
   };
