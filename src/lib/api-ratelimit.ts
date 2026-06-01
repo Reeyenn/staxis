@@ -285,7 +285,16 @@ export type RateLimitEndpoint =
   | 'packages-write'
   | 'packages-scan-label'
   | 'packages-notify-guest'
-  | 'packages-photo-presign';
+  | 'packages-photo-presign'
+  // ── Knowledge hub (0252) — manager-gated. knowledge-presign mints a signed
+  // upload URL; knowledge-write covers the document register (synchronous
+  // storage download + text extraction). Both keyed on the (pid,userId)
+  // composite via hashToRateLimitKey and fail OPEN (not billing-impacting — no
+  // Claude/SMS), exactly like comms-photo-presign. Cheap article/contact/event
+  // CRUD is intentionally left un-limited: this list scopes to billing / SMS /
+  // public / heavy-IO endpoints, not generic authenticated manager CRUD.
+  | 'knowledge-presign'
+  | 'knowledge-write';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -532,6 +541,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'packages-scan-label':         50,
   'packages-notify-guest':       30,
   'packages-photo-presign':     200,
+  // Knowledge hub uploads (0252). A manager bulk-adding files won't hit these;
+  // a runaway/stolen session caps fast.
+  'knowledge-presign':          120,
+  'knowledge-write':            120,
 };
 
 /**

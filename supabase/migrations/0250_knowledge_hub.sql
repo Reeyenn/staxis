@@ -120,7 +120,9 @@ create table if not exists public.knowledge_events (
   created_by      uuid,
   created_by_name text,
 
-  created_at      timestamptz not null default now()
+  created_at      timestamptz not null default now(),
+
+  constraint knowledge_events_date_order check (end_date is null or end_date >= event_date)
 );
 
 comment on table public.knowledge_events is
