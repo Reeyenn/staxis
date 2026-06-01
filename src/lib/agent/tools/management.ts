@@ -303,8 +303,29 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
       return { ok: false, error: 'date must be in YYYY-MM-DD format.' };
     }
 
-    const staff = await findStaffByName(ctx.propertyId, staffName);
-    if (!staff) return { ok: false, error: `No active staff member matching "${staffName}".` };
+    // Strict name resolution — a MUTATING decision must never act on the wrong
+    // person, so we refuse an ambiguous match instead of picking the first one
+    // (unlike findStaffByName, which is fine for non-destructive lookups).
+    const { data: staffRows, error: staffErr } = await supabaseAdmin
+      .from('staff')
+      .select('id, name')
+      .eq('property_id', ctx.propertyId)
+      .eq('is_active', true);
+    if (staffErr) return { ok: false, error: 'Failed to look up staff.' };
+    const nameQuery = staffName.trim().toLowerCase();
+    const allStaff = (staffRows ?? []).map(s => ({ id: s.id as string, name: (s.name as string) ?? '' }));
+    const exact = allStaff.filter(s => s.name.toLowerCase() === nameQuery);
+    const matches = exact.length > 0 ? exact : allStaff.filter(s => s.name.toLowerCase().includes(nameQuery));
+    if (matches.length === 0) {
+      return { ok: false, error: `No active staff member matching "${staffName}".` };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        error: `Multiple staff match "${staffName}": ${matches.map(s => s.name).join(', ')}. Use the full name.`,
+      };
+    }
+    const staff = matches[0];
 
     let q = supabaseAdmin
       .from('time_off_requests')
@@ -325,11 +346,19 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
           : `${staff.name} has no pending time-off requests.`,
       };
     }
-    if (rows.length > 1 && !date) {
-      const dates = rows.map(r => r.request_date as string).join(', ');
+    if (rows.length > 1) {
+      const dates = Array.from(new Set(rows.map(r => r.request_date as string)));
+      if (!date && dates.length > 1) {
+        return {
+          ok: false,
+          error: `${staff.name} has ${rows.length} pending requests (${dates.join(', ')}). Say which date to ${decision}.`,
+        };
+      }
+      // A date was supplied but several still match, or several pending share
+      // one date — can't safely auto-pick a mutating target. Defer to the UI.
       return {
         ok: false,
-        error: `${staff.name} has ${rows.length} pending requests (${dates}). Ask which date to ${decision}.`,
+        error: `${staff.name} has ${rows.length} pending requests${date ? ` for ${date}` : ''}. Approve or deny them in the Schedule tab to be sure.`,
       };
     }
 

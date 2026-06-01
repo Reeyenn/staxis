@@ -921,6 +921,12 @@ const inputStyle: React.CSSProperties = {
 // reuses the realtime torByStaff already loaded by useWeekShifts, and the
 // decision goes through the existing PUT /api/staff-schedule/time-off — so the
 // subscription refreshes the list (and removes the auto-deleted shift) for free.
+//
+// Scope note: torByStaff is property-wide and NOT date-windowed (the underlying
+// subscribeToTimeOffRequests fetches every request for the property), so this
+// panel intentionally lists ALL pending requests across every week — not just
+// the week shown in the grid above. That's the point: a manager should see and
+// clear upcoming PTO without first navigating to its week.
 // ────────────────────────────────────────────────────────────────────────────
 
 function TimeOffPanel({

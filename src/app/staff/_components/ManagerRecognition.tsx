@@ -322,7 +322,7 @@ function KudosCard({ kudos, recipient, lang }: { kudos: Kudos; recipient: StaffM
         </div>
         <div style={{
           fontFamily: fonts.sans, fontSize: 13.5, color: T.inkSoft, marginTop: 5, lineHeight: 1.5,
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          wordBreak: 'break-word',
         }}>{kudos.message}</div>
         {kudos.givenByName && (
           <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3, marginTop: 6 }}>
