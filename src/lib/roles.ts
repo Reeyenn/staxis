@@ -47,6 +47,16 @@ export function canViewFinancials(role: AppRole): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager';
 }
 
+// Roles that can manage inventory ordering — place / approve / receive purchase
+// orders, edit vendors, import the starter catalog, and toggle Simple/Pro mode.
+// Ordering touches spend + external vendor relationships, so it's management-only
+// (owner / GM / admin); front_desk / housekeeping / maintenance / staff can still
+// view inventory + run counts, but not place or approve orders. Same trio as
+// canViewFinancials today, kept as its own predicate so it can diverge later.
+export function canManageInventory(role: AppRole): boolean {
+  return role === 'admin' || role === 'owner' || role === 'general_manager';
+}
+
 // Display label for the role (English). Spanish translations live in the UI.
 export function roleLabel(role: AppRole): string {
   switch (role) {

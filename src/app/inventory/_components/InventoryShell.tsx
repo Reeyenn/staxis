@@ -20,6 +20,8 @@ import {
   type DailyAverages,
 } from '@/lib/inventory-predictions';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { canManageInventory } from '@/lib/roles';
+import type { OrderingMode } from '@/lib/ordering/types';
 import type {
   InventoryItem,
   InventoryCount,
@@ -45,12 +47,15 @@ import { HistoryPanel } from './overlays/HistoryPanel';
 import { BudgetsPanel } from './overlays/BudgetsPanel';
 import { SimpleSheet } from './overlays/SimpleSheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
+import { OrdersPanel } from './overlays/OrdersPanel';
+import { apiGetMode } from './ordering-api';
 
 type AiMode = 'off' | 'auto' | 'always-on';
 type OverlayKey =
   | 'count'
   | 'scan'
   | 'reorder'
+  | 'orders'
   | 'reports'
   | 'history'
   | 'ai'
@@ -59,7 +64,7 @@ type OverlayKey =
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'reports', 'history', 'ai', 'budgets', 'add',
+  'count', 'scan', 'reorder', 'orders', 'reports', 'history', 'ai', 'budgets', 'add',
 ];
 
 export function InventoryShell() {
@@ -68,6 +73,7 @@ export function InventoryShell() {
   const { user } = useAuth();
   const { activePropertyId, activeProperty } = useProperty();
   const { lang } = useLang();
+  const canManage = !!user && canManageInventory(user.role);
 
   // ── Core data state ────────────────────────────────────────────────
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -84,6 +90,7 @@ export function InventoryShell() {
   const [query, setQuery] = useState('');
   const [overlay, setOverlay] = useState<OverlayKey>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
+  const [orderingMode, setOrderingMode] = useState<OrderingMode>('simple');
 
   // ── Subscribe + fetch when property loads ──────────────────────────
   useEffect(() => {
@@ -138,6 +145,16 @@ export function InventoryShell() {
       cancelled = true;
     };
   }, [user, activePropertyId]);
+
+  // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
+  useEffect(() => {
+    if (!activePropertyId || !canManage) return;
+    let cancelled = false;
+    void apiGetMode(activePropertyId)
+      .then((m) => { if (!cancelled) setOrderingMode(m); })
+      .catch(() => { /* default 'simple' */ });
+    return () => { cancelled = true; };
+  }, [activePropertyId, canManage]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
@@ -365,6 +382,7 @@ export function InventoryShell() {
           historyCount={historyCount}
           spendSpent={totalSpent}
           spendCap={totalCap}
+          canManage={canManage}
           onAction={openOverlay}
         />
         <div>
@@ -406,6 +424,17 @@ export function InventoryShell() {
         spendByCat={spendByCat}
         averages={averages}
         mlRateMap={mlRateMap}
+        canManage={canManage}
+        orderingMode={orderingMode}
+        onViewOrders={() => setOverlay('orders')}
+      />
+
+      <OrdersPanel
+        open={overlay === 'orders'}
+        onClose={() => { closeOverlay(); void refreshData(); }}
+        canManage={canManage}
+        orderingMode={orderingMode}
+        onChanged={() => void refreshData()}
       />
 
       <ReportsPanel
