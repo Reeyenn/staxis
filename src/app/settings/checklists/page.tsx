@@ -102,7 +102,6 @@ interface InspectionChecklist {
   appliesToCleaningTypes: string[];
   appliesToRoomTypes: string[];
   isOverride: boolean; hasDefault: boolean;
-  otherCount: number;
   items: Array<InspectionItem & { id: string; orderIndex: number }>;
 }
 
@@ -411,12 +410,7 @@ function CleaningEditor({ pid, lang, properties }: {
         <Btn variant="primary" size="md" onClick={() => void save()} disabled={saving || loading}>
           <Save size={14} /> {saving ? (lang === 'es' ? 'Guardando…' : 'Saving…') : (lang === 'es' ? 'Guardar' : 'Save')}
         </Btn>
-        <Btn
-          variant="ghost" size="md"
-          onClick={() => setShowCopy(true)}
-          disabled={saving || loading || !data?.isOverride}
-          title={!data?.isOverride ? (lang === 'es' ? 'Personaliza y guarda primero para copiar.' : 'Customize and save first to copy.') : undefined}
-        >
+        <Btn variant="ghost" size="md" onClick={() => setShowCopy(true)} disabled={saving || loading}>
           <Copy size={14} /> {lang === 'es' ? 'Copiar a otras propiedades' : 'Copy to other properties'}
         </Btn>
         {data?.isOverride && (
@@ -426,7 +420,7 @@ function CleaningEditor({ pid, lang, properties }: {
         )}
       </div>
 
-      {showCopy && data?.isOverride && (
+      {showCopy && (
         <CopyModal
           lang={lang}
           pid={pid}
@@ -543,15 +537,6 @@ function InspectionEditor({ pid, lang, properties }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <StatusRow lang={lang} isOverride={data?.isOverride ?? false} hasDefault={data?.hasDefault ?? false} />
-
-      {(data?.otherCount ?? 0) > 0 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontFamily: fonts.sans, fontSize: 12.5, color: T.caramelDeep, background: 'rgba(215,176,126,0.14)', border: '1px solid rgba(140,106,51,0.25)', borderRadius: 8, padding: '8px 12px' }}>
-          <AlertTriangle size={13} style={{ flexShrink: 0 }} />
-          {lang === 'es'
-            ? `Esta propiedad tiene ${(data?.otherCount ?? 0) + 1} listas de inspección. Estás editando la más reciente; las demás siguen activas para la inspección.`
-            : `This property has ${(data?.otherCount ?? 0) + 1} inspection checklists. You’re editing the most recent; the others stay active for inspections.`}
-        </div>
-      )}
 
       {error && <Banner tone="warm">{error}</Banner>}
       {notice && <Banner tone="sage"><Check size={13} /> {notice}</Banner>}
@@ -876,8 +861,8 @@ function CopyModal({ lang, pid, properties, label, onClose, buildBody }: {
           <>
             <div style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
               {lang === 'es'
-                ? `Esto creará o reemplazará la lista “${label}” en las propiedades seleccionadas.`
-                : `This will create or replace the “${label}” checklist on the selected properties.`}
+                ? `Esto reemplazará la lista “${label}” en las propiedades seleccionadas.`
+                : `This will replace the “${label}” checklist on the selected properties.`}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {others.map((p) => {
