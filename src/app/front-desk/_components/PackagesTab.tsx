@@ -524,14 +524,18 @@ function AddPackageModal({
         const res = await scanPackageLabel(pid, p.b64, p.mime);
         if (res.ok && res.data) {
           const d = res.data;
-          let any = false;
-          if (d.guestName && !guestName.trim()) { setGuestName(d.guestName); any = true; }
-          if (d.roomNumber && !room.trim()) { setRoom(d.roomNumber); any = true; }
-          if (d.carrier && !carrier) { setCarrier(d.carrier); any = true; }
-          if (d.trackingNumber && !tracking.trim()) { setTracking(d.trackingNumber); any = true; }
-          if (any) {
+          // Functional setters: only fill a field that is STILL empty now — the
+          // clerk may have typed into it while the scan was in flight, and we
+          // must never clobber that (the closure's values are stale).
+          if (d.guestName) setGuestName((prev) => (prev.trim() ? prev : d.guestName!));
+          if (d.roomNumber) setRoom((prev) => (prev.trim() ? prev : d.roomNumber!));
+          if (d.carrier) setCarrier((prev) => (prev ? prev : d.carrier!));
+          if (d.trackingNumber) setTracking((prev) => (prev.trim() ? prev : d.trackingNumber!));
+          const readAnything = !!(d.guestName || d.roomNumber || d.carrier || d.trackingNumber);
+          if (readAnything) {
+            // The inline "✨ AI filled — check it" banner is the reminder; no
+            // extra toast (avoids a double notification for one action).
             setAiFilled(true);
-            onToast(tr(lang, 'AI filled the details — check them', 'La IA completó los datos — revísalos'));
           } else {
             onToast(tr(lang, 'Couldn’t read the label — enter it manually', 'No se pudo leer la etiqueta — ingrésalo manualmente'));
           }
@@ -624,7 +628,11 @@ function AddPackageModal({
         >
           <button
             type="button"
-            onClick={() => (preview ? (setPreview(null), (prepared.current = null)) : fileRef.current?.click())}
+            onClick={() =>
+              preview
+                ? (setPreview(null), setAiFilled(false), (prepared.current = null))
+                : fileRef.current?.click()
+            }
             style={{
               width: '100%',
               minHeight: 120,

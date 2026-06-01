@@ -44,6 +44,16 @@ export async function POST(req: NextRequest): Promise<Response> {
       return err('Package not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     }
 
+    // Only a held package is "waiting" — don't text a guest about a parcel
+    // they've already collected (the UI hides the button, but guard the API).
+    if (pkg.status !== 'held') {
+      return err('Package already picked up', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+
     if (!pkg.guestPhone) {
       return err('No guest phone on file for this package', {
         requestId,

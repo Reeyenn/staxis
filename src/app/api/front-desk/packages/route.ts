@@ -3,7 +3,7 @@
  *
  * GET  — list packages for a property (+ held/picked-up counts).
  *        `?status=held|picked_up` filters the items; counts are always the full
- *        totals. `?countsOnly=1` returns just the counts.
+ *        totals.
  * POST — log a new incoming package (status defaults to 'held').
  *
  * Authenticated, ANY signed-in user with access to the property (front-desk
@@ -49,12 +49,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     const records = await listPackages(gate.pid);
     const counts = computeCounts(records);
 
-    const url = new URL(req.url);
-    if (url.searchParams.get('countsOnly') === '1') {
-      return ok({ counts }, { requestId: gate.requestId });
-    }
-
-    const statusParam = url.searchParams.get('status');
+    const statusParam = new URL(req.url).searchParams.get('status');
     const filtered =
       statusParam === 'held' || statusParam === 'picked_up'
         ? records.filter((r) => r.status === statusParam)
@@ -99,6 +94,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Recipient is required — a parcel with no addressee can't be handed back.
   const nameV = validateString(body.guestName, { max: 120, label: 'guestName' });
   if (nameV.error) return bad(nameV.error);
+  const guestName = nameV.value!.trim();
+  if (!guestName) return bad('guestName cannot be empty');
 
   const roomV = optStr(body.roomNumber, 20, 'roomNumber');
   if (roomV.error) return bad(roomV.error);
@@ -134,7 +131,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   try {
     const res = await createPackage(pid, {
-      guestName: nameV.value!,
+      guestName,
       roomNumber: roomV.value,
       carrier,
       trackingNumber: trackingV.value,
