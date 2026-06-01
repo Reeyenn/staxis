@@ -4,7 +4,7 @@
 //   GET  ?hotelId=&scope=mine   [any linked staff]  the caller's OWN kudos
 //   POST body: { hotelId, staffId, message, category? }   [manager]  give a kudos
 //
-// staff_kudos is service-role-only (migration 0250) — anon + authenticated are
+// staff_kudos is service-role-only (migration 0251) — anon + authenticated are
 // deny-all, so every read/write goes through this route via supabaseAdmin. The
 // "feed" + "give" paths require a management role (verifyTeamManager); the
 // "mine" path only needs a valid session and returns nothing but the caller's

@@ -6,7 +6,7 @@
 // sees their recognition in their own My Shifts view (no SMS).
 //
 // Reads/writes go through /api/staff/kudos (service-role) — staff_kudos is
-// deny-all to anon + authenticated (migration 0250). The Staff page is already
+// deny-all to anon + authenticated (migration 0251). The Staff page is already
 // manager-only; the API route re-checks the management role on every call.
 
 'use client';
