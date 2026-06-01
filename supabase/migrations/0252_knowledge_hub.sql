@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0250 — Knowledge hub (SOPs · Documents · Contacts · Calendar)
+-- 0252 — Knowledge hub (SOPs · Documents · Contacts · Calendar)
 --
 -- A per-property knowledge base that lives as a third view inside
 -- Communications (Chats · Tasks · Knowledge). Four tables:
@@ -46,7 +46,7 @@ create table if not exists public.knowledge_articles (
 );
 
 comment on table public.knowledge_articles is
-  'Knowledge hub SOPs: per-property how-to write-ups (title + markdown/plain body). property_id scoped, service-role-only. All staff read, managers write — gated at /api/knowledge/articles. Added 0250.';
+  'Knowledge hub SOPs: per-property how-to write-ups (title + markdown/plain body). property_id scoped, service-role-only. All staff read, managers write — gated at /api/knowledge/articles. Added 0252.';
 
 create index if not exists knowledge_articles_property_updated_idx
   on public.knowledge_articles (property_id, updated_at desc);
@@ -72,7 +72,7 @@ create table if not exists public.knowledge_documents (
 );
 
 comment on table public.knowledge_documents is
-  'Knowledge hub uploaded files: a metadata row per object in the private knowledge-docs bucket. extracted_text holds plain-text/markdown content for AI search (PDF/doc content extraction is a documented fast-follow). property_id scoped, service-role-only. Added 0250.';
+  'Knowledge hub uploaded files: a metadata row per object in the private knowledge-docs bucket. extracted_text holds plain-text/markdown content for AI search (PDF/doc content extraction is a documented fast-follow). property_id scoped, service-role-only. Added 0252.';
 comment on column public.knowledge_documents.file_path is
   'Object path inside the private knowledge-docs bucket. Always begins with <property_id>/knowledge/ — the register route rejects any path not scoped to the caller''s property, so a row can never point at another tenant''s file.';
 
@@ -101,7 +101,7 @@ create table if not exists public.knowledge_contacts (
 );
 
 comment on table public.knowledge_contacts is
-  'Knowledge hub directory: vendor / emergency / brand / local contacts per property. property_id scoped, service-role-only. All staff read, managers write. Added 0250.';
+  'Knowledge hub directory: vendor / emergency / brand / local contacts per property. property_id scoped, service-role-only. All staff read, managers write. Added 0252.';
 
 create index if not exists knowledge_contacts_property_category_idx
   on public.knowledge_contacts (property_id, category);
@@ -126,7 +126,7 @@ create table if not exists public.knowledge_events (
 );
 
 comment on table public.knowledge_events is
-  'Knowledge hub team calendar: simple date-ranged entries (training days, vendor visits, brand audits). property_id scoped, service-role-only. All staff read, managers write. Added 0250.';
+  'Knowledge hub team calendar: simple date-ranged entries (training days, vendor visits, brand audits). property_id scoped, service-role-only. All staff read, managers write. Added 0252.';
 
 create index if not exists knowledge_events_property_date_idx
   on public.knowledge_events (property_id, event_date);
@@ -184,7 +184,7 @@ on conflict (id) do update
 -- ── 8. Bookkeeping + schema reload ──────────────────────────────────────────
 insert into public.applied_migrations (version, description)
 values (
-  '0250',
+  '0252',
   'Knowledge hub: knowledge_articles (SOPs) + knowledge_documents (private knowledge-docs bucket + extracted_text) + knowledge_contacts (vendor/emergency/brand/local) + knowledge_events (team calendar). All service-role-only (deny-all anon+authenticated); all-staff read / manager write enforced at /api/knowledge/*. Read-only AI search via search_knowledge tool (scoped to ctx.propertyId). Plain-text/markdown docs AI-searchable; PDF content extraction is a fast-follow.'
 )
 on conflict (version) do nothing;
