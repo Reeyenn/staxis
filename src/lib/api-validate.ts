@@ -148,12 +148,6 @@ export function validateDateStr(
   if (!DATE_RX.test(v)) return { error: `${opts.label} must be YYYY-MM-DD` };
   const d = new Date(v + 'T00:00:00Z');
   if (Number.isNaN(d.getTime())) return { error: `${opts.label} is not a real date` };
-  // Reject impossible calendar dates that Date() silently rolls forward
-  // (e.g. 2026-02-30 → Mar 2): verify the parsed components round-trip.
-  const [yr, mo, day] = v.split('-').map(Number);
-  if (d.getUTCFullYear() !== yr || d.getUTCMonth() + 1 !== mo || d.getUTCDate() !== day) {
-    return { error: `${opts.label} is not a real date` };
-  }
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   if (opts.allowFutureDays !== undefined) {

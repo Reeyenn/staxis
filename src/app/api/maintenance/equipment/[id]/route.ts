@@ -16,7 +16,7 @@ import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { isManager } from '@/lib/compliance/api-helpers';
 import { getEquipmentDetail, updateEquipment, deleteEquipment } from '@/lib/equipment/store';
-import { parseEquipmentPatch } from '@/lib/equipment/validate';
+import { parseEquipmentInput } from '@/lib/equipment/validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,7 +75,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const rl = await checkAndIncrementRateLimit('equipment-config', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const parsed = parseEquipmentPatch(body);
+  const parsed = parseEquipmentInput(body);
   if (parsed.error) return err(parsed.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
   try {
