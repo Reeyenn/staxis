@@ -24,32 +24,11 @@ export const MAX_STAFF_LIMIT = 1000;
 // including server-internal admin fields and any new columns added later
 // that the UI doesn't read. Update both this constant and fromStaffRow
 // when adding a column the UI needs.
-//
-// PRIVACY — hourly_wage is intentionally ABSENT. These helpers run on the
-// anon Supabase client, and `staff` RLS is row-level only ("owner rw
-// staff", migration 0001) — Postgres RLS cannot restrict a single column,
-// so listing hourly_wage here would ship every colleague's payroll to any
-// authenticated property user (front_desk, housekeeping, …) who can open
-// the staff list. Wages are read ONLY through the management-gated
-// service-role route GET /api/staff/wages. NEVER add hourly_wage back to
-// this constant (mirrors the same rule in /api/staff-list).
 export const STAFF_COLS =
-  'id, name, phone, language, is_senior, department, ' +
+  'id, name, phone, language, is_senior, department, hourly_wage, ' +
   'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
   'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
   'is_scheduling_manager, last_paired_at';
-
-// Defense for the WRITE side of the same leak. `toStaffRow` faithfully maps
-// hourlyWage → hourly_wage (the mapper is a pure translator), but the anon
-// client must never carry a wage write — RLS is row-level only, so any
-// authenticated property user could otherwise overwrite payroll. Wage
-// create/edit goes through the management-gated PUT /api/staff/wages
-// instead. Stripping here means even a caller that passes `hourlyWage` to
-// addStaffMember/updateStaffMember can't tunnel it past the browser.
-function stripWageWrite(row: Record<string, unknown>): Record<string, unknown> {
-  delete row.hourly_wage;
-  return row;
-}
 
 export interface StaffListOpts {
   /** 1-based page size cap. Clamped to [1, MAX_STAFF_LIMIT]. */
@@ -119,7 +98,7 @@ export function subscribeToStaff(
 
 export async function addStaffMember(_uid: string, pid: string, data: Omit<StaffMember, 'id'>): Promise<string> {
   try {
-    const row = { ...stripWageWrite(toStaffRow(data)), property_id: pid };
+    const row = { ...toStaffRow(data), property_id: pid };
     const { data: inserted, error } = await supabase
       .from('staff').insert(row).select('id').single();
     if (error) throw error;
@@ -129,7 +108,7 @@ export async function addStaffMember(_uid: string, pid: string, data: Omit<Staff
 
 export async function updateStaffMember(_uid: string, _pid: string, sid: string, data: Partial<StaffMember>): Promise<void> {
   try {
-    const { error } = await supabase.from('staff').update(stripWageWrite(toStaffRow(data))).eq('id', sid);
+    const { error } = await supabase.from('staff').update(toStaffRow(data)).eq('id', sid);
     if (error) throw error;
   } catch (err) { logErr('updateStaffMember', err); throw err; }
 }
