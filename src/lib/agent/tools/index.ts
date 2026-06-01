@@ -17,6 +17,7 @@ import './complaints';
 import './compliance';
 import './lost-found';
 import './financials';
+import './knowledge';
 
 // Future cross-feature tool modules (registered from other branches/chats)
 // can be added by importing from agent/index.ts at the top level — this
