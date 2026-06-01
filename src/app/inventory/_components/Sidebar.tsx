@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import { useLang } from '@/contexts/LanguageContext';
 import { T, fonts, statusColor } from './tokens';
 import { Caps } from './Caps';
 import { fmtMoney } from './format';
@@ -10,8 +9,6 @@ export type SidebarAction =
   | 'count'
   | 'scan'
   | 'reorder'
-  | 'orders'
-  | 'ordersettings'
   | 'reports'
   | 'history'
   | 'ai'
@@ -23,8 +20,6 @@ interface SidebarProps {
   historyCount: number;
   spendSpent: number;
   spendCap: number;
-  /** Management (owner/GM/admin) — gates the Orders + Ordering-settings actions. */
-  canManage: boolean;
   onAction: (key: SidebarAction) => void;
 }
 
@@ -34,12 +29,8 @@ export function Sidebar({
   historyCount,
   spendSpent,
   spendCap,
-  canManage,
   onAction,
 }: SidebarProps) {
-  const { lang } = useLang();
-  const L = lang === 'es' ? 'es' : 'en';
-  const ordersLabel = { en: 'Orders', es: 'Órdenes' }[L];
   return (
     <aside
       style={{
@@ -65,9 +56,6 @@ export function Sidebar({
         accent={statusColor.critical}
         onClick={() => onAction('reorder')}
       />
-      {canManage && (
-        <SidebarItem label={ordersLabel} onClick={() => onAction('orders')} />
-      )}
       <Divider />
       <Caps size={9} style={{ padding: '4px 8px 8px' }}>
         Look
