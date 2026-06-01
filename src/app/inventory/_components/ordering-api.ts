@@ -10,7 +10,6 @@ import type {
   OrderingMode,
   PurchaseOrder,
   ReceiveLineInput,
-  SpendRollup,
   Vendor,
 } from '@/lib/ordering/types';
 
@@ -124,12 +123,4 @@ export async function apiListCatalog(pid: string): Promise<CatalogItem[]> {
 
 export async function apiImportCatalog(pid: string): Promise<{ imported: number; skipped: number }> {
   return call('/api/inventory/catalog/import', jsonInit({ pid }));
-}
-
-export async function apiSpendRollup(days = 90): Promise<SpendRollup> {
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 86_400_000);
-  const qs = `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
-  const data = await call<{ rollup: SpendRollup }>(`/api/inventory/spend-rollup?${qs}`, { cache: 'no-store' });
-  return data.rollup;
 }

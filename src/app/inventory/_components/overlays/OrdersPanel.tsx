@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import type { OrderStatus, OrderingMode, PurchaseOrder, SpendRollup } from '@/lib/ordering/types';
+import type { OrderStatus, OrderingMode, PurchaseOrder } from '@/lib/ordering/types';
 
 import { T, fonts, statusColor } from '../tokens';
 import { Btn } from '../Btn';
@@ -14,7 +14,6 @@ import {
   apiListOrders,
   apiReceiveOrder,
   apiSendOrder,
-  apiSpendRollup,
 } from '../ordering-api';
 
 interface OrdersPanelProps {
@@ -60,12 +59,6 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Cross-property spend rollup (Phase E).
-  const [view, setView] = useState<'orders' | 'spend'>('orders');
-  const [rollup, setRollup] = useState<SpendRollup | null>(null);
-  const [rollupDays, setRollupDays] = useState(90);
-  const [rollupLoading, setRollupLoading] = useState(false);
-
   // Per-PO inline UI state.
   const [receiveFor, setReceiveFor] = useState<string | null>(null);
   const [receiveDraft, setReceiveDraft] = useState<Record<string, string>>({});
@@ -95,17 +88,6 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
       short: { en: 'Short delivery', es: 'Entrega incompleta' }[L],
       lines: { en: 'items', es: 'artículos' }[L],
       sentTo: { en: 'sent to', es: 'enviada a' }[L],
-      ordersTab: { en: 'Orders', es: 'Órdenes' }[L],
-      spendTab: { en: 'Cross-property spend', es: 'Gasto entre propiedades' }[L],
-      total: { en: 'Total', es: 'Total' }[L],
-      byProperty: { en: 'By property', es: 'Por propiedad' }[L],
-      byVendor: { en: 'By vendor', es: 'Por proveedor' }[L],
-      byCategory: { en: 'By category', es: 'Por categoría' }[L],
-      noSpend: { en: 'No spend recorded in this window.', es: 'Sin gastos registrados en este período.' }[L],
-      spendLoading: { en: 'Loading spend…', es: 'Cargando gasto…' }[L],
-      last30: { en: '30 days', es: '30 días' }[L],
-      last90: { en: '90 days', es: '90 días' }[L],
-      last365: { en: '12 months', es: '12 meses' }[L],
     }),
     [L],
   );
@@ -128,22 +110,9 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
       setNotice(null);
       setReceiveFor(null);
       setEmailFor(null);
-      setView('orders');
       void load();
     }
   }, [open, load]);
-
-  // Fetch the cross-property spend rollup when the Spend tab is shown / range changes.
-  useEffect(() => {
-    if (!open || view !== 'spend') return;
-    let cancelled = false;
-    setRollupLoading(true);
-    void apiSpendRollup(rollupDays)
-      .then((r) => { if (!cancelled) setRollup(r); })
-      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load spend'); })
-      .finally(() => { if (!cancelled) setRollupLoading(false); });
-    return () => { cancelled = true; };
-  }, [open, view, rollupDays]);
 
   const afterAction = useCallback(async () => {
     await load();
@@ -250,16 +219,7 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
         )}
         {error && <div style={banner(statusColor.critical)}>{error}</div>}
 
-        {/* Orders | Cross-property spend tabs */}
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['orders', 'spend'] as const).map((v) => (
-            <button key={v} type="button" onClick={() => setView(v)} style={tabStyle(view === v)}>
-              {v === 'orders' ? tt.ordersTab : tt.spendTab}
-            </button>
-          ))}
-        </div>
-
-        {view === 'orders' && (loading ? (
+        {loading ? (
           <div style={emptyBox}>{tt.loading}</div>
         ) : orders.length === 0 ? (
           <div style={emptyBox}>{tt.empty}</div>
@@ -308,90 +268,10 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
               </div>
             );
           })
-        ))}
-
-        {view === 'spend' && (
-          <SpendView rollup={rollup} loading={rollupLoading} days={rollupDays} setDays={setRollupDays} tt={tt} />
         )}
       </div>
     </Overlay>
   );
-}
-
-function SpendView({
-  rollup,
-  loading,
-  days,
-  setDays,
-  tt,
-}: {
-  rollup: SpendRollup | null;
-  loading: boolean;
-  days: number;
-  setDays: (d: number) => void;
-  tt: Record<string, string>;
-}) {
-  const ranges: Array<{ d: number; label: string }> = [
-    { d: 30, label: tt.last30 },
-    { d: 90, label: tt.last90 },
-    { d: 365, label: tt.last365 },
-  ];
-  const breakdown = (title: string, rows: SpendRollup['byProperty']) => (
-    <div style={{ flex: 1, minWidth: 220 }}>
-      <div style={{ fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.ink3, fontWeight: 600, marginBottom: 8 }}>{title}</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {rows.length === 0 ? (
-          <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>—</span>
-        ) : rows.map((r) => (
-          <div key={r.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: fonts.sans, fontSize: 13, color: T.ink }}>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</span>
-            <span style={{ fontFamily: fonts.mono, color: T.ink2 }}>{fmtMoney(r.spentCents / 100)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {ranges.map((r) => (
-          <button key={r.d} type="button" onClick={() => setDays(r.d)} style={tabStyle(days === r.d)}>{r.label}</button>
-        ))}
-      </div>
-      {loading ? (
-        <div style={emptyBox}>{tt.spendLoading}</div>
-      ) : !rollup || rollup.totalCents === 0 ? (
-        <div style={emptyBox}>{tt.noSpend}</div>
-      ) : (
-        <>
-          <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 18px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
-            <span style={{ fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.ink3 }}>{tt.total}</span>
-            <span style={{ fontFamily: fonts.serif, fontSize: 30, fontStyle: 'italic', color: T.ink }}>{fmtMoney(rollup.totalCents / 100)}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 18px' }}>
-            {breakdown(tt.byProperty, rollup.byProperty)}
-            {breakdown(tt.byVendor, rollup.byVendor)}
-            {breakdown(tt.byCategory, rollup.byCategory)}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function tabStyle(active: boolean): React.CSSProperties {
-  return {
-    padding: '6px 14px',
-    borderRadius: 8,
-    cursor: 'pointer',
-    background: active ? T.ink : 'transparent',
-    color: active ? T.bg : T.ink2,
-    border: `1px solid ${active ? T.ink : T.rule}`,
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    fontWeight: 600,
-  };
 }
 
 function OrderCard({
