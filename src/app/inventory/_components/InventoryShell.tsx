@@ -48,7 +48,6 @@ import { BudgetsPanel } from './overlays/BudgetsPanel';
 import { SimpleSheet } from './overlays/SimpleSheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
-import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
 import { apiGetMode } from './ordering-api';
 
 type AiMode = 'off' | 'auto' | 'always-on';
@@ -57,7 +56,6 @@ type OverlayKey =
   | 'scan'
   | 'reorder'
   | 'orders'
-  | 'ordersettings'
   | 'reports'
   | 'history'
   | 'ai'
@@ -66,7 +64,7 @@ type OverlayKey =
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'ai', 'budgets', 'add',
+  'count', 'scan', 'reorder', 'orders', 'reports', 'history', 'ai', 'budgets', 'add',
 ];
 
 export function InventoryShell() {
@@ -437,14 +435,6 @@ export function InventoryShell() {
         canManage={canManage}
         orderingMode={orderingMode}
         onChanged={() => void refreshData()}
-      />
-
-      <OrderingSettingsPanel
-        open={overlay === 'ordersettings'}
-        onClose={closeOverlay}
-        canManage={canManage}
-        orderingMode={orderingMode}
-        onModeChange={setOrderingMode}
       />
 
       <ReportsPanel
