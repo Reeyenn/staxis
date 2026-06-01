@@ -258,7 +258,7 @@ export type RateLimitEndpoint =
   // is a deliberate, idempotent action (unique(message_id,staff_id)); keyed per
   // (pid, staffId) composite via hashToRateLimitKey, fail-open like the other
   // non-AI comms write endpoints.
-  | 'comms-acknowledge';
+  | 'comms-acknowledge'
   // ── Inventory Ordering (2026-05-31) — GM/owner ordering suite. ALL keyed on
   // the RAW property id (a real properties.id) — api_limits.property_id has an
   // FK to properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
