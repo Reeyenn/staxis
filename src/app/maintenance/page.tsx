@@ -20,9 +20,10 @@ import { T, FONT_SANS, MTSubTabBar, type MaintenanceTabKey } from './_components
 import { WorkOrdersTab } from './_components/WorkOrdersTab';
 import { PreventiveTab } from './_components/PreventiveTab';
 import { ComplianceTab } from './_components/ComplianceTab';
+import { PartsTab } from './_components/PartsTab';
 
 const STORAGE_KEY = 'mt-tab';
-const VALID_TABS: MaintenanceTabKey[] = ['work', 'preventive', 'compliance'];
+const VALID_TABS: MaintenanceTabKey[] = ['work', 'preventive', 'compliance', 'parts'];
 
 export default function MaintenancePage() {
   const [tab, setTabState] = useState<MaintenanceTabKey>('work');
@@ -70,6 +71,7 @@ export default function MaintenancePage() {
         {tab === 'work'       && <WorkOrdersTab />}
         {tab === 'preventive' && <PreventiveTab />}
         {tab === 'compliance' && <ComplianceTab />}
+        {tab === 'parts'      && <PartsTab />}
       </div>
     </AppLayout>
   );

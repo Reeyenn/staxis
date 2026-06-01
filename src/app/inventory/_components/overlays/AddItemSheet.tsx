@@ -22,11 +22,15 @@ interface AddItemSheetProps {
   open: boolean;
   onClose: () => void;
   item: InventoryItem | null;
+  /** Category a *new* item starts on. Defaults to 'housekeeping' (Inventory
+   *  page). The Maintenance → Parts tab passes 'maintenance' so a part added
+   *  there lands back in that filtered view. Ignored when editing. */
+  defaultCategory?: InvCat;
 }
 
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
+export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeeping' }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
@@ -34,7 +38,7 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
   const isEdit = item != null;
 
   const [name, setName] = useState('');
-  const [category, setCategory] = useState<InvCat>('housekeeping');
+  const [category, setCategory] = useState<InvCat>(defaultCategory);
   const [currentStock, setCurrentStock] = useState<string>('0');
   const [parLevel, setParLevel] = useState<string>('0');
   const [unit, setUnit] = useState('each');
@@ -73,7 +77,7 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
       setNotes(item.notes || '');
     } else {
       setName('');
-      setCategory('housekeeping');
+      setCategory(defaultCategory);
       setCurrentStock('0');
       setParLevel('0');
       setUnit('each');
@@ -83,7 +87,7 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
       setLeadDays('3');
       setNotes('');
     }
-  }, [open, item]);
+  }, [open, item, defaultCategory]);
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
