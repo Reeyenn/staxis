@@ -19,6 +19,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { SubTabBar, type StaffTab } from './_components/SubTabBar';
 import { ManagerSchedule } from './_components/ManagerSchedule';
 import { ManagerDirectory } from './_components/ManagerDirectory';
+import { ManagerRecognition } from './_components/ManagerRecognition';
 import { MyShifts } from './_components/MyShifts';
 import { T, fonts } from './_components/_tokens';
 import StaleDataBanner from '@/components/StaleDataBanner';
@@ -48,7 +49,7 @@ function ManagerView() {
     if (typeof window === 'undefined') return 'schedule';
     try {
       const raw = window.localStorage.getItem(TAB_STORAGE_KEY);
-      return raw === 'directory' ? 'directory' : 'schedule';
+      return raw === 'directory' || raw === 'recognition' ? raw : 'schedule';
     } catch { return 'schedule'; }
   });
   useEffect(() => {
@@ -63,8 +64,9 @@ function ManagerView() {
         <StaleDataBanner />
       </div>
       <SubTabBar tab={tab} onTab={setTab}/>
-      {tab === 'schedule'  && <ManagerSchedule/>}
-      {tab === 'directory' && <ManagerDirectory/>}
+      {tab === 'schedule'    && <ManagerSchedule/>}
+      {tab === 'directory'   && <ManagerDirectory/>}
+      {tab === 'recognition' && <ManagerRecognition/>}
     </div>
   );
 }

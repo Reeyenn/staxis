@@ -4,6 +4,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, findStaffByName } from './_helpers';
+import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
 
 // ─── assign_room ──────────────────────────────────────────────────────────
 
@@ -207,6 +208,164 @@ registerTool<Record<string, never>>({
         heartbeat: data.updated_at,
         lastSuccessfulSync: data.last_poll_at,
         lastError: data.status !== 'running' ? (data.paused_reason ?? data.status) : null,
+      },
+    };
+  },
+});
+
+// ─── get_time_off_requests ────────────────────────────────────────────────
+// Lets a manager ask "any time-off requests?" and get a straight answer
+// instead of hunting the schedule grid. Read-only; chat + general voice.
+
+const TOR_STATUS_FILTERS = ['pending', 'approved', 'denied', 'all'] as const;
+
+registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
+  name: 'get_time_off_requests',
+  description:
+    'List staff time-off (PTO) requests for this property. Use when a manager asks things like "any time-off requests?", "who wants time off?", or "show pending PTO". Returns each request\'s staff name, date, reason, and status. Defaults to pending requests only.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      status: {
+        type: 'string',
+        enum: ['pending', 'approved', 'denied', 'all'],
+        description: 'Which requests to return. Defaults to "pending".',
+      },
+    },
+  },
+  allowedRoles: ['admin', 'owner', 'general_manager'],
+  surfaces: ['chat', 'voice'],
+  voiceModes: ['general'],
+  handler: async ({ status }, ctx): Promise<ToolResult> => {
+    const filter = TOR_STATUS_FILTERS.includes(status as typeof TOR_STATUS_FILTERS[number])
+      ? (status as typeof TOR_STATUS_FILTERS[number])
+      : 'pending';
+
+    let query = supabaseAdmin
+      .from('time_off_requests')
+      .select('id, staff_id, request_date, reason, status, submitted_at')
+      .eq('property_id', ctx.propertyId);
+    if (filter !== 'all') query = query.eq('status', filter);
+
+    const { data, error } = await query.order('request_date', { ascending: true }).limit(100);
+    if (error) return { ok: false, error: 'Failed to load time-off requests.' };
+
+    const rows = data ?? [];
+    // Resolve staff names in one batched lookup.
+    const ids = Array.from(new Set(rows.map(r => r.staff_id as string).filter(Boolean)));
+    const { data: staffRows } = ids.length
+      ? await supabaseAdmin.from('staff').select('id, name').in('id', ids)
+      : { data: [] };
+    const nameById = new Map<string, string>();
+    for (const s of staffRows ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
+
+    const requests = rows.map(r => ({
+      staffName: nameById.get(r.staff_id as string) ?? 'Unknown',
+      date: r.request_date as string,
+      reason: (r.reason as string | null) ?? null,
+      status: r.status as string,
+      submittedAt: r.submitted_at as string,
+    }));
+
+    return { ok: true, data: { filter, count: requests.length, requests } };
+  },
+});
+
+// ─── decide_time_off ──────────────────────────────────────────────────────
+// Approve or deny a PENDING time-off request by staff name (+ optional date).
+// Mutating + manager-only + chat-only (no voice approvals — a misheard "approve"
+// shouldn't delete a shift). Shares the approve-cascade with the HTTP route via
+// applyTimeOffDecision so the two surfaces can't drift.
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; denyReason?: string }>({
+  name: 'decide_time_off',
+  description:
+    'Approve or deny a PENDING staff time-off request. Identify the request by the staff member\'s name; pass the date (YYYY-MM-DD) too when they have more than one pending request. Approving also clears that day\'s scheduled shift. Use only when the manager clearly says to approve or deny someone\'s time off.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      staffName: { type: 'string', description: 'Staff member whose request to decide (first name is enough if unique).' },
+      decision: { type: 'string', enum: ['approve', 'deny'], description: 'approve or deny.' },
+      date: { type: 'string', description: 'Optional ISO date YYYY-MM-DD to disambiguate when the staff member has multiple pending requests.' },
+      denyReason: { type: 'string', description: 'Optional short reason shown to the staff member when denying.' },
+    },
+    required: ['staffName', 'decision'],
+  },
+  allowedRoles: ['admin', 'owner', 'general_manager'],
+  mutates: true,
+  handler: async ({ staffName, decision, date, denyReason }, ctx): Promise<ToolResult> => {
+    if (decision !== 'approve' && decision !== 'deny') {
+      return { ok: false, error: 'decision must be "approve" or "deny".' };
+    }
+    if (date && !DATE_RE.test(date)) {
+      return { ok: false, error: 'date must be in YYYY-MM-DD format.' };
+    }
+
+    const staff = await findStaffByName(ctx.propertyId, staffName);
+    if (!staff) return { ok: false, error: `No active staff member matching "${staffName}".` };
+
+    let q = supabaseAdmin
+      .from('time_off_requests')
+      .select('id, request_date, reason')
+      .eq('property_id', ctx.propertyId)
+      .eq('staff_id', staff.id)
+      .eq('status', 'pending');
+    if (date) q = q.eq('request_date', date);
+    const { data: pendingRows, error: pendErr } = await q.order('request_date', { ascending: true });
+    if (pendErr) return { ok: false, error: 'Failed to look up the request.' };
+
+    const rows = pendingRows ?? [];
+    if (rows.length === 0) {
+      return {
+        ok: false,
+        error: date
+          ? `${staff.name} has no pending time-off request for ${date}.`
+          : `${staff.name} has no pending time-off requests.`,
+      };
+    }
+    if (rows.length > 1 && !date) {
+      const dates = rows.map(r => r.request_date as string).join(', ');
+      return {
+        ok: false,
+        error: `${staff.name} has ${rows.length} pending requests (${dates}). Ask which date to ${decision}.`,
+      };
+    }
+
+    const target = rows[0];
+
+    // dryRun (eval runner): exercise the lookup path but skip the write.
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        data: { dryRun: true, staffName: staff.name, date: target.request_date, decision },
+      };
+    }
+
+    const result = await applyTimeOffDecision({
+      hotelId: ctx.propertyId,
+      requestId: target.id as string,
+      decision,
+      denyReason,
+      decidedBy: ctx.user.accountId,
+    });
+    if (!result.ok) {
+      const msg = result.reason === 'already_decided'
+        ? 'That request was already decided.'
+        : result.reason === 'not_found'
+          ? 'That request no longer exists.'
+          : 'Failed to update the request.';
+      return { ok: false, error: msg };
+    }
+
+    return {
+      ok: true,
+      data: {
+        staffName: staff.name,
+        date: result.requestDate,
+        decision: decision === 'approve' ? 'approved' : 'denied',
+        removedShift: result.removedShift,
       },
     };
   },

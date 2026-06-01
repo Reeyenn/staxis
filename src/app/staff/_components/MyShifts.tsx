@@ -11,7 +11,7 @@
 
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -203,6 +203,9 @@ export function MyShifts() {
             onAddRequest={() => setRequestOpen(true)}
           />
         </div>
+
+        {/* Recognition the manager gave you (in-app only; appears when you have some). */}
+        <MyRecognitionCard hotelId={activePropertyId ?? ''} lang={me.language} />
       </div>
 
       {requestOpen && (
@@ -579,3 +582,100 @@ const inputStyle: React.CSSProperties = {
   background: T.paper, fontFamily: fonts.sans, fontSize: 13, color: T.ink,
   outline: 'none',
 };
+
+// ── My recognition card ────────────────────────────────────────────────────
+// Closes the kudos loop: the recipient sees recognition their manager gave
+// them, in-app (no SMS). Reads only the caller's OWN kudos via
+// GET /api/staff/kudos?scope=mine. Hidden until there's something to show.
+const KUDOS_CAT_LABEL: Record<string, { en: string; es: string }> = {
+  'guest-praise':     { en: 'Guest praise',   es: 'Elogio de huésped' },
+  'teamwork':         { en: 'Teamwork',       es: 'Trabajo en equipo' },
+  'above-and-beyond': { en: 'Above & beyond', es: 'Excepcional' },
+  'attendance':       { en: 'Attendance',     es: 'Asistencia' },
+};
+
+interface MyKudos {
+  id: string;
+  message: string;
+  category: string | null;
+  givenByName: string | null;
+  createdAt: string | null;
+}
+
+function MyRecognitionCard({ hotelId, lang }: { hotelId: string; lang: 'en' | 'es' }) {
+  const [kudos, setKudos] = useState<MyKudos[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!hotelId) return;
+    let active = true;
+    fetchWithAuth(`/api/staff/kudos?hotelId=${hotelId}&scope=mine`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((b: { data?: { kudos?: MyKudos[] } } | null) => {
+        if (!active) return;
+        setKudos(b?.data?.kudos ?? []);
+        setLoaded(true);
+      })
+      .catch(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
+  }, [hotelId]);
+
+  // Keep My Shifts clean — only show the card once there's recognition to show.
+  if (!loaded || kudos.length === 0) return null;
+
+  return (
+    <div style={{
+      marginTop: 24, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '14px 18px', borderBottom: `1px solid ${T.rule}`,
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12,
+      }}>
+        <div>
+          <Caps size={9}>{lang === 'es' ? 'Reconocimiento' : 'Recognition'}</Caps>
+          <div style={{
+            fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic',
+            color: T.ink, letterSpacing: '-0.02em', marginTop: 3, lineHeight: 1.1,
+          }}>{lang === 'es' ? 'Para ti ✨' : 'For you ✨'}</div>
+        </div>
+        <span style={{
+          fontFamily: fonts.mono, fontSize: 9.5, color: '#8C6A33', letterSpacing: '0.06em', fontWeight: 700,
+          background: 'rgba(201,150,68,0.14)', border: '1px solid rgba(140,106,51,0.32)',
+          padding: '3px 9px', borderRadius: 999,
+        }}>{kudos.length}</span>
+      </div>
+      <div>
+        {kudos.slice(0, 6).map(k => {
+          const cat = k.category && KUDOS_CAT_LABEL[k.category]
+            ? (lang === 'es' ? KUDOS_CAT_LABEL[k.category].es : KUDOS_CAT_LABEL[k.category].en)
+            : null;
+          return (
+            <div key={k.id} style={{
+              padding: '12px 18px', borderBottom: `1px solid ${T.ruleSoft}`,
+              display: 'flex', flexDirection: 'column', gap: 4,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                {cat && (
+                  <span style={{
+                    fontFamily: fonts.sans, fontSize: 10.5, fontWeight: 600, color: '#8C6A33',
+                    background: 'rgba(201,150,68,0.14)', border: '1px solid rgba(140,106,51,0.28)',
+                    padding: '1px 8px', borderRadius: 999,
+                  }}>{cat}</span>
+                )}
+                {k.givenByName && (
+                  <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+                    {lang === 'es' ? 'Por' : 'From'} {k.givenByName}
+                  </span>
+                )}
+              </div>
+              <div style={{
+                fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic', color: T.ink,
+                lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>“{k.message}”</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

@@ -36,20 +36,28 @@ import '@/lib/agent/tools/index';
 const ROLES = ['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance', 'staff'] as const;
 
 describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => {
-  // Two tools opt into GENERAL voice mode (voiceModes: ['general']):
-  //   • log_complaint  (Complaints)   — "Hey Staxis, log a complaint, room 214 AC not cooling"
-  //   • log_found_item (Lost & Found) — "Hey Staxis, found a pair of glasses in 214"
-  // Both audited before updating this snapshot: property-scoped via ctx.propertyId,
-  // role-gated (exclude 'staff'), length-clamped, non-destructive (write a tracked
-  // row, no cross-tenant reach). Engineering-compliance tools declare
-  // voiceModes:['compliance'] so they stay OUT of general mode; and
-  // createMaintenanceWorkOrder stays hidden via voiceModes:['housekeeper_issue'].
+  // Tools that opt into GENERAL voice mode (voiceModes: ['general']):
+  //   • log_complaint        (Complaints)   — manager + floor roles
+  //   • log_found_item       (Lost & Found) — manager + floor roles
+  //   • get_time_off_requests (Staff PTO)   — MANAGER roles only
+  //       "Hey Staxis, any time-off requests?"
+  // get_time_off_requests audited before updating this snapshot: READ-ONLY
+  // (mutates:false — it never writes), property-scoped via ctx.propertyId,
+  // role-gated to admin/owner/general_manager (executeTool enforces
+  // allowedRoles), and it only answers spoken Q&A. The MUTATING PTO tool
+  // (decide_time_off) is deliberately chat-only — a misheard "approve" must
+  // not delete a shift — so it never reaches this catalog. Engineering-
+  // compliance tools declare voiceModes:['compliance'] so they stay OUT of
+  // general mode; createMaintenanceWorkOrder stays hidden via
+  // voiceModes:['housekeeper_issue'].
   const GENERAL_VOICE_ROLES = new Set(['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance']);
+  const MANAGER_VOICE_ROLES = new Set(['owner', 'admin', 'general_manager']);
   for (const role of ROLES) {
     test(`role=${role} general voice mode catalog`, () => {
       const tools = getToolsForRole(role as never, 'voice', 'general');
-      // sorted: 'log_complaint' < 'log_found_item'
-      const expected = GENERAL_VOICE_ROLES.has(role) ? ['log_complaint', 'log_found_item'] : [];
+      // sorted: 'get_time_off_requests' < 'log_complaint' < 'log_found_item'
+      const base = GENERAL_VOICE_ROLES.has(role) ? ['log_complaint', 'log_found_item'] : [];
+      const expected = (MANAGER_VOICE_ROLES.has(role) ? ['get_time_off_requests', ...base] : base).sort();
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
         expected,
