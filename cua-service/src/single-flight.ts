@@ -38,6 +38,9 @@ interface SingleFlightState {
   };
   /** Abort controller for the in-flight tick — set when busy=true. */
   abortController: AbortController | null;
+  /** FIFO of callers awaiting the mutex (exclusive writers waiting out a
+   *  read or another write). Woken one-at-a-time on release. Phase 3. */
+  waiters: Array<() => void>;
 }
 
 const states = new Map<string, SingleFlightState>();
@@ -50,6 +53,7 @@ function getState(propertyId: string): SingleFlightState {
       startedAt: null,
       metrics: { completed: 0, skipped: 0, timedOut: 0, failed: 0 },
       abortController: null,
+      waiters: [],
     };
     states.set(propertyId, state);
   }
@@ -134,6 +138,69 @@ export async function schedule<T>(
     state.busy = false;
     state.startedAt = null;
     state.abortController = null;
+    wakeNextWaiter(state);
+  }
+}
+
+function wakeNextWaiter(state: SingleFlightState): void {
+  const next = state.waiters.shift();
+  if (next) next();
+}
+
+/**
+ * Run fn() under the per-hotel mutex with EXCLUSIVE, WAIT semantics — the
+ * opposite of schedule()'s skip-if-busy. A write MUST happen, it can't be
+ * dropped, so if a tick (a read via schedule() OR another exclusive run)
+ * is in flight, this waits its turn. It shares the SAME `busy` state as
+ * schedule(), so a write blocks new reads and an in-flight read blocks a
+ * write: true mutual exclusion on the one browser context.
+ *
+ * Phase 3 / Codex adversarial review P0-1: before this, workflow jobs used
+ * a depth COUNTER ("acquireBrowserLock") that did not actually serialize
+ * concurrent callers, and it was a DIFFERENT lock from the read mutex — so
+ * a read and a write could drive the same Page at once. Write handlers now
+ * wrap their page work in runExclusive() against the read mutex.
+ */
+export async function runExclusive<T>(
+  propertyId: string,
+  timeoutMs: number,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const state = getState(propertyId);
+  // Wait out any in-flight tick (read or write). The while-loop re-checks
+  // after each wake so a race (another waiter grabbed the mutex first)
+  // simply re-queues rather than double-entering.
+  while (state.busy) {
+    await new Promise<void>((resolve) => state.waiters.push(resolve));
+  }
+  state.busy = true;
+  state.startedAt = Date.now();
+  const abortController = new AbortController();
+  state.abortController = abortController;
+
+  const timeoutHandle = setTimeout(() => {
+    log.warn('single-flight: exclusive tick exceeded timeout — aborting', { propertyId, timeoutMs });
+    abortController.abort();
+  }, timeoutMs);
+
+  try {
+    const result = await fn(abortController.signal);
+    state.metrics.completed++;
+    return result;
+  } catch (err) {
+    if (abortController.signal.aborted) {
+      state.metrics.timedOut++;
+      log.warn('single-flight: exclusive tick timed out', { propertyId, timeoutMs });
+    } else {
+      state.metrics.failed++;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutHandle);
+    state.busy = false;
+    state.startedAt = null;
+    state.abortController = null;
+    wakeNextWaiter(state);
   }
 }
 

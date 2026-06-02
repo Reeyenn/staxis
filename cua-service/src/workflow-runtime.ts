@@ -101,6 +101,11 @@ export class WorkflowRuntime {
   private handlers = new Map<string, WorkflowHandler>();
   private pollHandle: NodeJS.Timeout | null = null;
   private running = false;
+  /** Phase 3 / Codex P0-1: the 5s poll is a setInterval, so without this
+   *  guard a job running longer than 5s would let the next tick claim a
+   *  SECOND job and drive the same browser concurrently. One job at a
+   *  time per process (Plan v4 hosts one hotel per process). */
+  private inFlight = false;
 
   constructor(supervisor: SessionSupervisor) {
     this.supervisor = supervisor;
@@ -167,6 +172,11 @@ export class WorkflowRuntime {
   // ─── Internals ────────────────────────────────────────────────────────
 
   private async pollOnce(): Promise<void> {
+    // Phase 3 / Codex P0-1 — never run two jobs concurrently. A job that
+    // outlasts the 5s poll interval must not let the next tick claim and
+    // run another job on the same browser.
+    if (this.inFlight) return;
+    this.inFlight = true;
     try {
       const job = await this.claimNextJob();
       if (!job) return;
@@ -175,6 +185,8 @@ export class WorkflowRuntime {
       log.warn('workflow-runtime: poll failed', {
         err: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      this.inFlight = false;
     }
   }
 
