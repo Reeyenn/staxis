@@ -27,6 +27,12 @@ test('resolvePayloadValue fails CLOSED on an unresolved/empty payload field', ()
   assert.throws(() => resolvePayloadValue('$payload.room_number', { room_number: '' }), /payload_placeholder_unresolved/);
 });
 
+test('resolvePayloadValue fails CLOSED on a MALFORMED placeholder (never passes through as literal) — Codex P0', () => {
+  assert.throws(() => resolvePayloadValue('$payload.bad-name', { 'bad-name': 'x' }), /payload_placeholder_malformed/);
+  assert.throws(() => resolvePayloadValue('$payload.a.b', { a: 'x' }), /payload_placeholder_malformed/);
+  assert.throws(() => resolvePayloadValue('$payload', {}), /payload_placeholder_malformed/);
+});
+
 test('findExactMatchIndex matches EXACTLY — room "10" never matches "110"', () => {
   assert.equal(findExactMatchIndex(['10', '110', '210'], '10'), 0);
   assert.equal(findExactMatchIndex(['10', '110', '210'], '110'), 1);

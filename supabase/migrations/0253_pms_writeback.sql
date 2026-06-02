@@ -168,9 +168,11 @@ begin
 end;
 $$;
 
--- Browser roles can neither execute this nor touch the tables (RLS denies);
--- all access is via supabaseAdmin (service_role).
-revoke all on function public.staxis_enqueue_pms_write(uuid, text, text, text, text, jsonb, boolean) from anon, authenticated;
+-- Strip the default PUBLIC execute grant (Postgres grants EXECUTE to PUBLIC on
+-- new functions) AND the browser roles, then grant execute back to service_role
+-- only. All access is via supabaseAdmin (service_role). (Codex P2.)
+revoke all on function public.staxis_enqueue_pms_write(uuid, text, text, text, text, jsonb, boolean) from public, anon, authenticated;
+grant execute on function public.staxis_enqueue_pms_write(uuid, text, text, text, text, jsonb, boolean) to service_role;
 
 -- PostgREST caches the schema; reload so the new table/columns/RPC are visible.
 notify pgrst, 'reload schema';

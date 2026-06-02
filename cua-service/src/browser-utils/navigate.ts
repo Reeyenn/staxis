@@ -151,6 +151,22 @@ function registrableDomain(host: string): string {
   return lastTwo;
 }
 
+/** Unwrap an IPv4-mapped IPv6 literal (::ffff:a.b.c.d or ::ffff:hhhh:hhhh) to
+ *  its dotted IPv4 string, so isPrivateOrLocalHost's IPv4 rules catch a mapped
+ *  loopback / RFC1918 address. Returns null if `h` isn't such a literal. */
+function unwrapMappedIpv4(h: string): string | null {
+  if (!h.startsWith('::ffff:')) return null;
+  const suffix = h.slice(7);
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(suffix)) return suffix;
+  const m = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(suffix);
+  if (m) {
+    const a = parseInt(m[1], 16);
+    const b = parseInt(m[2], 16);
+    return `${(a >> 8) & 0xff}.${a & 0xff}.${(b >> 8) & 0xff}.${b & 0xff}`;
+  }
+  return null;
+}
+
 /** RFC1918 + loopback + link-local + cloud metadata + 0.0.0.0 + IPv6
  *  loopback + IPv6 link-local. Hostname-string check; if it doesn't
  *  match an IP literal we let it through (DNS would need a separate
@@ -158,9 +174,16 @@ function registrableDomain(host: string): string {
  *  v0; the registrable-domain allowlist is the primary defense). */
 export function isPrivateOrLocalHost(rawHostname: string): boolean {
   // URL parsing strips outer brackets from IPv6 but the raw hostname
-  // can still arrive with them in some code paths — normalize.
-  const h = rawHostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // can still arrive with them in some code paths — normalize. Also strip a
+  // trailing dot (FQDN root) so "localhost." / "127.0.0.1." can't slip past
+  // (Codex P0).
+  let h = rawHostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+  // IPv4-mapped IPv6 (::ffff:127.0.0.1 / ::ffff:7f00:1) — unwrap to the
+  // embedded IPv4 so the dotted-quad rules below catch a mapped loopback
+  // or RFC1918 address (Codex P0).
+  const mapped = unwrapMappedIpv4(h);
+  if (mapped) h = mapped;
   // IPv4 dotted-quad
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
   if (ipv4) {

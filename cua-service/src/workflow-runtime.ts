@@ -101,11 +101,13 @@ export class WorkflowRuntime {
   private handlers = new Map<string, WorkflowHandler>();
   private pollHandle: NodeJS.Timeout | null = null;
   private running = false;
-  /** Phase 3 / Codex P0-1: the 5s poll is a setInterval, so without this
-   *  guard a job running longer than 5s would let the next tick claim a
-   *  SECOND job and drive the same browser concurrently. One job at a
-   *  time per process (Plan v4 hosts one hotel per process). */
-  private inFlight = false;
+  /** Phase 3 / Codex P0-1 + P1: the 5s poll is a setInterval, so without an
+   *  in-flight guard a job outlasting the interval would let the next tick
+   *  claim a SECOND job and drive the same browser concurrently. TWO lanes so
+   *  a long no-driver mapper job (its own browser) can't starve alive-driver
+   *  pms.write jobs: one job in flight PER lane. */
+  private inFlightNoDriver = false;
+  private inFlightAlive = false;
 
   constructor(supervisor: SessionSupervisor) {
     this.supervisor = supervisor;
@@ -172,49 +174,60 @@ export class WorkflowRuntime {
   // ─── Internals ────────────────────────────────────────────────────────
 
   private async pollOnce(): Promise<void> {
-    // Phase 3 / Codex P0-1 — never run two jobs concurrently. A job that
-    // outlasts the 5s poll interval must not let the next tick claim and
-    // run another job on the same browser.
-    if (this.inFlight) return;
-    this.inFlight = true;
+    // Two lanes so a long-running no-driver mapper job can't block alive-driver
+    // pms.write jobs (Codex P1). Each lane runs at most one job at a time.
+    await Promise.allSettled([this.pumpNoDriver(), this.pumpAlive()]);
+  }
+
+  private async pumpNoDriver(): Promise<void> {
+    if (this.inFlightNoDriver) return;
+    this.inFlightNoDriver = true;
     try {
-      const job = await this.claimNextJob();
-      if (!job) return;
-      await this.runJob(job);
+      const job = await this.claimNextJob('noDriver');
+      if (job) await this.runJob(job);
     } catch (err) {
-      log.warn('workflow-runtime: poll failed', {
+      log.warn('workflow-runtime: no-driver poll failed', {
         err: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      this.inFlight = false;
+      this.inFlightNoDriver = false;
     }
   }
 
-  private async claimNextJob(): Promise<WorkflowJobRow | null> {
-    // Plan v7 Phase 2c — TWO claim paths:
-    //   (a) Alive-driver jobs: anything that needs to drive the persistent
-    //       browser of a hotel (e.g. "mark room clean in PMS"). Filter to
-    //       hotels with active SessionDrivers.
-    //   (b) No-driver jobs (NO_DRIVER_KINDS): mapper jobs. The mapper-driver
-    //       owns its own browser; no SessionDriver needed.
-    //
-    // Try (b) first — mapper jobs are admin/onboarding and rare, so it
-    // doesn't matter if they preempt; but if (a) had no alive drivers
-    // we'd starve the queue forever without (b).
+  private async pumpAlive(): Promise<void> {
+    if (this.inFlightAlive) return;
+    this.inFlightAlive = true;
+    try {
+      const job = await this.claimNextJob('alive');
+      if (job) await this.runJob(job);
+    } catch (err) {
+      log.warn('workflow-runtime: alive poll failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.inFlightAlive = false;
+    }
+  }
+
+  private async claimNextJob(lane: 'noDriver' | 'alive'): Promise<WorkflowJobRow | null> {
+    // Two independent claim lanes (Codex P1 — keep mapper + pms.write apart):
+    //   - 'noDriver' (NO_DRIVER_KINDS, e.g. the mapper): owns its own browser.
+    //   - 'alive': jobs that drive a live hotel's persistent browser (pms.write).
     const noDriverKinds = [...NO_DRIVER_KINDS];
-    const { data: noDriverRow } = await supabase
-      .from('workflow_jobs')
-      .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key')
-      .in('kind', noDriverKinds)
-      .eq('status', 'queued')
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    let row: WorkflowJobRow | null = null;
 
-    let row: WorkflowJobRow | null = noDriverRow ? (noDriverRow as WorkflowJobRow) : null;
-
-    if (!row) {
-      // Path (a): jobs for alive hotels only.
+    if (lane === 'noDriver') {
+      const { data } = await supabase
+        .from('workflow_jobs')
+        .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key')
+        .in('kind', noDriverKinds)
+        .eq('status', 'queued')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      row = data ? (data as WorkflowJobRow) : null;
+    } else {
+      // Alive-driver jobs for hotels with a live SessionDriver only.
       const aliveDriverIds = this.supervisor.listDrivers().map((d) => d.propertyId);
       if (aliveDriverIds.length === 0) return null;
       const { data, error } = await supabase
@@ -229,6 +242,8 @@ export class WorkflowRuntime {
       if (error || !data) return null;
       row = data as WorkflowJobRow;
     }
+
+    if (!row) return null;
 
     // Atomic claim: flip status to 'running' for THIS row only.
     const { data: claim, error: claimErr } = await supabase

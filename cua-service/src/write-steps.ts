@@ -41,13 +41,21 @@ export function resolvePayloadValue(rawValue: string, payload: Record<string, st
   const m = /^\$payload\.([A-Za-z0-9_]+)$/.exec(rawValue);
   if (m) {
     const field = m[1];
+    if (!Object.prototype.hasOwnProperty.call(payload, field)) {
+      throw new Error(`payload_placeholder_unresolved: $payload.${field} is missing from the write payload`);
+    }
     const v = payload[field];
     if (v === undefined || v === null || v === '') {
-      throw new Error(
-        `payload_placeholder_unresolved: $payload.${field} is missing from the write payload`,
-      );
+      throw new Error(`payload_placeholder_unresolved: $payload.${field} is empty`);
     }
     return String(v);
+  }
+  // Fail CLOSED (Codex P0): a value that LOOKS like a placeholder but doesn't
+  // match the strict $payload.<field> grammar (e.g. "$payload.bad-name",
+  // "$payload.a.b") must NEVER pass through as a literal to be typed/selected
+  // into a live PMS form. Throw instead.
+  if (rawValue.startsWith('$payload')) {
+    throw new Error(`payload_placeholder_malformed: "${rawValue}" is not a valid $payload.<field> reference`);
   }
   return rawValue;
 }
@@ -151,7 +159,35 @@ async function pollForChange(loc: Locator, fromText: string | undefined, timeout
  * `scope: 'row'` steps run relative to the located room row; otherwise the
  * whole page. The `save` step is the only thing dry-run skips.
  */
+/** Step kinds that change PMS state. In dry-run these are VALIDATED (payload
+ *  resolves, target element exists) but never executed — so a dry-run can't
+ *  mutate a PMS that autosaves on change/blur/click, not just on the Save
+ *  button (Codex P1). */
+const MUTATING_KINDS = new Set<WriteStep['kind']>([
+  'click', 'fill', 'select', 'type_text', 'press_key', 'save',
+]);
+
 export async function runWriteStep(page: Page, step: WriteStep, ctx: WriteStepCtx): Promise<void> {
+  // Dry-run: validate mutating steps (payload resolves, target exists) but do
+  // NOT perform them. Non-mutating steps (waits/asserts) still run.
+  if (ctx.dryRun && MUTATING_KINDS.has(step.kind)) {
+    if (step.kind === 'fill' || step.kind === 'select' || step.kind === 'type_text') {
+      resolvePayloadValue(step.value, ctx.payload); // validate $payload / refuse credentials
+    }
+    const sel =
+      'selector' in step && step.selector
+        ? step.selector
+        : step.kind === 'save'
+          ? step.tieredSelector?.css
+          : undefined;
+    if (sel) {
+      const base = baseFor(page, ctx, 'scope' in step ? step.scope : undefined);
+      await base.locator(sel).first().waitFor({ state: 'attached', timeout: 5_000 }).catch(() => {});
+    }
+    log.info('write-steps: dry-run — validated, not executed', { kind: step.kind });
+    return;
+  }
+
   switch (step.kind) {
     case 'click': {
       const base = baseFor(page, ctx, step.scope);
@@ -202,10 +238,7 @@ export async function runWriteStep(page: Page, step: WriteStep, ctx: WriteStepCt
       return;
     }
     case 'save': {
-      if (ctx.dryRun) {
-        log.info('write-steps: save skipped (dry-run)', { selector: step.selector ?? step.tieredSelector?.css });
-        return;
-      }
+      // (dry-run is intercepted above)
       const base = baseFor(page, ctx, step.scope);
       const sel = step.selector ?? step.tieredSelector?.css;
       if (!sel) {
@@ -214,5 +247,10 @@ export async function runWriteStep(page: Page, step: WriteStep, ctx: WriteStepCt
       await base.locator(sel).first().click({ timeout: DEFAULT_TIMEOUT_MS });
       return;
     }
+    default:
+      // Recipes are loaded from DB JSON, so TypeScript's union can't protect
+      // us — a typo or a future step kind must fail loudly, never silently
+      // no-op into a claimed success (Codex P2).
+      throw new Error(`unsupported_write_step_kind: ${(step as { kind?: string }).kind}`);
   }
 }

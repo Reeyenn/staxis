@@ -19,6 +19,7 @@
 
 import type { Locator, Page } from 'playwright';
 import { safeGoto } from './browser-utils/navigate.js';
+import { log } from './log.js';
 import { locateRowByExactText, resolvePayloadValue, runWriteStep } from './write-steps.js';
 import type { WriteActionRecipe, WriteStep } from './types.js';
 
@@ -32,6 +33,9 @@ export interface ExecuteWriteOpts {
   allowedHost?: string | null;
   /** Test-only loopback allowance for the mock-PMS harness. Never set in prod. */
   allowLoopback?: boolean;
+  /** Cancellation from the workflow timeout. Checked between phases/steps so a
+   *  timed-out write stops promptly and releases the browser mutex. */
+  signal?: AbortSignal;
 }
 
 export type ExecuteWriteResult =
@@ -120,8 +124,16 @@ export async function executeWriteRecipe(
     return { ok: false, error: 'row_locate_failed', detail: { message: (err as Error).message } };
   }
 
-  // 5. Idempotency short-circuit — if the row already shows the target, a
-  //    retry (at-least-once delivery) must not re-mutate.
+  if (opts.signal?.aborted) return { ok: false, error: 'aborted' };
+
+  // 5a. Precondition — optional sanity guard against a stale overwrite (e.g.
+  //     "only mark clean if currently dirty"). If declared and not met, refuse.
+  if (recipe.precondition && !(await passesVerify(page, row, recipe.precondition, payload))) {
+    return { ok: false, error: 'precondition_failed', detail: { selector: recipe.precondition.selector } };
+  }
+
+  // 5b. Idempotency short-circuit — if the row already shows the target, a
+  //     retry (at-least-once delivery) must not re-mutate.
   if (!opts.dryRun && recipe.verifyInPage && (await passesVerify(page, row, recipe.verifyInPage, payload))) {
     return { ok: true, verifiedVia: 'idempotent' };
   }
@@ -129,6 +141,7 @@ export async function executeWriteRecipe(
   // 6. Replay the edit steps.
   try {
     for (const step of recipe.steps) {
+      if (opts.signal?.aborted) throw new Error('aborted');
       await runWriteStep(page, step, { payload, rowLocator: row, dryRun: opts.dryRun });
     }
   } catch (err) {
@@ -139,29 +152,39 @@ export async function executeWriteRecipe(
     return { ok: true, verifiedVia: 'dry_run' };
   }
 
-  // The commit (Save) may have navigated the page; let it settle before
-  // we re-locate for verification.
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  // The commit (Save) may have navigated the page; let it settle before we
+  // re-locate for verification.
+  await page.waitForLoadState('networkidle').catch(() => {});
 
   if (!recipe.verifyInPage) {
     // Never claim a success we can't confirm.
     return { ok: false, error: 'no_verify_configured' };
   }
 
-  // 7. Layer 1 — in-page verify on a freshly-located row (Save may have
-  //    navigated, so re-locate rather than reuse the stale handle).
+  // 7. Layer 1 — in-page verify on a freshly-located row. When an authoritative
+  //    re-read (Layer 2) follows, this is BEST-EFFORT: a Save that triggers a
+  //    navigation can leave the page mid-transition, so a transient Layer-1
+  //    miss must not fail the write — Layer 2 (a fresh reload) is the real
+  //    gate (Codex P1, navigation-after-save race). When Layer 2 is disabled,
+  //    Layer 1 becomes authoritative and MUST pass.
+  let inPageOk = false;
   try {
     const row1 = await locateRowByExactText(page, recipe.rowLocator, payload);
     await runWriteStep(page, verifyStep(recipe.verifyInPage, payload), { payload, rowLocator: row1, dryRun: false });
+    inPageOk = true;
   } catch (err) {
-    return { ok: false, error: 'verify_in_page_failed', detail: { message: (err as Error).message } };
+    log.warn('write-runner: in-page verify miss (relying on authoritative re-read)', {
+      message: (err as Error).message,
+    });
+  }
+
+  if (recipe.rereadAfterReload === false) {
+    if (!inPageOk) return { ok: false, error: 'verify_in_page_failed' };
+    return { ok: true, verifiedVia: 'in_page' };
   }
 
   // 8. Layer 2 — authoritative re-read: reload the page from the PMS and
   //    re-assert. Single-room scoped (never re-runs the full feed sweep).
-  if (recipe.rereadAfterReload === false) {
-    return { ok: true, verifiedVia: 'in_page' };
-  }
   try {
     await safeGoto(page, recipe.pageUrl, gotoOpts);
     const row2 = await locateRowByExactText(page, recipe.rowLocator, payload);

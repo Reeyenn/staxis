@@ -160,6 +160,11 @@ function wakeNextWaiter(state: SingleFlightState): void {
  * concurrent callers, and it was a DIFFERENT lock from the read mutex — so
  * a read and a write could drive the same Page at once. Write handlers now
  * wrap their page work in runExclusive() against the read mutex.
+ *
+ * WARNING (Codex P2): do NOT call runExclusive() re-entrantly for the same
+ * propertyId from inside an fn that already holds it — the inner call would
+ * enqueue itself behind the outer and self-deadlock. The write handler
+ * acquires it exactly once around executeWriteRecipe; keep it that way.
  */
 export async function runExclusive<T>(
   propertyId: string,
