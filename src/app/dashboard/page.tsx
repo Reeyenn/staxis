@@ -41,7 +41,6 @@ import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/co
 import type { ComplianceSummary } from '@/lib/compliance/types';
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
-import { canManageTeam } from '@/lib/roles';
 import StaleDataBanner from '@/components/StaleDataBanner';
 import type { Room, WorkOrder } from '@/types';
 import {
@@ -586,15 +585,9 @@ export default function DashboardPage() {
 
           <StaleDataBanner />
 
-          {/* slim top line: date + Reports */}
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16 }}>
+          {/* date (Reports lives in Settings → Reports) */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
             <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink2, textTransform: 'capitalize' }}>{dateLong}</span>
-            {canManageTeam(user.role) && (
-              <button type="button" onClick={() => router.push('/settings/reports')}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 15px', borderRadius: 999, border: `1px solid ${C.line2}`, background: C.card, color: C.ink, fontFamily: SANS, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                {ES ? 'Reportes' : 'Reports'} →
-              </button>
-            )}
           </div>
 
           {/* hero: ring + chart */}
