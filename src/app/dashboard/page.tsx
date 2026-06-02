@@ -51,8 +51,8 @@ import {
 
 // ─── palette (design colors, on our kept #F8F8F5 background) ──────────
 const C = {
-  paper:  '#F8F8F5',
-  paper2: '#F0EEE9',
+  paper:  '#F6F7F9',   // clean neutral near-white (no warm/yellow tint)
+  paper2: '#ECEEF1',   // subtle neutral fill for the active KPI / pill
   card:   '#FFFFFF',
   ink:    '#20251F',
   ink2:   '#4A5249',
