@@ -1,12 +1,23 @@
 'use client';
 
-// Owner dashboard — 1:1 port of the second-round V35 Aurora x Spotlight
-// design Reeyen locked in claude.ai/design. Source files in the design
-// handoff bundle: final/dashboard.jsx, shared.jsx, final/dashboard.html.
-// Visual stays EXACTLY as Claude Design shipped it — no extra sections,
-// no integrations, no "improvements". The Right Now section is now part
-// of the design and is wired to live Supabase data (was static mocks in
-// the design's shared.jsx).
+// ════════════════════════════════════════════════════════════════════
+// Owner dashboard — "Staxis · Today".
+//
+// 1:1 port of the Claude Design "Staxis Today" handoff
+// (claude.ai/design → project "Staxis wearebrand", file today.jsx).
+// Signature: the occupancy figure IS the property — a ring of room-ticks,
+// each lit by its live status; hover a room to read its number + status.
+// Beside it, a metric chart with a Play-through animation and a
+// 30D / 6M / 1Y / All range toggle; a clickable KPI strip re-charts any
+// headline; "Right now" ops tiles + a "Needs attention" card; a
+// month-to-date footer.
+//
+// Kept from the live app per Reeyen: the page background (#F8F8F5) and
+// the global top nav (AppLayout). The ring + "Right now" + "Needs
+// attention" are wired to live Supabase data. The chart series is the
+// same deterministic seam as before (see today-series.ts) — every range
+// + Play works today and turns fully real once daily history is stored.
+// ════════════════════════════════════════════════════════════════════
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +30,6 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
-  subscribeToHandoffLogs,
   subscribeToDashboardNumbers,
   subscribeToComplaints,
   fetchComplianceSummary,
@@ -30,228 +40,255 @@ import {
 import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
 import type { ComplianceSummary } from '@/lib/compliance/types';
 import { useTodayStr } from '@/lib/use-today-str';
-import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
-import StaleDataBanner from '@/components/StaleDataBanner';
-import { FinancialsDashboardCard } from '@/app/financials/_components/FinancialsDashboardCard';
-import { LaborCostCard } from '@/app/dashboard/_components/LaborCostCard';
-import type { Room, WorkOrder, HandoffEntry } from '@/types';
 import { canManageTeam } from '@/lib/roles';
+import StaleDataBanner from '@/components/StaleDataBanner';
+import type { Room, WorkOrder } from '@/types';
+import {
+  RANGES, METRIC_DEFS, buildHistory, seriesFor,
+  fmtMoney, fmtCompact, fmtVal, smoothPath,
+  type TodayMetricKey, type HistRow, type SeriesPoint,
+} from '@/lib/dashboard/today-series';
 
-// ─── Palette + per-metric color maps (verbatim from design source) ────
-
+// ─── palette (design colors, on our kept #F8F8F5 background) ──────────
 const C = {
-  panel:   '#FFFFFF',
-  ink:     '#15191A',
-  ink2:    '#586056',
-  ink3:    '#9CA29C',
-  rule:    'rgba(15,20,17,0.07)',
-  sage:    '#3F7950',
-  sageBg:  '#E8F0E5',
-  caramel: '#B8853A',
-  warm:    '#B85C3D',
-  profit:  '#2F5840',
+  paper:  '#F8F8F5',
+  paper2: '#F0EEE9',
+  card:   '#FFFFFF',
+  ink:    '#20251F',
+  ink2:   '#4A5249',
+  ink3:   '#8A9187',
+  ink4:   '#B4B9AE',
+  green:  '#356B4C',
+  greenL: '#5C8E6F',
+  sage:   '#9DB8A6',
+  rust:   '#BC5E37',
+  rustD:  '#9A4A29',
+  rustBg: '#F4E2D6',
+  gold:   '#C09A3C',
+  line:   'rgba(32,37,31,0.10)',
+  line2:  'rgba(32,37,31,0.16)',
 } as const;
 
-const METRIC_COLORS: Record<MetricKey, string> = {
-  Occupancy: C.sage,
-  Revenue:   C.caramel,
-  ADR:       C.ink,
-  RevPAR:    C.warm,
-  Profit:    C.profit,
-};
+const SERIF = 'var(--font-fraunces), Georgia, "Times New Roman", serif';
+const SANS  = 'var(--font-geist), system-ui, -apple-system, sans-serif';
+const MONO  = 'var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace';
 
-const BG_BLOBS: Record<MetricKey, [string, string, string]> = {
-  Occupancy: ['#A6D8B0', '#B8E0CB', '#E8F0E5'],
-  Revenue:   ['#F5D8A0', '#F0C898', '#FAEED2'],
-  ADR:       ['#D2D2D8', '#C6CDD3', '#E8E8EC'],
-  RevPAR:    ['#F0BBA8', '#E8B098', '#F8DCC8'],
-  Profit:    ['#A0C0A6', '#8FB397', '#D8E6D2'],
-};
+type RingKey = 'occupied' | 'departing' | 'arriving' | 'clean' | 'dirty' | 'inprog' | 'none';
 
-const FONT_SERIF = "var(--font-fraunces), Georgia, serif";
-const FONT_MONO  = "var(--font-geist-mono), ui-monospace, monospace";
-const FONT_SANS  = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
+const RING: Record<RingKey, string> = {
+  occupied: '#356B4C', departing: '#C79A3C', arriving: '#6FA384',
+  clean: '#CBDBCF', dirty: '#C2704E', inprog: '#9DB8A6', none: '#E2E5DE',
+};
+const STATUS_EN: Record<RingKey, string> = {
+  occupied: 'Occupied', departing: 'Departing', arriving: 'Arriving soon',
+  clean: 'Clean / ready', dirty: 'Dirty', inprog: 'Being cleaned', none: 'No data yet',
+};
+const STATUS_ES: Record<RingKey, string> = {
+  occupied: 'Ocupada', departing: 'Saliendo', arriving: 'Por llegar',
+  clean: 'Limpia / lista', dirty: 'Sucia', inprog: 'En limpieza', none: 'Sin datos',
+};
 
 const LABEL: React.CSSProperties = {
-  fontFamily: FONT_MONO,
-  fontSize: 10,
-  letterSpacing: '0.18em',
-  textTransform: 'uppercase',
-  color: C.ink3,
-  fontWeight: 600,
+  fontFamily: SANS, textTransform: 'uppercase', letterSpacing: '0.14em',
+  fontWeight: 600, fontSize: 11, color: C.ink3,
 };
 
-const fmtMoney = (n: number) => '$' + n.toLocaleString('en-US');
+// ─── room → ring status ───────────────────────────────────────────────
+function ringStatus(r: Room, todayMDY: string): RingKey {
+  if (r.status === 'dirty') return 'dirty';
+  if (r.status === 'in_progress') return 'inprog';
+  if (r.type === 'stayover') return 'occupied';
+  if (r.type === 'checkout') return 'departing';
+  // vacant + clean/inspected
+  if (r.arrival && r.arrival === todayMDY) return 'arriving';
+  return 'clean';
+}
+function todayMDY(): string {
+  const n = new Date();
+  return `${n.getMonth() + 1}/${n.getDate()}/${String(n.getFullYear()).slice(2)}`;
+}
 
-// ─── Sparkles icon (verbatim from shared.jsx) ────────────────────────
+// ─── tween a row of numbers smoothly toward target (scrub / playback) ──
+function useTweenRow(target: Record<string, number>): Record<string, number> {
+  const targetRef = useRef(target);
+  targetRef.current = target;
+  const keysRef = useRef(Object.keys(target));
+  const [disp, setDisp] = useState<Record<string, number>>(() => {
+    const o: Record<string, number> = {};
+    keysRef.current.forEach(k => { o[k] = 0; });
+    return o;
+  });
+  const cur = useRef(disp);
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      const t = targetRef.current, c = cur.current;
+      const o: Record<string, number> = {};
+      let moving = false;
+      keysRef.current.forEach(k => {
+        const d = (t[k] ?? 0) - (c[k] ?? 0);
+        if (Math.abs(d) < 0.4) o[k] = t[k] ?? 0;
+        else { o[k] = (c[k] ?? 0) + d * 0.14; moving = true; }
+      });
+      cur.current = o;
+      if (moving) setDisp(o);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return disp;
+}
 
-function Sparkles({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
+// ─── Sparkline ────────────────────────────────────────────────────────
+function Sparkline({ data, w = 56, h = 16, stroke = C.green }: { data: number[]; w?: number; h?: number; stroke?: string }) {
+  if (!data.length) return null;
+  const min = Math.min(...data), max = Math.max(...data), rng = max - min || 1;
+  const pts: [number, number][] = data.map((v, i) => [(i / (data.length - 1 || 1)) * w, h - ((v - min) / rng) * (h - 2) - 1]);
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.7}
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3l1.9 4.8L18.7 9l-4.8 1.2L12 15l-1.9-4.8L5.3 9l4.8-1.2L12 3zM18 14l.8 2 2 .8-2 .8L18 20l-.8-2-2-.8 2-.8.8-2zM5 14l.6 1.5 1.5.6-1.5.6L5 18l-.6-1.5L3 16l1.4-.5L5 14z" />
+    <svg width={w} height={h} style={{ display: 'block', overflow: 'visible' }}>
+      <path d={smoothPath(pts)} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r={2} fill={stroke} />
     </svg>
   );
 }
 
-// ─── useElementWidth — callback ref so measurement runs the moment
-// React attaches the DOM node. The previous useRef + useEffect version
-// had chartHostW stuck at 0 in production for some Next.js/Turbopack
-// hydration reason I couldn't pin down, which forced the SVG to render
-// at the 1200-px fallback while the host was 1598-px wide. A callback
-// ref runs synchronously on attach — no race conditions.
-function useElementWidth(): [(el: HTMLDivElement | null) => void, number] {
-  const [w, setW] = useState(0);
-  const cleanupRef = useRef<(() => void) | null>(null);
-  const refCallback = useCallback((el: HTMLDivElement | null) => {
-    cleanupRef.current?.();
-    cleanupRef.current = null;
-    if (!el) return;
-    const measure = () => {
-      const next = el.getBoundingClientRect().width;
-      if (next > 0) setW(next);
-    };
-    measure();
-    const obs = new ResizeObserver(measure);
-    obs.observe(el);
-    cleanupRef.current = () => obs.disconnect();
-  }, []);
-  return [refCallback, w];
+// ─── Delta badge ──────────────────────────────────────────────────────
+function Delta({ v, size = 12 }: { v: number; size?: number }) {
+  const up = v >= 0;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontFamily: MONO, fontSize: size, fontWeight: 600, color: up ? C.green : C.rust }}>
+      <svg width={size * 0.7} height={size * 0.7} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1.8}
+        strokeLinecap="round" strokeLinejoin="round" style={{ transform: up ? 'none' : 'scaleY(-1)' }}>
+        <path d="M5 8V2M5 2L2 5M5 2l3 3" />
+      </svg>
+      {Math.abs(v)}%
+    </span>
+  );
 }
 
-// ─── SpotlightChart (verbatim from dashboard.jsx, typed) ───────────────
-
-interface SpotlightChartProps {
-  days: DayRow[];
-  scrub: number;
-  setScrub: (i: number) => void;
-  metric: MetricKey;
-  width: number;
-  height: number;
-  todayIdx: number;
+// ─── Room ring ────────────────────────────────────────────────────────
+function RoomRing({ rooms, onHover, hovered }: {
+  rooms: { num: string; status: RingKey }[];
+  onHover: (r: { num: string; status: RingKey } | null) => void;
+  hovered: { num: string; status: RingKey } | null;
+}) {
+  const size = 300, cx = size / 2, cy = size / 2, rOut = 140, rIn = 112;
+  const n = rooms.length || 1;
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ display: 'block', overflow: 'visible' }}>
+      {rooms.map((r, i) => {
+        const a = (-90 + (i + 0.5) / n * 360) * Math.PI / 180;
+        const isH = hovered != null && hovered.num === r.num;
+        const ri = isH ? rIn - 5 : rIn, ro = isH ? rOut + 6 : rOut;
+        return (
+          <line key={r.num + ':' + i}
+            x1={cx + Math.cos(a) * ri} y1={cy + Math.sin(a) * ri}
+            x2={cx + Math.cos(a) * ro} y2={cy + Math.sin(a) * ro}
+            stroke={RING[r.status]} strokeWidth={isH ? 9 : 6} strokeLinecap="round"
+            onMouseEnter={() => onHover(r)} onMouseLeave={() => onHover(null)}
+            style={{ cursor: 'pointer', transition: 'stroke-width .12s' }} />
+        );
+      })}
+    </svg>
+  );
 }
 
-function SpotlightChart({ days, scrub, setScrub, metric, width, height, todayIdx }: SpotlightChartProps) {
-  const m = METRICS[metric];
-  const color = METRIC_COLORS[metric];
-  const vals = days.map(d => d[m.key] as number);
-  const min = Math.min(...vals) * 0.92;
-  const max = Math.max(...vals) * 1.05;
-  const span = max - min || 1;
-  const stepX = days.length > 1 ? width / (days.length - 1) : width;
-  const pts: [number, number][] = days.map((d, i) => [
-    i * stepX,
-    height - (((d[m.key] as number) - min) / span) * height,
-  ]);
-  const path = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
-  const area = `${path} L ${width} ${height} L 0 ${height} Z`;
-
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [pos, setPos] = useState<{ x: number; y: number }>(() => {
-    const safe = Math.max(0, Math.min(days.length - 1, scrub));
-    return { x: safe * stepX, y: pts[safe]?.[1] ?? height / 2 };
-  });
+// ─── metric chart (draw-in line/area, hover-scrub, today + playhead) ──
+function MetricChart({ series, color, onHover, marker }: {
+  series: SeriesPoint[];
+  color: string;
+  onHover: (i: number | null) => void;
+  marker: number | null;
+}) {
+  const ref = useRef<SVGSVGElement>(null);
+  const pathRef = useRef<SVGPathElement>(null);
+  const [hi, setHi] = useState<number | null>(null);
+  const w = 920, h = 236, pad = { t: 26, r: 10, b: 26, l: 10 };
+  const vals = series.map(d => d.v);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const lo = min - (max - min) * 0.16 - 0.001, span = (max - lo) * 1.16 || 1;
+  const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+  const X = (i: number) => pad.l + (i / (series.length - 1 || 1)) * iw;
+  const Y = (v: number) => pad.t + ih - ((v - lo) / span) * ih;
+  const pts: [number, number][] = series.map((d, i) => [X(i), Y(d.v)]);
+  const line = smoothPath(pts);
+  const area = `${line} L ${X(series.length - 1)},${pad.t + ih} L ${X(0)},${pad.t + ih} Z`;
 
   useEffect(() => {
-    const safe = Math.max(0, Math.min(days.length - 1, scrub));
-    setPos({ x: safe * stepX, y: pts[safe]?.[1] ?? height / 2 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrub, metric, width]);
+    const p = pathRef.current;
+    if (!p) return;
+    if (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const L = p.getTotalLength();
+    p.style.transition = 'none';
+    p.style.strokeDasharray = String(L);
+    p.style.strokeDashoffset = String(L);
+    requestAnimationFrame(() => {
+      p.style.transition = 'stroke-dashoffset .9s cubic-bezier(.4,0,.1,1)';
+      p.style.strokeDashoffset = '0';
+    });
+  }, [series, color]);
 
-  const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const ratio = rect.width > 0 ? width / rect.width : 1;
-    const x = (e.clientX - rect.left) * ratio;
-    const idx = Math.max(0, Math.min(days.length - 1, Math.round(x / stepX)));
-    setScrub(idx);
-    setPos({ x: idx * stepX, y: pts[idx][1] });
+  const move = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (w / rect.width);
+    let i = Math.round(((x - pad.l) / iw) * (series.length - 1));
+    i = Math.max(0, Math.min(series.length - 1, i));
+    setHi(i); onHover(i);
   };
-
-  const spotR = Math.min(180, Math.max(110, width * 0.10));
+  const leave = () => { setHi(null); onHover(null); };
+  const shown = hi != null ? hi : marker;
 
   return (
-    <svg ref={svgRef}
-      viewBox={`0 0 ${width} ${height + 32}`}
-      preserveAspectRatio="none"
-      style={{
-        overflow: 'visible',
-        cursor: 'crosshair',
-        userSelect: 'none',
-        display: 'block',
-        width: '100%',
-        height: height + 32,
-      }}
-      onMouseMove={handleMove} onClick={handleMove} onMouseDown={handleMove}>
+    <svg ref={ref} viewBox={`0 0 ${w} ${h}`} width="100%" height={h} onMouseMove={move} onMouseLeave={leave}
+      style={{ display: 'block', overflow: 'visible', cursor: 'crosshair' }}>
       <defs>
-        <radialGradient id="v35-spot" cx="0.5" cy="0.5" r="0.5">
-          <stop offset="0%"  stopColor="#fff" stopOpacity={1} />
-          <stop offset="60%" stopColor="#fff" stopOpacity={0.85} />
-          <stop offset="100%" stopColor="#fff" stopOpacity={0} />
-        </radialGradient>
-        <mask id="v35-mask">
-          <rect x={0} y={0} width={width} height={height} fill="black" />
-          <circle cx={pos.x} cy={pos.y} r={spotR} fill="url(#v35-spot)" />
-        </mask>
-        <linearGradient id="v35-lit" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity={0.32} />
-          <stop offset="100%" stopColor={color} stopOpacity={0.02} />
-        </linearGradient>
-        <linearGradient id="v35-dim" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#A097A0" stopOpacity={0.18} />
-          <stop offset="100%" stopColor="#A097A0" stopOpacity={0.01} />
+        <linearGradient id="stx-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.2" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-
-      <path d={area} fill="url(#v35-dim)" />
-      <path d={path} fill="none" stroke={C.ink3} strokeWidth={1.5} strokeLinecap="round" opacity={0.55} />
-      {pts.map((p, i) => i % 3 === 0 ? (
-        <circle key={`dim-${i}`} cx={p[0]} cy={p[1]} r={2.5} fill={C.ink3} opacity={0.5} />
+      <path d={area} fill="url(#stx-grad)" />
+      <path ref={pathRef} d={line} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      {series.map((d, i) => d.today ? (
+        <g key="today">
+          <line x1={X(i)} y1={pad.t} x2={X(i)} y2={pad.t + ih} stroke={color} strokeWidth="1" strokeDasharray="2 4" opacity=".5" />
+          <circle cx={X(i)} cy={Y(d.v)} r="5" fill={C.paper} stroke={color} strokeWidth="2.5" />
+        </g>
       ) : null)}
-
-      <g mask="url(#v35-mask)">
-        <path d={area} fill="url(#v35-lit)" />
-        <path d={path} fill="none" stroke={color} strokeWidth={3} strokeLinecap="round" />
-        {pts.map((p, i) => (
-          <g key={`lit-${i}`}>
-            <circle cx={p[0]} cy={p[1]} r={4} fill="#fff" stroke={color} strokeWidth={2} />
-            <text x={p[0]} y={p[1] - 12} fontSize={11} textAnchor="middle"
-              fontFamily={FONT_MONO} fill={C.ink} fontWeight={600}>
-              {m.format(days[i][m.key] as number)}
-            </text>
-            <text x={p[0]} y={height + 14} fontSize={10} textAnchor="middle"
-              fontFamily={FONT_MONO} fill={C.ink2} fontWeight={500} letterSpacing="0.06em">
-              {days[i].day}
-            </text>
-          </g>
-        ))}
-      </g>
-
-      <circle cx={pos.x} cy={pos.y} r={spotR} fill="none" stroke={`${color}33`} strokeWidth={1.5} strokeDasharray="3 5" />
-      {todayIdx >= 0 && pts[todayIdx] && (
-        <line x1={pts[todayIdx][0]} x2={pts[todayIdx][0]} y1={0} y2={height}
-          stroke={C.caramel} strokeWidth={1.2} strokeDasharray="2 4" opacity={0.45} />
-      )}
-      <circle cx={pos.x} cy={pos.y} r={10} fill={color} stroke="#fff" strokeWidth={4} />
-      <circle cx={pos.x} cy={pos.y} r={4} fill="#fff" opacity={0.95} />
-
-      {days.map((d, i) => i % 5 === 0 ? (
-        <text key={`xlbl-${i}`} x={i * stepX} y={height + 22} fontSize={10}
-          fontFamily={FONT_MONO} fill={C.ink3} fontWeight={400}
-          textAnchor="middle" letterSpacing="0.06em">{d.day}</text>
+      {shown != null && series[shown] ? (
+        <g style={{ pointerEvents: 'none' }}>
+          <line x1={X(shown)} y1={pad.t} x2={X(shown)} y2={pad.t + ih} stroke={C.ink} strokeWidth="1" opacity=".25" />
+          <circle cx={X(shown)} cy={Y(series[shown].v)} r="5" fill={color} stroke={C.paper} strokeWidth="2" />
+        </g>
+      ) : null}
+      {[0, Math.floor(series.length / 2), series.length - 1].map(i => series[i] ? (
+        <text key={i} x={Math.min(Math.max(X(i), 16), w - 16)} y={h - 6} textAnchor="middle" fontSize="10" fontFamily={MONO} fill={C.ink3}>{series[i].d}</text>
       ) : null)}
     </svg>
   );
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────
+// ─── ops tile ─────────────────────────────────────────────────────────
+function OpsTile({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub: string; tone?: string }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ ...LABEL, marginBottom: 8 }}>{label}</div>
+      <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 34, lineHeight: 1, color: tone || C.ink, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontSize: 12, color: C.ink3, marginTop: 4 }}>{sub}</div>
+    </div>
+  );
+}
 
+// ─── page ─────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
   const today = useTodayStr();
+  const ES = lang === 'es';
 
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
@@ -259,25 +296,13 @@ export default function DashboardPage() {
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   const totalRooms = activeProperty?.totalRooms || 108;
-  const { days, todayIdx } = useMonthData(totalRooms);
-  const [metric, setMetric] = useState<MetricKey>('Occupancy');
-  const [scrub, setScrub] = useState<number>(todayIdx);
-  useEffect(() => { setScrub(todayIdx); }, [todayIdx]);
 
-  const cur = days[scrub];
-  const m = METRICS[metric];
-  const accent = METRIC_COLORS[metric];
-  const blobs = BG_BLOBS[metric];
-  const [chartHostRef, chartHostW] = useElementWidth();
-  const chartWidth = Math.max(320, chartHostW || 1200);
-  const chartHeight = 250;
-
-  // ── Real-time data for the "Right now" strip ─────────────────────
+  // ── live data ──────────────────────────────────────────────────────
   const [rooms, setRooms] = useState<Room[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [, setHandoffs] = useState<HandoffEntry[]>([]);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [lostFound, setLostFound] = useState<LostFoundCounts | null>(null);
 
   useEffect(() => {
@@ -286,48 +311,56 @@ export default function DashboardPage() {
   }, [user, activePropertyId, today]);
   useEffect(() => {
     if (!user || !activePropertyId) return;
+    return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
+  }, [user, activePropertyId]);
+  useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
+  }, [user, activePropertyId]);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
     return subscribeLostFoundCounts(activePropertyId, setLostFound);
   }, [user, activePropertyId]);
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
-  }, [user, activePropertyId]);
-  useEffect(() => {
-    if (!user || !activePropertyId) return;
-    return subscribeToHandoffLogs(user.uid, activePropertyId, setHandoffs);
-  }, [user, activePropertyId]);
-  useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
-  // Compliance tile — service-role tables, so fetch through /api (refetch on a
-  // poll; the compliance surfaces refetch-on-write, not realtime).
-  useEffect(() => {
-    if (!user || !activePropertyId) return;
     let alive = true;
-    const load = () => { void fetchComplianceSummary(activePropertyId).then((s) => { if (alive) setCompliance(s); }); };
+    const load = () => { void fetchComplianceSummary(activePropertyId).then(s => { if (alive) setCompliance(s); }); };
     load();
     const iv = setInterval(load, 60_000);
     return () => { alive = false; clearInterval(iv); };
   }, [user, activePropertyId]);
 
-  const [complaints, setComplaints] = useState<Complaint[]>([]);
-  useEffect(() => {
-    if (!user || !activePropertyId) return;
-    return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
-  }, [user, activePropertyId]);
+  // ── derived live values ──────────────────────────────────────────────
+  const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
+  const urgentOrders = useMemo(() => openOrders.filter(o => o.priority === 'urgent'), [openOrders]);
+  const dirtyRooms = useMemo(() => rooms.filter(r => r.status === 'dirty').length, [rooms]);
+  const inHouse = dashboardNums?.inHouse ?? 0;
+  const arrivals = dashboardNums?.arrivals ?? 0;
+  const departures = dashboardNums?.departures ?? 0;
 
-  const openOrders   = workOrders.filter(o => o.status === 'open');
-  const urgentOrders = openOrders.filter(o => o.priority === 'urgent');
-  const cleanRooms   = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-  const dirtyRooms   = rooms.filter(r => r.status === 'dirty').length;
-  const inHouse      = dashboardNums?.inHouse ?? 0;
-  const arrivals     = dashboardNums?.arrivals ?? 0;
-  const departures   = dashboardNums?.departures ?? 0;
-  const readyPct     = totalRooms > 0 ? Math.round((cleanRooms / totalRooms) * 100) : 0;
+  const mdy = todayMDY();
+  const ringRooms = useMemo<{ num: string; status: RingKey }[]>(() => {
+    if (!rooms.length) {
+      const cap = Math.max(1, Math.min(totalRooms, 200));
+      return Array.from({ length: cap }, (_, i) => ({ num: 'n' + i, status: 'none' as RingKey }));
+    }
+    return rooms.map(r => ({ num: r.number, status: ringStatus(r, mdy) }));
+  }, [rooms, totalRooms, mdy]);
 
-  // Complaints tile counts (open / aging-overdue / satisfaction-callbacks due).
-  const nowD = new Date();
-  const openComplaints    = complaints.filter(c => isOpenStatus(c.status)).length;
-  const overdueComplaints = complaints.filter(c => isOverdue(c, nowD)).length;
-  const callbacksDueCount = complaints.filter(c => isCallbackDue(c, nowD)).length;
+  // real occupancy = rooms sold (stayover + checkout) / total
+  const occPct = useMemo(() => {
+    if (!rooms.length || totalRooms <= 0) return null;
+    const sold = rooms.filter(r => r.type === 'stayover' || r.type === 'checkout').length;
+    return Math.round((sold / totalRooms) * 100);
+  }, [rooms, totalRooms]);
+
+  // ring distribution for the legend
+  const ringCounts = useMemo(() => {
+    const c: Partial<Record<RingKey, number>> = {};
+    ringRooms.forEach(r => { c[r.status] = (c[r.status] || 0) + 1; });
+    return c;
+  }, [ringRooms]);
 
   const avgTurnover = useMemo(() => {
     const toMs = (v: unknown): number | null => {
@@ -339,491 +372,287 @@ export default function DashboardPage() {
     };
     const timed = rooms
       .filter(r => r.startedAt && r.completedAt)
-      .map(r => {
-        const s = toMs(r.startedAt); const e = toMs(r.completedAt);
-        if (!s || !e) return 0;
-        return (e - s) / 60000;
-      })
+      .map(r => { const s = toMs(r.startedAt); const e = toMs(r.completedAt); return s && e ? (e - s) / 60000 : 0; })
       .filter(mins => mins > 0 && mins < 480);
-    return timed.length > 0 ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
+    return timed.length ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
   }, [rooms]);
+
+  // ── needs attention (live alerts) ────────────────────────────────────
+  const nowD = new Date();
+  const openComplaints = complaints.filter(c => isOpenStatus(c.status)).length;
+  const overdueComplaints = complaints.filter(c => isOverdue(c, nowD)).length;
+  const callbacksDueCount = complaints.filter(c => isCallbackDue(c, nowD)).length;
+  const attention = useMemo(() => {
+    const out: { n: number; text: string }[] = [];
+    if (urgentOrders.length) out.push({ n: urgentOrders.length, text: ES ? `orden${urgentOrders.length > 1 ? 'es' : ''} de trabajo urgente${urgentOrders.length > 1 ? 's' : ''}` : `urgent work order${urgentOrders.length > 1 ? 's' : ''}` });
+    if (compliance && compliance.pmOverdueCount > 0) out.push({ n: compliance.pmOverdueCount, text: ES ? 'revisiones de cumplimiento vencidas' : `compliance check${compliance.pmOverdueCount > 1 ? 's' : ''} overdue` });
+    if (compliance && compliance.anomalyCount > 0) out.push({ n: compliance.anomalyCount, text: ES ? 'anomalías marcadas' : `anomaly flagged · Maintenance` });
+    if (overdueComplaints > 0) out.push({ n: overdueComplaints, text: ES ? 'quejas atrasadas' : `complaint${overdueComplaints > 1 ? 's' : ''} overdue` });
+    if (callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: ES ? 'llamadas de seguimiento hoy' : `guest callback${callbacksDueCount > 1 ? 's' : ''} due` });
+    if (dirtyRooms > 0) out.push({ n: dirtyRooms, text: ES ? 'habitaciones por limpiar' : `room${dirtyRooms > 1 ? 's' : ''} to clean` });
+    if (lostFound && lostFound.nearingDisposal > 0) out.push({ n: lostFound.nearingDisposal, text: ES ? 'objetos por desechar' : 'lost items nearing disposal' });
+    return out.slice(0, 5);
+  }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, lostFound, ES]);
+  const attnTotal = attention.reduce((a, x) => a + x.n, 0);
+
+  // ── chart series ─────────────────────────────────────────────────────
+  const history = useMemo<HistRow[]>(() => buildHistory(totalRooms, occPct), [totalRooms, occPct]);
+
+  const [metric, setMetric] = useState<TodayMetricKey>('occ');
+  const [range, setRange] = useState<typeof RANGES[number]['key']>('30d');
+  const [hi, setHi] = useState<number | null>(null);
+  const [room, setRoom] = useState<{ num: string; status: RingKey } | null>(null);
+  const [playIdx, setPlayIdx] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+
+  const def = METRIC_DEFS.find(m => m.key === metric)!;
+  const RG = RANGES.find(r => r.key === range)!;
+  const series = useMemo(() => seriesFor(history, RG, metric), [history, RG, metric]);
+
+  const hov = hi != null ? series[hi] : (playIdx != null ? series[playIdx] : null);
+  const scrubbing = hi != null;
+  const todayRow = series.find(s => s.today) ?? series[series.length - 1];
+  const liveTarget = useMemo<Record<TodayMetricKey, number>>(() => {
+    const r = (hov ? hov.row : todayRow?.row) ?? { occ: 0, revenue: 0, adr: 0, revpar: 0, profit: 0 };
+    return { occ: r.occ, revenue: r.revenue, adr: r.adr, revpar: r.revpar, profit: r.profit };
+  }, [hov, todayRow]);
+  const live = useTweenRow(liveTarget) as Record<TodayMetricKey, number>;
+
+  // playback resets when metric/range change
+  useEffect(() => { setPlaying(false); setPlayIdx(null); setHi(null); }, [metric, range]);
+  useEffect(() => {
+    if (!playing) return;
+    const t = setInterval(() => {
+      setPlayIdx(i => {
+        const next = i == null ? 0 : i + 1;
+        if (next >= series.length) { setPlaying(false); return null; }
+        return next;
+      });
+    }, 600);
+    return () => clearInterval(t);
+  }, [playing, series.length]);
+  const togglePlay = () => {
+    if (playing) { setPlaying(false); }
+    else { setHi(null); setPlayIdx(0); setPlaying(true); }
+  };
+
+  // KPI spark + delta from raw daily history
+  const kpiSpark = useCallback((field: TodayMetricKey) => history.slice(-7).map(d => d[field]), [history]);
+  const kpiDelta = useCallback((field: TodayMetricKey) => {
+    const n = history.length;
+    if (n < 8) return 0;
+    const cur = history[n - 1][field], prev = history[n - 8][field];
+    return prev ? Math.round(((cur - prev) / prev) * 100) : 0;
+  }, [history]);
+
+  // current row backing the KPI sub-labels (target, not the tween)
+  const rowNow = (hov ? hov.row : todayRow?.row) ?? { occ: 0, revenue: 0, adr: 0, revpar: 0, profit: 0 };
+  const soldNow = Math.round((rowNow.occ / 100) * totalRooms);
+  const marginNow = rowNow.revenue > 0 ? Math.round((rowNow.profit / rowNow.revenue) * 100) : 37;
+
+  const kpis: { key: TodayMetricKey; label: string; tone: string; sub: string }[] = [
+    { key: 'occ',     label: ES ? 'Ocupación' : 'Occupancy', tone: C.green, sub: ES ? `${soldNow} de ${totalRooms}` : `${soldNow} of ${totalRooms} rooms` },
+    { key: 'revenue', label: ES ? 'Ingresos' : 'Revenue',    tone: C.rust,  sub: `${soldNow} × $${Math.round(rowNow.adr)}` },
+    { key: 'adr',     label: 'ADR',                            tone: C.ink,   sub: ES ? 'tarifa de hoy' : 'rate today' },
+    { key: 'revpar',  label: 'RevPAR',                         tone: C.rust,  sub: ES ? `en las ${totalRooms}` : `across all ${totalRooms}` },
+    { key: 'profit',  label: ES ? 'Ganancia' : 'Profit',       tone: C.green, sub: `${marginNow}% ${ES ? 'margen' : 'margin'}` },
+  ];
+
+  // ── month-to-date footer (from the daily history) ────────────────────
+  const mtd = useMemo(() => {
+    const now = new Date();
+    const cur = history.filter(d => d.date.getMonth() === now.getMonth() && d.date.getFullYear() === now.getFullYear() && d.date <= now);
+    if (!cur.length) return null;
+    const sum = (f: keyof HistRow) => cur.reduce((a, d) => a + (d[f] as number), 0);
+    const avg = (f: keyof HistRow) => Math.round(sum(f) / cur.length);
+    const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    return { occ: avg('occ'), revenue: sum('revenue'), profit: sum('profit'), adr: avg('adr'), soldRooms: sum('rooms'), elapsed: cur.length, dim };
+  }, [history]);
+  const monthFull = new Date().toLocaleDateString(ES ? 'es-ES' : 'en-US', { month: 'long' });
+  const dateLong = new Date().toLocaleDateString(ES ? 'es-ES' : 'en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
   if (authLoading || propLoading || !user || !activePropertyId) {
     return <AppLayout><div /></AppLayout>;
   }
 
-  const dayDelta = todayIdx - scrub;
-  const monthShort = new Date().toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
+  const STATUS = ES ? STATUS_ES : STATUS_EN;
+
+  // ring center: hovered room → its number+status; else the active metric
+  const center = room
+    ? { big: room.num, label: ES ? 'HABITACIÓN' : 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
+    : metric === 'occ'
+      ? { big: Math.round(live.occ) + '%', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: hov ? hov.d : (ES ? `${soldNow} de ${totalRooms} habitaciones` : `${soldNow} of ${totalRooms} rooms`), color: C.green }
+      : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : (ES ? 'hoy' : 'today'), color: def.color };
+
+  const pill = (on: boolean): React.CSSProperties => ({
+    padding: '6px 12px', borderRadius: 999, border: `1px solid ${C.line2}`, cursor: 'pointer',
+    fontFamily: SANS, fontSize: 12, fontWeight: 600,
+    background: on ? C.ink : 'transparent', color: on ? C.paper2 : C.ink2, transition: 'all .15s',
+  });
 
   return (
     <AppLayout>
-      <div style={{
-        width: '100%', minHeight: '100vh',
-        background: '#F8F8F5',
-        padding: 'clamp(12px, 1.6vw, 24px) clamp(16px, 2.5vw, 36px)',
-        fontFamily: FONT_SANS, color: C.ink,
-        overflow: 'hidden', position: 'relative',
-      }}>
+      <div className="stx-today" style={{ width: '100%', minHeight: '100vh', background: C.paper, fontFamily: SANS, color: C.ink, padding: 'clamp(16px, 2vw, 32px) clamp(16px, 3vw, 48px)' }}>
         <style>{`
-          @keyframes aurora-drift-1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(80px, -50px); } }
-          @keyframes aurora-drift-2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-60px, 60px); } }
-          @keyframes aurora-drift-3 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(40px, 40px); } }
-          @media (prefers-reduced-motion: reduce) { .aurora-blob { animation: none !important; } }
+          .stx-today .stx-hero { display:grid; grid-template-columns:320px 1fr; gap:48px; align-items:center; }
+          .stx-today .stx-kpis { display:grid; grid-template-columns:repeat(5,1fr); border-top:1px solid ${C.line}; border-bottom:1px solid ${C.line}; }
+          .stx-today .stx-now { display:grid; grid-template-columns:1.3fr 1fr; gap:40px; align-items:start; }
+          .stx-today .stx-ops { display:flex; }
+          .stx-today .stx-mtd { display:flex; }
+          @media (max-width: 980px) {
+            .stx-today .stx-hero { grid-template-columns:1fr; gap:24px; justify-items:center; }
+            .stx-today .stx-now { grid-template-columns:1fr; gap:24px; }
+          }
+          @media (max-width: 720px) {
+            .stx-today .stx-kpis { grid-template-columns:repeat(2,1fr); }
+            .stx-today .stx-ops { flex-wrap:wrap; gap:18px 0; }
+            .stx-today .stx-mtd { flex-wrap:wrap; gap:18px 0; }
+          }
+          @media (prefers-reduced-motion: reduce) { .stx-today * { animation-duration:.001ms !important; } }
         `}</style>
 
-        <div className="aurora-blob" style={{
-          position: 'absolute', top: -160, left: -120, width: 700, height: 700,
-          background: `radial-gradient(circle, ${blobs[0]} 0%, transparent 65%)`,
-          filter: 'blur(40px)', pointerEvents: 'none',
-          animation: 'aurora-drift-1 18s ease-in-out infinite',
-          transition: 'background 1.2s ease',
-        }} />
-        <div className="aurora-blob" style={{
-          position: 'absolute', top: -100, right: -120, width: 760, height: 760,
-          background: `radial-gradient(circle, ${blobs[1]} 0%, transparent 60%)`,
-          filter: 'blur(40px)', pointerEvents: 'none',
-          animation: 'aurora-drift-2 22s ease-in-out infinite',
-          transition: 'background 1.2s ease',
-        }} />
-        <div className="aurora-blob" style={{
-          position: 'absolute', bottom: -240, left: '30%', width: 800, height: 800,
-          background: `radial-gradient(circle, ${blobs[2]} 0%, transparent 60%)`,
-          filter: 'blur(40px)', pointerEvents: 'none',
-          animation: 'aurora-drift-3 26s ease-in-out infinite',
-          transition: 'background 1.2s ease',
-        }} />
+        <div style={{ maxWidth: 1440, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 26 }}>
 
-        <div style={{ position: 'relative', maxWidth: 1600, margin: '0 auto' }}>
-
-          {/* F8 stale-data banner from main — only renders when scraper
-              data is >90 min stale or the watchdog SMS path is degraded.
-              Self-hides in the steady state. */}
           <StaleDataBanner />
 
-          {/* Reports — managers/owners/admins jump to the self-serve report hub. */}
-          {user && canManageTeam(user.role) && (
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-              <button
-                type="button"
-                onClick={() => router.push('/settings/reports')}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  padding: '8px 16px', borderRadius: 999,
-                  border: '1px solid #E7E8E2', background: C.panel, color: C.ink,
-                  fontFamily: FONT_SANS, fontSize: 14, fontWeight: 500, cursor: 'pointer',
-                }}
-              >
-                {lang === 'es' ? 'Reportes' : 'Reports'} →
+          {/* slim top line: date + Reports */}
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16 }}>
+            <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink2, textTransform: 'capitalize' }}>{dateLong}</span>
+            {canManageTeam(user.role) && (
+              <button type="button" onClick={() => router.push('/settings/reports')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 15px', borderRadius: 999, border: `1px solid ${C.line2}`, background: C.card, color: C.ink, fontFamily: SANS, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                {ES ? 'Reportes' : 'Reports'} →
               </button>
-            </div>
-          )}
-
-          {/* Chart card — card padding removed on the chart's row so the
-              SVG goes truly edge-to-edge of the card; the top row keeps
-              its 32px side padding so the big number / date / badge
-              don't touch the card's rounded corners. */}
-          <div style={{
-            background: 'rgba(255,255,255,0.85)',
-            backdropFilter: 'blur(30px) saturate(140%)',
-            WebkitBackdropFilter: 'blur(30px) saturate(140%)',
-            border: '1px solid rgba(255,255,255,0.8)', borderRadius: 22,
-            padding: '26px 0 22px', marginBottom: 16,
-            boxShadow: '0 1px 0 rgba(255,255,255,0.7) inset, 0 30px 60px -30px rgba(15,20,17,0.18)',
-          }}>
-            {/* 3-column top row: big number left, centered date middle, badge right */}
-            <div style={{
-              padding: '0 32px',
-              display: 'grid',
-              gridTemplateColumns: '1fr auto 1fr',
-              alignItems: 'flex-start',
-              gap: 16, marginBottom: 4,
-            }}>
-              {/* Left: big italic-serif number */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
-                  <span style={{
-                    fontFamily: FONT_SERIF,
-                    fontSize: 76, lineHeight: 1, fontWeight: 500, fontStyle: 'italic',
-                    letterSpacing: '-0.035em',
-                    color: accent, transition: 'color 0.4s ease',
-                  }}>
-                    {cur ? m.format(cur[m.key] as number) : '—'}
-                  </span>
-                  <span style={{ fontSize: 16, color: C.ink2, fontStyle: 'italic', paddingBottom: 12 }}>
-                    {metric.toLowerCase()}
-                  </span>
-                </div>
-              </div>
-
-              {/* Middle: centered date, a touch larger */}
-              <div style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
-                paddingTop: 4, justifySelf: 'center',
-              }}>
-                <div style={{
-                  fontFamily: FONT_MONO,
-                  fontSize: 13, letterSpacing: '0.22em', textTransform: 'uppercase',
-                  color: C.ink, fontWeight: 600, whiteSpace: 'nowrap',
-                }}>
-                  {cur ? `${cur.date.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase()} · ${monthShort} ${cur.day}` : ''}
-                </div>
-              </div>
-
-              {/* Right: Forecast / Today / N days ago pill */}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-start', paddingTop: 4 }}>
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  padding: '7px 16px', borderRadius: 999,
-                  background: cur?.isFuture ? 'rgba(63,121,80,0.15)' : cur?.isToday ? 'rgba(184,133,58,0.15)' : 'rgba(0,0,0,0.06)',
-                  color: cur?.isFuture ? C.sage : cur?.isToday ? C.caramel : C.ink2,
-                  fontSize: 12.5, fontWeight: 700,
-                  fontFamily: FONT_MONO, letterSpacing: '0.14em', textTransform: 'uppercase',
-                }}>
-                  {cur?.isFuture ? <><Sparkles size={12} color={C.sage} /> Forecast</>
-                    : cur?.isToday ? 'Today'
-                    : `${dayDelta} day${dayDelta === 1 ? '' : 's'} ago`}
-                </span>
-              </div>
-            </div>
-
-            <div ref={chartHostRef} style={{ padding: '16px 0 4px', width: '100%' }}>
-              {cur && (
-                <SpotlightChart days={days} scrub={scrub} setScrub={setScrub} metric={metric}
-                  width={chartWidth} height={chartHeight} todayIdx={todayIdx} />
-              )}
-            </div>
+            )}
           </div>
 
-          {/* Stat cards — clicking switches metric */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: 12,
-          }}>
-            {([
-              { k: 'Occupancy', v: (cur?.occ ?? 0) + '%',                  sub: (cur?.rooms ?? 0) + ' of ' + totalRooms + ' rooms', color: C.sage },
-              { k: 'Revenue',   v: fmtMoney(cur?.revenue ?? 0),            sub: (cur?.rooms ?? 0) + ' × $' + (cur?.adr ?? 0),        color: C.caramel },
-              { k: 'ADR',       v: '$' + (cur?.adr ?? 0),                  sub: 'rate this day',                                       color: C.ink },
-              { k: 'RevPAR',    v: '$' + (cur?.revpar ?? 0),               sub: 'across all ' + totalRooms,                            color: C.warm },
-              { k: 'Profit',    v: fmtMoney(cur?.profit ?? 0),             sub: '37% margin',                                          color: C.profit },
-            ] as { k: MetricKey; v: string; sub: string; color: string }[]).map(row => {
-              const isActive = row.k === metric;
-              return (
-                <button key={row.k} type="button" onClick={() => setMetric(row.k)} style={{
-                  textAlign: 'left', cursor: 'pointer',
-                  background: isActive ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.7)',
-                  backdropFilter: 'blur(20px)',
-                  WebkitBackdropFilter: 'blur(20px)',
-                  border: `1px solid ${isActive ? `${row.color}66` : 'rgba(255,255,255,0.7)'}`,
-                  borderRadius: 14, padding: '14px 16px',
-                  boxShadow: isActive
-                    ? `0 8px 18px -8px ${row.color}66, 0 1px 0 rgba(255,255,255,0.7) inset`
-                    : '0 1px 0 rgba(255,255,255,0.6) inset',
-                  transition: 'all 0.25s ease',
-                  fontFamily: FONT_SANS,
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: row.color }} />
-                    <span style={{ ...LABEL, color: isActive ? row.color : C.ink3 }}>{row.k}</span>
+          {/* hero: ring + chart */}
+          <section className="stx-hero">
+            <div onClick={() => { setMetric('occ'); setRoom(null); }} title={ES ? 'Graficar ocupación' : 'Chart occupancy'} style={{ position: 'relative', cursor: 'pointer' }}>
+              <RoomRing rooms={ringRooms} onHover={setRoom} hovered={room} />
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                <div style={{ ...LABEL, fontSize: 10 }}>{center.label}</div>
+                <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: room ? 50 : 60, color: center.color, lineHeight: 1, margin: '6px 0 8px' }}>{center.big}</div>
+                <div style={{ fontSize: 14, fontWeight: 500, color: C.ink2, whiteSpace: 'nowrap' }}>{center.sub}</div>
+              </div>
+            </div>
+
+            <div style={{ width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ ...LABEL, marginBottom: 6 }}>{def.label} · {RG.full}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button onClick={togglePlay} title={playing ? (ES ? 'Pausar' : 'Pause') : (ES ? 'Reproducir' : 'Play through ' + RG.full)}
+                    style={{ width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer', flexShrink: 0, background: playing ? C.rust : def.color, color: '#fff', display: 'grid', placeItems: 'center', transition: 'background .15s' }}>
+                    {playing
+                      ? <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.6" height="12" rx="1" /><rect x="9.4" y="2" width="3.6" height="12" rx="1" /></svg>
+                      : <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z" /></svg>}
+                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {RANGES.map(r => <button key={r.key} onClick={() => setRange(r.key)} style={pill(range === r.key)}>{r.label}</button>)}
                   </div>
-                  <div style={{
-                    fontFamily: FONT_SERIF, fontStyle: 'italic',
-                    fontSize: 28, fontWeight: 500, letterSpacing: '-0.025em',
-                    color: row.color, lineHeight: 1, marginTop: 6,
-                  }}>{row.v}</div>
-                  <div style={{ fontSize: 11, color: C.ink2, marginTop: 4 }}>{row.sub}</div>
-                </button>
+                </div>
+              </div>
+              <MetricChart key={metric + range} series={series} color={def.color} onHover={setHi} marker={playing ? playIdx : null} />
+            </div>
+          </section>
+
+          {/* ring legend */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px', marginTop: -10 }}>
+            {(['occupied', 'departing', 'arriving', 'clean', 'dirty', 'inprog'] as RingKey[]).filter(k => (ringCounts[k] || 0) > 0).map(k => (
+              <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.ink2 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: RING[k] }} />
+                {STATUS[k]} <span style={{ fontFamily: MONO, color: C.ink3 }}>{ringCounts[k]}</span>
+              </span>
+            ))}
+          </div>
+
+          {/* KPI strip */}
+          <section className="stx-kpis">
+            {kpis.map((k, i) => {
+              const mdef = METRIC_DEFS.find(m => m.key === k.key)!;
+              const active = metric === k.key;
+              const val = mdef.fmt === 'pct' ? Math.round(live[k.key]) + '%' : fmtMoney(live[k.key]);
+              return (
+                <div key={k.key} onClick={() => { setMetric(k.key); setRoom(null); }} title={`${ES ? 'Graficar' : 'Chart'} ${k.label}`}
+                  style={{ padding: '20px 22px', borderLeft: i ? `1px solid ${C.line}` : 'none', cursor: 'pointer', background: active ? C.paper2 : 'transparent', boxShadow: active ? `inset 0 3px 0 ${mdef.color}` : 'none', transition: 'background .15s' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, minHeight: 14 }}>
+                    <span style={LABEL}>{k.label}</span>
+                    {active && <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: C.green }}><span style={{ width: 6, height: 6, borderRadius: 3, background: C.green }} />{ES ? 'EN GRÁFICO' : 'ON CHART'}</span>}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+                    <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 'clamp(32px, 3vw, 46px)', lineHeight: .95, color: k.tone, fontVariantNumeric: 'tabular-nums' }}>{val}</span>
+                    {!scrubbing && (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <Delta v={kpiDelta(k.key)} />
+                        <span style={{ fontSize: 10, color: C.ink4 }}>{ES ? 'vs sem.' : 'vs last wk'}</span>
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+                    <span style={{ fontSize: 12, color: C.ink3 }}>{k.sub}</span>
+                    <Sparkline data={kpiSpark(k.key)} stroke={k.tone === C.rust ? C.rust : C.green} />
+                  </div>
+                </div>
               );
             })}
+          </section>
 
-            {/* Staxis AI suggestion card */}
-            <div style={{
-              background: 'rgba(255,255,255,0.7)',
-              backdropFilter: 'blur(20px)',
-              WebkitBackdropFilter: 'blur(20px)',
-              border: `1px solid ${accent}33`, borderRadius: 14, padding: '12px 16px',
-              transition: 'border-color 0.4s ease',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Sparkles size={11} color={accent} />
-                <span style={{ ...LABEL, color: accent, transition: 'color 0.4s ease' }}>Staxis</span>
-              </div>
-              <p style={{
-                margin: '6px 0 0',
-                fontFamily: FONT_SERIF, fontStyle: 'italic',
-                fontSize: 14, color: C.ink, lineHeight: 1.35, letterSpacing: '-0.005em',
-              }}>
-                {cur?.isFuture ? (
-                  cur.occ >= 90 ? (
-                    <>Strong day, raise rate to <b style={{ color: accent, fontStyle: 'normal' }}>${cur.adr + 10}</b>.</>
-                  ) : cur.occ >= 80 ? (
-                    <>Steady, hold rate.</>
-                  ) : (
-                    <>Soft. <b style={{ color: accent, fontStyle: 'normal' }}>$10 discount</b> fills it.</>
-                  )
-                ) : cur?.isToday ? (
-                  <>Today on track for <b style={{ color: accent, fontStyle: 'normal' }}>{cur.occ}%</b>.</>
-                ) : (
-                  <>Closed at <b style={{ color: accent, fontStyle: 'normal' }}>{cur?.occ ?? 0}%</b>.</>
-                )}
-              </p>
-            </div>
-          </div>
-
-          {/* ── Right Now strip — live, point-in-time data, four cards.
-              Wired to Supabase subscriptions; the design's static mocks
-              from shared.jsx are replaced with real values. ──────── */}
-          <div style={{ marginTop: 22 }}>
-            <div style={{ ...LABEL, marginBottom: 10, paddingLeft: 4 }}>
-              {lang === 'es' ? 'Ahora mismo' : 'Right now'}
-            </div>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: 12,
-            }}>
-              {/* Guests */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Huéspedes' : 'Guests'}</div>
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {([
-                    [lang === 'es' ? 'En casa'   : 'In-house',   inHouse],
-                    [lang === 'es' ? 'Llegadas'  : 'Arrivals',   arrivals],
-                    [lang === 'es' ? 'Salidas'   : 'Departures', departures],
-                  ] as [string, number][]).map(([k, v]) => (
-                    <div key={k} style={{
-                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
-                    }}>
-                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
-                      <span style={{
-                        fontFamily: FONT_SERIF, fontStyle: 'italic',
-                        fontSize: 22, fontWeight: 500, color: C.ink,
-                        letterSpacing: '-0.025em', lineHeight: 1,
-                      }}>{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Rooms */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Habitaciones' : 'Rooms'}</div>
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {([
-                    [lang === 'es' ? 'Limpias' : 'Clean', cleanRooms, C.sage],
-                    [lang === 'es' ? 'Sucias'  : 'Dirty', dirtyRooms, C.warm],
-                  ] as [string, number, string][]).map(([k, v, color]) => (
-                    <div key={k} style={{
-                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
-                    }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13.5, color: C.ink2 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
-                        {k}
-                      </span>
-                      <span style={{
-                        fontFamily: FONT_SERIF, fontStyle: 'italic',
-                        fontSize: 22, fontWeight: 500, color,
-                        letterSpacing: '-0.025em', lineHeight: 1,
-                      }}>{v}</span>
-                    </div>
-                  ))}
-                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: 11.5, color: C.ink3 }}>
-                      {lang === 'es' ? `de ${totalRooms} totales` : `of ${totalRooms} total`}
-                    </span>
-                    <span style={{ fontSize: 11.5, color: C.ink3, fontFamily: FONT_MONO }}>
-                      {readyPct}% {lang === 'es' ? 'listas' : 'ready'}
-                    </span>
+          {/* right now + needs attention */}
+          <section className="stx-now">
+            <div>
+              <div style={{ ...LABEL, marginBottom: 18 }}>{ES ? 'Ahora mismo' : 'Right now'}</div>
+              <div className="stx-ops">
+                {([
+                  [ES ? 'Huéspedes' : 'Guests', inHouse, ES ? 'en casa' : 'in-house', C.green],
+                  [ES ? 'Llegadas' : 'Arrivals', arrivals, ES ? 'esperadas' : 'expected', C.greenL],
+                  [ES ? 'Salidas' : 'Departures', departures, ES ? 'saliendo' : 'checking out', C.gold],
+                  [ES ? 'Limpieza' : 'Housekeeping', dirtyRooms, ES ? 'por limpiar' : 'rooms to clean', C.rust],
+                  [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink],
+                ] as [string, React.ReactNode, string, string][]).map((o, i) => (
+                  <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>
+                    <OpsTile label={o[0]} value={o[1]} sub={o[2]} tone={o[3]} />
                   </div>
-                </div>
+                ))}
               </div>
-
-              {/* Work orders */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Órdenes de trabajo' : 'Work orders'}</div>
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {([
-                    [lang === 'es' ? 'Abiertas' : 'Open',   openOrders.length,   C.ink],
-                    [lang === 'es' ? 'Urgentes' : 'Urgent', urgentOrders.length, urgentOrders.length > 0 ? C.warm : C.ink],
-                  ] as [string, number, string][]).map(([k, v, color]) => (
-                    <div key={k} style={{
-                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
-                    }}>
-                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
-                      <span style={{
-                        fontFamily: FONT_SERIF, fontStyle: 'italic',
-                        fontSize: 22, fontWeight: 500, color,
-                        letterSpacing: '-0.025em', lineHeight: 1,
-                      }}>{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Complaints */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Quejas' : 'Complaints'}</div>
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {([
-                    [lang === 'es' ? 'Abiertas' : 'Open', openComplaints, openComplaints > 0 ? C.caramel : C.sage],
-                    [lang === 'es' ? 'Atrasadas' : 'Overdue', overdueComplaints, overdueComplaints > 0 ? C.warm : C.ink],
-                    [lang === 'es' ? 'Llamadas hoy' : 'Callbacks due', callbacksDueCount, callbacksDueCount > 0 ? C.caramel : C.ink],
-                  ] as [string, number, string][]).map(([k, v, color]) => (
-                    <div key={k} style={{
-                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
-                    }}>
-                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
-                      <span style={{
-                        fontFamily: FONT_SERIF, fontStyle: 'italic',
-                        fontSize: 22, fontWeight: 500, color,
-                        letterSpacing: '-0.025em', lineHeight: 1,
-                      }}>{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Avg turnover */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-                display: 'flex', flexDirection: 'column',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Tiempo promedio' : 'Avg turnover'}</div>
-                <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{
-                    fontFamily: FONT_SERIF, fontStyle: 'italic',
-                    fontSize: 56, fontWeight: 500, color: C.ink,
-                    letterSpacing: '-0.035em', lineHeight: 1,
-                  }}>{avgTurnover ?? '—'}</span>
-                  <span style={{ fontSize: 18, color: C.ink2, fontStyle: 'italic' }}>min</span>
-                </div>
-                <div style={{ marginTop: 6, fontSize: 11.5, color: C.ink3, fontFamily: FONT_MONO, letterSpacing: '0.04em' }}>
-                  {lang === 'es' ? "por habitación · promedio de hoy" : "per room · today's average"}
-                </div>
-              </div>
-
-              {/* Compliance — engineering readings + life-safety checks (feature #19) */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Cumplimiento' : 'Compliance'}</div>
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {([
-                    [
-                      lang === 'es' ? 'Lecturas hoy' : 'Readings today',
-                      compliance ? `${compliance.readingsCompletePct}%` : '—',
-                      compliance ? (compliance.readingsCompletePct >= 70 ? C.sage : compliance.readingsCompletePct >= 30 ? '#B8853A' : C.warm) : C.ink3,
-                    ],
-                    [
-                      lang === 'es' ? 'Vencidas' : 'Overdue checks',
-                      compliance ? String(compliance.pmOverdueCount) : '—',
-                      compliance && compliance.pmOverdueCount > 0 ? C.warm : C.ink,
-                    ],
-                    [
-                      lang === 'es' ? 'Anomalías' : 'Anomalies',
-                      compliance ? String(compliance.anomalyCount) : '—',
-                      compliance && compliance.anomalyCount > 0 ? C.warm : C.ink,
-                    ],
-                  ] as [string, string, string][]).map(([k, v, color]) => (
-                    <div key={k} style={{
-                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
-                    }}>
-                      <span style={{ fontSize: 13.5, color: C.ink2 }}>{k}</span>
-                      <span style={{
-                        fontFamily: FONT_SERIF, fontStyle: 'italic',
-                        fontSize: 22, fontWeight: 500, color,
-                        letterSpacing: '-0.025em', lineHeight: 1,
-                      }}>{v}</span>
-                    </div>
-                  ))}
-                  <div style={{ fontSize: 11.5, color: C.ink3 }}>
-                    {lang === 'es' ? 'Mantenimiento → Cumplimiento' : 'Maintenance → Compliance'}
-                  </div>
-                </div>
-              </div>
-
-              {/* Lost & Found */}
-              <div style={{
-                background: 'rgba(255,255,255,0.78)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255,255,255,0.75)',
-                borderRadius: 16, padding: '16px 18px',
-              }}>
-                <div style={LABEL}>{lang === 'es' ? 'Objetos perdidos' : 'Lost & Found'}</div>
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {([
-                    [lang === 'es' ? 'Abiertos'    : 'Open',            lostFound?.open ?? 0,            C.ink],
-                    [lang === 'es' ? 'Por devolver' : 'Awaiting return', lostFound?.awaitingReturn ?? 0,  C.caramel],
-                    [lang === 'es' ? 'Por desechar' : 'Nearing disposal', lostFound?.nearingDisposal ?? 0,
-                      (lostFound?.nearingDisposal ?? 0) > 0 ? C.warm : C.ink3],
-                  ] as [string, number, string][]).map(([k, v, color]) => (
-                    <div key={k} style={{
-                      display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-                      borderBottom: `1px dotted ${C.rule}`, paddingBottom: 6,
-                    }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13.5, color: C.ink2 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
-                        {k}
-                      </span>
-                      <span style={{
-                        fontFamily: FONT_SERIF, fontStyle: 'italic',
-                        fontSize: 22, fontWeight: 500, color,
-                        letterSpacing: '-0.025em', lineHeight: 1,
-                      }}>{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Labor cost — manager-only; today's labor $ as a % of revenue,
-                  costed from the published schedule × wages. Renders null for
-                  non-owner/GM/admin. */}
-              <LaborCostCard />
-
-              {/* Financials — manager-only; reads the same /api/financials/summary
-                  as the Financials page so revenue/profit always match. Renders
-                  null for non-owner/GM/admin. */}
-              <FinancialsDashboardCard />
             </div>
-          </div>
+
+            <div style={{ background: attention.length ? C.rustBg : '#E7EFE7', borderRadius: 16, padding: 22 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <span style={{ ...LABEL, color: attention.length ? C.rustD : C.green }}>{ES ? 'Necesita atención' : 'Needs attention'}</span>
+                <span style={{ background: attention.length ? C.rust : C.green, color: '#fff', borderRadius: 999, minWidth: 24, height: 24, padding: '0 7px', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700 }}>{attnTotal}</span>
+              </div>
+              {attention.length ? attention.map((a, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 0', borderTop: i ? '1px solid rgba(188,94,55,.2)' : 'none' }}>
+                  <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 22, color: C.rust, minWidth: 22 }}>{a.n}</span>
+                  <span style={{ fontSize: 13, color: C.rustD }}>{a.text}</span>
+                </div>
+              )) : (
+                <div style={{ fontSize: 14, color: C.green, paddingTop: 2 }}>{ES ? 'Todo en orden.' : 'All clear — nothing needs you right now.'}</div>
+              )}
+            </div>
+          </section>
+
+          {/* month to date */}
+          {mtd && (
+            <section className="stx-mtd" style={{ borderTop: `1px solid ${C.line}`, paddingTop: 22 }}>
+              <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: C.ink2, width: 200, flexShrink: 0, textTransform: 'capitalize' }}>
+                {ES ? `${monthFull}, hasta hoy` : `${monthFull}, month to date`}
+              </span>
+              {([
+                [ES ? 'Ocupación media' : 'Avg occupancy', mtd.occ + '%', C.green],
+                [ES ? 'Ingresos' : 'Revenue', fmtCompact(mtd.revenue), C.rust],
+                [ES ? 'Ganancia' : 'Profit', fmtCompact(mtd.profit), C.green],
+                ['ADR ' + (ES ? 'medio' : 'avg'), '$' + mtd.adr, C.ink],
+                [ES ? 'Hab. vendidas' : 'Rooms sold', mtd.soldRooms.toLocaleString(), C.ink],
+                [ES ? 'Días' : 'Days in', `${mtd.elapsed} ${ES ? 'de' : 'of'} ${mtd.dim}`, C.ink2],
+              ] as [string, string, string][]).map(m => (
+                <div key={m[0]} style={{ flex: 1, minWidth: 110, paddingLeft: 22, borderLeft: `1px solid ${C.line}` }}>
+                  <div style={{ ...LABEL, marginBottom: 6 }}>{m[0]}</div>
+                  <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 26, color: m[2], fontVariantNumeric: 'tabular-nums' }}>{m[1]}</div>
+                </div>
+              ))}
+            </section>
+          )}
 
         </div>
       </div>
