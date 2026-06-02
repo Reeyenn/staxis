@@ -414,7 +414,7 @@ function unwrap(row: Record<string, unknown>): LoadedKnowledgeFile | null {
  * it). Buffer-ify both. Returns null when the column was NULL (legacy
  * row pre-dating signing, or signing bypass under warn mode).
  */
-function decodeBytea(raw: unknown): Buffer | null {
+export function decodeBytea(raw: unknown): Buffer | null {
   if (raw == null) return null;
   if (raw instanceof Buffer) return raw;  // defensive, future-proof
   if (typeof raw !== 'string') return null;

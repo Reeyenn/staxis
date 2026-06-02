@@ -150,20 +150,36 @@ export class WorkflowRuntime {
    *  between crash and reclaim.
    */
   private async reclaimStaleRunningJobs(): Promise<void> {
-    const staleCutoff = new Date(Date.now() - 1.5 * env.MAPPER_JOB_TIMEOUT_MS).toISOString();
-    const { data, error } = await supabase
-      .from('workflow_jobs')
-      .update({ status: 'queued', error: 'reclaimed: worker restart before completion' })
-      .eq('status', 'running')
-      .lt('last_attempt_at', staleCutoff)
-      .select('id');
-    if (error) {
-      log.warn('workflow-runtime: stale reclaim failed', { err: error.message });
-      return;
-    }
-    if (data && data.length > 0) {
-      log.info('workflow-runtime: reclaimed stale running jobs', { count: data.length });
-    }
+    const noDriverKinds = [...NO_DRIVER_KINDS];
+    // Mapper (no-driver) jobs are long (90 min) — reclaim at 1.5x their timeout.
+    const mapperCutoff = new Date(Date.now() - 1.5 * env.MAPPER_JOB_TIMEOUT_MS).toISOString();
+    // Everything else (e.g. pms.write) is short — a crashed one must not sit
+    // 'running' for ~135 min (Codex P1-3). Reclaim at 2x the workflow timeout.
+    // Re-running is safe: the write handler is idempotent (precondition short-
+    // circuit) and writes are max_attempts=1, so a reclaim can't loop-mutate.
+    const shortCutoff = new Date(Date.now() - 2 * WORKFLOW_TIMEOUT_MS).toISOString();
+    const inList = `(${noDriverKinds.map((k) => `"${k}"`).join(',')})`;
+
+    const [mapper, other] = await Promise.all([
+      supabase
+        .from('workflow_jobs')
+        .update({ status: 'queued', error: 'reclaimed: worker restart before completion' })
+        .eq('status', 'running')
+        .in('kind', noDriverKinds)
+        .lt('last_attempt_at', mapperCutoff)
+        .select('id'),
+      supabase
+        .from('workflow_jobs')
+        .update({ status: 'queued', error: 'reclaimed: worker restart before completion' })
+        .eq('status', 'running')
+        .not('kind', 'in', inList)
+        .lt('last_attempt_at', shortCutoff)
+        .select('id'),
+    ]);
+    if (mapper.error) log.warn('workflow-runtime: stale mapper reclaim failed', { err: mapper.error.message });
+    if (other.error) log.warn('workflow-runtime: stale write reclaim failed', { err: other.error.message });
+    const count = (mapper.data?.length ?? 0) + (other.data?.length ?? 0);
+    if (count > 0) log.info('workflow-runtime: reclaimed stale running jobs', { count });
   }
 
   stop(): void {

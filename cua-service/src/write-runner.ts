@@ -74,24 +74,33 @@ async function passesVerify(
 export async function executeWriteRecipe(
   page: Page,
   recipe: WriteActionRecipe,
-  payload: Record<string, string>,
+  rawPayload: Record<string, string>,
   opts: ExecuteWriteOpts,
 ): Promise<ExecuteWriteResult> {
-  // 1. Payload validation — fail closed BEFORE touching the browser.
+  // 1. Payload validation — fail closed BEFORE touching the browser. Validate
+  //    the ORIGINAL (internal) values against the recipe's param enums.
   for (const p of recipe.requiredParams) {
-    const v = payload[p];
+    const v = rawPayload[p];
     if (v === undefined || v === null || v === '') {
       return { ok: false, error: 'bad_payload', detail: { missing: p } };
     }
   }
   if (recipe.paramEnums) {
     for (const [k, allowed] of Object.entries(recipe.paramEnums)) {
-      const v = payload[k];
+      const v = rawPayload[k];
       if (v !== undefined && v !== '' && !allowed.includes(v)) {
         return { ok: false, error: 'bad_payload', detail: { badEnum: k, value: v } };
       }
     }
   }
+
+  // Map internal values -> the PMS's on-screen strings (e.g. 'vacant_clean' ->
+  // 'Clean') for the browser interaction + in-page verify. The caller's
+  // original payload is untouched, so the handler still records the internal
+  // value to pms_room_status_log / pms_sync_echo.
+  const payload: Record<string, string> = recipe.valueMap
+    ? Object.fromEntries(Object.entries(rawPayload).map(([k, v]) => [k, recipe.valueMap?.[v] ?? v]))
+    : rawPayload;
 
   const gotoOpts = {
     allowedHost: opts.allowedHost ?? null,

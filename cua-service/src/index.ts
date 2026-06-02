@@ -34,6 +34,7 @@ import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
 import { runMappingJob, type MappingJobInput } from './mapping-driver.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
+import { writeJobHandler } from './write-job-handler.js';
 
 const WORKER_ID = makeWorkerId();
 
@@ -123,6 +124,11 @@ async function main(): Promise<void> {
       },
     };
   });
+
+  // Phase 3 — PMS write-back handler. Alive-driver kind: the runtime hands it
+  // the logged-in page + browser lock; the handler drives the write under the
+  // exclusive mutex and verifies it landed.
+  runtime.registerHandler('pms.write', (ctx) => writeJobHandler(ctx));
 
   log.info('cua-service ready', {
     workerId: WORKER_ID,

@@ -240,10 +240,22 @@ export async function saveGenericTable(
   // write to authoritative.
   const targetTable = tableName;
 
+  // Phase 3 echo-suppression: when the 30s reader sees a room status equal to
+  // what the write-back robot JUST pushed (recorded in pms_sync_echo), drop
+  // that 'cua' row so the robot's own write can't masquerade as a fresh
+  // external change and wrongly cancel a newer pending manual write (Codex P1-5).
+  let effectiveRows = rows;
+  if (tableName === 'pms_room_status_log') {
+    effectiveRows = await suppressEchoedRows(propertyId, rows);
+    if (rows.length > 0 && effectiveRows.length === 0) {
+      return { ok: true, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: 0, errors: [] };
+    }
+  }
+
   // ── Validate ──
   // Stamp property_id on every row before validation so the required-field
   // check sees it.
-  const stamped = rows.map((r) => ({ ...r, property_id: propertyId }));
+  const stamped = effectiveRows.map((r) => ({ ...r, property_id: propertyId }));
   const validation = validateRows(stamped, descriptor);
 
   if (validation.rejected.length > 0) {
@@ -323,6 +335,56 @@ async function writeAppend(
     ok: true, tableName, inserted: rows.length, updated: 0, autoResolved: 0,
     rejected, errors: [],
   };
+}
+
+/**
+ * Phase 3 echo-suppression (Codex P1-5). Drop incoming reader-origin ('cua')
+ * room-status rows whose (room_number, status) equals a value the write-back
+ * robot pushed within the last ~45s (covers the 30s±10s jittered poll), and
+ * consume those echo entries one-shot — so a LATER genuine same-value external
+ * change still logs. Returns the rows to actually write.
+ */
+async function suppressEchoedRows(
+  propertyId: string,
+  rows: Array<Record<string, unknown>>,
+): Promise<Array<Record<string, unknown>>> {
+  const cutoff = new Date(Date.now() - 45_000).toISOString();
+  const { data: echoes, error } = await supabase
+    .from('pms_sync_echo')
+    .select('room_number, pushed_value')
+    .eq('property_id', propertyId)
+    .gte('pushed_at', cutoff);
+  if (error || !echoes || echoes.length === 0) return rows;
+
+  const echoMap = new Map<string, string>();
+  for (const e of echoes) echoMap.set(String(e.room_number), String(e.pushed_value));
+
+  const consumed = new Set<string>();
+  const kept = rows.filter((r) => {
+    const room = String(r.room_number ?? '');
+    const status = String(r.status ?? '');
+    const src = r.source ? String(r.source) : 'cua';
+    if (src === 'cua' && echoMap.get(room) === status) {
+      consumed.add(room);
+      return false; // our own write echoed back — don't re-log it as 'cua'
+    }
+    return true;
+  });
+
+  if (consumed.size > 0) {
+    const { error: delErr } = await supabase
+      .from('pms_sync_echo')
+      .delete()
+      .eq('property_id', propertyId)
+      .in('room_number', [...consumed]);
+    if (delErr) {
+      log.warn('generic-table-writer: echo consume (delete) failed', { propertyId, msg: delErr.message });
+    }
+    log.info('generic-table-writer: suppressed echoed cua room-status rows', {
+      propertyId, count: consumed.size,
+    });
+  }
+  return kept;
 }
 
 async function writeUpsert(

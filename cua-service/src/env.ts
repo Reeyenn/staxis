@@ -69,6 +69,12 @@ const Schema = z.object({
   // flip to 'true' once we've measured the impact.
   CUA_DNS_PREFLIGHT: z.enum(['true', 'false']).default('false'),
 
+  // ── PMS write-back panic switch (Phase 3) ──────────────
+  // `fly secrets set CUA_WRITES_KILL_SWITCH=true -a staxis-cua` halts ALL
+  // PMS write-back instantly, regardless of per-property pms_writeback_enabled
+  // flags. Default 'false'.
+  CUA_WRITES_KILL_SWITCH: z.enum(['true', 'false']).default('false'),
+
   // ── Mapper job timeout (Plan v8 D.2 — vision is the only mode now) ──
   // Vision per-target wallclock is 3-5x slower than the deleted DOM tool;
   // 90min gives a real vision run + multiple help-request waits room
