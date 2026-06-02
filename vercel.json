@@ -78,6 +78,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/pms-sync-watchdog",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/run-rules-engine",
       "schedule": "*/5 * * * *"
     },

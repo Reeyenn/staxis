@@ -32,6 +32,11 @@ export type RateLimitEndpoint =
   | 'test-sms-flow'
   | 'sync-room-assignments'
   | 'populate-rooms-from-plan'
+  // Phase 3 — each manager room-status change, when write-back is enabled,
+  // enqueues a robot job that MUTATES the real PMS. Cap per property so a
+  // compromised account or a runaway UI loop can't fire thousands of PMS
+  // writes. Billing-impacting (fails CLOSED below).
+  | 'pms-writeback-enqueue'
   | 'notify-housekeepers-sms'
   // PMS onboarding endpoints — tight caps because each onboarding
   // job spawns a Fly worker that potentially burns Claude tokens.
@@ -327,6 +332,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
   'sync-room-assignments':    200,
   'populate-rooms-from-plan':  20,
+  // PMS write-back enqueue — one per manager status change when enabled. A
+  // busy 74-room checkout morning is ~100-150 changes/hr; 300/hr/property
+  // gives headroom while bounding abuse.
+  'pms-writeback-enqueue':    300,
   // SMS fan-out to housekeepers — Maria might re-broadcast after schedule
   // tweaks. 30/hr covers normal use and stops a runaway loop dead.
   'notify-housekeepers-sms':   30,
@@ -610,6 +619,9 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'reports-run',
   // Each pms-onboard burns $1-3 of Anthropic credit on the Fly worker.
   'pms-onboard',
+  // PMS write-back enqueue mutates the hotel's real PMS — fail CLOSED so a
+  // Supabase blip can't let a runaway uncap real-PMS writes (Codex P1-7).
+  'pms-writeback-enqueue',
   // Recipe regeneration is the same shape as pms-onboard.
   'admin-regenerate-recipe',
   // Claude Vision calls.

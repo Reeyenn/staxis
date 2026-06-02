@@ -61,6 +61,8 @@ create unique index if not exists pms_writeback_recipes_one_active
   where status = 'active';
 
 -- ── Echo-suppression: what the robot just pushed ────────────────────────────
+-- @rls: service-role-only — write-back internal sync state. Only the CUA worker
+--   (service_role) reads/writes it; no browser/anon access. Deny-all RLS below.
 create table if not exists public.pms_sync_echo (
   property_id   uuid not null references public.properties(id) on delete cascade,
   room_number   text not null,
@@ -70,6 +72,8 @@ create table if not exists public.pms_sync_echo (
 );
 
 -- ── Stuck-sync alert dedupe state ───────────────────────────────────────────
+-- @rls: service-role-only — write-back alert state machine. Only the watchdog
+--   cron + worker (service_role) touch it; no browser/anon access. Deny-all below.
 create table if not exists public.pms_sync_alert_state (
   property_id      uuid primary key references public.properties(id) on delete cascade,
   state            text not null default 'ok' check (state in ('ok','alerting')),
@@ -79,33 +83,30 @@ create table if not exists public.pms_sync_alert_state (
   updated_at       timestamptz not null default now()
 );
 
--- ── RLS: service-role only (browser denied) — mirrors 0202 pms_* convention ──
-do $$
-declare tbl text;
-begin
-  foreach tbl in array array[
-    'pms_writeback_recipes',
-    'pms_sync_echo',
-    'pms_sync_alert_state'
-  ]
-  loop
-    execute format('alter table public.%I enable row level security', tbl);
-    execute format('revoke all on public.%I from public, anon, authenticated', tbl);
-    execute format('grant select, insert, update, delete on public.%I to service_role', tbl);
-    execute format('drop policy if exists %I on public.%I', tbl || '_deny_all_browser', tbl);
-    execute format(
-      'create policy %I on public.%I for all to anon, authenticated using (false) with check (false)',
-      tbl || '_deny_all_browser',
-      tbl
-    );
-    execute format(
-      'comment on policy %I on public.%I is %L',
-      tbl || '_deny_all_browser',
-      tbl,
-      'Service-role only (Phase 3 write-back). Web app + CUA worker access via supabaseAdmin. Created 0253.'
-    );
-  end loop;
-end $$;
+-- ── RLS: service-role only (browser denied) ─────────────────────────────────
+-- Explicit per-table statements (mirrors 0245) so the rls-policy-coverage audit
+-- can statically see RLS is enabled on the tenant-scoped tables. Service-role
+-- bypasses RLS; anon + authenticated get a deny-all policy + revoked grants.
+alter table public.pms_writeback_recipes enable row level security;
+revoke all on public.pms_writeback_recipes from public, anon, authenticated;
+grant select, insert, update, delete on public.pms_writeback_recipes to service_role;
+drop policy if exists pms_writeback_recipes_deny_all_browser on public.pms_writeback_recipes;
+create policy pms_writeback_recipes_deny_all_browser on public.pms_writeback_recipes
+  for all to anon, authenticated using (false) with check (false);
+
+alter table public.pms_sync_echo enable row level security;
+revoke all on public.pms_sync_echo from public, anon, authenticated;
+grant select, insert, update, delete on public.pms_sync_echo to service_role;
+drop policy if exists pms_sync_echo_deny_all_browser on public.pms_sync_echo;
+create policy pms_sync_echo_deny_all_browser on public.pms_sync_echo
+  for all to anon, authenticated using (false) with check (false);
+
+alter table public.pms_sync_alert_state enable row level security;
+revoke all on public.pms_sync_alert_state from public, anon, authenticated;
+grant select, insert, update, delete on public.pms_sync_alert_state to service_role;
+drop policy if exists pms_sync_alert_state_deny_all_browser on public.pms_sync_alert_state;
+create policy pms_sync_alert_state_deny_all_browser on public.pms_sync_alert_state
+  for all to anon, authenticated using (false) with check (false);
 
 -- ── Atomic append-log + gated enqueue (Codex P1-1) ──────────────────────────
 -- Called (service-role) from src/lib/pms-rooms-writes.ts in place of a bare

@@ -57,6 +57,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabaseAdmin } from './supabase-admin';
+import { checkAndIncrementRateLimit } from './api-ratelimit';
 import type { Room, RoomStatus } from '@/types';
 import { log } from './log';
 import { todayStr } from './utils';
@@ -397,21 +398,49 @@ export async function applyRoomUpdate(
   // 'occupied_dirty' rather than the misleading 'vacant_dirty'.
   const logValue = statusToLogValue(partial.status, currentRawStatus);
   if (logValue !== null && logValue !== currentRawStatus) {
-    const { error: logInsertErr } = await supabaseAdmin
-      .from('pms_room_status_log')
-      .insert({
-        property_id: pid,
-        room_number: roomNumber,
-        status: logValue,
-        source: 'manual',
-        changed_at: new Date().toISOString(),
+    // Phase 3: append the manual status row AND — when write-back is enabled
+    // for this property — enqueue a robot job to push it into the real PMS,
+    // atomically (staxis_enqueue_pms_write). We read the flag first so we only
+    // rate-limit (and count) when a push would actually happen. Fail-closed:
+    // if the limiter errs, allowEnqueue stays false — the mirror still updates,
+    // the PMS push is just skipped (reconcilable on the next change).
+    let allowEnqueue = false;
+    try {
+      const { data: wbRow } = await supabaseAdmin
+        .from('properties')
+        .select('pms_writeback_enabled')
+        .eq('id', pid)
+        .maybeSingle();
+      if (wbRow?.pms_writeback_enabled) {
+        const rl = await checkAndIncrementRateLimit('pms-writeback-enqueue', pid);
+        allowEnqueue = rl.allowed;
+        if (!rl.allowed) {
+          log.warn('[pms-rooms-writes] pms-writeback enqueue rate-limited; mirror updated, PMS push skipped this time', {
+            pid, roomNumber,
+          });
+        }
+      }
+    } catch (e) {
+      log.warn('[pms-rooms-writes] pms-writeback gate check failed; PMS push skipped (mirror still updates)', {
+        pid, roomNumber, msg: (e as Error).message,
       });
+    }
+
+    const { error: logInsertErr } = await supabaseAdmin.rpc('staxis_enqueue_pms_write', {
+      p_property_id: pid,
+      p_room_number: roomNumber,
+      p_status: logValue,
+      p_changed_by: null,
+      p_action_key: 'room_status',
+      p_payload: { target_status: logValue },
+      p_allow_enqueue: allowEnqueue,
+    });
     if (logInsertErr) {
       // Don't roll back the assignment upsert — the assignment is the
       // authoritative read source. status_log is the supplementary audit
       // trail. A failure here downgrades to "audit gap" not "tap appears
       // broken." log.error routes to Sentry so the gap is discoverable.
-      log.error('[pms-rooms-writes] applyRoomUpdate status_log insert failed (assignment write succeeded)', {
+      log.error('[pms-rooms-writes] applyRoomUpdate enqueue RPC failed (assignment write succeeded)', {
         pid, rid, date, roomNumber, logValue, msg: logInsertErr.message,
       });
     }
