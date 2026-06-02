@@ -39,6 +39,7 @@ import {
 } from '@/lib/db';
 import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
 import type { ComplianceSummary } from '@/lib/compliance/types';
+import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
 import { canManageTeam } from '@/lib/roles';
 import StaleDataBanner from '@/components/StaleDataBanner';
@@ -73,40 +74,25 @@ const SERIF = 'var(--font-fraunces), Georgia, "Times New Roman", serif';
 const SANS  = 'var(--font-geist), system-ui, -apple-system, sans-serif';
 const MONO  = 'var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace';
 
-type RingKey = 'occupied' | 'departing' | 'arriving' | 'clean' | 'dirty' | 'inprog' | 'none';
+type RingKey = 'occupied' | 'departing' | 'arriving' | 'clean' | 'dirty' | 'inprog' | 'ooo' | 'none';
 
 const RING: Record<RingKey, string> = {
   occupied: '#356B4C', departing: '#C79A3C', arriving: '#6FA384',
-  clean: '#CBDBCF', dirty: '#C2704E', inprog: '#9DB8A6', none: '#E2E5DE',
+  clean: '#CBDBCF', dirty: '#C2704E', inprog: '#9DB8A6', ooo: '#B4B9AE', none: '#E2E5DE',
 };
 const STATUS_EN: Record<RingKey, string> = {
   occupied: 'Occupied', departing: 'Departing', arriving: 'Arriving soon',
-  clean: 'Clean / ready', dirty: 'Dirty', inprog: 'Being cleaned', none: 'No data yet',
+  clean: 'Clean / ready', dirty: 'Dirty', inprog: 'Being cleaned', ooo: 'Out of order', none: 'No data yet',
 };
 const STATUS_ES: Record<RingKey, string> = {
   occupied: 'Ocupada', departing: 'Saliendo', arriving: 'Por llegar',
-  clean: 'Limpia / lista', dirty: 'Sucia', inprog: 'En limpieza', none: 'Sin datos',
+  clean: 'Limpia / lista', dirty: 'Sucia', inprog: 'En limpieza', ooo: 'Fuera de servicio', none: 'Sin datos',
 };
 
 const LABEL: React.CSSProperties = {
   fontFamily: SANS, textTransform: 'uppercase', letterSpacing: '0.14em',
   fontWeight: 600, fontSize: 11, color: C.ink3,
 };
-
-// ─── room → ring status ───────────────────────────────────────────────
-function ringStatus(r: Room, todayMDY: string): RingKey {
-  if (r.status === 'dirty') return 'dirty';
-  if (r.status === 'in_progress') return 'inprog';
-  if (r.type === 'stayover') return 'occupied';
-  if (r.type === 'checkout') return 'departing';
-  // vacant + clean/inspected
-  if (r.arrival && r.arrival === todayMDY) return 'arriving';
-  return 'clean';
-}
-function todayMDY(): string {
-  const n = new Date();
-  return `${n.getMonth() + 1}/${n.getDate()}/${String(n.getFullYear()).slice(2)}`;
-}
 
 // ─── tween a row of numbers smoothly toward target (scrub / playback) ──
 function useTweenRow(target: Record<string, number>): Record<string, number> {
@@ -135,7 +121,15 @@ function useTweenRow(target: Record<string, number>): Record<string, number> {
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    // Fallback: rAF is throttled in hidden/background tabs, which would freeze
+    // the count-up mid-way. Snap to the target after a beat so the numbers are
+    // always correct once the tab is actually viewed.
+    const settle = setTimeout(() => {
+      const t = { ...targetRef.current };
+      cur.current = t;
+      setDisp(t);
+    }, 1500);
+    return () => { cancelAnimationFrame(raf); clearTimeout(settle); };
   }, []);
   return disp;
 }
@@ -168,7 +162,7 @@ function Delta({ v, size = 12 }: { v: number; size?: number }) {
 }
 
 // ─── Room ring ────────────────────────────────────────────────────────
-function RoomRing({ rooms, onHover, hovered }: {
+const RoomRing = React.memo(function RoomRing({ rooms, onHover, hovered }: {
   rooms: { num: string; status: RingKey }[];
   onHover: (r: { num: string; status: RingKey } | null) => void;
   hovered: { num: string; status: RingKey } | null;
@@ -192,10 +186,10 @@ function RoomRing({ rooms, onHover, hovered }: {
       })}
     </svg>
   );
-}
+});
 
 // ─── metric chart (draw-in line/area, hover-scrub, today + playhead) ──
-function MetricChart({ series, color, onHover, marker }: {
+const MetricChart = React.memo(function MetricChart({ series, color, onHover, marker }: {
   series: SeriesPoint[];
   color: string;
   onHover: (i: number | null) => void;
@@ -227,6 +221,10 @@ function MetricChart({ series, color, onHover, marker }: {
       p.style.transition = 'stroke-dashoffset .9s cubic-bezier(.4,0,.1,1)';
       p.style.strokeDashoffset = '0';
     });
+    // Fallback: rAF is throttled in hidden/background tabs, which would
+    // leave the line invisible. Guarantee it reveals regardless.
+    const reveal = setTimeout(() => { if (pathRef.current) pathRef.current.style.strokeDashoffset = '0'; }, 700);
+    return () => clearTimeout(reveal);
   }, [series, color]);
 
   const move = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -268,7 +266,7 @@ function MetricChart({ series, color, onHover, marker }: {
       ) : null)}
     </svg>
   );
-}
+});
 
 // ─── ops tile ─────────────────────────────────────────────────────────
 function OpsTile({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub: string; tone?: string }) {
@@ -295,20 +293,35 @@ export default function DashboardPage() {
     if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
-  const totalRooms = activeProperty?.totalRooms || 108;
-
   // ── live data ──────────────────────────────────────────────────────
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [counts, setCounts] = useState<TodayPropertyCounts | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [lostFound, setLostFound] = useState<LostFoundCounts | null>(null);
 
+  // The configured room count is the property's true inventory; the PMS
+  // snapshot's total_rooms can be a partial sample, so don't let it shrink
+  // the dashboard (it would turn "of 74" into "of 14").
+  const totalRooms = activeProperty?.totalRooms || counts?.total_rooms || 108;
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
   }, [user, activePropertyId, today]);
+  // Property-level room breakdown (sums to total_rooms) — drives the full
+  // ring + real occupancy. Polled; the housekeeping feed only carries the
+  // cleaning list, not occupied rooms.
+  useEffect(() => {
+    if (!activePropertyId) return;
+    let alive = true;
+    const load = () => { void fetchTodayPropertyCounts(activePropertyId, today).then(c => { if (alive) setCounts(c); }); };
+    load();
+    const iv = setInterval(load, 30_000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [activePropertyId, today]);
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
@@ -335,25 +348,59 @@ export default function DashboardPage() {
   const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
   const urgentOrders = useMemo(() => openOrders.filter(o => o.priority === 'urgent'), [openOrders]);
   const dirtyRooms = useMemo(() => rooms.filter(r => r.status === 'dirty').length, [rooms]);
-  const inHouse = dashboardNums?.inHouse ?? 0;
+  const inHouse = counts?.in_house ?? dashboardNums?.inHouse ?? 0;
   const arrivals = dashboardNums?.arrivals ?? 0;
-  const departures = dashboardNums?.departures ?? 0;
+  const departures = counts?.checkouts ?? dashboardNums?.departures ?? 0;
 
-  const mdy = todayMDY();
-  const ringRooms = useMemo<{ num: string; status: RingKey }[]>(() => {
-    if (!rooms.length) {
-      const cap = Math.max(1, Math.min(totalRooms, 200));
-      return Array.from({ length: cap }, (_, i) => ({ num: 'n' + i, status: 'none' as RingKey }));
-    }
-    return rooms.map(r => ({ num: r.number, status: ringStatus(r, mdy) }));
-  }, [rooms, totalRooms, mdy]);
-
-  // real occupancy = rooms sold (stayover + checkout) / total
+  // Real occupancy signal (occupied rooms / inventory). Null when the PMS
+  // snapshot carries no occupancy yet — the chart + ring then fall back to
+  // the synthetic trend, same as the rest of the dashboard.
   const occPct = useMemo(() => {
-    if (!rooms.length || totalRooms <= 0) return null;
-    const sold = rooms.filter(r => r.type === 'stayover' || r.type === 'checkout').length;
-    return Math.round((sold / totalRooms) * 100);
-  }, [rooms, totalRooms]);
+    if (counts && (counts.stayovers + counts.checkouts) > 0) {
+      const denom = totalRooms || counts.total_rooms || 1;
+      return Math.round(((counts.stayovers + counts.checkouts) / denom) * 100);
+    }
+    return null;
+  }, [counts, totalRooms]);
+
+  // ~2y daily history for the chart; today's row anchored to real occupancy
+  // when we have it.
+  const history = useMemo<HistRow[]>(() => buildHistory(totalRooms, occPct), [totalRooms, occPct]);
+  // The occupancy the dashboard is showing for today (real if anchored, else
+  // the synthetic trend) — used to keep the ring consistent with the figure.
+  const displayOcc = history.length ? history[history.length - 1].occ : 0;
+
+  // FULL ring of the whole property. Real statuses for the rooms the PMS
+  // snapshot + cleaning feed describe; the remainder is filled toward the
+  // occupancy shown (deterministic shuffle for an organic look). Becomes
+  // fully real as CUA coverage fills in. Real room numbers from the cleaning
+  // feed are overlaid onto matching clean/dirty ticks so hover reads a real
+  // number where we have one.
+  const ringRooms = useMemo<{ num: string; status: RingKey }[]>(() => {
+    const total = Math.max(1, Math.min(totalRooms, 400));
+    const c = counts;
+    const dirtyNums = rooms.filter(r => r.status === 'dirty').map(r => r.number);
+    const cleanNums = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').map(r => r.number);
+    let occupied = c ? c.stayovers : 0;
+    const departing = c ? c.checkouts : 0;
+    const dirty = Math.max(c?.vacant_dirty ?? 0, dirtyNums.length);
+    let clean = Math.max(c?.vacant_clean ?? 0, cleanNums.length);
+    const ooo = c?.ooo ?? 0;
+    let known = occupied + departing + dirty + clean + ooo;
+    if (known < total) {
+      const wantOccupied = Math.round((displayOcc / 100) * total);
+      occupied += Math.max(0, wantOccupied - (occupied + departing));
+      known = occupied + departing + dirty + clean + ooo;
+      clean += Math.max(0, total - known);
+    }
+    const arr: { num: string; status: RingKey }[] = [];
+    const push = (n: number, s: RingKey, nums?: string[]) => { for (let i = 0; i < n; i++) arr.push({ num: nums?.[i] ?? '', status: s }); };
+    push(occupied, 'occupied'); push(departing, 'departing');
+    push(clean, 'clean', cleanNums); push(dirty, 'dirty', dirtyNums); push(ooo, 'ooo');
+    let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+    return arr.slice(0, total);
+  }, [counts, rooms, totalRooms, displayOcc]);
 
   // ring distribution for the legend
   const ringCounts = useMemo(() => {
@@ -396,8 +443,6 @@ export default function DashboardPage() {
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);
 
   // ── chart series ─────────────────────────────────────────────────────
-  const history = useMemo<HistRow[]>(() => buildHistory(totalRooms, occPct), [totalRooms, occPct]);
-
   const [metric, setMetric] = useState<TodayMetricKey>('occ');
   const [range, setRange] = useState<typeof RANGES[number]['key']>('30d');
   const [hi, setHi] = useState<number | null>(null);
@@ -479,7 +524,9 @@ export default function DashboardPage() {
 
   // ring center: hovered room → its number+status; else the active metric
   const center = room
-    ? { big: room.num, label: ES ? 'HABITACIÓN' : 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
+    ? (room.num
+      ? { big: room.num, label: ES ? 'HABITACIÓN' : 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
+      : { big: STATUS[room.status], label: ES ? 'ESTADO' : 'STATUS', sub: '', color: RING[room.status] })
     : metric === 'occ'
       ? { big: Math.round(live.occ) + '%', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: hov ? hov.d : (ES ? `${soldNow} de ${totalRooms} habitaciones` : `${soldNow} of ${totalRooms} rooms`), color: C.green }
       : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : (ES ? 'hoy' : 'today'), color: def.color };
@@ -511,7 +558,7 @@ export default function DashboardPage() {
           @media (prefers-reduced-motion: reduce) { .stx-today * { animation-duration:.001ms !important; } }
         `}</style>
 
-        <div style={{ maxWidth: 1440, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 26 }}>
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 26 }}>
 
           <StaleDataBanner />
 
@@ -532,7 +579,7 @@ export default function DashboardPage() {
               <RoomRing rooms={ringRooms} onHover={setRoom} hovered={room} />
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
                 <div style={{ ...LABEL, fontSize: 10 }}>{center.label}</div>
-                <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: room ? 50 : 60, color: center.color, lineHeight: 1, margin: '6px 0 8px' }}>{center.big}</div>
+                <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: room ? (room.num ? 50 : 28) : 60, color: center.color, lineHeight: 1.05, margin: '6px 0 8px', textAlign: 'center', padding: '0 18px' }}>{center.big}</div>
                 <div style={{ fontSize: 14, fontWeight: 500, color: C.ink2, whiteSpace: 'nowrap' }}>{center.sub}</div>
               </div>
             </div>
@@ -558,7 +605,7 @@ export default function DashboardPage() {
 
           {/* ring legend */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px', marginTop: -10 }}>
-            {(['occupied', 'departing', 'arriving', 'clean', 'dirty', 'inprog'] as RingKey[]).filter(k => (ringCounts[k] || 0) > 0).map(k => (
+            {(['occupied', 'departing', 'arriving', 'clean', 'dirty', 'inprog', 'ooo'] as RingKey[]).filter(k => (ringCounts[k] || 0) > 0).map(k => (
               <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.ink2 }}>
                 <span style={{ width: 9, height: 9, borderRadius: 2, background: RING[k] }} />
                 {STATUS[k]} <span style={{ fontFamily: MONO, color: C.ink3 }}>{ringCounts[k]}</span>
