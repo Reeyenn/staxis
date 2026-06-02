@@ -216,6 +216,77 @@ export interface Recipe {
   };
 }
 
+// ─── Phase 3: PMS write-back recipe shapes ────────────────────────────────
+//
+// Writes are intentionally a SEPARATE type family from the read RecipeStep
+// union above. A malformed/poisoned write recipe must never be able to
+// change how reads or login replay. Two deliberate safety properties baked
+// into the TYPE here (Codex adversarial review P0-3):
+//   1. WriteStep OMITS coordinate clicks (`click_at`). A write must target an
+//      element by an exact, asserted match — never a pixel guess that could
+//      land on the wrong room.
+//   2. Write values use a `$payload.<field>` family ONLY. Credentials
+//      ($username/$password) are never part of a write step — enforced at
+//      runtime in write-steps.ts (defense-in-depth) AND absent from the
+//      value typing intent here.
+
+/** Scope a write step to the whole page or to the single located room row. */
+export type WriteScope = 'page' | 'row';
+
+/** Locate exactly ONE row by an exact-text match on a payload field.
+ *  Exact equality (trimmed, not substring) so room "10" can never match
+ *  "110" (Codex P0-3 wrong-room vector). */
+export interface WriteRowLocator {
+  /** Selector for candidate rows, e.g. '#hkTable tbody tr'. */
+  rowSelector: string;
+  /** Sub-selector within a row holding the key text; omit to match the row's own text. */
+  matchCell?: string;
+  /** Which payload field to exact-match (e.g. 'room_number'). */
+  matchParam: string;
+}
+
+export type WriteStep =
+  | { kind: 'click';           selector: string; scope?: WriteScope; tieredSelector?: TieredSelector }
+  | { kind: 'fill';            selector: string; value: string; scope?: WriteScope }
+  | { kind: 'select';          selector: string; value: string; scope?: WriteScope }
+  | { kind: 'type_text';       value: string }
+  | { kind: 'press_key';       key: string }
+  | { kind: 'wait_for';        selector: string; scope?: WriteScope; timeoutMs?: number }
+  | { kind: 'wait_ms';         ms: number }
+  | { kind: 'assert_text';     selector: string; scope?: WriteScope; equals?: string; contains?: string; timeoutMs?: number }
+  | { kind: 'wait_for_change'; selector: string; scope?: WriteScope; fromText?: string; timeoutMs?: number }
+  // The commit step — tagged distinctly so dry-run skips EXACTLY the commit
+  // and nothing else.
+  | { kind: 'save';            selector?: string; scope?: WriteScope; tieredSelector?: TieredSelector };
+
+export interface WriteActionRecipe {
+  /** Stable action key, e.g. 'set_room_status'. */
+  key: string;
+  description?: string;
+  /** Payload fields required before ANY browser action (fail-closed if missing). */
+  requiredParams: string[];
+  /** Allowed values per param — reject junk before touching the PMS. */
+  paramEnums?: Record<string, string[]>;
+  /** Navigate here first (the page hosting the editable rows). Pinned to allowedHost. */
+  pageUrl: string;
+  /** How to find the single target row (exact-text match). */
+  rowLocator: WriteRowLocator;
+  /** Optional: assert the row's current value before editing (idempotency / sanity). */
+  precondition?: { selector: string; scope?: WriteScope; equals?: string; contains?: string };
+  /** The edit steps (open control -> choose value -> save). $payload + scope aware. */
+  steps: WriteStep[];
+  /** In-page success check run immediately after steps (Layer-1 verify). */
+  verifyInPage?: { selector: string; scope?: WriteScope; equals?: string; contains?: string; timeoutMs?: number };
+  /** Authoritative re-read (Layer-2): which READ action proves the change + the field that must match. */
+  verifyReread?: { readActionKey: keyof Recipe['actions']; matchField: string; valueField: string };
+  /** Map our internal value -> the PMS's on-screen string for select/verify. */
+  valueMap?: Record<string, string>;
+  /** Provenance for the safety gate (how the recipe was learned/validated). */
+  verifiedAgainst: 'mock' | 'practice_room' | 'path_only';
+  learnedAt?: string;
+  learnedBy?: string;
+}
+
 // ─── Plan v7: TableTemplate — the canonical runtime template ──────────────
 //
 // `recipe-adapter.ts` translates BOTH legacy Recipe.actions AND new mapper
