@@ -592,7 +592,7 @@ export default function DashboardPage() {
 
           {/* hero: ring + chart */}
           <section className="stx-hero">
-            <div onClick={() => { setMetric('occ'); setRoom(null); }} style={{ position: 'relative', cursor: 'pointer' }}>
+            <div onClick={() => { setMetric('occ'); setRoom(null); }} style={{ position: 'relative', cursor: 'pointer', width: 'fit-content', justifySelf: 'center' }}>
               <RoomRing rooms={ringRooms} onHover={setRoom} hovered={room} />
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
                 <div style={{ ...LABEL, fontSize: 10 }}>{center.label}</div>
