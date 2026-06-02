@@ -277,8 +277,14 @@ export interface WriteActionRecipe {
   steps: WriteStep[];
   /** In-page success check run immediately after steps (Layer-1 verify). */
   verifyInPage?: { selector: string; scope?: WriteScope; equals?: string; contains?: string; timeoutMs?: number };
-  /** Authoritative re-read (Layer-2): which READ action proves the change + the field that must match. */
-  verifyReread?: { readActionKey: keyof Recipe['actions']; matchField: string; valueField: string };
+  /** Authoritative Layer-2 verify: reload the page and re-assert verifyInPage
+   *  against a freshly-located row. Default true. Set false to trust the
+   *  in-page assert alone (rare). */
+  rereadAfterReload?: boolean;
+  /** A selector present ONLY when logged in. The handler fails closed
+   *  ('session_expired') if it's absent after navigating — never blind-clicks
+   *  into a login wall (Codex P1-6). */
+  loggedInSelector?: string;
   /** Map our internal value -> the PMS's on-screen string for select/verify. */
   valueMap?: Record<string, string>;
   /** Provenance for the safety gate (how the recipe was learned/validated). */

@@ -1,0 +1,174 @@
+/**
+ * Write-runner core (Phase 3.1) — replay a signed write recipe against a
+ * logged-in page and VERIFY the change actually landed. Deterministic
+ * Playwright only — NO Claude.
+ *
+ * `executeWriteRecipe` is the pure, DB-free engine (testable against the
+ * mock PMS). The DB-backed handler (gate flags, fail-closed signature
+ * verify, load recipe, persist source='workflow' + echo, run under the
+ * exclusive mutex) is wired in Phase 3.2 where its tables exist.
+ *
+ * Safety properties (Codex adversarial review):
+ *   - Wrong-room (P0-3): rows located by EXACT text, one-match-asserted.
+ *   - Verify-after-write: we NEVER claim success without confirming — an
+ *     in-page assert AND an authoritative re-read (reload + re-assert).
+ *   - Fail-closed: bad payload / session-expired / unverifiable -> ok:false,
+ *     and the mock/real PMS is left untouched on any pre-commit failure.
+ *   - Idempotent: a row already at the target short-circuits (safe retries).
+ */
+
+import type { Locator, Page } from 'playwright';
+import { safeGoto } from './browser-utils/navigate.js';
+import { locateRowByExactText, resolvePayloadValue, runWriteStep } from './write-steps.js';
+import type { WriteActionRecipe, WriteStep } from './types.js';
+
+const PAGE_GOTO_TIMEOUT_MS = 30_000;
+const LOGGED_IN_TIMEOUT_MS = 8_000;
+
+export interface ExecuteWriteOpts {
+  /** When true, replay everything EXCEPT the final Save (no mutation, no verify). */
+  dryRun: boolean;
+  /** Pin navigation to this host (the PMS domain). null = unpinned (login anchor). */
+  allowedHost?: string | null;
+  /** Test-only loopback allowance for the mock-PMS harness. Never set in prod. */
+  allowLoopback?: boolean;
+}
+
+export type ExecuteWriteResult =
+  | { ok: true; verifiedVia: 'reread' | 'in_page' | 'idempotent' | 'dry_run' }
+  | { ok: false; error: string; detail?: Record<string, unknown> };
+
+type VerifySpec = NonNullable<WriteActionRecipe['verifyInPage']>;
+
+/** Build a concrete assert_text step from a verify spec, resolving any
+ *  $payload placeholders in equals/contains. */
+function verifyStep(spec: VerifySpec, payload: Record<string, string>): WriteStep {
+  return {
+    kind: 'assert_text',
+    selector: spec.selector,
+    scope: spec.scope,
+    equals: spec.equals !== undefined ? resolvePayloadValue(spec.equals, payload) : undefined,
+    contains: spec.contains !== undefined ? resolvePayloadValue(spec.contains, payload) : undefined,
+    timeoutMs: spec.timeoutMs,
+  };
+}
+
+async function passesVerify(
+  page: Page,
+  rowLocator: Locator,
+  spec: VerifySpec,
+  payload: Record<string, string>,
+): Promise<boolean> {
+  try {
+    await runWriteStep(page, verifyStep(spec, payload), { payload, rowLocator, dryRun: false });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function executeWriteRecipe(
+  page: Page,
+  recipe: WriteActionRecipe,
+  payload: Record<string, string>,
+  opts: ExecuteWriteOpts,
+): Promise<ExecuteWriteResult> {
+  // 1. Payload validation — fail closed BEFORE touching the browser.
+  for (const p of recipe.requiredParams) {
+    const v = payload[p];
+    if (v === undefined || v === null || v === '') {
+      return { ok: false, error: 'bad_payload', detail: { missing: p } };
+    }
+  }
+  if (recipe.paramEnums) {
+    for (const [k, allowed] of Object.entries(recipe.paramEnums)) {
+      const v = payload[k];
+      if (v !== undefined && v !== '' && !allowed.includes(v)) {
+        return { ok: false, error: 'bad_payload', detail: { badEnum: k, value: v } };
+      }
+    }
+  }
+
+  const gotoOpts = {
+    allowedHost: opts.allowedHost ?? null,
+    context: 'write-runner:goto',
+    allowLoopback: opts.allowLoopback,
+    timeoutMs: PAGE_GOTO_TIMEOUT_MS,
+  };
+
+  // 2. Navigate to the editable page.
+  try {
+    await safeGoto(page, recipe.pageUrl, gotoOpts);
+  } catch (err) {
+    return { ok: false, error: 'goto_failed', detail: { message: (err as Error).message } };
+  }
+
+  // 3. Session guard — fail closed if not on a logged-in page (Codex P1-6).
+  if (recipe.loggedInSelector) {
+    try {
+      await page.waitForSelector(recipe.loggedInSelector, { timeout: LOGGED_IN_TIMEOUT_MS });
+    } catch {
+      return { ok: false, error: 'session_expired', detail: { loggedInSelector: recipe.loggedInSelector } };
+    }
+  }
+
+  // 4. Locate exactly ONE row (exact text — wrong-room guard).
+  let row: Locator;
+  try {
+    row = await locateRowByExactText(page, recipe.rowLocator, payload);
+  } catch (err) {
+    return { ok: false, error: 'row_locate_failed', detail: { message: (err as Error).message } };
+  }
+
+  // 5. Idempotency short-circuit — if the row already shows the target, a
+  //    retry (at-least-once delivery) must not re-mutate.
+  if (!opts.dryRun && recipe.verifyInPage && (await passesVerify(page, row, recipe.verifyInPage, payload))) {
+    return { ok: true, verifiedVia: 'idempotent' };
+  }
+
+  // 6. Replay the edit steps.
+  try {
+    for (const step of recipe.steps) {
+      await runWriteStep(page, step, { payload, rowLocator: row, dryRun: opts.dryRun });
+    }
+  } catch (err) {
+    return { ok: false, error: 'replay_failed', detail: { message: (err as Error).message } };
+  }
+
+  if (opts.dryRun) {
+    return { ok: true, verifiedVia: 'dry_run' };
+  }
+
+  // The commit (Save) may have navigated the page; let it settle before
+  // we re-locate for verification.
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+  if (!recipe.verifyInPage) {
+    // Never claim a success we can't confirm.
+    return { ok: false, error: 'no_verify_configured' };
+  }
+
+  // 7. Layer 1 — in-page verify on a freshly-located row (Save may have
+  //    navigated, so re-locate rather than reuse the stale handle).
+  try {
+    const row1 = await locateRowByExactText(page, recipe.rowLocator, payload);
+    await runWriteStep(page, verifyStep(recipe.verifyInPage, payload), { payload, rowLocator: row1, dryRun: false });
+  } catch (err) {
+    return { ok: false, error: 'verify_in_page_failed', detail: { message: (err as Error).message } };
+  }
+
+  // 8. Layer 2 — authoritative re-read: reload the page from the PMS and
+  //    re-assert. Single-room scoped (never re-runs the full feed sweep).
+  if (recipe.rereadAfterReload === false) {
+    return { ok: true, verifiedVia: 'in_page' };
+  }
+  try {
+    await safeGoto(page, recipe.pageUrl, gotoOpts);
+    const row2 = await locateRowByExactText(page, recipe.rowLocator, payload);
+    await runWriteStep(page, verifyStep(recipe.verifyInPage, payload), { payload, rowLocator: row2, dryRun: false });
+  } catch (err) {
+    return { ok: false, error: 'verify_reread_failed', detail: { message: (err as Error).message } };
+  }
+
+  return { ok: true, verifiedVia: 'reread' };
+}

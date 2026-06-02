@@ -119,6 +119,11 @@ export interface SafeGotoOptions {
   /** Playwright passthrough. */
   waitUntil?: 'domcontentloaded' | 'load' | 'networkidle';
   timeoutMs?: number;
+  /** Test-only: allow navigation to loopback (127.0.0.1/localhost/::1) for
+   *  the Phase-3 mock-PMS harness. NEVER set in production code — set only
+   *  by write-runner tests. ALL other private/link-local/metadata IPs stay
+   *  blocked even when this is true. Caller-supplied, never recipe-supplied. */
+  allowLoopback?: boolean;
 }
 
 /** Normalize a user-typed URL by prepending https:// when scheme is missing.
@@ -177,7 +182,11 @@ export function isPrivateOrLocalHost(rawHostname: string): boolean {
 
 /** Validate without navigating. Exposed for tests + for any caller that
  *  needs to pre-flight a URL without running Playwright. */
-export function validateNavigationUrl(rawUrl: string, allowedHost: string | null): void {
+export function validateNavigationUrl(
+  rawUrl: string,
+  allowedHost: string | null,
+  opts?: { allowLoopback?: boolean },
+): void {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -196,11 +205,23 @@ export function validateNavigationUrl(rawUrl: string, allowedHost: string | null
     );
   }
   if (isPrivateOrLocalHost(url.hostname)) {
-    throw new UnsafeNavigationError(
-      `Refused private/local host "${url.hostname}": ${rawUrl.slice(0, 120)}`,
-      'private_or_local_ip',
-      rawUrl,
-    );
+    // Phase 3: the write-runner mock-PMS harness runs on 127.0.0.1. A
+    // narrow, caller-supplied (NEVER recipe-supplied) opt-in allows ONLY
+    // loopback, ONLY when test code explicitly requests it. Every other
+    // private/link-local/metadata IP stays blocked. Prod handlers never
+    // pass allowLoopback, so the SSRF guard is unchanged in production.
+    const isLoopback =
+      url.hostname === 'localhost' ||
+      url.hostname === '127.0.0.1' ||
+      url.hostname === '::1' ||
+      url.hostname === '[::1]';
+    if (!(opts?.allowLoopback && isLoopback)) {
+      throw new UnsafeNavigationError(
+        `Refused private/local host "${url.hostname}": ${rawUrl.slice(0, 120)}`,
+        'private_or_local_ip',
+        rawUrl,
+      );
+    }
   }
   // Reject empty hostname OR single-label hostnames (no dot). The URL
   // spec collapses `http:///path` to `http://path/` with hostname "path",
@@ -238,7 +259,7 @@ export async function safeGoto(
   url: string,
   opts: SafeGotoOptions,
 ): Promise<void> {
-  validateNavigationUrl(url, opts.allowedHost);
+  validateNavigationUrl(url, opts.allowedHost, { allowLoopback: opts.allowLoopback });
 
   // Plan v2 F-AI-5 — DNS preflight. Resolve the hostname via Node DNS
   // and refuse if the resolved IP is private. This closes the trivial
