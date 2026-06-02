@@ -198,7 +198,19 @@ const MetricChart = React.memo(function MetricChart({ series, color, onHover, ma
   const ref = useRef<SVGSVGElement>(null);
   const pathRef = useRef<SVGPathElement>(null);
   const [hi, setHi] = useState<number | null>(null);
-  const w = 920, h = 236, pad = { t: 26, r: 10, b: 26, l: 10 };
+  // Measure the real rendered width so the chart fills the full container
+  // (a fixed viewBox would scale-to-fit and leave white space on the sides).
+  const [w, setW] = useState(1100);
+  const h = 236, pad = { t: 26, r: 10, b: 26, l: 10 };
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => { const x = el.getBoundingClientRect().width; if (x > 0) setW(Math.round(x)); };
+    measure();
+    const obs = new ResizeObserver(measure);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
   const vals = series.map(d => d.v);
   const min = Math.min(...vals), max = Math.max(...vals);
   const lo = min - (max - min) * 0.16 - 0.001, span = (max - lo) * 1.16 || 1;
@@ -225,7 +237,7 @@ const MetricChart = React.memo(function MetricChart({ series, color, onHover, ma
     // leave the line invisible. Guarantee it reveals regardless.
     const reveal = setTimeout(() => { if (pathRef.current) pathRef.current.style.strokeDashoffset = '0'; }, 700);
     return () => clearTimeout(reveal);
-  }, [series, color]);
+  }, [series, color, w]);
 
   const move = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!ref.current) return;
@@ -239,7 +251,7 @@ const MetricChart = React.memo(function MetricChart({ series, color, onHover, ma
   const shown = hi != null ? hi : marker;
 
   return (
-    <svg ref={ref} viewBox={`0 0 ${w} ${h}`} width="100%" height={h} onMouseMove={move} onMouseLeave={leave}
+    <svg ref={ref} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" width="100%" height={h} onMouseMove={move} onMouseLeave={leave}
       style={{ display: 'block', overflow: 'visible', cursor: 'crosshair' }}>
       <defs>
         <linearGradient id="stx-grad" x1="0" y1="0" x2="0" y2="1">
