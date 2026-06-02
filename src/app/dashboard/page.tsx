@@ -89,6 +89,11 @@ const STATUS_ES: Record<RingKey, string> = {
   clean: 'Limpia / lista', dirty: 'Sucia', inprog: 'En limpieza', ooo: 'Fuera de servicio', none: 'Sin datos',
 };
 
+// One tick = one specific room. `idx` is a stable unique identity so hover
+// highlights only the room under the cursor (matching on room number would
+// pop out every room that shares it).
+type RingTick = { idx: number; num: string; status: RingKey };
+
 const LABEL: React.CSSProperties = {
   fontFamily: SANS, textTransform: 'uppercase', letterSpacing: '0.14em',
   fontWeight: 600, fontSize: 11, color: C.ink3,
@@ -163,9 +168,9 @@ function Delta({ v, size = 12 }: { v: number; size?: number }) {
 
 // ─── Room ring ────────────────────────────────────────────────────────
 const RoomRing = React.memo(function RoomRing({ rooms, onHover, hovered }: {
-  rooms: { num: string; status: RingKey }[];
-  onHover: (r: { num: string; status: RingKey } | null) => void;
-  hovered: { num: string; status: RingKey } | null;
+  rooms: RingTick[];
+  onHover: (r: RingTick | null) => void;
+  hovered: RingTick | null;
 }) {
   const size = 300, cx = size / 2, cy = size / 2, rOut = 140, rIn = 112;
   const n = rooms.length || 1;
@@ -173,10 +178,10 @@ const RoomRing = React.memo(function RoomRing({ rooms, onHover, hovered }: {
     <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ display: 'block', overflow: 'visible' }}>
       {rooms.map((r, i) => {
         const a = (-90 + (i + 0.5) / n * 360) * Math.PI / 180;
-        const isH = hovered != null && hovered.num === r.num;
+        const isH = hovered != null && hovered.idx === r.idx;
         const ri = isH ? rIn - 5 : rIn, ro = isH ? rOut + 6 : rOut;
         return (
-          <line key={r.num + ':' + i}
+          <line key={r.idx}
             x1={cx + Math.cos(a) * ri} y1={cy + Math.sin(a) * ri}
             x2={cx + Math.cos(a) * ro} y2={cy + Math.sin(a) * ro}
             stroke={RING[r.status]} strokeWidth={isH ? 9 : 6} strokeLinecap="round"
@@ -382,22 +387,23 @@ export default function DashboardPage() {
   // the synthetic trend) — used to keep the ring consistent with the figure.
   const displayOcc = history.length ? history[history.length - 1].occ : 0;
 
-  // FULL ring of the whole property. Real statuses for the rooms the PMS
-  // snapshot + cleaning feed describe; the remainder is filled toward the
-  // occupancy shown (deterministic shuffle for an organic look). Becomes
-  // fully real as CUA coverage fills in. Real room numbers from the cleaning
-  // feed are overlaid onto matching clean/dirty ticks so hover reads a real
-  // number where we have one.
-  const ringRooms = useMemo<{ num: string; status: RingKey }[]>(() => {
+  // FULL roster of the property's rooms — one tick = one specific room, each
+  // with a stable floor-based number (101.., 201..) and a unique idx. Sized to
+  // the property's room count (set at onboarding). Real status counts from the
+  // PMS snapshot / cleaning feed drive the mix where we have them; the rest is
+  // filled toward the occupancy shown. Deterministic shuffle so statuses
+  // scatter naturally + stay stable across renders. Becomes fully real
+  // per-room as CUA coverage fills in.
+  const ringRooms = useMemo<RingTick[]>(() => {
     const total = Math.max(1, Math.min(totalRooms, 400));
     const c = counts;
-    const dirtyNums = rooms.filter(r => r.status === 'dirty').map(r => r.number);
-    const cleanNums = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').map(r => r.number);
-    let occupied = c ? c.stayovers : 0;
-    const departing = c ? c.checkouts : 0;
-    const dirty = Math.max(c?.vacant_dirty ?? 0, dirtyNums.length);
-    let clean = Math.max(c?.vacant_clean ?? 0, cleanNums.length);
-    const ooo = c?.ooo ?? 0;
+    const feedDirty = rooms.filter(r => r.status === 'dirty').length;
+    const feedClean = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
+    let dirty = Math.min(total, Math.max(c?.vacant_dirty ?? 0, feedDirty));
+    let clean = Math.min(total, Math.max(c?.vacant_clean ?? 0, feedClean));
+    const ooo = Math.min(total, c?.ooo ?? 0);
+    const departing = Math.min(total, c?.checkouts ?? 0);
+    let occupied = Math.min(total, c?.stayovers ?? 0);
     let known = occupied + departing + dirty + clean + ooo;
     if (known < total) {
       const wantOccupied = Math.round((displayOcc / 100) * total);
@@ -405,13 +411,19 @@ export default function DashboardPage() {
       known = occupied + departing + dirty + clean + ooo;
       clean += Math.max(0, total - known);
     }
-    const arr: { num: string; status: RingKey }[] = [];
-    const push = (n: number, s: RingKey, nums?: string[]) => { for (let i = 0; i < n; i++) arr.push({ num: nums?.[i] ?? '', status: s }); };
-    push(occupied, 'occupied'); push(departing, 'departing');
-    push(clean, 'clean', cleanNums); push(dirty, 'dirty', dirtyNums); push(ooo, 'ooo');
+    const plan: RingKey[] = [];
+    const add = (count: number, s: RingKey) => { for (let i = 0; i < count && plan.length < total; i++) plan.push(s); };
+    add(occupied, 'occupied'); add(departing, 'departing'); add(clean, 'clean'); add(dirty, 'dirty'); add(ooo, 'ooo');
+    while (plan.length < total) plan.push('clean');
     let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-    for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
-    return arr.slice(0, total);
+    for (let i = plan.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [plan[i], plan[j]] = [plan[j], plan[i]]; }
+    const floors = Math.max(1, Math.ceil(total / 20));
+    const perFloor = Math.ceil(total / floors);
+    return plan.map((status, i) => ({
+      idx: i,
+      num: String((Math.floor(i / perFloor) + 1) * 100 + (i % perFloor) + 1),
+      status,
+    }));
   }, [counts, rooms, totalRooms, displayOcc]);
 
   // ring distribution for the legend
@@ -458,7 +470,7 @@ export default function DashboardPage() {
   const [metric, setMetric] = useState<TodayMetricKey>('occ');
   const [range, setRange] = useState<typeof RANGES[number]['key']>('30d');
   const [hi, setHi] = useState<number | null>(null);
-  const [room, setRoom] = useState<{ num: string; status: RingKey } | null>(null);
+  const [room, setRoom] = useState<RingTick | null>(null);
   const [playIdx, setPlayIdx] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
 
@@ -587,7 +599,7 @@ export default function DashboardPage() {
 
           {/* hero: ring + chart */}
           <section className="stx-hero">
-            <div onClick={() => { setMetric('occ'); setRoom(null); }} title={ES ? 'Graficar ocupación' : 'Chart occupancy'} style={{ position: 'relative', cursor: 'pointer' }}>
+            <div onClick={() => { setMetric('occ'); setRoom(null); }} style={{ position: 'relative', cursor: 'pointer' }}>
               <RoomRing rooms={ringRooms} onHover={setRoom} hovered={room} />
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
                 <div style={{ ...LABEL, fontSize: 10 }}>{center.label}</div>
