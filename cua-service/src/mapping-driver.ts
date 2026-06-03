@@ -82,10 +82,10 @@ export interface MappingJobResult {
 // Required targets MUST all be found (or quarantine). Business-critical
 // net-new targets need ≥ 3 found to auto-promote (otherwise park-as-draft).
 const REQUIRED_TARGETS: Array<keyof Recipe['actions']> = [
-  'getRoomStatus', 'getArrivals', 'getDepartures', 'getWorkOrders', 'getGuests',
+  'getRoomStatus', 'getArrivals', 'getDepartures', 'getWorkOrders',
 ];
 const BUSINESS_CRITICAL_TARGETS: Array<keyof Recipe['actions']> = [
-  'getRevenueDaily', 'getRatesAndInventory', 'getChannelPerformance',
+  'getGuests', 'getRevenueDaily', 'getRatesAndInventory', 'getChannelPerformance',
   'getForecastDaily', 'getGroupsAndBlocks',
 ];
 const MIN_BUSINESS_CRITICAL_FOR_AUTO = 3;
@@ -320,7 +320,7 @@ export async function runMappingJob(
 
   // 3. Evaluate the auto-promotion gate (Plan v7 — replaces the "≥60%
   //    of targets" magic number with required-target-class checks).
-  const gate = evaluatePromotionGate(result.recipe);
+  const gate = evaluatePromotionGate(result.recipe, input.seed_actions);
   log.info('mapping-driver: promotion gate evaluated', { jobId, ...gate });
 
   // 4. Save the draft knowledge file with the right status.
@@ -393,11 +393,28 @@ export async function runMappingJob(
 
 // ─── Promotion gate ────────────────────────────────────────────────────
 
-function evaluatePromotionGate(recipe: Recipe): {
+function evaluatePromotionGate(
+  recipe: Recipe,
+  seedActions?: Recipe['actions'],
+): {
   decision: 'auto_promote' | 'park_draft' | 'quarantine';
   reason: string;
 } {
   const found = new Set(Object.keys(recipe.actions));
+
+  // Plan v8 self-repair guard — a repair job seeds the existing recipe's
+  // actions (minus the one failing target) and re-learns just that one,
+  // so a successful repair yields seed-count + 1 actions. If the re-learn
+  // FAILS the mapper hands back a recipe with FEWER actions than the seed,
+  // yet the required-key checks below would still auto-promote it —
+  // silently dropping the feed forever. Park it as a draft for review
+  // instead of letting a partial repair regress live coverage.
+  if (seedActions && Object.keys(recipe.actions).length < Object.keys(seedActions).length + 1) {
+    return {
+      decision: 'park_draft',
+      reason: `self-repair failed to re-learn the target — mapped recipe has ${Object.keys(recipe.actions).length} actions vs seed's ${Object.keys(seedActions).length} (expected ≥ ${Object.keys(seedActions).length + 1}); parking as draft so a repair never drops a working feed`,
+    };
+  }
 
   const missingRequired = REQUIRED_TARGETS.filter((t) => !found.has(t));
   if (missingRequired.length > 0) {
@@ -599,7 +616,14 @@ async function saveDraftKnowledgeFile(
   let signedAt: string | null = null;
   if (isRecipeSigningConfigured()) {
     try {
-      const sig = signRecipe(recipe);
+      // Sign/verify split-brain fix — the DB stores the `knowledge`
+      // ENVELOPE (recipe re-wrapped with schema/description + an empty
+      // `hints` default), but verifyRecipe canonicalJson-s that exact
+      // stored envelope at load time. Signing the bare `recipe` here
+      // produced a digest over a different shape, so verification NEVER
+      // matched — and under enforce mode that silently halts ALL polling.
+      // Sign the same envelope object that gets persisted.
+      const sig = signRecipe(knowledge as unknown as Recipe);
       signatureBytes = sig.signature;
       signedWithKeyId = sig.signedWithKeyId;
       signedAt = sig.signedAt;

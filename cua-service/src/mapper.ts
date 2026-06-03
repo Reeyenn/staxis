@@ -755,7 +755,43 @@ async function mapLogin(
             detail: { phase: 'login_mapping', currentUrl, loginUrl: creds.loginUrl, reason: 'post_login_off_domain' },
           };
         }
-        const successSelector = typeof parsed.dashboardSelector === 'string' ? parsed.dashboardSelector : 'body';
+        // The on-domain check alone is weak evidence of login: a redirect
+        // back to the login page (or an interstitial) is still on-domain.
+        // Require a NON-TRIVIAL dashboard selector — 'body'/'html' match
+        // any page including the login form, so they're no evidence at all
+        // (C3) — AND assert it's actually visible before accepting. On
+        // failure, push a hint and let the agent keep working rather than
+        // recording a worthless 'body' success selector into the recipe.
+        const successSelector = typeof parsed.dashboardSelector === 'string' ? parsed.dashboardSelector : '';
+        const trivialSelector = successSelector === '' || successSelector === 'body' || successSelector === 'html';
+        let selectorVisible = false;
+        if (!trivialSelector) {
+          selectorVisible = await page
+            .locator(successSelector)
+            .first()
+            .isVisible({ timeout: 3000 })
+            .catch(() => false);
+        }
+        if (trivialSelector || !selectorVisible) {
+          log.warn('login claimed success but dashboard selector is missing/trivial/not visible', {
+            reason: 'dashboard_selector_not_found',
+            currentUrl, dashboardSelector: successSelector || null, trivialSelector, selectorVisible,
+          });
+          messages.push({
+            role: 'user',
+            content: [{
+              type: 'text',
+              text:
+                `That doesn't confirm you're logged in: ${trivialSelector
+                  ? `"${successSelector || '(none)'}" is too generic — 'body'/'html' match the login page too.`
+                  : `the selector "${successSelector}" is not visible on the current page.`} ` +
+                `Take a fresh screenshot. If you ARE on a dashboard with hotel-specific data, reply with ` +
+                `{"loggedIn": true, "dashboardSelector": "<a CSS selector that exists ONLY after login, e.g. '#mainNav' or 'a[href*=\\"reports\\"]'>"}. ` +
+                `If you're NOT logged in yet, keep working.`,
+            }],
+          });
+          continue;
+        }
         return {
           ok: true,
           steps: {
@@ -1027,7 +1063,7 @@ async function mapAction(args: {
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
       const parsed = tryParseJson(finalText) as
-        | { rowSelector?: unknown; columns?: unknown; url?: unknown; unavailable?: unknown; reason?: unknown }
+        | { rowSelector?: unknown; columns?: unknown; url?: unknown; unavailable?: unknown; reason?: unknown; ask_admin?: unknown; question?: unknown }
         | null;
 
       // Success path: agent found the page and emitted parse hints.
@@ -1084,6 +1120,42 @@ async function mapAction(args: {
         if (helpOutcome.kind === 'continue') {
           // Pop the assistant turn that emitted the unavailable JSON, push
           // a user-turn hint, reset floor counters, re-enter the agent loop.
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this target.` }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+        if (helpOutcome.kind === 'abort') {
+          throw new Error(helpOutcome.reason);
+        }
+        return {
+          ok: false,
+          reason: helpOutcome.kind === 'takeover'
+            ? 'takeover requested (handler not yet implemented)'
+            : helpOutcome.reason,
+          finalUrl: args.page.url(),
+        };
+      }
+      // "Ask admin" escape hatch: the agent emitted the help-request JSON
+      // from the system prompt ({"ask_admin": true, "question": "…"}). Route
+      // it through the same admin-help hook as the unavailable branch so a
+      // live admin can unstick the agent before we give up. Without this,
+      // the agent's documented help-request format fell straight through to
+      // the no-usable-JSON failure below (dead escape hatch).
+      if (parsed && parsed.ask_admin === true) {
+        const agentReason = typeof parsed.question === 'string' ? parsed.question : 'no reason given';
+        const helpOutcome = await maybeAskAdminBeforeUnavailable({
+          page: args.page,
+          jobId: args.jobId,
+          targetKey: args.actionName,
+          agentReason,
+          signal: args.signal,
+        });
+        if (helpOutcome.kind === 'continue') {
           messages.pop();
           messages.push({
             role: 'user',
@@ -1261,6 +1333,8 @@ interface DrillDownAgentPayload {
   samples?: unknown;
   unavailable?: unknown;
   reason?: unknown;
+  ask_admin?: unknown;
+  question?: unknown;
 }
 
 async function mapDrillDownAction(args: {
@@ -1307,7 +1381,8 @@ async function mapDrillDownAction(args: {
     `3. Look at the list visually. Make your best-guess CSS selectors for ` +
     `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
     `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n` +
-    `4. Pick ${SAMPLE_COUNT} sample rows. For each one:\n` +
+    `4. Pick up to ${SAMPLE_COUNT} sample rows (fewer is fine if the list ` +
+    `has only 1-2 records — even ONE sample is enough). For each one:\n` +
     `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
     `   - Click into the row to open the detail page\n` +
     `   - Capture the detail page URL (will be used for template inference)\n` +
@@ -1330,7 +1405,10 @@ async function mapDrillDownAction(args: {
     `\n` +
     `If you genuinely can't find the list page (e.g. the PMS doesn't have ` +
     `a Lost & Found module), emit {"unavailable": true, "reason": "..."} ` +
-    `per the system-prompt floor (≥1 screenshot, ≥3 navigations first).\n\n` +
+    `per the system-prompt floor (≥1 screenshot, ≥3 navigations first).\n` +
+    `If you FOUND the list page but it has ZERO rows (e.g. no items today), ` +
+    `that is NOT unavailable — emit the JSON with the list selectors and an ` +
+    `empty "samples": [] array.\n\n` +
     `Required fields: ${args.requiredFields.join(', ')}\n` +
     `Output the JSON on the first line of your reply — no preamble.`;
 
@@ -1459,19 +1537,49 @@ async function mapDrillDownAction(args: {
       }
 
       // Success path — validate shape, infer URL template, compute coverage.
+      // C4: don't require a full SAMPLE_COUNT of drilled records. URL-template
+      // inference works with a single sample, so accept >= min(SAMPLE_COUNT,
+      // observed). And an EMPTY list (zero rows — e.g. a hotel with no
+      // lost-and-found items today) is a legitimate success, not a failure:
+      // we record the list selectors and skip detail-template inference.
       if (
         parsed &&
         typeof parsed.listUrl === 'string' &&
         typeof parsed.listRowSelector === 'string' &&
         parsed.listColumns && typeof parsed.listColumns === 'object' &&
-        Array.isArray(parsed.samples) &&
-        parsed.samples.length >= SAMPLE_COUNT
+        Array.isArray(parsed.samples)
       ) {
         const samples = parsed.samples as DrillDownSamplePayload[];
+        // Empty list = zero rows on the list page. Capture the list-page
+        // selectors (the runtime can still extract the empty list and
+        // re-learn detail selectors once real records appear) and return a
+        // list-only recipe — no drillDown block, since there's nothing to
+        // infer a detail-URL template from.
+        if (samples.length === 0) {
+          log.info('mapper: drilldown list page is empty — recording list-only recipe', {
+            jobId: args.jobId ?? undefined, actionName: args.actionName, listUrl: parsed.listUrl,
+          });
+          return {
+            ok: true,
+            action: {
+              steps: recordedSteps,
+              parse: {
+                mode: 'table',
+                hint: {
+                  rowSelector: parsed.listRowSelector,
+                  columns: parsed.listColumns as Record<string, string>,
+                },
+              },
+            },
+          };
+        }
+        // Accept whatever the agent drilled (>=1); URL-template inference
+        // needs only one sample. Don't slice past what we actually have.
+        const effectiveSamples = Math.min(SAMPLE_COUNT, samples.length);
         const sampleUrls: string[] = [];
         const sampleRowData: Array<Record<string, string>> = [];
         const sampleDetailColumns: Array<Record<string, string>> = [];
-        for (const s of samples.slice(0, SAMPLE_COUNT)) {
+        for (const s of samples.slice(0, effectiveSamples)) {
           if (typeof s.url !== 'string' || !s.rowData || typeof s.rowData !== 'object' ||
               !s.detailColumns || typeof s.detailColumns !== 'object') {
             return {
@@ -1513,7 +1621,7 @@ async function mapDrillDownAction(args: {
           for (const dc of sampleDetailColumns) {
             if (dc[field] && String(dc[field]).length > 0) present++;
           }
-          fieldCoverage[field] = `${present}/${SAMPLE_COUNT}`;
+          fieldCoverage[field] = `${present}/${effectiveSamples}`;
           // Use the first non-empty selector as the canonical one.
           for (const dc of sampleDetailColumns) {
             if (dc[field] && String(dc[field]).length > 0) {
@@ -1542,7 +1650,7 @@ async function mapDrillDownAction(args: {
               detailUrlParams,
               detailColumns: mergedDetailColumns,
               fieldCoverage,
-              samplesDrilled: SAMPLE_COUNT,
+              samplesDrilled: effectiveSamples,
               // Plan v7 calls for a 4th-sample verification drill; for the
               // initial Phase 2a ship we treat successful inference as
               // verification. A follow-up enhancement (Phase 2c polish)
@@ -1550,6 +1658,41 @@ async function mapDrillDownAction(args: {
               templateVerified: inference.ok,
             },
           },
+        };
+      }
+
+      // "Ask admin" escape hatch — same hook as the unavailable branch.
+      // The agent emitted the help-request JSON from the system prompt
+      // ({"ask_admin": true, "question": "…"}); route it to a live admin
+      // instead of letting it fall through to the no-usable-JSON failure.
+      if (parsed && parsed.ask_admin === true) {
+        const agentReason = typeof parsed.question === 'string' ? parsed.question : 'no reason given';
+        const helpOutcome = await maybeAskAdminBeforeUnavailable({
+          page: args.page,
+          jobId: args.jobId,
+          targetKey: args.actionName,
+          agentReason,
+          signal: args.signal,
+        });
+        if (helpOutcome.kind === 'continue') {
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this drill-down target.` }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+        if (helpOutcome.kind === 'abort') {
+          throw new Error(helpOutcome.reason);
+        }
+        return {
+          ok: false,
+          reason: helpOutcome.kind === 'takeover'
+            ? 'takeover requested (handler not yet implemented)'
+            : helpOutcome.reason,
+          finalUrl: args.page.url(),
         };
       }
 

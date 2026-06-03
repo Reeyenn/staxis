@@ -549,10 +549,19 @@ async function runLogin(
       await runStep(page, step, creds, allowedHost, /* allowCredentialPlaceholders */ true);
     }
     // Confirm login by waiting for any of the success selectors.
-    const selectors = login.successSelectors.length > 0 ? login.successSelectors : ['body'];
-    await Promise.race(
-      selectors.map((sel) => page.waitForSelector(sel, { timeout: login.timeoutMs ?? 15_000 })),
-    );
+    //
+    // C3: a 'body'/'html' success selector is NO evidence of login (it
+    // matches the login page too), so the mapper no longer records one.
+    // If successSelectors is empty, skip the probe entirely rather than
+    // waiting for 'body' — a 'body' wait always resolves and would mask a
+    // failed login as success. The downstream action steps (each pinned to
+    // the PMS host) are the real correctness gate in that case.
+    const selectors = login.successSelectors.filter((sel) => sel && sel !== 'body' && sel !== 'html');
+    if (selectors.length > 0) {
+      await Promise.race(
+        selectors.map((sel) => page.waitForSelector(sel, { timeout: login.timeoutMs ?? 15_000 })),
+      );
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, detail: { message: (err as Error).message } };

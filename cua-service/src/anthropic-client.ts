@@ -144,8 +144,14 @@ export const MAPPING_SYSTEM_PROMPT =
   `with a property picker. Expect 5-15 actions to reach the dashboard. ` +
   `Choice Advantage specifically lands on a "Welcome" splash; click ` +
   `"Continue" / "Enter PMS" / the property name to reach the dashboard.\n` +
-  `3. Modals — dismiss any cookie banner, "what's new" dialog, "session ` +
-  `active" warning, or 2FA prompt by clicking Close / X / Continue / OK.\n` +
+  `3. Modals — dismiss any cookie banner, "what's new" dialog, or "session ` +
+  `active" warning by clicking Close / X / Continue / OK.\n` +
+  `   MFA/2FA is the EXCEPTION: if you hit a two-factor / one-time-code / ` +
+  `verification-code prompt, do NOT try to dismiss or bypass it — you ` +
+  `cannot complete it. Stop and emit an ask_admin help-request JSON ` +
+  `({"ask_admin": true, "question": "Hit a 2FA/MFA prompt — needs a human ` +
+  `to enter the code", "what_ive_tried": [...], "suggested_paths": []}) so ` +
+  `a Staxis admin can resolve it.\n` +
   `4. To find a specific page, click the most likely menu item, screenshot, ` +
   `check. Don't explore breadth-first.\n\n` +
 

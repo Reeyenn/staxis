@@ -37,6 +37,7 @@ import type {
   SnapshotScope,
   ExtractionMode,
 } from './types.js';
+import { log } from './log.js';
 
 // ─── Per-action → table mapping ───────────────────────────────────────────
 //
@@ -221,13 +222,23 @@ export function actionRecipeToTableTemplate(
     };
   }
 
-  // Drill-down — add a second source for the detail page + tag those
-  // fields as origin='detail_page'.
+  // Drill-down — collapse to a SINGLE list-page source.
+  //
+  // The mapper learns BOTH a list page and a per-record detail page, but
+  // emitting both as a 2-source template (list_row + detail_page) with no
+  // `aggregate` spec makes runMultiSourceTemplate hard-fail ("multi-source
+  // template missing aggregate spec") so guests / lost-and-found /
+  // activity-log extract NOTHING. The list-row data is correct and
+  // sufficient for the first run, so we use ONLY the list page here and
+  // DISCARD the detail_page source. Per-row detail enrichment is deferred.
   if (action.drillDown) {
     sources[0]!.url = action.drillDown.listUrl;
     sources[0]!.selectors = { rowSelector: action.drillDown.listRowSelector };
     sources[0]!.columns = action.drillDown.listColumns;
-    // List-row fields:
+    // Single-source template: keep ONLY the list-row fields. Reset the
+    // field map so any columns inferred from the non-drill-down parse hint
+    // above don't linger as orphans pointing at a discarded source.
+    for (const col of Object.keys(fields)) delete fields[col];
     for (const [col, selectorOrColumn] of Object.entries(action.drillDown.listColumns)) {
       fields[col] = {
         origin: 'list_row',
@@ -235,25 +246,9 @@ export function actionRecipeToTableTemplate(
         selectorOrColumn,
       };
     }
-    // Detail page source:
-    sources.push({
-      name: 'detail',
-      url: action.drillDown.detailUrlTemplate,
-      urlTemplate: action.drillDown.detailUrlTemplate,
-      urlParams: action.drillDown.detailUrlParams,
-      mode: 'dom_inline',
-      columns: action.drillDown.detailColumns,
-    });
-    for (const [col, selectorOrColumn] of Object.entries(action.drillDown.detailColumns)) {
-      fields[col] = {
-        origin: 'detail_page',
-        source: 'detail',
-        selectorOrColumn,
-      };
-    }
   }
 
-  return {
+  const template: TableTemplate = {
     tableName: route.tableName,
     keys: route.keys,
     writeStrategy: route.writeStrategy,
@@ -265,6 +260,36 @@ export function actionRecipeToTableTemplate(
     // single-target re-learn instead of the full 13-target re-mapping.
     sourceActionKey: actionKey,
   };
+
+  // The adapter only replays the LAST `goto` as the source URL — every
+  // click / select / type_text / wait_for / press_key the mapper recorded
+  // to reach the table is DISCARDED. For feeds that need interaction
+  // before the table renders, the extractor would then time out and churn
+  // paid re-mapping every 30s. Full pre-step replay is deferred; for now,
+  // flag the template `incomplete` (surfaces in admin review) and warn,
+  // rather than silently timing out. Allowed no-interaction kinds: goto,
+  // screenshot, wait_ms.
+  const NON_INTERACTION_KINDS = new Set(['goto', 'screenshot', 'wait_ms']);
+  const interactionKinds = [
+    ...new Set(
+      action.steps
+        .map((s) => s.kind)
+        .filter((k) => !NON_INTERACTION_KINDS.has(k)),
+    ),
+  ];
+  if (interactionKinds.length > 0) {
+    template.incomplete = true;
+    log.warn(
+      'recipe-adapter: action requires pre-table interaction the adapter does not replay — flagged incomplete for operator review',
+      {
+        actionKey,
+        tableName: route.tableName,
+        interactionKinds,
+      },
+    );
+  }
+
+  return template;
 }
 
 // ─── Multi-source aggregate templates (legacy seed shape) ────────────────
