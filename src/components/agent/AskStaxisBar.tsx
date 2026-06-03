@@ -577,9 +577,10 @@ const ASX_CSS = `
 .asx-pchat small{display:block;font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10px;color:var(--asx-ink3);margin-top:2px;letter-spacing:.02em;}
 .asx-pempty{padding:14px 12px;text-align:center;color:var(--asx-ink3);font-size:12.5px;}
 
+/* Reduced-motion: keep the essential one-shot motion the design intends (the
+   pill expanding into the bar, the slide-up entrance, message reveal) — only
+   drop the LOOPING/decorative animations, per the Ask Staxis handoff. */
 @media (prefers-reduced-motion: reduce){
-  .asx-dock,.asx-glass{transition:none;}
-  .asx-glass,.asx-msg,.asx-thread-in,.asx-thread-out,.asx-popover{animation:none;}
   .asx-typing i,.asx-ico.asx-dict.asx-listening{animation:none;}
 }
 `;
