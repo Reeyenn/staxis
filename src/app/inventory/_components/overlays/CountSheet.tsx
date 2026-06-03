@@ -272,127 +272,89 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
   };
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1000,
-        background: T.bg,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      <div
-        style={{
-          padding: '18px 48px',
-          borderBottom: `1px solid ${T.rule}`,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 24,
-          flexWrap: 'wrap',
-          background: T.paper,
-        }}
-      >
-        <div>
-          <Caps>Count mode</Caps>
-          <h2
+    <Overlay
+      open
+      onClose={onClose}
+      accent={statusColor.good}
+      eyebrow="Count mode"
+      italic="Walk & tally"
+      suffix={scopeLabel}
+      width={920}
+      footer={
+        <>
+          <span
             style={{
-              fontFamily: fonts.serif,
-              fontSize: 26,
-              color: T.ink,
-              margin: '2px 0 0',
-              letterSpacing: '-0.02em',
-              fontWeight: 400,
-              lineHeight: 1.1,
+              marginRight: 'auto',
+              fontFamily: fonts.mono,
+              fontSize: 10,
+              color: T.dim,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
             }}
           >
-            <span style={{ fontStyle: 'italic' }}>Walk & tally</span>
-            <span style={{ color: T.ink3 }}> · {scopeLabel}</span>
-          </h2>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span
-                style={{
-                  fontFamily: fonts.mono,
-                  fontSize: 10,
-                  color: T.ink2,
-                  letterSpacing: '0.10em',
-                  textTransform: 'uppercase',
-                }}
-              >
-                Progress
-              </span>
-              <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
-                {filled}/{total} · {pct}%
-              </span>
-            </div>
-            <span
-              style={{
-                height: 6,
-                borderRadius: 6,
-                background: T.rule,
-                overflow: 'hidden',
-                display: 'block',
-              }}
-            >
-              <span
-                style={{
-                  display: 'block',
-                  height: '100%',
-                  width: `${pct}%`,
-                  background: statusColor.good,
-                  borderRadius: 6,
-                  transition: 'width .25s',
-                }}
-              />
-            </span>
-            <span
-              style={{
-                fontFamily: fonts.mono,
-                fontSize: 10,
-                color: T.ink3,
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
-              }}
-            >
-              {auto} AI-prefilled{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
-            </span>
-          </div>
+            {auto} AI-prefilled{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
+          </span>
           <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
             Cancel
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || filled === 0}>
-            {saving ? 'Saving…' : '✓ Save count'}
+            {saving ? 'Saving…' : `✓ Save count · ${filled}/${total}`}
           </Btn>
-        </div>
-      </div>
+        </>
+      }
+    >
+      <button
+        type="button"
+        onClick={() => setScope(null)}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          marginBottom: 16,
+          padding: '5px 11px 5px 8px',
+          borderRadius: 8,
+          cursor: 'pointer',
+          background: T.bg,
+          border: `1px solid ${T.rule}`,
+          color: T.ink2,
+          fontFamily: fonts.sans,
+          fontSize: 12,
+          fontWeight: 600,
+        }}
+      >
+        <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15 }}>‹</span>
+        Change what to count
+      </button>
 
-      <div style={{ flex: 1, overflow: 'auto', padding: '24px 48px 80px' }}>
-        <button
-          type="button"
-          onClick={() => setScope(null)}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            marginBottom: 16,
-            padding: '5px 11px 5px 8px',
-            borderRadius: 8,
-            cursor: 'pointer',
-            background: T.bg,
-            border: `1px solid ${T.rule}`,
-            color: T.ink2,
-            fontFamily: fonts.sans,
-            fontSize: 12,
-            fontWeight: 600,
-          }}
-        >
-          <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15 }}>‹</span>
-          Change what to count
-        </button>
+      {/* Progress (moved out of the old full-screen header into the modal body) */}
+      <div
+        style={{
+          background: T.paper,
+          border: `1px solid ${T.rule}`,
+          borderRadius: 12,
+          padding: '14px 18px',
+          marginBottom: 18,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+          <Caps size={9}>Progress · {scopeLabel}</Caps>
+          <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
+            {filled}/{total} · {pct}%
+          </span>
+        </div>
+        <span style={{ display: 'block', height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
+          <span
+            style={{
+              display: 'block',
+              height: '100%',
+              width: `${pct}%`,
+              background: statusColor.good,
+              borderRadius: 6,
+              transition: 'width .25s',
+            }}
+          />
+        </span>
+      </div>
         <PhotoCountPanel display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
 
         {auto > 0 && (
@@ -472,8 +434,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
             </div>
           );
         })}
-      </div>
-    </div>
+    </Overlay>
   );
 }
 
