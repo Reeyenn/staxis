@@ -323,8 +323,6 @@ export function InventoryShell() {
   return (
     <div
       style={{
-        maxWidth: 1320,
-        margin: '0 auto',
         padding: '26px 30px 48px',
         background: T.bg,
         color: T.ink,
