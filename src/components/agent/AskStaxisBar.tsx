@@ -472,9 +472,7 @@ const ASX_CSS = `
 .asx-dock.asx-hist .asx-chips,.asx-dock.asx-hist .asx-closerow,.asx-dock.asx-hist .asx-resume{display:none;}
 
 .asx-thread{display:flex;flex-direction:column;gap:5px;justify-content:flex-end;padding:0 6px 8px;
-  max-height:146px;overflow-y:auto;scrollbar-width:none;
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 26px);
-  mask-image:linear-gradient(to bottom,transparent 0,#000 26px);}
+  max-height:min(64vh,560px);overflow-y:auto;scrollbar-width:none;}
 .asx-thread::-webkit-scrollbar{display:none;}
 @keyframes asx-thread-in{from{transform:translateY(18px)}to{transform:none}}
 @keyframes asx-thread-out{from{transform:translateY(0);opacity:1}to{transform:translateY(18px);opacity:0}}
@@ -523,7 +521,7 @@ const ASX_CSS = `
 .asx-chip:hover{color:var(--asx-accent);border-color:color-mix(in srgb,var(--asx-accent) 40%,transparent);transform:translateY(-1px);}
 
 .asx-resume{display:none;justify-content:center;padding:0 6px 3px;}
-.asx-dock.asx-collapsed .asx-resume{display:flex;}
+.asx-dock.asx-collapsed:not(.asx-idle) .asx-resume{display:flex;}
 .asx-resume button{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--asx-accent);
   cursor:pointer;background:transparent;border:none;padding:6px 8px;transition:opacity .18s;white-space:nowrap;font-family:inherit;}
 .asx-resume button:hover{opacity:.65;}
