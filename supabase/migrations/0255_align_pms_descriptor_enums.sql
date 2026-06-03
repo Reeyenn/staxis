@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0254 — Align pms_table_schemas DESCRIPTOR allowed_values to the 0202 table
+-- 0255 — Align pms_table_schemas DESCRIPTOR allowed_values to the 0202 table
 --        CHECK constraints (descriptor-vs-CHECK enum drift fix).
 --
 -- Why this exists:
@@ -148,7 +148,7 @@ where table_name = 'pms_work_orders_v2'
 
 -- ─── Track the migration ─────────────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
-values ('0254', 'Align pms_table_schemas descriptor allowed_values to the 0202 table CHECK constraints (descriptor-vs-CHECK enum drift): pms_room_status_log.status, pms_housekeeping_assignments.cleaning_type, pms_work_orders_v2.status + .priority. Descriptors only — CHECK constraints unchanged (CHECK is authoritative).')
+values ('0255', 'Align pms_table_schemas descriptor allowed_values to the 0202 table CHECK constraints (descriptor-vs-CHECK enum drift): pms_room_status_log.status, pms_housekeeping_assignments.cleaning_type, pms_work_orders_v2.status + .priority. Descriptors only — CHECK constraints unchanged (CHECK is authoritative).')
 on conflict (version) do nothing;
 
 -- ─── PostgREST schema reload ─────────────────────────────────────────────────
