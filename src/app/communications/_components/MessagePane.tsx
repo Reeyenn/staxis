@@ -7,16 +7,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
 import {
-  Send, Mic, Square, Image as ImageIcon, Megaphone, Users, MessageSquare, Sparkles,
+  Send, Mic, Square, Image as ImageIcon, Megaphone, Users, MessageSquare,
   Check, CheckCheck, X, Loader2, Wrench, AlertCircle, ShieldCheck, ChevronDown, ChevronRight,
   Building2, Pin, Reply, ListTodo, Paperclip, Bold, Italic, Strikethrough, AtSign,
-  ClipboardList, Search, ArrowRight,
+  ClipboardList, Search,
 } from 'lucide-react';
 import { apiGet, apiPost, uploadToSignedUrl } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO, StaffLite, MemberDTO, AckStatusDTO, CampaignStatusDTO, CommsDept } from '@/lib/comms/types';
 import type { Me, L, RightPanel } from './comms-types-fe';
 import {
-  T, SANS, MONO, deptColor, deptColorDark, tint, Avatar, DeptDot, MonoLabel,
+  T, SANS, MONO, deptColor, deptColorDark, tint, Avatar, DeptDot, MonoLabel, renderInline, Tip,
   fmtClock, fmtDayLabel, dayKey, paneIcon, slideInNode, popNode,
 } from './comms-ui';
 
@@ -194,7 +194,7 @@ function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread, onReac
 
         {text && (
           <div style={{ fontFamily: SANS, fontSize: 14.5, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word' }}>
-            {text}
+            {renderInline(text)}
             {mentionsMe && <span style={{ background: tint(T.teal, .14), color: deptColorDark(T.teal), borderRadius: 4, padding: '0 4px', marginLeft: 4, fontWeight: 600, fontSize: 13 }}>@{L('you', 'tú')}</span>}
           </div>
         )}
@@ -382,6 +382,35 @@ function Composer({ pid, me, conversation: c, L, onReloadThread, onReloadBoot }:
   const chunksRef = React.useRef<Blob[]>([]);
   const recStartRef = React.useRef(0);
   const sendBtn = React.useRef<HTMLButtonElement | null>(null);
+  const taRef = React.useRef<HTMLTextAreaElement | null>(null);
+
+  // Bold / italic / strike: wrap the current textarea selection in markdown
+  // markers (or drop the markers at the cursor when nothing is selected).
+  const wrap = (marker: string) => {
+    const ta = taRef.current;
+    const start = ta?.selectionStart ?? text.length;
+    const end = ta?.selectionEnd ?? text.length;
+    const sel = text.slice(start, end);
+    setText(text.slice(0, start) + marker + sel + marker + text.slice(end));
+    requestAnimationFrame(() => {
+      const t = taRef.current; if (!t) return;
+      t.focus();
+      const a = start + marker.length;
+      t.setSelectionRange(a, a + sel.length);
+    });
+  };
+  const insertAt = (str: string) => {
+    const ta = taRef.current;
+    const start = ta?.selectionStart ?? text.length;
+    const end = ta?.selectionEnd ?? text.length;
+    setText(text.slice(0, start) + str + text.slice(end));
+    requestAnimationFrame(() => {
+      const t = taRef.current; if (!t) return;
+      t.focus();
+      const p = start + str.length;
+      t.setSelectionRange(p, p);
+    });
+  };
 
   const reload = async () => { await onReloadThread(); await onReloadBoot(); };
 
@@ -428,13 +457,6 @@ function Composer({ pid, me, conversation: c, L, onReloadThread, onReloadBoot }:
       await apiPost('/api/comms/action', { pid, conversationId: c.id, kind: actionOffer.kind, description: actionOffer.description, roomNumber: actionOffer.roomNumber, severity: actionOffer.severity });
       setActionOffer(null); await onReloadThread();
     } finally { setBusy(false); }
-  };
-
-  const polish = async () => {
-    if (!text.trim()) return;
-    setBusy(true);
-    try { const r = await apiPost<{ text: string }>('/api/comms/polish', { pid, text }); if (r.data?.text) setText(r.data.text); }
-    finally { setBusy(false); }
   };
 
   // voice
@@ -498,15 +520,23 @@ function Composer({ pid, me, conversation: c, L, onReloadThread, onReloadBoot }:
 
       {canPostAnnouncement && (
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14, marginBottom: 10 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: (requireAck || orgWide) ? 700 : 500, color: (requireAck || orgWide) ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
-            <input type="checkbox" checked={requireAck || orgWide} disabled={orgWide} onChange={(e) => setRequireAck(e.target.checked)} style={{ accentColor: T.forestDeep }} />
-            <ShieldCheck size={14} /> {L('Require acknowledgement', 'Requerir confirmación')}
-          </label>
-          {me.canOrgWide && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: orgWide ? 700 : 500, color: orgWide ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
-              <input type="checkbox" checked={orgWide} onChange={(e) => setOrgWide(e.target.checked)} style={{ accentColor: T.forestDeep }} />
-              <Building2 size={14} /> {L('Send to all my properties', 'Enviar a todas mis propiedades')}
+          <Tip width={252} text={L(
+            'Everyone has to tap “I read & understand.” It stays marked unread for them until they do — and you’ll see exactly who has and hasn’t.',
+            'Todos deben tocar “Leí y entiendo”. Sigue como no leído hasta que lo hagan — y verás exactamente quién lo leyó y quién no.')}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: (requireAck || orgWide) ? 700 : 500, color: (requireAck || orgWide) ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
+              <input type="checkbox" checked={requireAck || orgWide} disabled={orgWide} onChange={(e) => setRequireAck(e.target.checked)} style={{ accentColor: T.forestDeep }} />
+              <ShieldCheck size={14} /> {L('Require acknowledgement', 'Requerir confirmación')}
             </label>
+          </Tip>
+          {me.canOrgWide && (
+            <Tip width={252} text={L(
+              'Posts this to every property you manage, and everyone at each one has to acknowledge it.',
+              'Lo publica en todas las propiedades que gestionas, y todos en cada una deben confirmarlo.')}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: orgWide ? 700 : 500, color: orgWide ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
+                <input type="checkbox" checked={orgWide} onChange={(e) => setOrgWide(e.target.checked)} style={{ accentColor: T.forestDeep }} />
+                <Building2 size={14} /> {L('Send to all my properties', 'Enviar a todas mis propiedades')}
+              </label>
+            </Tip>
           )}
         </div>
       )}
@@ -514,12 +544,11 @@ function Composer({ pid, me, conversation: c, L, onReloadThread, onReloadBoot }:
 
       <div style={{ border: `1px solid ${T.hairer}`, borderRadius: 11, overflow: 'hidden', background: T.bg }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '6px 8px', borderBottom: `1px solid ${T.hairSoft}` }}>
-          <button style={{ ...fmtBtn, fontWeight: 700 }} onClick={() => setText((t) => t + '**bold**')} title={L('Bold', 'Negrita')}><Bold size={14} /></button>
-          <button style={{ ...fmtBtn, fontStyle: 'italic' }} onClick={() => setText((t) => t + '_italic_')} title={L('Italic', 'Cursiva')}><Italic size={14} /></button>
-          <button style={fmtBtn} title={L('Strikethrough', 'Tachado')} onClick={() => setText((t) => t + '~~text~~')}><Strikethrough size={14} /></button>
-          <span style={{ width: 1, height: 16, background: T.hair, margin: '0 4px' }} />
-          {!isAnnouncement && <button style={fmtBtn} onClick={() => setText((t) => (t ? t + ' @' : '@'))} title={L('Mention', 'Mencionar')}><AtSign size={15} /></button>}
-          {canPostAnnouncement && <button style={fmtBtn} onClick={polish} title={L('AI polish', 'Pulir con IA')}><Sparkles size={15} color={deptColorDark(T.forest)} /></button>}
+          <button style={{ ...fmtBtn, fontWeight: 700 }} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('**')} title={L('Bold', 'Negrita')}><Bold size={14} /></button>
+          <button style={{ ...fmtBtn, fontStyle: 'italic' }} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('*')} title={L('Italic', 'Cursiva')}><Italic size={14} /></button>
+          <button style={fmtBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('~~')} title={L('Strikethrough', 'Tachado')}><Strikethrough size={14} /></button>
+          {!isAnnouncement && <span style={{ width: 1, height: 16, background: T.hair, margin: '0 4px' }} />}
+          {!isAnnouncement && <button style={fmtBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => insertAt('@')} title={L('Mention', 'Mencionar')}><AtSign size={15} /></button>}
           {!isAnnouncement && <>
             <button style={{ ...fmtBtn, color: recording ? T.terracotta : T.dim }} onClick={recording ? stopRec : startRec} title={L('Voice message', 'Mensaje de voz')}>{recording ? <Square size={15} /> : <Mic size={15} />}</button>
             <label style={{ ...fmtBtn, cursor: 'pointer' }} title={L('Photo', 'Foto')}><ImageIcon size={15} /><input type="file" accept="image/*" onChange={onPhoto} style={{ display: 'none' }} /></label>
@@ -528,9 +557,9 @@ function Composer({ pid, me, conversation: c, L, onReloadThread, onReloadBoot }:
           </>}
         </div>
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, padding: '8px 8px 8px 12px' }}>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={1}
+          <textarea ref={taRef} value={text} onChange={(e) => setText(e.target.value)} rows={1}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); popNode(sendBtn.current); void doSend(); } }}
-            placeholder={isAnnouncement ? L('Write an announcement… (try AI polish)', 'Escribe un anuncio… (prueba pulir con IA)') : L('Message…  (type @Staxis to ask the assistant)', 'Mensaje…  (escribe @Staxis para el asistente)')}
+            placeholder={isAnnouncement ? L('Write an announcement…', 'Escribe un anuncio…') : L('Message…  (type @Staxis to ask the assistant)', 'Mensaje…  (escribe @Staxis para el asistente)')}
             style={{ flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, padding: '4px 0', maxHeight: 120 }} />
           <button ref={sendBtn} onClick={() => { popNode(sendBtn.current); void doSend(); }} disabled={!canSend} aria-label={L('Send', 'Enviar')}
             style={{ width: 32, height: 32, borderRadius: 8, border: 'none', cursor: canSend ? 'pointer' : 'default', background: canSend ? T.forest : T.hairSoft, color: canSend ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -613,7 +642,7 @@ function ThreadMessage({ m, dept, L }: { m: MessageDTO; dept?: CommsDept; L: L }
         </div>
         {m.attachmentKind === 'photo' && m.attachmentUrl && <img src={m.attachmentUrl} alt="" style={{ maxWidth: 260, borderRadius: 8, border: `1px solid ${T.hair}`, marginTop: 4, display: 'block' }} />}
         {m.attachmentKind === 'voice' && m.attachmentUrl && <audio controls src={m.attachmentUrl} style={{ height: 34, maxWidth: 240, marginTop: 4 }} />}
-        {m.body && <div style={{ fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word', marginTop: 1 }}>{m.body}</div>}
+        {m.body && <div style={{ fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word', marginTop: 1 }}>{renderInline(m.body)}</div>}
       </div>
     </div>
   );
@@ -647,7 +676,7 @@ export function PinnedPanel({ pid, conversation: c, L, onClose }: { pid: string;
               <span style={{ fontFamily: MONO, fontSize: 10, color: T.dim }}>{fmtClock(m.createdAt)}</span>
             </div>
             {m.attachmentKind === 'photo' && m.attachmentUrl && <img src={m.attachmentUrl} alt="" style={{ maxWidth: '100%', borderRadius: 8, marginBottom: 6, display: 'block' }} />}
-            <div style={{ fontFamily: SANS, fontSize: 13.5, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word' }}>{m.body || (m.attachmentKind === 'photo' ? L('Photo', 'Foto') : m.attachmentKind === 'voice' ? L('Voice message', 'Mensaje de voz') : '')}</div>
+            <div style={{ fontFamily: SANS, fontSize: 13.5, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word' }}>{m.body ? renderInline(m.body) : (m.attachmentKind === 'photo' ? L('Photo', 'Foto') : m.attachmentKind === 'voice' ? L('Voice message', 'Mensaje de voz') : '')}</div>
           </div>
         ))}
         {pins.length === 0 && <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13, textAlign: 'center', padding: 24 }}>{L('Nothing pinned in this channel yet.', 'Nada fijado en este canal aún.')}</div>}

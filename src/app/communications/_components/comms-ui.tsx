@@ -202,6 +202,40 @@ export function slideInNode(el: HTMLElement | null) {
     { duration: 240, easing: 'cubic-bezier(.2,.9,.3,1)', fill: 'backwards' });
 }
 
+// ── Inline markdown (the composer's B / i / S) ──────────────────────────────
+/** Render **bold**, *italic*, ~~strike~~ as safe React nodes (no HTML injection). */
+export function renderInline(text: string): React.ReactNode {
+  if (!text) return text;
+  const re = /(\*\*([^*\n]+)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*)/g;
+  const out: React.ReactNode[] = [];
+  let last = 0; let key = 0; let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[2] != null) out.push(<strong key={key++}>{m[2]}</strong>);
+    else if (m[3] != null) out.push(<del key={key++} style={{ opacity: 0.75 }}>{m[3]}</del>);
+    else if (m[4] != null) out.push(<em key={key++}>{m[4]}</em>);
+    last = m.index + m[0].length;
+  }
+  if (out.length === 0) return text;
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+// ── Hover tooltip (plain-language explainer) ────────────────────────────────
+export function Tip({ text, children, width = 240 }: { text: string; children: React.ReactNode; width?: number }) {
+  const [show, setShow] = React.useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }} onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && (
+        <span style={{ position: 'absolute', left: 0, top: '100%', marginTop: 7, zIndex: 60, width, background: T.ink, color: '#fff', fontFamily: SANS, fontSize: 11.5, fontWeight: 500, lineHeight: 1.5, padding: '9px 11px', borderRadius: 9, boxShadow: '0 10px 28px rgba(24,22,17,.24)', pointerEvents: 'none' }}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // ── Shared button styles ────────────────────────────────────────────────────
 export const paneIcon: React.CSSProperties = { width: 32, height: 32, borderRadius: 7, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
 export const iconBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
