@@ -21,7 +21,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { FONT_SERIF, FONT_MONO, FONT_SANS, EASE_OUT, prefersReducedMotion, usd } from './kit';
+import { FONT_SERIF, FONT_MONO, FONT_SANS, usd } from './kit';
 import { OnboardingSurface } from './surfaces/OnboardingSurface';
 import { LiveSurface } from './surfaces/LiveSurface';
 import { SystemSurface } from './surfaces/SystemSurface';
@@ -59,16 +59,26 @@ export function StudioShell() {
   const [tab, setTab] = useState<StudioTab>('onboarding');
   const [ov, setOv] = useState<Overview | null>(null);
   const [refreshedAgo, setRefreshedAgo] = useState(0);
-  const stageRef = useRef<HTMLDivElement>(null);
+  // Which tabs have been mounted at least once. We mount a surface on first
+  // visit and KEEP it mounted (hidden) afterwards, so re-visiting a tab is
+  // instant — no re-fetch, no spinner. 'onboarding' starts mounted; the rest
+  // are prefetched a tick after first paint (see below) so by the time you
+  // click them their data is usually already loaded.
+  const [mounted, setMounted] = useState<Set<StudioTab>>(() => new Set<StudioTab>(['onboarding']));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tick = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Deep-link the active tab to the URL hash.
+  // Deep-link the active tab to the URL hash. Mark the visited tab mounted so
+  // a deep link (e.g. #money) renders that surface right away.
   useEffect(() => {
-    setTab(readHashTab());
-    const onHash = () => setTab(readHashTab());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    const sync = () => {
+      const h = readHashTab();
+      setTab(h);
+      setMounted((m) => (m.has(h) ? m : new Set(m).add(h)));
+    };
+    sync();
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
   }, []);
 
   // Overview stat strip — refresh every 15s (same cadence as the old header).
@@ -94,18 +104,20 @@ export function StudioShell() {
 
   const go = (t: StudioTab) => {
     setTab(t);
+    setMounted((m) => (m.has(t) ? m : new Set(m).add(t)));
     if (typeof window !== 'undefined') {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${t}`);
     }
   };
 
-  // Rise-in when the surface changes.
+  // Prefetch every surface shortly after first paint, so tab switches are
+  // instant (each surface fetches its data on mount, then stays mounted).
+  // Delayed slightly so the initial Onboarding paint isn't competing for the
+  // network on load.
   useEffect(() => {
-    const el = stageRef.current;
-    if (!el || prefersReducedMotion() || typeof el.animate !== 'function') return;
-    el.animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'translateY(0)' }],
-      { duration: 420, easing: EASE_OUT, fill: 'none' });
-  }, [tab]);
+    const t = setTimeout(() => setMounted(new Set<StudioTab>(['onboarding', 'live', 'system', 'money', 'ml'])), 500);
+    return () => clearTimeout(t);
+  }, []);
 
   // Bright tones — the stat strip sits on the dark canvas now.
   const stats: { label: string; node: React.ReactNode }[] = [
@@ -177,14 +189,16 @@ export function StudioShell() {
         </div>
       </div>
 
-      {/* Stage — surfaces render full-width on the dark canvas (each provides
-          its own padding + radial glow via SurfaceShell). */}
-      <div ref={stageRef} key={tab} style={{ paddingBottom: 64 }}>
-        {tab === 'onboarding' && <OnboardingSurface />}
-        {tab === 'live' && <LiveSurface />}
-        {tab === 'system' && <SystemSurface />}
-        {tab === 'money' && <MoneySurface />}
-        {tab === 'ml' && <MlSurface />}
+      {/* Stage — every visited surface stays mounted (data cached) and is
+          shown/hidden via display, so switching tabs is instant: no re-mount,
+          no re-fetch, no spinner. Surfaces render full-width on the dark
+          canvas (each provides its own padding + radial glow). */}
+      <div style={{ paddingBottom: 64 }}>
+        {mounted.has('onboarding') && <div style={{ display: tab === 'onboarding' ? 'block' : 'none' }}><OnboardingSurface /></div>}
+        {mounted.has('live') && <div style={{ display: tab === 'live' ? 'block' : 'none' }}><LiveSurface /></div>}
+        {mounted.has('system') && <div style={{ display: tab === 'system' ? 'block' : 'none' }}><SystemSurface /></div>}
+        {mounted.has('money') && <div style={{ display: tab === 'money' ? 'block' : 'none' }}><MoneySurface /></div>}
+        {mounted.has('ml') && <div style={{ display: tab === 'ml' ? 'block' : 'none' }}><MlSurface /></div>}
       </div>
     </div>
   );
