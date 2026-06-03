@@ -490,9 +490,9 @@ const ASX_CSS = `
   animation:asx-msgin .44s cubic-bezier(.2,1.25,.4,1);}
 @keyframes asx-msgin{from{transform:translateY(12px) scale(.985)}to{transform:none}}
 .asx-msg.asx-a{align-self:flex-start;color:var(--asx-ink);border-bottom-left-radius:7px;
-  background:rgba(255,255,255,.85);backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);
-  border:1px solid rgba(255,255,255,.9);
-  box-shadow:0 1px 0 rgba(255,255,255,.8) inset,0 14px 30px -18px rgba(20,30,20,.35);}
+  background:rgba(255,255,255,.97);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  border:1px solid rgba(20,24,20,.07);
+  box-shadow:0 6px 20px -8px rgba(20,30,20,.28);}
 .asx-msg.asx-a b,.asx-msg.asx-a strong{color:var(--asx-accent);font-weight:600;}
 .asx-msg.asx-a p{margin:0 0 6px;}
 .asx-msg.asx-a p:last-child{margin:0;}
@@ -502,13 +502,14 @@ const ASX_CSS = `
 .asx-msg.asx-a code{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:.9em;
   background:rgba(20,24,20,.05);padding:1px 5px;border-radius:4px;}
 .asx-msg.asx-err{align-self:flex-start;color:var(--snow-warm,#B85C3D);border-bottom-left-radius:7px;
-  background:rgba(184,92,61,.08);border:1px solid rgba(184,92,61,.2);}
+  background:rgba(253,244,241,.97);border:1px solid rgba(184,92,61,.28);box-shadow:0 6px 20px -8px rgba(20,30,20,.2);}
 .asx-msg.asx-u{align-self:flex-end;color:var(--asx-ink);border-bottom-right-radius:7px;white-space:pre-wrap;word-break:break-word;
-  background:color-mix(in srgb,var(--asx-accent) 14%,transparent);
-  border:1px solid color-mix(in srgb,var(--asx-accent) 24%,transparent);}
+  background:color-mix(in srgb,var(--asx-accent) 16%,#fff);
+  border:1px solid color-mix(in srgb,var(--asx-accent) 32%,#fff);
+  box-shadow:0 6px 20px -8px rgba(20,30,20,.2);}
 
 .asx-typing{align-self:flex-start;display:inline-flex;gap:5px;padding:14px 17px;border-radius:18px;border-bottom-left-radius:7px;
-  background:rgba(255,255,255,.5);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.7);}
+  background:rgba(255,255,255,.95);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid rgba(20,24,20,.07);box-shadow:0 6px 20px -8px rgba(20,30,20,.2);}
 .asx-typing i{width:6px;height:6px;border-radius:50%;background:var(--asx-ink3);animation:asx-td 1.1s infinite;}
 .asx-typing i:nth-child(2){animation-delay:.15s}
 .asx-typing i:nth-child(3){animation-delay:.3s}
