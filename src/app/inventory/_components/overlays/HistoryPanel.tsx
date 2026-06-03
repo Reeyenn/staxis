@@ -73,13 +73,13 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
     order: {
       color: T.sageDeep,
       bg: T.sageDim,
-      border: 'rgba(92,122,96,0.28)',
+      border: `${T.forest}48`,
       label: 'Order',
     },
     count: {
       color: T.purple,
       bg: T.purpleDim,
-      border: 'rgba(123,106,151,0.28)',
+      border: `${T.teal}48`,
       label: 'Count',
     },
   } as const;

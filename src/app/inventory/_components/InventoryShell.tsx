@@ -32,13 +32,15 @@ import type { AutoFillItem } from '@/lib/db/ml-inventory-cockpit';
 
 import { T, fonts } from './tokens';
 import { Caps } from './Caps';
-import { HeroStats } from './HeroStats';
+import { Serif } from './Serif';
+import { StatusDot } from './StatusPill';
 import { Sidebar, type SidebarAction } from './Sidebar';
 import { FilterBar } from './FilterBar';
 import { StockList } from './StockList';
 import { toDisplayItem } from './adapter';
+import { fmtMoney } from './format';
 import type { DisplayItem } from './types';
-import type { StockBucket } from './tokens';
+import type { StockBucket, StockStatus } from './tokens';
 
 import { CountSheet } from './overlays/CountSheet';
 import { ReorderPanel } from './overlays/ReorderPanel';
@@ -88,7 +90,7 @@ export function InventoryShell() {
   const [orders, setOrders] = useState<InventoryOrder[]>([]);
   const [budgets, setBudgets] = useState<InventoryBudget[]>([]);
   const [spendByCat, setSpendByCat] = useState<Record<string, number>>({});
-  const [bucket, setBucket] = useState<StockBucket>('general');
+  const [bucket, setBucket] = useState<StockBucket>('all');
   const [query, setQuery] = useState('');
   const [overlay, setOverlay] = useState<OverlayKey>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
@@ -165,7 +167,7 @@ export function InventoryShell() {
       setOverlay(action as OverlayKey);
     }
     // Run only on initial mount + param changes — we want sticky URLs.
-     
+
   }, [searchParams]);
 
   // ── Derived display items ──────────────────────────────────────────
@@ -190,8 +192,17 @@ export function InventoryShell() {
     [items, occupancy, averages, mlRateMap, autoFillGraduated],
   );
 
+  const totalItems = display.length;
   const generalCount = display.filter((d) => d.cat !== 'breakfast').length;
   const breakfastCount = display.filter((d) => d.cat === 'breakfast').length;
+
+  const statusCounts = useMemo(() => {
+    const acc: Record<StockStatus, number> = { good: 0, low: 0, critical: 0 };
+    for (const d of display) acc[d.status] += 1;
+    return acc;
+  }, [display]);
+  const stockHealth = totalItems > 0 ? Math.round((100 * statusCounts.good) / totalItems) : 0;
+  const shelfValue = useMemo(() => display.reduce((s, d) => s + d.value, 0), [display]);
 
   const reorderCount = useMemo(
     () => display.filter((d) => d.status !== 'good').length,
@@ -206,13 +217,6 @@ export function InventoryShell() {
     }
     return orders.length + countEvents.size;
   }, [counts, orders]);
-
-  const lastCount = useMemo<{ date: Date; by: string } | null>(() => {
-    for (const c of counts) {
-      if (c.countedAt) return { date: c.countedAt, by: c.countedBy || 'team' };
-    }
-    return null;
-  }, [counts]);
 
   const totalSpent = useMemo(
     () => Object.values(spendByCat).reduce((s, n) => s + (n || 0), 0) / 100,
@@ -250,7 +254,7 @@ export function InventoryShell() {
     }
   }, [router]);
 
-  const onItemClick = useCallback((d: DisplayItem) => {
+  const onEditItem = useCallback((d: DisplayItem) => {
     setEditItem(d.raw);
     setOverlay('add');
   }, []);
@@ -319,67 +323,48 @@ export function InventoryShell() {
   return (
     <div
       style={{
-        padding: '24px 24px 48px',
+        maxWidth: 1320,
+        margin: '0 auto',
+        padding: '26px 30px 48px',
         background: T.bg,
         color: T.ink,
         fontFamily: fonts.sans,
         minHeight: 'calc(100dvh - 90px)',
       }}
     >
-      {/* Header strip — title left, tiny date upper-right */}
+      {/* Header — title left, live stat cluster + date right */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'flex-start',
-          marginBottom: 18,
+          marginBottom: 20,
           gap: 24,
+          flexWrap: 'wrap',
         }}
       >
         <div>
-          <Caps>
-            Inventory · {propertyName}
-          </Caps>
-          <h1
-            style={{
-              fontFamily: fonts.serif,
-              fontSize: 36,
-              color: T.ink,
-              margin: '4px 0 0',
-              letterSpacing: '-0.03em',
-              lineHeight: 1.1,
-              fontWeight: 400,
-            }}
-          >
-            <span style={{ fontStyle: 'italic' }}>What you have</span>
-          </h1>
+          <Caps>Inventory · {propertyName}</Caps>
+          <div style={{ marginTop: 4 }}>
+            <Serif size={38}>What needs you</Serif>
+          </div>
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <span
-            style={{
-              fontFamily: fonts.mono,
-              fontSize: 10,
-              color: T.ink2,
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              fontWeight: 600,
-            }}
-          >
-            {todayLabel()}
-          </span>
-          <div
-            style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, marginTop: 2 }}
-          >
-            {todayDow()}{totalRooms ? ` · ${totalRooms} rooms` : ''}
+        <div style={{ display: 'flex', gap: 26, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <HStat eyebrow="Stock health" big={`${stockHealth}%`} dot="good" />
+          <HStat eyebrow="Order now" big={String(statusCounts.critical)} dot="critical" />
+          <HStat eyebrow="On the shelf" big={fmtMoney(shelfValue)} />
+          <div style={{ textAlign: 'right', paddingTop: 2 }}>
+            <Caps size={9}>{todayLabel()}</Caps>
+            <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim, marginTop: 2 }}>
+              {todayDow()}{totalRooms ? ` · ${totalRooms} rooms` : ''}
+            </div>
           </div>
         </div>
       </div>
 
-      <HeroStats items={display} lastCount={lastCount} />
-
-      <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '224px 1fr', gap: 18, alignItems: 'start' }}>
         <Sidebar
-          totalItems={display.length}
+          totalItems={totalItems}
           reorderCount={reorderCount}
           historyCount={historyCount}
           spendSpent={totalSpent}
@@ -388,12 +373,13 @@ export function InventoryShell() {
           onAction={openOverlay}
         />
         <div>
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 16 }}>
             <FilterBar
               bucket={bucket}
               onBucket={setBucket}
               query={query}
               onQuery={setQuery}
+              allCount={totalItems}
               generalCount={generalCount}
               breakfastCount={breakfastCount}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
@@ -403,7 +389,9 @@ export function InventoryShell() {
             items={display}
             bucket={bucket}
             query={query}
-            onItemClick={onItemClick}
+            onEdit={onEditItem}
+            onCount={() => setOverlay('count')}
+            onReorder={() => setOverlay('reorder')}
           />
         </div>
       </div>
@@ -481,6 +469,19 @@ export function InventoryShell() {
         onClose={() => { closeOverlay(); }}
         item={editItem}
       />
+    </div>
+  );
+}
+
+// Inline header stat: mono eyebrow (+ optional status dot) over a big serif value.
+function HStat({ eyebrow, big, dot }: { eyebrow: string; big: string; dot?: StockStatus }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        <Caps size={9}>{eyebrow}</Caps>
+        {dot && <StatusDot s={dot} size={5} />}
+      </div>
+      <Serif size={27}>{big}</Serif>
     </div>
   );
 }

@@ -716,7 +716,7 @@ function PhotoCountPanel({
             flexBasis: '100%',
             fontFamily: fonts.sans,
             fontSize: 12.5,
-            color: status === 'error' ? T.warm : lowCount > 0 ? T.caramelDeep : '#3F5A43',
+            color: status === 'error' ? T.warm : lowCount > 0 ? T.caramelDeep : T.forestText,
           }}
         >
           {message}

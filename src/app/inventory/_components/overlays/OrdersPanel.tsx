@@ -40,7 +40,7 @@ function statusMeta(s: OrderStatus, lang: 'en' | 'es'): { label: string; color: 
   const L: Record<OrderStatus, { en: string; es: string; color: string }> = {
     draft: { en: 'Draft', es: 'Borrador', color: T.ink3 },
     pending_approval: { en: 'Needs approval', es: 'Requiere aprobación', color: statusColor.low },
-    approved: { en: 'Approved', es: 'Aprobada', color: '#3F5A43' },
+    approved: { en: 'Approved', es: 'Aprobada', color: T.forestText },
     sent: { en: 'Sent', es: 'Enviada', color: statusColor.good },
     partially_received: { en: 'Partially received', es: 'Recibida en parte', color: statusColor.low },
     received: { en: 'Received', es: 'Recibida', color: statusColor.good },

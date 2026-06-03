@@ -8,6 +8,9 @@ import { StatusPill } from './StatusPill';
 import { fmtMoney, fmtInt, daysOutLabel } from './format';
 import type { DisplayItem } from './types';
 
+// Shared single-line stock row. Used by the maintenance Parts tab (and any
+// future flat list). The Triage board uses BoardCard, not this. Restyles to
+// the Triage palette automatically via tokens.
 interface ItemRowProps {
   it: DisplayItem;
   onClick?: (item: DisplayItem) => void;
