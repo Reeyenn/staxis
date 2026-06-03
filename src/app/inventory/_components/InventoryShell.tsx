@@ -75,7 +75,7 @@ export function InventoryShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
-  const { activePropertyId, activeProperty } = useProperty();
+  const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const canManage = !!user && canManageInventory(user.role);
 
@@ -317,9 +317,6 @@ export function InventoryShell() {
     );
   }
 
-  const propertyName = activeProperty?.name ?? 'Inventory';
-  const totalRooms = (activeProperty as { totalRooms?: number } | null)?.totalRooms;
-
   return (
     <div
       style={{
@@ -330,31 +327,31 @@ export function InventoryShell() {
         minHeight: 'calc(100dvh - 90px)',
       }}
     >
-      {/* Header — title left, live stat cluster + date right */}
+      {/* Header — centered stat cluster + date */}
       <div
         style={{
           display: 'flex',
-          justifyContent: 'space-between',
+          justifyContent: 'center',
           alignItems: 'flex-start',
           marginBottom: 20,
-          gap: 24,
-          flexWrap: 'wrap',
         }}
       >
-        <div>
-          <Caps>Inventory · {propertyName}</Caps>
-          <div style={{ marginTop: 4 }}>
-            <Serif size={38}>What needs you</Serif>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 26, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: 32,
+            alignItems: 'flex-start',
+            flexWrap: 'wrap',
+            justifyContent: 'center',
+          }}
+        >
           <HStat eyebrow="Stock health" big={`${stockHealth}%`} dot="good" />
           <HStat eyebrow="Order now" big={String(statusCounts.critical)} dot="critical" />
           <HStat eyebrow="On the shelf" big={fmtMoney(shelfValue)} />
-          <div style={{ textAlign: 'right', paddingTop: 2 }}>
+          <div style={{ paddingTop: 2 }}>
             <Caps size={9}>{todayLabel()}</Caps>
             <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim, marginTop: 2 }}>
-              {todayDow()}{totalRooms ? ` · ${totalRooms} rooms` : ''}
+              {todayDow()}
             </div>
           </div>
         </div>
