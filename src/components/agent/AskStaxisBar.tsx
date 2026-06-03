@@ -515,10 +515,12 @@ const ASX_CSS = `
 .asx-typing i:nth-child(3){animation-delay:.3s}
 @keyframes asx-td{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-4px)}}
 
-.asx-chips{display:flex;gap:8px;padding:0 6px 11px;flex-wrap:wrap;justify-content:center;}
-.asx-chip{font-size:12.5px;color:var(--asx-ink2);cursor:pointer;padding:7px 13px;border-radius:999px;font-family:inherit;
-  background:rgba(255,255,255,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.7);
-  box-shadow:0 6px 16px -12px rgba(20,30,20,.4);transition:color .18s,border-color .18s,transform .18s;}
+.asx-chips{display:flex;gap:8px;padding:0 6px 11px;flex-wrap:nowrap;justify-content:center;
+  width:min(540px,calc(100vw - 24px));margin:0 auto;overflow-x:auto;scrollbar-width:none;}
+.asx-chips::-webkit-scrollbar{display:none;}
+.asx-chip{flex-shrink:0;white-space:nowrap;font-size:12.5px;color:var(--asx-ink2);cursor:pointer;padding:7px 13px;border-radius:999px;font-family:inherit;
+  background:rgba(255,255,255,.85);border:1px solid rgba(20,24,20,.07);
+  box-shadow:0 4px 14px -8px rgba(20,30,20,.25);transition:color .15s,border-color .15s,transform .15s;}
 .asx-chip:hover{color:var(--asx-accent);border-color:color-mix(in srgb,var(--asx-accent) 40%,transparent);transform:translateY(-1px);}
 
 .asx-resume{display:none;justify-content:center;padding:0 6px 3px;}
