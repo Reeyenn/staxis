@@ -9,7 +9,7 @@ import type { NextRequest } from 'next/server';
 import { ok } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
-import { listConversationsForStaff, listStaff } from '@/lib/comms/core';
+import { listConversationsForStaff, listStaff, touchPresence, listOnlineStaff } from '@/lib/comms/core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,10 +22,15 @@ export async function GET(req: NextRequest): Promise<Response> {
   const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const [conversations, staff] = await Promise.all([
+  // Record that the caller is active right now (drives the green "on shift"
+  // presence dots), then read back the whole property's online set.
+  await touchPresence(ctx.pid, ctx.staffId);
+  const [conversations, staff, online] = await Promise.all([
     listConversationsForStaff(ctx.pid, ctx.staffId, { isManager: ctx.isManager, dept: ctx.dept, floorMode: false }),
     listStaff(ctx.pid),
+    listOnlineStaff(ctx.pid),
   ]);
+  const onlineStaffIds = Array.from(online);
   // An un-acked required announcement (unread=0, pendingAck>0) still lights the
   // badge — passive "seen" doesn't clear a mandatory read.
   const unreadTotal = conversations.reduce((s, c) => s + Math.max(c.unread, c.pendingAck ?? 0), 0);
@@ -45,6 +50,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       conversations,
       staff: staff.filter((s) => s.id !== ctx.staffId),
       unreadTotal,
+      onlineStaffIds,
     },
     { requestId: ctx.requestId, headers: ctx.headers },
   );

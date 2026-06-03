@@ -24,6 +24,9 @@ import { CatIcon } from '../CatIcon';
 import { ItemThumb } from '../ItemThumb';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
+import { Serif } from '../Serif';
+import { Motion } from '../motion';
+import { Overlay } from './Overlay';
 import type { DisplayItem } from '../types';
 
 interface CountSheetProps {
@@ -45,6 +48,8 @@ type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium'
 export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: CountSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  // scope: null shows the "what to count" chooser; a value shows the scoped count.
+  const [scope, setScope] = useState<Scope | null>(null);
   const [entries, setEntries] = useState<Record<string, Entry>>({});
   const [saving, setSaving] = useState(false);
   const [mae, setMae] = useState<number | null>(null);
@@ -81,16 +86,28 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
     return () => { cancelled = true; };
   }, [open, activePropertyId]);
 
-  // Build defaults whenever opened. Auto-fill rule:
-  //   off       → blank
-  //   auto      → graduated items get predicted, else blank
-  //   always-on → any prediction gets used
+  // Show the "what to count" chooser fresh on every open (clear any old entries).
   useEffect(() => {
-    if (!open) return;
+    if (open) {
+      setScope(null);
+      setEntries({});
+    }
+  }, [open]);
+
+  // The items in the chosen scope. Empty until a scope is picked.
+  const scopedDisplay = useMemo(
+    () => (scope === null ? [] : display.filter((d) => inScope(d.cat, scope))),
+    [display, scope],
+  );
+
+  // Pick a scope → seed the count inputs for just that subset and proceed.
+  // Auto-fill rule (unchanged): off → blank; auto → graduated items prefilled;
+  // always-on → any available prediction prefilled.
+  const begin = (s: Scope) => {
     const next: Record<string, Entry> = {};
-    for (const d of display) {
+    for (const d of display.filter((d) => inScope(d.cat, s))) {
       const f = autoFillById.get(d.id);
-      let prefill: string = '';
+      let prefill = '';
       let auto = false;
       if (f && aiMode !== 'off') {
         const shouldFill = aiMode === 'always-on' || f.graduated;
@@ -102,7 +119,8 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
       next[d.id] = { value: prefill, source: auto ? 'ai' : 'manual' };
     }
     setEntries(next);
-  }, [open, display, autoFillById, aiMode]);
+    setScope(s);
+  };
 
   const setEntry = (id: string, val: string) =>
     setEntries((prev) => ({ ...prev, [id]: { value: val, source: 'manual' } }));
@@ -118,15 +136,39 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
 
   if (!open) return null;
 
-  const total = display.length;
-  const filled = display.filter((d) => {
+  // STEP 1 — the chooser. Plain modal: just the title + three rows (label +
+  // item count). No eyebrow, no property name, no subtext, no category chips.
+  if (scope === null) {
+    const gN = display.filter((d) => d.cat !== 'breakfast').length;
+    const bN = display.filter((d) => d.cat === 'breakfast').length;
+    return (
+      <Overlay open onClose={onClose} width={560} title="Inventory counting">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <ScopeOption title="General inventory" n={gN} onPick={() => begin('general')} />
+          <ScopeOption title="Breakfast inventory" n={bN} onPick={() => begin('breakfast')} />
+          <ScopeOption title="Count both" n={gN + bN} onPick={() => begin('all')} />
+        </div>
+      </Overlay>
+    );
+  }
+
+  // STEP 2 — the existing walk-&-tally, scoped to the chosen subset.
+  const total = scopedDisplay.length;
+  const filled = scopedDisplay.filter((d) => {
     const e = entries[d.id];
     return e && e.value !== '' && !Number.isNaN(Number(e.value));
   }).length;
-  const auto = display.filter((d) => entries[d.id]?.source === 'ai').length;
+  const auto = scopedDisplay.filter((d) => entries[d.id]?.source === 'ai').length;
   const pct = total > 0 ? Math.round((100 * filled) / total) : 0;
 
-  const cats: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
+  const scopeLabel =
+    scope === 'general' ? 'General inventory' : scope === 'breakfast' ? 'Breakfast inventory' : 'Everything';
+  const cats: InvCat[] =
+    scope === 'breakfast'
+      ? ['breakfast']
+      : scope === 'general'
+        ? ['housekeeping', 'maintenance']
+        : ['housekeeping', 'maintenance', 'breakfast'];
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
@@ -135,7 +177,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
       const now = new Date();
       const rows: Array<Omit<InventoryCount, 'id'>> = [];
       const stockUps: Array<{ item: InventoryItem; delta: number }> = [];
-      for (const d of display) {
+      for (const d of scopedDisplay) {
         const e = entries[d.id];
         if (!e || e.value === '') continue;
         const n = Number(e.value);
@@ -205,7 +247,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
         body: JSON.stringify({ propertyId: activePropertyId, itemIds }),
       }).catch(() => {});
       // Trigger SMS only for items that landed in critical territory.
-      const criticalItemIds = display
+      const criticalItemIds = scopedDisplay
         .filter((d) => {
           const counted = Number(entries[d.id]?.value);
           if (!Number.isFinite(counted) || d.par <= 0) return false;
@@ -230,106 +272,90 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
   };
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1000,
-        background: T.bg,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      <div
-        style={{
-          padding: '18px 48px',
-          borderBottom: `1px solid ${T.rule}`,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 24,
-          flexWrap: 'wrap',
-          background: T.paper,
-        }}
-      >
-        <div>
-          <Caps>Count mode</Caps>
-          <h2
+    <Overlay
+      open
+      onClose={onClose}
+      accent={statusColor.good}
+      eyebrow="Count mode"
+      italic="Walk & tally"
+      suffix={scopeLabel}
+      width={920}
+      footer={
+        <>
+          <span
             style={{
-              fontFamily: fonts.serif,
-              fontSize: 26,
-              color: T.ink,
-              margin: '2px 0 0',
-              letterSpacing: '-0.02em',
-              fontWeight: 400,
-              lineHeight: 1.1,
+              marginRight: 'auto',
+              fontFamily: fonts.mono,
+              fontSize: 10,
+              color: T.dim,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
             }}
           >
-            <span style={{ fontStyle: 'italic' }}>Walk & tally</span>
-            <span style={{ color: T.ink3 }}> · {todayStamp()}</span>
-          </h2>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span
-                style={{
-                  fontFamily: fonts.mono,
-                  fontSize: 10,
-                  color: T.ink2,
-                  letterSpacing: '0.10em',
-                  textTransform: 'uppercase',
-                }}
-              >
-                Progress
-              </span>
-              <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
-                {filled}/{total} · {pct}%
-              </span>
-            </div>
-            <span
-              style={{
-                height: 6,
-                borderRadius: 6,
-                background: T.rule,
-                overflow: 'hidden',
-                display: 'block',
-              }}
-            >
-              <span
-                style={{
-                  display: 'block',
-                  height: '100%',
-                  width: `${pct}%`,
-                  background: statusColor.good,
-                  borderRadius: 6,
-                  transition: 'width .25s',
-                }}
-              />
-            </span>
-            <span
-              style={{
-                fontFamily: fonts.mono,
-                fontSize: 10,
-                color: T.ink3,
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
-              }}
-            >
-              {auto} AI-prefilled{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
-            </span>
-          </div>
+            {auto} AI-prefilled{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
+          </span>
           <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
             Cancel
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || filled === 0}>
-            {saving ? 'Saving…' : '✓ Save count'}
+            {saving ? 'Saving…' : `✓ Save count · ${filled}/${total}`}
           </Btn>
-        </div>
-      </div>
+        </>
+      }
+    >
+      <button
+        type="button"
+        onClick={() => setScope(null)}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          marginBottom: 16,
+          padding: '5px 11px 5px 8px',
+          borderRadius: 8,
+          cursor: 'pointer',
+          background: T.bg,
+          border: `1px solid ${T.rule}`,
+          color: T.ink2,
+          fontFamily: fonts.sans,
+          fontSize: 12,
+          fontWeight: 600,
+        }}
+      >
+        <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15 }}>‹</span>
+        Change what to count
+      </button>
 
-      <div style={{ flex: 1, overflow: 'auto', padding: '24px 48px 80px' }}>
-        <PhotoCountPanel display={display} pid={activePropertyId} onFills={applyPhotoFills} />
+      {/* Progress (moved out of the old full-screen header into the modal body) */}
+      <div
+        style={{
+          background: T.paper,
+          border: `1px solid ${T.rule}`,
+          borderRadius: 12,
+          padding: '14px 18px',
+          marginBottom: 18,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+          <Caps size={9}>Progress · {scopeLabel}</Caps>
+          <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
+            {filled}/{total} · {pct}%
+          </span>
+        </div>
+        <span style={{ display: 'block', height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
+          <span
+            style={{
+              display: 'block',
+              height: '100%',
+              width: `${pct}%`,
+              background: statusColor.good,
+              borderRadius: 6,
+              transition: 'width .25s',
+            }}
+          />
+        </span>
+      </div>
+        <PhotoCountPanel display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
 
         {auto > 0 && (
           <div
@@ -376,7 +402,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
         )}
 
         {cats.map((cat) => {
-          const catItems = display.filter((d) => d.cat === cat);
+          const catItems = scopedDisplay.filter((d) => d.cat === cat);
           if (catItems.length === 0) return null;
           return (
             <div key={cat} style={{ marginBottom: 30 }}>
@@ -408,8 +434,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
             </div>
           );
         })}
-      </div>
-    </div>
+    </Overlay>
   );
 }
 
@@ -727,7 +752,47 @@ function PhotoCountPanel({
   );
 }
 
-function todayStamp(): string {
-  const d = new Date();
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+// What the count is scoped to: general = housekeeping + maintenance,
+// breakfast = food & beverage only, all = everything.
+type Scope = 'general' | 'breakfast' | 'all';
+
+function inScope(cat: InvCat, scope: Scope): boolean {
+  if (scope === 'all') return true;
+  if (scope === 'breakfast') return cat === 'breakfast';
+  return cat !== 'breakfast';
+}
+
+// One chooser row: serif label on the left, "{n} items" + arrow on the right.
+// Deliberately plain — no category chip, no subtext (per the handoff).
+function ScopeOption({ title, n, onPick }: { title: string; n: number; onPick: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={() => { Motion.pop(ref.current, 0.98); onPick(); }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.ink; e.currentTarget.style.background = T.inkWash; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.background = T.bg; }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 15,
+        padding: '18px 20px',
+        borderRadius: 13,
+        cursor: 'pointer',
+        background: T.bg,
+        border: `1px solid ${T.rule}`,
+        textAlign: 'left',
+        width: '100%',
+      }}
+    >
+      <Serif size={23} style={{ letterSpacing: '-0.01em', whiteSpace: 'nowrap' }}>{title}</Serif>
+      <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
+        <Serif size={22} color={T.ink2}>{n}</Serif>
+        <Caps size={9} color={T.dim}>items</Caps>
+        <Serif size={20} color={T.dim} style={{ marginLeft: 4 }}>→</Serif>
+      </span>
+    </button>
+  );
 }
