@@ -453,18 +453,21 @@ const ChevronUp = () => (
 // ── Scoped styles (everything prefixed asx-) ──────────────────────────────
 const ASX_CSS = `
 .asx-dock{position:fixed;left:50%;bottom:max(22px,env(safe-area-inset-bottom,22px));transform:translateX(-50%);
-  z-index:60;width:min(540px,calc(100vw - 24px));display:flex;flex-direction:column;pointer-events:none;
+  z-index:60;width:min(540px,calc(100vw - 24px));display:flex;flex-direction:column;
+  transition:width .5s cubic-bezier(.16,1,.3,1);
   --asx-accent:#2563EB;--asx-frost:18px;
   --asx-ink:var(--snow-ink,#1F231C);--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .asx-dock,.asx-dock *{box-sizing:border-box;}
-.asx-glass,.asx-thread,.asx-chip,.asx-close,.asx-resume button,.asx-popover{pointer-events:auto;}
 
-.asx-dock.asx-idle .asx-glass{width:44px;height:44px;overflow:hidden;opacity:.82;margin:0 auto;cursor:pointer;}
+/* idle: the whole dock shrinks to a 44px spark pill — keeps clicks passing
+   through behind it AND lets a normal hover on the pill wake it back open. */
+.asx-dock.asx-idle{width:44px;}
+.asx-dock.asx-idle .asx-glass{height:44px;overflow:hidden;opacity:.82;cursor:pointer;}
 .asx-dock.asx-idle .asx-barrow{padding:0;gap:0;justify-content:center;align-items:center;height:44px;}
 .asx-dock.asx-idle .asx-barrow > :not(.asx-sp){display:none;}
 .asx-dock.asx-idle .asx-sp{font-size:16px;margin:0;}
-.asx-dock.asx-idle .asx-closerow,.asx-dock.asx-idle .asx-resume{opacity:0;pointer-events:none;}
+.asx-dock.asx-idle .asx-closerow,.asx-dock.asx-idle .asx-resume{display:none;}
 .asx-dock.asx-idle .asx-chips{display:none;}
 .asx-dock.asx-hist .asx-chips,.asx-dock.asx-hist .asx-closerow,.asx-dock.asx-hist .asx-resume{display:none;}
 
@@ -527,8 +530,9 @@ const ASX_CSS = `
 .asx-resume svg{width:12px;height:12px;}
 .asx-resume .asx-cnt{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:11px;color:var(--asx-accent);opacity:.6;}
 
+@keyframes asx-barin{from{transform:translateY(16px)}to{transform:none}}
 .asx-glass{position:relative;border-radius:999px;overflow:visible;width:100%;
-  transition:width .5s cubic-bezier(.16,1,.3,1),opacity .45s ease;
+  animation:asx-barin .6s cubic-bezier(.16,1,.3,1);transition:opacity .45s ease;
   background:rgba(255,255,255,.72);
   backdrop-filter:blur(var(--asx-frost,18px)) saturate(150%);-webkit-backdrop-filter:blur(var(--asx-frost,18px)) saturate(150%);
   border:1px solid rgba(20,24,20,.08);
@@ -574,8 +578,8 @@ const ASX_CSS = `
 .asx-pempty{padding:14px 12px;text-align:center;color:var(--asx-ink3);font-size:12.5px;}
 
 @media (prefers-reduced-motion: reduce){
-  .asx-glass{transition:none;}
-  .asx-msg,.asx-thread-in,.asx-thread-out,.asx-popover{animation:none;}
+  .asx-dock,.asx-glass{transition:none;}
+  .asx-glass,.asx-msg,.asx-thread-in,.asx-thread-out,.asx-popover{animation:none;}
   .asx-typing i,.asx-ico.asx-dict.asx-listening{animation:none;}
 }
 `;
