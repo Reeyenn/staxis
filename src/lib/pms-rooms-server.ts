@@ -357,7 +357,10 @@ export async function mergePmsRoomsForDate(
       .select('room_number, arrival_date, departure_date, status')
       .eq('property_id', pid)
       .lte('arrival_date', date)
-      .gt('departure_date', date)
+      // .gte (not .gt) so today's checkouts (departure_date == date) are
+      // included — laundry checkout/stayover counts read 0 on a turn day
+      // otherwise, before the CUA has populated assignments.
+      .gte('departure_date', date)
       .in('status', ['booked', 'checked_in'])
       .order('arrival_date', { ascending: true }),
     supabaseAdmin
@@ -420,7 +423,23 @@ export async function mergePmsRoomsForDate(
     const rawStatus = latestStatusByRoom.get(num) ?? null;
 
     const status = deriveStatus(assignment, rawStatus);
-    const type = mapType(assignment?.cleaning_type);
+    // Type: assignment wins once it exists. Before the CUA has populated
+    // assignments, fall back to deriving the turn type from the reservation
+    // so laundry checkout/stayover counts aren't all 0 on a real turn day.
+    let reservationDerivedType: RoomType | undefined;
+    if (!assignment && reservation) {
+      if (reservation.departure_date === date) {
+        reservationDerivedType = 'checkout';
+      } else if (
+        (reservation.arrival_date ?? '') < date &&
+        (reservation.departure_date ?? '') > date
+      ) {
+        reservationDerivedType = 'stayover';
+      }
+    }
+    const type = assignment
+      ? mapType(assignment.cleaning_type)
+      : (reservationDerivedType ?? 'vacant');
 
     const assignedNameRaw = assignment?.housekeeper_name?.trim() || undefined;
     const assignedTo = staffLookup.resolve(assignedNameRaw);

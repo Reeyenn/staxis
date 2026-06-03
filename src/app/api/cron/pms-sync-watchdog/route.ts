@@ -37,25 +37,75 @@ export async function GET(req: NextRequest) {
   if (unauth) return unauth;
 
   try {
+    const phone = (env.OPS_ALERT_PHONE || '').trim();
+    const nowMs = Date.now();
+    const failedCutoff = new Date(nowMs - FAILED_LOOKBACK_MS).toISOString();
+    const pendingCutoff = new Date(nowMs - PENDING_STUCK_MS).toISOString();
+
+    // The gated set: properties with write-back currently enabled.
     const { data: props, error: propErr } = await supabaseAdmin
       .from('properties')
       .select('id, name')
       .eq('pms_writeback_enabled', true);
     if (propErr) throw new Error(`properties read: ${propErr.message}`);
 
-    const phone = (env.OPS_ALERT_PHONE || '').trim();
-    const nowMs = Date.now();
-    const failedCutoff = new Date(nowMs - FAILED_LOOKBACK_MS).toISOString();
-    const pendingCutoff = new Date(nowMs - PENDING_STUCK_MS).toISOString();
+    // Fix (#1 blind-when-disabled): the documented mitigation for a misbehaving
+    // write-back is to flip pms_writeback_enabled OFF — which drops the property
+    // from the gated set above and makes any still-queued/running/failed pms.write
+    // job invisible (so it never alerts). Detect stuck/failed pms.write jobs
+    // INDEPENDENTLY of the gate: scan ALL properties for failed/queued/running
+    // pms.write jobs in the relevant windows, then union those property ids with
+    // the gated set so the per-property checks below cover both.
+    const propMap = new Map<string, string>();
+    for (const p of props ?? []) {
+      propMap.set(p.id as string, ((p.name as string | null) ?? (p.id as string)));
+    }
+
+    const [ungatedFailed, ungatedPending] = await Promise.all([
+      supabaseAdmin
+        .from('workflow_jobs')
+        .select('property_id')
+        .eq('kind', 'pms.write')
+        .eq('status', 'failed')
+        .gte('completed_at', failedCutoff),
+      supabaseAdmin
+        .from('workflow_jobs')
+        .select('property_id')
+        .eq('kind', 'pms.write')
+        .in('status', ['queued', 'running'])
+        .lt('created_at', pendingCutoff),
+    ]);
+    if (ungatedFailed.error) throw new Error(`ungated failed-jobs read: ${ungatedFailed.error.message}`);
+    if (ungatedPending.error) throw new Error(`ungated pending-jobs read: ${ungatedPending.error.message}`);
+
+    const extraIds = new Set<string>();
+    for (const row of [...(ungatedFailed.data ?? []), ...(ungatedPending.data ?? [])]) {
+      const pid = (row.property_id as string | null) ?? null;
+      if (pid && !propMap.has(pid)) extraIds.add(pid);
+    }
+    if (extraIds.size > 0) {
+      const { data: extraProps, error: extraErr } = await supabaseAdmin
+        .from('properties')
+        .select('id, name')
+        .in('id', [...extraIds]);
+      if (extraErr) throw new Error(`extra properties read: ${extraErr.message}`);
+      for (const p of extraProps ?? []) {
+        propMap.set(p.id as string, ((p.name as string | null) ?? (p.id as string)));
+      }
+      // Any id with jobs but no properties row still gets checked, named by id.
+      for (const pid of extraIds) {
+        if (!propMap.has(pid)) propMap.set(pid, pid);
+      }
+    }
 
     let checked = 0;
     let alerted = 0;
     let recovered = 0;
 
-    for (const p of props ?? []) {
+    for (const [propIdKey, propNameVal] of propMap) {
       checked++;
-      const propId = p.id as string;
-      const propName = (p.name as string | null) ?? propId;
+      const propId = propIdKey;
+      const propName = propNameVal;
 
       const [failedRes, pendingRes] = await Promise.all([
         supabaseAdmin
@@ -113,6 +163,61 @@ export async function GET(req: NextRequest) {
         );
         recovered++;
       }
+    }
+
+    // Fix (#2 dedupe wedge): a property that was 'alerting' and then got write-back
+    // disabled would never fire its recovery edge (it dropped out of the loop),
+    // staying wedged in 'alerting' forever — which suppresses ALL future incidents
+    // (the stuck guard sees wasAlerting=true). The un-gated scan in #1 largely
+    // subsumes this (a property with an outstanding stuck job is now in propMap),
+    // but sweep explicitly for orphaned alerts to be safe: rows still 'alerting'
+    // that are NOT in the merged set get a recovery text and flip back to 'ok'
+    // once we confirm they have no outstanding stuck/failed pms.write job.
+    const { data: orphanAlerts, error: orphanErr } = await supabaseAdmin
+      .from('pms_sync_alert_state')
+      .select('property_id')
+      .eq('state', 'alerting');
+    if (orphanErr) throw new Error(`orphan alert-state read: ${orphanErr.message}`);
+
+    for (const row of orphanAlerts ?? []) {
+      const propId = (row.property_id as string | null) ?? null;
+      if (!propId || propMap.has(propId)) continue; // already handled in the main loop
+
+      const [failedRes, pendingRes] = await Promise.all([
+        supabaseAdmin
+          .from('workflow_jobs')
+          .select('id', { count: 'exact', head: true })
+          .eq('property_id', propId)
+          .eq('kind', 'pms.write')
+          .eq('status', 'failed')
+          .gte('completed_at', failedCutoff),
+        supabaseAdmin
+          .from('workflow_jobs')
+          .select('id', { count: 'exact', head: true })
+          .eq('property_id', propId)
+          .eq('kind', 'pms.write')
+          .in('status', ['queued', 'running'])
+          .lt('created_at', pendingCutoff),
+      ]);
+      if ((failedRes.count ?? 0) > 0 || (pendingRes.count ?? 0) > 0) continue; // still genuinely stuck
+
+      const { data: prop } = await supabaseAdmin
+        .from('properties')
+        .select('name')
+        .eq('id', propId)
+        .maybeSingle();
+      const propName = (prop?.name as string | null) ?? propId;
+
+      if (phone) {
+        await sendSms(phone, `Staxis: PMS sync recovered at ${propName}.`).catch((e) =>
+          log.error('[pms-sync-watchdog] recovery sms failed', { err: (e as Error).message }),
+        );
+      }
+      await supabaseAdmin.from('pms_sync_alert_state').upsert(
+        { property_id: propId, state: 'ok', last_recovery_at: new Date().toISOString(), last_reason: null, updated_at: new Date().toISOString() },
+        { onConflict: 'property_id' },
+      );
+      recovered++;
     }
 
     await writeCronHeartbeat('pms-sync-watchdog', { requestId, notes: { checked, alerted, recovered } });

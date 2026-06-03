@@ -70,7 +70,7 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   //    UNCONDITIONALLY, regardless of RECIPE_SIGNING_ENFORCE (Codex P0-2).
   const { data: rec } = await supabase
     .from('pms_writeback_recipes')
-    .select('recipe, signature, signed_with_key_id, version')
+    .select('recipe, signature, signed_with_key_id, version, verified_against')
     .eq('pms_family', pmsFamily)
     .eq('action_key', actionKey)
     .eq('status', 'active')
@@ -87,6 +87,44 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
       propertyId: ctx.propertyId, pmsFamily, actionKey, reason: verify.reason,
     });
     return { ok: false, error: `write_recipe_unverified:${verify.reason}` };
+  }
+
+  // 3a. Provenance gate. A recipe validated only against the MOCK PMS
+  //     (verified_against='mock', the column default) or one learned 'path_only'
+  //     would replay byte-for-byte against the LIVE PMS — wrong-room risk. A
+  //     live write REQUIRES a recipe that was verified against a real practice
+  //     room. The ONLY escape hatch is an explicit test/loopback signal on the
+  //     job payload (allow_loopback), which the real enqueue path never sets, so
+  //     production writes are gated unconditionally.
+  const verifiedAgainst =
+    typeof rec.verified_against === 'string' ? rec.verified_against : 'mock';
+  const allowLoopback = payload.allow_loopback === true || payload.dry_run === true;
+  if (verifiedAgainst !== 'practice_room' && !allowLoopback) {
+    log.error('write-job-handler: write recipe has insufficient provenance — refusing (fail closed)', {
+      propertyId: ctx.propertyId, pmsFamily, actionKey, verifiedAgainst,
+    });
+    return { ok: false, error: `write_recipe_insufficient_provenance:${verifiedAgainst}` };
+  }
+
+  // 3b. valueMap completeness. Every internal status statusToLogValue can emit
+  //     must be translatable to a PMS on-screen string before we touch the
+  //     browser — either an explicit valueMap entry or a paramEnums value the
+  //     write-runner passes through unmapped. Otherwise an occupied-room push
+  //     would crash mid-replay; fail closed here instead.
+  const REQUIRED_STATUS_VALUES = [
+    'occupied_clean', 'occupied_dirty', 'vacant_clean', 'vacant_dirty', 'inspected',
+  ];
+  const valueMap: Record<string, string> = recipe.valueMap ?? {};
+  const paramEnums: Record<string, string[]> = recipe.paramEnums ?? {};
+  const enumValues = new Set<string>(Object.values(paramEnums).flat());
+  const missingValues = REQUIRED_STATUS_VALUES.filter(
+    (s) => !(s in valueMap) && !enumValues.has(s),
+  );
+  if (missingValues.length > 0) {
+    log.error('write-job-handler: write recipe valueMap incomplete — refusing (fail closed)', {
+      propertyId: ctx.propertyId, pmsFamily, actionKey, missing: missingValues,
+    });
+    return { ok: false, error: `recipe_valuemap_incomplete:${missingValues.join(',')}` };
   }
 
   // 4. Most-recent-wins. Only push if our origin row is still the newest REAL
