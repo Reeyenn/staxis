@@ -1,148 +1,121 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { T, fonts, catLabel, type InvCat, type StockBucket } from './tokens';
-import { CatIcon } from './CatIcon';
-import { ItemRow } from './ItemRow';
+import {
+  T,
+  fonts,
+  statusColor,
+  statusTint,
+  inBucket,
+  type StockStatus,
+  type StockBucket,
+} from './tokens';
+import { StatusDot } from './StatusPill';
+import { Serif } from './Serif';
+import { Caps } from './Caps';
+import { useRiseIn } from './motion';
+import { BoardCard } from './BoardCard';
 import type { DisplayItem } from './types';
 
 interface StockListProps {
   items: DisplayItem[];
   bucket: StockBucket;
   query: string;
-  onItemClick?: (item: DisplayItem) => void;
+  onEdit?: (item: DisplayItem) => void;
+  onCount?: () => void;
+  onReorder?: () => void;
 }
 
-export function StockList({ items, bucket, query, onItemClick }: StockListProps) {
+const COLUMNS: Array<{ status: StockStatus; label: string; sub: string }> = [
+  { status: 'critical', label: 'Order now', sub: 'below half par' },
+  { status: 'low', label: 'Order soon', sub: 'under par' },
+  { status: 'good', label: 'Stocked', sub: 'at or above par' },
+];
+
+// Items with no real forecast (par/60 fallback or no data) sort to the bottom
+// of their column — soonest-to-run-out first otherwise.
+function sortKey(it: DisplayItem): number {
+  if (it.burnSource === 'fallback-60d' || it.burnSource === 'no-data') return Infinity;
+  return it.daysLeft;
+}
+
+export function StockList({ items, bucket, query, onEdit, onCount, onReorder }: StockListProps) {
   const filtered = useMemo(() => {
-    const inBucket = (it: DisplayItem) =>
-      bucket === 'breakfast' ? it.cat === 'breakfast' : it.cat !== 'breakfast';
     const q = query.trim().toLowerCase();
     return items
-      .filter(inBucket)
+      .filter((it) => inBucket(it.cat, bucket))
       .filter((it) => {
         if (!q) return true;
-        const hay = `${it.name} ${it.vendor} ${it.id}`.toLowerCase();
-        return hay.includes(q);
-      })
-      .slice()
-      .sort((a, b) => a.daysLeft - b.daysLeft);
+        return `${it.name} ${it.vendor} ${it.id}`.toLowerCase().includes(q);
+      });
   }, [items, bucket, query]);
 
-  const total = filtered.length;
-  const cats: InvCat[] =
-    bucket === 'breakfast' ? ['breakfast'] : ['housekeeping', 'maintenance'];
+  const boardRef = useRiseIn<HTMLDivElement>([bucket, query], { step: 14 });
 
   return (
-    <section>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-end',
-          marginBottom: 14,
-          gap: 14,
-          flexWrap: 'wrap',
-        }}
-      >
-        <h2
-          style={{
-            fontFamily: fonts.serif,
-            fontSize: 24,
-            color: T.ink,
-            margin: 0,
-            letterSpacing: '-0.02em',
-            fontWeight: 400,
-            lineHeight: 1.15,
-          }}
-        >
-          <span style={{ fontStyle: 'italic' }}>
-            {total} {total === 1 ? 'item' : 'items'}
-          </span>
-        </h2>
-      </div>
-
-      {cats.map((cat) => {
-        const catItems = filtered.filter((it) => it.cat === cat);
-        if (catItems.length === 0) return null;
-        return <CategorySection key={cat} cat={cat} items={catItems} onClick={onItemClick} />;
-      })}
-
-      {total === 0 && (
-        <div
-          style={{
-            background: T.paper,
-            border: `1px solid ${T.rule}`,
-            borderRadius: 14,
-            padding: '48px 24px',
-            textAlign: 'center',
-          }}
-        >
-          <span
+    <div
+      ref={boardRef}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr 1fr',
+        gap: 13,
+        alignItems: 'start',
+      }}
+    >
+      {COLUMNS.map((col) => {
+        const c = statusColor[col.status];
+        const colItems = filtered
+          .filter((it) => it.status === col.status)
+          .slice()
+          .sort((a, b) => sortKey(a) - sortKey(b));
+        return (
+          <div
+            key={col.status}
             style={{
-              fontFamily: fonts.serif,
-              fontSize: 22,
-              color: T.ink2,
-              fontStyle: 'italic',
+              background: statusTint[col.status],
+              borderRadius: 15,
+              padding: 12,
+              border: `1px solid ${c}22`,
             }}
           >
-            Nothing matches.
-          </span>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function CategorySection({
-  cat,
-  items,
-  onClick,
-}: {
-  cat: InvCat;
-  items: DisplayItem[];
-  onClick?: (item: DisplayItem) => void;
-}) {
-  return (
-    <section style={{ marginBottom: 14 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          marginBottom: 8,
-          padding: '0 4px',
-        }}
-      >
-        <CatIcon cat={cat} size={24} />
-        <span
-          style={{
-            fontFamily: fonts.sans,
-            fontSize: 15,
-            color: T.ink,
-            fontWeight: 600,
-            letterSpacing: '-0.01em',
-          }}
-        >
-          {catLabel[cat]}
-        </span>
-        <span
-          style={{
-            fontFamily: fonts.mono,
-            fontSize: 11,
-            color: T.ink3,
-            letterSpacing: '0.04em',
-          }}
-        >
-          {items.length} {items.length === 1 ? 'item' : 'items'}
-        </span>
-        <span style={{ flex: 1, height: 1, background: T.rule }} />
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-        {items.map((it) => (
-          <ItemRow key={it.id} it={it} onClick={onClick} />
-        ))}
-      </div>
-    </section>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 6px 12px' }}>
+              <StatusDot s={col.status} size={10} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 700, color: c }}>
+                  {col.label}
+                </div>
+                <Caps size={8.5} color={T.dim}>{col.sub}</Caps>
+              </div>
+              <Serif size={24} color={c}>{colItems.length}</Serif>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+              {colItems.map((it) => (
+                <BoardCard
+                  key={it.id}
+                  it={it}
+                  onEdit={onEdit}
+                  onCount={onCount}
+                  onReorder={onReorder}
+                />
+              ))}
+              {colItems.length === 0 && (
+                <div
+                  style={{
+                    padding: '22px 0',
+                    textAlign: 'center',
+                    fontFamily: fonts.sans,
+                    fontSize: 12.5,
+                    color: T.dim,
+                    fontStyle: 'italic',
+                  }}
+                >
+                  Nothing here.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }

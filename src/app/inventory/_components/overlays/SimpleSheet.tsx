@@ -407,7 +407,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
               borderRadius: 14,
               padding: '40px 24px',
               textAlign: 'center',
-              background: 'repeating-linear-gradient(135deg, rgba(31,35,28,0.03) 0 10px, transparent 10px 20px)',
+              background: 'repeating-linear-gradient(135deg, rgba(24,22,17,0.03) 0 10px, transparent 10px 20px)',
             }}
           >
             <div style={{ fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
@@ -473,7 +473,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
               border: `1px solid ${T.sageDeep}33`,
               fontFamily: fonts.sans,
               fontSize: 14,
-              color: '#3F5A43',
+              color: T.forestText,
               lineHeight: 1.5,
             }}
           >
@@ -1075,7 +1075,7 @@ function StatusTab({
           padding: '14px 16px',
           fontFamily: fonts.sans,
           fontSize: 13,
-          color: '#3F5A43',
+          color: T.forestText,
           lineHeight: 1.5,
         }}
       >
