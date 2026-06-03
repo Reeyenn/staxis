@@ -252,9 +252,19 @@ export function AskStaxisBar() {
   const lastIsAssistantText = !!last && last.role === 'assistant' && !!last.text && !last.toolName;
   const showTyping = streaming && !lastIsAssistantText;
 
+  // Rising dim — a scrim that fades the page from the bottom up while a chat is
+  // open and climbs as the conversation grows (the chat sits above it, stays lit).
+  const dimOn = chatState === 'active' && !hidden;
+  const dimRise = Math.min(100, 22 + messages.length * 16);
+
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: ASX_CSS }} />
+      <div
+        className={`asx-scrim${dimOn ? ' asx-scrim-on' : ''}`}
+        style={{ ['--asx-dimrise']: `${dimRise}%` } as React.CSSProperties}
+        aria-hidden
+      />
       <div
         ref={dockRef}
         className={dockClass}
@@ -459,6 +469,14 @@ const ASX_CSS = `
   --asx-ink:var(--snow-ink,#1F231C);--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .asx-dock,.asx-dock *{box-sizing:border-box;}
+
+/* Rising dim — scrim that fades the page from the bottom up while a chat is open
+   and climbs with the conversation. Below the dock (z 60), above the page; never
+   blocks clicks; the chat sits above it so it stays lit. NB: keep gradient stops
+   plain/single-var — calc(var()*n) inside a stop voids the whole background. */
+.asx-scrim{position:fixed;inset:0;z-index:50;pointer-events:none;opacity:0;transition:opacity .45s ease;
+  background:linear-gradient(to top, rgba(14,18,16,.5) 0%, transparent var(--asx-dimrise,30%));}
+.asx-scrim.asx-scrim-on{opacity:1;}
 
 /* idle: the whole dock shrinks to a 44px spark pill — keeps clicks passing
    through behind it AND lets a normal hover on the pill wake it back open. */
