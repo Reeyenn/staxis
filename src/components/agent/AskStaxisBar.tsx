@@ -454,8 +454,8 @@ const ChevronUp = () => (
 const ASX_CSS = `
 .asx-dock{position:fixed;left:50%;bottom:max(22px,env(safe-area-inset-bottom,22px));transform:translateX(-50%);
   z-index:60;width:min(540px,calc(100vw - 24px));display:flex;flex-direction:column;
-  transition:width .5s cubic-bezier(.16,1,.3,1);
-  --asx-accent:#2563EB;--asx-frost:18px;
+  transition:width .28s cubic-bezier(.33,1,.68,1);
+  --asx-accent:#2563EB;--asx-frost:12px;
   --asx-ink:var(--snow-ink,#1F231C);--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .asx-dock,.asx-dock *{box-sizing:border-box;}
@@ -532,9 +532,9 @@ const ASX_CSS = `
 
 @keyframes asx-barin{from{transform:translateY(16px)}to{transform:none}}
 .asx-glass{position:relative;border-radius:999px;overflow:visible;width:100%;
-  animation:asx-barin .6s cubic-bezier(.16,1,.3,1);transition:opacity .45s ease;
-  background:rgba(255,255,255,.72);
-  backdrop-filter:blur(var(--asx-frost,18px)) saturate(150%);-webkit-backdrop-filter:blur(var(--asx-frost,18px)) saturate(150%);
+  animation:asx-barin .42s cubic-bezier(.33,1,.68,1);transition:opacity .28s ease;
+  background:rgba(255,255,255,.78);
+  backdrop-filter:blur(var(--asx-frost,12px));-webkit-backdrop-filter:blur(var(--asx-frost,12px));
   border:1px solid rgba(20,24,20,.08);
   box-shadow:0 1px 0 rgba(255,255,255,.8) inset,0 8px 26px -16px rgba(20,30,20,.3);}
 .asx-barrow{position:relative;z-index:2;display:flex;align-items:center;gap:9px;padding:7px 7px 7px 16px;}
