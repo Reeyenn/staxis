@@ -224,10 +224,11 @@ export function OnboardingSurface() {
   );
 }
 
-// ── Dark surface shell with radial glow ─────────────────────────────────
+// ── Dark surface section with radial glow — seamless with the full-bleed
+//    dark admin canvas (no card chrome, just padding + glow). ────────────
 function DarkShell({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ background: 'var(--ink)', borderRadius: 20, padding: '26px 26px 30px', color: '#fff', position: 'relative', overflow: 'hidden' }}>
+    <div style={{ background: 'transparent', padding: '24px 32px 8px', color: '#fff', position: 'relative' }}>
       <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 80% at 100% 0%, rgba(60,156,104,.14), transparent 60%)', pointerEvents: 'none' }} />
       <div style={{ position: 'relative' }}>{children}</div>
     </div>

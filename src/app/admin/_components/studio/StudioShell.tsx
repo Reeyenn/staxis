@@ -107,57 +107,66 @@ export function StudioShell() {
       { duration: 420, easing: EASE_OUT, fill: 'none' });
   }, [tab]);
 
+  // Bright tones — the stat strip sits on the dark canvas now.
   const stats: { label: string; node: React.ReactNode }[] = [
-    { label: 'Live', node: <StatVal v={ov?.liveHotels} tone="var(--forest-deep)" /> },
-    { label: 'Onboarding', node: <StatVal v={ov?.onboarding} tone="var(--gold-deep)" /> },
-    { label: 'Errors', node: <StatVal v={ov?.errorsToday} tone={(ov?.errorsToday ?? 0) > 0 ? 'var(--terracotta)' : 'var(--ink)'} /> },
-    { label: 'Jobs', node: <StatVal v={ov?.activeJobs} tone="var(--teal-deep)" /> },
+    { label: 'Live', node: <StatVal v={ov?.liveHotels} tone="var(--forest)" /> },
+    { label: 'Onboarding', node: <StatVal v={ov?.onboarding} tone="var(--gold)" /> },
+    { label: 'Errors', node: <StatVal v={ov?.errorsToday} tone={(ov?.errorsToday ?? 0) > 0 ? 'var(--terracotta)' : '#fff'} /> },
+    { label: 'Jobs', node: <StatVal v={ov?.activeJobs} tone="var(--teal)" /> },
     {
       label: 'MRR',
       node: ov?.pilotMode
-        ? <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 15, color: 'var(--forest-deep)' }}>Pilot</span>
-        : <StatVal text={ov?.mrrCents != null ? usd(ov.mrrCents) : undefined} tone="var(--ink)" />,
+        ? <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 15, color: 'var(--forest)' }}>Pilot</span>
+        : <StatVal text={ov?.mrrCents != null ? usd(ov.mrrCents) : undefined} tone="#fff" />,
     },
   ];
 
   return (
-    <div className="admin-studio">
-      {/* Sticky sub-header — sits just below the global app nav (Header is
-          64px tall). The site's own nav + wordmark live above this, so we
-          don't repeat the wordmark here — just the live stat strip + tabs. */}
+    <div className="admin-studio" style={{
+      background: 'var(--ink)', color: '#fff',
+      // Full-bleed: break out of AppLayout's centered max-width (1920) so the
+      // dark admin canvas spans the whole viewport below the global nav. On
+      // viewports ≤1920 the margins compute to ~0 (already full width); wider
+      // monitors get pulled out to the edges. macOS overlay scrollbars → no
+      // stray horizontal scrollbar.
+      marginLeft: 'calc(50% - 50vw)', marginRight: 'calc(50% - 50vw)',
+      minHeight: 'calc(100vh - 64px)',
+    }}>
+      {/* Dark sticky sub-header — live stat strip + tabs, just below the 64px
+          global nav. Part of the same continuous dark admin canvas; the site
+          nav + wordmark live above it so we don't repeat them here. */}
       <div style={{
         position: 'sticky', top: 64, zIndex: 30,
-        background: 'rgba(255,255,255,.86)',
-        backdropFilter: 'blur(40px)', WebkitBackdropFilter: 'blur(40px)',
-        borderBottom: '1px solid var(--rule)',
+        background: 'var(--ink)',
+        borderBottom: '1px solid rgba(255,255,255,.10)',
       }}>
-        <div style={{ maxWidth: 1480, margin: '0 auto', padding: '0 28px' }}>
+        <div style={{ padding: '0 32px' }}>
           {/* Row 1 — live stat strip */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 22, height: 52, borderBottom: '1px solid var(--rule-soft)' }}>
-            <div style={{ display: 'flex', gap: 24, alignItems: 'center', overflowX: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 22, height: 50, borderBottom: '1px solid rgba(255,255,255,.07)' }}>
+            <div style={{ display: 'flex', gap: 26, alignItems: 'center', overflowX: 'auto' }}>
               {stats.map((s) => (
                 <div key={s.label} style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexShrink: 0 }}>
-                  <span className="caps" style={{ fontSize: 8.5, whiteSpace: 'nowrap' }}>{s.label}</span>
+                  <span className="caps" style={{ fontSize: 8.5, whiteSpace: 'nowrap', color: 'rgba(255,255,255,.5)' }}>{s.label}</span>
                   <span>{s.node}</span>
                 </div>
               ))}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 'auto' }}>
               <span data-studio-pulse style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--forest)', display: 'inline-block', animation: 'studio-pulse 1.6s ease-in-out infinite' }} />
-              <span className="mono" style={{ fontSize: 10, color: 'var(--dim2)', whiteSpace: 'nowrap' }}>
+              <span className="mono" style={{ fontSize: 10, color: 'rgba(255,255,255,.4)', whiteSpace: 'nowrap' }}>
                 refreshed {refreshedAgo < 60 ? `${refreshedAgo}s` : `${Math.floor(refreshedAgo / 60)}m`}
               </span>
             </div>
           </div>
           {/* Row 2 — tabs */}
-          <div style={{ display: 'flex', gap: 2, height: 50, alignItems: 'stretch', overflowX: 'auto' }}>
+          <div style={{ display: 'flex', gap: 4, height: 50, alignItems: 'stretch', overflowX: 'auto' }}>
             {TABS.map((t) => {
               const active = t.id === tab;
               return (
                 <button key={t.id} onClick={() => go(t.id)} style={{
                   background: 'transparent', border: 'none', padding: '0 16px', cursor: 'pointer',
                   fontFamily: FONT_SANS, fontSize: 14, fontWeight: active ? 700 : 500,
-                  color: active ? 'var(--ink)' : 'var(--dim)', whiteSpace: 'nowrap',
+                  color: active ? '#fff' : 'rgba(255,255,255,.5)', whiteSpace: 'nowrap',
                   borderBottom: `2px solid ${active ? 'var(--forest)' : 'transparent'}`, transition: 'color .15s',
                 }}>
                   {t.label}
@@ -168,8 +177,9 @@ export function StudioShell() {
         </div>
       </div>
 
-      {/* Stage */}
-      <div ref={stageRef} key={tab} style={{ maxWidth: 1480, margin: '0 auto', padding: '26px 28px 80px' }}>
+      {/* Stage — surfaces render full-width on the dark canvas (each provides
+          its own padding + radial glow via SurfaceShell). */}
+      <div ref={stageRef} key={tab} style={{ paddingBottom: 64 }}>
         {tab === 'onboarding' && <OnboardingSurface />}
         {tab === 'live' && <LiveSurface />}
         {tab === 'system' && <SystemSurface />}
@@ -182,5 +192,5 @@ export function StudioShell() {
 
 function StatVal({ v, text, tone }: { v?: number | null; text?: string; tone: string }) {
   const display = text !== undefined ? text : (v == null ? '—' : String(v));
-  return <span className="mono" style={{ fontFamily: FONT_MONO, fontSize: 16, fontWeight: 700, color: v == null && text === undefined ? 'var(--dim2)' : tone, whiteSpace: 'nowrap' }}>{display}</span>;
+  return <span className="mono" style={{ fontFamily: FONT_MONO, fontSize: 16, fontWeight: 700, color: v == null && text === undefined ? 'rgba(255,255,255,.4)' : tone, whiteSpace: 'nowrap' }}>{display}</span>;
 }

@@ -23,11 +23,13 @@ export const GLOW: Record<string, string> = {
   tealTop:   'radial-gradient(100% 80% at 50% 0%, rgba(51,137,160,.14), transparent 62%)',
 };
 
-/** Dark editorial stage card with a configurable radial glow. */
+/** Dark editorial stage section with a configurable radial glow. Seamless
+ *  with the full-bleed dark admin canvas (no card chrome) — just padding +
+ *  the per-surface glow over the shared ink background. */
 export function SurfaceShell({ glow = 'forestTR', children, style }: { glow?: keyof typeof GLOW | string; children: React.ReactNode; style?: React.CSSProperties }) {
   const bg = GLOW[glow] ?? glow;
   return (
-    <div style={{ background: 'var(--ink)', borderRadius: 20, padding: '26px 26px 30px', color: '#fff', position: 'relative', overflow: 'hidden', ...style }}>
+    <div style={{ background: 'transparent', padding: '24px 32px 8px', color: '#fff', position: 'relative', ...style }}>
       <div style={{ position: 'absolute', inset: 0, background: bg, pointerEvents: 'none' }} />
       <div style={{ position: 'relative' }}>{children}</div>
     </div>
