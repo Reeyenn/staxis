@@ -246,7 +246,7 @@ export function RoomsTab() {
   return (
     <div className="rooms-ledger" style={{ background: LED.card, color: LED.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <style>{`
-        .rooms-ledger .lgr-wrap { max-width:1360px; margin:0 auto; padding:22px 36px 90px; }
+        .rooms-ledger .lgr-wrap { width:100%; padding:22px 36px 90px; }
         .rooms-ledger .lgr-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(94px, 1fr)); }
         .rooms-ledger .lgr-card { position:relative; height:66px; border-radius:9px; background:#FFFFFF; border:1px solid ${LED.line}; cursor:pointer; overflow:visible; display:flex; flex-direction:column; justify-content:space-between; padding:9px 10px 9px 13px; transition:transform .25s cubic-bezier(.34,1.56,.5,1), box-shadow .25s; -webkit-tap-highlight-color:transparent; }
         .rooms-ledger .lgr-card:hover { transform:translateY(-3px); box-shadow:0 10px 24px rgba(24,22,17,.10); }
@@ -268,11 +268,6 @@ export function RoomsTab() {
           <div>
             <div style={{ fontFamily: FONT_SERIF, fontSize: 38, fontWeight: 400, lineHeight: 1, color: LED.ink }}>
               <i style={{ color: LED.dirty }}>{counts.dirty}</i>{lang === 'es' ? ' cuartos por limpiar' : ' rooms to turn'}
-            </div>
-            <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: LED.dim, letterSpacing: '.04em', marginTop: 8 }}>
-              {counts.cleaning > 0
-                ? (lang === 'es' ? `${counts.cleaning} en limpieza · toca para marcar limpio` : `${counts.cleaning} cleaning · tap a room to flip it clean`)
-                : (lang === 'es' ? 'Toca un cuarto para marcarlo limpio' : 'Tap a room to flip it clean')}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 18 }}>
