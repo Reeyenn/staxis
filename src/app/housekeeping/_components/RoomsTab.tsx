@@ -247,6 +247,9 @@ export function RoomsTab() {
     <div className="rooms-ledger" style={{ background: LED.card, color: LED.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <style>{`
         .rooms-ledger .lgr-wrap { width:100%; padding:22px 36px 90px; }
+        .rooms-ledger .lgr-head { display:grid; grid-template-columns:1fr auto 1fr; align-items:flex-end; gap:24px; margin:4px 0 22px; }
+        .rooms-ledger .lgr-stats { justify-self:center; display:flex; gap:26px; }
+        @media (max-width:680px){ .rooms-ledger .lgr-head { grid-template-columns:1fr; } .rooms-ledger .lgr-stats { justify-self:start; } }
         .rooms-ledger .lgr-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(94px, 1fr)); }
         .rooms-ledger .lgr-card { position:relative; height:66px; border-radius:9px; background:#FFFFFF; border:1px solid ${LED.line}; cursor:pointer; overflow:visible; display:flex; flex-direction:column; justify-content:space-between; padding:9px 10px 9px 13px; transition:transform .25s cubic-bezier(.34,1.56,.5,1), box-shadow .25s; -webkit-tap-highlight-color:transparent; }
         .rooms-ledger .lgr-card:hover { transform:translateY(-3px); box-shadow:0 10px 24px rgba(24,22,17,.10); }
@@ -263,20 +266,20 @@ export function RoomsTab() {
       `}</style>
 
       <div className="lgr-wrap">
-        {/* header: title + summary counts */}
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', margin: '4px 0 22px' }}>
+        {/* header: title (left) + summary counts (centered) */}
+        <div className="lgr-head">
           <div>
             <div style={{ fontFamily: FONT_SERIF, fontSize: 38, fontWeight: 400, lineHeight: 1, color: LED.ink }}>
               <i style={{ color: LED.dirty }}>{counts.dirty}</i>{lang === 'es' ? ' cuartos por limpiar' : ' rooms to turn'}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 18 }}>
+          <div className="lgr-stats">
             {[
               { v: String(counts.clean), l: lang === 'es' ? 'Limpias' : 'Clean', c: LED.clean },
               { v: String(counts.dirty), l: lang === 'es' ? 'Sucias' : 'Dirty', c: LED.dirty },
               { v: `${donePct}%`,         l: lang === 'es' ? 'Listo' : 'Done',  c: LED.ink },
             ].map(s => (
-              <div key={s.l} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+              <div key={s.l} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <b style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 28, lineHeight: 1, color: s.c, fontWeight: 400 }}>{s.v}</b>
                 <span style={{ ...capLabel, marginTop: 4 }}>{s.l}</span>
               </div>
