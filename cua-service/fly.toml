@@ -41,6 +41,11 @@ kill_timeout = "300s"
   # case. Code default (job-runner.ts) is also 900000; this just makes
   # the env explicit.
   JOB_TIMEOUT_MS = "900000"
+  # Belt-and-suspenders for memory-monitor's 80% RAM auto-restart: Fly
+  # injects FLY_VM_MEMORY_MB, but set the read-path alias explicitly here
+  # too so pressure % computes even if the FLY_ var name ever differs.
+  # Must match the [[vm]] memory below (1gb = 1024 MB).
+  VM_MEMORY_MB = "1024"
 
 # No [[services]] block — this is a worker, not an HTTP service. Fly
 # still keeps it alive via the `auto_stop_machines = false` flag below.
@@ -51,9 +56,12 @@ kill_timeout = "300s"
   cpus = 1
 
 [deploy]
-  # Rolling restart: at least one machine is always running so jobs
-  # don't pile up while we deploy.
-  strategy = "rolling"
+  # Immediate (NOT rolling): a rolling deploy overlaps the old and new
+  # machine, so for a brief window two drivers per hotel run — double PMS
+  # writes + double Claude spend. Single-machine ownership matters more
+  # than uptime here; a ~30s polling gap during deploy is fine, two
+  # simultaneous drivers is not.
+  strategy = "immediate"
 
 # Worker pattern — must stay running. After deploys (which send SIGTERM
 # and exit cleanly with code 0), Fly's "on-failure" policy would NOT

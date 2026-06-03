@@ -170,11 +170,12 @@ function sample_memory(): MemorySample {
 }
 
 /**
- * Fly.io sets VM_MEMORY_MB on every machine. Fallback to FLY_MEMORY_MB
- * (older alias). Returns null on macOS local dev where neither is set.
+ * Fly.io injects FLY_VM_MEMORY_MB on every machine. Fall back to
+ * VM_MEMORY_MB / FLY_MEMORY_MB (older aliases). Returns null on macOS
+ * local dev where none is set.
  */
 function machineMemoryLimitMb(): number | null {
-  return env.VM_MEMORY_MB ?? env.FLY_MEMORY_MB ?? null;
+  return env.FLY_VM_MEMORY_MB ?? env.VM_MEMORY_MB ?? env.FLY_MEMORY_MB ?? null;
 }
 
 function requestRestart(reason: string): void {

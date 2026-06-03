@@ -255,7 +255,28 @@ export async function saveGenericTable(
   // ── Validate ──
   // Stamp property_id on every row before validation so the required-field
   // check sees it.
-  const stamped = effectiveRows.map((r) => ({ ...r, property_id: propertyId }));
+  //
+  // Also auto-stamp synthetic required timestamps the extractor can't
+  // produce. Columns like captured_at / changed_at are marked required in
+  // the descriptor but the DB normally fills them via a `default now()`.
+  // The validator runs BEFORE the insert, so without this every
+  // in_house_snapshot / room_status_log / activity_log row would be
+  // rejected for a "required field missing" it never had to supply. For
+  // any descriptor column that is required + timestamptz + absent on the
+  // row, stamp the current time as an ISO-8601 string — equivalent to
+  // what the DB default now() would store. Never overwrite an extracted
+  // value (only fill when undefined).
+  const nowIso = new Date().toISOString();
+  const syntheticTsCols = descriptor.columns.filter(
+    (c) => c.required && c.type === 'timestamptz',
+  );
+  const stamped = effectiveRows.map((r) => {
+    const row: Record<string, unknown> = { ...r, property_id: propertyId };
+    for (const col of syntheticTsCols) {
+      if (row[col.name] === undefined) row[col.name] = nowIso;
+    }
+    return row;
+  });
   const validation = validateRows(stamped, descriptor);
 
   if (validation.rejected.length > 0) {
@@ -343,6 +364,14 @@ async function writeAppend(
  * robot pushed within the last ~45s (covers the 30s±10s jittered poll), and
  * consume those echo entries one-shot — so a LATER genuine same-value external
  * change still logs. Returns the rows to actually write.
+ *
+ * Intervening-change guard: a matching (room, status) is NOT necessarily our
+ * own echo. A human could have flipped vacant_clean → vacant_dirty →
+ * vacant_clean inside the 45s window; the final read legitimately matches the
+ * pushed value but is a genuine new change. Before suppressing, we check the
+ * status log for any manual/cua row for that room with changed_at AFTER the
+ * echo's pushed_at — if one exists there was a real intervening change, so we
+ * keep the row and leave the echo un-consumed.
  */
 async function suppressEchoedRows(
   propertyId: string,
@@ -351,25 +380,39 @@ async function suppressEchoedRows(
   const cutoff = new Date(Date.now() - 45_000).toISOString();
   const { data: echoes, error } = await supabase
     .from('pms_sync_echo')
-    .select('room_number, pushed_value')
+    .select('room_number, pushed_value, pushed_at')
     .eq('property_id', propertyId)
     .gte('pushed_at', cutoff);
   if (error || !echoes || echoes.length === 0) return rows;
 
-  const echoMap = new Map<string, string>();
-  for (const e of echoes) echoMap.set(String(e.room_number), String(e.pushed_value));
+  const echoMap = new Map<string, { value: string; pushedAt: string }>();
+  for (const e of echoes) {
+    echoMap.set(String(e.room_number), {
+      value: String(e.pushed_value),
+      pushedAt: String(e.pushed_at),
+    });
+  }
 
   const consumed = new Set<string>();
-  const kept = rows.filter((r) => {
+  const kept: Array<Record<string, unknown>> = [];
+  for (const r of rows) {
     const room = String(r.room_number ?? '');
     const status = String(r.status ?? '');
     const src = r.source ? String(r.source) : 'cua';
-    if (src === 'cua' && echoMap.get(room) === status) {
-      consumed.add(room);
-      return false; // our own write echoed back — don't re-log it as 'cua'
+    const echo = echoMap.get(room);
+    if (src === 'cua' && echo && echo.value === status) {
+      // Looks like our own write echoed back. But only suppress if there is
+      // NO genuine human/CUA status change logged AFTER we pushed — otherwise
+      // a real flip back to the same status would be silently swallowed.
+      const intervening = await hasInterveningChange(propertyId, room, echo.pushedAt);
+      if (!intervening) {
+        consumed.add(room);
+        continue; // our own write echoed back — don't re-log it as 'cua'
+      }
+      // Genuine later change to the same value — keep it, leave echo intact.
     }
-    return true;
-  });
+    kept.push(r);
+  }
 
   if (consumed.size > 0) {
     const { error: delErr } = await supabase
@@ -385,6 +428,38 @@ async function suppressEchoedRows(
     });
   }
   return kept;
+}
+
+/**
+ * Is there a genuine status change logged for this room AFTER the robot's
+ * push? A manual/cua row in pms_room_status_log with changed_at > pushedAt
+ * means a human (or a later CUA read of a real external change) touched the
+ * room since we pushed — so the current poll's matching value is NOT just our
+ * echo and must not be suppressed. We deliberately scope to source in
+ * ('manual','cua'); 'scheduled'/'workflow' rows are not human-driven echoes
+ * of concern here. Fail-open on query error (treat as "no intervening
+ * change") so a transient read blip can't permanently wedge suppression.
+ */
+async function hasInterveningChange(
+  propertyId: string,
+  roomNumber: string,
+  pushedAt: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('pms_room_status_log')
+    .select('id')
+    .eq('property_id', propertyId)
+    .eq('room_number', roomNumber)
+    .in('source', ['manual', 'cua'])
+    .gt('changed_at', pushedAt)
+    .limit(1);
+  if (error) {
+    log.warn('generic-table-writer: intervening-change check failed', {
+      propertyId, roomNumber, msg: error.message,
+    });
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
 }
 
 async function writeUpsert(
@@ -420,16 +495,64 @@ async function writeReconcile(
     throw new Error(`reconcile strategy on ${tableName} requires reconcile_key_field in descriptor`);
   }
 
-  // Step 1: upsert all incoming rows.
+  // Detect rows whose reconcile/natural key is NULL (e.g. pms_lost_and_found
+  // with a null pms_item_id when the PMS row carries no stable id). A null
+  // key is poison for reconcile two ways: (a) it never lands in incomingKeys,
+  // so the auto-resolve pass would see it as "disappeared" and dispose
+  // everything; (b) ON CONFLICT can't match a null, so upsert re-INSERTs the
+  // same null-key rows on every poll → unbounded duplicates. When any null
+  // key is present we degrade safely: plain append (no upsert) for this batch
+  // and skip auto-resolve entirely.
+  const reconcileKeyField = descriptor.reconcile_key_field;
+  const hasNullReconcileKey = rows.some((r) => {
+    const k = r[reconcileKeyField];
+    return k === undefined || k === null;
+  });
+
+  // Step 1: write all incoming rows. Normally an upsert on the natural key;
+  // but when any reconcile key is null, upsert-on-null re-inserts duplicates
+  // every poll, so fall back to a plain append for this batch.
   const onConflict = descriptor.natural_key.join(',');
-  const { error: upsertErr } = await supabase.from(tableName).upsert(rows, { onConflict });
-  if (upsertErr) throw upsertErr;
+  if (hasNullReconcileKey) {
+    log.warn('reconcile: incoming row(s) have a null reconcile key — appending instead of upserting', {
+      tableName: descriptor.table_name,
+      reconcileKeyField,
+      reason: 'upsert on a null key cannot match ON CONFLICT and would duplicate every poll',
+    });
+    const { error: insertErr } = await supabase.from(tableName).insert(rows);
+    if (insertErr) throw insertErr;
+  } else {
+    const { error: upsertErr } = await supabase.from(tableName).upsert(rows, { onConflict });
+    if (upsertErr) throw upsertErr;
+  }
 
   // Step 2: auto-resolve disappeared rows. ONLY for full snapshots (Codex
   // v2 P1-RECONCILE — auto-resolve on a delta would falsely resolve real
   // rows that the partial view just didn't include).
   let autoResolved = 0;
-  if (snapshotScope === 'full') {
+  if (snapshotScope === 'full' && rejected > 0) {
+    // A "full" snapshot that had ANY rejected rows is not actually complete:
+    // some rows the PMS reported were dropped by validation, so their natural
+    // keys are missing from `rows`. Treating it as a full snapshot would
+    // auto-resolve genuinely-present rows that just failed to parse this poll.
+    // Skip the destructive step until a clean full snapshot lands (Codex
+    // P1 partial-extraction false auto-resolve).
+    log.warn('reconcile: skipping auto-resolve for partially-rejected full snapshot', {
+      tableName: descriptor.table_name,
+      rejected,
+      reason: 'rejected>0 — batch is incomplete; auto-resolve could falsely resolve rows dropped by validation',
+    });
+  } else if (snapshotScope === 'full' && hasNullReconcileKey) {
+    // A null reconcile key never lands in incomingKeys, so the disappeared-row
+    // diff below would treat EVERY existing open row as missing and dispose it.
+    // Skip auto-resolve when the batch can't be keyed reliably (Codex P1
+    // pms_lost_and_found null pms_item_id case).
+    log.warn('reconcile: skipping auto-resolve — incoming batch has a null reconcile key', {
+      tableName: descriptor.table_name,
+      reconcileKeyField,
+      reason: 'null key → empty incomingKeys → would falsely resolve all existing open rows',
+    });
+  } else if (snapshotScope === 'full') {
     const onMissing = RECONCILE_ON_MISSING[descriptor.table_name];
     if (!onMissing) {
       log.warn('reconcile: no on_missing behavior for table', { tableName: descriptor.table_name });

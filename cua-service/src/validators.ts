@@ -188,7 +188,8 @@ export function validateRoomStatus(row: RoomStatusRow): RowValidationResult<Room
   const clean: RoomStatusRow = { ...row };
 
   if (!validRoomNumber(row.room_number)) {
-    errors.push(`room_number "${row.room_number}" invalid`);
+    warnings.push(`room_number "${row.room_number}" invalid format — dropped`);
+    clean.room_number = undefined;
   }
   if (!row.status || !ROOM_STATUS_ENUM.has(row.status as string)) {
     errors.push(`status "${row.status}" not in enum`);
@@ -223,7 +224,8 @@ export function validateHousekeeping(row: HousekeepingRow): RowValidationResult<
     errors.push(`date "${row.date}" invalid`);
   }
   if (!validRoomNumber(row.room_number)) {
-    errors.push(`room_number "${row.room_number}" invalid`);
+    warnings.push(`room_number "${row.room_number}" invalid format — dropped`);
+    clean.room_number = undefined;
   }
   if (row.cleaning_type !== undefined && row.cleaning_type !== null) {
     if (!CLEANING_TYPE_ENUM.has(row.cleaning_type as string)) {

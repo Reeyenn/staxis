@@ -124,8 +124,17 @@ function scrubContext(ctx: LogContext | undefined): LogContext | undefined {
 function capLine(line: string): string {
   if (Buffer.byteLength(line, 'utf8') <= MAX_EMITTED_BYTES) return line;
   const marker = '…<redacted:line_truncated>';
-  const buf = Buffer.from(line, 'utf8').subarray(0, MAX_EMITTED_BYTES - marker.length - 1);
-  return buf.toString('utf8') + marker;
+  // Reserve room for the marker by its BYTE length (not char length — the
+  // '…' is 3 bytes / 1 char, so marker.length under-budgets and the result
+  // overruns the cap). Byte-slicing can also cut a multi-byte char, which
+  // re-encodes as a 3-byte U+FFFD; trim trailing chars until the marker'd
+  // result is guaranteed within MAX_EMITTED_BYTES.
+  const budget = Math.max(0, MAX_EMITTED_BYTES - Buffer.byteLength(marker, 'utf8'));
+  let head = Buffer.from(line, 'utf8').subarray(0, budget).toString('utf8');
+  while (head.length > 0 && Buffer.byteLength(head + marker, 'utf8') > MAX_EMITTED_BYTES) {
+    head = head.slice(0, -1);
+  }
+  return head + marker;
 }
 
 function emit(level: 'info' | 'warn' | 'error', msg: string, ctx?: LogContext) {

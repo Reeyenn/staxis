@@ -508,6 +508,60 @@ export class SessionDriver {
     return true;
   }
 
+  /**
+   * Phase-2 robustness (fix 1): cheap in-page check, run at the top of every
+   * poll, that answers "is this page logged OUT?" WITHOUT navigating (the
+   * poll already has us on a real PMS page).
+   *
+   * Returns true (logged-out) when EITHER:
+   *   - a login-form input is visible (j_username / username / password), OR
+   *   - an MFA prompt is visible (detectMfaPrompt), OR
+   *   - the knowledge file's success selector is real (not body/html — C3)
+   *     yet NOT present (the post-login chrome is gone).
+   *
+   * A 'body'/'html' success selector is treated as NO evidence of login
+   * (C3): in that case we rely solely on the positive logged-out signals
+   * (login form / MFA). False (treat as logged-in) on any probe error — the
+   * existing zero-row streak guard remains the backstop, and we never want a
+   * transient locator hiccup to force a needless re-login storm.
+   */
+  private async detectLoggedOut(): Promise<boolean> {
+    if (!this.page || !this.knowledgeFile) return false;
+    try {
+      // Positive logged-out signal #1 — the login form is back.
+      const loginFormVisible = await this.page
+        .locator('input[name="j_username"], input[name="username"], input[type="password"]')
+        .first()
+        .isVisible({ timeout: 1_000 })
+        .catch(() => false);
+      if (loginFormVisible) return true;
+
+      // Positive logged-out signal #2 — an MFA challenge is showing.
+      const mfa = await detectMfaPrompt(this.page);
+      if (mfa.mfa) return true;
+
+      // Negative signal — a REAL success selector should still be present.
+      // body/html carry no evidence (C3), so they can't prove logged-in and
+      // their absence can't prove logged-out; skip them.
+      const successSelector = this.knowledgeFile.knowledge.login.successSelectors.find(
+        (s) => !isWeakSelector(s),
+      );
+      if (successSelector) {
+        const present = await this.page
+          .locator(successSelector)
+          .first()
+          .isVisible({ timeout: 2_000 })
+          .catch(() => false);
+        if (!present) return true;
+      }
+
+      return false;
+    } catch {
+      // Probe failure is inconclusive — don't force a re-login on a hiccup.
+      return false;
+    }
+  }
+
   private async runLoginStep(step: Record<string, unknown>): Promise<void> {
     if (!this.page || !this.credentials || !this.allowedHost) {
       throw new Error('runLoginStep precondition failed');
@@ -639,6 +693,42 @@ export class SessionDriver {
       return;
     }
 
+    // Phase-2 robustness (fix 1): the 30s poll loop must re-check login on
+    // EVERY tick. ensureLoggedIn/detectMfaPrompt only run at start(); without
+    // this, an expired PMS session goes undetected and the extractors happily
+    // scrape (and write) login-page chrome. If the current page shows the
+    // login form / an MFA prompt — or lacks real evidence of being logged in
+    // (a 'body'/'html' success selector is NO evidence per C3) — attempt a
+    // single re-login via the existing ensureLoggedIn path. On failure, flip
+    // to failed_restart so the supervisor respawns us (C2) and return WITHOUT
+    // running feeds, so we never persist login-page data.
+    let loggedOutThisPoll = false;
+    if (await this.detectLoggedOut()) {
+      loggedOutThisPoll = true;
+      log.warn('session-driver: poll detected logged-out — attempting single re-login', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+      });
+      const reloggedIn = await this.ensureLoggedIn().catch(() => false);
+      if (!reloggedIn) {
+        // ensureLoggedIn already set paused_mfa/failed_restart for its own
+        // failure modes. For the plain logged-out-and-can't-recover case,
+        // make the failed_restart explicit so the supervisor respawns us.
+        await this.updateStatus({
+          status: 'failed_restart',
+          paused_reason: 'Polling detected logged-out and re-login failed.',
+        });
+        log.warn('session-driver: re-login failed — skipping feeds (failed_restart)', {
+          propertyId: this.propertyId,
+          pmsFamily: this.pmsFamily,
+        });
+        return;
+      }
+      // Re-login succeeded. Clear any zero-row streak so login-caused zeros
+      // don't count toward self-repair; genuine drift rebuilds it later.
+      this.consecutiveZeroRowsByAction.clear();
+    }
+
     // Plan v8 self-repair guard: a zero-row streak is far more often an
     // expired PMS session (every feed returns empty) than selector drift.
     // Before running feeds, if any action is mid-streak, re-verify login and
@@ -704,7 +794,9 @@ export class SessionDriver {
           // Plan v8 self-repair — a run failure (broken navigation,
           // bad selector) counts toward consecutive-zero just like a
           // 0-row extraction. Both mean "selector probably drifted."
-          this.maybeFireSelfRepair(template, 0);
+          // Suppress when this poll was logged-out (fix 2): a failure on a
+          // logged-out page is a session artifact, not selector drift.
+          this.maybeFireSelfRepair(template, 0, loggedOutThisPoll);
           continue;
         }
 
@@ -712,6 +804,10 @@ export class SessionDriver {
           this.propertyId,
           template.tableName,
           runResult.rows,
+          // Fix 3: drive delta-vs-full reconcile safety off the TEMPLATE's
+          // snapshotScope, not the descriptor default. A template that only
+          // sees a partial view ('delta') must never trigger auto-resolve.
+          { snapshotScope: template.snapshotScope },
         );
         results.push({
           table: template.tableName,
@@ -721,7 +817,8 @@ export class SessionDriver {
         });
         // Plan v8 self-repair — track zero-row streak; trigger repair
         // when threshold tripped. Non-zero row count resets the streak.
-        this.maybeFireSelfRepair(template, runResult.rows.length);
+        // Suppress on a logged-out poll (fix 2).
+        this.maybeFireSelfRepair(template, runResult.rows.length, loggedOutThisPoll);
       } catch (err) {
         log.warn('session-driver: template run threw', {
           propertyId: this.propertyId,
@@ -976,9 +1073,22 @@ export class SessionDriver {
    * repair (failed = constraint persists = no silent re-trigger; admin
    * must manually retry from the UI).
    */
-  private maybeFireSelfRepair(template: TableTemplate, rowCount: number): void {
+  private maybeFireSelfRepair(template: TableTemplate, rowCount: number, suppress = false): void {
     const actionKey = template.sourceActionKey;
     if (!actionKey) return;  // template can't be repaired (no source tag)
+
+    // Phase-2 robustness: never count this poll toward the dead-selector
+    // streak when the just-completed poll was logged-out (zeros are a
+    // session-expiry artifact, not selector drift) OR when this feed is
+    // one that's legitimately empty at small hotels (no work orders /
+    // lost-and-found / group blocks today). Either case would otherwise
+    // fire a paid mapper repair (~$2) for healthy, expected zeros.
+    if (suppress || isLegitimatelyEmptyFeed(actionKey)) {
+      // Don't advance the streak; also don't reset a real drift streak on
+      // the suppress case — just skip this poll's contribution.
+      if (isLegitimatelyEmptyFeed(actionKey)) this.consecutiveZeroRowsByAction.set(actionKey, 0);
+      return;
+    }
 
     if (rowCount > 0) {
       this.consecutiveZeroRowsByAction.set(actionKey, 0);
@@ -1083,6 +1193,31 @@ function safeUrl(page: Page): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Phase-2 robustness (C3): a 'body' or 'html' success selector is NO
+ * evidence of a successful login — it matches every page including the
+ * login wall. Treat such selectors as weak so logged-out detection never
+ * relies on them.
+ */
+function isWeakSelector(selector: string): boolean {
+  const s = selector.trim().toLowerCase();
+  return s === 'body' || s === 'html';
+}
+
+/**
+ * Phase-2 robustness (fix 2): feeds that are routinely empty at small
+ * limited-service hotels. Zero rows here is the NORMAL state, not selector
+ * drift, so they must never count toward the paid self-repair streak.
+ */
+const LEGITIMATELY_EMPTY_FEEDS = new Set<keyof Recipe['actions']>([
+  'getWorkOrders',
+  'getLostAndFound',
+  'getGroupsAndBlocks',
+]);
+function isLegitimatelyEmptyFeed(actionKey: keyof Recipe['actions']): boolean {
+  return LEGITIMATELY_EMPTY_FEEDS.has(actionKey);
 }
 
 // Reference env to satisfy linters about the import being used.

@@ -117,16 +117,29 @@ export async function checkBudget(propertyId: string): Promise<BudgetState> {
   const row = data as PropertySessionRow;
   const resetsAt = new Date(row.daily_claude_cost_resets_at);
   let spentMicros = row.daily_claude_cost_micros;
+  // Tracks whether THIS call's reset cleared a cost-cap pause, so the
+  // paused-status check below doesn't immediately re-report ok=false.
+  let clearedPause = false;
 
   // Auto-reset if the window has passed.
   if (Date.now() >= resetsAt.getTime()) {
     const newResetsAt = nextLocalMidnight();
+    // C1 auto-resume: if this row was paused by the cap, clear the pause
+    // in the SAME update that zeroes the tally so the driver resumes on
+    // the reset tick (checkBudget returns ok=true below).
+    const wasPausedByCap = row.status === 'paused_cost_cap';
+    const resetPayload: Record<string, unknown> = {
+      daily_claude_cost_micros: 0,
+      daily_claude_cost_resets_at: newResetsAt.toISOString(),
+    };
+    if (wasPausedByCap) {
+      resetPayload.status = 'alive';
+      resetPayload.paused_reason = null;
+      resetPayload.paused_until = null;
+    }
     const { error: resetErr } = await supabase
       .from('property_sessions')
-      .update({
-        daily_claude_cost_micros: 0,
-        daily_claude_cost_resets_at: newResetsAt.toISOString(),
-      })
+      .update(resetPayload)
       .eq('property_id', propertyId);
     if (resetErr) {
       log.warn('cost-cap: failed to reset daily tally', {
@@ -134,10 +147,12 @@ export async function checkBudget(propertyId: string): Promise<BudgetState> {
         err: resetErr.message,
       });
     } else {
+      clearedPause = wasPausedByCap;
       log.info('cost-cap: reset daily tally', {
         propertyId,
         previousSpentMicros: spentMicros,
         nextResetAt: newResetsAt.toISOString(),
+        resumedFromCap: wasPausedByCap,
       });
     }
     spentMicros = 0;
@@ -153,9 +168,9 @@ export async function checkBudget(propertyId: string): Promise<BudgetState> {
     };
   }
 
-  if (row.status === 'paused_cost_cap') {
-    // Tally is under cap but row is still flagged. Caller (session-supervisor)
-    // is responsible for flipping the status back to 'alive' on reset.
+  if (row.status === 'paused_cost_cap' && !clearedPause) {
+    // Tally is under cap but row is still flagged AND this call didn't just
+    // clear the pause on a reset tick. Stay paused until the reset fires.
     return {
       ok: false,
       reason: 'paused',
@@ -318,12 +333,15 @@ export async function checkDailyMappingSpend(): Promise<{
 }> {
   const capMicros = env.CUA_DAILY_MAPPING_SPEND_CAP_MICROS;
   const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-  // Sum cost_micros where source='mapping' AND ts >= 24h ago.
-  // Using a select with sum aggregate via PostgREST.
+  // Sum cost_micros for mapping workloads in the last 24h.
+  // NOTE: logClaudeUsage never sets `source` (defaults to polling), so the
+  // prior `.eq('source','mapping')` filter always summed $0 and the cap was
+  // inert. Filter on the workload prefix instead — per migration 0208 the
+  // `cua_mapping%` workloads are the documented equivalent of source=mapping.
   const { data, error } = await supabase
     .from('claude_usage_log')
     .select('cost_micros')
-    .eq('source', 'mapping')
+    .like('workload', 'cua_mapping%')
     .gte('ts', since);
   if (error) {
     // Don't fail-closed: if the cap-check query itself fails, we

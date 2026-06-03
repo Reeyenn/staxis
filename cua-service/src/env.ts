@@ -140,8 +140,10 @@ const Schema = z.object({
   FLY_REGION: z.string().optional(),
   HOSTNAME: z.string().default('local'),
   // Fly machine memory limit (MB) — used by memory-monitor.ts to compute
-  // pressure %. VM_MEMORY_MB is what Fly sets; FLY_MEMORY_MB is an older
-  // alias still present in some configs.
+  // pressure %. FLY_VM_MEMORY_MB is what Fly actually injects on every
+  // machine; VM_MEMORY_MB / FLY_MEMORY_MB are older aliases still present
+  // in some configs. memory-monitor prefers FLY_VM_MEMORY_MB.
+  FLY_VM_MEMORY_MB: z.coerce.number().int().positive().optional(),
   VM_MEMORY_MB: z.coerce.number().int().positive().optional(),
   FLY_MEMORY_MB: z.coerce.number().int().positive().optional(),
 });
