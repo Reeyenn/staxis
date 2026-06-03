@@ -44,7 +44,14 @@ export interface ConversationDTO {
   pendingAck?: number;
   /** For DMs: the other participant's staff id + name. */
   otherStaffId?: string | null;
+  /** Department tint key for the Slack-style UI (channel colour / dept dot). */
+  dept?: CommsDept;
+  /** How many staff are in this conversation (header "N members" + members chip). */
+  memberCount?: number;
 }
+
+/** Department buckets used purely for colour-coding the Slack-style UI. */
+export type CommsDept = 'management' | 'front_desk' | 'housekeeping' | 'maintenance' | 'laundry';
 
 /** A message as returned to the client (already translated into the reader's lang). */
 export interface MessageDTO {
@@ -82,6 +89,21 @@ export interface MessageDTO {
   acked?: boolean;
   /** Set on the per-property copies of an org-wide mandatory-read campaign. */
   ackCampaignId?: string | null;
+  // ── Slack-style threading / pinning / reactions ───────────────────────────
+  /** null = top-level (shown in the main pane). Non-null = a reply (thread only). */
+  parentMessageId?: string | null;
+  /** Top-level only: how many threaded replies hang off this message. */
+  replyCount?: number;
+  /** Top-level only: timestamp of the most recent reply (for "Last reply …"). */
+  lastReplyAt?: string | null;
+  /** Top-level only: distinct reply-author staff ids (for the avatar stack), capped. */
+  replyAuthorIds?: string[];
+  /** Whether this message is pinned to the channel's pinned board. */
+  pinned?: boolean;
+  /** Count of ✓ acknowledgement reactions on this message. */
+  ackCount?: number;
+  /** Whether the reader has added their own ✓ acknowledgement reaction. */
+  ackedByMe?: boolean;
 }
 
 /** Live who-has / who-hasn't tracker for one require-ack announcement (manager view). */
@@ -120,6 +142,7 @@ export interface TaskDTO {
   assignedDepartment: string | null;
   dueAt: string | null;
   status: 'open' | 'done';
+  priority: 'normal' | 'high' | 'urgent';
   createdByStaffId: string | null;
   sourceMessageId: string | null;
   completedAt: string | null;
@@ -132,4 +155,39 @@ export interface StaffLite {
   name: string;
   department: string | null;
   channel: ChannelKey;  // the department channel they belong to
+}
+
+/** A member of a conversation, with live presence (members panel). */
+export interface MemberDTO {
+  staffId: string;
+  name: string;
+  department: string | null;
+  dept: CommsDept;       // colour bucket
+  onShift: boolean;      // online = activity heartbeat within the freshness window
+  isMe: boolean;
+}
+
+/** Live presence of one teammate (sidebar dots + "N on shift"). */
+export interface PresenceDTO {
+  staffId: string;
+  onShift: boolean;
+}
+
+/** One ranked item in the AI "Catch up" popover. */
+export interface CatchUpItemDTO {
+  conversationId: string;
+  text: string;
+  dept: CommsDept;
+  urgent: boolean;
+}
+
+/** A search hit (channels / people / messages palette). */
+export interface SearchHitDTO {
+  kind: 'channel' | 'person' | 'message';
+  conversationId: string | null;   // where "jump" lands
+  staffId: string | null;          // for people
+  title: string;                   // channel name / person name / author name
+  subtitle: string | null;         // member count / role / "in #channel · time"
+  snippet: string | null;          // message body excerpt
+  dept: CommsDept;
 }

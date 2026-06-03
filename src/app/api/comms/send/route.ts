@@ -10,7 +10,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
-import { getConversation, canAccessConversation, postMessage } from '@/lib/comms/core';
+import { getConversation, canAccessConversation, postMessage, getMessageScope } from '@/lib/comms/core';
 import type { MessageType } from '@/lib/comms/types';
 
 export const runtime = 'nodejs';
@@ -26,6 +26,8 @@ interface Body {
   voiceDurationMs?: number;
   handoffShift?: string;
   handoffOutstanding?: string;
+  /** When set, this message is a threaded reply to that top-level message. */
+  parentMessageId?: string;
 }
 
 const ALLOWED_TYPES = new Set<MessageType>(['text', 'handoff', 'photo', 'voice']);
@@ -76,6 +78,20 @@ export async function POST(req: NextRequest): Promise<Response> {
     ? validateString(body.handoffShift, { max: 20, label: 'handoffShift' }).value ?? null
     : null;
 
+  // Threaded reply: the parent must be a real message in THIS conversation.
+  let parentMessageId: string | null = null;
+  if (body.parentMessageId) {
+    const pv = validateUuid(body.parentMessageId, 'parentMessageId');
+    if (pv.error) {
+      return err(pv.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
+    const scope = await getMessageScope(ctx.pid, pv.value!);
+    if (!scope || scope.conversationId !== convo.id) {
+      return err('parent message not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
+    }
+    parentMessageId = pv.value!;
+  }
+
   const msg = await postMessage(ctx.pid, convo.id, {
     senderStaffId: ctx.staffId,
     senderKind: 'staff',
@@ -87,6 +103,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     voiceDurationMs: typeof body.voiceDurationMs === 'number' ? body.voiceDurationMs : null,
     handoffShift,
     handoffOutstanding: msgType === 'handoff' ? (body.handoffOutstanding ?? null) : null,
+    parentMessageId,
   });
 
   return ok({ id: msg.id, createdAt: msg.createdAt }, { requestId: ctx.requestId, status: 201, headers: ctx.headers });
