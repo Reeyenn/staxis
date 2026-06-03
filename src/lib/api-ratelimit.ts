@@ -252,6 +252,8 @@ export type RateLimitEndpoint =
   | 'comms-read'
   | 'comms-task'
   | 'comms-action'
+  | 'comms-react'             // ✓ acknowledgement reaction toggle (Slack-redesign)
+  | 'comms-pin'              // pin / unpin a message (Slack-redesign)
   | 'comms-photo-presign'
   | 'comms-save-language'
   // Announcement acknowledgement (migration 0248). Tapping "I read & understand"
@@ -514,6 +516,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'comms-read':                3600,
   'comms-task':                 400,
   'comms-action':               200,
+  'comms-react':               1200,
+  'comms-pin':                  300,
   'comms-photo-presign':        300,
   'comms-save-language':         20,
   // Acknowledge: a person taps "I read & understand" once per required

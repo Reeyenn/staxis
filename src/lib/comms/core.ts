@@ -11,8 +11,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { translateMessagesForReader } from './translate';
 import type {
-  ChannelKey, CommsLang, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
-  AckStatusDTO, CampaignStatusDTO,
+  ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
+  AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO,
 } from './types';
 import { CHANNEL_LABELS } from './types';
 
@@ -35,6 +35,41 @@ export function deptChannel(dept: string | null | undefined): ChannelKey | null 
     default: return null; // 'other' / unknown → all-staff only
   }
 }
+
+/** Map a staff.department to a colour bucket for the Slack-style UI (dept dots / channel tints). */
+export function commsDeptOf(dept: string | null | undefined): CommsDept {
+  switch ((dept ?? '').toLowerCase()) {
+    case 'front_desk': case 'frontdesk': case 'front desk': return 'front_desk';
+    case 'housekeeping': return 'housekeeping';
+    case 'maintenance': case 'engineering': return 'maintenance';
+    case 'laundry': return 'laundry';
+    default: return 'management'; // admin / owner / gm / other / null
+  }
+}
+
+/** Colour bucket for a channel conversation. */
+function channelDept(channelKey: ChannelKey | 'announcements' | null): CommsDept {
+  switch (channelKey) {
+    case 'front_desk': return 'front_desk';
+    case 'housekeeping': return 'housekeeping';
+    case 'maintenance': return 'maintenance';
+    default: return 'management'; // all_staff / announcements
+  }
+}
+
+/**
+ * Membership (display only — access is still gated by canAccessConversation):
+ * managers (the 'management' bucket) are in every channel; dept staff are in
+ * their own channel + all-staff; everyone is in all-staff + announcements.
+ */
+function staffInChannel(channelKey: ChannelKey, dept: CommsDept): boolean {
+  if (channelKey === 'all_staff') return true;
+  if (dept === 'management') return true;
+  return channelKey === (dept as unknown as ChannelKey);
+}
+
+/** Online if the activity heartbeat landed within this window. */
+const PRESENCE_WINDOW_MS = 150_000; // 2.5 min — generous vs the ~8s client poll
 
 /** Channels a person can see. Managers see them all; staff see all-staff + their dept. */
 export function channelsVisibleTo(opts: { dept: string | null; isManager: boolean }): ChannelKey[] {
@@ -84,6 +119,17 @@ async function staffNameMap(pid: string, ids: string[]): Promise<Map<string, str
     .eq('property_id', pid)
     .in('id', unique);
   return new Map(((data ?? []) as { id: string; name: string }[]).map((r) => [r.id, r.name]));
+}
+
+async function staffDeptMap(pid: string, ids: string[]): Promise<Map<string, string | null>> {
+  const unique = Array.from(new Set(ids.filter(Boolean)));
+  if (unique.length === 0) return new Map();
+  const { data } = await supabaseAdmin
+    .from('staff')
+    .select('id, department')
+    .eq('property_id', pid)
+    .in('id', unique);
+  return new Map(((data ?? []) as { id: string; department: string | null }[]).map((r) => [r.id, r.department]));
 }
 
 /** Resolve an authenticated account → its staff identity + role for messaging. */
@@ -341,6 +387,8 @@ export interface PostMessageInput {
   requiresAck?: boolean;
   /** Set on the per-property copies of an org-wide mandatory-read campaign. */
   ackCampaignId?: string | null;
+  /** A threaded reply → the top-level message it answers. null = top-level. */
+  parentMessageId?: string | null;
 }
 
 export async function postMessage(
@@ -365,6 +413,7 @@ export async function postMessage(
       meta: input.meta ?? {},
       requires_ack: input.requiresAck ?? false,
       ack_campaign_id: input.ackCampaignId ?? null,
+      parent_message_id: input.parentMessageId ?? null,
       created_at: now,
     })
     .select('id, created_at')
@@ -389,10 +438,11 @@ interface MessageRow {
   attachment_kind: string | null; voice_duration_ms: number | null; handoff_shift: string | null;
   handoff_outstanding: string | null; meta: Record<string, unknown> | null; created_at: string;
   requires_ack: boolean | null; ack_campaign_id: string | null;
+  parent_message_id: string | null; pinned_at: string | null;
 }
 
 const MESSAGE_COLUMNS =
-  'id, conversation_id, sender_staff_id, sender_kind, body, source_lang, msg_type, attachment_path, attachment_kind, voice_duration_ms, handoff_shift, handoff_outstanding, meta, created_at, requires_ack, ack_campaign_id';
+  'id, conversation_id, sender_staff_id, sender_kind, body, source_lang, msg_type, attachment_path, attachment_kind, voice_duration_ms, handoff_shift, handoff_outstanding, meta, created_at, requires_ack, ack_campaign_id, parent_message_id, pinned_at';
 
 /**
  * List the conversations a staff member can see (DMs they're in + visible
@@ -456,6 +506,7 @@ export async function listConversationsForStaff(
     }
   }
   const nameMap = await staffNameMap(pid, dmPartnerIds);
+  const partnerDeptMap = await staffDeptMap(pid, dmPartnerIds);
 
   // For each conversation, compute unread + last preview.
   for (const c of convoIds) {
@@ -484,10 +535,12 @@ export async function listConversationsForStaff(
 
     let title = c.title ?? 'Conversation';
     let otherStaffId: string | null = null;
+    let dept: CommsDept = channelDept(c.channelKey as ConversationDTO['channelKey']);
     if (c.kind === 'dm' && c.dmKey) {
       const [a, b] = c.dmKey.split(':');
       otherStaffId = a === staffId ? b : a;
       title = nameMap.get(otherStaffId) ?? 'Teammate';
+      dept = commsDeptOf(partnerDeptMap.get(otherStaffId));
     } else if (c.kind === 'announcement') {
       title = 'Announcements';
     } else if (c.kind === 'channel' && c.channelKey) {
@@ -510,6 +563,7 @@ export async function listConversationsForStaff(
       unread,
       pendingAck,
       otherStaffId,
+      dept,
     });
   }
 
@@ -594,6 +648,7 @@ export async function getMessages(
     .select(MESSAGE_COLUMNS)
     .eq('conversation_id', conversationId)
     .eq('property_id', pid)
+    .is('parent_message_id', null) // top-level only; replies live in the thread panel
     .order('created_at', { ascending: false })
     .limit(limit);
   const rows = ((data ?? []) as unknown as MessageRow[]).reverse(); // chronological
@@ -692,6 +747,11 @@ export async function getMessages(
       .map((m) => ({ staffId: m.staff_id, name: memberNames.get(m.staff_id) ?? 'Teammate', lastReadAt: m.last_read_at }));
   }
 
+  // Threaded-reply rollups (count / last reply / first few authors) + ✓ reactions.
+  const ids = rows.map((r) => r.id);
+  const replyRollup = await replyRollupsFor(ids);
+  const reactionRollup = await reactionsFor(ids, readerStaffId);
+
   return rows.map((r) => {
     const original = r.body;
     const body = translated.get(r.id) ?? r.body;
@@ -721,6 +781,13 @@ export async function getMessages(
       mustAck: !!r.requires_ack && !mine && (!readerCreatedAt || readerCreatedAt <= r.created_at),
       acked: r.requires_ack ? ackedByReader.has(r.id) : false,
       ackCampaignId: (r.ack_campaign_id as string | null) ?? null,
+      parentMessageId: null,
+      replyCount: replyRollup.get(r.id)?.count ?? 0,
+      lastReplyAt: replyRollup.get(r.id)?.lastAt ?? null,
+      replyAuthorIds: replyRollup.get(r.id)?.authorIds ?? [],
+      pinned: !!r.pinned_at,
+      ackCount: reactionRollup.get(r.id)?.count ?? 0,
+      ackedByMe: reactionRollup.get(r.id)?.mine ?? false,
     };
     if (opts.withReceipts && mine) {
       dto.seenBy = receiptsByTime
@@ -1031,6 +1098,7 @@ export async function createTask(
   input: {
     title: string; notes?: string | null; assignedStaffId?: string | null;
     assignedDepartment?: string | null; dueAt?: string | null;
+    priority?: 'normal' | 'high' | 'urgent';
     createdByStaffId?: string | null; sourceMessageId?: string | null;
   },
 ): Promise<{ id: string }> {
@@ -1043,6 +1111,7 @@ export async function createTask(
       assigned_staff_id: input.assignedStaffId ?? null,
       assigned_department: input.assignedDepartment ?? null,
       due_at: input.dueAt ?? null,
+      priority: input.priority ?? 'normal',
       created_by_staff_id: input.createdByStaffId ?? null,
       source_message_id: input.sourceMessageId ?? null,
     })
@@ -1064,7 +1133,8 @@ export async function listTasks(pid: string): Promise<TaskDTO[]> {
   const rows = (data ?? []) as Record<string, unknown>[];
   const assigneeIds = rows.map((r) => r.assigned_staff_id as string | null).filter((x): x is string => !!x);
   const nameMap = await staffNameMap(pid, assigneeIds);
-  return rows.map((r) => ({
+  const PRIO_WEIGHT: Record<string, number> = { urgent: 0, high: 1, normal: 2 };
+  const out = rows.map((r) => ({
     id: r.id as string,
     title: r.title as string,
     notes: (r.notes as string | null) ?? null,
@@ -1073,11 +1143,21 @@ export async function listTasks(pid: string): Promise<TaskDTO[]> {
     assignedDepartment: (r.assigned_department as string | null) ?? null,
     dueAt: (r.due_at as string | null) ?? null,
     status: (r.status as 'open' | 'done'),
+    priority: ((r.priority as string | null) ?? 'normal') as 'normal' | 'high' | 'urgent',
     createdByStaffId: (r.created_by_staff_id as string | null) ?? null,
     sourceMessageId: (r.source_message_id as string | null) ?? null,
     completedAt: (r.completed_at as string | null) ?? null,
     createdAt: r.created_at as string,
   }));
+  // Stable urgency sort within the existing status/due ordering: urgent → high → normal.
+  return out
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => {
+      if ((a.t.status === 'done') !== (b.t.status === 'done')) return a.t.status === 'done' ? 1 : -1;
+      const pw = PRIO_WEIGHT[a.t.priority] - PRIO_WEIGHT[b.t.priority];
+      return pw !== 0 ? pw : a.i - b.i;
+    })
+    .map(({ t }) => t);
 }
 
 export async function setTaskStatus(
@@ -1093,6 +1173,16 @@ export async function setTaskStatus(
     .eq('property_id', pid)
     .select('id')
     .maybeSingle();
+  return !!data;
+}
+
+/** Delete a to-do. Creators can delete their own; managers can delete any. */
+export async function deleteTask(
+  pid: string, taskId: string, byStaffId: string | null, allowAny: boolean,
+): Promise<boolean> {
+  let q = supabaseAdmin.from('comms_tasks').delete().eq('id', taskId).eq('property_id', pid);
+  if (!allowAny && byStaffId) q = q.eq('created_by_staff_id', byStaffId);
+  const { data } = await q.select('id').maybeSingle();
   return !!data;
 }
 
@@ -1193,4 +1283,384 @@ export async function presignAttachment(
   } catch {
     return null;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Slack-Classic redesign: threads · pinned · ✓ reactions · members · presence ·
+// search. All additive; reached only via /api/comms/* after a route auth check.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** ✓-reaction counts (+ whether the reader reacted) for a set of messages. */
+async function reactionsFor(
+  messageIds: string[], readerStaffId: string,
+): Promise<Map<string, { count: number; mine: boolean }>> {
+  const out = new Map<string, { count: number; mine: boolean }>();
+  const ids = Array.from(new Set(messageIds.filter(Boolean)));
+  if (ids.length === 0) return out;
+  const { data } = await supabaseAdmin
+    .from('comms_reactions')
+    .select('message_id, staff_id')
+    .eq('kind', 'ack')
+    .in('message_id', ids);
+  for (const r of (data ?? []) as { message_id: string; staff_id: string }[]) {
+    const cur = out.get(r.message_id) ?? { count: 0, mine: false };
+    cur.count += 1;
+    if (r.staff_id === readerStaffId) cur.mine = true;
+    out.set(r.message_id, cur);
+  }
+  return out;
+}
+
+/** Reply rollups (count / last-reply time / first 3 distinct authors) per parent. */
+async function replyRollupsFor(
+  parentIds: string[],
+): Promise<Map<string, { count: number; lastAt: string | null; authorIds: string[] }>> {
+  const out = new Map<string, { count: number; lastAt: string | null; authorIds: string[] }>();
+  const ids = Array.from(new Set(parentIds.filter(Boolean)));
+  if (ids.length === 0) return out;
+  const { data } = await supabaseAdmin
+    .from('comms_messages')
+    .select('parent_message_id, sender_staff_id, created_at')
+    .in('parent_message_id', ids)
+    .order('created_at', { ascending: true });
+  for (const r of (data ?? []) as { parent_message_id: string; sender_staff_id: string | null; created_at: string }[]) {
+    const cur = out.get(r.parent_message_id) ?? { count: 0, lastAt: null, authorIds: [] };
+    cur.count += 1;
+    cur.lastAt = r.created_at; // ascending → last row wins
+    if (r.sender_staff_id && !cur.authorIds.includes(r.sender_staff_id) && cur.authorIds.length < 3) {
+      cur.authorIds.push(r.sender_staff_id);
+    }
+    out.set(r.parent_message_id, cur);
+  }
+  return out;
+}
+
+/**
+ * Hydrate raw message rows into reader-facing DTOs (translation + names +
+ * attachment URLs + ✓ reactions, optional reply rollups). Used by the thread
+ * panel + pinned board; the main feed's getMessages has its own pass because it
+ * also resolves the require-ack reachability window.
+ */
+async function hydrateMessages(
+  pid: string, rows: MessageRow[], readerStaffId: string, readerLang: CommsLang,
+  opts: { withReplies?: boolean } = {},
+): Promise<MessageDTO[]> {
+  if (rows.length === 0) return [];
+  const translated = await translateMessagesForReader(
+    rows.map((r) => ({ id: r.id, body: r.body, source_lang: r.source_lang })), readerLang,
+  );
+  const nameMap = await staffNameMap(pid, rows.map((r) => r.sender_staff_id).filter((x): x is string => !!x));
+  const urlByPath = new Map<string, string>();
+  for (const r of rows) {
+    if (r.attachment_path && !urlByPath.has(r.attachment_path)) {
+      const url = await attachmentSignedUrl(r.attachment_path);
+      if (url) urlByPath.set(r.attachment_path, url);
+    }
+  }
+  const ids = rows.map((r) => r.id);
+  const reactionRollup = await reactionsFor(ids, readerStaffId);
+  const replyRollup = opts.withReplies ? await replyRollupsFor(ids) : new Map();
+  return rows.map((r) => {
+    const original = r.body;
+    const body = translated.get(r.id) ?? r.body;
+    const mine = r.sender_staff_id === readerStaffId;
+    return {
+      id: r.id,
+      conversationId: r.conversation_id,
+      senderStaffId: r.sender_staff_id,
+      senderKind: r.sender_kind as MessageDTO['senderKind'],
+      senderName: r.sender_kind === 'staxis' ? 'Staxis' : (r.sender_staff_id ? (nameMap.get(r.sender_staff_id) ?? 'Teammate') : 'System'),
+      body,
+      originalBody: original,
+      sourceLang: r.source_lang,
+      wasTranslated: body !== original,
+      msgType: r.msg_type as MessageDTO['msgType'],
+      attachmentKind: (r.attachment_kind as 'photo' | 'voice' | null) ?? null,
+      attachmentUrl: r.attachment_path ? (urlByPath.get(r.attachment_path) ?? null) : null,
+      voiceDurationMs: r.voice_duration_ms,
+      handoffShift: r.handoff_shift,
+      handoffOutstanding: r.handoff_outstanding,
+      meta: r.meta ?? {},
+      createdAt: r.created_at,
+      mine,
+      requiresAck: !!r.requires_ack,
+      acked: false,
+      ackCampaignId: (r.ack_campaign_id as string | null) ?? null,
+      parentMessageId: (r.parent_message_id as string | null) ?? null,
+      replyCount: replyRollup.get(r.id)?.count ?? 0,
+      lastReplyAt: replyRollup.get(r.id)?.lastAt ?? null,
+      replyAuthorIds: replyRollup.get(r.id)?.authorIds ?? [],
+      pinned: !!r.pinned_at,
+      ackCount: reactionRollup.get(r.id)?.count ?? 0,
+      ackedByMe: reactionRollup.get(r.id)?.mine ?? false,
+    } satisfies MessageDTO;
+  });
+}
+
+/** A message's conversation + property scope (for pin/react access checks). */
+export async function getMessageScope(
+  pid: string, messageId: string,
+): Promise<{ id: string; conversationId: string } | null> {
+  const { data } = await supabaseAdmin
+    .from('comms_messages')
+    .select('id, conversation_id')
+    .eq('id', messageId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  return data ? { id: data.id as string, conversationId: data.conversation_id as string } : null;
+}
+
+/** The parent message + its threaded replies, translated for the reader. */
+export async function getThreadReplies(
+  pid: string, conversationId: string, parentId: string, readerStaffId: string, readerLang: CommsLang,
+): Promise<{ parent: MessageDTO | null; replies: MessageDTO[] }> {
+  const { data: pData } = await supabaseAdmin
+    .from('comms_messages')
+    .select(MESSAGE_COLUMNS)
+    .eq('id', parentId)
+    .eq('property_id', pid)
+    .eq('conversation_id', conversationId)
+    .maybeSingle();
+  if (!pData) return { parent: null, replies: [] };
+  const { data: rData } = await supabaseAdmin
+    .from('comms_messages')
+    .select(MESSAGE_COLUMNS)
+    .eq('property_id', pid)
+    .eq('parent_message_id', parentId)
+    .order('created_at', { ascending: true })
+    .limit(200);
+  const [parentArr, replies] = await Promise.all([
+    hydrateMessages(pid, [pData as unknown as MessageRow], readerStaffId, readerLang, { withReplies: true }),
+    hydrateMessages(pid, (rData ?? []) as unknown as MessageRow[], readerStaffId, readerLang),
+  ]);
+  return { parent: parentArr[0] ?? null, replies };
+}
+
+/** Pin / unpin a message to its channel's pinned board. */
+export async function setPinned(
+  pid: string, messageId: string, staffId: string, pinned: boolean,
+): Promise<boolean> {
+  const patch = pinned
+    ? { pinned_at: new Date().toISOString(), pinned_by_staff_id: staffId }
+    : { pinned_at: null, pinned_by_staff_id: null };
+  const { data } = await supabaseAdmin
+    .from('comms_messages')
+    .update(patch)
+    .eq('id', messageId)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  return !!data;
+}
+
+/** The pinned board for a conversation (newest pin first). */
+export async function listPinned(
+  pid: string, conversationId: string, readerStaffId: string, readerLang: CommsLang,
+): Promise<MessageDTO[]> {
+  const { data } = await supabaseAdmin
+    .from('comms_messages')
+    .select(MESSAGE_COLUMNS)
+    .eq('property_id', pid)
+    .eq('conversation_id', conversationId)
+    .not('pinned_at', 'is', null)
+    .order('pinned_at', { ascending: false })
+    .limit(50);
+  return hydrateMessages(pid, (data ?? []) as unknown as MessageRow[], readerStaffId, readerLang);
+}
+
+/**
+ * Toggle the reader's ✓ acknowledgement reaction on a message. Idempotent via
+ * the unique(message_id, staff_id, kind) constraint: a present row is removed
+ * (toggle off), an absent one is inserted (toggle on).
+ */
+export async function toggleReaction(
+  pid: string, messageId: string, staffId: string,
+): Promise<{ acked: boolean; count: number }> {
+  const ins = await supabaseAdmin
+    .from('comms_reactions')
+    .insert({ property_id: pid, message_id: messageId, staff_id: staffId, kind: 'ack' })
+    .select('id')
+    .maybeSingle();
+  let acked: boolean;
+  if (ins.error) {
+    if ((ins.error as { code?: string }).code === '23505') {
+      await supabaseAdmin
+        .from('comms_reactions')
+        .delete()
+        .eq('message_id', messageId)
+        .eq('staff_id', staffId)
+        .eq('kind', 'ack');
+      acked = false;
+    } else {
+      log.error('toggleReaction failed', { err: ins.error.message });
+      throw ins.error;
+    }
+  } else {
+    acked = true;
+  }
+  const { count } = await supabaseAdmin
+    .from('comms_reactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('message_id', messageId)
+    .eq('kind', 'ack');
+  return { acked, count: count ?? 0 };
+}
+
+// ── Presence (activity heartbeat → "on shift / online" dots) ─────────────────
+
+/** Mark a staff member active now (called on every Communications poll). */
+export async function touchPresence(pid: string, staffId: string): Promise<void> {
+  await supabaseAdmin
+    .from('comms_presence')
+    .upsert({ property_id: pid, staff_id: staffId, last_seen_at: new Date().toISOString() }, { onConflict: 'property_id,staff_id' });
+}
+
+/** Set of staff seen within the freshness window (= currently "on shift"/online). */
+export async function listOnlineStaff(pid: string): Promise<Set<string>> {
+  const since = new Date(Date.now() - PRESENCE_WINDOW_MS).toISOString();
+  const { data } = await supabaseAdmin
+    .from('comms_presence')
+    .select('staff_id')
+    .eq('property_id', pid)
+    .gte('last_seen_at', since);
+  return new Set(((data ?? []) as { staff_id: string }[]).map((r) => r.staff_id));
+}
+
+// ── Members panel (roster + live presence) ──────────────────────────────────
+
+/** The roster of a conversation with live presence, on-shift first. */
+export async function listMembers(
+  pid: string, convo: ConversationRow, readerStaffId: string,
+): Promise<{ members: MemberDTO[]; memberCount: number }> {
+  const online = await listOnlineStaff(pid);
+  let staffRows: { id: string; name: string; department: string | null; is_active: boolean | null }[] = [];
+  if (convo.kind === 'dm' && convo.dm_key) {
+    const ids = convo.dm_key.split(':');
+    const { data } = await supabaseAdmin
+      .from('staff').select('id, name, department, is_active')
+      .eq('property_id', pid).in('id', ids);
+    staffRows = (data ?? []) as typeof staffRows;
+  } else {
+    const { data } = await supabaseAdmin
+      .from('staff').select('id, name, department, is_active')
+      .eq('property_id', pid).order('name', { ascending: true });
+    staffRows = ((data ?? []) as typeof staffRows).filter((s) => s.is_active !== false);
+    if (convo.kind === 'channel' && convo.channel_key) {
+      staffRows = staffRows.filter((s) => staffInChannel(convo.channel_key as ChannelKey, commsDeptOf(s.department)));
+    }
+    // announcement → the whole active roster (everyone receives announcements)
+  }
+  const members: MemberDTO[] = staffRows.map((s) => ({
+    staffId: s.id,
+    name: s.name,
+    department: s.department,
+    dept: commsDeptOf(s.department),
+    onShift: online.has(s.id),
+    isMe: s.id === readerStaffId,
+  }));
+  members.sort((a, b) => (b.onShift ? 1 : 0) - (a.onShift ? 1 : 0) || a.name.localeCompare(b.name));
+  return { members, memberCount: members.length };
+}
+
+// ── Search palette (channels · people · messages) ───────────────────────────
+
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+/** Every top-level message with replies across the caller's visible conversations (Threads view). */
+export interface ThreadSummary { conversationId: string; conversationTitle: string; dept: CommsDept; parent: MessageDTO }
+export async function listThreads(
+  pid: string, staffId: string, readerLang: CommsLang, ctx: { isManager: boolean; dept: string | null },
+): Promise<ThreadSummary[]> {
+  const convos = await listConversationsForStaff(pid, staffId, { ...ctx, floorMode: false });
+  const convoIds = convos.map((c) => c.id);
+  if (convoIds.length === 0) return [];
+  const meta = new Map(convos.map((c) => [c.id, { title: c.title, dept: (c.dept ?? 'management') as CommsDept }] as const));
+
+  const { data: parentIdRows } = await supabaseAdmin
+    .from('comms_messages')
+    .select('parent_message_id')
+    .in('conversation_id', convoIds)
+    .not('parent_message_id', 'is', null)
+    .limit(2000);
+  const parentIds = Array.from(new Set(((parentIdRows ?? []) as { parent_message_id: string }[]).map((r) => r.parent_message_id)));
+  if (parentIds.length === 0) return [];
+
+  const { data: parentRows } = await supabaseAdmin
+    .from('comms_messages')
+    .select(MESSAGE_COLUMNS)
+    .in('id', parentIds)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  const hydrated = await hydrateMessages(pid, (parentRows ?? []) as unknown as MessageRow[], staffId, readerLang, { withReplies: true });
+  return hydrated
+    .map((m) => ({
+      conversationId: m.conversationId,
+      conversationTitle: meta.get(m.conversationId)?.title ?? '',
+      dept: meta.get(m.conversationId)?.dept ?? 'management',
+      parent: m,
+    }))
+    .sort((a, b) => (b.parent.lastReplyAt ?? '').localeCompare(a.parent.lastReplyAt ?? ''));
+}
+
+/** Jump-to / search across the caller's visible channels, the staff directory, and message bodies. */
+export async function searchComms(
+  pid: string, staffId: string, q: string, ctx: { isManager: boolean; dept: string | null },
+): Promise<SearchHitDTO[]> {
+  const convos = await listConversationsForStaff(pid, staffId, { ...ctx, floorMode: false });
+  const ql = q.trim().toLowerCase();
+  const hits: SearchHitDTO[] = [];
+
+  // Channels + announcements (always shown; filtered by name when typing).
+  for (const c of convos.filter((c) => c.kind !== 'dm')) {
+    if (!ql || c.title.toLowerCase().includes(ql)) {
+      hits.push({
+        kind: 'channel', conversationId: c.id, staffId: null,
+        title: c.title, subtitle: c.memberCount != null ? `${c.memberCount} members` : null,
+        snippet: null, dept: c.dept ?? 'management',
+      });
+    }
+  }
+
+  // People (the staff directory).
+  const staff = await listStaff(pid);
+  for (const s of staff.filter((s) => s.id !== staffId)) {
+    if (!ql || s.name.toLowerCase().includes(ql) || (s.department ?? '').toLowerCase().includes(ql)) {
+      hits.push({
+        kind: 'person', conversationId: null, staffId: s.id,
+        title: s.name, subtitle: s.department, snippet: null, dept: commsDeptOf(s.department),
+      });
+    }
+  }
+
+  // Messages — only when there's a query, across conversations the caller can see.
+  if (ql) {
+    const convoIds = convos.map((c) => c.id);
+    const titleById = new Map(convos.map((c) => [c.id, c.title] as const));
+    const deptById = new Map(convos.map((c) => [c.id, c.dept ?? 'management'] as const));
+    if (convoIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from('comms_messages')
+        .select('id, conversation_id, sender_staff_id, body, created_at')
+        .in('conversation_id', convoIds)
+        .is('parent_message_id', null)
+        .ilike('body', `%${escapeLike(ql)}%`)
+        .order('created_at', { ascending: false })
+        .limit(12);
+      const rows = (data ?? []) as { id: string; conversation_id: string; sender_staff_id: string | null; body: string; created_at: string }[];
+      const names = await staffNameMap(pid, rows.map((r) => r.sender_staff_id).filter((x): x is string => !!x));
+      for (const r of rows) {
+        const author = r.sender_staff_id ? (names.get(r.sender_staff_id) ?? 'Teammate') : 'System';
+        hits.push({
+          kind: 'message', conversationId: r.conversation_id, staffId: null,
+          title: author,
+          subtitle: `${titleById.get(r.conversation_id) ?? 'Conversation'}`,
+          snippet: r.body.length > 140 ? r.body.slice(0, 140) + '…' : r.body,
+          dept: deptById.get(r.conversation_id) ?? 'management',
+        });
+      }
+    }
+  }
+  return hits;
 }

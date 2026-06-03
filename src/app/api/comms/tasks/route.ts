@@ -10,7 +10,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
-import { listTasks, createTask, setTaskStatus, getStaffRow } from '@/lib/comms/core';
+import { listTasks, createTask, setTaskStatus, deleteTask, getStaffRow } from '@/lib/comms/core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
 export async function POST(req: NextRequest): Promise<Response> {
   let body: {
-    pid?: string; title?: string; notes?: string;
+    pid?: string; title?: string; notes?: string; priority?: string;
     assignedStaffId?: string; assignedDepartment?: string; dueAt?: string; sourceMessageId?: string;
   };
   try { body = await req.json(); } catch { body = {}; }
@@ -66,6 +66,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!Number.isFinite(ms)) return err('invalid dueAt', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     dueAt = new Date(ms).toISOString();
   }
+  let priority: 'normal' | 'high' | 'urgent' = 'normal';
+  if (body.priority) {
+    const pv = validateEnum(body.priority, ['normal', 'high', 'urgent'] as const, 'priority');
+    if (pv.error) return err(pv.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    priority = pv.value!;
+  }
   let sourceMessageId: string | null = null;
   if (body.sourceMessageId) {
     const mv = validateUuid(body.sourceMessageId, 'sourceMessageId');
@@ -78,6 +84,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     assignedStaffId,
     assignedDepartment,
     dueAt,
+    priority,
     createdByStaffId: ctx.staffId,
     sourceMessageId,
   });
@@ -102,4 +109,20 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   const okUpdate = await setTaskStatus(ctx.pid, idV.value!, stV.value!, ctx.staffId);
   if (!okUpdate) return err('Not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
   return ok({ updated: true }, { requestId: ctx.requestId, headers: ctx.headers });
+}
+
+export async function DELETE(req: NextRequest): Promise<Response> {
+  const { searchParams } = new URL(req.url);
+  const ctx = await commsContext(req, searchParams.get('pid'));
+  if (!ctx.ok) return ctx.response;
+
+  const idV = validateUuid(searchParams.get('taskId'), 'taskId');
+  if (idV.error) return err(idV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+
+  const rl = await checkAndIncrementRateLimit('comms-task', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
+  if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+
+  const okDel = await deleteTask(ctx.pid, idV.value!, ctx.staffId, ctx.isManager);
+  if (!okDel) return err('Not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
+  return ok({ deleted: true }, { requestId: ctx.requestId, headers: ctx.headers });
 }
