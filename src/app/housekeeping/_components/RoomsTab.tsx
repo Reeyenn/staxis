@@ -246,8 +246,8 @@ export function RoomsTab() {
   return (
     <div className="rooms-ledger" style={{ background: LED.card, color: LED.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <style>{`
-        .rooms-ledger .lgr-wrap { width:100%; padding:22px 36px 90px; }
-        .rooms-ledger .lgr-head { display:grid; grid-template-columns:1fr auto 1fr; align-items:flex-end; gap:24px; margin:4px 0 22px; }
+        .rooms-ledger .lgr-wrap { width:100%; padding:10px 36px 90px; }
+        .rooms-ledger .lgr-head { display:grid; grid-template-columns:1fr auto 1fr; align-items:baseline; gap:24px; margin:0 0 20px; }
         .rooms-ledger .lgr-stats { justify-self:center; display:flex; gap:26px; }
         @media (max-width:680px){ .rooms-ledger .lgr-head { grid-template-columns:1fr; } .rooms-ledger .lgr-stats { justify-self:start; } }
         .rooms-ledger .lgr-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(94px, 1fr)); }
