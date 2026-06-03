@@ -4,10 +4,13 @@
    Admin Studio shell — the redesigned /admin owner console (June 2026).
 
    Replaces the old StickyHeader + light Snow tabs with the design-handoff
-   "Studio": a light blurred sticky header (wordmark · live stat strip · five
-   tabs) over dark editorial surfaces. Full-bleed — no AppLayout chrome; the
-   wordmark links back to the app. Admin is gated server-side in
-   src/app/admin/layout.tsx, with a client spinner here during auth load.
+   "Studio": a light blurred sticky sub-header (live stat strip + five tabs)
+   over dark editorial surfaces. Rendered INSIDE the normal app shell
+   (AppLayout) so the site's global nav (Dashboard · Housekeeping · … · Admin)
+   stays on top — this is one section of the website, not a separate page.
+   The sub-header sits just below that 64px global nav. Admin is gated
+   server-side in src/app/admin/layout.tsx, with a client spinner during
+   auth load.
 
    Five surfaces (Agent is folded into System, per the handoff):
      Onboarding · Live hotels · System & Agent · Money · ML
@@ -17,7 +20,6 @@
    ─────────────────────────────────────────────────────────────────────── */
 
 import React, { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { FONT_SERIF, FONT_MONO, FONT_SANS, EASE_OUT, prefersReducedMotion, usd } from './kit';
 import { OnboardingSurface } from './surfaces/OnboardingSurface';
@@ -119,34 +121,32 @@ export function StudioShell() {
   ];
 
   return (
-    <div className="admin-studio" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-      {/* Sticky header */}
+    <div className="admin-studio">
+      {/* Sticky sub-header — sits just below the global app nav (Header is
+          64px tall). The site's own nav + wordmark live above this, so we
+          don't repeat the wordmark here — just the live stat strip + tabs. */}
       <div style={{
-        position: 'sticky', top: 0, zIndex: 40,
+        position: 'sticky', top: 64, zIndex: 30,
         background: 'rgba(255,255,255,.86)',
         backdropFilter: 'blur(40px)', WebkitBackdropFilter: 'blur(40px)',
         borderBottom: '1px solid var(--rule)',
       }}>
         <div style={{ maxWidth: 1480, margin: '0 auto', padding: '0 28px' }}>
-          {/* Row 1 — wordmark + live stat strip */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 22, height: 58, borderBottom: '1px solid var(--rule-soft)' }}>
-            <Link href="/" title="Back to the app" style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexShrink: 0, textDecoration: 'none' }}>
-              <span style={{ fontFamily: FONT_SERIF, fontSize: 22, letterSpacing: '-0.02em', color: 'var(--ink)' }}>Staxis</span>
-              <span className="caps" style={{ fontSize: 9.5 }}>Admin</span>
-            </Link>
-            <div style={{ display: 'flex', gap: 26, marginLeft: 'auto', overflowX: 'auto', alignItems: 'center' }}>
+          {/* Row 1 — live stat strip */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 22, height: 52, borderBottom: '1px solid var(--rule-soft)' }}>
+            <div style={{ display: 'flex', gap: 24, alignItems: 'center', overflowX: 'auto' }}>
               {stats.map((s) => (
-                <div key={s.label} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                <div key={s.label} style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexShrink: 0 }}>
                   <span className="caps" style={{ fontSize: 8.5, whiteSpace: 'nowrap' }}>{s.label}</span>
-                  <span style={{ marginTop: 1 }}>{s.node}</span>
+                  <span>{s.node}</span>
                 </div>
               ))}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                <span data-studio-pulse style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--forest)', display: 'inline-block', animation: 'studio-pulse 1.6s ease-in-out infinite' }} />
-                <span className="mono" style={{ fontSize: 10, color: 'var(--dim2)', whiteSpace: 'nowrap' }}>
-                  refreshed {refreshedAgo < 60 ? `${refreshedAgo}s` : `${Math.floor(refreshedAgo / 60)}m`}
-                </span>
-              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 'auto' }}>
+              <span data-studio-pulse style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--forest)', display: 'inline-block', animation: 'studio-pulse 1.6s ease-in-out infinite' }} />
+              <span className="mono" style={{ fontSize: 10, color: 'var(--dim2)', whiteSpace: 'nowrap' }}>
+                refreshed {refreshedAgo < 60 ? `${refreshedAgo}s` : `${Math.floor(refreshedAgo / 60)}m`}
+              </span>
             </div>
           </div>
           {/* Row 2 — tabs */}

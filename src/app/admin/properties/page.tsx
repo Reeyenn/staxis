@@ -5,23 +5,23 @@ export const dynamic = 'force-dynamic';
 /**
  * /admin/properties — Owner cockpit ("Admin Studio", June 2026 redesign).
  *
- * Full-bleed dark editorial console with a light blurred sticky header and
- * five surfaces (Onboarding · Live hotels · System & Agent · Money · ML).
+ * The dark editorial "Studio" surfaces live INSIDE the normal app shell
+ * (AppLayout) — same as every other section of the site — so the global
+ * nav (Dashboard · Housekeeping · … · Admin), the notification bell, and the
+ * floating assistant all stay on top. Only the admin *content* changed; this
+ * is one page of the website, not a standalone app.
+ *
  * All visual + interaction work lives in _components/studio/*; this route
- * file is just the auth gate + the studio mount.
+ * file is just the app shell + auth gate + the studio mount.
  *
- * Auth: admin role only — only Reeyen has that role today. The server
- * component at src/app/admin/layout.tsx redirects non-admins before any
- * HTML ships; the client check below is defense-in-depth during the brief
- * auth-load window. Entered via the global Header "Admin" nav link.
- *
- * No AppLayout here on purpose: the studio is a standalone owner cockpit
- * with its own header (the "Staxis" wordmark links back to the app), so the
- * staff-app chrome (nav, floating chat, voice) would only get in the way.
+ * Auth: admin role only. The server component at src/app/admin/layout.tsx
+ * redirects non-admins before any HTML ships; the client check below is
+ * defense-in-depth during the brief auth-load window.
  */
 
 import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { AppLayout } from '@/components/layout/AppLayout';
 import { ShieldAlert } from 'lucide-react';
 import { StudioShell } from '@/app/admin/_components/studio/StudioShell';
 import { FONT_SERIF } from '@/app/admin/_components/studio/kit';
@@ -32,20 +32,26 @@ export default function AdminPropertiesPage() {
 
   if (authLoading || (user && user.role !== 'admin')) {
     return (
-      <div className="admin-studio" style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-        <div style={{ padding: '120px 24px', textAlign: 'center', fontFamily: FONT_SERIF, color: 'var(--ink)' }}>
-          {authLoading
-            ? <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
-            : (
-              <>
-                <ShieldAlert size={32} color="var(--terracotta)" style={{ marginBottom: 12 }} />
-                <p style={{ fontSize: 22, fontStyle: 'italic', letterSpacing: '-0.02em' }}>Admin access only.</p>
-              </>
-            )}
+      <AppLayout>
+        <div className="admin-studio">
+          <div style={{ padding: '120px 24px', textAlign: 'center', fontFamily: FONT_SERIF, color: 'var(--ink)' }}>
+            {authLoading
+              ? <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
+              : (
+                <>
+                  <ShieldAlert size={32} color="var(--terracotta)" style={{ marginBottom: 12 }} />
+                  <p style={{ fontSize: 22, fontStyle: 'italic', letterSpacing: '-0.02em' }}>Admin access only.</p>
+                </>
+              )}
+          </div>
         </div>
-      </div>
+      </AppLayout>
     );
   }
 
-  return <StudioShell />;
+  return (
+    <AppLayout>
+      <StudioShell />
+    </AppLayout>
+  );
 }
