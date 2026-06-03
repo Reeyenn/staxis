@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Geist, Geist_Mono, Instrument_Serif, Fraunces } from 'next/font/google';
+import { Geist, Geist_Mono, Instrument_Serif, Fraunces, Newsreader, Hanken_Grotesk, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
@@ -39,6 +39,30 @@ const fraunces = Fraunces({
   variable: '--font-fraunces',
   display: 'swap',
 });
+// Admin Studio typography (the /admin owner console only). Newsreader is the
+// editorial serif signature (always italic for numbers/headlines), Hanken
+// Grotesk the UI sans, JetBrains Mono the tiny uppercase labels. These are
+// only fetched by the browser on pages that actually render the families
+// (i.e. /admin), so they add no weight to the staff app. See studio.css.
+const newsreader = Newsreader({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  style: ['normal', 'italic'],
+  variable: '--font-newsreader',
+  display: 'swap',
+});
+const hankenGrotesk = Hanken_Grotesk({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-hanken',
+  display: 'swap',
+});
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-jetbrains',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'Staxis - Hotel Operations Platform',
@@ -59,7 +83,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable} ${fraunces.variable}`}>
+    <html lang="en" className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable} ${fraunces.variable} ${newsreader.variable} ${hankenGrotesk.variable} ${jetbrainsMono.variable}`}>
       <head>
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
