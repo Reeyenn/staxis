@@ -1,12 +1,11 @@
 'use client';
 
-// "What Staxis knows about your hotel" + impact — owner Dashboard.
-// The full picture of the hotel-wide knowledge Staxis has built (grouped by where
-// it came from) plus an HONEST impact strip: real counts only. Dollar ROI is shown
-// as a "turns on with live data" state — we never fabricate savings figures.
-// Manager-gated (canManageTeam); reads via /api/memory/knows (service-role behind
-// a session + management gate). Renders a friendly ready-state when empty so the
-// panel is visible from day one.
+// "What Staxis knows" — compact owner-Dashboard box. A small summary of the
+// hotel-wide knowledge Staxis has built + an HONEST impact strip (real counts
+// only; dollar ROI is a "turns on with live data" line, never fabricated).
+// Manager-gated; reads via /api/memory/knows. Shows a one-line ready-state when
+// empty so the box is visible from day one. The full fact lists live in the copilot
+// ("what do you know about my hotel") + the "What Staxis noticed" card above.
 
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
@@ -30,8 +29,6 @@ const C = {
   ink: '#15191A',
   ink2: '#586056',
   ink3: '#9CA29C',
-  rule: 'rgba(15,20,17,0.07)',
-  line: 'rgba(15,20,17,0.10)',
 } as const;
 
 const FONT_SERIF = 'var(--font-fraunces), Georgia, serif';
@@ -39,8 +36,8 @@ const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
 
 const LABEL: React.CSSProperties = {
   fontFamily: FONT_MONO,
-  fontSize: 10,
-  letterSpacing: '0.18em',
+  fontSize: 9,
+  letterSpacing: '0.16em',
   textTransform: 'uppercase',
   color: C.ink3,
   fontWeight: 600,
@@ -81,16 +78,10 @@ export function WhatStaxisKnowsCard() {
   const { stats } = data;
   const empty = stats.totalKnown === 0;
 
-  const statTiles: Array<[string, number]> = [
-    [es ? 'Cosas que sabe' : 'Things it knows', stats.totalKnown],
-    [es ? 'Patrones este mes' : 'Patterns caught (30d)', stats.patternsThisMonth],
-    [es ? 'Problemas detectados' : 'Issues flagged early', stats.issuesCaughtEarly],
-  ];
-
-  const groups: Array<[string, KnowItem[]]> = [
-    [es ? 'Le enseñaste' : 'You taught it', data.taught],
-    [es ? 'Lo notó en las operaciones' : 'It noticed in operations', data.noticed],
-    [es ? 'Lo aprendió de conversaciones' : 'It learned from conversations', data.learned],
+  const tiles: Array<[string, number]> = [
+    [es ? 'Sabe' : 'Known', stats.totalKnown],
+    [es ? 'Patrones 30d' : 'Patterns 30d', stats.patternsThisMonth],
+    [es ? 'Detectados' : 'Flagged early', stats.issuesCaughtEarly],
   ];
 
   return (
@@ -100,55 +91,40 @@ export function WhatStaxisKnowsCard() {
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         border: '1px solid rgba(255,255,255,0.75)',
-        borderRadius: 16,
-        padding: '18px 20px',
+        borderRadius: 14,
+        padding: '12px 14px',
+        maxWidth: 440,
       }}
     >
-      <div style={LABEL}>{es ? 'Lo que Staxis sabe de tu hotel' : 'What Staxis knows about your hotel'}</div>
+      <div style={LABEL}>{es ? 'Lo que Staxis sabe' : 'What Staxis knows'}</div>
 
-      {/* Impact strip — real counts only */}
-      <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 22 }}>
-        {statTiles.map((t, i) => (
-          <div key={t[0]} style={{ flex: 1, minWidth: 120, paddingLeft: i === 0 ? 0 : 22, borderLeft: i === 0 ? 'none' : `1px solid ${C.line}` }}>
-            <div style={{ ...LABEL, marginBottom: 6 }}>{t[0]}</div>
-            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 26, color: C.ink, fontVariantNumeric: 'tabular-nums' }}>
+      {/* compact inline impact stats — real counts only */}
+      <div style={{ marginTop: 9, display: 'flex', gap: 20 }}>
+        {tiles.map((t) => (
+          <div key={t[0]}>
+            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 20, lineHeight: 1, color: C.ink, fontVariantNumeric: 'tabular-nums' }}>
               {t[1]}
             </div>
+            <div style={{ ...LABEL, fontSize: 8.5, marginTop: 4 }}>{t[0]}</div>
           </div>
         ))}
       </div>
 
-      {/* Honest ROI line — no fabricated dollars */}
-      <div style={{ marginTop: 14, fontSize: 12.5, color: C.ink2, lineHeight: 1.5 }}>
-        {es
-          ? 'Cada problema recurrente que Staxis detecta temprano es una avería evitada. El impacto en dólares (ahorro de personal y tiempo de inactividad evitado) aparecerá aquí cuando se conecten los datos de ingresos y nómina de tu hotel.'
-          : 'Every recurring issue Staxis flags early is a breakdown avoided. Dollar impact — labor saved and downtime prevented — will appear here once your hotel’s live revenue & labor data is connected.'}
-      </div>
-
-      {empty ? (
-        <div style={{ marginTop: 14, fontSize: 13.5, color: C.ink2, lineHeight: 1.45, borderTop: `1px solid ${C.rule}`, paddingTop: 14 }}>
-          {es
-            ? 'Staxis está listo. Empieza a aprender sobre tu hotel en cuanto tu equipo registre actividad — quejas, reparaciones, inspecciones — y desde tus conversaciones con el copiloto.'
-            : 'Staxis is ready. It starts learning your hotel the moment your team logs activity — complaints, repairs, inspections — and from your chats with the copilot.'}
+      {!empty && (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: C.ink2 }}>
+          {data.taught.length} {es ? 'enseñados' : 'taught'} · {data.noticed.length} {es ? 'notados' : 'noticed'} · {data.learned.length} {es ? 'aprendidos' : 'learned'}
         </div>
-      ) : (
-        groups
-          .filter((g) => g[1].length > 0)
-          .map((g) => (
-            <div key={g[0]} style={{ marginTop: 16 }}>
-              <div style={LABEL}>
-                {g[0]} ({g[1].length})
-              </div>
-              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column' }}>
-                {g[1].slice(0, 12).map((it) => (
-                  <div key={it.id} style={{ padding: '7px 0', borderTop: `1px solid ${C.rule}`, fontSize: 13.5, color: C.ink2, lineHeight: 1.4 }}>
-                    {it.content}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))
       )}
+
+      <div style={{ marginTop: 8, fontSize: 10.5, color: C.ink3, lineHeight: 1.45 }}>
+        {empty
+          ? es
+            ? 'Listo — se llena a medida que tu equipo registra actividad.'
+            : 'Ready — fills in as your team logs activity.'
+          : es
+            ? 'El impacto en dólares aparece cuando se conecten los datos de ingresos y nómina.'
+            : 'Dollar impact appears once your live revenue & labor data is connected.'}
+      </div>
     </div>
   );
 }
