@@ -114,5 +114,5 @@ export async function POST(req: NextRequest) {
     log.error('[memory/recap:POST] remove failed', { requestId, err: res.error });
     return err('Failed to remove', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
-  return ok({ removed: true, id: idV.value }, { requestId });
+  return ok({ removed: res.removed > 0, id: idV.value }, { requestId });
 }

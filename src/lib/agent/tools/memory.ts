@@ -97,6 +97,11 @@ registerTool<{ scope: string; topic: string; content: string; confidence?: strin
       return { ok: false, error: 'That is enough new memories for one go — ask me again in a moment if there is more.' };
     }
 
+    // Eval / dry-run: run all validation + gates but never touch real memory.
+    if (ctx.dryRun) {
+      return { ok: true, data: { remembered: true, scope, topic: cleanTopic, dryRun: true } };
+    }
+
     const { content: safeContent, redacted } = redactMemoryContent(trimmed);
 
     const res = await storeMemory({
@@ -157,6 +162,8 @@ registerTool<{ scope: string; topic: string }>({
     }
     const cleanTopic = slugifyTopic(topic);
     if (!cleanTopic) return { ok: false, error: 'Which memory? Tell me its topic.' };
+
+    if (ctx.dryRun) return { ok: true, data: { forgotten: true, topic: cleanTopic, dryRun: true } };
 
     const res = await forgetMemory(
       ctx.propertyId,

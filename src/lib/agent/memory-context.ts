@@ -66,7 +66,7 @@ export function formatMemoryForPrompt(rows: MemoryRow[]): string {
       ? 'Staxis-auto'
       : r.createdByRole ? `role:${r.createdByRole}` : 'unknown';
     const line =
-      `<staxis-memory scope="${scopeLabel}" topic="${attrEscape(r.topic)}" ` +
+      `<staxis-memory trust="system-derived-from-untrusted" scope="${scopeLabel}" topic="${attrEscape(r.topic)}" ` +
       `by="${attrEscape(by)}" confidence="${attrEscape(r.confidence)}">` +
       `${escapeTrustMarkerContent(r.content)}</staxis-memory>`;
     if (chars + line.length > MEMORY_CHAR_BUDGET && lines.length > 0) break;
