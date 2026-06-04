@@ -23,6 +23,7 @@ const SOURCE_RANK: Record<string, number> = {
   correction: 0,
   explicit_user: 1,
   consolidation: 2,
+  operational: 2, // auto-learned from operations — ranks with consolidation, below human facts
   inferred: 3,
 };
 
@@ -64,7 +65,9 @@ export function formatMemoryForPrompt(rows: MemoryRow[]): string {
     // the model weights them as Staxis's own inference, below a manager's word.
     const by = r.source === 'consolidation'
       ? 'Staxis-auto'
-      : r.createdByRole ? `role:${r.createdByRole}` : 'unknown';
+      : r.source === 'operational'
+        ? 'Staxis-observed'
+        : r.createdByRole ? `role:${r.createdByRole}` : 'unknown';
     const line =
       `<staxis-memory trust="system-derived-from-untrusted" scope="${scopeLabel}" topic="${attrEscape(r.topic)}" ` +
       `by="${attrEscape(by)}" confidence="${attrEscape(r.confidence)}">` +

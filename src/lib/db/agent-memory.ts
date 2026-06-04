@@ -12,7 +12,7 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export type MemoryScope = 'property' | 'user';
-export type MemorySource = 'explicit_user' | 'inferred' | 'correction' | 'consolidation';
+export type MemorySource = 'explicit_user' | 'inferred' | 'correction' | 'consolidation' | 'operational';
 export type MemoryConfidence = 'low' | 'normal' | 'high';
 export type StoreMemoryAction = 'inserted' | 'updated' | 'skipped' | 'property_full' | 'user_full';
 
@@ -196,6 +196,9 @@ export interface ConsolidationRecap {
   ranAt: string;
   learnedCount: number;
   updatedCount: number;
+  operationalRecap: string | null;
+  operationalLearnedCount: number;
+  operationalUpdatedCount: number;
 }
 
 /** Most recent nightly consolidation run for a property (dashboard recap header). */
@@ -203,7 +206,7 @@ export async function getLatestConsolidation(propertyId: string): Promise<Consol
   if (!UUID_RX.test(propertyId)) return null;
   const { data, error } = await supabaseAdmin
     .from('agent_memory_consolidations')
-    .select('recap, ran_at, learned_count, updated_count')
+    .select('recap, ran_at, learned_count, updated_count, operational_recap, operational_learned_count, operational_updated_count')
     .eq('property_id', propertyId)
     .order('ran_at', { ascending: false })
     .limit(1)
@@ -214,6 +217,9 @@ export async function getLatestConsolidation(propertyId: string): Promise<Consol
     ranAt: data.ran_at as string,
     learnedCount: (data.learned_count as number) ?? 0,
     updatedCount: (data.updated_count as number) ?? 0,
+    operationalRecap: (data.operational_recap as string | null) ?? null,
+    operationalLearnedCount: (data.operational_learned_count as number) ?? 0,
+    operationalUpdatedCount: (data.operational_updated_count as number) ?? 0,
   };
 }
 
@@ -226,7 +232,7 @@ export async function listLearnedMemory(propertyId: string, limit = 20): Promise
     .eq('property_id', propertyId)
     .eq('is_active', true)
     .eq('scope', 'property')
-    .eq('source', 'consolidation')
+    .in('source', ['consolidation', 'operational'])
     .order('updated_at', { ascending: false })
     .limit(limit);
   if (error || !data) return [];
@@ -235,9 +241,10 @@ export async function listLearnedMemory(propertyId: string, limit = 20): Promise
 
 /**
  * Soft-delete an AUTO-LEARNED memory by id, scoped to the property (the
- * dashboard "What Staxis learned" Remove). Restricted to source='consolidation'
- * so a manager can't accidentally delete an explicitly-set fact via this
- * surface (Codex P1-C). Returns how many rows were removed (0 = no match).
+ * dashboard "What Staxis learned/noticed" Remove). Restricted to auto-learned
+ * sources (consolidation + operational) so a manager can't accidentally delete
+ * an explicitly-set fact via this surface (Codex P1-C). Returns how many rows
+ * were removed (0 = no match).
  */
 export async function deactivateMemoryById(
   propertyId: string,
@@ -250,7 +257,7 @@ export async function deactivateMemoryById(
     .eq('property_id', propertyId)
     .eq('id', id)
     .eq('is_active', true)
-    .eq('source', 'consolidation')
+    .in('source', ['consolidation', 'operational'])
     .select('id');
   if (error) return { ok: false, removed: 0, error: error.message };
   return { ok: true, removed: (data ?? []).length };

@@ -18,7 +18,7 @@ import { consolidateAllProperties } from '@/lib/agent/memory-consolidate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300; // fleet-scale: concurrency + early-exits keep 300+ hotels well inside this
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -26,7 +26,16 @@ export async function GET(req: NextRequest) {
   if (cronGate) return cronGate;
 
   try {
-    const result = await consolidateAllProperties();
+    // Optional sharding: a GitHub Actions workflow can dispatch N parallel jobs
+    // (?shard_offset=k&shard_count=N) once the fleet outgrows a single run.
+    // Default (no params) = one shard = the nightly Vercel cron processes all.
+    const sp = new URL(req.url).searchParams;
+    const shardOffset = parseInt(sp.get('shard_offset') ?? '0', 10);
+    const shardCount = parseInt(sp.get('shard_count') ?? '1', 10);
+    const result = await consolidateAllProperties({
+      shardOffset: Number.isFinite(shardOffset) ? shardOffset : 0,
+      shardCount: Number.isFinite(shardCount) ? shardCount : 1,
+    });
 
     await writeCronHeartbeat('agent-consolidate-memory', {
       requestId,

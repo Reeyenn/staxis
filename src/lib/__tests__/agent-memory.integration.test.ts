@@ -99,6 +99,50 @@ describe('agent_memory — RPCs + tenant isolation (pglite)', () => {
     }
   });
 
+  test('operational write defers to a human-authored fact (0261 guard)', async () => {
+    await fx.pg.exec('begin');
+    try {
+      const h = await fx.pg.query(STORE(), [PID_A, 'property', null, 'op_guard_t', 'human says X']);
+      assert.equal((h.rows[0] as { action: string }).action, 'inserted');
+      // The operational learner tries to overwrite the SAME topic.
+      const o = await fx.pg.query(STORE(", p_source:='operational', p_confidence:='low'"), [PID_A, 'property', null, 'op_guard_t', 'auto observed Y']);
+      assert.equal((o.rows[0] as { action: string }).action, 'skipped', 'operational must defer to a human fact');
+      const r = await fx.pg.query(`select content, source from agent_memory where property_id=$1 and topic='op_guard_t' and is_active`, [PID_A]);
+      assert.equal((r.rows[0] as { content: string }).content, 'human says X', 'human content untouched');
+      assert.equal((r.rows[0] as { source: string }).source, 'explicit_user', 'human source untouched');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test('a human write upgrades a prior operational fact (0261 guard)', async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(", p_source:='operational', p_confidence:='low'"), [PID_A, 'property', null, 'op_up_t', 'auto observed']);
+      const u = await fx.pg.query(STORE(", p_source:='correction', p_confidence:='high'"), [PID_A, 'property', null, 'op_up_t', 'manager truth']);
+      assert.equal((u.rows[0] as { action: string }).action, 'updated', 'a human write upgrades an operational row');
+      const r = await fx.pg.query(`select content, source from agent_memory where property_id=$1 and topic='op_up_t' and is_active`, [PID_A]);
+      assert.equal((r.rows[0] as { content: string }).content, 'manager truth');
+      assert.equal((r.rows[0] as { source: string }).source, 'correction');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test('operational co-updates a prior auto-learned (consolidation) row — no human to defer to', async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(", p_source:='consolidation', p_confidence:='low'"), [PID_A, 'property', null, 'op_mix_t', 'from chat']);
+      const o = await fx.pg.query(STORE(", p_source:='operational', p_confidence:='low'"), [PID_A, 'property', null, 'op_mix_t', 'from operations']);
+      assert.equal((o.rows[0] as { action: string }).action, 'updated', 'auto sources co-update when no human fact exists');
+      const r = await fx.pg.query(`select content, source from agent_memory where property_id=$1 and topic='op_mix_t' and is_active`, [PID_A]);
+      assert.equal((r.rows[0] as { source: string }).source, 'operational');
+      assert.equal((r.rows[0] as { content: string }).content, 'from operations');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
   test('user-scope memory is private to its subject account', async () => {
     await fx.pg.exec('begin');
     try {

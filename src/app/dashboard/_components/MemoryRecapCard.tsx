@@ -18,11 +18,16 @@ interface LearnedItem {
   topic: string;
   content: string;
 }
+interface NoticedItem extends LearnedItem {
+  severity: 'attention';
+}
 interface RecapData {
   recap: string | null;
   ranAt: string | null;
   learnedCount: number;
   updatedCount: number;
+  operationalRecap: string | null;
+  noticed: NoticedItem[];
   items: LearnedItem[];
 }
 
@@ -31,6 +36,8 @@ const C = {
   ink2: '#586056',
   ink3: '#9CA29C',
   rule: 'rgba(15,20,17,0.07)',
+  attn: '#9A5B0B', // amber-ink for "noticed" attention insights
+  attnRule: 'rgba(154,91,11,0.16)',
 } as const;
 
 const FONT_SERIF = 'var(--font-fraunces), Georgia, serif';
@@ -87,7 +94,16 @@ export function MemoryRecapCard() {
           body: JSON.stringify({ propertyId: activePropertyId, id }),
         });
         const j = await r.json();
-        if (j?.ok) setData((d) => (d ? { ...d, items: d.items.filter((i) => i.id !== id) } : d));
+        if (j?.ok)
+          setData((d) =>
+            d
+              ? {
+                  ...d,
+                  items: d.items.filter((i) => i.id !== id),
+                  noticed: d.noticed.filter((i) => i.id !== id),
+                }
+              : d,
+          );
       } finally {
         setRemoving(null);
       }
@@ -96,8 +112,30 @@ export function MemoryRecapCard() {
   );
 
   if (!canSee || !activePropertyId) return null;
-  // Additive-only: nothing to show until Staxis has actually learned something.
-  if (!loaded || !data || data.items.length === 0) return null;
+  const noticed = data?.noticed ?? [];
+  const items = data?.items ?? [];
+  // Additive-only: nothing to show until Staxis has actually learned/noticed something.
+  if (!loaded || !data || (noticed.length === 0 && items.length === 0)) return null;
+
+  const removeBtn = (id: string) => (
+    <button
+      onClick={() => remove(id)}
+      disabled={removing === id}
+      style={{
+        flexShrink: 0,
+        fontFamily: FONT_MONO,
+        fontSize: 11,
+        color: C.ink3,
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        textTransform: 'uppercase',
+        letterSpacing: '0.1em',
+      }}
+    >
+      {removing === id ? '…' : es ? 'Quitar' : 'Remove'}
+    </button>
+  );
 
   return (
     <div
@@ -110,62 +148,82 @@ export function MemoryRecapCard() {
         padding: '18px 20px',
       }}
     >
-      <div style={LABEL}>{es ? 'Lo que Staxis aprendió' : 'What Staxis learned'}</div>
-
-      {data.recap && data.recap !== 'Nothing new to remember today.' && (
-        <div
-          style={{
-            marginTop: 10,
-            fontFamily: FONT_SERIF,
-            fontStyle: 'italic',
-            fontSize: 18,
-            color: C.ink,
-            lineHeight: 1.35,
-          }}
-        >
-          {data.recap}
-        </div>
+      {/* What Staxis noticed — proactive operational insights (attention) */}
+      {noticed.length > 0 && (
+        <>
+          <div style={{ ...LABEL, color: C.attn }}>
+            {es ? '⚠ Lo que Staxis notó' : '⚠ What Staxis noticed'}
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>
+            {noticed.map((it) => (
+              <div
+                key={it.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '8px 0',
+                  borderTop: `1px solid ${C.attnRule}`,
+                }}
+              >
+                <span style={{ fontSize: 13.5, color: C.ink, lineHeight: 1.4, fontWeight: 500 }}>
+                  {it.content}
+                </span>
+                {removeBtn(it.id)}
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
-      <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column' }}>
-        {data.items.map((it) => (
-          <div
-            key={it.id}
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: 12,
-              padding: '8px 0',
-              borderTop: `1px solid ${C.rule}`,
-            }}
-          >
-            <span style={{ fontSize: 13.5, color: C.ink2, lineHeight: 1.4 }}>{it.content}</span>
-            <button
-              onClick={() => remove(it.id)}
-              disabled={removing === it.id}
+      {/* What Staxis learned — facts from conversations + lower-signal patterns */}
+      {items.length > 0 && (
+        <>
+          <div style={{ ...LABEL, marginTop: noticed.length > 0 ? 20 : 0 }}>
+            {es ? 'Lo que Staxis aprendió' : 'What Staxis learned'}
+          </div>
+
+          {data.recap && data.recap !== 'Nothing new to remember today.' && (
+            <div
               style={{
-                flexShrink: 0,
-                fontFamily: FONT_MONO,
-                fontSize: 11,
-                color: C.ink3,
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                textTransform: 'uppercase',
-                letterSpacing: '0.1em',
+                marginTop: 10,
+                fontFamily: FONT_SERIF,
+                fontStyle: 'italic',
+                fontSize: 18,
+                color: C.ink,
+                lineHeight: 1.35,
               }}
             >
-              {removing === it.id ? '…' : es ? 'Quitar' : 'Remove'}
-            </button>
+              {data.recap}
+            </div>
+          )}
+
+          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column' }}>
+            {items.map((it) => (
+              <div
+                key={it.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '8px 0',
+                  borderTop: `1px solid ${C.rule}`,
+                }}
+              >
+                <span style={{ fontSize: 13.5, color: C.ink2, lineHeight: 1.4 }}>{it.content}</span>
+                {removeBtn(it.id)}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
 
       <div style={{ marginTop: 12, fontSize: 11, color: C.ink3, fontFamily: FONT_MONO, lineHeight: 1.5 }}>
         {es
-          ? 'Staxis aprende de tus conversaciones cada noche. Quita cualquier nota incorrecta.'
-          : 'Staxis learns from your conversations each night — remove anything that’s off.'}
+          ? 'Staxis observa tus operaciones y conversaciones y aprende cada noche. Quita cualquier nota incorrecta.'
+          : 'Staxis watches your operations and conversations and learns each night — remove anything that’s off.'}
       </div>
     </div>
   );

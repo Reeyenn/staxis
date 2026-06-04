@@ -21,9 +21,15 @@ import { validateUuid } from '@/lib/api-validate';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getLatestConsolidation, listLearnedMemory, deactivateMemoryById } from '@/lib/db/agent-memory';
+import { insightSeverityFromTopic } from '@/lib/agent/operational-signals';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+// "What Staxis noticed" surfaces only operational 'attention' insights that are
+// still fresh — a pattern that stopped recurring ages off the proactive card
+// (it stays in long-term memory until its 75-day expiry).
+const NOTICED_FRESH_DAYS = 14;
 
 interface Caller {
   role: AppRole;
@@ -66,10 +72,30 @@ export async function GET(req: NextRequest) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
-  const [recap, items] = await Promise.all([
+  const [recap, all] = await Promise.all([
     getLatestConsolidation(pidV.value!),
-    listLearnedMemory(pidV.value!, 20),
+    listLearnedMemory(pidV.value!, 50),
   ]);
+
+  // "What Staxis noticed" = operational attention insights, still fresh.
+  const freshCutoff = Date.now() - NOTICED_FRESH_DAYS * 86400_000;
+  const noticed = all
+    .filter(
+      (i) =>
+        i.source === 'operational' &&
+        insightSeverityFromTopic(i.topic) === 'attention' &&
+        new Date(i.updatedAt).getTime() >= freshCutoff,
+    )
+    .slice(0, 8)
+    .map((i) => ({ id: i.id, topic: i.topic, content: i.content, severity: 'attention' as const }));
+  const noticedIds = new Set(noticed.map((n) => n.id));
+
+  // "What Staxis learned" = everything else active (conversation facts +
+  // operational info + older operational), excluding what's already in noticed.
+  const items = all
+    .filter((i) => !noticedIds.has(i.id))
+    .slice(0, 20)
+    .map((i) => ({ id: i.id, topic: i.topic, content: i.content }));
 
   return ok(
     {
@@ -77,7 +103,9 @@ export async function GET(req: NextRequest) {
       ranAt: recap?.ranAt ?? null,
       learnedCount: recap?.learnedCount ?? 0,
       updatedCount: recap?.updatedCount ?? 0,
-      items: items.map((i) => ({ id: i.id, topic: i.topic, content: i.content })),
+      operationalRecap: recap?.operationalRecap ?? null,
+      noticed,
+      items,
     },
     { requestId },
   );
