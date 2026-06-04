@@ -74,6 +74,22 @@ export async function runMultiSourceTemplate(args: {
   const strategy = template.aggregate.strategy;
 
   if (strategy === 'merge_named') {
+    // If EVERY source failed / returned no rows (e.g. logged out, all
+    // dashboard pages errored), don't synthesize an all-null snapshot —
+    // that would overwrite good last-good data downstream. Bail with
+    // ok:false so saveGenericTable is skipped and last-good is preserved.
+    // (Partial pulls — at least one source with rows — still aggregate,
+    // matching the tolerance noted above.)
+    const anySourceHasRows = fetchedResults.some((f) => f.rows.length > 0);
+    if (!anySourceHasRows) {
+      return {
+        ok: false,
+        rows: [],
+        sourceResults,
+        reason: 'merge_named: all sources failed/empty — preserving last-good snapshot',
+      };
+    }
+
     // For each output column in template.fields, find its source
     // (field.source = source.name), grab the value from that source's
     // first row, apply the parser.

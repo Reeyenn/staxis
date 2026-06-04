@@ -280,6 +280,20 @@ export async function saveGenericTable(
   const validation = validateRows(stamped, descriptor);
 
   if (validation.rejected.length > 0) {
+    // Surface dropped rows as a structured read-health signal the doctor /
+    // parity cron can alert on. An all-reject cycle (rejected === rows.length)
+    // otherwise looks identical to a healthy empty poll — the snapshot "wrote
+    // 0 rows" — and would silently mask a broken extraction. Emitting this
+    // warn (table + rejected count + total + allRejected flag) makes the drop
+    // visible as a read problem. We do NOT touch property_sessions here;
+    // session-driver owns the read_failure_streak counter.
+    log.warn('generic-table-writer: rows rejected by validation', {
+      tableName,
+      rejected: validation.rejected.length,
+      total: stamped.length,
+      allRejected: stamped.length > 0 && validation.rejected.length === stamped.length,
+    });
+
     // Best-effort: log to error_logs (admin's recent-errors panel).
     for (const r of validation.rejected) {
       void supabase.from('error_logs').insert({

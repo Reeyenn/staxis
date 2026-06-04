@@ -23,6 +23,8 @@
  * Codex v2 hard-pass surfaced this as P0 missing.
  */
 
+import { log } from './log.js';
+
 export interface UrlTemplateInferenceResult {
   /** True iff at least one variable component was identified. */
   ok: boolean;
@@ -167,16 +169,38 @@ export function mapPlaceholdersToColumns(
     // observed placeholder values 1:1 across all samples.
     if (sampleRowData.length === 0) continue;
     const candidateColumns = Object.keys(sampleRowData[0]!);
+    // Collect EVERY column whose values match, not just the first. With an
+    // ambiguous id column (e.g. both `reservation_id` and a numeric `seq`
+    // happen to share the same sample values), picking the first match
+    // could silently bind the template to the wrong field. We prefer an
+    // id-looking column and warn so a wrong binding is never fully silent.
+    const matches: string[] = [];
     for (const col of candidateColumns) {
       const colValues = sampleRowData.map((row) => row[col] ?? '');
       if (colValues.length === observedValues.length &&
           colValues.every((v, i) => v === observedValues[i])) {
-        mapping[placeholder] = col;
-        break;
+        matches.push(col);
       }
     }
-    // If no column matched, leave the placeholder unnamed; caller can
-    // surface as a warning ("URL has a var we can't map to a known field").
+    if (matches.length === 0) {
+      // No column matched — leave the placeholder unnamed; caller can
+      // surface as a warning ("URL has a var we can't map to a known field").
+      continue;
+    }
+    // Prefer a column whose name looks like the record key (ends with
+    // `_id`, or mentions reservation/confirmation). Falls back to the first
+    // match (preserving prior behaviour) when nothing looks id-like.
+    const looksLikeId = (c: string) =>
+      /(_id$|reservation|confirmation)/i.test(c);
+    const chosen = matches.find(looksLikeId) ?? matches[0]!;
+    if (matches.length > 1) {
+      log.warn('url-template: placeholder matched multiple columns; ambiguous binding', {
+        placeholder,
+        candidates: matches,
+        chosen,
+      });
+    }
+    mapping[placeholder] = chosen;
   }
   return mapping;
 }

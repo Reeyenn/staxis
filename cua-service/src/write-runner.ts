@@ -147,6 +147,14 @@ export async function executeWriteRecipe(
     return { ok: true, verifiedVia: 'idempotent' };
   }
 
+  // 5c. Fail closed BEFORE mutating if the recipe is unverifiable. An
+  //     unverifiable recipe must never replay the Save step — we'd mutate the
+  //     PMS and still have to report failure (no way to confirm the change
+  //     landed). A dry-run never mutates and never verifies, so it skips this.
+  if (!opts.dryRun && !recipe.verifyInPage) {
+    return { ok: false, error: 'no_verify_configured' };
+  }
+
   // 6. Replay the edit steps.
   try {
     for (const step of recipe.steps) {
@@ -162,13 +170,12 @@ export async function executeWriteRecipe(
   }
 
   // The commit (Save) may have navigated the page; let it settle before we
-  // re-locate for verification.
+  // re-locate for verification. `verifyInPage` is guaranteed present here — an
+  // absent one fails closed at step 5c, before any mutation (this guard is a
+  // type-narrowing no-op: step 5c already returned for the absent case).
+  const verifyInPage = recipe.verifyInPage;
+  if (!verifyInPage) return { ok: false, error: 'no_verify_configured' };
   await page.waitForLoadState('networkidle').catch(() => {});
-
-  if (!recipe.verifyInPage) {
-    // Never claim a success we can't confirm.
-    return { ok: false, error: 'no_verify_configured' };
-  }
 
   // 7. Layer 1 — in-page verify on a freshly-located row. When an authoritative
   //    re-read (Layer 2) follows, this is BEST-EFFORT: a Save that triggers a
@@ -179,7 +186,7 @@ export async function executeWriteRecipe(
   let inPageOk = false;
   try {
     const row1 = await locateRowByExactText(page, recipe.rowLocator, payload);
-    await runWriteStep(page, verifyStep(recipe.verifyInPage, payload), { payload, rowLocator: row1, dryRun: false });
+    await runWriteStep(page, verifyStep(verifyInPage, payload), { payload, rowLocator: row1, dryRun: false });
     inPageOk = true;
   } catch (err) {
     log.warn('write-runner: in-page verify miss (relying on authoritative re-read)', {
@@ -197,7 +204,7 @@ export async function executeWriteRecipe(
   try {
     await safeGoto(page, recipe.pageUrl, gotoOpts);
     const row2 = await locateRowByExactText(page, recipe.rowLocator, payload);
-    await runWriteStep(page, verifyStep(recipe.verifyInPage, payload), { payload, rowLocator: row2, dryRun: false });
+    await runWriteStep(page, verifyStep(verifyInPage, payload), { payload, rowLocator: row2, dryRun: false });
   } catch (err) {
     return { ok: false, error: 'verify_reread_failed', detail: { message: (err as Error).message } };
   }

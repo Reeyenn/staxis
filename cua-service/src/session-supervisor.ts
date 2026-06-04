@@ -139,6 +139,18 @@ export class SessionSupervisor {
             restartCount: session.restart_count,
             limit: MAX_RESTARTS_PER_HOUR,
           });
+          // Move the row into the 'failed_restart' dead-letter state so it
+          // leaves the runnable set (loadEnabledSessions only selects
+          // 'starting'/'alive'/'paused_cost_cap') and surfaces in the admin
+          // UI instead of sitting in 'starting' forever. The operator's
+          // existing Resume action recovers it (clears status + restart_count).
+          await supabase
+            .from('property_sessions')
+            .update({
+              status: 'failed_restart',
+              paused_reason: `Exceeded ${MAX_RESTARTS_PER_HOUR} restarts within the last hour. Resume from /admin/property-sessions once the underlying issue is fixed.`,
+            })
+            .eq('property_id', session.property_id);
           continue;
         }
 

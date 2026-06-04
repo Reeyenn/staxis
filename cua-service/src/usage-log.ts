@@ -142,7 +142,15 @@ export async function getJobCostMicros(jobId: string): Promise<number> {
     // Seed the in-process map so subsequent calls hit the fast path.
     IN_PROC_COST_BY_JOB.set(jobId, total);
     return total;
-  } catch {
+  } catch (err) {
+    // Fail-open to 0 so the cost-lookup itself never blocks a job, but
+    // make the failure VISIBLE: a throwing DB read here silently disables
+    // the per-job cost cap (e.g. after a worker restart wiped the in-proc
+    // total), so this must reach Sentry rather than vanish.
+    log.error('getJobCostMicros cost read failed — cost cap may be disabled for this job', {
+      jobId,
+      err: err instanceof Error ? err.message : String(err),
+    });
     return 0;
   }
 }

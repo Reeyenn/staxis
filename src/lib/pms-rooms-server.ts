@@ -114,7 +114,33 @@ function deriveStatus(
   // out_of_inventory, unknown, null) defaults to 'dirty'. Out-of-order
   // rooms get a separate visual treatment via pms_work_orders_v2 / the
   // openWoRooms badge layer in RoomsTab.
+  //
+  // NOTE: deriveStatus stays purely status_log-based for back-compat with
+  // its callers and tests. Out-of-service rooms are split out at the Room
+  // composition layer below (isOutOfServiceStatus), where the full row
+  // context is available — so 'dirty' here is a safe default; it gets
+  // overridden for OOO/OOS rooms before the Room is emitted.
   return 'dirty';
+}
+
+// PMS status_log values that mean the room is blocked / out of service —
+// not a housekeeping turn. A guest can't be placed in it and HK won't
+// clean it, so it must NOT land in the 'dirty' ("needs turning") bucket
+// that the dashboard / laundry counts read. RoomsTab has a work-order
+// badge overlay that catches OOO rooms with an open WO, but the dashboard
+// and laundry have no such overlay — they read Room.status directly and
+// would otherwise count these as dirty. We tag them with isOutOfService so
+// those surfaces can bucket them separately. Mirrors BLOCKED_ROOM_STATUSES
+// in rules-engine/context.ts.
+const OUT_OF_SERVICE_STATUSES = new Set<string>([
+  'out_of_order',
+  'out_of_inventory',
+]);
+
+export function isOutOfServiceStatus(
+  rawStatus: string | null | undefined,
+): boolean {
+  return !!rawStatus && OUT_OF_SERVICE_STATUSES.has(rawStatus);
 }
 
 // cleaning_type → legacy RoomType. Limited-service hotels only really see
@@ -422,7 +448,12 @@ export async function mergePmsRoomsForDate(
     const reservation = reservationByRoom.get(num);
     const rawStatus = latestStatusByRoom.get(num) ?? null;
 
-    const status = deriveStatus(assignment, rawStatus);
+    // Out-of-service rooms (OOO / OOS in the status_log) with no active
+    // HK assignment must not be counted as 'dirty'. They're blocked, not a
+    // turn — force a non-dirty status and flag them so the dashboard /
+    // laundry (no work-order overlay) can bucket them as out-of-service.
+    const outOfService = !assignment && isOutOfServiceStatus(rawStatus);
+    const status = outOfService ? 'clean' : deriveStatus(assignment, rawStatus);
     // Type: assignment wins once it exists. Before the CUA has populated
     // assignments, fall back to deriving the turn type from the reservation
     // so laundry checkout/stayover counts aren't all 0 on a real turn day.
@@ -482,7 +513,12 @@ export async function mergePmsRoomsForDate(
       ...(assignment?.dnd_active === true ? { isDnd: true } : {}),
       ...(arrival ? { arrival } : {}),
       ...(stayoverDay !== undefined ? { stayoverDay } : {}),
-    };
+      // isOutOfService: distinct out-of-service flag so dirty/ready counts
+      // can exclude OOO/OOS rooms. Cast: the `Room` type (src/types) does
+      // not yet declare this optional field; producer-side cast keeps tsc
+      // green here. Consumers read it as an optional boolean.
+      ...(outOfService ? { isOutOfService: true } : {}),
+    } as Room;
     rooms.push(room);
   }
 

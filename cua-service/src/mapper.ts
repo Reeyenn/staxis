@@ -639,6 +639,12 @@ async function mapLogin(
 
   const phaseStartedAt = Date.now();
 
+  // Login-phase action-loop detector — same guard mapAction uses. Without
+  // it, a login that keeps re-clicking the same (often misaligned) field
+  // burns the whole login step budget instead of aborting early. Trips on
+  // the 4th identical (action, page) tuple within the last 8 turns.
+  const loopDetector = new ActionLoopDetector();
+
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS_LOGIN; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       log.warn('mapper exceeded input token budget', { totalInputTokens, totalOutputTokens, stepIdx });
@@ -676,6 +682,27 @@ async function mapLogin(
       }
     }
 
+    // MFA / OTP detection. If the PMS bounced us to a one-time-code screen,
+    // the agent will otherwise spin until the step/wallclock budget runs out
+    // and report a vague "took too long". Detect a visible OTP prompt (any of
+    // the common verification-code phrasings, or a 6-digit code input) and
+    // bail with a DISTINCT reason so the admin UI can show "PMS requires MFA"
+    // instead of a misleading timeout. Best-effort: any evaluate error just
+    // skips the check and the loop proceeds as before.
+    {
+      const mfaDetected = await detectMfaScreen(page);
+      if (mfaDetected) {
+        log.warn('login mapper aborting — PMS requires MFA', { jobId: ctx.jobId ?? undefined, stepIdx });
+        return {
+          ok: false,
+          userMessage:
+            'Your PMS asked for a one-time verification code (multi-factor login). ' +
+            'We can\'t complete the code step automatically — please contact support to finish connecting.',
+          detail: { phase: 'login_mapping', reason: 'mfa_required', currentUrl: page.url() },
+        };
+      }
+    }
+
     // Beta-API call so we can attach `cache_control` to the system block.
     // The system prompt + tool definitions are stable across the entire
     // mapping run; caching them means each turn after the first only pays
@@ -690,6 +717,12 @@ async function mapLogin(
     const idempotencyKey = ctx.jobId
       ? `${ctx.jobId}:login:${stepIdx}`
       : `anon:login:${stepIdx}:${Date.now()}`;
+
+    // Loop-detector input — fingerprint the page state Claude is about to
+    // reason on (same pattern as mapAction). Computed BEFORE messages.create
+    // so it matches the screenshot the model acts on. Best-effort: errors
+    // fall back to a URL-only fingerprint inside the helper.
+    const turnPageFingerprint = await pageFingerprint(page);
 
     // Extended thinking — Anthropic best-practices: 2000-token "medium"
     // budget for Sonnet 4.6. Thinking tokens consume from max_tokens —
@@ -839,6 +872,23 @@ async function mapLogin(
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
 
+    // Loop-detector — record each toolUse's (action, page) tuple against the
+    // pre-action page fingerprint and abort if the agent is stuck re-trying
+    // the same thing on the same starting state (same pattern as mapAction).
+    for (const toolUse of toolUses) {
+      const stuck = loopDetector.record(actionFingerprint(toolUse.input), turnPageFingerprint);
+      if (stuck.stuck) {
+        log.warn('login mapper: action-loop detector tripped — aborting login', {
+          jobId: ctx.jobId ?? undefined, stepIdx, reason: stuck.reason,
+        });
+        return {
+          ok: false,
+          userMessage: 'We got stuck on the login page. Please double-check your credentials and login URL, or contact support.',
+          detail: { phase: 'login_mapping', reason: 'loop detector tripped', currentUrl: page.url() },
+        };
+      }
+    }
+
     messages.push({ role: 'user', content: toolResults });
   }
 
@@ -958,6 +1008,15 @@ async function mapAction(args: {
   const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
+
+  // Per-target cost baseline — snapshot job spend at the START of this
+  // target so the per-target soft-abort below measures THIS target's delta
+  // rather than cumulative job spend. Without it, late targets get aborted
+  // with zero exploration once cumulative spend crosses the cap (the old
+  // cap*3 cumulative heuristic). Best-effort: a read failure leaves the
+  // baseline at 0, which just makes the soft-abort behave like the global
+  // cap for this one target.
+  const targetStartSpentMicros = args.jobId ? await getJobCostMicros(args.jobId) : 0;
 
   // Per-target action-loop detector. Trips on the 4th identical
   // (action, page) tuple within the last 8 turns — defaults chosen so
@@ -1284,18 +1343,17 @@ async function mapAction(args: {
     messages.push({ role: 'user', content: toolResults });
 
     // Plan v7 — per-target cost soft-abort. After each round trip, check
-    // cumulative job spend; if we've blown past the per-target cap, set
+    // how much THIS target has spent (current job spend minus the baseline
+    // snapped at target start); if it's blown past the per-target cap, set
     // the flag and let the next iteration return cleanly. We DON'T abort
     // mid-call — the in-flight Anthropic call is already paid for, so we
-    // let it complete and return whatever it had.
+    // let it complete and return whatever it had. Measuring the delta (not
+    // cumulative job spend) means late targets still get their full
+    // per-target budget instead of being aborted with zero exploration.
     if (args.jobId && targetCostCapMicros !== Number.POSITIVE_INFINITY) {
       const totalSpent = await getJobCostMicros(args.jobId);
-      // Per-target budget is cumulative-relative — we don't have a clean
-      // way to measure THIS target's spend separately from earlier targets,
-      // so we approximate: if total job spend exceeds (priorTargets×cap +
-      // thisTargetCap), this target has likely blown its budget. The
-      // checkBudget global cap is the harder backstop.
-      if (totalSpent > targetCostCapMicros * 3) {  // soft heuristic
+      const targetSpent = totalSpent - targetStartSpentMicros;
+      if (targetSpent > targetCostCapMicros) {
         targetOverBudget = true;
       }
     }
@@ -1430,6 +1488,17 @@ async function mapDrillDownAction(args: {
   // is its own back-and-forth).
   const effectiveStepCap = targetStepCap * SAMPLE_COUNT;
 
+  // Per-target cost baseline — snapshot job spend at the START so the
+  // soft-abort below measures THIS target's delta, not cumulative job
+  // spend (which would abort late targets with zero exploration). See the
+  // matching note in mapAction.
+  const targetStartSpentMicros = args.jobId ? await getJobCostMicros(args.jobId) : 0;
+
+  // Action-loop detector — same guard mapAction uses. A drill-down that
+  // keeps re-clicking the same row on the same list state burns the (large)
+  // drill-down step budget; trip on the 4th identical (action, page) tuple.
+  const loopDetector = new ActionLoopDetector();
+
   for (let stepIdx = 0; stepIdx < effectiveStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
@@ -1458,6 +1527,11 @@ async function mapDrillDownAction(args: {
     const idempotencyKey = args.jobId
       ? `${args.jobId}:drilldown:${args.actionName}:${stepIdx}`
       : `anon:drilldown:${args.actionName}:${stepIdx}:${Date.now()}`;
+
+    // Loop-detector input — fingerprint the page state Claude is about to
+    // reason on (same pattern as mapAction). Computed BEFORE messages.create
+    // so it matches the screenshot the model acts on.
+    const turnPageFingerprint = await pageFingerprint(args.page);
 
     // Extended thinking — 2000-token "medium" budget per Anthropic's
     // best-practices blog. Bump max_tokens by the thinking budget so the
@@ -1721,11 +1795,27 @@ async function mapDrillDownAction(args: {
                actionType === 'scroll') navigationCount++;
     }
 
+    // Loop-detector — record each toolUse's (action, page) tuple against
+    // the pre-action page fingerprint and abort if stuck (same pattern as
+    // mapAction).
+    for (const toolUse of toolUses) {
+      const stuck = loopDetector.record(actionFingerprint(toolUse.input), turnPageFingerprint);
+      if (stuck.stuck) {
+        log.warn('drilldown mapper: action-loop detector tripped — aborting target', {
+          jobId: args.jobId ?? undefined, actionName: args.actionName, stepIdx, reason: stuck.reason,
+        });
+        return { ok: false, reason: 'loop detector tripped', finalUrl: args.page.url() };
+      }
+    }
+
     messages.push({ role: 'user', content: toolResults });
 
+    // Per-target cost soft-abort — measure THIS target's delta from the
+    // baseline snapped at target start, not cumulative job spend (which
+    // would abort late targets with zero exploration).
     if (args.jobId) {
       const totalSpent = await getJobCostMicros(args.jobId);
-      if (totalSpent > targetCostCapMicros * 3) targetOverBudget = true;
+      if (totalSpent - targetStartSpentMicros > targetCostCapMicros) targetOverBudget = true;
     }
   }
 
@@ -1770,6 +1860,51 @@ function makeToolResult(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Detect a one-time-code / MFA login screen. Returns true when the page
+ * shows a common OTP/MFA prompt (visible "verification code" / "one-time
+ * code" / "two-factor" / "authentication code" text) OR a 6-digit code
+ * input. Used in mapLogin to bail with a distinct `mfa_required` reason
+ * instead of spinning until the step budget times out.
+ *
+ * Best-effort: any evaluate error returns false so the caller proceeds
+ * exactly as it did before this check existed.
+ */
+async function detectMfaScreen(page: Page): Promise<boolean> {
+  try {
+    return await page.evaluate(() => {
+      const text = (document.body?.innerText ?? '').toLowerCase();
+      const phrases = [
+        'verification code',
+        'one-time code',
+        'one time code',
+        'one-time passcode',
+        'two-factor',
+        'two factor',
+        'authentication code',
+        'security code',
+        'enter the code',
+      ];
+      if (phrases.some((p) => text.includes(p))) return true;
+      // A dedicated 6-digit code input is a strong MFA signal even when the
+      // surrounding copy is unusual. Match maxlength=6 numeric/otp inputs or
+      // a one-time-code autocomplete hint.
+      const inputs = Array.from(document.querySelectorAll('input'));
+      return inputs.some((el) => {
+        const input = el as HTMLInputElement;
+        const maxLen = input.getAttribute('maxlength');
+        const inputMode = (input.getAttribute('inputmode') ?? '').toLowerCase();
+        const autocomplete = (input.getAttribute('autocomplete') ?? '').toLowerCase();
+        if (autocomplete.includes('one-time-code')) return true;
+        if (maxLen === '6' && (input.type === 'tel' || input.type === 'number' || inputMode === 'numeric')) return true;
+        return false;
+      });
+    });
+  } catch {
+    return false;
+  }
+}
 
 function extractFinalText(content: Anthropic.Messages.ContentBlock[]): string {
   return content

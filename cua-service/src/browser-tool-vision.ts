@@ -61,6 +61,21 @@ export type MappingPhase = 'login' | 'action';
 // removed at the start of every non-screenshot action (see executeVisionAction).
 const setOfMarkStore = new WeakMap<Page, Map<number, BadgeInfo>>();
 
+// ─── Viewport-drift guard ────────────────────────────────────────────────
+//
+// Every click coordinate the model picks is grounded in a screenshot taken
+// at the DECLARED display size (VISION_TOOL_PARAM.display_{width,height}_px,
+// 1280×800 — kept in sync with mapper.ts's VIEWPORT). If the real Playwright
+// viewport ever differs from that declared size, the model is targeting one
+// coordinate space while the page lives in another and EVERY click lands in
+// the wrong place. We assert the two agree exactly once per page (first
+// action), so a drift surfaces loudly at startup instead of as a baffling
+// run of mis-clicks.
+//
+// WeakSet so the "already checked" flag is freed when the page is GC'd; a
+// fresh page (new mapping run) re-asserts.
+const viewportAssertedPages = new WeakSet<Page>();
+
 /**
  * Resolve a `#N` token from the action's text payload to a badge-center
  * coordinate AND the badge's role+name (if any). Returns `null` if the
@@ -182,6 +197,55 @@ async function extractRoleNameAtPoint(
   }
 }
 
+/**
+ * Stale-badge guard (robustness fix): a Set-of-Mark badge's coordinate is
+ * captured at screenshot time. By the time the agent's `left_click {#N}`
+ * arrives, the page may have scrolled, re-laid-out, or popped a dialog —
+ * so the stored (x, y) can now sit over a DIFFERENT element, producing a
+ * silent wrong-element click.
+ *
+ * Just before clicking a resolved badge, re-run elementsFromPoint at the
+ * stored coordinate and confirm the topmost non-badge element still has
+ * the badge's recorded role + accessible name. Returns:
+ *   - `true`  → element under the coord still matches; safe to click.
+ *   - `false` → drifted; caller returns isError so the model re-screenshots.
+ *
+ * Best-effort on the EVALUATE itself (cross-origin / mid-navigation): if
+ * the lookup throws we return `true` (don't block a click on an infra
+ * hiccup — the worst case degrades to the pre-fix behavior, which is the
+ * coordinate click we'd have made anyway). A clean "no element / no role /
+ * no name" result is a genuine MISMATCH and returns `false`.
+ */
+async function badgeStillMatchesAtPoint(
+  page: Page,
+  x: number,
+  y: number,
+  expected: { role: string; name: string },
+): Promise<boolean> {
+  let current: { role: string; name: string } | undefined;
+  try {
+    // Reuse the exact same role+name extraction the badge was recorded
+    // with (applySetOfMark / extractRoleNameAtPoint share this logic), so
+    // a match comparison is apples-to-apples.
+    current = await extractRoleNameAtPoint(page, x, y);
+  } catch (err) {
+    log.warn('badgeStillMatchesAtPoint: lookup threw — allowing click', {
+      message: (err as Error).message,
+    });
+    return true;
+  }
+  if (!current) {
+    // Nothing identifiable under the stored coordinate now — treat as drift.
+    return false;
+  }
+  // Names can be long visible-text blobs that get truncated differently
+  // (80 vs 79+… ). Compare on a normalized prefix so a benign truncation
+  // boundary difference doesn't read as drift, while a real label change
+  // still does.
+  const norm = (s: string) => s.replace(/[…]+$/, '').trim().slice(0, 60);
+  return current.role === expected.role && norm(current.name) === norm(expected.name);
+}
+
 // ─── Anthropic computer_20251124 tool param ──────────────────────────────
 
 /**
@@ -210,6 +274,49 @@ export const VISION_TOOL_PARAM = {
 } as const;
 
 export const VISION_TOOL_NAME = 'computer';
+
+/**
+ * Viewport-drift guard (robustness fix): read the live Playwright viewport
+ * once and assert it matches the display size we DECLARE to the model
+ * (VISION_TOOL_PARAM.display_{width,height}_px). A mismatch means the
+ * model's coordinate space and the page's coordinate space disagree, so
+ * every coordinate click lands in the wrong place — far better to fail
+ * loudly here than to ship a run of silently-wrong clicks.
+ *
+ * Runs at most once per page (guarded by `viewportAssertedPages`). We
+ * THROW on a hard mismatch so the surrounding executeVisionAction try/catch
+ * converts it into an isError tool result the model sees immediately;
+ * `viewportSize()` returning null (rare — only for non-emulated contexts)
+ * is logged but not fatal, since then there's no declared box to compare.
+ */
+function assertViewportMatchesDisplay(page: Page): void {
+  if (viewportAssertedPages.has(page)) return;
+  viewportAssertedPages.add(page);
+  const vp = page.viewportSize();
+  const declaredW = VISION_TOOL_PARAM.display_width_px;
+  const declaredH = VISION_TOOL_PARAM.display_height_px;
+  if (!vp) {
+    log.warn('viewport-drift-check: page.viewportSize() is null — skipping assert', {
+      declaredW,
+      declaredH,
+    });
+    return;
+  }
+  if (vp.width !== declaredW || vp.height !== declaredH) {
+    log.error('viewport-drift: Playwright viewport != declared display size', {
+      actualWidth: vp.width,
+      actualHeight: vp.height,
+      declaredWidth: declaredW,
+      declaredHeight: declaredH,
+    });
+    throw new Error(
+      `Viewport drift: Playwright viewport is ${vp.width}x${vp.height} but the ` +
+        `computer tool declares ${declaredW}x${declaredH} to the model — every click ` +
+        `coordinate would be off. Open the browser context with viewport ` +
+        `${declaredW}x${declaredH} (see mapper.ts VIEWPORT).`,
+    );
+  }
+}
 
 // ─── Action types — what Anthropic's tool emits as `input` ────────────────
 
@@ -260,6 +367,12 @@ export async function executeVisionAction(
     // (Plan v8 D.2 deleted the DOM-era policy.ts allow/deny layer; vision
     // actions don't carry element-attribute hints to gate on anyway).
     log.info('vision-action', { phase, action: action.action });
+
+    // Viewport-drift guard: on the first action against this page, assert
+    // the live Playwright viewport equals the display size we declare to
+    // the model. A mismatch throws (caught below → isError result) so a
+    // misconfigured context fails loudly instead of mis-landing every click.
+    assertViewportMatchesDisplay(page);
 
     // Set-of-Mark cleanup. Badges from the previous screenshot are
     // pointer-events:none so they don't block clicks, but we still
@@ -322,6 +435,41 @@ export async function executeVisionAction(
         const [rawX, rawY] = action.coordinate;
         const x = resolved?.x ?? rawX;
         const y = resolved?.y ?? rawY;
+        // Stale-badge guard: a badge's coordinate is from screenshot time and
+        // can be stale by now (scroll / layout shift / dialog). If we resolved
+        // a badge that carried a role+name, re-verify JUST-IN-TIME that the
+        // element still sitting under the stored coordinate matches before we
+        // click — otherwise we'd silently click whatever drifted into that
+        // spot. On mismatch, bail with isError so the model re-screenshots
+        // (which redraws fresh badges at fresh coordinates) instead of
+        // clicking blind. Raw-coordinate clicks are the model's own live
+        // visual targeting, so they don't get (or need) this guard.
+        if (resolved?.roleName) {
+          const stillMatches = await badgeStillMatchesAtPoint(
+            page,
+            x,
+            y,
+            resolved.roleName,
+          );
+          if (!stillMatches) {
+            log.warn('left_click: stale Set-of-Mark badge — refusing blind click', {
+              badge: action.text,
+              x,
+              y,
+              expectedRole: resolved.roleName.role,
+              expectedName: resolved.roleName.name,
+            });
+            return {
+              output:
+                `Badge ${action.text} is stale — the element at its recorded position ` +
+                `(${x}, ${y}) no longer matches the "${resolved.roleName.role}" labeled ` +
+                `"${resolved.roleName.name}" (the page likely scrolled, re-laid-out, or ` +
+                `opened a dialog since the last screenshot). Did NOT click to avoid hitting ` +
+                `the wrong element. Take a fresh screenshot and click the up-to-date badge.`,
+              isError: true,
+            };
+          }
+        }
         // Capture role+name BEFORE the click — the click may navigate
         // away and the element will be gone afterward. Prefer the badge's
         // own roleName (we already extracted it during applySetOfMark);

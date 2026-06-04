@@ -29,7 +29,7 @@ import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
 import { loadActive, type LoadedKnowledgeFile } from './knowledge-file.js';
-import { checkBudget, markResumed } from './cost-cap.js';
+import { checkBudget, markResumed, checkDailyMappingSpend } from './cost-cap.js';
 import { schedule as singleFlight, getMetrics as getSingleFlightMetrics } from './single-flight.js';
 import { shouldRestart } from './memory-monitor.js';
 import {
@@ -285,6 +285,20 @@ export class SessionDriver {
    */
   acquireBrowserLock(): () => void {
     this.browserLockDepth++;
+    // Reader safety (single-flight reads, detectLoggedOut, re-login) assumes
+    // EXACTLY ONE write lane drives this.page at a time — the lock is a
+    // depth counter, not a serializing mutex. If a second writer ever
+    // acquires concurrently (depth > 1), two code paths could drive the same
+    // page at once and corrupt reads. There's only one write lane today
+    // (workflow-runtime), so this must never happen; flag it loudly rather
+    // than letting a future second lane silently race. Don't throw — the
+    // caller still needs its release fn so the existing lane isn't wedged.
+    if (this.browserLockDepth > 1) {
+      log.error('session-driver: browser lock acquired concurrently (depth > 1) — reader safety assumes a single write lane', {
+        propertyId: this.propertyId,
+        depth: this.browserLockDepth,
+      });
+    }
     log.info('session-driver: browser lock acquired', {
       propertyId: this.propertyId,
       depth: this.browserLockDepth,
@@ -453,6 +467,21 @@ export class SessionDriver {
         propertyId: this.propertyId,
         url: safeUrl(this.page!),
         err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return false;
+    }
+    // Reactive MFA can land mid-redirect: the URL leaves j_security_check
+    // (positive signal) but an MFA challenge is actually rendering, and the
+    // username field being gone is NOT proof of login. Let the network
+    // settle (best-effort — slow PMS redirect chains), then re-detect MFA.
+    // If a challenge is up, pause for MFA rather than declaring success.
+    await this.page!.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+    const postRedirectMfa = await detectMfaPrompt(this.page!);
+    if (postRedirectMfa.mfa) {
+      await pauseForMfa({
+        propertyId: this.propertyId,
+        detectedSelector: postRedirectMfa.selector,
+        loginUrl: login.startUrl,
       });
       return false;
     }
@@ -767,6 +796,11 @@ export class SessionDriver {
     }
 
     const results: Array<{ table: string; ok: boolean; rowsWritten?: number; reason?: string }> = [];
+    // Read-health signal (fix 2): a sweep is "successful" iff at least one
+    // feed both ran ok AND returned rows. Drives last_successful_read_at /
+    // read_failure_streak below so the doctor + property-sessions UI can
+    // tell a quietly-stuck session (logged-out, drifted) from a healthy one.
+    let anySuccessfulFeed = false;
 
     // Process in stable order: dashboard / in-house snapshot first
     // (cheapest, most-displayed), then list pages, then drill-down.
@@ -815,6 +849,9 @@ export class SessionDriver {
           rowsWritten: saveResult.inserted + saveResult.updated + saveResult.autoResolved,
           reason: saveResult.errors[0],
         });
+        // Read-health (fix 2): this feed ran ok and produced rows — the
+        // session is genuinely reading the PMS, not staring at a login wall.
+        if (runResult.rows.length > 0) anySuccessfulFeed = true;
         // Plan v8 self-repair — track zero-row streak; trigger repair
         // when threshold tripped. Non-zero row count resets the streak.
         // Suppress on a logged-out poll (fix 2).
@@ -833,6 +870,60 @@ export class SessionDriver {
       propertyId: this.propertyId,
       results,
     });
+
+    // Read-health signals (fix 2). On a sweep with at least one ok+rows
+    // feed: stamp last_successful_read_at and zero the failure streak. On a
+    // fully-empty sweep (every feed failed / drifted / login wall): bump the
+    // streak so the doctor + property-sessions UI surface a quietly-stuck
+    // session. Folded into a property_sessions update alongside last_alive_at
+    // so it rides the same write the heartbeat path uses. Best-effort — a
+    // failed update only loses a health stat, never the poll itself.
+    try {
+      if (anySuccessfulFeed) {
+        const { error } = await supabase
+          .from('property_sessions')
+          .update({
+            last_alive_at: new Date().toISOString(),
+            last_successful_read_at: new Date().toISOString(),
+            read_failure_streak: 0,
+          })
+          .eq('property_id', this.propertyId);
+        if (error) {
+          log.warn('session-driver: read-health (success) update failed', {
+            propertyId: this.propertyId,
+            err: error.message,
+          });
+        }
+      } else {
+        // Increment without an RPC: read the current streak, then write +1.
+        // The cap is a soft monitoring signal, so an occasional lost bump
+        // under concurrency is acceptable (matches the cost-cap rationale).
+        const { data } = await supabase
+          .from('property_sessions')
+          .select('read_failure_streak')
+          .eq('property_id', this.propertyId)
+          .maybeSingle();
+        const prev = (data as { read_failure_streak: number | null } | null)?.read_failure_streak ?? 0;
+        const { error } = await supabase
+          .from('property_sessions')
+          .update({
+            last_alive_at: new Date().toISOString(),
+            read_failure_streak: prev + 1,
+          })
+          .eq('property_id', this.propertyId);
+        if (error) {
+          log.warn('session-driver: read-health (failure) update failed', {
+            propertyId: this.propertyId,
+            err: error.message,
+          });
+        }
+      }
+    } catch (err) {
+      log.warn('session-driver: read-health update threw (non-fatal)', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // ─── Internals: heartbeat + status ───────────────────────────────────
@@ -1118,6 +1209,28 @@ export class SessionDriver {
 
   private async enqueueSelfRepairJob(actionKey: keyof Recipe['actions']): Promise<void> {
     if (!this.knowledgeFile) return;
+
+    // Money-path guard: a self-repair enqueues a paid mapper run (~$2 in
+    // vision mode). The per-hotel $5 cap only gates the polling loop's own
+    // Claude calls — mapping spend is deliberately excluded from it — so
+    // without this check a string of drifting feeds could fire unbounded
+    // paid repairs org-wide. Honor the aggregate daily mapping cap here
+    // (same gate workflow-runtime/mapping-driver use): if the org is
+    // over-cap, skip + log and let the next poll's streak retry once spend
+    // resets. Fail-open on a query error (checkDailyMappingSpend already
+    // logs + returns over=false) — the per-job cap remains the backstop.
+    const mappingSpend = await checkDailyMappingSpend();
+    if (mappingSpend.over) {
+      log.warn('session-driver: self-repair skipped — daily mapping spend cap reached', {
+        actionKey,
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+        spentMicros: mappingSpend.spentMicros,
+        capMicros: mappingSpend.capMicros,
+      });
+      return;
+    }
+
     const allActions = this.knowledgeFile.knowledge.actions as Recipe['actions'];
     if (!allActions || !(actionKey in allActions)) {
       log.warn('session-driver: self-repair skipped — target not in active recipe', {

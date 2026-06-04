@@ -31,6 +31,50 @@ export const maxDuration = 60;
 const FAILED_LOOKBACK_MS = 30 * 60_000; // a write that gave up in the last 30 min
 const PENDING_STUCK_MS = 10 * 60_000; // a write not drained within 10 min
 
+/**
+ * A terminally-failed pms.write (max_attempts=1, never retried) is an UNRESOLVED
+ * incident, not a transient blip. It only lands in the FAILED_LOOKBACK_MS window
+ * for 30 min, after which the "stuck" check stops seeing it — so without this
+ * guard a property would "recover" purely by aging out, firing a false
+ * "PMS sync recovered" text even though the write never happened.
+ *
+ * This compares the most-recent FAILED pms.write against the most-recent
+ * COMPLETED one (both stamp completed_at via the workflow-runtime). A failure
+ * with no newer success means the write still hasn't landed → the incident is
+ * unresolved and recovery must NOT fire. Once a real successful write lands
+ * (its completed_at is newer than the last failure's, or there was never a
+ * failure), this returns false and the honest recovery edge can proceed.
+ */
+async function hasUnresolvedWriteFailure(propId: string): Promise<boolean> {
+  const [lastFailed, lastCompleted] = await Promise.all([
+    supabaseAdmin
+      .from('workflow_jobs')
+      .select('completed_at')
+      .eq('property_id', propId)
+      .eq('kind', 'pms.write')
+      .eq('status', 'failed')
+      .not('completed_at', 'is', null)
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('workflow_jobs')
+      .select('completed_at')
+      .eq('property_id', propId)
+      .eq('kind', 'pms.write')
+      .eq('status', 'completed')
+      .not('completed_at', 'is', null)
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  const failedAt = (lastFailed.data?.completed_at as string | null) ?? null;
+  if (!failedAt) return false; // no terminal failure on record → nothing unresolved
+  const completedAt = (lastCompleted.data?.completed_at as string | null) ?? null;
+  // Unresolved iff no successful write has landed AT OR AFTER the last failure.
+  return !completedAt || completedAt < failedAt;
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const unauth = requireCronSecret(req);
@@ -152,16 +196,33 @@ export async function GET(req: NextRequest) {
         );
         alerted++;
       } else if (!stuck && wasAlerting) {
-        if (phone) {
-          await sendSms(phone, `Staxis: PMS sync recovered at ${propName}.`).catch((e) =>
-            log.error('[pms-sync-watchdog] recovery sms failed', { err: (e as Error).message }),
+        // A terminally-failed pms.write only sits in the failed-lookback window
+        // for 30 min, so `stuck` can flip false purely by aging out even though
+        // the write never landed. Don't call that "recovered": only recover once
+        // a subsequent successful write exists. Until then, stay 'alerting' (and
+        // refresh the reason) so the incident isn't silently auto-resolved.
+        if (await hasUnresolvedWriteFailure(propId)) {
+          await supabaseAdmin.from('pms_sync_alert_state').upsert(
+            {
+              property_id: propId,
+              state: 'alerting',
+              last_reason: 'PMS write still failed — manual fix needed',
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'property_id' },
           );
+        } else {
+          if (phone) {
+            await sendSms(phone, `Staxis: PMS sync recovered at ${propName}.`).catch((e) =>
+              log.error('[pms-sync-watchdog] recovery sms failed', { err: (e as Error).message }),
+            );
+          }
+          await supabaseAdmin.from('pms_sync_alert_state').upsert(
+            { property_id: propId, state: 'ok', last_recovery_at: new Date().toISOString(), last_reason: null, updated_at: new Date().toISOString() },
+            { onConflict: 'property_id' },
+          );
+          recovered++;
         }
-        await supabaseAdmin.from('pms_sync_alert_state').upsert(
-          { property_id: propId, state: 'ok', last_recovery_at: new Date().toISOString(), last_reason: null, updated_at: new Date().toISOString() },
-          { onConflict: 'property_id' },
-        );
-        recovered++;
       }
     }
 
@@ -200,6 +261,12 @@ export async function GET(req: NextRequest) {
           .lt('created_at', pendingCutoff),
       ]);
       if ((failedRes.count ?? 0) > 0 || (pendingRes.count ?? 0) > 0) continue; // still genuinely stuck
+
+      // Same aging-out trap as the main loop: a terminal failure that has fallen
+      // out of the 30-min window leaves both counts at 0, but the write still
+      // never landed. Don't auto-recover it here — keep the row 'alerting' until
+      // a subsequent successful write exists.
+      if (await hasUnresolvedWriteFailure(propId)) continue;
 
       const { data: prop } = await supabaseAdmin
         .from('properties')

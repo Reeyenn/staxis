@@ -22,7 +22,7 @@
 
 import { createHmac } from 'node:crypto';
 import { env } from './env.js';
-import type { Recipe } from './types.js';
+import type { Recipe, WriteActionRecipe } from './types.js';
 
 /**
  * Short identifier for the active signing key. Derived from the first 8
@@ -83,7 +83,7 @@ export interface RecipeSignature {
  * Throws when `RECIPE_SIGNING_KEY` is missing — the caller MUST check
  * env first (see `isRecipeSigningConfigured`).
  */
-export function signRecipe(recipe: Recipe): RecipeSignature {
+export function signRecipe(recipe: Recipe | WriteActionRecipe): RecipeSignature {
   const key = env.RECIPE_SIGNING_KEY;
   if (!key) throw new Error('RECIPE_SIGNING_KEY is not set');
   const payload = canonicalJson(recipe);

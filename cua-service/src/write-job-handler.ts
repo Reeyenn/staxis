@@ -36,6 +36,29 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
     return { ok: false, error: 'writes_killed' };
   }
 
+  // 0a. Session pre-flight gate. A cost-cap-paused / MFA-paused / otherwise
+  //     not-'alive' hotel has no usable logged-in browser, so driving a real
+  //     PMS write would terminal-fail on an expired session and burn the job's
+  //     retry budget. Bail BEFORE any browser action with a distinct TRANSIENT
+  //     error — markFailedOrRetry re-queues (while attempts remain) so the job
+  //     drains once the session resumes (cost cap clears at midnight, MFA on
+  //     /admin/mfa-resume). The runtime owns the attempt counter; we can't mark
+  //     this non-counting from here, so the contract is "distinct transient
+  //     error + log, never a hard/silent failure".
+  const { data: sess, error: sessErr } = await supabase
+    .from('property_sessions')
+    .select('status')
+    .eq('property_id', ctx.propertyId)
+    .maybeSingle();
+  if (sessErr) return { ok: false, error: `session_read_failed: ${sessErr.message}` };
+  const sessionStatus = typeof sess?.status === 'string' ? sess.status : 'unknown';
+  if (sessionStatus !== 'alive') {
+    log.warn('write-job-handler: deferring — session not alive (transient)', {
+      propertyId: ctx.propertyId, sessionStatus,
+    });
+    return { ok: false, error: `session_not_alive:${sessionStatus}` };
+  }
+
   const payload = ctx.payload as Record<string, unknown>;
   const actionKey = typeof payload.action_key === 'string' ? payload.action_key : '';
   const roomNumber = typeof payload.room_number === 'string' ? payload.room_number : '';
@@ -77,6 +100,22 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
     .maybeSingle();
   if (!rec) return { ok: false, error: 'no_active_write_recipe' };
   const recipe = rec.recipe as WriteActionRecipe;
+
+  // 3-pre. Param-contract assert. The job-side write payload only plumbs these
+  //   four keys into the recipe replay (see step 5: target_status/room_number/
+  //   action_key/origin_log_id). A recipe authored referencing any OTHER param
+  //   name ($payload.foo) would resolve to undefined and fail closed mid-replay
+  //   on an occupied room. Reject it up front, BEFORE any browser action.
+  const PLUMBED_PARAMS = ['target_status', 'room_number', 'action_key', 'origin_log_id'];
+  const requiredParams = Array.isArray(recipe.requiredParams) ? recipe.requiredParams : [];
+  const unplumbed = requiredParams.find((p) => !PLUMBED_PARAMS.includes(p));
+  if (unplumbed) {
+    log.error('write-job-handler: recipe requires an unplumbed param — refusing (fail closed)', {
+      propertyId: ctx.propertyId, pmsFamily, actionKey, unplumbed,
+    });
+    return { ok: false, error: `recipe_param_unplumbed:${unplumbed}` };
+  }
+
   const verify = verifyRecipe(
     recipe as unknown as Recipe,
     decodeBytea(rec.signature),

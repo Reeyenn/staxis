@@ -90,16 +90,10 @@ export interface PlanSnapshot {
  * the config is absent.
  */
 async function buildSnapshot(pid: string, date: string): Promise<PlanSnapshot> {
-  const [workRows, counts, propRow, latestEventRow] = await Promise.all([
+  const [workRows, counts, propRow] = await Promise.all([
     fetchTodayRoomWork(pid, date),
     fetchTodayPropertyCounts(pid, date),
     supabase.from('properties').select('config').eq('id', pid).maybeSingle(),
-    supabase.from('pms_room_status_log')
-      .select('changed_at')
-      .eq('property_id', pid)
-      .order('changed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
   ]);
 
   const config = (propRow.data?.config ?? {}) as Record<string, unknown>;
@@ -151,9 +145,15 @@ async function buildSnapshot(pid: string, date: string): Promise<PlanSnapshot> {
     ? Math.max(0, Math.ceil(totalCleaningMinutes / shiftMinutes))
     : 0;
 
-  const latestEventAt = latestEventRow.data?.changed_at
-    ? new Date(latestEventRow.data.changed_at as string)
-    : null;
+  // `pulledAt` (the "last pulled at" freshness on the Schedule tab) used to
+  // come from a direct read of pms_room_status_log via the anon browser
+  // client. pms_* tables are RLS deny-all for anon AND authenticated, so
+  // that read silently returned nothing (the #1 recurring Staxis bug). The
+  // bridge RPCs (today_room_work_v1 / today_property_counts_v1) don't expose
+  // a max(changed_at), so we degrade: leave pulledAt null and let the
+  // indicator simply not render, rather than depend on a read RLS blocks.
+  // See concerns — a follow-up SECURITY DEFINER freshness RPC could restore it.
+  const latestEventAt = null;
 
   return {
     date,
