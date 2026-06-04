@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0256 — pms_table_schemas DESCRIPTOR fixups (two targeted corrections).
+-- 0258 — pms_table_schemas DESCRIPTOR fixups (two targeted corrections).
 --
 -- Why this exists:
 --   Same descriptor-vs-table relationship as 0255: the 0202 table CHECK
@@ -86,7 +86,7 @@ where table_name = 'pms_lost_and_found'
 
 -- ─── Track the migration ─────────────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
-values ('0256', 'pms_table_schemas descriptor fixups: drop status from pms_housekeeping_assignments descriptor so the CUA refresh never clobbers the manager-set lifecycle status; align pms_lost_and_found.status descriptor allowed_values to the 0202 table CHECK (open, claimed, disposed, shipped, expired). Descriptors only — CHECK constraints unchanged (CHECK is authoritative).')
+values ('0258', 'pms_table_schemas descriptor fixups: drop status from pms_housekeeping_assignments descriptor so the CUA refresh never clobbers the manager-set lifecycle status; align pms_lost_and_found.status descriptor allowed_values to the 0202 table CHECK (open, claimed, disposed, shipped, expired). Descriptors only — CHECK constraints unchanged (CHECK is authoritative).')
 on conflict (version) do nothing;
 
 -- ─── PostgREST schema reload ─────────────────────────────────────────────────
