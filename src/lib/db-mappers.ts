@@ -547,6 +547,13 @@ export function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
     // but omits undefined so existing write paths are untouched.
     equipment_id: o.equipmentId,
     repair_cost: o.repairCost,
+    // "Call in a professional" lane (0262). All optional; dropUndefined omits
+    // any the caller didn't set so existing write paths are untouched.
+    needs_pro: o.needsPro,
+    pro_trade: o.proTrade,
+    pro_company: o.proCompany,
+    pro_phone: o.proPhone,
+    pro_called_at: toISO(o.proCalledAt),
   });
 }
 
@@ -569,6 +576,13 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     completedAt: toDate(r.resolved_at),
     equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
     repairCost: r.repair_cost != null && Number.isFinite(Number(r.repair_cost)) ? Number(r.repair_cost) : null,
+    // "Call in a professional" lane (0262). needs_pro may be absent on rows
+    // written before the migration → coerce to false.
+    needsPro: Boolean(r.needs_pro),
+    proTrade: parseStringField(r.pro_trade),
+    proCompany: parseStringField(r.pro_company),
+    proPhone: parseStringField(r.pro_phone),
+    proCalledAt: toDate(r.pro_called_at),
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
   };

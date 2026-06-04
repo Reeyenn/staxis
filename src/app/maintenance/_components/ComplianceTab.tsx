@@ -1,5 +1,14 @@
 'use client';
 
+// ⚠️ PARKED (Jun 2026 Maintenance redesign): this component is no longer linked
+// from the Maintenance nav — that tab now has Work orders · Preventive ·
+// Equipment only. The compliance FEATURE is untouched and still live: anomaly
+// crons, the engineer SMS links (/engineer/[id]) and the dashboard summary all
+// keep running. This manager-facing surface is kept on disk (not deleted) so it
+// can be re-linked trivially if a new home is chosen. To restore: re-add the
+// import + a tab entry in page.tsx and _mt-snow's MTSubTabBar. Don't delete
+// without first giving the compliance manager-UI a new entry point.
+//
 // Maintenance → Compliance tab (feature #19, manager/GM desktop surface).
 //
 // Today's required readings + PM checks, done/overdue status, out-of-range
