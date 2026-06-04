@@ -38,6 +38,7 @@ import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/ll
 import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
+import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import { recordNonRequestCost, assertAudioBudget } from '@/lib/agent/cost-controls';
 import {
   resolveVoiceSession,
@@ -449,9 +450,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
 
         // Build the system prompt for this turn AFTER keepalive flushes.
-        // surface='voice' is passed below to getToolsForRole — the voice
-        // catalog is empty today (no tool opts in via surfaces:['voice']),
-        // which is the secure-by-default posture after the Codex P0 fix.
+        // surface='voice' is passed below to getToolsForRole — the general
+        // voice catalog includes the memory tools (remember/forget) alongside
+        // the existing general-voice tools; tools opt into voice explicitly
+        // (the secure-by-default posture after the Codex P0 fix).
         //
         // Feature #11: the voice mode + UI room hint are stitched into the
         // system prompt by buildSystemPrompt so the agent in 'housekeeper_issue'
@@ -459,11 +461,14 @@ export async function POST(req: NextRequest): Promise<Response> {
         // defaults the room to whatever the UI hint says.
         let systemPrompt;
         try {
-          const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId);
+          const [snapshot, memoryBlock] = await Promise.all([
+            buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId),
+            retrieveMemoryForTurn(ctx.propertyId, ctx.accountId),
+          ]);
           systemPrompt = await buildSystemPrompt(ctx.role, snapshot, ctx.conversationId, {
             mode: ctx.mode,
             currentRoomNumber: ctx.currentRoomNumber,
-          });
+          }, memoryBlock);
         } catch (e) {
           log.error('[voice-brain] failed to build system prompt', { requestId, e });
           const id = makeOpenAiId();
@@ -480,16 +485,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Codex 2026-05-16 P0 fix (Pattern E): pass surface='voice' so the
         // tool registry filters down to tools that explicitly opt into the
         // voice surface (via `surfaces: ['voice']` on their definition).
-        // Today no tool opts in → voice gets an empty tool list, which is
-        // the secure default. Curating which tools are voice-callable is a
-        // deliberate product decision tracked separately.
+        // Memory tools (remember/forget) opt into general voice via
+        // surfaces:['chat','voice'] + voiceModes:['general'], alongside the
+        // existing general-voice tools. Curating which tools are voice-callable
+        // is a deliberate product decision tracked separately.
         //
         // Feature #11 (2026-05-24): pass the voice mode so tools that opt
         // into a specific mode (e.g. createMaintenanceWorkOrder with
         // voiceModes: ['housekeeper_issue']) are only exposed when the
-        // session is in that mode. General voice sessions still get an
-        // empty catalog; housekeeper_issue mode gets just the issue-
-        // reporter tool.
+        // session is in that mode. General voice sessions get the memory
+        // tools; housekeeper_issue mode gets just the issue-reporter tool.
         const tools = getToolsForRole(ctx.role, 'voice', ctx.mode);
         const userCtx = {
           uid: ctx.userId,
@@ -515,6 +520,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             voiceMode: ctx.mode,
             currentRoomNumber: ctx.currentRoomNumber,
             voiceSessionId: ctx.voiceSessionId,
+            conversationId: ctx.conversationId,
           },
         });
 

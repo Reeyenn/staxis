@@ -7,8 +7,10 @@
  * Feature #11 (2026-05-24): introduced the `housekeeper_issue` voice mode
  * and the createMaintenanceWorkOrder tool that opts into it. The general
  * voice mode (passed when the housekeeper-issue button isn't the entry
- * point) still gets an empty tool catalog — the new tool declares
- * `voiceModes: ['housekeeper_issue']` so it's hidden from any other mode.
+ * point) gets the general-voice tools (log_complaint, log_found_item,
+ * get_time_off_requests for managers, and remember/forget); the
+ * createMaintenanceWorkOrder tool declares `voiceModes: ['housekeeper_issue']`
+ * so it stays hidden from any other mode.
  *
  * This test exists to make sure any future tool that opts into voice
  * triggers an explicit security review. If you're hitting a regression
@@ -56,8 +58,18 @@ describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => 
     test(`role=${role} general voice mode catalog`, () => {
       const tools = getToolsForRole(role as never, 'voice', 'general');
       // sorted: 'get_time_off_requests' < 'log_complaint' < 'log_found_item'
+      // Memory tools (remember/forget) opt into general voice for ALL roles
+      // (voiceModes:['general']). Audited before updating this snapshot: role-
+      // gated via allowedRoles, hotel-scope writes additionally management-gated
+      // in the handler, property-scoped, PII-redacted, caps-bounded — they only
+      // read/write the hotel's own memory, never operational data.
+      const memoryTools = ['forget', 'remember'];
       const base = GENERAL_VOICE_ROLES.has(role) ? ['log_complaint', 'log_found_item'] : [];
-      const expected = (MANAGER_VOICE_ROLES.has(role) ? ['get_time_off_requests', ...base] : base).sort();
+      const expected = [
+        ...(MANAGER_VOICE_ROLES.has(role) ? ['get_time_off_requests'] : []),
+        ...base,
+        ...memoryTools,
+      ].sort();
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
         expected,
@@ -99,12 +111,13 @@ describe('voice surface tool catalog — surface omitted (no-mode call)', () => 
   test('no-mode lookup sees the voice-mode-gated tools (executor still refuses)', () => {
     const tools = getToolsForRole('housekeeping' as never, 'voice');
     // housekeeping is in allowedRoles for createMaintenanceWorkOrder
-    // (voiceModes:['housekeeper_issue']), log_complaint and log_found_item
-    // (both voiceModes:['general']); with no mode the voiceModes filter no-ops
-    // so all three surface. (Compliance tools exclude the housekeeping role.)
+    // (voiceModes:['housekeeper_issue']), log_complaint + log_found_item +
+    // remember + forget (all voiceModes:['general']); with no mode the
+    // voiceModes filter no-ops so all of them surface. (Compliance tools and
+    // get_time_off_requests exclude the housekeeping role.)
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['createMaintenanceWorkOrder', 'log_complaint', 'log_found_item'],
+      ['createMaintenanceWorkOrder', 'forget', 'log_complaint', 'log_found_item', 'remember'],
       'No-mode getToolsForRole bypasses voiceModes filter — this is fine because executeTool re-checks mode.',
     );
   });
