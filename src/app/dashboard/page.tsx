@@ -28,6 +28,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
+import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
@@ -721,6 +722,9 @@ export default function DashboardPage() {
 
           {/* What Staxis learned — self-learning Move #2; renders only once populated */}
           <MemoryRecapCard />
+
+          {/* What Staxis knows about your hotel + impact — management view */}
+          <WhatStaxisKnowsCard />
 
         </div>
       </div>
