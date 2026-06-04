@@ -21,7 +21,7 @@ import { recordNonRequestCost } from './cost-controls';
 import { runAgent, escapeTrustMarkerContent } from './llm';
 import { storeMemory } from '@/lib/db/agent-memory';
 import { redactMemoryContent } from './memory-redact';
-import { gatherOperationalSignals, templateContent } from './operational-signals';
+import { gatherOperationalSignals, templateContent, MAX_SIGNALS } from './operational-signals';
 import { runWithConcurrency } from '@/lib/parallel';
 
 const LOOKBACK_HOURS = 24;
@@ -90,7 +90,10 @@ function slugifyTopic(raw: string): string {
     .slice(0, 80);
 }
 
-export function parseExtraction(text: string): { recap: string; facts: ExtractedFact[] } {
+export function parseExtraction(
+  text: string,
+  maxFacts: number = MAX_FACTS_PER_RUN,
+): { recap: string; facts: ExtractedFact[] } {
   try {
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
@@ -104,7 +107,7 @@ export function parseExtraction(text: string): { recap: string; facts: Extracted
               typeof (f as ExtractedFact).topic === 'string' &&
               typeof (f as ExtractedFact).content === 'string',
           )
-          .slice(0, MAX_FACTS_PER_RUN)
+          .slice(0, maxFacts)
       : [];
     return { recap: typeof obj.recap === 'string' ? obj.recap : '', facts };
   } catch {
@@ -406,7 +409,7 @@ export async function consolidateOperationalSignals(
       },
       model: 'sonnet',
     });
-    const parsed = parseExtraction(run.text);
+    const parsed = parseExtraction(run.text, MAX_SIGNALS);
     recap = parsed.recap;
     for (const f of parsed.facts) {
       const t = slugifyTopic(f.topic);
@@ -420,14 +423,19 @@ export async function consolidateOperationalSignals(
     captureException(err, { subsystem: 'memory-consolidate', failure_mode: 'operational_llm_failed', propertyId });
   }
 
-  // 4) Store. If the LLM ran, store ONLY the signals it kept (it may drop noise),
-  //    using its wording. If it failed, template-phrase every signal.
-  const toStore = usedLlm ? signals.filter((s) => llmContent.has(s.topic)) : signals;
+  // 4) Store. The model owns WORDING and may drop INDIVIDUAL noise lines. But if
+  //    it drops EVERYTHING (or returns valid-but-empty facts) while the
+  //    deterministic detector found real, threshold-passing patterns, fall back
+  //    to templates — one model whim must not silently suppress a hotel's whole
+  //    operational learning. Per-signal content: the model's wording if present,
+  //    else the template.
+  const llmKept = usedLlm ? signals.filter((s) => llmContent.has(s.topic)) : [];
+  const toStore = !usedLlm || llmKept.length === 0 ? signals : llmKept;
   const expiresAt = new Date(Date.now() + CONSOLIDATION_EXPIRY_DAYS * 86400_000).toISOString();
   let learned = 0;
   let updated = 0;
   for (const s of toStore) {
-    const raw = usedLlm ? (llmContent.get(s.topic) as string) : templateContent(s);
+    const raw = llmContent.get(s.topic) ?? templateContent(s);
     const content = redactMemoryContent(String(raw).slice(0, 500)).content.trim();
     if (!content) continue;
     const res = await storeMemory({

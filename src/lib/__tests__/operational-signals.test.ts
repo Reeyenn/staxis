@@ -144,8 +144,19 @@ describe('signalsFromCompliance', () => {
     ];
     const sigs = signalsFromCompliance(rows, names);
     assert.equal(sigs.length, 1);
-    assert.equal(sigs[0].topic, 'op_compliance_pool_ph');
-    assert.equal(sigs[0].targetLabel, 'Pool pH');
+    assert.equal(sigs[0].topic, 'op_compliance_t1', 'topic keyed on the stable reading_type_id');
+    assert.equal(sigs[0].targetLabel, 'Pool pH', 'display name carried separately');
+  });
+
+  test('SLUG STABILITY: renaming the reading type does NOT change the topic', () => {
+    const rows = [
+      { reading_type_id: 't1', out_of_range: true },
+      { reading_type_id: 't1', out_of_range: true },
+      { reading_type_id: 't1', out_of_range: true },
+    ];
+    const before = signalsFromCompliance(rows, new Map([['t1', 'Pool pH']]));
+    const after = signalsFromCompliance(rows, new Map([['t1', 'Pool pH (deep end)']]));
+    assert.equal(before[0].topic, after[0].topic, 'a rename must not fork into a duplicate memory row');
   });
 });
 

@@ -79,19 +79,21 @@ export async function GET(req: NextRequest) {
 
   // "What Staxis noticed" = operational attention insights, still fresh.
   const freshCutoff = Date.now() - NOTICED_FRESH_DAYS * 86400_000;
-  const noticed = all
-    .filter(
-      (i) =>
-        i.source === 'operational' &&
-        insightSeverityFromTopic(i.topic) === 'attention' &&
-        new Date(i.updatedAt).getTime() >= freshCutoff,
-    )
+  const attention = all.filter(
+    (i) =>
+      i.source === 'operational' &&
+      insightSeverityFromTopic(i.topic) === 'attention' &&
+      new Date(i.updatedAt).getTime() >= freshCutoff,
+  );
+  // Exclude ALL fresh attention insights from the "learned" list (not only the
+  // 8 displayed) so a 9th never leaks into the plain section.
+  const noticedIds = new Set(attention.map((i) => i.id));
+  const noticed = attention
     .slice(0, 8)
     .map((i) => ({ id: i.id, topic: i.topic, content: i.content, severity: 'attention' as const }));
-  const noticedIds = new Set(noticed.map((n) => n.id));
 
   // "What Staxis learned" = everything else active (conversation facts +
-  // operational info + older operational), excluding what's already in noticed.
+  // operational info + older operational), excluding the noticed insights.
   const items = all
     .filter((i) => !noticedIds.has(i.id))
     .slice(0, 20)

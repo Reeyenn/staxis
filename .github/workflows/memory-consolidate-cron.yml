@@ -22,13 +22,11 @@ name: Memory consolidate (sharded)
 # requireCronSecret gate).
 
 on:
-  workflow_dispatch:
-    inputs:
-      shard_count:
-        description: 'Number of shards to fan out across'
-        required: false
-        default: '4'
+  workflow_dispatch: {}
 
+# shard_count is hard-coded to 4 to match the matrix below. To change the shard
+# count, edit BOTH the matrix and the shard_count query param together (keeping
+# them in lockstep avoids unprocessed shards / out-of-range offsets).
 jobs:
   consolidate:
     runs-on: ubuntu-latest
@@ -38,13 +36,12 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     steps:
-      - name: Hit /api/cron/agent-consolidate-memory (shard ${{ matrix.shard }})
+      - name: Hit /api/cron/agent-consolidate-memory (shard ${{ matrix.shard }}/4)
         run: |
-          COUNT="${{ github.event.inputs.shard_count || '4' }}"
           # --max-time 310 covers the route's maxDuration=300 with a small buffer.
           curl -fsS --max-time 310 --retry 1 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://getstaxis.com/api/cron/agent-consolidate-memory?shard_offset=${{ matrix.shard }}&shard_count=${COUNT}" \
+            "https://getstaxis.com/api/cron/agent-consolidate-memory?shard_offset=${{ matrix.shard }}&shard_count=4" \
             | tee /tmp/result.json
           # Fail the job only if the route itself errored (envelope ok=false).
           jq -e '.ok == true' /tmp/result.json

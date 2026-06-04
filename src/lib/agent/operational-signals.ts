@@ -66,7 +66,11 @@ export function normalizeRoom(raw: string | null | undefined): string | null {
   return t.replace(/^0+(?=.)/, '');
 }
 
-/** Derive a floor label from a room number: "305"→"3", "1203"→"12", "12"→"12". */
+/** Derive a floor label from a room number: "305"→"3", "1203"→"12", "12"→"12".
+ *  ACCEPTED LIMITATION: the floor-based (weekend-noise) signal assumes ≥3-digit
+ *  room numbering; a 2-digit-room hotel makes each room its own "floor" so the
+ *  per-floor count never reaches threshold — the signal fails CLOSED (no false
+ *  positives), the other signals are unaffected. */
 export function floorOf(raw: string | null | undefined): string | null {
   const room = normalizeRoom(raw);
   if (!room) return null;
@@ -197,7 +201,11 @@ export function signalsFromComplaints(rows: ComplaintRow[]): OperationalSignal[]
     });
   }
 
-  // (b) weekend noise by floor — Fri/Sat/Sun (getUTCDay 5,6,0)
+  // (b) weekend noise by floor — Fri/Sat/Sun (getUTCDay 5,6,0).
+  // ACCEPTED LIMITATION: day-of-week is UTC, not property-local, so complaints
+  // logged near local midnight can land in the adjacent day. Low impact (the
+  // threshold is ≥4; only boundary complaints shift) and it never fabricates a
+  // signal — revisit if we thread the property timezone through this layer.
   const byFloor = new Map<string, number>();
   for (const r of rows) {
     if ((r.category || '').toLowerCase() !== 'noise') continue;
@@ -237,7 +245,9 @@ export function signalsFromCompliance(
     if (n < THRESHOLDS.complianceOutOfRange) continue;
     const name = typeNames.get(typeId) || 'A reading';
     out.push({
-      topic: makeTopic('op_compliance', name),
+      // Topic keyed on the STABLE reading_type_id, never the editable `name` —
+      // renaming a reading type must not fork the memory into a duplicate row.
+      topic: makeTopic('op_compliance', typeId),
       category: 'compliance',
       severity: 'attention',
       targetLabel: name,
@@ -340,7 +350,7 @@ export async function gatherOperationalSignals(propertyId: string): Promise<Oper
     // Maintenance work orders (PMS-fed; empty until the robot's on → auto-activates).
     supabaseAdmin
       .from('pms_work_orders_v2')
-      .select('room_number, category, reported_at, created_at')
+      .select('room_number, category, created_at')
       .eq('property_id', propertyId)
       .gte('created_at', sinceIso)
       .limit(QUERY_ROW_CAP),
@@ -375,6 +385,20 @@ export async function gatherOperationalSignals(propertyId: string): Promise<Oper
       .gte('date', sinceDate)
       .limit(QUERY_ROW_CAP),
   ]);
+
+  // Observability: a failed query is otherwise indistinguishable from "no data"
+  // (empty → no signals), which would make operational learning silently vanish
+  // for a source. Log per-source errors; still aggregate whatever did return.
+  for (const [label, res] of [
+    ['pms_work_orders_v2', woRes],
+    ['complaints', complaintRes],
+    ['compliance_readings', complianceRes],
+    ['compliance_reading_types', typeRes],
+    ['inspections', inspRes],
+    ['cleaning_events', cleanRes],
+  ] as const) {
+    if (res.error) console.error(`[operational-signals] ${label} query failed for ${propertyId}: ${res.error.message}`);
+  }
 
   const typeNames = new Map<string, string>();
   for (const t of (typeRes.data ?? []) as Array<{ id: string; name: string }>) {
