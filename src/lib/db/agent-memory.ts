@@ -184,3 +184,61 @@ export async function listMemory(
   if (error || !data) return [];
   return (data as RawRow[]).map(mapRow);
 }
+
+export interface ConsolidationRecap {
+  recap: string | null;
+  ranAt: string;
+  learnedCount: number;
+  updatedCount: number;
+}
+
+/** Most recent nightly consolidation run for a property (dashboard recap header). */
+export async function getLatestConsolidation(propertyId: string): Promise<ConsolidationRecap | null> {
+  if (!UUID_RX.test(propertyId)) return null;
+  const { data, error } = await supabaseAdmin
+    .from('agent_memory_consolidations')
+    .select('recap, ran_at, learned_count, updated_count')
+    .eq('property_id', propertyId)
+    .order('ran_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    recap: (data.recap as string | null) ?? null,
+    ranAt: data.ran_at as string,
+    learnedCount: (data.learned_count as number) ?? 0,
+    updatedCount: (data.updated_count as number) ?? 0,
+  };
+}
+
+/** Active auto-learned (consolidation) facts for the dashboard "What Staxis learned" card. */
+export async function listLearnedMemory(propertyId: string, limit = 20): Promise<MemoryRow[]> {
+  if (!UUID_RX.test(propertyId)) return [];
+  const { data, error } = await supabaseAdmin
+    .from('agent_memory')
+    .select(SELECT_COLS)
+    .eq('property_id', propertyId)
+    .eq('is_active', true)
+    .eq('scope', 'property')
+    .eq('source', 'consolidation')
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return (data as RawRow[]).map(mapRow);
+}
+
+/** Soft-delete a memory by id, scoped to the property (the dashboard "remove"). */
+export async function deactivateMemoryById(
+  propertyId: string,
+  id: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!UUID_RX.test(propertyId) || !UUID_RX.test(id)) return { ok: false, error: 'bad id' };
+  const { error } = await supabaseAdmin
+    .from('agent_memory')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('property_id', propertyId)
+    .eq('id', id)
+    .eq('is_active', true);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
