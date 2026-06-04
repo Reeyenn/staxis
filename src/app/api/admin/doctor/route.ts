@@ -2077,6 +2077,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'compliance-anomaly-sweep',      cadenceHours: 30/60, description: 'every-30-min leak/spike anomaly sweep — slow-trend + stuck-meter detection + AI phrasing (Vercel native cron) — feature #19 v2' },
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
+  { name: 'agent-consolidate-memory',      cadenceHours: 24,    description: 'nightly per-hotel memory consolidation — auto-learns durable facts from conversations (self-learning Move #2)' },
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },

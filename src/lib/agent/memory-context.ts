@@ -60,7 +60,11 @@ export function formatMemoryForPrompt(rows: MemoryRow[]): string {
   for (const r of ranked) {
     if (lines.length >= MAX_MEMORY_ENTRIES) break;
     const scopeLabel = r.scope === 'user' ? 'you' : 'hotel';
-    const by = r.createdByRole ? `role:${r.createdByRole}` : 'unknown';
+    // Provenance: auto-learned (consolidation) facts are labelled distinctly so
+    // the model weights them as Staxis's own inference, below a manager's word.
+    const by = r.source === 'consolidation'
+      ? 'Staxis-auto'
+      : r.createdByRole ? `role:${r.createdByRole}` : 'unknown';
     const line =
       `<staxis-memory scope="${scopeLabel}" topic="${attrEscape(r.topic)}" ` +
       `by="${attrEscape(by)}" confidence="${attrEscape(r.confidence)}">` +

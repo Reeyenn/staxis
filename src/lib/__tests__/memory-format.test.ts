@@ -55,6 +55,13 @@ describe('formatMemoryForPrompt — structure + empty', () => {
     const out = formatMemoryForPrompt([row({ scope: 'user', subjectAccountId: 'x', content: 'prefers Spanish' })]);
     assert.ok(out.includes('scope="you"'));
   });
+
+  test('auto-learned (consolidation) facts are labelled by="Staxis-auto"', () => {
+    const out = formatMemoryForPrompt([row({ source: 'consolidation', content: 'auto-learned fact' })]);
+    assert.ok(out.includes('by="Staxis-auto"'), 'consolidation provenance must read as Staxis, not a manager role');
+    const human = formatMemoryForPrompt([row({ source: 'explicit_user', createdByRole: 'general_manager', content: 'manager fact' })]);
+    assert.ok(human.includes('by="role:general_manager"'));
+  });
 });
 
 describe('formatMemoryForPrompt — stored injection is neutralized', () => {

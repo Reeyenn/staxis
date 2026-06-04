@@ -27,6 +27,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { MemoryRecapCard } from './_components/MemoryRecapCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
@@ -717,6 +718,9 @@ export default function DashboardPage() {
               ))}
             </section>
           )}
+
+          {/* What Staxis learned — self-learning Move #2; renders only once populated */}
+          <MemoryRecapCard />
 
         </div>
       </div>
