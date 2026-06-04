@@ -252,16 +252,17 @@ export function AskStaxisBar() {
   const lastIsAssistantText = !!last && last.role === 'assistant' && !!last.text && !last.toolName;
   const showTyping = streaming && !lastIsAssistantText;
 
-  // Rising dim — a scrim that fades the page from the bottom up while a chat is
-  // open and climbs as the conversation grows (the chat sits above it, stays lit).
-  const dimOn = chatState === 'active' && !hidden;
-  const dimRise = Math.min(100, 22 + messages.length * 16);
+  // Rising dim — a gentle wash the moment the bar wakes (hover/open), deepening
+  // and climbing once a conversation is actually going. Chat sits above it (lit).
+  const dimOn = !idle && !hidden;
+  const chatting = chatState === 'active' && !hidden;
+  const dimRise = chatting ? Math.min(100, 55 + messages.length * 16) : 34;
 
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: ASX_CSS }} />
       <div
-        className={`asx-scrim${dimOn ? ' asx-scrim-on' : ''}`}
+        className={`asx-scrim${dimOn ? ' asx-scrim-on' : ''}${chatting ? ' asx-scrim-chat' : ''}`}
         style={{ ['--asx-dimrise']: `${dimRise}%` } as React.CSSProperties}
         aria-hidden
       />
@@ -474,9 +475,11 @@ const ASX_CSS = `
    and climbs with the conversation. Below the dock (z 60), above the page; never
    blocks clicks; the chat sits above it so it stays lit. NB: keep gradient stops
    plain/single-var — calc(var()*n) inside a stop voids the whole background. */
-.asx-scrim{position:fixed;inset:0;z-index:50;pointer-events:none;opacity:0;transition:opacity .45s ease;
-  background:linear-gradient(to top, rgba(14,18,16,.5) 0%, transparent var(--asx-dimrise,30%));}
-.asx-scrim.asx-scrim-on{opacity:1;}
+@property --asx-dimrise{syntax:'<length-percentage>';inherits:false;initial-value:30%;}
+.asx-scrim{position:fixed;inset:0;z-index:50;pointer-events:none;opacity:0;transition:opacity .45s ease,--asx-dimrise .45s ease;
+  background:linear-gradient(to top, rgba(12,16,14,.82) 0%, transparent var(--asx-dimrise,30%));}
+.asx-scrim.asx-scrim-on{opacity:.38;}     /* gentle wash the moment the bar wakes */
+.asx-scrim.asx-scrim-chat{opacity:1;}     /* much deeper once a conversation is going */
 
 /* idle: the whole dock shrinks to a 44px spark pill — keeps clicks passing
    through behind it AND lets a normal hover on the pill wake it back open. */
