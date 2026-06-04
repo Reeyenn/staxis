@@ -486,7 +486,9 @@ export function CenteredBoard({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 22, alignItems: 'flex-start', justifyContent: 'center', flexWrap: 'wrap' }}>
       {React.Children.map(children, (c) => (
-        <div style={{ flex: '1 1 0', minWidth: 280, maxWidth: 392 }}>{c}</div>
+        // Grow each band to fill wide screens (up to 520px) while staying
+        // centered when there are only one or two bands.
+        <div style={{ flex: '1 1 0', minWidth: 280, maxWidth: 520 }}>{c}</div>
       ))}
     </div>
   );

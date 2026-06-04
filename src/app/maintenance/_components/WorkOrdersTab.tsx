@@ -664,7 +664,7 @@ export function WorkOrdersTab() {
   ];
 
   return (
-    <div style={{ padding: '28px 48px 64px', maxWidth: 1280, margin: '0 auto', background: T.bg, color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div style={{ padding: '28px 48px 64px', background: T.bg, color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={es ? 'Órdenes de trabajo · hoy' : 'Work orders · today'}
         lead={`${open.length} ${es ? 'abiertas' : 'open'}`}
