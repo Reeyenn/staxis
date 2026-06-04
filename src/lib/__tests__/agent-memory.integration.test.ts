@@ -68,6 +68,37 @@ describe('agent_memory — RPCs + tenant isolation (pglite)', () => {
     }
   });
 
+  test('consolidation never downgrades a human-authored fact (0260 guard)', async () => {
+    await fx.pg.exec('begin');
+    try {
+      // A manager states a fact explicitly.
+      const h = await fx.pg.query(STORE(), [PID_A, 'property', null, 'guard_t', 'human says X']);
+      assert.equal((h.rows[0] as { action: string }).action, 'inserted');
+      // The nightly consolidator tries to re-learn the SAME topic.
+      const c = await fx.pg.query(STORE(", p_source:='consolidation', p_confidence:='low'"), [PID_A, 'property', null, 'guard_t', 'auto guess Y']);
+      assert.equal((c.rows[0] as { action: string }).action, 'skipped', 'consolidation must defer to a human fact');
+      const r = await fx.pg.query(`select content, source from agent_memory where property_id=$1 and topic='guard_t' and is_active`, [PID_A]);
+      assert.equal((r.rows[0] as { content: string }).content, 'human says X', 'human content untouched');
+      assert.equal((r.rows[0] as { source: string }).source, 'explicit_user', 'human source untouched');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test('a human write still upgrades a prior consolidation fact (0260 guard)', async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(", p_source:='consolidation', p_confidence:='low'"), [PID_A, 'property', null, 'up_t', 'auto']);
+      const u = await fx.pg.query(STORE(), [PID_A, 'property', null, 'up_t', 'manager truth']);
+      assert.equal((u.rows[0] as { action: string }).action, 'updated', 'a human write upgrades an auto-learned row');
+      const r = await fx.pg.query(`select content, source from agent_memory where property_id=$1 and topic='up_t' and is_active`, [PID_A]);
+      assert.equal((r.rows[0] as { content: string }).content, 'manager truth');
+      assert.equal((r.rows[0] as { source: string }).source, 'explicit_user');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
   test('user-scope memory is private to its subject account', async () => {
     await fx.pg.exec('begin');
     try {

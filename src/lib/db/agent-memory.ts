@@ -14,7 +14,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 export type MemoryScope = 'property' | 'user';
 export type MemorySource = 'explicit_user' | 'inferred' | 'correction' | 'consolidation';
 export type MemoryConfidence = 'low' | 'normal' | 'high';
-export type StoreMemoryAction = 'inserted' | 'updated' | 'property_full' | 'user_full';
+export type StoreMemoryAction = 'inserted' | 'updated' | 'skipped' | 'property_full' | 'user_full';
 
 export interface MemoryRow {
   id: string;
@@ -75,23 +75,29 @@ export async function getActiveMemoryForTurn(
   if (!UUID_RX.test(propertyId)) return [];
   const nowIso = new Date().toISOString();
 
-  let q = supabaseAdmin
-    .from('agent_memory')
-    .select(SELECT_COLS)
-    .eq('property_id', propertyId)
-    .eq('is_active', true)
-    .or(`expires_at.is.null,expires_at.gt.${nowIso}`);
+  // Separate query per scope, each with its own limit, so a large set of
+  // property facts can never crowd out this user's personal prefs (Codex P1-B).
+  // (nowIso is server-generated; subjectAccountId is UUID-validated — no filter
+  // injection.) The .eq('property_id') is the per-tenant guarantee on every one.
+  const base = () =>
+    supabaseAdmin
+      .from('agent_memory')
+      .select(SELECT_COLS)
+      .eq('property_id', propertyId)
+      .eq('is_active', true)
+      .or(`expires_at.is.null,expires_at.gt.${nowIso}`);
 
+  const queries = [base().eq('scope', 'property').limit(150)];
   if (subjectAccountId && UUID_RX.test(subjectAccountId)) {
-    // property-scope (shared) OR this user's own user-scope rows.
-    q = q.or(`scope.eq.property,and(scope.eq.user,subject_account_id.eq.${subjectAccountId})`);
-  } else {
-    q = q.eq('scope', 'property');
+    queries.push(base().eq('scope', 'user').eq('subject_account_id', subjectAccountId).limit(50));
   }
 
-  const { data, error } = await q.limit(200);
-  if (error || !data) return [];
-  return (data as RawRow[]).map(mapRow);
+  const results = await Promise.all(queries);
+  const out: MemoryRow[] = [];
+  for (const { data, error } of results) {
+    if (!error && data) out.push(...(data as RawRow[]).map(mapRow));
+  }
+  return out;
 }
 
 export interface StoreMemoryInput {
@@ -227,18 +233,25 @@ export async function listLearnedMemory(propertyId: string, limit = 20): Promise
   return (data as RawRow[]).map(mapRow);
 }
 
-/** Soft-delete a memory by id, scoped to the property (the dashboard "remove"). */
+/**
+ * Soft-delete an AUTO-LEARNED memory by id, scoped to the property (the
+ * dashboard "What Staxis learned" Remove). Restricted to source='consolidation'
+ * so a manager can't accidentally delete an explicitly-set fact via this
+ * surface (Codex P1-C). Returns how many rows were removed (0 = no match).
+ */
 export async function deactivateMemoryById(
   propertyId: string,
   id: string,
-): Promise<{ ok: boolean; error?: string }> {
-  if (!UUID_RX.test(propertyId) || !UUID_RX.test(id)) return { ok: false, error: 'bad id' };
-  const { error } = await supabaseAdmin
+): Promise<{ ok: boolean; removed: number; error?: string }> {
+  if (!UUID_RX.test(propertyId) || !UUID_RX.test(id)) return { ok: false, removed: 0, error: 'bad id' };
+  const { data, error } = await supabaseAdmin
     .from('agent_memory')
     .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq('property_id', propertyId)
     .eq('id', id)
-    .eq('is_active', true);
-  if (error) return { ok: false, error: error.message };
-  return { ok: true };
+    .eq('is_active', true)
+    .eq('source', 'consolidation')
+    .select('id');
+  if (error) return { ok: false, removed: 0, error: error.message };
+  return { ok: true, removed: (data ?? []).length };
 }
