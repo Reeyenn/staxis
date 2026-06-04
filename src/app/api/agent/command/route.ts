@@ -44,6 +44,7 @@ import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/ll
 import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
+import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import {
   createConversation,
   lockLoadAndRecordUserTurn,
@@ -217,8 +218,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   // conversationId (preserved on the signature for future per-conv
   // routing; today the prompts-store always returns the single
   // globally-active row).
-  const snapshot = await buildHotelSnapshot(body.propertyId, userCtx.role, staffId);
-  const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId);
+  // Build the live snapshot and the hotel's long-term memory in parallel; both
+  // feed the DYNAMIC prompt block. Memory retrieval is non-fatal (returns '').
+  const [snapshot, memoryBlock] = await Promise.all([
+    buildHotelSnapshot(body.propertyId, userCtx.role, staffId),
+    retrieveMemoryForTurn(body.propertyId, userCtx.accountId),
+  ]);
+  const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId, undefined, memoryBlock);
   const tools = getToolsForRole(userCtx.role, 'chat');
 
   // ── Stream the agent response via SSE ────────────────────────────────
@@ -261,6 +267,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             staffId,
             requestId,
             surface: 'chat',
+            conversationId: finalConversationId,
           },
         });
 

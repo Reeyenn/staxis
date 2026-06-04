@@ -37,6 +37,10 @@ export interface ToolContext {
   staffId: string | null;
   /** Request correlation id (echoed through to logs + API responses). */
   requestId: string;
+  /** agent_conversations.id for this turn — lets memory writes record which
+   *  conversation taught a fact (source_conversation_id). Optional; threaded
+   *  from both the chat and voice routes. */
+  conversationId?: string;
   /** Which surface is invoking this tool. REQUIRED so executeTool() can
    *  enforce per-tool surface opt-in (a tool without `surfaces: ['voice']`
    *  refuses a voice-surface call, etc.). Codex 2026-05-16 P0 fix

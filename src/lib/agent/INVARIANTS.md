@@ -211,3 +211,48 @@ heals it (false). This is the safety net for INV-4 and INV-7.
 When a heal event fires, it indicates a bug in trigger logic or an
 RPC path that updated counters incorrectly. The cron logs to Sentry.
 Investigate; don't just heal and move on.
+
+## Copilot long-term memory (migrations 0256 / 0257)
+
+- **INV-MEM-1 — per-tenant isolation.** A memory row is only ever read for its
+  own `property_id`. All access is via `supabaseAdmin` (RLS-bypassing), so the
+  real guarantee is the `.eq('property_id', …)` filter in
+  `src/lib/db/agent-memory.ts` + the `property_id` predicate inside the RPCs.
+  **Enforced by:** RLS deny-all (anon/authenticated) on `agent_memory` (0256) as
+  the backstop + `scripts/audit-rls-policy-coverage.mjs`; the read-path scoping
+  is verified by `agent-memory.integration.test.ts` (cross-property + per-user
+  isolation) — necessary because deny-all tables are NOT auto-discovered by
+  `rls-tenant-isolation.integration.test.ts`. **History:** copilot-memory build
+  2026-06-03; Codex caught the false "auto-covered" assumption.
+- **INV-MEM-2 — one active fact per (property, scope, subject, topic).**
+  **Enforced by:** partial unique index `agent_memory_active_topic_key` (0256) +
+  the advisory-locked upsert in `staxis_store_memory`. Restating a topic updates
+  in place; corrections never fork into duplicate rows.
+- **INV-MEM-3 — scope/subject coherence.** property-scope ⇒
+  `subject_account_id IS NULL`; user-scope ⇒ NOT NULL. **Enforced by:** CHECK
+  `agent_memory_scope_subject_ck` (0256) + an early guard in `staxis_store_memory`.
+- **INV-MEM-4 — bounded growth.** ≤200 active property rows / ≤50 active per
+  (user,property); content ≤500, topic ≤80 chars; ≤20 entries / ~6000 chars
+  injected per turn; ≤5 writes per request. **Enforced by:** length CHECKs (0256),
+  active-row cap inside `staxis_store_memory` (returns `property_full`/`user_full`),
+  injection caps in `memory-context.ts` (`MAX_MEMORY_ENTRIES`/`MEMORY_CHAR_BUDGET`),
+  per-request `WeakMap` counter in `tools/memory.ts`.
+- **INV-MEM-5 — memory is reference data, never instruction.** Injected memory is
+  wrapped in `<staxis-memory trust="system-derived-from-untrusted">`, content
+  escaped with `escapeTrustMarkerContent`, and the base prompt (0257) names the
+  channel as data-not-instruction. **Enforced by:** the `memory-context.ts`
+  formatter + `memory-format.test.ts` (stored `</staxis-memory>` / imperative
+  content is neutralized) + the base-prompt rule. Prompt-level + escaping defense
+  — no DB constraint can guarantee "the model obeys", so this is a documented
+  not-DB-enforceable invariant backed by tests.
+- **INV-MEM-6 — hotel-scope writes are management-only.** Floor roles may write
+  only user-scope ('me') memory. **Enforced by:** `isManagerOrAbove` gate in the
+  `remember`/`forget` handlers (`tools/memory.ts`), backed by
+  `memory-tool-registration.test.ts`. Code-level (NOT DB) — a future
+  "propose → manager approves" queue can move this to the DB.
+- **INV-MEM-7 — no guest PII in memory content.** **Enforced by:**
+  `redactMemoryContent` masks emails/phones/card/SSN shapes at write
+  (`memory-redact.ts`) + the `remember` tool-description instruction +
+  `memory-redact.test.ts`. Code-level and imperfect by nature (regex) — one layer
+  of several (also: management-gated hotel writes, guest-data-default-deny);
+  documented gap, not a hard guarantee.
