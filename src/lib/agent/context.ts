@@ -8,7 +8,10 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
-import { getCurrentRoomsDate, computeRoomTotal } from './tools/_helpers';
+import { computeRoomTotal } from './tools/_helpers';
+import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface HotelSnapshot {
   /** ISO date string YYYY-MM-DD in the property's local time. */
@@ -20,15 +23,31 @@ export interface HotelSnapshot {
   };
   rooms: {
     total: number;
+    /** Rooms that still need a turn: PMS vacant-dirty + today's checkouts.
+     *  Sourced from today_property_counts_v1 (the live pms_* feed). */
     dirty: number;
+    /** Always 0 for now — "in progress" is a housekeeping-workflow state
+     *  that lives in the future overlay table, not the PMS feed. */
     in_progress: number;
+    /** Rooms confirmed vacant-and-clean in the PMS in-house snapshot. */
     clean: number;
+    /** Always 0 for now — DND is an overlay-table workflow flag. */
     dnd: number;
+    /** Always 0 for now — issue notes are an overlay-table field. */
     issuesFlagged: number;
+    /** Always 0 for now — "help requested" is an overlay-table field. */
     helpRequested: number;
-    /** When > 0, today's rooms table has fewer rows than the property's
-     *  master inventory. Surfaced to the agent so it doesn't claim
-     *  "100% occupancy" while silently looking at a partial picture. */
+    /** Today's departures (checkout cleans) from pms_reservations. */
+    checkouts: number;
+    /** Stayover rooms (occupied tonight too) from pms_reservations. */
+    stayovers: number;
+    /** Occupied rooms right now (pms_in_house_snapshot). */
+    inHouse: number;
+    /** Out-of-order rooms (pms_in_house_snapshot). */
+    outOfOrder: number;
+    /** When > 0, the live PMS feed knows about fewer rooms than the
+     *  property's master inventory. Surfaced to the agent so it doesn't
+     *  claim "100% occupancy" while looking at a partial picture. */
     seedingGap: number;
   };
   staff: {
@@ -102,11 +121,11 @@ async function buildHotelSnapshotUncached(
   // Property name + timezone + total_rooms + room_inventory (cheap; one query).
   //
   // Round 14 (2026-05-14): room_inventory is the truth about how many rooms
-  // a property has. The `rooms` table is a per-day operational view that
-  // may be partially seeded (Choice Advantage's CSV omits vacant-clean
-  // rooms — see migration 0025). Reading inventory length here means the
-  // agent reports the correct total even when today's seed is incomplete;
-  // missing rooms surface as vacant in `get_occupancy` (which is the safe
+  // a property has. Plan v4: live room status now flows into the pms_*
+  // tables (written by the persistent CUA per hotel), surfaced here via the
+  // today_property_counts_v1 RPC. Reading inventory length here means the
+  // agent reports the correct total even when the PMS feed is mid-bootstrap;
+  // rooms the feed doesn't know about yet surface as vacant (the safe
   // default — absence of data means no guest).
   let propertyName: string | null = null;
   let timezone: string | null = null;
@@ -129,74 +148,83 @@ async function buildHotelSnapshotUncached(
     // non-fatal — snapshot continues with nulls
   }
 
-  // Pick the rooms.date to query against — see getCurrentRoomsDate for why
-  // this isn't just `new Date().toISOString().slice(0,10)`. If the property
-  // has no rooms at all (brand-new account, pre-seed) the helper returns
-  // null and the rooms summary stays zeroed.
-  const roomsDate = await getCurrentRoomsDate(propertyId);
-  const today = roomsDate ?? new Date().toISOString().slice(0, 10);
+  // Plan v4: there is no `rooms.date` anymore. "Today" is the property's
+  // local calendar date — mirrors the doctor's Intl.DateTimeFormat('en-CA',
+  // { timeZone }) approach via the shared propertyLocalToday helper. UTC
+  // today disagrees with the property's local date for ~5 hours every
+  // evening in CST/CDT (where the pilot hotels live), so we must anchor on
+  // the property timezone. Falls back to UTC today when timezone is null.
+  const today = propertyLocalToday(new Date(), timezone);
 
-  // Room summary — only the rows for the chosen date.
+  // Room summary — live PMS counts for `today` via today_property_counts_v1
+  // (one RPC; the housekeeping Schedule tab + dashboard read the same).
   //
-  // 2026-05-14 root cause: this query previously had no date filter, so
-  // for a hotel with N rooms and D days of seeded history it returned
-  // N×D rows and reported them all as "today's rooms." Result: the
-  // voice mode replied "557 dirty rooms, 432 clean…" for a ~100-room
-  // property. The composite key on (property_id, date, number) makes
-  // multi-day accumulation the default behavior — the date filter is
-  // mandatory for any "today" summary.
+  // This is the hot path: buildHotelSnapshot runs on EVERY agent turn. We
+  // deliberately use the count RPC here instead of mergePmsRoomsForDate
+  // (which fires ~5 queries to build full Room rows) — counts are all the
+  // snapshot needs, and one RPC keeps the per-turn cost ~50ms.
+  //
+  // 2026-05-14 history: the old `rooms`-table query had no date filter and
+  // reported every historical day's rows as "today's rooms" (557 dirty for
+  // a 100-room property). The RPC is inherently single-date (it takes the
+  // date as a parameter), so that class of bug can't recur here.
   const rooms = {
     total: 0,
     dirty: 0,
-    in_progress: 0,
+    in_progress: 0,   // TODO(overlay): HK-workflow state, not in the PMS feed.
     clean: 0,
-    dnd: 0,
-    issuesFlagged: 0,
-    helpRequested: 0,
+    dnd: 0,            // TODO(overlay): DND is an overlay-table flag.
+    issuesFlagged: 0,  // TODO(overlay): issue notes live in the overlay table.
+    helpRequested: 0,  // TODO(overlay): "help requested" lives in the overlay table.
+    checkouts: 0,
+    stayovers: 0,
+    inHouse: 0,
+    outOfOrder: 0,
     seedingGap: 0,
   };
-  let seededRowCount = 0;
-  if (roomsDate) {
-    try {
-      const { data } = await supabaseAdmin
-        .from('rooms')
-        .select('status, is_dnd, issue_note, help_requested')
-        .eq('property_id', propertyId)
-        .eq('date', roomsDate);
-      if (data) {
-        seededRowCount = data.length;
-        for (const r of data) {
-          const status = (r.status as string) ?? 'dirty';
-          if (r.is_dnd) rooms.dnd++;
-          else if (status === 'dirty') rooms.dirty++;
-          else if (status === 'in_progress') rooms.in_progress++;
-          else if (status === 'clean' || status === 'inspected') rooms.clean++;
-          if (r.issue_note) rooms.issuesFlagged++;
-          if (r.help_requested) rooms.helpRequested++;
-        }
-      }
-    } catch {
-      // non-fatal
-    }
+  let pmsRoomCount = 0;
+  try {
+    const counts = await fetchTodayPropertyCounts(propertyId, today);
+    // Map PMS-state counts onto the snapshot. The PMS feed reports room
+    // states (vacant_clean / vacant_dirty / ooo / in_house) + reservation-
+    // derived work (checkouts / stayovers) — NOT housekeeping-workflow
+    // states (in_progress / dnd / issue / help), which come from the future
+    // overlay table and stay 0 above.
+    //   dirty = vacant-dirty + today's checkouts (rooms that still need a
+    //           turn). Excludes OOO (blocked, not a turn).
+    //   clean = vacant-clean (confirmed clean & ready).
+    rooms.dirty = counts.vacant_dirty + counts.checkouts;
+    rooms.clean = counts.vacant_clean;
+    rooms.checkouts = counts.checkouts;
+    rooms.stayovers = counts.stayovers;
+    rooms.inHouse = counts.in_house;
+    rooms.outOfOrder = counts.ooo;
+    // pmsRoomCount = how many rooms the live feed has accounted for today.
+    // Used only to compute the seeding gap against the configured total.
+    pmsRoomCount =
+      counts.vacant_clean + counts.vacant_dirty + counts.ooo + counts.in_house;
+  } catch {
+    // non-fatal — snapshot continues with zeroed room counts.
   }
 
   // Round 14: total comes from inventory when configured. Round 15 (Codex
   // finding A): also consider properties.total_rooms — take the max of the
   // three signals so a stale or empty inventory can't silently under-report.
-  // The doctor check fails loud when inventory and total_rooms disagree
-  // (INV-24).
-  const totalDerived = computeRoomTotal(inventoryLength, configuredTotalRooms, seededRowCount);
+  // Third signal is now the live PMS room count (was the seeded `rooms` row
+  // count). The doctor check fails loud when inventory and total_rooms
+  // disagree (INV-24).
+  const totalDerived = computeRoomTotal(inventoryLength, configuredTotalRooms, pmsRoomCount);
   rooms.total = totalDerived.total;
   rooms.seedingGap = totalDerived.seedingGap;
 
-  // Sanity check: seeded rows shouldn't exceed the configured property size
-  // (which the manager set at onboarding). If they do, the data layer is
-  // somehow returning multi-day rows again — log loudly so we can spot it
-  // before the agent reports inflated numbers to a user.
-  if (configuredTotalRooms > 0 && seededRowCount > configuredTotalRooms) {
+  // Sanity check: the live feed shouldn't account for more rooms than the
+  // configured property size (which the manager set at onboarding). If it
+  // does, the PMS feed is double-counting somewhere — log loudly so we can
+  // spot it before the agent reports inflated numbers to a user.
+  if (configuredTotalRooms > 0 && pmsRoomCount > configuredTotalRooms) {
     console.warn(
-      `[agent/context] seededRowCount=${seededRowCount} exceeds properties.total_rooms=${configuredTotalRooms} ` +
-      `for property=${propertyId} date=${roomsDate} — possible date-filter regression`,
+      `[agent/context] pmsRoomCount=${pmsRoomCount} exceeds properties.total_rooms=${configuredTotalRooms} ` +
+      `for property=${propertyId} date=${today} — possible PMS feed double-count`,
     );
   }
 
@@ -221,29 +249,30 @@ async function buildHotelSnapshotUncached(
   }
 
   // For housekeeping role, also include their assigned rooms so they can ask
-  // "what's next" without an extra tool call. Same date filter applies —
-  // without it, a housekeeper sees every room they've ever been assigned
-  // to instead of the rooms on the active date.
+  // "what's next" without an extra tool call. Plan v4: pull the live merged
+  // Room[] for today from the pms_* feeds and filter to this housekeeper.
+  // mergePmsRoomsForDate resolves assignedTo by collision-aware name match
+  // (pms_housekeeping_assignments.housekeeper_name → staff.id), so filtering
+  // on assignedTo === staffId gives exactly this person's rooms for today.
   let myRooms: HotelSnapshot['myRooms'] | undefined;
-  if (role === 'housekeeping' && staffId && roomsDate) {
+  if (role === 'housekeeping' && staffId) {
     try {
-      const { data } = await supabaseAdmin
-        .from('rooms')
-        .select('id, number, status, is_dnd, issue_note, help_requested')
-        .eq('property_id', propertyId)
-        .eq('date', roomsDate)
-        .eq('assigned_to', staffId)
-        .order('number');
-      if (data) {
-        myRooms = data.map(r => ({
-          id: r.id as string,
-          number: (r.number as string) ?? '',
-          status: (r.status as string) ?? 'dirty',
-          is_dnd: !!r.is_dnd,
-          has_issue: !!r.issue_note,
-          help_requested: !!r.help_requested,
-        }));
-      }
+      const merged = await mergePmsRoomsForDate(propertyId, today);
+      const mine = merged
+        .filter(r => r.assignedTo === staffId)
+        .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+      myRooms = mine.map(r => ({
+        id: r.id,
+        number: r.number,
+        status: r.status,
+        is_dnd: !!r.isDnd,
+        // TODO(overlay): has_issue (issueNote) + help_requested live in the
+        // future overlay table; the merged Room doesn't carry them yet, so
+        // they're always false here (they were empty on the legacy `rooms`
+        // table too — behaviour-preserving).
+        has_issue: !!r.issueNote,
+        help_requested: !!r.helpRequested,
+      }));
     } catch {
       // non-fatal
     }
@@ -315,28 +344,35 @@ async function loadVoiceContext(propertyId: string): Promise<VoiceContext> {
   if (cached && cached.expiresAt > Date.now()) return cached.ctx;
 
   let propertyName: string | null = null;
+  let timezone: string | null = null;
   try {
     const { data } = await supabaseAdmin
       .from('properties')
-      .select('name')
+      .select('name, timezone')
       .eq('id', propertyId)
       .maybeSingle();
-    if (data) propertyName = (data.name as string) ?? null;
+    if (data) {
+      propertyName = (data.name as string) ?? null;
+      timezone = (data.timezone as string) ?? null;
+    }
   } catch { /* non-fatal */ }
 
   // Room number range — min/max as integers. Some properties have
   // non-numeric room numbers ("L1-201", "Suite-A"); skip those when
   // computing the range to avoid garbage hints.
+  //
+  // Plan v4: room numbers come from the live pms_* feed via
+  // mergePmsRoomsForDate (today, property-local) rather than the dropped
+  // `rooms` table. The full room set is inventory-backed, so the min/max
+  // range is stable regardless of today's occupancy.
   let roomNumberRange = '';
   try {
-    const { data } = await supabaseAdmin
-      .from('rooms')
-      .select('number')
-      .eq('property_id', propertyId);
-    if (data && data.length > 0) {
+    const today = propertyLocalToday(new Date(), timezone);
+    const merged = await mergePmsRoomsForDate(propertyId, today);
+    if (merged.length > 0) {
       const nums: number[] = [];
-      for (const r of data) {
-        const n = parseInt((r.number as string) ?? '', 10);
+      for (const r of merged) {
+        const n = parseInt(r.number ?? '', 10);
         if (Number.isFinite(n)) nums.push(n);
       }
       if (nums.length > 0) {
@@ -397,19 +433,28 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
     `Property: ${esc(snap.property.name ?? 'Unnamed')} (${esc(snap.property.id)})` +
     (snap.property.timezone ? `, timezone ${esc(snap.property.timezone)}` : ''),
   );
+  // PMS-state counts from the live pms_* feed. dirty/clean/checkouts/
+  // stayovers/in-house/OOO are real; in_progress/DND/issue/help are
+  // overlay-table workflow fields that stay 0 until that table lands —
+  // only render them when non-zero so the line auto-upgrades later without
+  // misleading the agent with hard-coded zeros today.
   lines.push(
     `Rooms: ${snap.rooms.total} total — ${snap.rooms.dirty} dirty, ` +
-    `${snap.rooms.in_progress} in progress, ${snap.rooms.clean} clean, ${snap.rooms.dnd} DND` +
+    `${snap.rooms.clean} clean, ${snap.rooms.inHouse} occupied, ` +
+    `${snap.rooms.checkouts} checking out today, ${snap.rooms.stayovers} stayover` +
+    (snap.rooms.outOfOrder ? `, ${snap.rooms.outOfOrder} out of order` : '') +
+    (snap.rooms.in_progress ? `, ${snap.rooms.in_progress} in progress` : '') +
+    (snap.rooms.dnd ? `, ${snap.rooms.dnd} DND` : '') +
     (snap.rooms.issuesFlagged ? `, ${snap.rooms.issuesFlagged} with issue notes` : '') +
     (snap.rooms.helpRequested ? `, ${snap.rooms.helpRequested} requesting help` : ''),
   );
   if (snap.rooms.seedingGap > 0) {
     // The agent needs to know it's looking at a partial picture so it
-    // doesn't claim "100% occupancy" or "all rooms occupied" when really
-    // some rooms simply haven't been seeded into today's view yet.
+    // doesn't claim "100% occupancy" or "all rooms occupied" when the live
+    // PMS feed simply hasn't accounted for some rooms yet.
     const seeded = snap.rooms.total - snap.rooms.seedingGap;
     lines.push(
-      `Heads-up: today's housekeeping data has ${seeded} of ${snap.rooms.total} rooms seeded; ` +
+      `Heads-up: the live PMS feed has accounted for ${seeded} of ${snap.rooms.total} rooms; ` +
       `the missing ${snap.rooms.seedingGap} are reported as vacant.`,
     );
   }

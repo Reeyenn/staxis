@@ -5,6 +5,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, findStaffByName } from './_helpers';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 
 // ─── assign_room ──────────────────────────────────────────────────────────
 
@@ -145,40 +146,39 @@ registerTool<{ date?: string }>({
   handler: async ({ date }, ctx): Promise<ToolResult> => {
     const target = date ?? new Date().toISOString().slice(0, 10);
 
-    // Group assigned rooms by housekeeper for the target date.
-    const { data, error } = await supabaseAdmin
-      .from('rooms')
-      .select('assigned_to, status, number')
-      .eq('property_id', ctx.propertyId)
-      .eq('date', target)
-      .not('assigned_to', 'is', null);
-    if (error) return { ok: false, error: 'Failed to load schedule.' };
+    // Live room state now flows through the pms_* tables (the legacy `rooms`
+    // table is empty post-Plan-v4). mergePmsRoomsForDate returns Room[] in the
+    // legacy shape with assignedTo (resolved staffId) + assignedName already
+    // name-resolved from pms_housekeeping_assignments, so we group by those
+    // directly instead of re-querying `staff`.
+    let mergedRooms;
+    try {
+      mergedRooms = await mergePmsRoomsForDate(ctx.propertyId, target);
+    } catch {
+      return { ok: false, error: 'Failed to load schedule.' };
+    }
 
-    const byStaff = new Map<string, { roomCount: number; rooms: string[] }>();
-    for (const r of data ?? []) {
-      const key = r.assigned_to as string;
-      const prev = byStaff.get(key) ?? { roomCount: 0, rooms: [] };
+    // Group assigned rooms by housekeeper for the target date.
+    const byStaff = new Map<string, { name: string; roomCount: number; rooms: string[] }>();
+    let totalAssigned = 0;
+    for (const r of mergedRooms) {
+      if (!r.assignedTo) continue; // only rooms with a resolved housekeeper
+      totalAssigned += 1;
+      const key = r.assignedTo;
+      const prev = byStaff.get(key) ?? { name: r.assignedName ?? 'Unknown', roomCount: 0, rooms: [] };
       prev.roomCount += 1;
-      prev.rooms.push(r.number as string);
+      prev.rooms.push(r.number);
       byStaff.set(key, prev);
     }
 
-    // Resolve staff names.
-    const ids = Array.from(byStaff.keys());
-    const { data: staffRows } = ids.length
-      ? await supabaseAdmin.from('staff').select('id, name').in('id', ids)
-      : { data: [] };
-    const nameById = new Map<string, string>();
-    for (const s of staffRows ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
-
     const schedule = Array.from(byStaff.entries()).map(([id, info]) => ({
       staffId: id,
-      name: nameById.get(id) ?? 'Unknown',
+      name: info.name,
       roomCount: info.roomCount,
       rooms: info.rooms.sort(),
     })).sort((a, b) => b.roomCount - a.roomCount);
 
-    return { ok: true, data: { date: target, schedule, totalAssigned: data?.length ?? 0 } };
+    return { ok: true, data: { date: target, schedule, totalAssigned } };
   },
 });
 

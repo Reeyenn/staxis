@@ -5,7 +5,8 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
-import { getCurrentRoomsDate, computeOccupancySummary } from './_helpers';
+import { computeRoomTotal } from './_helpers';
+import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 
 // ─── get_occupancy ────────────────────────────────────────────────────────
 
@@ -16,51 +17,73 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   handler: async (_, ctx): Promise<ToolResult> => {
-    // Round 14 (2026-05-14): total comes from `properties.room_inventory`
-    // (the truth, set at onboarding from the floor plan) — NOT from
-    // count(rooms today). Choice Advantage's CSV omits vacant-clean rooms,
-    // so seed-from-CSV produces a partial `rooms` table; reading
-    // count(rooms today) as the denominator made the agent report
-    // "100% occupancy, 0 vacant" when really 4 rooms simply weren't in
-    // today's seed. Round 15 (Codex finding A): also read `total_rooms`
-    // and use the max of the three signals so a stale-inventory or
-    // empty-inventory state can't silently under-report. The doctor
-    // check fails loud on disagreement (INV-24).
-    const [{ data: propRow }, roomsDate] = await Promise.all([
-      supabaseAdmin
-        .from('properties')
-        .select('room_inventory, total_rooms')
-        .eq('id', ctx.propertyId)
-        .maybeSingle(),
-      getCurrentRoomsDate(ctx.propertyId),
-    ]);
+    // Plan v4 (2026): live room state now comes from the pms_* tables the
+    // persistent CUA writes (the legacy `rooms` table is empty). Occupancy
+    // is a COUNTS question, so we read the today_property_counts_v1 RPC
+    // (in_house / vacant / total_rooms day aggregates) instead of listing
+    // and re-aggregating every room — far cheaper, and this tool runs on a
+    // hot path (every owner "how full are we?" turn).
+    //
+    // Date: there is no `rooms.date` anymore. "Current" = today in the
+    // property's timezone, mirroring the doctor's Intl.DateTimeFormat
+    // approach (route.ts: property-local `en-CA` date, UTC fallback).
+    //
+    // Total: kept the Round-14/Round-15 "never under-report" rule. Total is
+    // the MAX of every size signal — properties.room_inventory.length,
+    // properties.total_rooms, and now the RPC's total_rooms — so a stale or
+    // empty source can't silently shrink the hotel. The doctor check still
+    // fails loud when inventory and total_rooms disagree (INV-24).
+    const { data: propRow } = await supabaseAdmin
+      .from('properties')
+      .select('room_inventory, total_rooms, timezone')
+      .eq('id', ctx.propertyId)
+      .maybeSingle();
+
     const inventory = (propRow?.room_inventory as string[] | null) ?? [];
     const inventoryLength = inventory.length;
     const configuredTotalRooms = Number(propRow?.total_rooms ?? 0);
 
-    if (!roomsDate) {
-      // No seed at all yet today. Helper returns total from inventory
-      // or total_rooms (whichever is larger), all vacant.
-      const summary = computeOccupancySummary(inventoryLength, configuredTotalRooms, []);
-      return { ok: true, data: { ...summary } };
+    // Today in the property's local timezone (en-CA → YYYY-MM-DD), with a
+    // UTC fallback if the timezone is missing/invalid — same shape the
+    // doctor uses so the agent and the health check agree on "today".
+    const tz = (propRow?.timezone as string | null) ?? null;
+    let asOfDate: string;
+    try {
+      asOfDate = tz
+        ? new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+          }).format(new Date())
+        : new Date().toISOString().slice(0, 10);
+    } catch {
+      asOfDate = new Date().toISOString().slice(0, 10);
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('rooms')
-      .select('type')
-      .eq('property_id', ctx.propertyId)
-      .eq('date', roomsDate);
-    if (error) return { ok: false, error: 'Failed to read occupancy.' };
+    // today_property_counts_v1: { checkouts, stayovers, vacant_clean,
+    // vacant_dirty, ooo, total_rooms, in_house, ... }. Returns all-zeros
+    // when the CUA hasn't populated a snapshot yet (bootstrap window) —
+    // which reads as "every room vacant," the honest cold-start answer.
+    const counts = await fetchTodayPropertyCounts(ctx.propertyId, asOfDate);
 
-    const summary = computeOccupancySummary(
+    // Occupied = rooms with a guest in them right now (point-in-time
+    // in-house), not today's turn-work (checkouts + stayovers conflate
+    // departures with occupancy). Fold the RPC's total_rooms into the same
+    // max so it joins inventory + configured as a third "never shrink"
+    // signal; seededRowCount is in_house (the occupied floor we can see).
+    const occupied = Math.max(0, Number(counts.in_house ?? 0));
+    const rpcTotalRooms = Math.max(0, Number(counts.total_rooms ?? 0));
+    const { total } = computeRoomTotal(
       inventoryLength,
-      configuredTotalRooms,
-      (data ?? []).map(r => r.type as string | null),
+      Math.max(configuredTotalRooms, rpcTotalRooms),
+      occupied,
     );
+    const vacant = Math.max(0, total - occupied);
+    const occupancyPercent = total > 0
+      ? Math.round((occupied / total) * 1000) / 10
+      : 0;
 
     return {
       ok: true,
-      data: { ...summary, asOfDate: roomsDate },
+      data: { total, occupied, vacant, occupancyPercent, asOfDate },
     };
   },
 });

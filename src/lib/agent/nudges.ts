@@ -12,6 +12,9 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOverview } from '@/lib/compliance/store';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface NudgeRunResult {
   propertyId: string;
@@ -294,27 +297,26 @@ async function insertNudgeIfNew(opts: {
 async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]> {
   const drafts: NudgeDraft[] = [];
 
-  // Overdue rooms: in_progress for > 90 minutes
-  const overdueCutoff = new Date(Date.now() - 90 * 60 * 1000).toISOString();
-  const { data: overdueRooms } = await supabaseAdmin
-    .from('rooms')
-    .select('id, number, started_at, assigned_to')
-    .eq('property_id', propertyId)
-    .eq('status', 'in_progress')
-    .not('started_at', 'is', null)
-    .lt('started_at', overdueCutoff);
+  // Plan v4: the legacy `rooms` table was dropped (migration 0204). Live room
+  // status now flows into the pms_* tables, surfaced via the per-(property,
+  // date) merge below (Room[] in the legacy camel-cased shape). Resolve the
+  // property's local "today" the way the doctor does (Intl tz-aware) since
+  // there is no rooms.date anymore.
+  const date = await getPropertyToday(propertyId);
+  const rooms = await mergePmsRoomsForDate(propertyId, date);
 
-  for (const r of overdueRooms ?? []) {
-    const minutesAgo = Math.round((Date.now() - new Date(r.started_at as string).getTime()) / 60_000);
-    let staffName: string | null = null;
-    if (r.assigned_to) {
-      const { data: s } = await supabaseAdmin
-        .from('staff')
-        .select('name')
-        .eq('id', r.assigned_to)
-        .maybeSingle();
-      staffName = (s?.name as string) ?? null;
-    }
+  // Overdue rooms: in_progress for > 90 minutes. The merge derives
+  // status='in_progress' from a started-but-not-completed HK assignment, and
+  // carries the start timestamp as startedAt — both real pms_* signals.
+  const overdueCutoffMs = Date.now() - 90 * 60 * 1000;
+  for (const r of rooms) {
+    if (r.status !== 'in_progress' || !r.startedAt) continue;
+    const startedTime = new Date(r.startedAt).getTime();
+    if (Number.isNaN(startedTime) || startedTime > overdueCutoffMs) continue;
+    const minutesAgo = Math.round((Date.now() - startedTime) / 60_000);
+    // assignedName comes through the merge (housekeeper_name on the
+    // assignment); no extra staff lookup needed.
+    const staffName = r.assignedName ?? null;
     drafts.push({
       severity: 'warning',
       payload: {
@@ -324,23 +326,27 @@ async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]>
         staffName,
         minutesElapsed: minutesAgo,
       },
+      // r.id is the composite "${date}:${room_number}" — stable per day,
+      // so the dedupe key behaves the same as the old per-room-row id.
       dedupeKey: `overdue_room:${r.id}`,
     });
   }
 
-  // Unresolved help requests > 5 min
-  const helpCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-  const { data: helpRooms } = await supabaseAdmin
-    .from('rooms')
-    .select('id, number, assigned_to, started_at')
-    .eq('property_id', propertyId)
-    .eq('help_requested', true);
-
-  for (const r of helpRooms ?? []) {
-    // Use started_at as the proxy for "when did help get raised". If null, default to now (skip).
-    if (!r.started_at) continue;
-    const startedTime = new Date(r.started_at as string).getTime();
-    if (startedTime > new Date(helpCutoff).getTime()) continue;
+  // Unresolved help requests > 5 min.
+  // TODO(overlay): `helpRequested` is a housekeeper-set workflow field with
+  // no pms_* home yet — it lands in a future overlay table. The merge shape
+  // does not provide it (r.helpRequested is always undefined), so this check
+  // produces nothing for now. That preserves current behavior: in prod the
+  // legacy `rooms` table is empty (0 rows), so this alert never fired anyway.
+  // Once the overlay lands, filter `rooms` on `r.helpRequested === true` here.
+  for (const r of rooms) {
+    if (!r.helpRequested) continue;
+    // started_at is the proxy for "when did help get raised". If absent, skip.
+    if (!r.startedAt) continue;
+    const startedTime = new Date(r.startedAt).getTime();
+    if (Number.isNaN(startedTime)) continue;
+    const helpCutoffMs = Date.now() - 5 * 60 * 1000;
+    if (startedTime > helpCutoffMs) continue;
     const minutesAgo = Math.round((Date.now() - startedTime) / 60_000);
     drafts.push({
       severity: 'urgent',
@@ -390,12 +396,50 @@ async function shouldFireDailySummary(propertyId: string): Promise<boolean> {
   return hour === 20;
 }
 
+/** The property's local "today" as YYYY-MM-DD.
+ *
+ * Plan v4 dropped `rooms` (and with it the `rooms.date` column that used to
+ * define "current rooms date"). Room data now lives in the pms_* tables keyed
+ * by an explicit date. We mirror the doctor's Intl.DateTimeFormat approach via
+ * the shared `propertyLocalToday` helper: format `now` in the property's IANA
+ * timezone, falling back to UTC when timezone is null/invalid. */
+async function getPropertyToday(propertyId: string): Promise<string> {
+  const { data } = await supabaseAdmin
+    .from('properties')
+    .select('timezone')
+    .eq('id', propertyId)
+    .maybeSingle();
+  const tz = (data?.timezone as string) ?? null;
+  return propertyLocalToday(new Date(), tz);
+}
+
 async function buildDailySummary(propertyId: string): Promise<Record<string, unknown>> {
-  const today = new Date().toISOString().slice(0, 10);
-  const { data: rooms } = await supabaseAdmin
-    .from('rooms')
-    .select('status, is_dnd, issue_note')
-    .eq('property_id', propertyId);
+  const today = await getPropertyToday(propertyId);
+
+  // Room-state counts: pull from the today_property_counts_v1 RPC, NOT the
+  // 5-query pms_* merge. The RPC is the cheaper count source (single
+  // SECURITY-DEFINER call over pms_in_house_snapshot + pms_reservations +
+  // pms_rooms_inventory) and is the canonical occupancy/clean/dirty/ooo feed.
+  // This is a per-property cron path, so the count RPC is the right tool.
+  //   clean  ← vacant_clean   (rooms clean and ready, from the in-house snapshot)
+  //   dirty  ← vacant_dirty   (rooms still needing a turn)
+  const counts = await fetchTodayPropertyCounts(propertyId, today);
+  const clean = counts.vacant_clean;
+  const dirty = counts.vacant_dirty;
+
+  // TODO(overlay): in-progress, DND, and flagged-issue counts have no pms_*
+  // home. The legacy `rooms` table carried per-room `status='in_progress'`,
+  // `is_dnd`, and `issue_note` (housekeeper-set workflow fields). Those land
+  // in a future overlay table; until then report 0 rather than fabricate.
+  // In prod the legacy `rooms` table is empty (0 rows), so these were already
+  // 0 — behaviour-preserving. The in-house snapshot does NOT expose a separate
+  // in-progress or DND bucket, so we do not derive them from the merge either.
+  const inProgress = 0;
+  const dnd = 0;
+  const issues = 0;
+
+  // cleaning_events stays UNCHANGED — it's the labor-audit source of truth and
+  // is independent of the pms_* migration.
   const { data: events } = await supabaseAdmin
     .from('cleaning_events')
     .select('staff_id, duration_minutes')
@@ -403,14 +447,6 @@ async function buildDailySummary(propertyId: string): Promise<Record<string, unk
     .eq('date', today)
     .neq('status', 'discarded');
 
-  let clean = 0, dirty = 0, inProgress = 0, dnd = 0, issues = 0;
-  for (const r of rooms ?? []) {
-    if (r.is_dnd) dnd++;
-    else if (r.status === 'dirty') dirty++;
-    else if (r.status === 'in_progress') inProgress++;
-    else if (r.status === 'clean' || r.status === 'inspected') clean++;
-    if (r.issue_note) issues++;
-  }
   const totalLabor = (events ?? []).reduce((acc, e) => acc + Number(e.duration_minutes ?? 0), 0);
   const uniqueStaff = new Set((events ?? []).map(e => e.staff_id)).size;
 

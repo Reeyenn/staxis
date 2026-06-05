@@ -1,10 +1,70 @@
 // ─── Read-only query tools ────────────────────────────────────────────────
 // Everything the agent can ASK the database. Mutations live elsewhere.
+//
+// Plan v4 data source (2026-06): the legacy `rooms` table was dropped /
+// emptied. Live room status now flows into the service-role-only `pms_*`
+// tables written by the persistent CUA browser per hotel. These tools used
+// to read `.from('rooms')` (which now returns ZERO rows, so the agent saw
+// nothing). They now read through the canonical server-only bridges:
+//
+//   • Per-room LIST  → mergePmsRoomsForDate(pid, date) — returns Room[] in
+//     the legacy camel-cased shape (pms_rooms_inventory + status_log +
+//     assignments + reservations + staff, merged + name-resolved).
+//   • Day COUNTS     → fetchTodayPropertyCounts (today_property_counts_v1
+//     RPC) — cheaper than the 5-query merge; used on the manager rollup so
+//     the per-turn agent path doesn't pay for a full room fetch when it
+//     only needs aggregates.
+//
+// "Current date": there is no `rooms.date` column anymore, so we can't pick
+// the most-recent seeded date. Instead we compute the property-LOCAL today
+// (getPropertyToday below) the same way /api/admin/doctor does
+// (Intl.DateTimeFormat('en-CA', { timeZone: properties.timezone })). For a
+// limited-service hotel in CST/CDT this avoids the ~5-hour UTC-vs-local
+// drift every evening.
+//
+// Workflow-only fields (issueNote / dndNote / helpRequested / pause /
+// exception / checklist / rush / inspection) are NOT in the merge shape yet
+// — they'll come from a future overlay table. Where this file used to read
+// them off `rooms`, they're now surfaced as null/0 with a `TODO(overlay)`
+// marker. They were empty in practice anyway (CUA doesn't write them), so
+// behaviour is preserved, not regressed.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { buildHotelSnapshot } from '../context';
-import { getCurrentRoomsDate, computeRoomTotal } from './_helpers';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
+import type { Room } from '@/types';
+
+// ─── getPropertyToday ───────────────────────────────────────────────────────
+// Property-local "today" as YYYY-MM-DD. Mirrors the doctor's approach
+// (route.ts ~L3958): format `new Date()` in the property's IANA timezone via
+// Intl.DateTimeFormat('en-CA', …) so we get an unambiguous ISO date, falling
+// back to UTC today when the property has no timezone set or the zone string
+// is invalid. Replaces the old getCurrentRoomsDate(`rooms`.date max) which
+// can no longer work — `rooms` is empty and has no usable date column.
+async function getPropertyToday(propertyId: string): Promise<string> {
+  let timezone: string | null = null;
+  try {
+    const { data } = await supabaseAdmin
+      .from('properties')
+      .select('timezone')
+      .eq('id', propertyId)
+      .maybeSingle();
+    timezone = (data?.timezone as string) ?? null;
+  } catch {
+    // non-fatal — fall through to UTC today
+  }
+  try {
+    return timezone
+      ? new Intl.DateTimeFormat('en-CA', {
+          timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(new Date())
+      : new Date().toISOString().slice(0, 10);
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
 
 // ─── get_hotel_state ──────────────────────────────────────────────────────
 // Returns the same HotelSnapshot the system prompt today embeds inline. The
@@ -52,37 +112,39 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['housekeeping', 'maintenance'],
   handler: async (_, ctx): Promise<ToolResult> => {
-    // `rooms.assigned_to` is a `staff.id` — must use ctx.staffId, NOT
-    // ctx.user.accountId (different tables). Codex review fix #4, 2026-05-13.
+    // Room.assignedTo is a `staff.id` (resolved by the merge layer from the
+    // PMS housekeeper name) — must use ctx.staffId, NOT ctx.user.accountId
+    // (different tables). Codex review fix #4, 2026-05-13.
     if (!ctx.staffId) {
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
     }
-    // Date filter required — rooms is keyed (property, date, number) and
-    // without scoping the user sees every day they've ever been assigned.
-    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
-    if (!roomsDate) {
-      return { ok: true, data: { count: 0, rooms: [] } };
+    // Plan v4: read today's rooms from pms_* via the merge bridge, then
+    // filter to this housekeeper's assignments. Date scoping is mandatory —
+    // mergePmsRoomsForDate is per-(property, date), so the user only sees
+    // today, not every day they've ever been assigned.
+    const today = await getPropertyToday(ctx.propertyId);
+    let rooms: Room[];
+    try {
+      rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
+    } catch {
+      return { ok: false, error: 'Failed to fetch assigned rooms.' };
     }
-    const { data, error } = await supabaseAdmin
-      .from('rooms')
-      .select('number, status, is_dnd, issue_note, help_requested, type')
-      .eq('property_id', ctx.propertyId)
-      .eq('date', roomsDate)
-      .eq('assigned_to', ctx.staffId)
-      .order('number');
-    if (error) return { ok: false, error: 'Failed to fetch assigned rooms.' };
+    const mine = rooms.filter(r => r.assignedTo === ctx.staffId);
 
     return {
       ok: true,
       data: {
-        count: data?.length ?? 0,
-        rooms: (data ?? []).map(r => ({
-          number: r.number as string,
-          status: r.status as string,
-          type: r.type as string,
-          dnd: !!r.is_dnd,
-          issue: (r.issue_note as string) || null,
-          helpRequested: !!r.help_requested,
+        count: mine.length,
+        rooms: mine.map(r => ({
+          number: r.number,
+          status: r.status,
+          type: r.type,
+          dnd: !!r.isDnd,
+          // TODO(overlay): issueNote / helpRequested come from a future
+          // workflow overlay table; the pms_* merge shape doesn't carry
+          // them yet (they were empty on `rooms` in practice too).
+          issue: r.issueNote ?? null,
+          helpRequested: !!r.helpRequested,
         })),
       },
     };
@@ -102,33 +164,33 @@ registerTool<Record<string, never>>({
     if (!ctx.staffId) {
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
     }
-    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
-    if (!roomsDate) {
-      return { ok: true, data: { hasNext: false, message: 'No rooms scheduled yet for today.' } };
+    const today = await getPropertyToday(ctx.propertyId);
+    let rooms: Room[];
+    try {
+      rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
+    } catch {
+      return { ok: false, error: 'Failed to find next room.' };
     }
-    const { data, error } = await supabaseAdmin
-      .from('rooms')
-      .select('number, status, is_dnd, type')
-      .eq('property_id', ctx.propertyId)
-      .eq('date', roomsDate)
-      .eq('assigned_to', ctx.staffId)
-      .in('status', ['dirty', 'in_progress'])
-      .eq('is_dnd', false)
-      .order('number')
-      .limit(1);
-    if (error) return { ok: false, error: 'Failed to find next room.' };
+    // First non-clean, non-DND room assigned to this housekeeper, by room
+    // number — same ordering the old `rooms` query used (.order('number')).
+    const next = rooms
+      .filter(r =>
+        r.assignedTo === ctx.staffId &&
+        (r.status === 'dirty' || r.status === 'in_progress') &&
+        !r.isDnd,
+      )
+      .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }))[0];
 
-    if (!data?.length) {
+    if (!next) {
       return { ok: true, data: { hasNext: false, message: 'No more rooms to clean — looks like you\'re done for the day.' } };
     }
-    const r = data[0];
     return {
       ok: true,
       data: {
         hasNext: true,
-        number: r.number,
-        status: r.status,
-        type: r.type,
+        number: next.number,
+        status: next.status,
+        type: next.type,
       },
     };
   },
@@ -147,42 +209,25 @@ registerTool<{ roomNumber: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
-    // PostgREST embedding: pull the assignee row in the same round-trip
-    // instead of a second `staff.select('name').eq('id', assigned_to)`
-    // call. The FK `rooms.assigned_to -> staff(id)` lets us alias it as
-    // `assignee` (audit hot-paths recommendation, 2026-05-17).
+    // Plan v4: the old `rooms` PostgREST FK-embed
+    // (assignee:staff!rooms_assigned_to_fkey) is impossible against the
+    // pms_* merge — there's no `rooms` table to embed off, and the merge
+    // already name-resolves the assignee. Read today's merged rooms and
+    // find the requested number; use Room.assignedName (the PMS housekeeper
+    // name) for the assignee, falling back to assignedTo (a staff id) only
+    // if no name was on the assignment.
     const normalized = String(roomNumber ?? '').trim();
     if (!normalized) return { ok: false, error: `Room ${roomNumber} not found.` };
 
-    const { data, error } = await supabaseAdmin
-      .from('rooms')
-      .select(
-        'number, status, type, is_dnd, dnd_note, issue_note, help_requested, started_at, completed_at, ' +
-        'assignee:staff!rooms_assigned_to_fkey(name)',
-      )
-      .eq('property_id', ctx.propertyId)
-      .eq('number', normalized)
-      .order('date', { ascending: false, nullsFirst: false })
-      .limit(1);
-    if (error || !data?.length) return { ok: false, error: `Room ${roomNumber} not found.` };
-
-    type EmbeddedRow = {
-      number: string;
-      status: string;
-      type: string | null;
-      is_dnd: boolean | null;
-      dnd_note: string | null;
-      issue_note: string | null;
-      help_requested: boolean | null;
-      started_at: string | null;
-      completed_at: string | null;
-      assignee: { name: string | null } | { name: string | null }[] | null;
-    };
-    const room = data[0] as unknown as EmbeddedRow;
-    // PostgREST returns the embedded resource as an object for a single
-    // FK relationship, but the type system surfaces it as `T | T[]`. Normalize.
-    const assignee = Array.isArray(room.assignee) ? room.assignee[0] : room.assignee;
-    const assignedName = assignee?.name ?? null;
+    const today = await getPropertyToday(ctx.propertyId);
+    let rooms: Room[];
+    try {
+      rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
+    } catch {
+      return { ok: false, error: `Room ${roomNumber} not found.` };
+    }
+    const room = rooms.find(r => r.number === normalized);
+    if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
     return {
       ok: true,
@@ -190,13 +235,18 @@ registerTool<{ roomNumber: string }>({
         number: room.number,
         status: room.status,
         type: room.type,
-        assignedTo: assignedName,
-        dnd: room.is_dnd,
-        dndNote: room.dnd_note,
-        issueNote: room.issue_note,
-        helpRequested: room.help_requested,
-        startedAt: room.started_at,
-        completedAt: room.completed_at,
+        // assignedName is already resolved by the merge layer; no second
+        // staff lookup needed.
+        assignedTo: room.assignedName ?? room.assignedTo ?? null,
+        dnd: !!room.isDnd,
+        // TODO(overlay): dndNote / issueNote / helpRequested live in a
+        // future workflow overlay table; the pms_* merge shape doesn't
+        // carry them yet (empty on `rooms` in practice too).
+        dndNote: room.dndNote ?? null,
+        issueNote: room.issueNote ?? null,
+        helpRequested: !!room.helpRequested,
+        startedAt: room.startedAt ? room.startedAt.toISOString() : null,
+        completedAt: room.completedAt ? room.completedAt.toISOString() : null,
       },
     };
   },
@@ -212,57 +262,41 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   handler: async (_, ctx): Promise<ToolResult> => {
-    // Use the property's most-recent rooms-date for both the rooms summary
-    // AND the cleaning_events join so the rollup is internally consistent.
-    // (Falling back to UTC today for events when no rooms exist; the rollup
-    // is meaningless in that case anyway.)
-    // Round 14: pull room_inventory so `total` reflects the truth even when
-    // today's seed is partial. Round 15 (Codex finding A): also pull
-    // `total_rooms` and let computeRoomTotal take the max — so a stale or
-    // empty inventory can't silently under-report. See reports.ts
-    // get_occupancy for the full rationale. INV-23 + INV-24.
-    const [roomsDate, { data: propRow }] = await Promise.all([
-      getCurrentRoomsDate(ctx.propertyId),
+    // Plan v4: day-level counts come from the today_property_counts_v1 RPC
+    // (fetchTodayPropertyCounts) instead of summing `rooms` rows. The RPC is
+    // a single ~50ms call that derives live from pms_in_house_snapshot +
+    // pms_reservations + pms_rooms_inventory — much cheaper than the 5-query
+    // mergePmsRoomsForDate, and this is the manager "how are we doing"
+    // rollup, so aggregates are all we need (no per-room fetch). It also
+    // gives a more honest picture than the old `rooms` count: real PMS
+    // checkouts / stayovers / in-house / occupancy, not just dirty/clean.
+    //
+    // cleaning_events is LEFT UNCHANGED (labor audit source) — same property
+    // + today filter as before.
+    const today = await getPropertyToday(ctx.propertyId);
+    const [counts, { data: events }] = await Promise.all([
+      fetchTodayPropertyCounts(ctx.propertyId, today),
       supabaseAdmin
-        .from('properties')
-        .select('room_inventory, total_rooms')
-        .eq('id', ctx.propertyId)
-        .maybeSingle(),
-    ]);
-    const today = roomsDate ?? new Date().toISOString().slice(0, 10);
-    const inventory = (propRow?.room_inventory as string[] | null) ?? [];
-    const inventoryLength = inventory.length;
-    const configuredTotalRooms = Number(propRow?.total_rooms ?? 0);
-
-    type RoomRow = { status: string | null; is_dnd: boolean | null; issue_note: string | null; help_requested: boolean | null; completed_at: string | null };
-    let rooms: RoomRow[] = [];
-    if (roomsDate) {
-      const { data } = await supabaseAdmin
-        .from('rooms')
-        .select('status, is_dnd, issue_note, help_requested, completed_at')
+        .from('cleaning_events')
+        .select('staff_id, duration_minutes, status')
         .eq('property_id', ctx.propertyId)
-        .eq('date', roomsDate);
-      rooms = (data ?? []) as RoomRow[];
-    }
-    const { data: events } = await supabaseAdmin
-      .from('cleaning_events')
-      .select('staff_id, duration_minutes, status')
-      .eq('property_id', ctx.propertyId)
-      .eq('date', today)
-      .neq('status', 'discarded');
+        .eq('date', today)
+        .neq('status', 'discarded'),
+    ]);
 
-    let dirty = 0, inProgress = 0, clean = 0, dnd = 0, issues = 0, helpRequests = 0;
-    for (const r of rooms ?? []) {
-      if (r.is_dnd) dnd++;
-      else if (r.status === 'dirty') dirty++;
-      else if (r.status === 'in_progress') inProgress++;
-      else if (r.status === 'clean' || r.status === 'inspected') clean++;
-      if (r.issue_note) issues++;
-      if (r.help_requested) helpRequests++;
-    }
-
-    const seededRowCount = rooms?.length ?? 0;
-    const { total, seedingGap } = computeRoomTotal(inventoryLength, configuredTotalRooms, seededRowCount);
+    // Map the PMS count RPC to the rollup shape.
+    //   dirty   ← vacant_dirty  (rooms needing a turn)
+    //   clean   ← vacant_clean  (vacant + ready)
+    //   total   ← total_rooms   (pms_rooms_inventory denominator)
+    // TODO(overlay): inProgress / dnd / issues / helpRequests are
+    // housekeeping-workflow signals not in the PMS count RPC — sourced from
+    // a future overlay table. Reported as 0 for now (they were effectively
+    // empty on the old `rooms` read once the CUA took over). `seedingGap`
+    // is dropped: with a live PMS feed there's no daily-seed completeness
+    // gap to report.
+    const occupancyPercent = counts.total_rooms > 0
+      ? Math.round((counts.in_house / counts.total_rooms) * 1000) / 10
+      : 0;
 
     const eventCount = events?.length ?? 0;
     const totalDuration = (events ?? []).reduce(
@@ -276,9 +310,22 @@ registerTool<Record<string, never>>({
       ok: true,
       data: {
         today,
-        rooms: { dirty, inProgress, clean, dnd, total, seedingGap },
-        issues,
-        helpRequests,
+        rooms: {
+          dirty: counts.vacant_dirty,
+          inProgress: 0, // TODO(overlay)
+          clean: counts.vacant_clean,
+          dnd: 0,        // TODO(overlay)
+          total: counts.total_rooms,
+        },
+        occupancy: {
+          checkouts: counts.checkouts,
+          stayovers: counts.stayovers,
+          inHouse: counts.in_house,
+          outOfOrder: counts.ooo,
+          occupancyPercent,
+        },
+        issues: 0,       // TODO(overlay)
+        helpRequests: 0, // TODO(overlay)
         cleaningEvents: {
           count: eventCount,
           avgDurationMinutes: Math.round(avgDuration * 10) / 10,
@@ -301,32 +348,34 @@ registerTool<Record<string, never>>({
   handler: async (_, ctx): Promise<ToolResult> => {
     // Deep clean for v1 = stayovers on day 2 of their stay (industry convention:
     // a longer-than-standard refresh on the second day of a multi-night stay).
-    // The schema tracks this via rooms.stayover_day (1 or 2). True "deep cleans"
-    // (e.g. carpet shampooing, full reset) aren't yet modelled as a separate
-    // column — we return what the schema supports and surface a note.
-    const today = new Date().toISOString().slice(0, 10);
-    const { data, error } = await supabaseAdmin
-      .from('rooms')
-      .select('number, status, type, stayover_day, completed_at')
-      .eq('property_id', ctx.propertyId)
-      .eq('date', today)
-      .eq('type', 'stayover')
-      .eq('stayover_day', 2);
-    if (error) {
+    // True "deep cleans" (e.g. carpet shampooing, full reset) aren't modelled
+    // as a separate field — we return what the data supports and surface a note.
+    //
+    // Plan v4: stayoverDay now comes from the merged Room (mergePmsRoomsForDate
+    // derives it from pms_reservations). We mirror the same `stayoverDay === 2`
+    // filter ScheduleTab uses against the merged Room (the "Stay · full"
+    // bucket), so the queue is consistent with what the housekeeping board
+    // shows. Replaces the old `rooms.stayover_day = 2` query.
+    const today = await getPropertyToday(ctx.propertyId);
+    let rooms: Room[];
+    try {
+      rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
+    } catch {
       return { ok: true, data: { queue: [], note: 'Deep clean queue could not be loaded.' } };
     }
+    const queue = rooms.filter(r => r.type === 'stayover' && r.stayoverDay === 2);
 
     return {
       ok: true,
       data: {
-        count: data?.length ?? 0,
+        count: queue.length,
         note: 'Showing stayover-day-2 rooms (the longer mid-stay refresh). Full reset deep cleans are not yet tracked as a separate category.',
-        queue: (data ?? []).map(r => ({
+        queue: queue.map(r => ({
           number: r.number,
           status: r.status,
           type: r.type,
-          stayoverDay: r.stayover_day,
-          lastCompleted: r.completed_at,
+          stayoverDay: r.stayoverDay,
+          lastCompleted: r.completedAt ? r.completedAt.toISOString() : null,
         })),
       },
     };
