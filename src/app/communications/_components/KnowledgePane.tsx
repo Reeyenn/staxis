@@ -12,16 +12,34 @@
 import React from 'react';
 import {
   BookOpen, FileText, Phone, CalendarDays, Plus, Pencil, Trash2, Sparkles,
-  Download, Loader2, ChevronLeft, Mail, Search,
+  Download, Loader2, ChevronLeft, Mail, Search, Lock, AlertTriangle,
 } from 'lucide-react';
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
 import type {
   KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeContactDTO, KnowledgeEventDTO,
-  KnowledgeSection, ContactCategory,
+  KnowledgeSection, ContactCategory, KnowledgeVisibility, ExtractionStatus,
 } from '@/lib/knowledge/types';
 import { CONTACT_CATEGORIES, KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 
 type LFn = (en: string, es: string) => string;
+
+// ── Extraction-status badge (drives the Documents list) ──────────────────────
+function statusBadge(status: ExtractionStatus, L: LFn): { label: string; color: string; tone: 'good' | 'warn' | 'muted' } | null {
+  switch (status) {
+    case 'ready':       return { label: L('Searchable by AI', 'Buscable por IA'), color: 'var(--snow-sage-deep)', tone: 'good' };
+    case 'partial':     return { label: L('Partially indexed', 'Indexado parcial'), color: 'var(--snow-sage-deep)', tone: 'good' };
+    case 'pending':
+    case 'processing':  return { label: L('Processing…', 'Procesando…'), color: 'var(--snow-ink3)', tone: 'muted' };
+    case 'unsupported': return { label: L('Not text-searchable', 'No buscable por texto'), color: 'var(--snow-ink3)', tone: 'muted' };
+    case 'failed':      return { label: L('Couldn’t read', 'No se pudo leer'), color: 'var(--snow-warm)', tone: 'warn' };
+    default:            return null;
+  }
+}
+
+const VIS_LABEL: Record<KnowledgeVisibility, { en: string; es: string }> = {
+  all_staff: { en: 'All staff', es: 'Todo el personal' },
+  managers: { en: 'Managers only', es: 'Solo gerentes' },
+};
 const SANS = 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif';
 
 // ── shared styles ─────────────────────────────────────────────────────────
@@ -132,7 +150,10 @@ function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
             <div>
               <div style={{ fontSize: 19, fontWeight: 700, marginBottom: 4 }}>{selected.title}</div>
-              {selected.category && <span style={chip}>{selected.category}</span>}
+              <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                {selected.category && <span style={chip}>{selected.category}</span>}
+                {selected.visibility === 'managers' && <span style={{ ...chip, display: 'inline-flex', alignItems: 'center', gap: 3 }}><Lock size={10} /> {L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</span>}
+              </div>
             </div>
             {isManager && (
               <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
@@ -169,6 +190,7 @@ function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L
                 <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.title}</div>
                 {a.body && <div style={{ fontSize: 12.5, color: 'var(--snow-ink3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.body.replace(/\s+/g, ' ').slice(0, 120)}</div>}
               </div>
+              {a.visibility === 'managers' && <Lock size={13} color="var(--snow-ink3)" />}
               {a.category && <span style={chip}>{a.category}</span>}
             </button>
           ))}
@@ -182,13 +204,14 @@ function SopEditor({ pid, article, L, onDone, onCancel }: { pid: string; article
   const [title, setTitle] = React.useState(article?.title ?? '');
   const [category, setCategory] = React.useState(article?.category ?? '');
   const [body, setBody] = React.useState(article?.body ?? '');
+  const [visibility, setVisibility] = React.useState<KnowledgeVisibility>(article?.visibility ?? 'all_staff');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const save = async () => {
     if (!title.trim() || busy) return;
     setBusy(true); setError(null);
-    const payload = { pid, title: title.trim(), body, category: category.trim() || null };
+    const payload = { pid, title: title.trim(), body, category: category.trim() || null, visibility };
     const r = article
       ? await apiPatch('/api/knowledge/articles', { ...payload, id: article.id })
       : await apiPost('/api/knowledge/articles', payload);
@@ -206,9 +229,18 @@ function SopEditor({ pid, article, L, onDone, onCancel }: { pid: string; article
           <label style={labelStyle}>{L('Title', 'Título')}</label>
           <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={KNOWLEDGE_LIMITS.TITLE_MAX} placeholder={L('e.g. Breakfast bar setup', 'ej. Montaje del desayuno')} style={inputStyle} autoFocus />
         </div>
-        <div>
-          <label style={labelStyle}>{L('Category (optional)', 'Categoría (opcional)')}</label>
-          <input value={category} onChange={(e) => setCategory(e.target.value)} maxLength={KNOWLEDGE_LIMITS.CATEGORY_MAX} placeholder={L('e.g. Front desk, Breakfast, Safety', 'ej. Recepción, Desayuno, Seguridad')} style={inputStyle} />
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <label style={labelStyle}>{L('Category (optional)', 'Categoría (opcional)')}</label>
+            <input value={category} onChange={(e) => setCategory(e.target.value)} maxLength={KNOWLEDGE_LIMITS.CATEGORY_MAX} placeholder={L('e.g. Front desk, Breakfast, Safety', 'ej. Recepción, Desayuno, Seguridad')} style={inputStyle} />
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <label style={labelStyle}>{L('Who can see it', 'Quién puede verlo')}</label>
+            <select value={visibility} onChange={(e) => setVisibility(e.target.value as KnowledgeVisibility)} style={{ ...inputStyle, cursor: 'pointer' }}>
+              <option value="all_staff">{L(VIS_LABEL.all_staff.en, VIS_LABEL.all_staff.es)}</option>
+              <option value="managers">{L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</option>
+            </select>
+          </div>
         </div>
         <div>
           <label style={labelStyle}>{L('Steps / content', 'Pasos / contenido')}</label>
@@ -232,6 +264,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
   const [items, setItems] = React.useState<KnowledgeDocumentDTO[] | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [uploadVis, setUploadVis] = React.useState<KnowledgeVisibility>('all_staff');
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
   const load = React.useCallback(async () => {
@@ -240,6 +273,16 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
     else setItems([]);
   }, [pid]);
   React.useEffect(() => { void load(); }, [load]);
+
+  // Auto-refresh while any document is still being read/embedded (the upload
+  // route processes in the background), so "Processing…" flips to "Searchable"
+  // without a manual reload. Stops once nothing is pending/processing.
+  React.useEffect(() => {
+    const anyProcessing = (items ?? []).some((d) => d.extractionStatus === 'pending' || d.extractionStatus === 'processing');
+    if (!anyProcessing) return;
+    const t = setTimeout(() => { void load(); }, 4000);
+    return () => clearTimeout(t);
+  }, [items, load]);
 
   const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -255,7 +298,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       const up = await fetch(pre.data.signedUrl, { method: 'PUT', body: file, headers: { 'Content-Type': pre.data.contentType } });
       if (!up.ok) { setError(L('Upload failed. Try again.', 'La carga falló. Inténtalo de nuevo.')); return; }
       const title = file.name.replace(/\.[^.]+$/, '').slice(0, KNOWLEDGE_LIMITS.TITLE_MAX) || file.name;
-      const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size });
+      const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size, visibility: uploadVis });
       if (!reg.ok) { setError(reg.error || L('Could not save the document.', 'No se pudo guardar el documento.')); return; }
       await load();
     } finally {
@@ -274,14 +317,23 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       <SectionHeader
         title={L('Documents', 'Documentos')}
         action={isManager ? (
-          <>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select
+              value={uploadVis}
+              onChange={(e) => setUploadVis(e.target.value as KnowledgeVisibility)}
+              title={L('Who can see the next upload', 'Quién verá la próxima carga')}
+              style={{ ...ghostBtn, cursor: 'pointer', padding: '7px 10px' }}
+            >
+              <option value="all_staff">{L(VIS_LABEL.all_staff.en, VIS_LABEL.all_staff.es)}</option>
+              <option value="managers">{L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</option>
+            </select>
             <input ref={fileRef} type="file" accept={ACCEPT_DOCS} onChange={onPick} style={{ display: 'none' }} />
             <button onClick={() => fileRef.current?.click()} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : <Plus size={15} />} {L('Upload', 'Subir')}</button>
-          </>
+          </div>
         ) : undefined}
       />
       {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-      {isManager && <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', marginBottom: 12 }}>{L('PDF, TXT, Markdown, CSV, DOC, DOCX up to 10 MB. Text & Markdown files are searchable by the assistant; PDFs are listed by title (full-text search is coming soon).', 'PDF, TXT, Markdown, CSV, DOC, DOCX hasta 10 MB. Los archivos de texto y Markdown se pueden buscar con el asistente; los PDF se listan por título (búsqueda de contenido próximamente).')}</div>}
+      {isManager && <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', marginBottom: 12 }}>{L('PDF, Word, Text, Markdown, CSV up to 10 MB. The assistant reads the full text of typed PDFs and Word docs — ask it anything about them. Scanned (photo) PDFs can’t be read yet.', 'PDF, Word, Texto, Markdown, CSV hasta 10 MB. El asistente lee el texto completo de los PDF y documentos de Word — pregúntale lo que sea. Los PDF escaneados (foto) aún no se pueden leer.')}</div>}
       {items === null ? <Loading L={L} /> : items.length === 0 ? (
         <Empty text={L('No documents yet.', 'Aún no hay documentos.')} />
       ) : (
@@ -294,7 +346,17 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
                 <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span>{prettyType(d.mimeType)}</span>
                   {d.sizeBytes != null && <span>· {prettySize(d.sizeBytes)}</span>}
-                  {d.hasText && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--snow-sage-deep)', fontWeight: 600 }}><Search size={11} /> {L('Searchable by AI', 'Buscable por IA')}</span>}
+                  {(() => {
+                    const b = statusBadge(d.extractionStatus, L);
+                    if (!b) return null;
+                    const Icon = b.tone === 'good' ? Search : b.tone === 'warn' ? AlertTriangle : Loader2;
+                    return (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: b.color, fontWeight: 600 }}>
+                        <Icon size={11} className={b.tone === 'muted' && (d.extractionStatus === 'pending' || d.extractionStatus === 'processing') ? 'spin' : undefined} /> {b.label}
+                      </span>
+                    );
+                  })()}
+                  {d.visibility === 'managers' && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--snow-ink3)', fontWeight: 600 }}><Lock size={11} /> {L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</span>}
                 </div>
               </div>
               {d.downloadUrl && (

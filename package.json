@@ -31,6 +31,7 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "lucide-react": "^1.14.0",
+    "mammoth": "^1.12.0",
     "next": "^16.2.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -41,6 +42,7 @@
     "stripe": "^22.1.1",
     "tailwind-merge": "^3.3.0",
     "twilio": "^6.0.2",
+    "unpdf": "^1.6.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

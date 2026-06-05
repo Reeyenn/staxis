@@ -12,26 +12,31 @@
  * object path is scoped to the caller's property (tenant isolation).
  */
 import type { NextRequest } from 'next/server';
+import { after } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { validateUuid, validateString, validateInt } from '@/lib/api-validate';
+import { validateUuid, validateString, validateInt, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { listDocuments, registerDocument, deleteDocument } from '@/lib/knowledge/core';
-import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
+import { indexDocument } from '@/lib/knowledge/indexing';
+import { KNOWLEDGE_LIMITS, KNOWLEDGE_VISIBILITIES, type KnowledgeVisibility } from '@/lib/knowledge/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// The POST hands extraction + embedding to after() (runs after the response,
+// within this invocation). Give it room so a large PDF's read/embed finishes.
+export const maxDuration = 60;
 
 export async function GET(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
   if (!ctx.ok) return ctx.response;
-  const documents = await listDocuments(ctx.pid);
+  const documents = await listDocuments(ctx.pid, ctx.role as AppRole);
   return ok({ documents }, { requestId: ctx.requestId, headers: ctx.headers });
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  let raw: { pid?: string; title?: unknown; path?: unknown; mimeType?: unknown; sizeBytes?: unknown };
+  let raw: { pid?: string; title?: unknown; path?: unknown; mimeType?: unknown; sizeBytes?: unknown; visibility?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
   const ctx = await commsContext(req, raw.pid ?? null);
@@ -49,6 +54,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const mimeV = validateString(raw.mimeType, { max: 120, label: 'mimeType' });
   if (mimeV.error) return err(mimeV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
 
+  let visibility: KnowledgeVisibility = 'all_staff';
+  if (raw.visibility !== undefined && raw.visibility !== null) {
+    const visV = validateEnum(raw.visibility, KNOWLEDGE_VISIBILITIES, 'visibility');
+    if (visV.error) return err(visV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    visibility = visV.value!;
+  }
+
   let sizeBytes: number | null = null;
   if (raw.sizeBytes !== undefined && raw.sizeBytes !== null) {
     const sizeV = validateInt(raw.sizeBytes, { min: 0, max: 10_485_760, label: 'sizeBytes' });
@@ -58,12 +70,17 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const result = await registerDocument(
     ctx.pid,
-    { title: titleV.value!, path: pathV.value!, mimeType: mimeV.value!, sizeBytes },
+    { title: titleV.value!, path: pathV.value!, mimeType: mimeV.value!, sizeBytes, visibility },
     { accountId: ctx.accountId, name: ctx.displayName },
   );
   if ('error' in result) {
     return err(result.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
   }
+  // Read + chunk + embed AFTER the response so a slow PDF/embedding doesn't
+  // block the upload. The row is already `pending`; this drives it to its
+  // terminal status (ready/partial/failed/unsupported).
+  const pid = ctx.pid, docId = result.id, filePath = pathV.value!, mime = mimeV.value!, accountId = ctx.accountId;
+  after(() => indexDocument({ propertyId: pid, docId, filePath, mime, accountId, visibility }));
   return ok({ id: result.id }, { requestId: ctx.requestId, status: 201, headers: ctx.headers });
 }
 

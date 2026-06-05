@@ -215,6 +215,23 @@ export function escapeTrustMarkerContent(content: string): string {
     .replace(/>/g, '&gt;');
 }
 
+/**
+ * Wrap a tool result in the untrusted trust-marker, applying the canonical
+ * pipeline: truncate (R3) → escape <>& (R4/R6, unforgeable boundary) → wrap
+ * (A-C2, anti-jailbreak). The `name` attribute is escaped too so a tool name
+ * can never carry a forged attribute/tag.
+ *
+ * SINGLE SOURCE OF TRUTH for tool-result wrapping. Used by BOTH the live tool
+ * loop AND the history replay (toClaudeMessages) — the replay path previously
+ * emitted persisted results RAW, so a malicious document surfaced by a tool on
+ * turn N could inject instructions when that result was replayed on turn N+1.
+ * Wrapping on replay closes that (knowledge-doc-reading security pass).
+ */
+export function wrapToolResultForModel(toolName: string, rawContent: string): string {
+  const safeName = escapeTrustMarkerContent(toolName).replace(/"/g, '&quot;');
+  return `<tool-result trust="untrusted" name="${safeName}">${escapeTrustMarkerContent(truncateToolResultContent(rawContent))}</tool-result>`;
+}
+
 // ─── Client ────────────────────────────────────────────────────────────────
 
 let cachedClient: Anthropic | null = null;
@@ -392,7 +409,7 @@ type ClaudeContent = Anthropic.Messages.ContentBlockParam;
  * abort-cleanup row racing a new user turn) be misclassified as
  * "matched" while still producing an invalid message sequence.
  */
-function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessage[] {
+export function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessage[] {
   const out: ClaudeMessage[] = [];
 
   // Iterate over history with explicit index control so we can peek
@@ -417,10 +434,12 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
     const blocks: ClaudeContent[] = [];
     if (m.content) blocks.push({ type: 'text', text: m.content });
     const toolCallIds: string[] = [];
+    const toolNameById = new Map<string, string>();
     if (m.toolCalls) {
       for (const tc of m.toolCalls) {
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
         toolCallIds.push(tc.id);
+        toolNameById.set(tc.id, tc.name);
       }
     }
     out.push({ role: 'assistant', content: blocks });
@@ -463,10 +482,15 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
     const resultBlocks: ClaudeContent[] = toolCallIds.map(id => {
       const tm = adjacentResults.get(id);
       if (tm) {
+        // SECURITY: persisted tool results are stored RAW (the route writes
+        // result.data unwrapped). Wrap + escape on replay with the SAME helper
+        // the live loop uses, so a malicious document a tool surfaced on an
+        // earlier turn can't inject instructions when its result is replayed.
+        const raw = typeof tm.result === 'string' ? tm.result : safeStringify(tm.result);
         return {
           type: 'tool_result' as const,
           tool_use_id: id,
-          content: typeof tm.result === 'string' ? tm.result : safeStringify(tm.result),
+          content: wrapToolResultForModel(toolNameById.get(id) ?? 'tool', raw),
           is_error: tm.isError ?? false,
         };
       }
@@ -890,9 +914,9 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: call.id,
-          // Truncate first (R3), escape <>& second (R6 R4 — unforgeable
-          // boundary), wrap in trust marker third (A-C2 — anti-jailbreak).
-          content: `<tool-result trust="untrusted" name="${call.name}">${escapeTrustMarkerContent(truncateToolResultContent(rawContent))}</tool-result>`,
+          // Truncate → escape <>& → wrap in trust marker (single source of
+          // truth — same helper the history replay uses).
+          content: wrapToolResultForModel(call.name, rawContent),
           is_error: isError,
         });
       }
