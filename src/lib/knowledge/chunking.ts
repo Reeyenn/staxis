@@ -31,7 +31,11 @@ export interface ChunkOptions {
   maxChunks?: number;
 }
 
-const DEFAULTS = { targetChars: 1000, overlapChars: 150, maxChunks: 400 } as const;
+/** Default hard ceiling on chunk count (cost/scale guard). Exported so the
+ *  indexer can mark a doc `partial` when its text would exceed the cap rather
+ *  than silently dropping the tail behind a green "ready" badge. */
+export const DEFAULT_MAX_CHUNKS = 400;
+const DEFAULTS = { targetChars: 1000, overlapChars: 150, maxChunks: DEFAULT_MAX_CHUNKS } as const;
 
 /** Detect a heading line so chunks can carry a section ref.
  *  Conservative on purpose — over-detecting headings mislabels passages. */

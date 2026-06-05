@@ -18,7 +18,7 @@
 import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
-import { chunkText, type TextChunk } from './chunking';
+import { chunkText, DEFAULT_MAX_CHUNKS, type TextChunk } from './chunking';
 import { extractDocumentText } from './extraction';
 import {
   getDefaultEmbedder, estimateEmbeddingCostUsd, EMBEDDING_MODEL, toVectorLiteral, type Embedder,
@@ -250,8 +250,11 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
       chunks, embedder: input.embedder,
     });
 
-    const finalStatus: ExtractionStatus = outcome.status === 'partial' || emb.partial ? 'partial' : 'ready';
-    const finalError = outcome.error ?? emb.error ?? null;
+    // If chunking hit the hard cap, the tail wasn't indexed → honest `partial`
+    // (don't show a green "ready" badge the doc didn't earn).
+    const hitChunkCap = chunks.length >= DEFAULT_MAX_CHUNKS;
+    const finalStatus: ExtractionStatus = outcome.status === 'partial' || emb.partial || hitChunkCap ? 'partial' : 'ready';
+    const finalError = outcome.error ?? emb.error ?? (hitChunkCap ? 'Document is very large — only the first part is indexed for search.' : null);
     await setDocStatus(propertyId, docId, finalStatus, { extractedText: outcome.text, error: finalError });
     return finalStatus;
   } catch (e) {
