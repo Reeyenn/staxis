@@ -1,10 +1,13 @@
 'use client';
 
-// Checkbook — the expense register. List + month total + department filter,
-// add/edit/delete, and "scan invoice" which pre-fills the add form from Claude
-// Vision (vendor, total, AI-suggested department) with a 2×-outlier warning.
-// All reads/writes go through /api/financials/expenses (service-role + finance
-// gate). Money is integer cents; the dollar input is parsed once on save.
+// Checkbook — the expense register, as a department swimlane board (Kanban
+// redesign). Each department is a column carrying its month spend + budget
+// meter; expense cards flip to reveal vendor / notes / who-logged and the
+// edit + delete actions. Month total + department filter + "scan invoice"
+// (Claude Vision pre-fill, 2× outlier warning) + add/edit/delete are all
+// preserved. All reads/writes go through /api/financials/* (service-role +
+// finance gate). Money is integer cents; the dollar input is parsed once on
+// save.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -16,10 +19,12 @@ import {
 import {
   DEPARTMENTS,
   parseDollarsToCents,
+  type BudgetVsActual,
   type Department,
   type FinancialExpense,
 } from '@/lib/financials/shared';
-import { apiGet, apiSend, Btn, Money, Pill, Card, Notice, DollarInput, T, FONT_SANS, FONT_MONO } from './fin-ui';
+import { apiGet, apiSend, Btn, Money, Notice, DollarInput, T, FONT_SANS, FONT_MONO } from './fin-ui';
+import { ExpenseSourceTag, FinColumn, FlipExpenseCard, BoardScroller, deptColor } from './fin-board';
 import { ft, deptLabel } from './fin-i18n';
 import { ScanButton, type InvoiceDraft } from './ScanButton';
 
@@ -44,6 +49,14 @@ function blankForm(): FormState {
   return { id: null, vendor: '', amount: '', department: 'other', category: '', date: todayYmd(), notes: '', source: 'manual' };
 }
 
+function shortDate(ymd: string, lang: Lang): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return ymd;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+    .toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+    .toUpperCase();
+}
+
 export function CheckbookTab({
   pid,
   lang,
@@ -58,6 +71,7 @@ export function CheckbookTab({
   const S = ft(lang);
   const [expenses, setExpenses] = useState<FinancialExpense[]>([]);
   const [total, setTotal] = useState(0);
+  const [budgetByDept, setBudgetByDept] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [errored, setErrored] = useState(false);
   const [deptFilter, setDeptFilter] = useState<Department | 'all'>('all');
@@ -72,14 +86,20 @@ export function CheckbookTab({
     setErrored(false);
     const qs = new URLSearchParams({ pid, month });
     if (deptFilter !== 'all') qs.set('department', deptFilter);
-    const res = await apiGet<{ expenses: FinancialExpense[]; total: number }>(`/api/financials/expenses?${qs}`);
-    if (!res.ok || !res.data) {
+    const [exp, bud] = await Promise.all([
+      apiGet<{ expenses: FinancialExpense[]; total: number }>(`/api/financials/expenses?${qs}`),
+      apiGet<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}`),
+    ]);
+    if (!exp.ok || !exp.data) {
       setErrored(true);
       setLoading(false);
       return;
     }
-    setExpenses(res.data.expenses);
-    setTotal(res.data.total);
+    setExpenses(exp.data.expenses);
+    setTotal(exp.data.total);
+    const bmap: Record<string, number> = {};
+    if (bud.ok && bud.data) for (const b of bud.data.budgets) bmap[b.department] = b.budgetCents;
+    setBudgetByDept(bmap);
     setLoading(false);
   }, [pid, month, deptFilter]);
 
@@ -173,20 +193,28 @@ export function CheckbookTab({
     [lang, S.allDepartments],
   );
 
+  // Group expenses into department columns (respect filter; only depts with rows).
+  const columns = useMemo(() => {
+    return DEPARTMENTS.filter((d) => (deptFilter === 'all' || deptFilter === d) && expenses.some((e) => e.department === d)).map((d) => {
+      const items = expenses
+        .filter((e) => e.department === d)
+        .slice()
+        .sort((a, b) => (a.expenseDate < b.expenseDate ? 1 : -1));
+      const spent = items.reduce((s, e) => s + e.amountCents, 0);
+      return { dept: d, items, spent, budget: budgetByDept[d] ?? 0 };
+    });
+  }, [expenses, deptFilter, budgetByDept]);
+
   return (
     <div>
       {/* Toolbar */}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2 }}>{S.monthTotal}</span>
-          <Money cents={total} size={22} weight={600} />
+          <Money cents={total} size={20} weight={700} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <select
-            value={deptFilter}
-            onChange={(e) => setDeptFilter(e.target.value as Department | 'all')}
-            style={selectStyle}
-          >
+          <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value as Department | 'all')} style={selectStyle}>
             {deptOptions.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -198,42 +226,46 @@ export function CheckbookTab({
         </div>
       </div>
 
-      {/* List */}
+      {/* Board */}
       {loading ? (
         <Notice text={S.loading} />
       ) : errored ? (
         <Notice text={S.errorLoading} onRetry={() => void load()} />
-      ) : expenses.length === 0 ? (
+      ) : columns.length === 0 ? (
         <Notice text={S.noExpenses} />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {expenses.map((e) => (
-            <Card key={e.id} style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: FONT_SANS, fontSize: 14, fontWeight: 600, color: T.ink }}>
-                    {e.vendor || (lang === 'es' ? 'Sin proveedor' : 'No vendor')}
-                  </span>
-                  <Pill label={deptLabel(lang, e.department)} color={T.ink2} />
-                  {e.source === 'invoice_scan' && <Pill label={S.fromScan} color={T.sageDeep} />}
-                </div>
-                <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, marginTop: 3 }}>
-                  {e.expenseDate}
-                  {e.category ? ` · ${e.category}` : ''}
-                </div>
-              </div>
-              <Money cents={e.amountCents} size={15} />
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button onClick={() => openEdit(e)} style={iconBtn} aria-label={S.edit}>
-                  ✎
-                </button>
-                <button onClick={() => void del(e.id)} style={{ ...iconBtn, color: T.warm }} aria-label={S.delete}>
-                  ✕
-                </button>
-              </div>
-            </Card>
-          ))}
-        </div>
+        <BoardScroller>
+          {columns.map((col) => {
+            const c = deptColor(col.dept);
+            return (
+              <FinColumn key={col.dept} color={c} name={deptLabel(lang, col.dept)} count={col.items.length} spentCents={col.spent} budgetCents={col.budget > 0 ? col.budget : null}>
+                {col.items.map((e) => {
+                  const detailRows: { label: string; value: string }[] = [];
+                  if (e.notes) detailRows.push({ label: lang === 'es' ? 'NOTA' : 'NOTE', value: e.notes.length > 40 ? e.notes.slice(0, 38) + '…' : e.notes });
+                  if (e.createdByName) detailRows.push({ label: lang === 'es' ? 'REGISTRÓ' : 'LOGGED', value: e.createdByName });
+                  if (e.invoiceNumber) detailRows.push({ label: lang === 'es' ? 'FACTURA' : 'INVOICE', value: e.invoiceNumber });
+                  return (
+                    <FlipExpenseCard
+                      key={e.id}
+                      memo={e.vendor || (e.category ?? (lang === 'es' ? 'Gasto' : 'Expense'))}
+                      dateLabel={shortDate(e.expenseDate, lang)}
+                      amountCents={e.amountCents}
+                      sourceTag={<ExpenseSourceTag label={e.source === 'invoice_scan' ? 'SCAN' : 'MANUAL'} tone={e.source === 'invoice_scan' ? 'scan' : 'manual'} />}
+                      vendorLabel={e.category || e.vendor || (lang === 'es' ? 'Gasto' : 'Expense')}
+                      detailRows={detailRows}
+                      deptName={deptLabel(lang, e.department)}
+                      deptColorHex={c}
+                      editLabel={S.edit}
+                      deleteLabel={S.delete}
+                      onEdit={() => openEdit(e)}
+                      onDelete={() => void del(e.id)}
+                    />
+                  );
+                })}
+              </FinColumn>
+            );
+          })}
+        </BoardScroller>
       )}
 
       {/* Add / edit modal */}
@@ -317,15 +349,4 @@ const dateStyle: React.CSSProperties = {
   width: '100%',
   boxSizing: 'border-box',
   outline: 'none',
-};
-const iconBtn: React.CSSProperties = {
-  width: 30,
-  height: 30,
-  borderRadius: 8,
-  border: `1px solid ${T.rule}`,
-  background: 'transparent',
-  color: T.ink2,
-  cursor: 'pointer',
-  fontSize: 13,
-  flexShrink: 0,
 };
