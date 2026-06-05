@@ -294,6 +294,11 @@ const ServerSchema = z.object({
   // Kill-switch for the cron/sweep-orphan-auth-users job — set to "true"
   // to disable the sweep (e.g. during incident triage).
   DISABLE_ORPHAN_AUTH_SWEEP: z.string().optional(),
+
+  // Global kill-switch for the AI Agent Builder (0262) — set to "false" to
+  // stop agent-tick, dispatchAgentEvent, and runAgent (incident lever).
+  // Default unset = agents enabled.
+  AGENTS_ENABLED: z.string().optional(),
 });
 
 type Env = z.infer<typeof ServerSchema>;

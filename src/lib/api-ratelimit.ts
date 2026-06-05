@@ -22,6 +22,15 @@ import { log } from '@/lib/log';
 
 /** Endpoint identifier — keep these short and stable. */
 export type RateLimitEndpoint =
+  // ── AI Agent Builder (0262) ──────────────────────────────────────────────
+  // agents-config: create/update agents. agents-run: manual/backtest runs (can
+  // call Anthropic + fire actions). agents-approve: approve/reject a queued
+  // step (executes side effects). agents-action-sms: approving an SMS-firing
+  // action. run/approve/sms are billing-impacting (see set below).
+  | 'agents-config'
+  | 'agents-run'
+  | 'agents-approve'
+  | 'agents-action-sms'
   // ── Reports (self-serve report hub) ──────────────────────────────────────
   // reports-run can call Claude for the AI summary (billing-impacting); keyed
   // on the RAW property id, never a hashed composite (api_limits FK trap).
@@ -300,6 +309,11 @@ export type RateLimitEndpoint =
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
+  // AI Agent Builder (0262)
+  'agents-config':               120,
+  'agents-run':                  60,
+  'agents-approve':              120,
+  'agents-action-sms':           30,
   'reports-run':                 120,
   'reports-export':              120,
   // PMS onboarding — testing creds is cheap so 30/hr handles a GM
@@ -611,6 +625,10 @@ export const NO_PROPERTY_RATE_LIMIT_KEY = '00000000-0000-0000-0000-000000000000'
  * caller hits the fail-closed branch.
  */
 const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<RateLimitEndpoint>([
+  // AI Agent Builder — runs cost Anthropic; approvals execute side effects (incl. SMS).
+  'agents-run',
+  'agents-approve',
+  'agents-action-sms',
   'reports-run',
   // Each pms-onboard burns $1-3 of Anthropic credit on the Fly worker.
   'pms-onboard',

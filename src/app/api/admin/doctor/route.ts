@@ -2123,6 +2123,8 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // "today" and runs the scoring engine. Idempotent (skips already-
   // assigned tasks via the hk_assignments partial unique index).
   { name: 'run-auto-assign',               cadenceHours: 15/60, description: '15-min Vercel cron — auto-assigns cleaning_tasks to housekeepers per property timezone' },
+  // AI Agent Builder (0262): 5-min schedule trigger + stranded-run reaper + 90d snapshot retention.
+  { name: 'agent-tick',                    cadenceHours: 5/60,  description: '5-min Vercel cron — runs due schedule-triggered agents (per property tz), reaps stranded runs, purges old snapshots' },
   // 2026-05-24: sick-callout coverage flow (feature #6). Sweeps callouts
   // whose redistribute_at has passed (or whose 'after_current_room'
   // gate is now satisfied) and fires the redistribute. Safety net for

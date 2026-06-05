@@ -101,6 +101,8 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // a hardcoded shift-start gate. Rationale + rejected alternatives are
   // documented in the route file header.
   { heartbeatName: 'run-auto-assign',       source: { kind: 'vercel', cronPath: '/api/cron/run-auto-assign' },                  cronExpr: '*/15 * * * *' },
+  // AI Agent Builder (0262): 5-min schedule trigger + reaper + retention sweep.
+  { heartbeatName: 'agent-tick',            source: { kind: 'vercel', cronPath: '/api/cron/agent-tick' },                       cronExpr: '*/5 * * * *' },
   // 2026-05-24: sick-callout coverage flow (feature #6). Every 5 min,
   // sweeps callout_events for rows whose redistribute_at has passed
   // (or whose 'after_current_room' guard is now satisfied) and fires
