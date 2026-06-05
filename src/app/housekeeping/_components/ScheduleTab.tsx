@@ -1,25 +1,36 @@
 'use client';
 
-// Schedule tab — a single board with a Kanban / Timeline / Forecast view
-// toggle near the top (May 2026 combine). The legacy manual board (crew
-// rows, drag-to-assign, swap menus, the "Auto-assign" + "Send links"
-// action band, and the staff-priority modal) was removed: it duplicated
-// the Kanban board and ran on the retired schedule_assignments data layer.
-// Auto-assignment now happens server-side (the run-auto-assign cron) and
-// surfaces in the Kanban (AutoAssignBoard) + Timeline views, which read
-// cleaning_tasks / hk_assignments. "Send the crew their rooms" and "pick
-// who's working today" will be rebuilt on the new board once the PMS room
-// feed is live end-to-end.
+// Schedule tab — redesigned June 2026 (the "wearebrand" handoff). The
+// manager plans the day's cleaning here: pull occupancy, then assign every
+// serviceable room to a housekeeper and balance everyone's workload. Two
+// alternate representations of the SAME assignment, toggled by one control:
 //
-// What stays here: the date stepper, the PMS pull strip (live counts) with
-// its cleaning-time settings modal, the "tomorrow's confidence" ML tile,
-// and the three sub-views.
+//   • Board    — one compact row per housekeeper (avatar, workload bar,
+//                "rooms · time · status", and their room chips). Drag chips
+//                between crew; tap a chip for detail. (ScheduleBoard.tsx)
+//   • Timeline — the same assignment as a Gantt strip across the shift,
+//                one lane per housekeeper. (ScheduleTimeline.tsx)
+//
+// Data backbone = the cleaning_tasks + hk_assignments system (the modern,
+// persistent assignment engine), surfaced via:
+//   GET  /api/housekeeping/board            (rooms + crew + current assignment)
+//   POST /api/housekeeping/reassign         (move one room to a housekeeper)
+//   POST /api/housekeeping/reset-assignments(clear all, or one — drag-to-unassigned)
+//   POST /api/housekeeping/auto-assign      (balance unassigned rooms across crew)
+//   POST /api/housekeeping/staff-priority   (★ Priority modal)
+//   POST /api/send-shift-confirmations      (→ Send links)
+//
+// Kept from the prior tab: the live date stepper, the PMS pull strip (with
+// its cleaning-time settings modal), and the sick-callout banner. Dropped
+// per the new design: the Forecast sub-view, the notice board, and the
+// tomorrow's-confidence tile.
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   subscribeToPlanSnapshot,
   subscribeToDashboardByDate,
@@ -27,36 +38,28 @@ import {
 } from '@/lib/db';
 import type { PlanSnapshot, DashboardNumbers } from '@/lib/db';
 import {
-  defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms, formatPulledAt,
+  defaultShiftDate, addDays, formatDisplayDate, formatPulledAt,
 } from './_shared';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
-  Caps, Btn,
+  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn, HousekeeperDot,
 } from './_snow';
 import { CalloutBanner } from './CalloutBanner';
 import {
-  getActiveOptimizerForTomorrow,
-  getActiveDemandForTomorrow,
-} from '@/lib/ml-schedule-helpers';
-// Auto-Assign Board — the Kanban view. Manager view of the cleaning_tasks +
-// hk_assignments system; degrades to an empty-state when the rules engine
-// hasn't produced tasks for today yet.
-import { AutoAssignBoard } from './AutoAssignBoard';
-// Timeline View — Gantt-style strip below the Auto-Assign Board. Shows each
-// housekeeper's day on a horizontal time axis. Same data model as the board,
-// richer payload via /api/housekeeping/timeline (lifecycle timestamps).
-import { TimelineView } from './TimelineView';
-// Forecast View — third optional sub-view below the legacy schedule.
-// Renders forward-looking demand vs supply across 1 / 7 / 14 day ranges
-// so the GM can spot understaffed days before the day-of fire drill.
-import { ForecastView } from './ForecastView';
-import { NoticeBoardPoster } from './NoticeBoardPoster';
+  ScheduleBoard, type BoardTask, type BoardHk,
+  chipKind, fmtMinutes,
+} from './ScheduleBoard';
+import { ScheduleTimeline } from './ScheduleTimeline';
 
-// Persisted view choice. Three states — see the toggle below the
-// existing PMS strip. Stored in localStorage so a tab refresh lands
-// the manager on the same view they last looked at.
-type ScheduleView = 'kanban' | 'timeline' | 'forecast';
+type ScheduleView = 'board' | 'timeline';
 const VIEW_STORAGE_KEY = 'staxis.schedule.view';
+
+interface BoardData {
+  tasks: BoardTask[];
+  housekeepers: BoardHk[];
+  unassigned: number;
+}
+
+const PRIORITY_RANK: Record<string, number> = { priority: 0, normal: 1, excluded: 2 };
 
 export function ScheduleTab() {
   const { user } = useAuth();
@@ -65,40 +68,33 @@ export function ScheduleTab() {
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
-  // Flips true after the first plan-snapshot callback fires (with data or
-  // null), so the PMS strip can show a skeleton during the initial fetch
-  // instead of zero-counts that read like real data.
   const [planLoaded, setPlanLoaded] = useState(false);
-  // 15-min Choice Advantage dashboard pull (In House / Arrivals /
-  // Departures). Independent of the hourly CSV plan-snapshot above — each
-  // refreshes on its own cadence and has its own loaded flag.
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
+
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [scheduleView, setScheduleView] = useState<ScheduleView>('kanban');
+  const [view, setView] = useState<ScheduleView>('board');
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
-      if (stored === 'kanban' || stored === 'timeline' || stored === 'forecast') {
-        setScheduleView(stored);
-      }
-    } catch {
-      // private-browsing modes can throw on localStorage — ignore
-    }
+      if (stored === 'board' || stored === 'timeline') setView(stored);
+    } catch { /* private mode */ }
   }, []);
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    try { window.localStorage.setItem(VIEW_STORAGE_KEY, scheduleView); } catch { /* ignore */ }
-  }, [scheduleView]);
+    try { window.localStorage.setItem(VIEW_STORAGE_KEY, view); } catch { /* ignore */ }
+  }, [view]);
 
-  // Prediction Settings modal — lets the user tune per-property cleaning
-  // minutes (checkout / stayover Day 1 / stayover Day 2 / prep) and the
-  // shift cap, which all feed the auto-assign algorithm and the per-HK
-  // capacity bars. Form state is seeded from activeProperty when the
-  // modal opens so the inputs always reflect the current persisted values.
+  // ── Board data ─────────────────────────────────────────────────────────
+  const [boardData, setBoardData] = useState<BoardData | null>(null);
+  const [boardLoaded, setBoardLoaded] = useState(false);
+  const [boardErr, setBoardErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<null | 'auto' | 'reset' | 'send'>(null);
+
+  // Settings (cleaning-time) modal.
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsForm, setSettingsForm] = useState({
@@ -109,9 +105,21 @@ export function ScheduleTab() {
     shiftMinutes: 420,
   });
 
+  // Priority modal + detail drawer.
+  const [showPriority, setShowPriority] = useState(false);
+  const [openTask, setOpenTask] = useState<BoardTask | null>(null);
+
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
+  const flashToast = useCallback((msg: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(msg);
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+
+  // Dashboard pull (In House / Arrivals / Departures).
   useEffect(() => {
     if (!pid) return;
     setDashboardLoaded(false);
@@ -121,6 +129,7 @@ export function ScheduleTab() {
     });
   }, [pid, shiftDate]);
 
+  // Plan snapshot — kept only for the "Latest PMS pull" freshness stamp.
   useEffect(() => {
     if (!uid || !pid) return;
     setPlanLoaded(false);
@@ -130,140 +139,239 @@ export function ScheduleTab() {
     });
   }, [uid, pid, shiftDate]);
 
-  const [optimizerPanel, setOptimizerPanel] = useState<{
-    recommendedHeadcount: number;
-    completionProbabilityCurve: Array<{ headcount: number; p: number }>;
-    // Phase 1.3 (2026-05-22) — derived from optimizer_results.inputs_snapshot
-    // so the confidence tile can branch the headline label honestly
-    // between "AI recommendation" (fitted) and "Industry estimate ·
-    // learning" (warming-up or capacity-unavailable).
-    modelKind: 'fitted' | 'warming-up' | 'capacity-unavailable';
-    warmupReason: string | null;
-  } | null>(null);
-  const [demandPanel, setDemandPanel] = useState<{
-    predictedHeadcountP80: number;
-    predictedHeadcountP95: number;
-  } | null>(null);
+  // Board fetch (rooms + crew + assignment).
+  const refreshBoard = useCallback(async () => {
+    if (!pid) return;
+    try {
+      const res = await fetchWithAuth(
+        `/api/housekeeping/board?propertyId=${encodeURIComponent(pid)}&date=${encodeURIComponent(shiftDate)}`,
+      );
+      const body = (await res.json()) as { ok: boolean; data?: BoardData; error?: string };
+      if (!res.ok || !body.ok || !body.data) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      setBoardData(body.data);
+      setBoardErr(null);
+    } catch (e) {
+      setBoardErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBoardLoaded(true);
+    }
+  }, [pid, shiftDate]);
+
   useEffect(() => {
-    if (!pid || !activeProperty) return;
-    let cancelled = false;
-    void Promise.all([
-      getActiveOptimizerForTomorrow(pid, activeProperty.timezone ?? undefined),
-      getActiveDemandForTomorrow(pid, activeProperty.timezone ?? undefined),
-    ]).then(([opt, dem]) => {
-      if (cancelled) return;
-      setOptimizerPanel(opt);
-      setDemandPanel(dem);
-    });
-    return () => { cancelled = true; };
-  }, [pid, activeProperty, shiftDate]);
+    setBoardLoaded(false);
+    setBoardData(null);
+    void refreshBoard();
+  }, [refreshBoard]);
 
-  // ── Derived: shift rooms from CSV pull ────────────────────────────────
-  const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
-
-  // Rooms eligible for cleaning. Excludes DND rooms — guest flagged "do
-  // not disturb" so the housekeeper can't enter. They re-appear next
-  // refresh once the HK clears DND from their phone. Without this filter,
-  // auto-assign would hand someone a room they physically can't service.
-  //
-  // The May-2026 maintenance simplification (migration 0131) dropped the
-  // `blockedRoom` field from work_orders, so we no longer filter rooms by
-  // an open maintenance ticket here. If unsellable-room filtering comes
-  // back, it should be sourced from a dedicated room-status flag.
-  const assignableRooms = useMemo(
-    () => shiftRooms.filter(r => !r.isDnd),
-    [shiftRooms],
-  );
-
-  const checkouts = assignableRooms.filter(r => r.type === 'checkout').length;
-  const stayoverDay1 = assignableRooms.filter(r => r.type === 'stayover' && r.stayoverDay === 1).length;
-  const stayoverDay2 = assignableRooms.filter(r => r.type === 'stayover' && r.stayoverDay === 2).length;
-
-  // Time math — checkout 30m + stayoverDay1 15m + stayoverDay2 20m by default,
-  // or whatever Maria has set in Property settings.
-  const ckMin   = activeProperty?.checkoutMinutes      ?? 30;
-  const so1Min  = activeProperty?.stayoverDay1Minutes  ?? 15;
-  const so2Min  = activeProperty?.stayoverDay2Minutes  ?? 20;
-  const totalMinutes = checkouts * ckMin + stayoverDay1 * so1Min + stayoverDay2 * so2Min;
-  // Per-housekeeper shift cap. Property setting (default 420 = 7h),
-  // not a hardcoded 8h — the auto-assign algorithm and the capacity
-  // bars MUST agree on the same number, or the bars will misrepresent
-  // what auto-assign actually produced.
-  //
-  // Clamp to a positive minimum: a misconfigured property row (0 or
-  // negative shiftMinutes) would otherwise propagate as Infinity through
-  // every division in the tab (recommendedHKs, capacity bars, etc.) and
-  // render literal "Infinity HKs". Bottom-clamp at 60 — anything below
-  // a single hour-long shift is almost certainly a fat-finger.
+  // ── Derived ────────────────────────────────────────────────────────────
   const SHIFT_MINS = Math.max(60, activeProperty?.shiftMinutes ?? 420);
-  // Recommended housekeeping headcount = cleaning crew needed to cover
-  // the total cleaning minutes within shift hours, plus 1 dedicated to
-  // laundry. Matches the previous version's `recommendedStaff` formula.
-  const LAUNDRY_STAFF = 1;
-  const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS)) + LAUNDRY_STAFF;
 
-  const fmtTime = (mins: number) => {
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    return h > 0 ? `${h}h${m > 0 ? ` ${m}m` : ''}` : `${m}m`;
-  };
+  const tasks = useMemo(() => boardData?.tasks ?? [], [boardData]);
+  const crew = useMemo(() => {
+    const list = (boardData?.housekeepers ?? []).filter(h => h.is_active);
+    return [...list].sort((a, b) => {
+      const pr = (PRIORITY_RANK[a.schedule_priority] ?? 1) - (PRIORITY_RANK[b.schedule_priority] ?? 1);
+      return pr !== 0 ? pr : a.name.localeCompare(b.name);
+    });
+  }, [boardData]);
 
-  // ── Persist (debounced) ───────────────────────────────────────────────
-  const flashToast = (msg: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(msg);
-    toastTimer.current = setTimeout(() => setToast(null), 4000);
-  };
+  const checkouts = tasks.filter(t => chipKind(t.cleaning_type) === 'checkout').length;
+  const stayovers = tasks.filter(t => chipKind(t.cleaning_type) === 'stayover').length;
+  const totalMinutes = tasks.reduce((s, t) => s + t.estimated_minutes_resolved, 0);
+  const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS)) + 1;
 
-  // Clear any pending toast timer on unmount so a delayed setToast(null)
-  // can't fire after the component is gone (React warns + leaks state).
-  useEffect(() => () => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-  }, []);
-
-  // Shift back/forward controls — date stepper
   const today = useMemo(() => new Date().toLocaleDateString('en-CA'), []);
   const isToday = shiftDate === today;
   const isYesterday = shiftDate === addDays(today, -1);
   const isTomorrow = shiftDate === addDays(today, 1);
 
-  // formatPulledAt prefixes "Today" vs the weekday so a 2-day-old pull
-  // and a 1-min-old pull don't both show the same time-of-day. Coerce
-  // pulledAt to ISO string for the helper (it can come through as Date
-  // from Supabase or string from a cached snapshot).
   const pulledAtIso = planSnapshot?.pulledAt
-    ? (planSnapshot.pulledAt instanceof Date
-        ? planSnapshot.pulledAt.toISOString()
-        : String(planSnapshot.pulledAt))
+    ? (planSnapshot.pulledAt instanceof Date ? planSnapshot.pulledAt.toISOString() : String(planSnapshot.pulledAt))
     : null;
   const pulledAtLabel = pulledAtIso
     ? formatPulledAt(pulledAtIso, lang)
     : (lang === 'es' ? 'sin datos' : 'no data');
 
+  // ── Mutations ──────────────────────────────────────────────────────────
+
+  // Optimistic single-task assignee patch (hkId or null), with rollback.
+  const patchAssignee = useCallback((taskId: string, assignee: string | null) => {
+    setBoardData(d => {
+      if (!d) return d;
+      return { ...d, tasks: d.tasks.map(t => t.id === taskId ? { ...t, assignee_id: assignee } : t) };
+    });
+  }, []);
+
+  const onReassign = useCallback(async (taskId: string, toHkId: string) => {
+    const prev = boardData?.tasks.find(t => t.id === taskId)?.assignee_id ?? null;
+    if (prev === toHkId) return;
+    patchAssignee(taskId, toHkId);
+    try {
+      const res = await fetchWithAuth('/api/housekeeping/reassign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, taskId, toHousekeeperId: toHkId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await refreshBoard();
+    } catch (e) {
+      patchAssignee(taskId, prev);
+      flashToast((lang === 'es' ? 'No se pudo mover: ' : 'Move failed: ') + (e instanceof Error ? e.message : String(e)));
+    }
+  }, [boardData, pid, patchAssignee, refreshBoard, flashToast, lang]);
+
+  const onUnassign = useCallback(async (taskId: string) => {
+    const prev = boardData?.tasks.find(t => t.id === taskId)?.assignee_id ?? null;
+    if (prev === null) return;
+    patchAssignee(taskId, null);
+    try {
+      const res = await fetchWithAuth('/api/housekeeping/reset-assignments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, date: shiftDate, taskId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await refreshBoard();
+    } catch (e) {
+      patchAssignee(taskId, prev);
+      flashToast((lang === 'es' ? 'No se pudo quitar: ' : 'Unassign failed: ') + (e instanceof Error ? e.message : String(e)));
+    }
+  }, [boardData, pid, shiftDate, patchAssignee, refreshBoard, flashToast, lang]);
+
+  const onAutoAssign = useCallback(async () => {
+    if (!pid || busy) return;
+    setBusy('auto');
+    try {
+      const res = await fetchWithAuth('/api/housekeeping/auto-assign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      const n = body.data?.assigned ?? 0;
+      await refreshBoard();
+      flashToast(
+        n > 0
+          ? (lang === 'es' ? `Asignados ${n} cuartos` : `Auto-assigned ${n} rooms`)
+          : (lang === 'es' ? 'No hay cuartos por asignar' : 'No rooms to assign'),
+      );
+    } catch (e) {
+      flashToast((lang === 'es' ? 'Error al asignar: ' : 'Auto-assign failed: ') + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  }, [pid, shiftDate, busy, refreshBoard, flashToast, lang]);
+
+  const onReset = useCallback(async () => {
+    if (!pid || busy) return;
+    const assignedCount = tasks.filter(t => t.assignee_id).length;
+    if (assignedCount === 0) {
+      flashToast(lang === 'es' ? 'Nada que reiniciar' : 'Nothing to reset');
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm(
+      lang === 'es'
+        ? `¿Quitar las asignaciones de ${assignedCount} cuartos?`
+        : `Clear assignments for ${assignedCount} rooms?`,
+    )) return;
+    setBusy('reset');
+    try {
+      const res = await fetchWithAuth('/api/housekeeping/reset-assignments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await refreshBoard();
+      flashToast(lang === 'es' ? 'Asignaciones reiniciadas' : 'Assignments reset');
+    } catch (e) {
+      flashToast((lang === 'es' ? 'Error al reiniciar: ' : 'Reset failed: ') + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  }, [pid, shiftDate, busy, tasks, refreshBoard, flashToast, lang]);
+
+  const onSendLinks = useCallback(async () => {
+    if (!pid || busy) return;
+    // One text per crew member who has BOTH a phone and at least one room.
+    const recipients = crew
+      .filter(h => h.has_phone && h.phone)
+      .map(h => ({
+        staffId: h.id,
+        name: h.name,
+        phone: h.phone as string,
+        language: h.language,
+        assignedRooms: tasks.filter(t => t.assignee_id === h.id).map(t => t.room_number),
+      }))
+      .filter(r => r.assignedRooms.length > 0);
+    if (recipients.length === 0) {
+      flashToast(lang === 'es' ? 'Nadie con cuartos y teléfono' : 'No crew with rooms + a phone');
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm(
+      lang === 'es'
+        ? `¿Enviar el enlace de turno por SMS a ${recipients.length} personas?`
+        : `Text the shift link to ${recipients.length} housekeeper(s)?`,
+    )) return;
+    setBusy('send');
+    try {
+      const res = await fetchWithAuth('/api/send-shift-confirmations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid, shiftDate,
+          baseUrl: window.location.origin,
+          staff: recipients,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      flashToast(lang === 'es' ? `Enlaces enviados a ${recipients.length}` : `Sent links to ${recipients.length}`);
+    } catch (e) {
+      flashToast((lang === 'es' ? 'Error al enviar: ' : 'Send failed: ') + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  }, [pid, shiftDate, busy, crew, tasks, flashToast, lang]);
+
+  const onSavePriority = useCallback(async (staffId: string, priority: 'priority' | 'normal' | 'excluded') => {
+    // Optimistic.
+    setBoardData(d => {
+      if (!d) return d;
+      return { ...d, housekeepers: d.housekeepers.map(h => h.id === staffId ? { ...h, schedule_priority: priority } : h) };
+    });
+    try {
+      const res = await fetchWithAuth('/api/housekeeping/staff-priority', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, staffId, priority }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+    } catch {
+      flashToast(lang === 'es' ? 'Error al guardar prioridad' : 'Priority save failed');
+      await refreshBoard();
+    }
+  }, [pid, refreshBoard, flashToast, lang]);
+
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div style={{
       padding: '24px 48px 48px', background: T.bg, color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
+      <CalloutBanner shiftDate={shiftDate} />
 
-      <NoticeBoardPoster />
-
-      {/* DATE STEPPER */}
+      {/* DATE HEADER + STEPPER */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
         marginBottom: 18, gap: 24, flexWrap: 'wrap',
       }}>
         <div>
-          <Caps>{
-            // Show "Schedule" alone for arbitrary past/future dates so we
-            // don't render "Schedule · " with a dangling middle-dot.
-            (() => {
-              if (isToday)     return lang === 'es' ? 'Horario · hoy'     : 'Schedule · today';
-              if (isYesterday) return lang === 'es' ? 'Horario · ayer'    : 'Schedule · yesterday';
-              if (isTomorrow)  return lang === 'es' ? 'Horario · mañana'  : 'Schedule · tomorrow';
-              return lang === 'es' ? 'Horario' : 'Schedule';
-            })()
-          }</Caps>
+          <Caps>{(() => {
+            if (isToday)     return lang === 'es' ? 'Horario · hoy'    : 'Schedule · today';
+            if (isYesterday) return lang === 'es' ? 'Horario · ayer'   : 'Schedule · yesterday';
+            if (isTomorrow)  return lang === 'es' ? 'Horario · mañana' : 'Schedule · tomorrow';
+            return lang === 'es' ? 'Horario' : 'Schedule';
+          })()}</Caps>
           <h1 style={{
             fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0',
             letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400,
@@ -279,25 +387,15 @@ export function ScheduleTab() {
         </div>
       </div>
 
-      <CalloutBanner shiftDate={shiftDate} />
-
-      {/* PMS PULL STRIP — current pull's numbers in plain sight.
-          The design also showed ‹/› buttons toggling between morning and
-          evening pulls, but the underlying subscription only gives us the
-          most-recent pull for the date. Rather than render lying buttons
-          we just show the current pull's freshness; we'll add real
-          history navigation when the data layer supports it. */}
+      {/* PMS PULL STRIP */}
       <div style={{
-        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-        padding: '18px 22px', marginBottom: 18,
-        display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+        padding: '15px 20px', marginBottom: 16,
+        display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap',
       }}>
-        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 140 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
-            {/* Cleaning-time settings live behind the gear so the strip
-                stays uncluttered. Opens the Prediction Settings modal,
-                seeded from activeProperty. */}
             <button
               onClick={() => {
                 setSettingsForm({
@@ -309,13 +407,12 @@ export function ScheduleTab() {
                 });
                 setShowSettings(true);
               }}
-              title={lang === 'es' ? 'Ajustes de cuartos / turno' : 'Cleaning-time settings'}
-              style={{
-                background: 'transparent', border: 'none', cursor: 'pointer',
-                padding: 2, borderRadius: 4, color: T.ink3,
-                display: 'inline-flex', alignItems: 'center',
-              }}
+              title={lang === 'es' ? 'Ajustes de tiempos de limpieza' : 'Cleaning-time settings'}
               aria-label={lang === 'es' ? 'Ajustes' : 'Settings'}
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer', padding: 2,
+                borderRadius: 4, color: T.ink3, display: 'inline-flex', alignItems: 'center',
+              }}
             >
               <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="3" />
@@ -323,34 +420,25 @@ export function ScheduleTab() {
               </svg>
             </button>
           </div>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, marginTop: 2 }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 600, marginTop: 3 }}>
             {planLoaded ? pulledAtLabel : (lang === 'es' ? 'Cargando…' : 'Loading…')}
           </span>
         </div>
-        <span style={{ width: 1, height: 42, background: T.rule }} />
-        <div style={{ display: 'flex', gap: 32, flex: 1, flexWrap: 'wrap' }}>
-          {/* Skeleton dashes until each source's first callback fires
-              — without this, the strip momentarily reads "Checkouts: 0
-              · Stay·light: 0 · Recommended: 1 HKs" which looks like real
-              data on a slow pull. The first five cells come from the
-              hourly CSV plan snapshot; the last three come from the
-              15-min Choice Advantage dashboard pull. Each cell uses
-              its own `loaded` flag so a slow dashboard pull doesn't
-              hold back the CSV numbers (or vice versa). */}
+        <span style={{ width: 1, height: 40, background: T.rule }} />
+        <div style={{ display: 'flex', gap: 26, flex: 1, flexWrap: 'wrap' }}>
           {([
             { l: lang === 'es' ? 'En Casa'      : 'In House',    v: dashboardNums?.inHouse    ?? null, loaded: dashboardLoaded },
             { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: dashboardNums?.arrivals   ?? null, loaded: dashboardLoaded },
             { l: lang === 'es' ? 'Salen'        : 'Departures',  v: dashboardNums?.departures ?? null, loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts,             loaded: planLoaded },
-            { l: lang === 'es' ? 'Estadía·1'    : 'Stay · light',v: stayoverDay1,          loaded: planLoaded },
-            { l: lang === 'es' ? 'Estadía·2+'   : 'Stay · full', v: stayoverDay2,          loaded: planLoaded },
-            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtTime(totalMinutes), loaded: planLoaded },
-            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HKs`, loaded: planLoaded, tone: T.sageDeep },
+            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts,                loaded: boardLoaded },
+            { l: lang === 'es' ? 'Continúan'    : 'Stayovers',   v: stayovers,                loaded: boardLoaded },
+            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtMinutes(totalMinutes), loaded: boardLoaded },
+            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HK`,   loaded: boardLoaded, tone: T.sageDeep },
           ] as Array<{ l: string; v: React.ReactNode; loaded: boolean; tone?: string }>).map(n => (
-            <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 80 }}>
+            <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 58 }}>
               <Caps size={9}>{n.l}</Caps>
               <span style={{
-                fontFamily: FONT_SERIF, fontSize: 30, color: n.loaded ? (n.tone || T.ink) : T.ink3,
+                fontFamily: FONT_SERIF, fontSize: 28, color: n.loaded ? (n.tone || T.ink) : T.ink3,
                 lineHeight: 1, letterSpacing: '-0.02em', fontWeight: 400, whiteSpace: 'nowrap',
               }}>{n.loaded && n.v != null ? n.v : '—'}</span>
             </div>
@@ -358,147 +446,118 @@ export function ScheduleTab() {
         </div>
       </div>
 
-      {/* Phase M3.1 (2026-05-14): ML confidence panel — Tomorrow's
-          recommended headcount + p80/p95 confidence band. Renders only
-          when (a) shiftDate is tomorrow (the optimizer writes for
-          tomorrow only), AND (b) optimizer has produced a row for this
-          property. Fail closed: if the optimizer cron hasn't run yet
-          (brand-new property), the panel is hidden — operator falls
-          back to the existing PMS strip + crew rows below.
-
-          Phase 1.4 (2026-05-22): label branches on modelKind. Only
-          fitted-from-this-hotel recommendations are labeled "AI
-          recommendation" — cold-start / capacity-unavailable rows
-          show "Industry estimate · learning". The synthetic p80/p95
-          confidence band is hidden when not fitted (multiplier-derived
-          bands carry no per-hotel signal). */}
-      {isTomorrow && optimizerPanel && (() => {
-        const isFitted = optimizerPanel.modelKind === 'fitted';
-        const headlineLabel = isFitted
-          ? (lang === 'es' ? 'Recomendación de IA' : 'AI recommendation')
-          : (lang === 'es' ? 'Estimación del sector · aprendiendo' : 'Industry estimate · learning');
-        const kindTooltip = isFitted
-          ? (optimizerPanel.completionProbabilityCurve.length > 0
-              ? optimizerPanel.completionProbabilityCurve
-                  .map((r) => `${r.headcount} HKs → ${Math.round(r.p * 100)}% finish`)
-                  .join('\n')
-              : (lang === 'es' ? 'Recomendación basada en demanda + capacidad estimada.' : 'Recommendation based on predicted demand + crew capacity.'))
-          : optimizerPanel.modelKind === 'capacity-unavailable'
-            ? (lang === 'es'
-                ? 'El modelo por habitación aún no está activo. Recomendación basada en demanda agregada.'
-                : 'Per-room model is not yet active. Recommendation is based on aggregate workload only.')
-            : (lang === 'es'
-                ? 'Basado en datos de hoteles similares. Mejorará con el historial de tu hotel.'
-                : "Based on industry benchmark for hotels of your size. Will sharpen as your hotel's cleaning history accumulates.");
-        return (
-          <div
-            title={kindTooltip}
-            style={{
-              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-              padding: '14px 22px', marginBottom: 10,
-              display: 'flex', alignItems: 'center', gap: 28, flexWrap: 'wrap',
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 160 }}>
-              <Caps size={9}>{lang === 'es' ? 'Confianza para mañana' : "Tomorrow's confidence"}</Caps>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, marginTop: 2 }}>
-                {headlineLabel}
-              </span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
-              <Caps size={9}>{lang === 'es' ? 'Recomendado' : 'Recommended'}</Caps>
-              <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, lineHeight: 1.1 }}>
-                {optimizerPanel.recommendedHeadcount}
-                <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, marginLeft: 4 }}>
-                  {lang === 'es' ? 'HK' : 'HKs'}
-                </span>
-              </span>
-            </div>
-            {/* P80/P95 bands are only shown when the model is fitted; for
-                cold-start / capacity-unavailable, the bands are derived from
-                synthetic multipliers (mu × [0.5, 0.7, …, 1.8]) and have no
-                per-hotel signal. Hiding them keeps the tile honest. */}
-            {isFitted && demandPanel && (
-              <>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
-                  <Caps size={9}>P80</Caps>
-                  <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
-                    {demandPanel.predictedHeadcountP80}
-                    <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
-                      {lang === 'es' ? 'HK' : 'HKs'}
-                    </span>
-                  </span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
-                  <Caps size={9}>P95</Caps>
-                  <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
-                    {demandPanel.predictedHeadcountP95}
-                    <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
-                      {lang === 'es' ? 'HK' : 'HKs'}
-                    </span>
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* VIEW TOGGLE — Kanban / Timeline / Forecast. Only the chosen
-          view renders; the unselected sub-views unmount entirely so
-          they don't keep their subscriptions live in the background.
-          Defaults to Kanban (the historical primary view). */}
+      {/* TOOLBAR — view toggle + actions */}
       {pid && (
         <div style={{
-          marginTop: 24, marginBottom: 12,
-          display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 14, flexWrap: 'wrap', marginBottom: 16,
         }}>
-          <Caps>{lang === 'es' ? 'Vista' : 'View'}</Caps>
-          <div role="tablist" aria-label={lang === 'es' ? 'Vista del horario' : 'Schedule view'}
-            style={{ display: 'inline-flex', gap: 4, marginLeft: 6 }}>
-            <Btn variant={scheduleView === 'kanban'   ? 'paper' : 'ghost'} size="sm" onClick={() => setScheduleView('kanban')}>
-              {lang === 'es' ? 'Kanban' : 'Kanban'}
+          {/* Board ⇄ Timeline */}
+          <div style={{
+            display: 'inline-flex', gap: 4, background: T.ruleSoft,
+            border: `1px solid ${T.rule}`, borderRadius: 999, padding: 4,
+          }}>
+            {([['board', lang === 'es' ? 'Tablero' : 'Board', '▤'], ['timeline', lang === 'es' ? 'Línea' : 'Timeline', '▦']] as const).map(([k, label, icon]) => (
+              <button
+                key={k}
+                onClick={() => setView(k)}
+                style={{
+                  fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600,
+                  border: 'none', borderRadius: 999, padding: '8px 18px', cursor: 'pointer',
+                  background: view === k ? T.ink : 'transparent',
+                  color: view === k ? T.bg : T.ink2,
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                  transition: 'background 120ms ease, color 120ms ease',
+                }}
+              >
+                <span style={{ fontSize: 13 }}>{icon}</span>{label}
+              </button>
+            ))}
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+            <Btn variant="ghost" size="sm" onClick={() => setShowPriority(true)}>★ {lang === 'es' ? 'Prioridad' : 'Priority'}</Btn>
+            <Btn variant="ghost" size="sm" onClick={onReset} disabled={busy != null}>{lang === 'es' ? 'Reiniciar' : 'Reset'}</Btn>
+            <Btn variant="primary" size="sm" onClick={onAutoAssign} disabled={busy != null}>
+              {busy === 'auto' ? (lang === 'es' ? 'Asignando…' : 'Assigning…') : `↻ ${lang === 'es' ? 'Auto-asignar' : 'Auto-assign'}`}
             </Btn>
-            <Btn variant={scheduleView === 'timeline' ? 'paper' : 'ghost'} size="sm" onClick={() => setScheduleView('timeline')}>
-              {lang === 'es' ? 'Línea de tiempo' : 'Timeline'}
-            </Btn>
-            <Btn variant={scheduleView === 'forecast' ? 'paper' : 'ghost'} size="sm" onClick={() => setScheduleView('forecast')}>
-              {lang === 'es' ? 'Pronóstico' : 'Forecast'}
+            <Btn variant="sage" size="sm" onClick={onSendLinks} disabled={busy != null}>
+              {busy === 'send' ? (lang === 'es' ? 'Enviando…' : 'Sending…') : `→ ${lang === 'es' ? 'Enviar enlaces' : 'Send links'}`}
             </Btn>
           </div>
         </div>
       )}
 
-      {/* AUTO-ASSIGN BOARD — new cleaning_tasks + hk_assignments system.
-          Renders below the existing legacy schedule. Only shows when there's
-          a property + date in context, so the rest of the tab works the same
-          when the manager hasn't selected a property yet. */}
-      {pid && scheduleView === 'kanban' && (
-        <div style={{ marginTop: 12 }}>
-          <AutoAssignBoard
-            propertyId={pid}
-            shiftDate={shiftDate}
-            shiftMinutes={SHIFT_MINS}
-            lang={lang}
-          />
+      {/* VIEW */}
+      {!pid && (
+        <div style={{ padding: '40px 0', textAlign: 'center', color: T.ink2, fontFamily: FONT_SANS, fontSize: 14 }}>
+          {lang === 'es' ? 'Selecciona una propiedad.' : 'Select a property to plan the schedule.'}
         </div>
       )}
-
-      {/* TIMELINE VIEW — horizontal time-axis strip beneath the board.
-          Board = place work; timeline = watch it unfold. */}
-      {pid && scheduleView === 'timeline' && (
-        <div style={{ marginTop: 12 }}>
-          <TimelineView propertyId={pid} shiftDate={shiftDate} lang={lang} />
+      {pid && !boardLoaded && (
+        <div style={{ padding: '40px 0', textAlign: 'center' }}>
+          <div className="animate-spin" style={{
+            width: 26, height: 26, margin: '0 auto',
+            border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
+          }} />
         </div>
       )}
-
-      {/* FORECAST VIEW — forward-looking demand vs supply across
-          today / 7-day / 14-day ranges. Lets the GM spot understaffed
-          days early enough to adjust schedules. */}
-      {pid && scheduleView === 'forecast' && (
-        <div style={{ marginTop: 12 }}>
-          <ForecastView propertyId={pid} lang={lang} />
+      {pid && boardLoaded && boardErr && (
+        <div style={{
+          padding: '18px 20px', border: `1px solid ${T.rule}`, borderRadius: 12,
+          background: T.warmDim, color: T.warm, fontFamily: FONT_SANS, fontSize: 13,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+        }}>
+          <span>{(lang === 'es' ? 'No se pudo cargar el tablero: ' : 'Couldn\'t load the board: ') + boardErr}</span>
+          <Btn variant="ghost" size="sm" onClick={() => void refreshBoard()}>{lang === 'es' ? 'Reintentar' : 'Retry'}</Btn>
         </div>
+      )}
+      {pid && boardLoaded && !boardErr && crew.length === 0 && (
+        <div style={{
+          padding: '40px 20px', textAlign: 'center', color: T.ink2,
+          fontFamily: FONT_SANS, fontSize: 14, border: `1px dashed ${T.rule}`, borderRadius: 12,
+        }}>
+          {lang === 'es'
+            ? 'No hay personal de limpieza activo todavía.'
+            : 'No active housekeeping staff yet — add crew in Staff to start assigning.'}
+        </div>
+      )}
+      {pid && boardLoaded && !boardErr && crew.length > 0 && (
+        <>
+          {tasks.length === 0 && (
+            <div style={{
+              marginBottom: 12, padding: '12px 16px',
+              border: `1px dashed ${T.rule}`, borderRadius: 12,
+              background: T.paper, color: T.ink2, fontFamily: FONT_SANS, fontSize: 13,
+            }}>
+              {lang === 'es'
+                ? 'No hay cuartos para limpiar en esta fecha todavía. Aparecerán aquí cuando llegue la próxima carga del PMS.'
+                : 'No rooms to clean for this date yet. They\'ll appear here on the next PMS pull.'}
+            </div>
+          )}
+          {view === 'board' ? (
+            <ScheduleBoard
+              crew={crew}
+              tasks={tasks}
+              shiftMinutes={SHIFT_MINS}
+              lang={lang}
+              onReassign={onReassign}
+              onUnassign={onUnassign}
+              onOpenTask={setOpenTask}
+            />
+          ) : (
+            <ScheduleTimeline
+              crew={crew}
+              tasks={tasks}
+              shiftMinutes={SHIFT_MINS}
+              lang={lang}
+              showNow={isToday}
+              onReassign={onReassign}
+              onOpenTask={setOpenTask}
+            />
+          )}
+        </>
       )}
 
       {/* TOAST */}
@@ -507,95 +566,83 @@ export function ScheduleTab() {
           position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
           zIndex: 70, padding: '12px 18px',
           background: T.sageDim, color: T.sageDeep,
-          border: '1px solid rgba(104,131,114,0.3)',
-          borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+          border: '1px solid rgba(104,131,114,0.3)', borderRadius: 999,
+          fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
         }}>{toast}</div>
       )}
 
-      {/* PREDICTION SETTINGS MODAL — Maria's per-property cleaning-time
-          knobs. Saves directly to the property record; auto-assign and
-          the per-HK capacity bars both read these fields, so changes
-          propagate the moment refreshProperty() finishes. Triggered by
-          the gear next to "Latest PMS pull" in the strip above. */}
+      {/* DETAIL DRAWER */}
+      {openTask && typeof document !== 'undefined' && createPortal(
+        <RoomDetailDrawer
+          task={openTask}
+          crew={crew}
+          lang={lang}
+          onReassign={(hkId) => { void onReassign(openTask.id, hkId); setOpenTask(null); }}
+          onUnassign={() => { void onUnassign(openTask.id); setOpenTask(null); }}
+          onClose={() => setOpenTask(null)}
+        />,
+        document.body,
+      )}
+
+      {/* PRIORITY MODAL */}
+      {showPriority && typeof document !== 'undefined' && createPortal(
+        <PriorityModal
+          crew={boardData?.housekeepers ?? []}
+          lang={lang}
+          onSave={onSavePriority}
+          onClose={() => setShowPriority(false)}
+        />,
+        document.body,
+      )}
+
+      {/* SETTINGS MODAL */}
       {showSettings && typeof document !== 'undefined' && createPortal(
         <div
           onClick={() => { if (!settingsSaving) setShowSettings(false); }}
           style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
-            zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 20,
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
           }}
         >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-              padding: '20px 24px', maxWidth: 480, width: '100%',
-              maxHeight: '85vh', overflow: 'auto',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
-            }}
-          >
+          <div onClick={(e) => e.stopPropagation()} style={{
+            background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+            padding: '20px 24px', maxWidth: 480, width: '100%', maxHeight: '85vh', overflow: 'auto',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
+          }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
-                <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Ajustes de Predicción' : 'Cleaning-time Settings'}</span>
+                <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Tiempos de limpieza' : 'Cleaning-time settings'}</span>
               </h2>
-              <button
-                onClick={() => setShowSettings(false)}
-                disabled={settingsSaving}
-                style={{
-                  background: 'transparent', border: 'none', cursor: settingsSaving ? 'default' : 'pointer',
-                  fontSize: 20, color: T.ink3, padding: '0 6px',
-                }}
-                aria-label="Close"
-              >
-                ×
-              </button>
+              <button onClick={() => setShowSettings(false)} disabled={settingsSaving} aria-label="Close" style={{
+                background: 'transparent', border: 'none', cursor: settingsSaving ? 'default' : 'pointer',
+                fontSize: 20, color: T.ink3, padding: '0 6px',
+              }}>×</button>
             </div>
             <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 14px' }}>
               {lang === 'es'
-                ? 'Estos minutos definen cuánto tarda cada tipo de limpieza. Auto-asignar y las barras de capacidad usan estos valores.'
-                : 'How long each clean takes, by type. Auto-assign and the per-housekeeper capacity bars both read these values.'}
+                ? 'Cuánto tarda cada limpieza. Auto-asignar y las barras de capacidad usan estos valores.'
+                : 'How long each clean takes, by type. Auto-assign and the per-housekeeper capacity bars read these.'}
             </p>
-            {/* 4 minute fields + 1 hour-cap field. shiftMinutes is shown
-                in hours for sanity, converted to minutes on save. */}
             {([
-              { key: 'checkoutMinutes',        label: lang === 'es' ? 'Salida (limpieza completa)'  : 'Checkout (full clean)',      unit: 'min', step: 1,    min: 1,   max: 240 },
-              { key: 'stayoverDay1Minutes',    label: lang === 'es' ? 'Estadía día 1 (ligera)'      : 'Stayover Day 1 (light)',      unit: 'min', step: 1,    min: 1,   max: 240 },
-              { key: 'stayoverDay2Minutes',    label: lang === 'es' ? 'Estadía día 2+ (completa)'   : 'Stayover Day 2+ (full)',      unit: 'min', step: 1,    min: 1,   max: 240 },
-              { key: 'prepMinutesPerActivity', label: lang === 'es' ? 'Preparación entre cuartos'   : 'Prep between rooms',          unit: 'min', step: 1,    min: 0,   max: 60  },
-              { key: 'shiftMinutes',           label: lang === 'es' ? 'Turno máximo por persona'    : 'Max shift hours per person',   unit: 'h',   step: 0.25, min: 1,   max: 24, asHours: true },
+              { key: 'checkoutMinutes',        label: lang === 'es' ? 'Salida (limpieza completa)' : 'Checkout (full clean)',     unit: 'min', step: 1,    min: 1, max: 240 },
+              { key: 'stayoverDay1Minutes',    label: lang === 'es' ? 'Estadía día 1 (ligera)'     : 'Stayover Day 1 (light)',     unit: 'min', step: 1,    min: 1, max: 240 },
+              { key: 'stayoverDay2Minutes',    label: lang === 'es' ? 'Estadía día 2+ (completa)'  : 'Stayover Day 2+ (full)',     unit: 'min', step: 1,    min: 1, max: 240 },
+              { key: 'prepMinutesPerActivity', label: lang === 'es' ? 'Preparación entre cuartos'  : 'Prep between rooms',         unit: 'min', step: 1,    min: 0, max: 60 },
+              { key: 'shiftMinutes',           label: lang === 'es' ? 'Turno máximo por persona'   : 'Max shift hours per person', unit: 'h',   step: 0.25, min: 1, max: 24, asHours: true },
             ] as Array<{ key: keyof typeof settingsForm; label: string; unit: string; step: number; min: number; max: number; asHours?: boolean }>).map(f => {
               const raw = settingsForm[f.key];
               const display = f.asHours ? raw / 60 : raw;
               return (
-                <div key={f.key} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '12px 0', borderTop: `1px solid ${T.rule}`, gap: 12,
-                }}>
-                  <label htmlFor={`pred-${f.key}`} style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, flex: 1 }}>
-                    {f.label}
-                  </label>
+                <div key={f.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${T.rule}`, gap: 12 }}>
+                  <label htmlFor={`pred-${f.key}`} style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, flex: 1 }}>{f.label}</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input
-                      id={`pred-${f.key}`}
-                      type="number"
-                      step={f.step}
-                      min={f.min}
-                      max={f.max}
-                      value={display}
+                    <input id={`pred-${f.key}`} type="number" step={f.step} min={f.min} max={f.max} value={display}
                       onChange={(e) => {
-                        const n = Number(e.target.value);
-                        if (Number.isNaN(n)) return;
-                        setSettingsForm(prev => ({
-                          ...prev,
-                          [f.key]: f.asHours ? Math.round(n * 60) : Math.round(n),
-                        }));
+                        const num = Number(e.target.value);
+                        if (Number.isNaN(num)) return;
+                        setSettingsForm(prev => ({ ...prev, [f.key]: f.asHours ? Math.round(num * 60) : Math.round(num) }));
                       }}
-                      style={{
-                        width: 70, padding: '6px 8px', borderRadius: 8,
-                        border: `1px solid ${T.rule}`, background: T.bg,
-                        fontFamily: FONT_MONO, fontSize: 13, color: T.ink, textAlign: 'right',
-                      }}
+                      style={{ width: 70, padding: '6px 8px', borderRadius: 8, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_MONO, fontSize: 13, color: T.ink, textAlign: 'right' }}
                     />
                     <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, minWidth: 24 }}>{f.unit}</span>
                   </div>
@@ -603,49 +650,209 @@ export function ScheduleTab() {
               );
             })}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
-              <Btn variant="ghost" size="sm" onClick={() => setShowSettings(false)} disabled={settingsSaving}>
-                {lang === 'es' ? 'Cancelar' : 'Cancel'}
-              </Btn>
-              <Btn
-                variant="primary"
-                size="sm"
-                disabled={settingsSaving || !uid || !pid}
-                onClick={async () => {
-                  if (!uid || !pid) return;
-                  setSettingsSaving(true);
-                  try {
-                    await updateProperty(uid, pid, {
-                      checkoutMinutes:        settingsForm.checkoutMinutes,
-                      stayoverDay1Minutes:    settingsForm.stayoverDay1Minutes,
-                      stayoverDay2Minutes:    settingsForm.stayoverDay2Minutes,
-                      // Mirror Day 2 to the legacy stayoverMinutes field
-                      // so older callers (DND/over-time fallbacks) still
-                      // get a sensible value.
-                      stayoverMinutes:        settingsForm.stayoverDay2Minutes,
-                      prepMinutesPerActivity: settingsForm.prepMinutesPerActivity,
-                      shiftMinutes:           settingsForm.shiftMinutes,
-                    });
-                    await refreshProperty();
-                    flashToast(lang === 'es' ? 'Ajustes guardados' : 'Settings saved');
-                    setShowSettings(false);
-                  } catch (err) {
-                    console.error('[Schedule] settings save failed:', err);
-                    flashToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
-                  } finally {
-                    setSettingsSaving(false);
-                  }
-                }}
-              >
-                {settingsSaving
-                  ? (lang === 'es' ? 'Guardando…' : 'Saving…')
-                  : (lang === 'es' ? 'Guardar' : 'Save')}
+              <Btn variant="ghost" size="sm" onClick={() => setShowSettings(false)} disabled={settingsSaving}>{lang === 'es' ? 'Cancelar' : 'Cancel'}</Btn>
+              <Btn variant="primary" size="sm" disabled={settingsSaving || !uid || !pid} onClick={async () => {
+                if (!uid || !pid) return;
+                setSettingsSaving(true);
+                try {
+                  await updateProperty(uid, pid, {
+                    checkoutMinutes:        settingsForm.checkoutMinutes,
+                    stayoverDay1Minutes:    settingsForm.stayoverDay1Minutes,
+                    stayoverDay2Minutes:    settingsForm.stayoverDay2Minutes,
+                    stayoverMinutes:        settingsForm.stayoverDay2Minutes,
+                    prepMinutesPerActivity: settingsForm.prepMinutesPerActivity,
+                    shiftMinutes:           settingsForm.shiftMinutes,
+                  });
+                  await refreshProperty();
+                  flashToast(lang === 'es' ? 'Ajustes guardados' : 'Settings saved');
+                  setShowSettings(false);
+                } catch (err) {
+                  console.error('[Schedule] settings save failed:', err);
+                  flashToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
+                } finally {
+                  setSettingsSaving(false);
+                }
+              }}>
+                {settingsSaving ? (lang === 'es' ? 'Guardando…' : 'Saving…') : (lang === 'es' ? 'Guardar' : 'Save')}
               </Btn>
             </div>
           </div>
         </div>,
         document.body,
       )}
+    </div>
+  );
+}
 
+// ───────────────────────────────────────────────────────────────────────
+// Detail drawer — room detail + reassign-to list (design's detailDrawer).
+// ───────────────────────────────────────────────────────────────────────
+
+function RoomDetailDrawer({
+  task, crew, lang, onReassign, onUnassign, onClose,
+}: {
+  task: BoardTask;
+  crew: BoardHk[];
+  lang: 'en' | 'es';
+  onReassign: (hkId: string) => void;
+  onUnassign: () => void;
+  onClose: () => void;
+}) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const kind = chipKind(task.cleaning_type);
+  const kindColor = kind === 'checkout' ? T.warm : kind === 'stayover' ? T.caramelDeep : T.sageDeep;
+  const floor = (() => {
+    const d = task.room_number.replace(/\D/g, '');
+    return d.length >= 4 ? d.slice(0, 2) : d.length >= 2 ? d.slice(0, 1) : '?';
+  })();
+  return (
+    <div onClick={onClose} role="dialog" aria-modal="true" style={{
+      position: 'fixed', inset: 0, background: 'rgba(24,22,17,0.32)',
+      display: 'flex', justifyContent: 'flex-end', zIndex: 9999,
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width: 'min(380px, 92vw)', background: T.paper, height: '100%', padding: 22,
+        borderLeft: `1px solid ${T.rule}`, display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <Caps>{lang === 'es' ? 'Detalle del cuarto' : 'Room detail'}</Caps>
+            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 40, color: T.ink, lineHeight: 1 }}>{task.room_number}</div>
+          </div>
+          <Btn variant="ghost" size="sm" onClick={onClose}>{lang === 'es' ? 'Cerrar' : 'Close'}</Btn>
+        </div>
+        <DRow label={lang === 'es' ? 'Tipo' : 'Type'} value={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: kindColor }} />
+            <span style={{ textTransform: 'capitalize' }}>{task.cleaning_type.replace(/_/g, ' ')}</span>
+          </span>
+        } />
+        <DRow label={lang === 'es' ? 'Min. estimados' : 'Est. minutes'} value={fmtMinutes(task.estimated_minutes_resolved)} mono />
+        <DRow label={lang === 'es' ? 'Estado' : 'Status'} value={<span style={{ textTransform: 'capitalize' }}>{task.status.replace(/_/g, ' ')}</span>} />
+        <DRow label={lang === 'es' ? 'Piso' : 'Floor'} value={floor} />
+        {task.requires_inspection && (
+          <DRow label={lang === 'es' ? 'Inspección' : 'Inspection'} value={lang === 'es' ? 'Requerida' : 'Required'} />
+        )}
+        <div>
+          <div style={{ margin: '6px 0 8px' }}><Caps>{lang === 'es' ? 'Reasignar a' : 'Reassign to'}</Caps></div>
+          {crew.map(c => (
+            <button key={c.id} onClick={() => onReassign(c.id)} style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 9, justifyContent: 'flex-start',
+              padding: '8px 10px', marginBottom: 6, borderRadius: 999,
+              border: `1px solid ${task.assignee_id === c.id ? T.sageDeep : T.rule}`,
+              background: task.assignee_id === c.id ? T.sageDim : 'transparent',
+              cursor: 'pointer', fontFamily: FONT_SANS, fontSize: 13, color: T.ink,
+            }}>
+              <HousekeeperDot staff={{ id: c.id, name: c.name }} size={22} />
+              <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
+              {task.assignee_id === c.id && <span style={{ color: T.sageDeep }}>✓</span>}
+            </button>
+          ))}
+          {task.assignee_id && (
+            <button onClick={onUnassign} style={{
+              width: '100%', padding: '8px 10px', marginTop: 2, borderRadius: 999,
+              border: `1px dashed ${T.rule}`, background: 'transparent', cursor: 'pointer',
+              fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
+            }}>{lang === 'es' ? 'Quitar asignación' : 'Unassign'}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderTop: `1px solid ${T.rule}`, gap: 12 }}>
+      <Caps>{label}</Caps>
+      <span style={{ fontFamily: mono ? FONT_MONO : FONT_SANS, fontSize: 13, color: T.ink }}>{value}</span>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Priority modal — per-staff Priority / Normal / Excluded.
+// ───────────────────────────────────────────────────────────────────────
+
+function PriorityModal({
+  crew, lang, onSave, onClose,
+}: {
+  crew: BoardHk[];
+  lang: 'en' | 'es';
+  onSave: (staffId: string, priority: 'priority' | 'normal' | 'excluded') => void;
+  onClose: () => void;
+}) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const levels: Array<['priority' | 'normal' | 'excluded', string]> = [
+    ['priority', lang === 'es' ? 'Prioridad' : 'Priority'],
+    ['normal', lang === 'es' ? 'Normal' : 'Normal'],
+    ['excluded', lang === 'es' ? 'Excluido' : 'Excluded'],
+  ];
+  const ordered = [...crew.filter(c => c.is_active)].sort((a, b) =>
+    (PRIORITY_RANK[a.schedule_priority] ?? 1) - (PRIORITY_RANK[b.schedule_priority] ?? 1) || a.name.localeCompare(b.name),
+  );
+  return (
+    <div onClick={onClose} role="dialog" aria-modal="true" style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '20px 24px',
+        maxWidth: 480, width: '100%', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
+            <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Prioridad del personal' : 'Staff priority'}</span>
+          </h2>
+          <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 20, color: T.ink3, padding: '0 6px' }}>×</button>
+        </div>
+        <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 10px' }}>
+          {lang === 'es'
+            ? 'Prioridad = se asigna primero. Excluido = nunca se asigna automáticamente.'
+            : 'Priority = assigned first. Excluded = never auto-assigned.'}
+        </p>
+        {ordered.length === 0 && (
+          <div style={{ padding: '16px 0', color: T.ink2, fontFamily: FONT_SANS, fontSize: 13 }}>
+            {lang === 'es' ? 'No hay personal de limpieza.' : 'No housekeeping staff.'}
+          </div>
+        )}
+        {ordered.map(s => (
+          <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 0', borderTop: `1px solid ${T.rule}`, gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+              <HousekeeperDot staff={{ id: s.id, name: s.name }} size={28} />
+              <span style={{ fontWeight: 600, fontSize: 13, color: T.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+              {levels.map(([val, label]) => {
+                const on = s.schedule_priority === val;
+                return (
+                  <button key={val} onClick={() => onSave(s.id, val)} style={{
+                    fontFamily: FONT_SANS, fontSize: 11, borderRadius: 999, padding: '5px 11px', cursor: 'pointer',
+                    border: `1px solid ${on ? T.sageDeep : T.rule}`,
+                    background: on ? T.sageDeep : 'transparent',
+                    color: on ? '#fff' : T.ink2,
+                  }}>{label}</button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+          <Btn variant="primary" size="sm" onClick={onClose}>{lang === 'es' ? 'Listo' : 'Done'}</Btn>
+        </div>
+      </div>
     </div>
   );
 }
