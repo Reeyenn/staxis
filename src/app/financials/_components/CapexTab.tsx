@@ -1,12 +1,15 @@
 'use client';
 
-// CapEx — full capital-request approval workflow. Submit a request → owner/GM
-// approves / rejects / asks for changes → in-progress (% complete) → completed.
-// Views: Overview · Pending · Active · Closed · Forecast · Binder (+ a
-// multi-property Rollup for owners with more than one hotel). Smart CapEx scans
-// a contractor quote into a new request. All reads/writes go through
-// /api/financials/capex(+/decision,/progress,/forecast,/rollup,/attachment,
-// /line-items) behind the owner/GM finance gate. Money is integer cents.
+// CapEx — full capital-request approval workflow, presented as a status board
+// (Kanban redesign). Submit a request → owner/GM approves / rejects / asks for
+// changes → in-progress (% complete) → completed. The board groups projects
+// into Pending · Active · Closed columns; clicking a card opens its binder,
+// which now hosts the approve/reject/revisions decision and the progress
+// controls. Forecast (upcoming capital spend) and a multi-property Rollup are
+// switchable views. Smart CapEx scans a contractor quote into a new request.
+// All reads/writes go through /api/financials/capex(+/decision,/progress,
+// /forecast,/rollup,/attachment,/line-items) behind the owner/GM finance gate.
+// Money is integer cents.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Field, TextInput, TextArea } from '@/app/maintenance/_components/_mt-snow';
@@ -17,6 +20,7 @@ import {
   CAPEX_PENDING_STATUSES,
   CAPEX_ACTIVE_STATUSES,
   CAPEX_CLOSED_STATUSES,
+  formatCents,
   parseDollarsToCents,
   capexEstimateCents,
   capexOverrunPct,
@@ -27,11 +31,13 @@ import {
   type RequestType,
 } from '@/lib/financials/shared';
 import { apiGet, apiSend, Btn, Money, Pill, Card, Notice, BudgetBar, DollarInput, T, FONT_SANS, FONT_MONO } from './fin-ui';
+import { CapexCard, BigMoney, Eyebrow } from './fin-board';
 import { ft, capexStatusLabel, capexCategoryLabel, requestTypeLabel } from './fin-i18n';
 import { ScanButton, type QuoteDraft } from './ScanButton';
 
 type Lang = 'en' | 'es';
-type View = 'overview' | 'pending' | 'active' | 'closed' | 'forecast' | 'binder' | 'rollup';
+type View = 'board' | 'forecast' | 'rollup';
+type DecisionAction = 'approve' | 'reject' | 'revisions';
 
 function statusColor(s: CapexStatus): string {
   if (s === 'completed' || s === 'approved') return T.sageDeep;
@@ -40,6 +46,9 @@ function statusColor(s: CapexStatus): string {
   if (s === 'revisions_needed') return T.warm;
   return T.ink2; // requested
 }
+
+// Column grouping colors (each card still carries its own real-status accent).
+const COL_COLOR = { pending: '#3389A0', active: T.caramelDeep, closed: T.sageDeep };
 
 interface ForecastMonth {
   month: string;
@@ -62,17 +71,28 @@ interface Rollup {
   totals: { projects: number; pending: number; active: number; estimatedCents: number; spentCents: number };
 }
 
+function shortDate(ymd: string | null, lang: Lang): string {
+  if (!ymd) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return ymd;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
 export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; onChanged: () => void }) {
   const S = ft(lang);
   const { properties } = useProperty();
-  const [view, setView] = useState<View>('overview');
+  const [view, setView] = useState<View>('board');
   const [projects, setProjects] = useState<CapexProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [errored, setErrored] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CapexProject | null>(null);
   const [requestForm, setRequestForm] = useState<RequestForm | null>(null);
-  const [decision, setDecision] = useState<{ project: CapexProject; action: 'approve' | 'reject' | 'revisions' } | null>(null);
+  const [decision, setDecision] = useState<{ project: CapexProject; action: DecisionAction } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,14 +135,14 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
   const active = useMemo(() => projects.filter((p) => CAPEX_ACTIVE_STATUSES.includes(p.status)), [projects]);
   const closed = useMemo(() => projects.filter((p) => CAPEX_CLOSED_STATUSES.includes(p.status)), [projects]);
 
+  const totalEstimated = projects.reduce((a, p) => a + capexEstimateCents(p), 0);
+  const totalSpent = projects.reduce((a, p) => a + (p.spentCents ?? 0), 0);
+  const emergency = projects.filter((p) => p.requestType === 'emergency').length;
+
   const showRollup = properties.length > 1;
-  const tabs: { key: View; label: string }[] = [
-    { key: 'overview', label: S.capOverview },
-    { key: 'pending', label: `${S.capPending}${pending.length ? ` (${pending.length})` : ''}` },
-    { key: 'active', label: `${S.capActive}${active.length ? ` (${active.length})` : ''}` },
-    { key: 'closed', label: S.capClosed },
+  const views: { key: View; label: string }[] = [
+    { key: 'board', label: S.projects },
     { key: 'forecast', label: S.capForecast },
-    { key: 'binder', label: S.capBinder },
     ...(showRollup ? [{ key: 'rollup' as const, label: S.rollup }] : []),
   ];
 
@@ -138,72 +158,144 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
     });
   };
 
+  const openDecision = (project: CapexProject, action: DecisionAction) => {
+    setOpenId(null);
+    setDetail(null);
+    setDecision({ project, action });
+  };
+
   if (loading) return <Notice text={S.loading} />;
   if (errored) return <Notice text={S.errorLoading} onRetry={() => void load()} />;
+
+  const columns: { key: 'pending' | 'active' | 'closed'; label: string; items: CapexProject[]; empty: string; addable: boolean }[] = [
+    { key: 'pending', label: S.capPending, items: pending, empty: S.noPending, addable: true },
+    { key: 'active', label: S.capActive, items: active, empty: S.noActive, addable: false },
+    { key: 'closed', label: S.capClosed, items: closed, empty: S.noClosed, addable: false },
+  ];
 
   return (
     <div>
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: FONT_SANS, fontSize: 15, fontWeight: 600, color: T.ink }}>{S.projects}</span>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {/* View switcher */}
+        <div style={{ display: 'flex', gap: 3, padding: 3, borderRadius: 9, border: `1px solid ${T.rule}`, background: T.bg }}>
+          {views.map((v) => {
+            const on = view === v.key;
+            return (
+              <button
+                key={v.key}
+                onClick={() => setView(v.key)}
+                style={{
+                  padding: '6px 13px',
+                  borderRadius: 6,
+                  fontFamily: FONT_SANS,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  background: on ? T.ink : 'transparent',
+                  color: on ? T.bg : T.ink3,
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                {v.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink }}>{formatCents(totalEstimated, { showCents: false })} {lang === 'es' ? 'comprometido' : 'committed'}</span>
           <ScanButton mode="quote" pid={pid} label={S.scanQuote} scanningLabel={S.scanning} failLabel={S.scanFailed} onQuote={onScanQuote} />
           <Btn onClick={() => setRequestForm(blankRequest())}>+ {S.newRequest}</Btn>
         </div>
       </div>
 
-      {/* Sub-tab bar */}
-      <div style={{ display: 'flex', gap: 22, borderBottom: `1px solid ${T.rule}`, marginBottom: 18, overflowX: 'auto' }}>
-        {tabs.map((t) => {
-          const on = view === t.key;
-          return (
-            <button
-              key={t.key}
-              onClick={() => setView(t.key)}
-              style={{
-                background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 0 10px',
-                fontFamily: FONT_SANS, fontSize: 13, fontWeight: on ? 600 : 500,
-                color: on ? T.ink : T.ink2, borderBottom: on ? `1.5px solid ${T.ink}` : '1.5px solid transparent',
-                marginBottom: -1, whiteSpace: 'nowrap',
-              }}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
+      {view === 'board' && (
+        <>
+          {projects.length === 0 ? (
+            <Notice text={S.noProjects} />
+          ) : (
+            <>
+              {/* CapEx totals strip */}
+              <div style={{ display: 'flex', gap: 30, flexWrap: 'wrap', alignItems: 'center', padding: '0 0 16px', borderBottom: `1px solid ${T.ruleSoft}`, marginBottom: 18 }}>
+                <StatStrip label={S.totalRequests}>
+                  <span style={statNum}>{projects.length}</span>
+                </StatStrip>
+                <StatStrip label={S.totalEstimated}>
+                  <BigMoney cents={totalEstimated} size={28} />
+                </StatStrip>
+                <StatStrip label={S.totalSpent}>
+                  <BigMoney cents={totalSpent} size={28} />
+                </StatStrip>
+                <StatStrip label={S.emergency}>
+                  <span style={{ ...statNum, color: emergency > 0 ? T.warm : T.ink }}>{emergency}</span>
+                </StatStrip>
+              </div>
 
-      {/* Views */}
-      {view === 'overview' && <Overview projects={projects} lang={lang} />}
-      {view === 'pending' && (
-        <ProjectList
-          projects={pending}
-          lang={lang}
-          empty={S.noPending}
-          onOpen={openDetail}
-          actions={(p) => (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <Btn onClick={() => setDecision({ project: p, action: 'approve' })}>{S.approve}</Btn>
-              <Btn variant="ghost" onClick={() => setDecision({ project: p, action: 'revisions' })}>{S.requestRevisions}</Btn>
-              <Btn variant="danger" onClick={() => setDecision({ project: p, action: 'reject' })}>{S.reject}</Btn>
-            </div>
+              {/* Status board */}
+              <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', justifyContent: 'center', flexWrap: 'wrap' }}>
+                {columns.map((col) => (
+                  <div key={col.key} style={{ flex: '1 1 0', minWidth: 270, maxWidth: 420, background: 'rgba(31,35,28,0.022)', borderRadius: 12, padding: 12, border: `1px solid ${T.ruleSoft}` }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+                      <span style={{ width: 9, height: 9, borderRadius: '50%', background: COL_COLOR[col.key], flexShrink: 0 }} />
+                      <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 700, color: T.ink, flex: 1 }}>{col.label}</span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{col.items.length}</span>
+                      {col.addable && (
+                        <button
+                          onClick={() => setRequestForm(blankRequest())}
+                          title={S.newRequest}
+                          style={{ width: 22, height: 22, borderRadius: 6, border: `1px solid ${T.rule}`, display: 'grid', placeItems: 'center', color: T.ink2, background: T.bg, cursor: 'pointer', fontSize: 14, lineHeight: 1 }}
+                        >
+                          +
+                        </button>
+                      )}
+                    </div>
+                    {col.items.length === 0 ? (
+                      col.addable ? (
+                        <button
+                          onClick={() => setRequestForm(blankRequest())}
+                          style={{ width: '100%', padding: '14px 0', borderRadius: 10, border: `1px dashed ${T.rule}`, color: T.ink3, fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: 600, background: 'transparent', cursor: 'pointer' }}
+                        >
+                          + {S.newRequest}
+                        </button>
+                      ) : (
+                        <span style={{ fontFamily: FONT_SANS, fontStyle: 'italic', fontSize: 13, color: T.ink3, padding: '4px 2px', display: 'block' }}>{col.empty}</span>
+                      )
+                    ) : (
+                      col.items.map((p) => {
+                        const spent = p.spentCents ?? 0;
+                        const estimate = capexEstimateCents(p);
+                        return (
+                          <CapexCard
+                            key={p.id}
+                            accent={statusColor(p.status)}
+                            name={p.name}
+                            metaLabel={[p.vendor, shortDate(p.targetDate, lang)].filter(Boolean).join(' · ')}
+                            spentCents={spent}
+                            estimateCents={estimate}
+                            spentLabel={S.spent}
+                            estimateLabel={S.estimate}
+                            pills={
+                              <>
+                                {p.requestType === 'emergency' && <Pill label={requestTypeLabel(lang, 'emergency')} color={T.warm} />}
+                                {p.category && <Pill label={capexCategoryLabel(lang, p.category)} color={T.ink2} />}
+                                <Pill label={capexStatusLabel(lang, p.status)} color={statusColor(p.status)} />
+                                {p.status === 'in_progress' && <Pill label={`${p.pctComplete}%`} color={T.caramelDeep} />}
+                              </>
+                            }
+                            onOpen={() => void openDetail(p.id)}
+                          />
+                        );
+                      })
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
-        />
+        </>
       )}
-      {view === 'active' && (
-        <ProjectList
-          projects={active}
-          lang={lang}
-          empty={S.noActive}
-          onOpen={openDetail}
-          actions={(p) => <ProgressControls pid={pid} project={p} lang={lang} onChanged={() => void afterChange()} />}
-        />
-      )}
-      {view === 'closed' && <ProjectList projects={closed} lang={lang} empty={S.noClosed} onOpen={openDetail} />}
+
       {view === 'forecast' && <Forecast pid={pid} lang={lang} />}
-      {view === 'binder' && (
-        <ProjectList projects={projects} lang={lang} empty={S.noProjects} onOpen={openDetail} hint={S.selectProject} />
-      )}
       {view === 'rollup' && <RollupView lang={lang} />}
 
       {/* Detail / binder modal */}
@@ -216,6 +308,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
             setOpenId(null);
             setDetail(null);
           }}
+          onDecision={openDecision}
           onChanged={() => void afterChange(openId)}
         />
       )}
@@ -238,155 +331,6 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
             void afterChange();
           }}
         />
-      )}
-    </div>
-  );
-}
-
-// ─── Overview ─────────────────────────────────────────────────────────────
-function Overview({ projects, lang }: { projects: CapexProject[]; lang: Lang }) {
-  const S = ft(lang);
-  const totalEstimated = projects.reduce((a, p) => a + capexEstimateCents(p), 0);
-  const totalSpent = projects.reduce((a, p) => a + (p.spentCents ?? 0), 0);
-  const budgeted = projects.filter((p) => p.requestType === 'budgeted').length;
-  const emergency = projects.filter((p) => p.requestType === 'emergency').length;
-  const approved = projects.filter((p) => ['approved', 'in_progress', 'completed'].includes(p.status)).length;
-  const started = projects.filter((p) => ['in_progress', 'completed'].includes(p.status)).length;
-  const completed = projects.filter((p) => p.status === 'completed').length;
-  const total = projects.length;
-  const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
-
-  if (total === 0) return <Notice text={S.noProjects} />;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Card>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 18 }}>
-          <Stat label={S.totalRequests}><span style={statNum}>{total}</span></Stat>
-          <Stat label={S.totalEstimated}><Money cents={totalEstimated} size={22} /></Stat>
-          <Stat label={S.totalSpent}><Money cents={totalSpent} size={22} /></Stat>
-          <Stat label={S.budgetedVsEmergency}>
-            <span style={statNum}>{budgeted}</span>
-            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3 }}> / </span>
-            <span style={{ ...statNum, color: emergency > 0 ? T.warm : T.ink }}>{emergency}</span>
-          </Stat>
-        </div>
-      </Card>
-      <Card>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 16 }}>
-          <Progress label={S.approvedPct} pct={pct(approved)} />
-          <Progress label={S.startedPct} pct={pct(started)} />
-          <Progress label={S.completedPct} pct={pct(completed)} />
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function Progress({ label, pct }: { label: string; pct: number }) {
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: T.ink }}>{pct}%</span>
-      </div>
-      <div style={{ height: 6, borderRadius: 999, background: T.rule, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: T.sageDeep, borderRadius: 999 }} />
-      </div>
-    </div>
-  );
-}
-
-// ─── Project list + card ──────────────────────────────────────────────────
-function ProjectList({
-  projects,
-  lang,
-  empty,
-  onOpen,
-  actions,
-  hint,
-}: {
-  projects: CapexProject[];
-  lang: Lang;
-  empty: string;
-  onOpen: (id: string) => void;
-  actions?: (p: CapexProject) => React.ReactNode;
-  hint?: string;
-}) {
-  const S = ft(lang);
-  if (projects.length === 0) return <Notice text={empty} />;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {hint && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, marginBottom: 2 }}>{hint}</span>}
-      {projects.map((p) => {
-        const spent = p.spentCents ?? 0;
-        const estimate = capexEstimateCents(p);
-        const overrun = capexOverrunPct(spent, estimate);
-        const over = overrun != null && overrun > 0;
-        return (
-          <Card key={p.id} style={{ padding: 15 }}>
-            <div onClick={() => onOpen(p.id)} style={{ cursor: 'pointer' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontFamily: FONT_SANS, fontSize: 15, fontWeight: 600, color: T.ink }}>{p.name}</span>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  {p.requestType === 'emergency' && <Pill label={requestTypeLabel(lang, 'emergency')} color={T.warm} />}
-                  {p.category && <Pill label={capexCategoryLabel(lang, p.category)} color={T.ink2} />}
-                  <Pill label={capexStatusLabel(lang, p.status)} color={statusColor(p.status)} />
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                <Money cents={spent} size={17} color={over ? T.warm : T.ink} />
-                <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3 }}>
-                  {S.spent} · {S.estimate} <Money cents={estimate} size={12} weight={500} color={T.ink2} />
-                </span>
-                {p.status === 'in_progress' && (
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>· {p.pctComplete}% {S.percentComplete}</span>
-                )}
-              </div>
-              <BudgetBar actualCents={spent} budgetCents={estimate} status={over ? 'over' : 'good'} />
-              {overrun != null && (
-                <div style={{ marginTop: 6, fontFamily: FONT_SANS, fontSize: 12, color: over ? T.warm : T.sageDeep }}>
-                  {over ? `${Math.round(overrun)}% ${S.overrun}` : `${Math.abs(Math.round(overrun))}% ${S.underQuote}`}
-                </div>
-              )}
-            </div>
-            {actions && <div style={{ marginTop: 12 }}>{actions(p)}</div>}
-          </Card>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Progress controls (active projects) ──────────────────────────────────
-function ProgressControls({ pid, project, lang, onChanged }: { pid: string; project: CapexProject; lang: Lang; onChanged: () => void }) {
-  const S = ft(lang);
-  const [busy, setBusy] = useState(false);
-  const send = async (patch: { status?: CapexStatus; pctComplete?: number }) => {
-    setBusy(true);
-    await apiSend('/api/financials/capex/progress', 'POST', { pid, id: project.id, ...patch });
-    setBusy(false);
-    onChanged();
-  };
-  return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      {project.status === 'approved' && <Btn disabled={busy} onClick={() => void send({ status: 'in_progress' })}>{S.markInProgress}</Btn>}
-      {project.status === 'in_progress' && (
-        <>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: FONT_SANS, fontSize: 12, color: T.ink2 }}>
-            {S.percentComplete}
-            <input
-              type="range"
-              min={0}
-              max={100}
-              defaultValue={project.pctComplete}
-              onMouseUp={(e) => void send({ pctComplete: Number((e.target as HTMLInputElement).value) })}
-              onTouchEnd={(e) => void send({ pctComplete: Number((e.target as HTMLInputElement).value) })}
-              style={{ accentColor: T.sageDeep }}
-            />
-          </label>
-          <Btn variant="ghost" disabled={busy} onClick={() => void send({ status: 'completed' })}>{S.markComplete}</Btn>
-        </>
       )}
     </div>
   );
@@ -431,11 +375,11 @@ function RollupView({ lang }: { lang: Lang }) {
       <Card>
         <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>{S.acrossProperties}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 16 }}>
-          <Stat label={S.totalRequests}><span style={statNum}>{data.totals.projects}</span></Stat>
-          <Stat label={S.capPending}><span style={statNum}>{data.totals.pending}</span></Stat>
-          <Stat label={S.capActive}><span style={statNum}>{data.totals.active}</span></Stat>
-          <Stat label={S.totalEstimated}><Money cents={data.totals.estimatedCents} size={20} /></Stat>
-          <Stat label={S.totalSpent}><Money cents={data.totals.spentCents} size={20} /></Stat>
+          <StatStrip label={S.totalRequests}><span style={statNum}>{data.totals.projects}</span></StatStrip>
+          <StatStrip label={S.capPending}><span style={statNum}>{data.totals.pending}</span></StatStrip>
+          <StatStrip label={S.capActive}><span style={statNum}>{data.totals.active}</span></StatStrip>
+          <StatStrip label={S.totalEstimated}><Money cents={data.totals.estimatedCents} size={20} /></StatStrip>
+          <StatStrip label={S.totalSpent}><Money cents={data.totals.spentCents} size={20} /></StatStrip>
         </div>
       </Card>
       {data.properties.map((p) => (
@@ -576,7 +520,7 @@ function DecisionModal({
   pid: string;
   lang: Lang;
   project: CapexProject;
-  action: 'approve' | 'reject' | 'revisions';
+  action: DecisionAction;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -609,8 +553,56 @@ function DecisionModal({
   );
 }
 
+// ─── Progress controls (active projects, inside the binder) ────────────────
+function ProgressControls({ pid, project, lang, onChanged }: { pid: string; project: CapexProject; lang: Lang; onChanged: () => void }) {
+  const S = ft(lang);
+  const [busy, setBusy] = useState(false);
+  const send = async (patch: { status?: CapexStatus; pctComplete?: number }) => {
+    setBusy(true);
+    await apiSend('/api/financials/capex/progress', 'POST', { pid, id: project.id, ...patch });
+    setBusy(false);
+    onChanged();
+  };
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      {project.status === 'approved' && <Btn disabled={busy} onClick={() => void send({ status: 'in_progress' })}>{S.markInProgress}</Btn>}
+      {project.status === 'in_progress' && (
+        <>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: FONT_SANS, fontSize: 12, color: T.ink2 }}>
+            {S.percentComplete}
+            <input
+              type="range"
+              min={0}
+              max={100}
+              defaultValue={project.pctComplete}
+              onMouseUp={(e) => void send({ pctComplete: Number((e.target as HTMLInputElement).value) })}
+              onTouchEnd={(e) => void send({ pctComplete: Number((e.target as HTMLInputElement).value) })}
+              style={{ accentColor: T.sageDeep }}
+            />
+          </label>
+          <Btn variant="ghost" disabled={busy} onClick={() => void send({ status: 'completed' })}>{S.markComplete}</Btn>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Detail / binder modal ──────────────────────────────────────────────────
-function DetailModal({ pid, lang, project, onClose, onChanged }: { pid: string; lang: Lang; project: CapexProject | null; onClose: () => void; onChanged: () => void }) {
+function DetailModal({
+  pid,
+  lang,
+  project,
+  onClose,
+  onDecision,
+  onChanged,
+}: {
+  pid: string;
+  lang: Lang;
+  project: CapexProject | null;
+  onClose: () => void;
+  onDecision: (project: CapexProject, action: DecisionAction) => void;
+  onChanged: () => void;
+}) {
   const S = ft(lang);
   const [addLabel, setAddLabel] = useState('');
   const [addAmount, setAddAmount] = useState('');
@@ -626,6 +618,8 @@ function DetailModal({ pid, lang, project, onClose, onChanged }: { pid: string; 
   const spent = project.spentCents ?? 0;
   const estimate = capexEstimateCents(project);
   const over = capexOverrunPct(spent, estimate);
+  const isPending = CAPEX_PENDING_STATUSES.includes(project.status);
+  const isActive = project.status === 'approved' || project.status === 'in_progress';
 
   const addLine = async () => {
     if (!addLabel.trim()) return;
@@ -679,6 +673,20 @@ function DetailModal({ pid, lang, project, onClose, onChanged }: { pid: string; 
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Workflow actions */}
+        {isPending && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 4 }}>
+            <Btn onClick={() => onDecision(project, 'approve')}>{S.approve}</Btn>
+            <Btn variant="ghost" onClick={() => onDecision(project, 'revisions')}>{S.requestRevisions}</Btn>
+            <Btn variant="danger" onClick={() => onDecision(project, 'reject')}>{S.reject}</Btn>
+          </div>
+        )}
+        {isActive && (
+          <div style={{ paddingBottom: 4 }}>
+            <ProgressControls pid={pid} project={project} lang={lang} onChanged={onChanged} />
+          </div>
+        )}
+
         {/* Quote & estimate */}
         <Section title={S.binderQuote}>
           <Card style={{ background: T.bg }}>
@@ -759,11 +767,11 @@ function DetailModal({ pid, lang, project, onClose, onChanged }: { pid: string; 
 }
 
 // ─── small shared bits ──────────────────────────────────────────────────────
-function Stat({ label, children }: { label: string; children: React.ReactNode }) {
+function StatStrip({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
-      <div>{children}</div>
+      <Eyebrow>{label}</Eyebrow>
+      <div style={{ marginTop: 3 }}>{children}</div>
     </div>
   );
 }
