@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks, Bot } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -28,6 +28,12 @@ export default function SettingsPage() {
     },
     ...(user && canManageTeam(user.role)
       ? [
+          {
+            href:'/settings/agents',
+            icon:Bot,
+            label: lang === 'es' ? 'Agentes' : 'Agents',
+            desc: lang === 'es' ? 'Agentes de IA que ejecutan tus rutinas — tú apruebas lo que importa' : 'AI agents that run your routines — you approve what matters',
+          },
           {
             href:'/settings/reports',
             icon:BarChart3,
