@@ -230,6 +230,9 @@ export function AgentWizard({
             {state.actions.length === 0 && (
               <p style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink3, marginTop: 10 }}>{s(lang, 'pickOneAction')}</p>
             )}
+            {state.actions.length > 0 && !requiredPayloadsMet(state, requiredByAction) && (
+              <p style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink3, marginTop: 10 }}>{s(lang, 'fillRequiredFields')}</p>
+            )}
           </>
         )}
         {step === 'review' && (

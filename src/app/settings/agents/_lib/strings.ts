@@ -107,6 +107,10 @@ export const S = {
   // ── wizard: actions ──
   actionsIntro: { en: 'Choose what this agent can do, and how much it can do on its own.', es: 'Elige qué puede hacer este agente y cuánto puede hacer por sí solo.' },
   pickOneAction: { en: 'Pick at least one action.', es: 'Elige al menos una acción.' },
+  fillRequiredFields: {
+    en: 'Fill in the required fields (marked *) to continue.',
+    es: 'Completa los campos obligatorios (marcados con *) para continuar.',
+  },
   safetyDial: { en: 'Safety dial', es: 'Nivel de control' },
   modeSuggest: { en: 'Suggest', es: 'Sugerir' },
   modeApprove: { en: 'Ask me first', es: 'Pregúntame primero' },

@@ -124,6 +124,20 @@ const defaultConfig: AgentConfig = {
     // can flip assign_rooms to Auto in the wizard once comfortable.
     perAction: { assign_rooms: 'approve_first', notify_manager: 'auto' },
   },
+  // Seed notify_manager's required `message` so the wizard's required-field gate
+  // is satisfied out of the box — the flagship template must be saveable without
+  // the GM hand-writing a message. At run time plan() recomputes the real
+  // bilingual turnover summary from the day's data and ignores this seed (it's
+  // only the wizard placeholder/fallback), kept in step with the notify step's
+  // own `reason` copy below.
+  templateParams: {
+    payloads: {
+      notify_manager: {
+        message: 'Morning turnover summary for the team.',
+        messageEs: 'Resumen de preparación matutina para el equipo.',
+      },
+    },
+  },
 };
 
 // ── template ──────────────────────────────────────────────────────────────────
