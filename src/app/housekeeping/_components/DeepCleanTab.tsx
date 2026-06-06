@@ -1,34 +1,36 @@
 'use client';
 
-// Snow / simplified Deep Clean from the Claude Design housekeeping
-// handoff (May 2026). The user said the previous version was "way too
-// complicated for just something like you just list who rooms are deep
-// clean," so the design is essentially a list:
-//   • Header: "{n} overdue · {n} due soon · {n} fresh"
-//   • Today's suggestion banner (sage gradient): how many cleans fit today
-//   • Two columns: Overdue list + Recent log
-//   • Cadence settings tucked into a button → modal
+// Deep Clean — "Command" layout from the Claude Design housekeeping
+// handoff (June 2026, design_handoff_deepclean). Replaces the prior Snow
+// list view. Structure (top → bottom):
+//   • Header: "Deep clean" title (serif, "Deep" italic) + mono sub-label
+//     "{n}-DAY CADENCE · ROTATION & SCHEDULING" + ⚙ Cadence settings button.
+//   • Freshness chips: Overdue · Scheduled? · Due soon · Fresh · Cadence.
+//   • Two-column board (1.35fr / 1fr, collapses < 880px): overdue worklist
+//     on the left (table + due-soon pills), recent deep-clean log on the
+//     right. Newly scheduled rooms surface in the log as "today · Queued · ⏵".
 //
-// Hooks preserved: getDeepCleanConfig, setDeepCleanConfig,
-// getDeepCleanRecords, markRoomDeepCleaned, subscribeToRooms.
-// Dropped from the JSX (data layer untouched): assign-team modal,
-// complete-room modal with date picker, add-rooms modal, collapsible
-// floors. Schedule button on each overdue room flips it to in-progress
-// via markRoomDeepCleaned.
+// Intentionally dropped per the handoff: the old "Today's suggestion / Fit
+// N deep cleans today" green banner and its bulk-schedule button (plus the
+// DND-freed-minutes math that fed it). Per-room Schedule + cadence settings
+// are the live write actions.
+//
+// Data layer unchanged: getDeepCleanConfig / setDeepCleanConfig /
+// getDeepCleanRecords / assignRoomDeepClean. There's still no realtime
+// channel on deep_clean_records, so a 60s timer + visibility refresh stands
+// in — without it a completed deep clean wouldn't surface until remount.
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import {
-  subscribeToRooms,
   getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
   assignRoomDeepClean,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
-import type { Room, DeepCleanConfig, DeepCleanRecord } from '@/types';
-import { calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
-import { format } from 'date-fns';
+import type { DeepCleanConfig, DeepCleanRecord } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn,
@@ -40,10 +42,37 @@ interface RoomInfo {
   number: string;
   daysSince: number;
   parDays: number;
-  lastCleaned: string | null;
-  cleanedBy: string | null;
   status: RowStatus;
   inProgress: boolean;
+}
+
+interface LogEntry {
+  key: string;
+  roomNumber: string;
+  agoDays: number;
+  team: string;
+  status: 'completed' | 'in_progress';
+  sortTs: number;
+}
+
+// ── Freshness chip — caps label over a big italic serif value ──────────────
+function StatChip({
+  label, value, color,
+}: {
+  label: string; value: React.ReactNode; color?: string;
+}) {
+  return (
+    <div style={{
+      border: `1px solid ${T.rule}`, borderRadius: 13, padding: '11px 16px',
+      display: 'flex', flexDirection: 'column', gap: 3, minWidth: 104,
+    }}>
+      <Caps size={10}>{label}</Caps>
+      <span style={{
+        fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 30,
+        lineHeight: 0.9, fontWeight: 400, color: color ?? T.ink,
+      }}>{value}</span>
+    </div>
+  );
 }
 
 export function DeepCleanTab() {
@@ -51,44 +80,35 @@ export function DeepCleanTab() {
   const { activePropertyId, activeProperty } = useProperty();
   const { lang } = useLang();
   const todayStrReactive = useTodayStr();
+  const es = lang === 'es';
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
   const [records, setRecords] = useState<Record<string, DeepCleanRecord>>({});
-  const [todayRooms, setTodayRooms] = useState<Room[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [showCadence, setShowCadence] = useState(false);
-  // Default cadence is 90 days — matches the historical behavior on
-  // properties that haven't explicitly configured one. The Claude Design
-  // mock used 28 (which is fine for housekeeper-rotation) but the prior
-  // production default was 90, and a quieter cycle is the conservative
-  // choice for a hotel that hasn't actively opted in.
+  // Default cadence 90 days — matches the historical production default for
+  // properties that haven't explicitly configured one.
   const [cadenceDraft, setCadenceDraft] = useState<number>(90);
   const [savingCadence, setSavingCadence] = useState(false);
-  // Tracks the bulk-schedule promise so rapid clicks on "Schedule N deep
-  // cleans" can't fire the same writes 3× before optimistic state updates.
-  const [bulkScheduling, setBulkScheduling] = useState(false);
-  // `loaded` flips true after the first records-fetch resolves so the
-  // empty list doesn't flash "Nothing overdue" while still loading.
+  // `loaded` flips true after the first records-fetch resolves so the empty
+  // list doesn't flash "Nothing overdue" while the request is still in flight.
   const [loaded, setLoaded] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
-  // `today` reactively rebuilds when todayStrReactive flips at midnight,
-  // so a tab left open overnight doesn't quietly compute days-since-clean
-  // off yesterday's date. Identity stability still matters for downstream
-  // useMemos — keying off the string means it only changes once per day.
+  // `today` reactively rebuilds when todayStrReactive flips at midnight, so a
+  // tab left open overnight doesn't compute days-since off yesterday's date.
+  // Keying off the string means it only changes once per day (stable identity
+  // for downstream useMemos).
   // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: midnight rollover trigger
   const today = useMemo(() => new Date(), [todayStrReactive]);
 
-  // Parse a YYYY-MM-DD string as a *local* date (midnight in the user's
-  // timezone) instead of UTC midnight. `new Date('2026-05-12')` parses
-  // as UTC, so the manager in CDT sees it as 2026-05-11 19:00 — and the
-  // recent-log row displays "May 11" for a clean that actually happened
-  // May 12. This helper anchors the date in the local zone so labels and
-  // days-since math agree.
+  // Parse a YYYY-MM-DD string as a *local* date (midnight in the user's zone)
+  // instead of UTC midnight, so "May 12" labels and days-since math agree for
+  // a manager in CDT (new Date('2026-05-12') would parse as UTC → May 11 19:00).
   const parseLocalDate = (ymd: string | null | undefined): Date | null => {
     if (!ymd) return null;
     const parts = ymd.split('-').map(Number);
@@ -99,20 +119,18 @@ export function DeepCleanTab() {
   const allRoomNumbers = useMemo(() => {
     const inv = activeProperty?.roomInventory ?? [];
     if (inv.length > 0) return inv;
-    // Comfort Suites Beaumont fallback layout — matches the previous tab
-    // for properties that haven't been onboarded yet.
+    // Comfort Suites Beaumont fallback layout — matches the prior tab for
+    // properties that haven't been onboarded yet.
     const out: string[] = [];
-    [101,102,103,104,105,106,108,110,112].forEach(n => out.push(String(n)));
+    [101, 102, 103, 104, 105, 106, 108, 110, 112].forEach(n => out.push(String(n)));
     for (let r = 201; r <= 222; r++) if (r !== 213) out.push(String(r));
     for (let r = 300; r <= 322; r++) if (r !== 313) out.push(String(r));
     for (let r = 400; r <= 422; r++) if (r !== 413) out.push(String(r));
     return out;
   }, [activeProperty?.roomInventory]);
 
-  // Refresh records from DB. Extracted because we call it on mount, on
-  // tab-visibility change, and on a 60s timer — there's no realtime
-  // channel on deep_clean_records yet (see audit fix #2). Without this,
-  // a completed deep clean wouldn't surface until tab remount.
+  // Refresh records from DB. Called on mount, on tab-visibility change, and on
+  // a 60s timer (no realtime channel on deep_clean_records yet).
   const refreshRecords = useCallback(async (opts?: { silent?: boolean }) => {
     if (!uid || !pid) return;
     try {
@@ -124,20 +142,18 @@ export function DeepCleanTab() {
       console.error('[DeepCleanTab] records fetch failed:', err);
       if (!opts?.silent) {
         setToastKind('error');
-        setToast(lang === 'es' ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
+        setToast(es ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
         if (toastTimer.current) clearTimeout(toastTimer.current);
         toastTimer.current = setTimeout(() => setToast(null), 3500);
       }
     } finally {
       setLoaded(true);
     }
-  }, [uid, pid, lang]);
+  }, [uid, pid, es]);
 
-  // Load config + records on mount/property-change + subscribe to today's
-  // rooms for DND math. Resets local state immediately when uid/pid
-  // changes so a slow response from the previous property can't paint
-  // its data over the new one (and the loading skeleton shows again
-  // during the gap).
+  // Load config + records on mount / property-change. Resets local state
+  // immediately when uid/pid changes so a slow response from the previous
+  // property can't paint its data over the new one.
   useEffect(() => {
     if (!uid || !pid) return;
     setLoaded(false);
@@ -149,17 +165,15 @@ export function DeepCleanTab() {
       setConfigState(c);
       if (c?.frequencyDays) setCadenceDraft(c.frequencyDays);
     }).catch(err => {
+      // Config failure is recoverable (we fall back to defaults). Don't toast —
+      // the records-fetch toast already signals if the DB is down.
       console.error('[DeepCleanTab] config fetch failed:', err);
-      // Config failure is recoverable (we fall back to defaults). Don't
-      // toast — the records-fetch toast already signals if the DB is down.
     });
     void refreshRecords();
-    const unsub = subscribeToRooms(uid, pid, todayStrReactive, setTodayRooms);
-    return () => { cancelled = true; unsub(); };
-  }, [uid, pid, todayStrReactive, refreshRecords]);
+    return () => { cancelled = true; };
+  }, [uid, pid, refreshRecords]);
 
-  // Refresh on tab-visibility change (manager comes back from another tab)
-  // and every 60s while visible. Cheap stand-in for a realtime channel.
+  // Refresh on tab-visibility change + every 60s while visible.
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const onVisible = () => {
@@ -189,20 +203,12 @@ export function DeepCleanTab() {
   // ── Derived per-room info ──────────────────────────────────────────────
   const allInfo: RoomInfo[] = useMemo(() => allRoomNumbers.map(num => {
     const rec = records[num];
-    if (!rec || !rec.lastDeepClean) {
+    const last = rec ? parseLocalDate(rec.lastDeepClean) : null;
+    if (!rec || !last) {
       return {
         number: num, daysSince: Infinity, parDays,
-        lastCleaned: null, cleanedBy: null,
         status: 'never' as const,
         inProgress: rec?.status === 'in_progress',
-      };
-    }
-    const last = parseLocalDate(rec.lastDeepClean);
-    if (!last) {
-      return {
-        number: num, daysSince: Infinity, parDays,
-        lastCleaned: null, cleanedBy: null, status: 'never' as const,
-        inProgress: rec.status === 'in_progress',
       };
     }
     const daysSince = Math.floor((today.getTime() - last.getTime()) / 86_400_000);
@@ -211,17 +217,14 @@ export function DeepCleanTab() {
     if (ratio >= 1.0) status = 'overdue';
     else if (ratio >= 0.85) status = 'due-soon';
     return {
-      number: num, daysSince, parDays,
-      lastCleaned: rec.lastDeepClean,
-      cleanedBy: rec.cleanedByTeam?.join(', ') ?? null,
-      status,
+      number: num, daysSince, parDays, status,
       inProgress: rec.status === 'in_progress',
     };
   }), [allRoomNumbers, records, parDays, today]);
 
-  // Overdue list excludes rooms already in_progress (Maria scheduled
-  // them in this session — they shouldn't keep yelling "OVERDUE!").
-  const overdue  = useMemo(() => allInfo
+  // Overdue list excludes rooms already scheduled (in_progress) this session —
+  // they shouldn't keep yelling "OVERDUE!".
+  const overdue = useMemo(() => allInfo
     .filter(r => (r.status === 'overdue' || r.status === 'never') && !r.inProgress)
     .sort((a, b) =>
       (b.daysSince === Infinity ? 99999 : b.daysSince) -
@@ -234,29 +237,48 @@ export function DeepCleanTab() {
     .filter(r => r.status === 'due-soon')
     .sort((a, b) => b.daysSince - a.daysSince), [allInfo]);
 
-  const freshCount = allInfo.filter(r => r.status === 'fresh').length;
+  const freshCount = useMemo(() => allInfo.filter(r => r.status === 'fresh').length, [allInfo]);
 
-  const recentLog = useMemo(() => Object.values(records)
-    .filter(r => Boolean(r.lastDeepClean))
-    .sort((a, b) => (b.lastDeepClean! > a.lastDeepClean! ? 1 : -1))
-    .slice(0, 10), [records]);
+  // Recent log = currently-queued rooms (status in_progress → "today · Queued ·
+  // ⏵") on top, then completed cleans by recency. A re-scheduled room
+  // (in_progress with an old lastDeepClean) shows as its queued entry, not the
+  // prior completed date.
+  const recentLog: LogEntry[] = useMemo(() => {
+    const list: LogEntry[] = [];
+    for (const rec of Object.values(records)) {
+      if (rec.status === 'in_progress') {
+        list.push({
+          key: rec.roomNumber + ':ip',
+          roomNumber: rec.roomNumber,
+          agoDays: 0,
+          team: (rec.cleanedByTeam ?? []).join(', ') || (es ? 'En cola' : 'Queued'),
+          status: 'in_progress',
+          sortTs: Number.POSITIVE_INFINITY,
+        });
+      } else {
+        const last = parseLocalDate(rec.lastDeepClean);
+        if (!last) continue;
+        const ago = Math.max(0, Math.floor((today.getTime() - last.getTime()) / 86_400_000));
+        list.push({
+          key: rec.roomNumber + ':' + rec.lastDeepClean,
+          roomNumber: rec.roomNumber,
+          agoDays: ago,
+          team: (rec.cleanedByTeam ?? []).join(', ') || (es ? 'Sin asignar' : 'Unassigned'),
+          status: 'completed',
+          sortTs: last.getTime(),
+        });
+      }
+    }
+    return list.sort((a, b) => b.sortTs - a.sortTs).slice(0, 12);
+  }, [records, today, es]);
 
-  // Today's suggestion — uses the same DND/freed-minutes math as the
-  // dashboard's deep-clean alert.
-  const dndFreedMins = activeProperty
-    ? calcDndFreedMinutes(todayRooms, activeProperty)
-    : 0;
-  const suggestion = config && overdue.length > 0
-    ? suggestDeepCleans(dndFreedMins, 0, config, overdue.length)
-    : null;
-  const fits = suggestion?.count ?? 0;
+  const agoLabel = (n: number) =>
+    n === 0 ? (es ? 'hoy' : 'today') : (es ? `hace ${n}d` : `${n}d ago`);
 
   // Schedule a deep clean for one room — sets status='in_progress' via
   // assignRoomDeepClean (NOT markRoomDeepCleaned, which would mark it
-  // already-completed and silently advance the cycle date for a clean
-  // that hasn't actually happened yet). Empty team = "queued, no
-  // specific staff yet" — Maria can assign someone later via a future
-  // team-picker modal.
+  // already-completed and silently advance the cycle date for a clean that
+  // hasn't happened yet). Empty team = "queued, no specific staff yet".
   const handleSchedule = async (roomNumber: string) => {
     if (!uid || !pid) return;
     try {
@@ -266,15 +288,15 @@ export function DeepCleanTab() {
       setRecords(prev => ({
         ...prev,
         [roomNumber]: {
-          ...(prev[roomNumber] ?? { roomNumber, lastDeepClean: null }),
+          ...(prev[roomNumber] ?? { id: roomNumber, roomNumber, lastDeepClean: '' }),
           status: 'in_progress',
           cleanedByTeam: prev[roomNumber]?.cleanedByTeam ?? [],
         } as DeepCleanRecord,
       }));
-      flashToast(lang === 'es' ? `Limpieza profunda programada · ${roomNumber}` : `Deep clean scheduled · ${roomNumber}`);
+      flashToast(es ? `Limpieza profunda programada · ${roomNumber}` : `Deep clean scheduled · ${roomNumber}`);
     } catch (err) {
       console.error('[DeepCleanTab] schedule failed:', err);
-      flashToast(lang === 'es' ? 'No se pudo programar' : 'Could not schedule', 'error');
+      flashToast(es ? 'No se pudo programar' : 'Could not schedule', 'error');
     }
   };
 
@@ -283,28 +305,24 @@ export function DeepCleanTab() {
     setSavingCadence(true);
     try {
       const next: DeepCleanConfig = {
-        ...(config ?? { minutesPerRoom: 45, targetPerWeek: 5 }),
-        frequencyDays: Math.max(7, cadenceDraft),
+        ...(config ?? { minutesPerRoom: 60, targetPerWeek: 5, frequencyDays: 90 }),
+        frequencyDays: Math.max(7, Math.min(365, cadenceDraft)),
       };
       await setDeepCleanConfig(uid, pid, next);
       setConfigState(next);
       setShowCadence(false);
-      flashToast(lang === 'es' ? 'Cadencia guardada' : 'Cadence saved');
+      flashToast(es ? 'Cadencia guardada' : 'Cadence saved');
     } catch (err) {
       console.error('[DeepCleanTab] save cadence failed:', err);
-      flashToast(
-        lang === 'es' ? 'No se pudo guardar la cadencia' : 'Could not save cadence',
-        'error',
-      );
+      flashToast(es ? 'No se pudo guardar la cadencia' : 'Could not save cadence', 'error');
     } finally {
       setSavingCadence(false);
     }
   };
 
-  // Skeleton until first records-fetch resolves — without this the
-  // header would briefly say "0 overdue · 0 due soon · 0 fresh" and
-  // the body would say "Nothing overdue. Nice work." for the half-
-  // second the request is in flight, both of which are lies.
+  // Skeleton until the first records-fetch resolves — without this the chips
+  // would briefly read "0 / 0 / 0" and the worklist would say "Nothing
+  // overdue. Nice work." for the half-second the request is in flight.
   if (!loaded) {
     return (
       <div style={{
@@ -318,7 +336,7 @@ export function DeepCleanTab() {
           border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
         }} />
         <p style={{ color: T.ink2, fontSize: 13 }}>
-          {lang === 'es' ? 'Cargando limpieza profunda…' : 'Loading deep clean…'}
+          {es ? 'Cargando limpieza profunda…' : 'Loading deep clean…'}
         </p>
       </div>
     );
@@ -329,116 +347,78 @@ export function DeepCleanTab() {
       padding: '24px 48px 48px', background: T.bg, color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
+      {/* Two-column board collapses to one column on narrow windows. Scoped
+          to .dc-twocol so the media query can't leak into sibling tabs. */}
+      <style>{`
+        .dc-twocol { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; align-items: start; }
+        @media (max-width: 880px) { .dc-twocol { grid-template-columns: 1fr; } }
+      `}</style>
 
       {/* HEADER */}
       <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
-        marginBottom: 18, gap: 24, flexWrap: 'wrap',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+        gap: 20, flexWrap: 'wrap', margin: '4px 0 18px',
       }}>
         <div>
-          <Caps>{lang === 'es' ? 'Limpieza profunda' : 'Deep clean'}</Caps>
           <h1 style={{
-            fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0',
-            letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400,
+            fontFamily: FONT_SERIF, fontSize: 36, fontWeight: 400, lineHeight: 1,
+            color: T.ink, margin: 0, letterSpacing: '-0.02em',
           }}>
-            <span style={{ fontStyle: 'italic' }}>
-              {overdue.length} {lang === 'es' ? 'atrasadas' : 'overdue'}
-            </span>
-            <span style={{ color: T.ink3 }}>
-              {scheduled.length > 0 && ` · ${scheduled.length} ${lang === 'es' ? 'programadas' : 'scheduled'}`}
-              {' · '}{dueSoon.length} {lang === 'es' ? 'próximas' : 'due soon'}
-              {' · '}{freshCount} {lang === 'es' ? 'frescas' : 'fresh'}
-            </span>
+            <span style={{ fontStyle: 'italic' }}>{es ? 'Limpieza' : 'Deep'}</span>{' '}
+            {es ? 'profunda' : 'clean'}
           </h1>
+          <div style={{
+            fontFamily: FONT_MONO, fontSize: 11, letterSpacing: '0.04em',
+            color: T.ink2, marginTop: 7, textTransform: 'uppercase',
+          }}>
+            {es
+              ? `Cadencia de ${parDays} días · Rotación y programación`
+              : `${parDays}-day cadence · Rotation & scheduling`}
+          </div>
         </div>
         <Btn variant="ghost" size="sm" onClick={() => setShowCadence(true)}>
-          ⚙ {lang === 'es' ? 'Cadencia' : 'Cadence settings'}
+          ⚙ {es ? 'Cadencia' : 'Cadence settings'}
         </Btn>
       </div>
 
-      {/* TODAY'S SUGGESTION — only renders if there's at least one overdue */}
-      {overdue.length > 0 && (
-        <div style={{
-          background: `linear-gradient(135deg, ${T.sageDim}, rgba(215,176,126,0.06))`,
-          border: '1px solid rgba(104,131,114,0.18)', borderRadius: 18,
-          padding: '18px 22px', marginBottom: 18,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          gap: 18, flexWrap: 'wrap',
-        }}>
-          <div>
-            <Caps c={T.sageDeep}>{lang === 'es' ? 'Sugerencia de hoy' : "Today's suggestion"}</Caps>
-            <p style={{
-              fontFamily: FONT_SERIF, fontSize: 22, color: T.ink,
-              margin: '4px 0 0', lineHeight: 1.3, fontWeight: 400,
-            }}>
-              {fits > 0 ? (
-                <>
-                  {lang === 'es' ? 'Cabe(n) ' : 'Fit '}
-                  <span style={{ fontStyle: 'italic', color: T.sageDeep }}>
-                    {fits} {lang === 'es' ? 'limpieza(s) profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')}
-                  </span>
-                  {lang === 'es'
-                    ? ` hoy — ${dndFreedMins}m de tiempo DND son recuperables.`
-                    : ` today — ${dndFreedMins}m of DND time is reclaimable.`}
-                </>
-              ) : (
-                lang === 'es'
-                  ? 'Sin tiempo DND recuperable hoy — programa manualmente abajo.'
-                  : 'No DND time reclaimable today — schedule individual rooms below.'
-              )}
-            </p>
-          </div>
-          {/* Bulk-schedule button only renders when there's actually
-              capacity to schedule. A disabled button next to a "Today's
-              suggestion" headline is a misleading affordance. */}
-          {fits > 0 && (
-            <Btn
-              variant="primary"
-              size="md"
-              disabled={bulkScheduling}
-              onClick={async () => {
-                if (bulkScheduling) return;
-                setBulkScheduling(true);
-                try {
-                  const queue = overdue.slice(0, fits);
-                  await Promise.all(queue.map(r => handleSchedule(r.number)));
-                } finally {
-                  setBulkScheduling(false);
-                }
-              }}
-            >
-              {bulkScheduling
-                ? (lang === 'es' ? 'Programando…' : 'Scheduling…')
-                : <>{lang === 'es' ? 'Programar' : 'Schedule'} {fits} {lang === 'es' ? 'profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')} →</>}
-            </Btn>
-          )}
-        </div>
-      )}
+      {/* FRESHNESS CHIPS */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        <StatChip label={es ? 'Atrasadas' : 'Overdue'} value={overdue.length} color={T.warm} />
+        {scheduled.length > 0 && (
+          <StatChip label={es ? 'Programadas' : 'Scheduled'} value={scheduled.length} />
+        )}
+        <StatChip label={es ? 'Próximas' : 'Due soon'} value={dueSoon.length} color={T.caramelDeep} />
+        <StatChip label={es ? 'Frescas' : 'Fresh'} value={freshCount} color={T.sageDeep} />
+        <StatChip
+          label={es ? 'Cadencia' : 'Cadence'}
+          value={<>{parDays}<span style={{ fontSize: 14, color: T.ink3 }}>d</span></>}
+        />
+      </div>
 
-      {/* TWO-COLUMN: OVERDUE + RECENT */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+      {/* TWO-COLUMN: OVERDUE WORKLIST + RECENT LOG */}
+      <div className="dc-twocol">
 
-        {/* OVERDUE */}
+        {/* OVERDUE WORKLIST */}
         <div style={{
-          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-          padding: '8px 22px 16px',
+          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+          padding: '6px 20px 14px',
         }}>
           <div style={{
-            display: 'grid', gridTemplateColumns: '58px 1fr 78px 90px',
-            gap: 10, padding: '14px 0', borderBottom: `1px solid ${T.rule}`, alignItems: 'center',
+            display: 'grid', gridTemplateColumns: '60px 1fr 64px 96px', gap: 12,
+            padding: '10px 6px', borderBottom: `1px solid ${T.rule}`, alignItems: 'center',
           }}>
-            <Caps size={9}>{lang === 'es' ? 'Cuarto' : 'Room'}</Caps>
-            <Caps size={9}>{lang === 'es' ? 'Estado' : 'Status'}</Caps>
-            <Caps size={9}>{lang === 'es' ? 'Días' : 'Days'}</Caps>
-            <Caps size={9} style={{ textAlign: 'right' }}>{lang === 'es' ? 'Acción' : 'Action'}</Caps>
+            <Caps size={9} tracking="0.14em">{es ? 'Cuarto' : 'Room'}</Caps>
+            <Caps size={9} tracking="0.14em">{es ? 'Estado' : 'Status'}</Caps>
+            <Caps size={9} tracking="0.14em">{es ? 'Días' : 'Days'}</Caps>
+            <span />
           </div>
 
           {overdue.length === 0 && (
             <p style={{
               fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
-              padding: '20px 0', fontStyle: 'italic',
+              padding: '22px 6px', fontStyle: 'italic', margin: 0,
             }}>
-              {lang === 'es' ? 'Nada vencido. Buen trabajo.' : 'Nothing overdue. Nice work.'}
+              {es ? 'Nada vencido — buen trabajo.' : 'Nothing overdue — nice work.'}
             </p>
           )}
 
@@ -446,24 +426,24 @@ export function DeepCleanTab() {
             const over = r.daysSince === Infinity ? null : r.daysSince - r.parDays;
             return (
               <div key={r.number} style={{
-                display: 'grid', gridTemplateColumns: '58px 1fr 78px 90px',
-                gap: 10, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center',
+                display: 'grid', gridTemplateColumns: '60px 1fr 64px 96px', gap: 12,
+                padding: '11px 6px', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center',
               }}>
                 <span style={{
-                  fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, fontStyle: 'italic',
+                  fontFamily: FONT_SERIF, fontSize: 23, color: T.ink, fontStyle: 'italic',
                   letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400,
                 }}>{r.number}</span>
                 <span>
                   {r.daysSince === Infinity
-                    ? <Pill tone="warm">{lang === 'es' ? 'Nunca limpiada' : 'Never cleaned'}</Pill>
-                    : <Pill tone="warm">{over}d {lang === 'es' ? 'sobre par' : 'over par'}</Pill>}
+                    ? <Pill tone="warm">{es ? 'Nunca limpiada' : 'Never cleaned'}</Pill>
+                    : <Pill tone="warm">{over}d {es ? 'sobre par' : 'over par'}</Pill>}
                 </span>
-                <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink, fontWeight: 500 }}>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink, fontWeight: 600 }}>
                   {r.daysSince === Infinity ? '—' : `${r.daysSince}d`}
                 </span>
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <Btn variant="ghost" size="sm" onClick={() => handleSchedule(r.number)}>
-                    {lang === 'es' ? 'Programar' : 'Schedule'}
+                    {es ? 'Programar' : 'Schedule'}
                   </Btn>
                 </div>
               </div>
@@ -473,12 +453,12 @@ export function DeepCleanTab() {
           {/* DUE SOON — inline pills */}
           {dueSoon.length > 0 && (
             <div style={{ paddingTop: 14, marginTop: 6 }}>
-              <Caps>{lang === 'es' ? 'Próximas' : 'Due soon'}</Caps>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              <Caps>{es ? 'Próximas' : 'Due soon'}</Caps>
+              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 8 }}>
                 {dueSoon.map(r => (
                   <div key={r.number} style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '5px 12px', background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 999,
+                    display: 'flex', alignItems: 'center', gap: 7,
+                    padding: '5px 11px', border: `1px solid ${T.rule}`, borderRadius: 999,
                   }}>
                     <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink, fontWeight: 600 }}>
                       {r.number}
@@ -495,85 +475,80 @@ export function DeepCleanTab() {
 
         {/* RECENT LOG */}
         <div style={{
-          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-          padding: '8px 22px 16px',
+          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+          padding: '18px 20px',
         }}>
-          <div style={{
-            display: 'grid', gridTemplateColumns: '70px 60px 1fr 60px',
-            gap: 10, padding: '14px 0', borderBottom: `1px solid ${T.rule}`, alignItems: 'center',
-          }}>
-            <Caps size={9}>{lang === 'es' ? 'Fecha' : 'Date'}</Caps>
-            <Caps size={9}>{lang === 'es' ? 'Cuarto' : 'Room'}</Caps>
-            <Caps size={9}>{lang === 'es' ? 'Personal' : 'Staff'}</Caps>
-            <Caps size={9} style={{ textAlign: 'right' }}>{lang === 'es' ? 'Estado' : 'Status'}</Caps>
+          <Caps>{es ? 'Limpiezas recientes' : 'Recent deep cleans'}</Caps>
+          <div style={{ marginTop: 6 }}>
+            {recentLog.length === 0 && (
+              <p style={{
+                fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
+                padding: '16px 0', fontStyle: 'italic', margin: 0,
+              }}>
+                {es ? 'Sin registro reciente.' : 'No recent records yet.'}
+              </p>
+            )}
+            {recentLog.map(e => (
+              <div key={e.key} style={{
+                display: 'grid', gridTemplateColumns: '64px 50px 1fr 44px', gap: 11,
+                alignItems: 'center', padding: '10px 0', borderTop: `1px solid ${T.ruleSoft}`,
+              }}>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: T.ink2 }}>
+                  {agoLabel(e.agoDays)}
+                </span>
+                <span style={{
+                  fontFamily: FONT_SERIF, fontSize: 19, color: T.ink, fontStyle: 'italic',
+                  letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400,
+                }}>{e.roomNumber}</span>
+                <span style={{
+                  fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{e.team}</span>
+                <span style={{
+                  fontFamily: FONT_MONO, fontSize: 13, fontWeight: 700, textAlign: 'right',
+                  color: e.status === 'completed' ? T.sageDeep : T.caramelDeep,
+                }}>
+                  {e.status === 'completed' ? '✓' : '⏵'}
+                </span>
+              </div>
+            ))}
           </div>
-
-          {recentLog.length === 0 && (
-            <p style={{
-              fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
-              padding: '20px 0', fontStyle: 'italic',
-            }}>
-              {lang === 'es' ? 'Sin registro reciente.' : 'No recent records yet.'}
-            </p>
-          )}
-
-          {recentLog.map(rc => (
-            <div key={rc.roomNumber + rc.lastDeepClean} style={{
-              display: 'grid', gridTemplateColumns: '70px 60px 1fr 60px',
-              gap: 10, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center',
-            }}>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>
-                {(() => {
-                  const d = parseLocalDate(rc.lastDeepClean);
-                  return d ? format(d, 'MMM d') : '—';
-                })()}
-              </span>
-              <span style={{
-                fontFamily: FONT_SERIF, fontSize: 20, color: T.ink, fontStyle: 'italic',
-                letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400,
-              }}>{rc.roomNumber}</span>
-              <span style={{
-                fontFamily: FONT_SANS, fontSize: 13, color: T.ink,
-                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              }}>
-                {(rc.cleanedByTeam ?? []).join(', ') || (lang === 'es' ? 'Sin asignar' : 'Unassigned')}
-              </span>
-              <span style={{
-                fontFamily: FONT_MONO, fontSize: 12, color: T.sageDeep, fontWeight: 600, textAlign: 'right',
-              }}>
-                {rc.status === 'completed' ? '✓' : (rc.status === 'in_progress' ? '⏵' : '·')}
-              </span>
-            </div>
-          ))}
         </div>
       </div>
 
-      {/* CADENCE MODAL */}
-      {showCadence && (
-        <>
+      {/* CADENCE MODAL — portaled to <body> so the page's animate-in
+          transform wrapper (which creates a containing block) can't capture
+          the position:fixed overlay and shove it off-screen. Mirrors the
+          createPortal pattern in ScheduleTab. */}
+      {showCadence && typeof document !== 'undefined' && createPortal(
+        <div
+          onClick={() => setShowCadence(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9998, background: 'rgba(31,35,28,0.32)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+          }}
+        >
           <div
-            style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(31,35,28,0.32)' }}
-            onClick={() => setShowCadence(false)}
-          />
-          <div style={{
-            position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-            zIndex: 61, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-            padding: '22px 24px', minWidth: 360, maxWidth: 440,
-            boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
-            display: 'flex', flexDirection: 'column', gap: 16,
-          }}>
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+              padding: '22px 24px', minWidth: 360, maxWidth: 440, width: '100%',
+              boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
+              display: 'flex', flexDirection: 'column', gap: 16,
+            }}
+          >
             <div>
-              <Caps>{lang === 'es' ? 'Configuración' : 'Settings'}</Caps>
+              <Caps>{es ? 'Configuración' : 'Settings'}</Caps>
               <h3 style={{
                 fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, margin: '4px 0 0',
-                fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1,
+                fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400,
               }}>
-                {lang === 'es' ? 'Cadencia de limpieza profunda' : 'Deep clean cadence'}
+                {es ? 'Cadencia de limpieza profunda' : 'Deep clean cadence'}
               </h3>
               <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '8px 0 0' }}>
-                {lang === 'es'
-                  ? 'Cada cuántos días debe limpiarse profundamente cada cuarto.'
-                  : 'How many days between deep cleans for each room.'}
+                {es
+                  ? 'Días entre limpiezas profundas de cada cuarto. Los cuartos que pasen este límite están atrasados.'
+                  : 'Days between deep cleans for each room. Rooms past this are overdue.'}
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -582,7 +557,7 @@ export function DeepCleanTab() {
                 min={7}
                 max={365}
                 value={cadenceDraft}
-                onChange={e => setCadenceDraft(parseInt(e.target.value) || 28)}
+                onChange={e => setCadenceDraft(parseInt(e.target.value) || 90)}
                 style={{
                   width: 100, fontFamily: FONT_MONO, fontSize: 22, fontWeight: 500,
                   border: `1px solid ${T.rule}`, borderRadius: 10, padding: '8px 12px',
@@ -590,32 +565,35 @@ export function DeepCleanTab() {
                 }}
               />
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
-                {lang === 'es' ? 'días' : 'days'}
+                {es ? 'días' : 'days'}
               </span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Btn variant="ghost" size="sm" onClick={() => setShowCadence(false)}>
-                {lang === 'es' ? 'Cancelar' : 'Cancel'}
+                {es ? 'Cancelar' : 'Cancel'}
               </Btn>
               <Btn variant="primary" size="sm" onClick={handleSaveCadence} disabled={savingCadence}>
-                {savingCadence ? (lang === 'es' ? 'Guardando…' : 'Saving…') : (lang === 'es' ? 'Guardar' : 'Save')}
+                {savingCadence ? (es ? 'Guardando…' : 'Saving…') : (es ? 'Guardar' : 'Save')}
               </Btn>
             </div>
           </div>
-        </>
+        </div>,
+        document.body,
       )}
 
-      {/* TOAST — color flips by toastKind so init-failure surfaces in
-          warm tone instead of looking like a successful action. */}
-      {toast && (
+      {/* TOAST — portaled to <body> for the same reason as the modal; color
+          flips by toastKind so an init failure surfaces in the warm tone
+          instead of looking like a successful action. */}
+      {toast && typeof document !== 'undefined' && createPortal(
         <div style={{
           position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 70, padding: '12px 18px',
+          zIndex: 9999, padding: '12px 18px',
           background: toastKind === 'error' ? T.warmDim : T.sageDim,
           color:      toastKind === 'error' ? T.warm     : T.sageDeep,
           border: `1px solid ${toastKind === 'error' ? 'rgba(184,92,61,0.3)' : 'rgba(104,131,114,0.3)'}`,
           borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        }}>{toast}</div>
+        }}>{toast}</div>,
+        document.body,
       )}
     </div>
   );
