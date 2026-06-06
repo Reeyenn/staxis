@@ -6,7 +6,8 @@ export const dynamic = 'force-dynamic';
 // - ScheduleTab.tsx: Schedule tab (assignment planning)
 // - RoomsTab.tsx: Rooms tab (live status board)
 // - DeepCleanTab.tsx: Deep clean tab (config + records)
-// - PerformanceTab.tsx: Performance tab (leaderboard + metrics)
+// - QualityTab.tsx: Quality & performance (merged Inspections + Performance,
+//   June 2026 — replaces the former two separate tabs)
 //
 // This page.tsx is now just the tab orchestrator — routes between tabs,
 // persists tab choice to localStorage, handles auth guards. No section
@@ -21,20 +22,18 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { ScheduleTab } from './_components/ScheduleTab';
 import { RoomsTab } from './_components/RoomsTab';
 import { DeepCleanTab } from './_components/DeepCleanTab';
-import { PerformanceTab } from './_components/PerformanceTab';
-import { InspectionsTab } from './_components/InspectionsTab';
+import { QualityTab } from './_components/QualityTab';
 import { T, FONT_SANS } from './_components/_snow';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'rooms' | 'schedule' | 'inspections' | 'deepclean' | 'performance';
+type TabKey = 'rooms' | 'schedule' | 'quality' | 'deepclean';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
-  { key: 'rooms',       label: 'Rooms',       labelEs: 'Habitaciones'    },
-  { key: 'schedule',    label: 'Schedule',    labelEs: 'Horario'         },
-  { key: 'inspections', label: 'Inspections', labelEs: 'Inspecciones'    },
-  { key: 'performance', label: 'Performance', labelEs: 'Rendimiento'     },
-  { key: 'deepclean',   label: 'Deep Clean',  labelEs: 'Limpieza prof.'  },
+  { key: 'rooms',     label: 'Rooms',      labelEs: 'Habitaciones'   },
+  { key: 'schedule',  label: 'Schedule',   labelEs: 'Horario'        },
+  { key: 'quality',   label: 'Quality',    labelEs: 'Calidad'        },
+  { key: 'deepclean', label: 'Deep Clean', labelEs: 'Limpieza prof.' },
 ];
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -56,9 +55,12 @@ export default function HousekeepingPage() {
 
   // Restore tab from localStorage on mount
   useEffect(() => {
-    const saved = localStorage.getItem('hk-tab') as TabKey | null;
-    const valid: TabKey[] = ['rooms', 'schedule', 'inspections', 'deepclean', 'performance'];
-    if (saved && valid.includes(saved)) setActiveTabState(saved);
+    const saved = localStorage.getItem('hk-tab');
+    // Legacy keys: the former Inspections / Performance tabs are now merged
+    // into Quality, so anyone whose last tab was one of those lands on Quality.
+    if (saved === 'inspections' || saved === 'performance') { setActiveTabState('quality'); return; }
+    const valid: TabKey[] = ['rooms', 'schedule', 'quality', 'deepclean'];
+    if (saved && (valid as string[]).includes(saved)) setActiveTabState(saved as TabKey);
   }, []);
 
   const setActiveTab = (tab: TabKey) => {
@@ -122,11 +124,10 @@ export default function HousekeepingPage() {
 
       {/* ── Tab content — keyed remount triggers the CSS .animate-in cascade ── */}
       <div key={activeTab} className="animate-in stagger-1">
-        {activeTab === 'rooms'       && <RoomsTab />}
-        {activeTab === 'schedule'    && <ScheduleTab />}
-        {activeTab === 'inspections' && <InspectionsTab />}
-        {activeTab === 'performance' && <PerformanceTab />}
-        {activeTab === 'deepclean'   && <DeepCleanTab />}
+        {activeTab === 'rooms'     && <RoomsTab />}
+        {activeTab === 'schedule'  && <ScheduleTab />}
+        {activeTab === 'quality'   && <QualityTab />}
+        {activeTab === 'deepclean' && <DeepCleanTab />}
       </div>
     </AppLayout>
   );
