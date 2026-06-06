@@ -97,7 +97,8 @@ export default function HousekeeperRoomPage({
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
   const [reservationsByRoom, setReservationsByRoom] = useState<Record<string, RoomReservationContext>>({});
-  const [groupBy, setGroupBy] = useState<GroupBy>('floor');
+  // Always sort by room number (the floor/number toggle was removed per design).
+  const [groupBy] = useState<GroupBy>('number');
 
   const lastRefetchAtRef = useRef<number>(0);
   const [loading, setLoading] = useState(true);
@@ -1052,31 +1053,6 @@ export default function HousekeeperRoomPage({
             </div>
           )}
 
-          {/* Grouping toggle */}
-          {total > 0 && !allDone && (
-            <div
-              style={{
-                display: 'flex',
-                gap: '8px',
-                background: 'white',
-                padding: '6px',
-                borderRadius: '12px',
-                border: '1.5px solid var(--border-light, #E5E7EB)',
-              }}
-            >
-              <ToggleButton
-                active={groupBy === 'floor'}
-                onClick={() => setGroupBy('floor')}
-                label={t('hkGroupByFloor', lang)}
-              />
-              <ToggleButton
-                active={groupBy === 'number'}
-                onClick={() => setGroupBy('number')}
-                label={t('hkGroupByRoom', lang)}
-              />
-            </div>
-          )}
-
           {allDone && <AllRoomsCleanCard count={total} firstName={firstName} lang={lang} />}
 
           {total === 0 && (
@@ -1340,36 +1316,5 @@ export default function HousekeeperRoomPage({
         })()}
       </div>
     </div>
-  );
-}
-
-function ToggleButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        flex: 1,
-        height: '38px',
-        border: 'none',
-        borderRadius: '8px',
-        background: active ? 'var(--navy-light, #2563EB)' : 'transparent',
-        color: active ? 'white' : '#4B5563',
-        fontSize: '13px',
-        fontWeight: 700,
-        cursor: 'pointer',
-        WebkitTapHighlightColor: 'transparent',
-        touchAction: 'manipulation',
-      }}
-    >
-      {label}
-    </button>
   );
 }
