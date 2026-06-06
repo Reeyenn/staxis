@@ -423,7 +423,11 @@ export async function getInspectionHistory(opts: InspectionHistoryOpts): Promise
     .from('inspections')
     .select('id, room_number, result, inspector_staff_id, housekeeper_staff_id, failed_items, started_at, completed_at, escalated')
     .eq('property_id', opts.propertyId)
-    .neq('result', 'in_progress')
+    // Only real outcomes belong in "recent inspections" — exclude both
+    // in-progress AND cancelled (an inspector opened the checklist then
+    // backed out). Without excluding 'cancelled', the UI rendered it as a
+    // "Fail", inflating the apparent fail count.
+    .in('result', ['pass', 'fail'])
     .order('started_at', { ascending: false })
     .limit(limit);
 
