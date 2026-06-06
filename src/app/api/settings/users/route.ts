@@ -150,7 +150,7 @@ export async function GET(req: NextRequest) {
 
   const { data: accountRows, error: qErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, username, display_name, role, active, last_sign_in_at, data_user_id, property_access, created_at')
+    .select('id, username, display_name, role, active, data_user_id, property_access, created_at')
     .order('created_at', { ascending: true });
   if (qErr) {
     log.error('[settings/users:GET] accounts query failed', { requestId, err: qErr.message });
@@ -166,10 +166,10 @@ export async function GET(req: NextRequest) {
   });
 
   const emailByUserId = new Map<string, string>();
-  // Supabase Auth tracks last_sign_in_at natively on auth.users — use
-  // that as the source of truth rather than maintaining a parallel
-  // column ourselves (the accounts.last_sign_in_at column added in 0220
-  // is reserved for future app-side tracking distinct from auth-level).
+  // Supabase Auth tracks last_sign_in_at natively on auth.users — that is
+  // the single source of truth. There is intentionally NO last_sign_in_at
+  // column on `accounts` (see migration 0220) — do not SELECT it here, or
+  // the whole accounts query 500s.
   const lastSignInByUserId = new Map<string, string | null>();
   const { data: authPage } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   for (const u of authPage?.users ?? []) {
@@ -181,7 +181,7 @@ export async function GET(req: NextRequest) {
 
   const users: UserRow[] = rows.map((r: {
     id: string; username: string; display_name: string; role: string; active: boolean;
-    last_sign_in_at: string | null; data_user_id: string; property_access: string[] | null;
+    data_user_id: string; property_access: string[] | null;
   }) => ({
     accountId: r.id,
     username: r.username,
@@ -189,7 +189,7 @@ export async function GET(req: NextRequest) {
     email: emailByUserId.get(r.data_user_id) ?? '',
     role: r.role as AppRole,
     active: r.active !== false,
-    lastSignInAt: lastSignInByUserId.get(r.data_user_id) ?? r.last_sign_in_at,
+    lastSignInAt: lastSignInByUserId.get(r.data_user_id) ?? null,
     propertyAccess: Array.isArray(r.property_access) ? r.property_access : [],
   }));
 
