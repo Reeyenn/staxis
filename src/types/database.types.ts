@@ -1258,7 +1258,7 @@ export type Database = {
           cleaned_by_team: string[] | null
           completed_at: string | null
           id: string
-          last_deep_clean: string
+          last_deep_clean: string | null
           notes: string | null
           property_id: string
           room_number: string
@@ -1271,7 +1271,7 @@ export type Database = {
           cleaned_by_team?: string[] | null
           completed_at?: string | null
           id?: string
-          last_deep_clean: string
+          last_deep_clean?: string | null
           notes?: string | null
           property_id: string
           room_number: string
@@ -1284,7 +1284,7 @@ export type Database = {
           cleaned_by_team?: string[] | null
           completed_at?: string | null
           id?: string
-          last_deep_clean?: string
+          last_deep_clean?: string | null
           notes?: string | null
           property_id?: string
           room_number?: string
