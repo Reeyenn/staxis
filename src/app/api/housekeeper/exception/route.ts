@@ -17,10 +17,8 @@
  */
 
 import type { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
 import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import {
@@ -133,34 +131,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       code: ApiErrorCode.InternalError,
       headers: gate.headers,
     });
-  }
-
-  // If the room was paused when the exception came in, the transition
-  // resets is_paused=false (above). But the room_pause_events audit row
-  // is still open — without closing it the audit would say the pause is
-  // open forever even though the room is no longer paused.
-  if (room.is_paused) {
-    try {
-      const { data: openRow } = await supabaseAdmin
-        .from('room_pause_events')
-        .select('id')
-        .eq('room_id', body.roomId)
-        .is('resumed_at', null)
-        .order('paused_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (openRow?.id) {
-        await supabaseAdmin
-          .from('room_pause_events')
-          .update({ resumed_at: now })
-          .eq('id', openRow.id as string);
-      }
-    } catch (auditErr) {
-      log.warn('exception: close-pause audit failed (non-fatal)', {
-        requestId: gate.requestId,
-        err: errToString(auditErr),
-      });
-    }
   }
 
   return ok(

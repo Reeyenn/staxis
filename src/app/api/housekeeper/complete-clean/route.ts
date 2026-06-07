@@ -202,34 +202,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
-  // ─── Close any open pause audit row ────────────────────────────────────
-  // If the user went paused → done without Resume, the audit row is still
-  // open. Tag it resumed_at=now so the audit doesn't claim the room is
-  // forever paused.
-  if (room.is_paused) {
-    try {
-      const { data: openRow } = await supabaseAdmin
-        .from('room_pause_events')
-        .select('id')
-        .eq('room_id', body.roomId)
-        .is('resumed_at', null)
-        .order('paused_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (openRow?.id) {
-        await supabaseAdmin
-          .from('room_pause_events')
-          .update({ resumed_at: completedAt })
-          .eq('id', openRow.id as string);
-      }
-    } catch (auditErr) {
-      log.warn('complete-clean: pause-event close failed (non-fatal)', {
-        requestId: gate.requestId,
-        err: errToString(auditErr),
-      });
-    }
-  }
-
   // ─── cleaning_events audit row ─────────────────────────────────────────
   // Only checkout/stayover rooms get an audit row — vacant cleans aren't
   // training data for the supply model.

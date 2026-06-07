@@ -132,10 +132,6 @@ export type RateLimitEndpoint =
   // properties). MUST also be added to BILLING_IMPACTING_ENDPOINTS below
   // so an RPC failure fails closed.
   | 'agent-tts-speak'
-  // Scraper hardening v2 (F6) — read-only freshness probe powering the
-  // <StaleDataBanner /> on /dashboard and /staff. Polled every 60s
-  // from each open tab. Keyed on (userId, propertyId).
-  | 'scraper-status'
   // Sick-callout coverage flow (feature #6, 2026-05-24). Each entry point
   // gets its own bucket so a runaway in one channel doesn't lock the
   // others. Caps tuned to "this is a person tapping a button" — anything
@@ -431,10 +427,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // long before the $5 daily budget cap trips. Easy to bump if a real
   // user hits it.
   'agent-tts-speak':             30,
-  // scraper-status — banner polls every 60s = 60/hr per tab. Cap at
-  // 240/hr per (user, property) to absorb 4 open tabs without 429,
-  // while still stopping a runaway useEffect or stale-link DDoS.
-  'scraper-status':              240,
   // Sick-callout buckets — see RateLimitEndpoint union comment for rationale.
   'callout-housekeeper':          10,
   'callout-manager':              30,

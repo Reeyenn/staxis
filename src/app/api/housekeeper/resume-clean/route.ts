@@ -2,15 +2,13 @@
  * POST /api/housekeeper/resume-clean
  *
  * Housekeeper taps "Resume" after pausing. Accumulates the elapsed pause
- * time into `rooms.total_paused_seconds`, clears `is_paused` and
- * `paused_at`, and closes the open `room_pause_events` audit row.
+ * time into the assignment's total_paused_seconds, clears is_paused and
+ * paused_at.
  */
 
 import type { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
 import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import { transition } from '@/lib/housekeeper-workflow/state-machine';
@@ -89,31 +87,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       status: 500,
       code: ApiErrorCode.InternalError,
       headers: gate.headers,
-    });
-  }
-
-  // Close the open audit row.
-  try {
-    const { data: openRow } = await supabaseAdmin
-      .from('room_pause_events')
-      .select('id')
-      .eq('room_id', body.roomId)
-      .is('resumed_at', null)
-      .order('paused_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (openRow?.id) {
-      await supabaseAdmin
-        .from('room_pause_events')
-        .update({ resumed_at: now })
-        .eq('id', openRow.id as string);
-    }
-  } catch (auditErr) {
-    log.warn('resume-clean: audit close failed (non-fatal)', {
-      requestId: gate.requestId,
-      pid: gate.pid,
-      staffId: gate.staffId,
-      err: errToString(auditErr),
     });
   }
 

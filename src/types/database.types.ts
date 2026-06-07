@@ -2859,113 +2859,6 @@ export type Database = {
           },
         ]
       }
-      plan_snapshots: {
-        Row: {
-          arrival_room_numbers: string[]
-          arrivals: number
-          checkout_minutes: number
-          checkout_room_numbers: string[]
-          checkouts: number
-          date: string
-          ooo: number
-          ooo_room_numbers: string[]
-          property_id: string
-          pull_type: string
-          pulled_at: string
-          recommended_hks: number
-          rooms: Json
-          stayover_arrival_day: number
-          stayover_arrival_room_numbers: string[]
-          stayover_day1: number
-          stayover_day1_minutes: number
-          stayover_day1_room_numbers: string[]
-          stayover_day2: number
-          stayover_day2_minutes: number
-          stayover_day2_room_numbers: string[]
-          stayover_unknown: number
-          stayovers: number
-          total_cleaning_minutes: number
-          total_rooms: number
-          vacant_clean: number
-          vacant_clean_room_numbers: string[]
-          vacant_dirty: number
-          vacant_dirty_minutes: number
-          vacant_dirty_room_numbers: string[]
-        }
-        Insert: {
-          arrival_room_numbers?: string[]
-          arrivals?: number
-          checkout_minutes?: number
-          checkout_room_numbers?: string[]
-          checkouts?: number
-          date: string
-          ooo?: number
-          ooo_room_numbers?: string[]
-          property_id: string
-          pull_type: string
-          pulled_at?: string
-          recommended_hks?: number
-          rooms?: Json
-          stayover_arrival_day?: number
-          stayover_arrival_room_numbers?: string[]
-          stayover_day1?: number
-          stayover_day1_minutes?: number
-          stayover_day1_room_numbers?: string[]
-          stayover_day2?: number
-          stayover_day2_minutes?: number
-          stayover_day2_room_numbers?: string[]
-          stayover_unknown?: number
-          stayovers?: number
-          total_cleaning_minutes?: number
-          total_rooms?: number
-          vacant_clean?: number
-          vacant_clean_room_numbers?: string[]
-          vacant_dirty?: number
-          vacant_dirty_minutes?: number
-          vacant_dirty_room_numbers?: string[]
-        }
-        Update: {
-          arrival_room_numbers?: string[]
-          arrivals?: number
-          checkout_minutes?: number
-          checkout_room_numbers?: string[]
-          checkouts?: number
-          date?: string
-          ooo?: number
-          ooo_room_numbers?: string[]
-          property_id?: string
-          pull_type?: string
-          pulled_at?: string
-          recommended_hks?: number
-          rooms?: Json
-          stayover_arrival_day?: number
-          stayover_arrival_room_numbers?: string[]
-          stayover_day1?: number
-          stayover_day1_minutes?: number
-          stayover_day1_room_numbers?: string[]
-          stayover_day2?: number
-          stayover_day2_minutes?: number
-          stayover_day2_room_numbers?: string[]
-          stayover_unknown?: number
-          stayovers?: number
-          total_cleaning_minutes?: number
-          total_rooms?: number
-          vacant_clean?: number
-          vacant_clean_room_numbers?: string[]
-          vacant_dirty?: number
-          vacant_dirty_minutes?: number
-          vacant_dirty_room_numbers?: string[]
-        }
-        Relationships: [
-          {
-            foreignKeyName: "plan_snapshots_property_id_fkey"
-            columns: ["property_id"]
-            isOneToOne: false
-            referencedRelation: "properties"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       pms_recipes: {
         Row: {
           created_at: string
@@ -3675,105 +3568,6 @@ export type Database = {
         }
         Relationships: []
       }
-      rooms: {
-        Row: {
-          arrival: string | null
-          assigned_name: string | null
-          assigned_to: string | null
-          checklist: Json | null
-          completed_at: string | null
-          created_at: string
-          date: string
-          dnd_note: string | null
-          help_requested: boolean | null
-          id: string
-          inspected_at: string | null
-          inspected_by: string | null
-          is_dnd: boolean | null
-          issue_note: string | null
-          last_started_occupancy: number | null
-          number: string
-          photo_url: string | null
-          priority: string
-          property_id: string
-          started_at: string | null
-          status: string
-          stayover_day: number | null
-          stayover_minutes: number | null
-          type: string
-          updated_at: string
-        }
-        Insert: {
-          arrival?: string | null
-          assigned_name?: string | null
-          assigned_to?: string | null
-          checklist?: Json | null
-          completed_at?: string | null
-          created_at?: string
-          date: string
-          dnd_note?: string | null
-          help_requested?: boolean | null
-          id?: string
-          inspected_at?: string | null
-          inspected_by?: string | null
-          is_dnd?: boolean | null
-          issue_note?: string | null
-          last_started_occupancy?: number | null
-          number: string
-          photo_url?: string | null
-          priority?: string
-          property_id: string
-          started_at?: string | null
-          status?: string
-          stayover_day?: number | null
-          stayover_minutes?: number | null
-          type: string
-          updated_at?: string
-        }
-        Update: {
-          arrival?: string | null
-          assigned_name?: string | null
-          assigned_to?: string | null
-          checklist?: Json | null
-          completed_at?: string | null
-          created_at?: string
-          date?: string
-          dnd_note?: string | null
-          help_requested?: boolean | null
-          id?: string
-          inspected_at?: string | null
-          inspected_by?: string | null
-          is_dnd?: boolean | null
-          issue_note?: string | null
-          last_started_occupancy?: number | null
-          number?: string
-          photo_url?: string | null
-          priority?: string
-          property_id?: string
-          started_at?: string | null
-          status?: string
-          stayover_day?: number | null
-          stayover_minutes?: number | null
-          type?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "rooms_assigned_to_fkey"
-            columns: ["assigned_to"]
-            isOneToOne: false
-            referencedRelation: "staff"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "rooms_property_id_fkey"
-            columns: ["property_id"]
-            isOneToOne: false
-            referencedRelation: "properties"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       schedule_assignments: {
         Row: {
           crew: string[]
@@ -3890,24 +3684,6 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      }
-      scraper_status: {
-        Row: {
-          data: Json
-          key: string
-          updated_at: string
-        }
-        Insert: {
-          data?: Json
-          key: string
-          updated_at?: string
-        }
-        Update: {
-          data?: Json
-          key?: string
-          updated_at?: string
-        }
-        Relationships: []
       }
       service_contracts: {
         Row: {
@@ -4926,10 +4702,6 @@ export type Database = {
         Args: { p_conversation_id: string; p_min_age_days?: number }
         Returns: number
       }
-      staxis_bulk_update_room_status: {
-        Args: { p_date: string; p_property: string; p_updates: Json }
-        Returns: Json
-      }
       staxis_cancel_agent_spend: {
         Args: { p_reservation_id: string }
         Returns: undefined
@@ -5133,15 +4905,6 @@ export type Database = {
           p_tool_calls: Json
         }
         Returns: undefined
-      }
-      staxis_refresh_rooms_from_pms: {
-        Args: {
-          p_date: string
-          p_inventory: string[]
-          p_property: string
-          p_rooms: Json
-        }
-        Returns: Json
       }
       staxis_reserve_agent_spend: {
         Args: {

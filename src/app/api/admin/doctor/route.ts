@@ -37,8 +37,6 @@
  *   supabase_rls_enabled    — verifies RLS is still enabled on every
  *                             user-facing table (catches accidental
  *                             `ALTER TABLE … DISABLE ROW LEVEL SECURITY`)
- *   supabase_heartbeat      — scraper_status/heartbeat row exists and fresh
- *   supabase_dashboard      — scraper_status/dashboard row exists
  *   scraper_health_cron     — GitHub Actions' scraper-health cron last ran
  *                             within 25h (catches silently-disabled workflows)
  *   twilio_credentials      — Twilio REST API accepts our sid+token
@@ -58,7 +56,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminOrCron } from '@/lib/admin-auth';
-import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { env } from '@/lib/env';
@@ -202,7 +199,6 @@ const checks: Array<[string, CheckFn]> = [
   ['twilio_from_number_registered',  checkTwilioFromNumberRegistered],
   ['alert_phone_shape',              checkAlertPhoneShape],
   ['cron_secret_shape',              checkCronSecretShape],
-  ['cron_secret_cross_platform',     checkCronSecretCrossPlatform],
   // Plan v4 (2026-05-24): removed `watchdog_alert_path` +
   // `scraper_pull_latency`. The former read scraper_status['vercel_watchdog'] +
   // ['alertState'] (Railway scraper observability); the latter read
@@ -1636,61 +1632,14 @@ async function checkSupabaseRealtimePublication(): Promise<Omit<Check, 'name' | 
 }
 
 
-/**
- * Verify Vercel's CRON_SECRET matches Railway's. The doctor runs on Vercel
- * so it can read env.CRON_SECRET locally; Railway writes the first
- * 8 hex chars of sha256(CRON_SECRET) into scraper_status[heartbeat] every
- * tick. We hash Vercel's secret the same way and compare.
- *
- * Why this matters: CRON_SECRET has to be identical on Vercel + Railway +
- * GitHub Actions. Rotation drift (someone updated Vercel but forgot
- * Railway, or vice versa) silently breaks every Railway-to-Vercel watchdog
- * ping (401 auth_mismatch) AND every GitHub Actions smoke test. Without
- * this check, the only signal is the watchdog itself logging "auth_mismatch"
- * — which is silent until a real outage hits.
- *
- * Skips if either side hasn't published a fingerprint yet (clean install).
- */
-async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const vercelSecret = env.CRON_SECRET;
-    if (!vercelSecret) {
-      // env_vars / cron_secret_shape will already flag this — don't double-report.
-      return { status: 'skipped', detail: 'Vercel CRON_SECRET not set (reported elsewhere).' };
-    }
-    const vercelHash = createHash('sha256').update(vercelSecret).digest('hex').slice(0, 8);
-
-    const { data, error } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data, updated_at')
-      .eq('key', 'heartbeat')
-      .maybeSingle();
-    if (error) {
-      return { status: 'warn', detail: `heartbeat read failed: ${errToString(error)}` };
-    }
-    const heartbeat = (data?.data ?? {}) as { cronSecretFingerprint?: string };
-    const railwayHash = heartbeat.cronSecretFingerprint;
-    if (!railwayHash) {
-      return {
-        status: 'skipped',
-        detail: 'Railway has not yet published a CRON_SECRET fingerprint. Wait one tick (~5 min) after the scraper redeploys.',
-      };
-    }
-    if (railwayHash !== vercelHash) {
-      return {
-        status: 'fail',
-        detail: `CRON_SECRET drift detected: Vercel=${vercelHash}, Railway=${railwayHash}.`,
-        fix: 'Pick one secret as canonical. Update on the platform that doesn\'t match: Railway → hotelops-scraper → Variables, or Vercel → Project Settings → Environment Variables. Then redeploy that platform. Don\'t forget GitHub Actions secret too if it diverged.',
-      };
-    }
-    return {
-      status: 'ok',
-      detail: `CRON_SECRET matches across Vercel + Railway (fingerprint ${vercelHash}).`,
-    };
-  } catch (err) {
-    return { status: 'warn', detail: `cross-platform check raised: ${errToString(err)}` };
-  }
-}
+// checkCronSecretCrossPlatform REMOVED (feature/pms-rooms-retire): it compared
+// a Railway-published CRON_SECRET fingerprint stored in
+// scraper_status[heartbeat], but Railway + the scraper were deleted in Plan v4
+// — the check always returned 'skipped' (Railway never published a
+// fingerprint), and scraper_status is dropped in migration 0272. Its siblings
+// supabase_heartbeat / supabase_dashboard were already removed in the Plan-v4
+// doctor cleanup. CRON_SECRET presence is still verified by env_vars /
+// cron_secret_shape.
 
 /**
  * Schema-drift detection: every numbered migration in /supabase/migrations/

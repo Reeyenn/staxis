@@ -104,28 +104,76 @@ afterEach(() => {
   supabaseAdmin.from = originalFrom;
 });
 
-function buildTableStub(table: string) {
-  if (table === 'rooms') {
-    // findRoomByNumber: select … from rooms where property=? and number=? order by date desc limit 1
+// Generic thenable chainable Supabase stub — `await q` resolves to
+// {data, error}; .maybeSingle()/.single() resolve to the first row. Every
+// chain method returns the same builder so any read/write chain shape resolves.
+function pmsChain(rows: Record<string, unknown>[]) {
+  const res = { data: rows, error: null };
+  const single = { data: rows[0] ?? null, error: null };
+  const api: Record<string, unknown> = {
+    select: () => api, eq: () => api, neq: () => api, is: () => api,
+    gte: () => api, lte: () => api, gt: () => api, lt: () => api, in: () => api,
+    order: () => api, limit: () => api, range: () => api,
+    update: () => api, upsert: () => api, insert: () => api, delete: () => api,
+    maybeSingle: async () => single, single: async () => single,
+    then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve(res).then(resolve, reject),
+  };
+  return api;
+}
+
+// The pms_housekeeping_assignments row mergePmsRoomsForDate maps back into the
+// camel-cased Room shape `roomRow` describes (number/status/assigned/notes).
+function pmsAssignmentFor(rr: RoomRow): Record<string, unknown> {
+  const status =
+    rr.status === 'clean' || rr.status === 'inspected' ? 'completed'
+    : rr.status === 'in_progress' ? 'in_progress'
+    : 'not_started';
+  return {
+    room_number: rr.number,
+    housekeeper_name: rr.assigned_to ? 'Assignee' : null,
+    cleaning_type: rr.type === 'stayover' ? 'stayover' : 'departure',
+    status,
+    started_at: rr.started_at, completed_at: rr.completed_at,
+    dnd_active: rr.is_dnd,
+    is_paused: false, paused_at: null, total_paused_seconds: 0,
+    exception_type: null, exception_note: null, exception_at: null,
+    checklist_template_id: null, checklist_progress: [],
+    manager_notes: null, housekeeper_note: null,
+    is_rush: false, rush_due_by: null, marked_for_inspection_at: null,
+    inspected_by: null, inspected_at: null,
+    issue_note: rr.issue_note, help_requested: rr.help_requested, dnd_note: rr.dnd_note,
+  };
+}
+
+// Stubs for the pms_* tables mergePmsRoomsForDate + getCurrentRoomsDate query
+// (findRoomByNumber's data path after the rooms→pms_* migration). Returns null
+// for tables this stub doesn't own.
+function pmsRoomStub(table: string, rr: RoomRow | null): Record<string, unknown> | null {
+  if (table === 'pms_rooms_inventory') {
+    return pmsChain(rr ? [{ id: rr.id, room_number: rr.number, room_type: rr.type }] : []);
+  }
+  if (table === 'pms_room_status_log' || table === 'pms_reservations') return pmsChain([]);
+  if (table === 'staff') {
+    return pmsChain(rr?.assigned_to ? [{ id: rr.assigned_to, name: 'Assignee' }] : []);
+  }
+  if (table === 'properties') return pmsChain([{ pms_writeback_enabled: false }]);
+  if (table === 'pms_housekeeping_assignments') {
+    const base = pmsChain(rr ? [pmsAssignmentFor(rr)] : []);
     return {
-      select: (_cols: string) => ({
-        eq: (_col1: string, _v1: string) => ({
-          eq: (_col2: string, _v2: string) => ({
-            order: (_col3: string, _opts: unknown) => ({
-              limit: async (_n: number) => ({
-                data: roomRow ? [roomRow] : [],
-                error: null,
-              }),
-            }),
-          }),
-        }),
-      }),
-      // The mirror update onto rooms.issue_note — no-op stub.
-      update: (_patch: Record<string, unknown>) => ({
-        eq: async (_col: string, _v: string) => ({ data: null, error: null }),
-      }),
+      ...base,
+      select: (cols: string) =>
+        typeof cols === 'string' && cols.trim() === 'date'
+          ? pmsChain(rr ? [{ date: rr.date }] : [])
+          : base,
     };
   }
+  return null;
+}
+
+function buildTableStub(table: string) {
+  const pmsStub = pmsRoomStub(table, roomRow);
+  if (pmsStub) return pmsStub;
   if (table === 'pms_work_orders_v2') {
     // Migration 0225 unified the voice-issue write path into
     // pms_work_orders_v2. The tool inserts a row with source='housekeeper_voice'
@@ -460,31 +508,20 @@ describe('createMaintenanceWorkOrder — rooms.issue_note mirror', () => {
     // Track update calls on the rooms table.
     const roomUpdates: Array<Record<string, unknown>> = [];
     const orig = supabaseAdmin.from.bind(supabaseAdmin);
+    // Room already has a pending issue_note → the tool must skip the mirror.
+    roomRow = { ...roomRow!, issue_note: 'previous issue still pending' };
     // @ts-expect-error monkey-patch
     supabaseAdmin.from = (table: string) => {
-      if (table === 'rooms') {
+      if (table === 'pms_housekeeping_assignments') {
+        // Capture any mirror upsert/update so the test asserts it was skipped.
+        const stub = pmsRoomStub(table, roomRow) as Record<string, unknown>;
         return {
-          select: (_cols: string) => ({
-            eq: (_c1: string, _v1: string) => ({
-              eq: (_c2: string, _v2: string) => ({
-                order: (_c3: string, _o: unknown) => ({
-                  limit: async (_n: number) => ({
-                    data: [{ ...roomRow!, issue_note: 'previous issue still pending' }],
-                    error: null,
-                  }),
-                }),
-              }),
-            }),
-          }),
-          update: (patch: Record<string, unknown>) => ({
-            eq: async (_col: string, _v: string) => {
-              roomUpdates.push(patch);
-              return { data: null, error: null };
-            },
-          }),
+          ...stub,
+          upsert: (patch: Record<string, unknown>) => { roomUpdates.push(patch); return stub; },
+          update: (patch: Record<string, unknown>) => { roomUpdates.push(patch); return stub; },
         };
       }
-      // Fall through to the default stub for the other tables.
+      // Other pms_* tables + pms_work_orders_v2 → default stub.
       return buildTableStub(table);
     };
 

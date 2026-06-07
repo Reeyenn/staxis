@@ -1,22 +1,18 @@
 /**
  * POST /api/housekeeper/pause-clean
  *
- * Housekeeper taps "Pause" while cleaning. Records the pause start
- * and logs an audit row in `room_pause_events`. Room stays
- * `in_progress` but with `is_paused=true` so the UI can render the
- * pause chip and the resume button.
+ * Housekeeper taps "Pause" while cleaning. Records the pause start on the
+ * assignment row (is_paused=true + paused_at) so the UI can render the pause
+ * chip and the resume button. Room stays in_progress.
  *
- * Pause durations accumulate into `rooms.total_paused_seconds` on
- * Resume (or on Done if the user goes straight from paused to done).
- * The cleaning-event audit row uses ACTIVE duration (elapsed minus
- * paused).
+ * Pause durations accumulate into the assignment's total_paused_seconds on
+ * Resume (or on Done if the user goes straight from paused to done). The
+ * cleaning-event audit row uses ACTIVE duration (elapsed minus paused).
  */
 
 import type { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
 import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import { transition } from '@/lib/housekeeper-workflow/state-machine';
@@ -95,29 +91,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       status: 500,
       code: ApiErrorCode.InternalError,
       headers: gate.headers,
-    });
-  }
-
-  // Audit row in room_pause_events. Non-fatal — the room update already
-  // succeeded and we'd rather the housekeeper not see an error than
-  // bother them about an audit-only failure.
-  try {
-    if (room.date) {
-      await supabaseAdmin.from('room_pause_events').insert({
-        property_id: gate.pid,
-        room_id: body.roomId,
-        staff_id: gate.staffId,
-        business_date: room.date,
-        paused_at: now,
-        reason: typeof body.reason === 'string' ? body.reason.slice(0, 200) : null,
-      });
-    }
-  } catch (auditErr) {
-    log.warn('pause-clean: audit insert failed (non-fatal)', {
-      requestId: gate.requestId,
-      pid: gate.pid,
-      staffId: gate.staffId,
-      err: errToString(auditErr),
     });
   }
 

@@ -247,12 +247,15 @@ describe('RLS tenant isolation — real Postgres via pglite (real migrations)', 
   });
 
   describe('anon role — denied', () => {
-    test('an unauthenticated session sees zero rooms', async () => {
+    test('an unauthenticated session sees zero tenant rows', async () => {
+      // The legacy `rooms` table was retired (migration 0272 — pms_* is the
+      // single source). Probe RLS denial on `staff` instead: an
+      // authenticated role with no JWT claim must see zero tenant rows.
       await fx.pg.exec('begin');
       try {
         await fx.pg.exec(`set local role authenticated`);
-        const r = await fx.pg.query<{ n: number }>(`select count(*)::int as n from rooms`);
-        assert.equal(r.rows[0].n, 0, 'anon-like session (no JWT claim) must see zero rooms');
+        const r = await fx.pg.query<{ n: number }>(`select count(*)::int as n from staff`);
+        assert.equal(r.rows[0].n, 0, 'anon-like session (no JWT claim) must see zero tenant rows');
       } finally {
         await fx.pg.exec('rollback');
       }

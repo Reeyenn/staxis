@@ -36,36 +36,11 @@
 
 -- ─── Part A: empty stub tables (legacy schema, no data) ─────────────────
 
-create table if not exists public.rooms (
-  id                uuid primary key default gen_random_uuid(),
-  property_id       uuid references public.properties(id) on delete cascade,
-  number            text,
-  date              date,
-  type              text,
-  priority          text default 'standard',
-  status            text default 'dirty',
-  assigned_to       uuid,
-  assigned_name     text,
-  started_at        timestamptz,
-  completed_at      timestamptz,
-  issue_note        text,
-  inspected_by      text,
-  inspected_at      timestamptz,
-  is_dnd            boolean default false,
-  dnd_note          text,
-  arrival           text,
-  stayover_day      integer,
-  stayover_minutes  integer,
-  help_requested    boolean default false,
-  checklist         jsonb,
-  photo_url         text,
-  last_synced_at    timestamptz,
-  created_at        timestamptz default now(),
-  updated_at        timestamptz default now()
-);
--- Drop the original tight CHECK constraints — the empty stub doesn't
--- need them and they'd reject legitimate inserts from dead code paths
--- before the web app is fully migrated.
+-- public.rooms stub NEUTRALIZED (feature/pms-rooms-retire): the legacy rooms
+-- table is retired in migration 0272 — pms_* is the single source of truth.
+-- On a from-scratch replay this CREATE is intentionally skipped so 0272's
+-- `DROP TABLE IF EXISTS rooms` is a clean no-op. Prod created it under the
+-- original 0205; 0272 drops it there.
 
 create table if not exists public.work_orders (
   id                     uuid primary key default gen_random_uuid(),
@@ -90,50 +65,13 @@ create table if not exists public.work_orders (
   resolved_at            timestamptz
 );
 
-create table if not exists public.plan_snapshots (
-  property_id                       uuid references public.properties(id) on delete cascade,
-  date                              date,
-  pulled_at                         timestamptz default now(),
-  pull_type                         text,
-  total_rooms                       integer default 0,
-  checkouts                         integer default 0,
-  stayovers                         integer default 0,
-  stayover_day1                     integer default 0,
-  stayover_day2                     integer default 0,
-  stayover_arrival_day              integer default 0,
-  stayover_unknown                  integer default 0,
-  arrivals                          integer default 0,
-  vacant_clean                      integer default 0,
-  vacant_dirty                      integer default 0,
-  ooo                               integer default 0,
-  checkout_minutes                  integer default 0,
-  stayover_day1_minutes             integer default 0,
-  stayover_day2_minutes             integer default 0,
-  vacant_dirty_minutes              integer default 0,
-  total_cleaning_minutes            integer default 0,
-  recommended_hks                   numeric default 0,
-  checkout_room_numbers             text[] default '{}',
-  stayover_day1_room_numbers        text[] default '{}',
-  stayover_day2_room_numbers        text[] default '{}',
-  stayover_arrival_room_numbers     text[] default '{}',
-  arrival_room_numbers              text[] default '{}',
-  vacant_clean_room_numbers         text[] default '{}',
-  vacant_dirty_room_numbers         text[] default '{}',
-  ooo_room_numbers                  text[] default '{}',
-  rooms                             jsonb default '[]'::jsonb,
-  primary key (property_id, date)
-);
+-- public.plan_snapshots stub NEUTRALIZED (feature/pms-rooms-retire) —
+-- retired in migration 0272 (replaced by pms_reservations / the
+-- today_property_counts_v1 RPC). CREATE intentionally skipped on replay.
 
-create table if not exists public.scraper_status (
-  key             text primary key,
-  data            jsonb default '{}'::jsonb,
-  updated_at      timestamptz default now()
-);
-insert into public.scraper_status (key, data) values
-  ('heartbeat',       '{}'::jsonb),
-  ('dashboard',       '{}'::jsonb),
-  ('vercel_watchdog', '{}'::jsonb)
-on conflict (key) do nothing;
+-- public.scraper_status stub NEUTRALIZED (feature/pms-rooms-retire) —
+-- retired in migration 0272 (replaced by pms_room_status_log freshness +
+-- the CUA session-health checks). CREATE + seed intentionally skipped on replay.
 
 create table if not exists public.dashboard_by_date (
   date                 date,
@@ -175,11 +113,11 @@ do $$
 declare
   tbl text;
 begin
+  -- rooms / plan_snapshots / scraper_status removed from this list — they are
+  -- neutralized above and dropped in 0272. (Prod set their RLS under the
+  -- original 0205; the drop in 0272 removes them and their policies.)
   for tbl in select unnest(array[
-    'rooms',
     'work_orders',
-    'plan_snapshots',
-    'scraper_status',
     'dashboard_by_date',
     'pull_metrics'
   ])
