@@ -149,49 +149,55 @@ const FUTURE_EXP = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 
-describe('use-join-code — legacy privileged code rejection (F-06)', () => {
-  test('legacy code baked with role=owner → 410, security event logged, no auth user created', async () => {
+// Single-use owner/GM codes are NOW a legitimate onboarding primitive
+// (migration 0273) — their full behavior, including the anti-displacement
+// unclaimed-hotel guard, is covered in use-join-code-owner-onboarding.test.ts.
+// What MUST stay forbidden here is the shared-code takeover vector that 0152
+// closed: a MULTI-USE owner/GM code. A reusable privileged code, if leaked,
+// is a "seize this hotel" token, so it's rejected before any account is made.
+describe('use-join-code — multi-use privileged code rejection (F-06 / 0273)', () => {
+  test('multi-use owner code → 410, security event logged, no auth user created', async () => {
     state.joinCode = {
-      id: 'code-legacy-owner',
+      id: 'code-multiuse-owner',
       hotel_id: HOTEL_ID,
       role: 'owner',
       expires_at: FUTURE_EXP,
-      max_uses: 1,
+      max_uses: 5,  // multi-use = shared = forbidden
       used_count: 0,
       revoked_at: null,
     };
 
     const res = await POST(
       mockReq({
-        code: 'LEGACY01',
+        code: 'MULTI001',
         email: 'attacker@example.com',
         displayName: 'A',
         password: 'pw_long_enough',
-        role: 'housekeeping',  // ignored — legacy code's role wins
+        role: 'housekeeping',  // ignored — baked role wins
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 410);
     const refused = state.insertedEvents.find(
-      (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
+      (e) => e.event_type === 'auth.privileged_multiuse_code_rejected',
     );
-    assert.ok(refused, 'auth.legacy_privileged_code_rejected must be logged');
+    assert.ok(refused, 'auth.privileged_multiuse_code_rejected must be logged');
     assert.equal(refused?.metadata.bakedRole, 'owner');
   });
 
-  test('legacy code baked with role=general_manager → 410, event logged', async () => {
+  test('multi-use general_manager code → 410, event logged', async () => {
     state.joinCode = {
-      id: 'code-legacy-gm',
+      id: 'code-multiuse-gm',
       hotel_id: HOTEL_ID,
       role: 'general_manager',
       expires_at: FUTURE_EXP,
-      max_uses: 1,
+      max_uses: 5,
       used_count: 0,
       revoked_at: null,
     };
 
     const res = await POST(
       mockReq({
-        code: 'LEGACY02',
+        code: 'MULTI002',
         email: 'attacker@example.com',
         displayName: 'A',
         password: 'pw_long_enough',
@@ -199,7 +205,7 @@ describe('use-join-code — legacy privileged code rejection (F-06)', () => {
     );
     assert.equal(res.status, 410);
     const refused = state.insertedEvents.find(
-      (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
+      (e) => e.event_type === 'auth.privileged_multiuse_code_rejected',
     );
     assert.ok(refused);
     assert.equal(refused?.metadata.bakedRole, 'general_manager');

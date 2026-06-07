@@ -7,12 +7,19 @@
 // the code's hotel with the role the staff member chose at signup.
 //
 // Role assignment:
-//   - New-flow codes (role = null): the user picks their role at signup.
-//     Restricted to staff roles — front_desk / housekeeping / maintenance —
-//     so a shared code cannot be used to self-promote to owner or admin.
-//   - Legacy codes (role set on the row): the baked-in role wins for
-//     back-compat. We still accept role/phone in the payload but ignore
-//     the legacy code's role.
+//   - New-flow staff codes (role = null): the user picks their role at
+//     signup. Restricted to staff roles — front_desk / housekeeping /
+//     maintenance — so a shared code cannot be used to self-promote to
+//     owner or admin.
+//   - Admin-issued owner/GM invites (role = 'owner' | 'general_manager'):
+//     the baked role wins. Allowed ONLY when the code is single-use
+//     (max_uses = 1, enforced by migration 0273's CHECK) AND the hotel is
+//     still UNCLAIMED — owned by the admin placeholder, onboarding not yet
+//     completed. Multi-use privileged codes, or redemption against an
+//     already-claimed hotel, are rejected (the owner-displacement threat
+//     migration 0152 closed). See the gate just below the code lookup.
+//   - Legacy codes with any other baked role: the baked role wins for
+//     back-compat. We still accept role/phone in the payload but ignore it.
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -100,33 +107,95 @@ export async function POST(req: NextRequest) {
   if (new Date(row.expires_at).getTime() <= Date.now()) return err('Code has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   if (row.used_count >= row.max_uses) return err('Code has been used up', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
 
-  // F-06: legacy owner/GM-baked codes are an ownership-transfer primitive.
-  // The redeem path below unconditionally rewrites properties.owner_id when
-  // finalRole === 'owner' (line 251-267), so possession of an unrevoked
-  // legacy owner code lets the redeemer displace the current owner of an
-  // existing hotel. GM codes are nearly as bad — GMs can issue further
-  // invites/codes (canManageTeam returns true for them). New-flow codes
-  // always insert role=null (join-codes/route.ts) so this only affects
-  // legacy/manual rows. Migration 0150 revokes existing legacy owner/GM
-  // rows; this gate is defense-in-depth in case any sneak in later or
-  // ride a service-role write past the CHECK constraint.
+  // ── Owner / General-Manager codes: single-use invites on UNCLAIMED hotels ──
+  // Owner/GM redemption is an ownership-grant primitive — the path below
+  // transfers properties.owner_id to the redeemer when finalRole === 'owner'
+  // and grants full property_access either way. Two rules keep that from
+  // becoming an account-takeover vector (F-06; migration 0152 banned all
+  // owner/GM codes, 0273 relaxes that to single-use only):
   //
-  // Reject BEFORE the CAS increment so a probe doesn't burn a slot.
+  //   1. MULTI-USE owner/GM codes are forbidden outright. A shared/reusable
+  //      privileged code, if leaked, is a "seize this hotel" token. Migration
+  //      0273's CHECK already blocks minting one; this is defense-in-depth in
+  //      case a row rides a raw service-role write past the constraint.
+  //
+  //   2. A single-use owner/GM code may only be redeemed on an UNCLAIMED
+  //      hotel — still owned by the admin placeholder set at creation AND
+  //      with onboarding not yet completed. This makes owner-DISPLACEMENT
+  //      impossible: once a real owner has claimed the hotel (or onboarding
+  //      finished), no owner/GM code can rewrite ownership. Fail CLOSED — if
+  //      we can't positively confirm the hotel is unclaimed, reject.
+  //
+  // New-flow codes (row.role === null) never reach this block; their role
+  // comes from the request body and is clamped to STAFF_SIGNUP_ROLES below.
+  //
+  // Both rejections fire BEFORE the CAS increment so a probe burns no slot.
+  let placeholderOwnerId: string | null = null;
   if (row.role === 'owner' || row.role === 'general_manager') {
-    await logSecurityEvent({
-      action: 'auth.legacy_privileged_code_rejected',
-      propertyId: row.hotel_id,
-      requestId,
-      metadata: {
-        codeId: row.id,
-        bakedRole: row.role,
-        email: normalizedEmail,
-      },
-    });
-    return err(
-      'Owner and General Manager roles cannot be assigned via shared join codes — ask your admin for an emailed invite instead.',
-      { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
-    );
+    if (row.max_uses > 1) {
+      await logSecurityEvent({
+        action: 'auth.privileged_multiuse_code_rejected',
+        propertyId: row.hotel_id,
+        requestId,
+        metadata: { codeId: row.id, bakedRole: row.role, maxUses: row.max_uses, email: normalizedEmail },
+      });
+      return err(
+        'Owner and General Manager roles cannot be assigned via a shared (multi-use) join code — ask your admin for a single-use invite link.',
+        { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+
+    // Single-use privileged code → enforce the unclaimed-hotel invariant.
+    const { data: prop, error: propErr } = await supabaseAdmin
+      .from('properties')
+      .select('owner_id, onboarding_completed_at')
+      .eq('id', row.hotel_id)
+      .maybeSingle();
+
+    let unclaimed = false;
+    let rejectReason = 'owner_unverifiable';
+    if (propErr || !prop) {
+      rejectReason = 'property_read_failed';
+    } else if (prop.onboarding_completed_at) {
+      rejectReason = 'onboarding_completed';
+    } else if (!prop.owner_id) {
+      rejectReason = 'no_placeholder_owner';
+    } else {
+      // The current owner_id must belong to an ADMIN placeholder account —
+      // i.e. the hotel has NOT yet been claimed by a real owner or GM.
+      const { data: ownerAcct, error: ownerAcctErr } = await supabaseAdmin
+        .from('accounts')
+        .select('role')
+        .eq('data_user_id', prop.owner_id)
+        .maybeSingle();
+      if (ownerAcctErr) {
+        // Degenerate data (e.g. >1 account sharing a data_user_id makes
+        // maybeSingle error) must NOT read as "unclaimed". Fail closed and
+        // log loudly so the bad state is visible rather than silent.
+        log.warn('[use-join-code] placeholder-owner lookup failed — failing closed', {
+          requestId, hotelId: row.hotel_id, ownerId: prop.owner_id, err: ownerAcctErr.message,
+        });
+        rejectReason = 'owner_unverifiable';
+      } else if (ownerAcct?.role === 'admin') {
+        unclaimed = true;
+        placeholderOwnerId = prop.owner_id as string;
+      } else {
+        rejectReason = 'already_claimed';
+      }
+    }
+
+    if (!unclaimed) {
+      await logSecurityEvent({
+        action: 'auth.privileged_code_displacement_blocked',
+        propertyId: row.hotel_id,
+        requestId,
+        metadata: { codeId: row.id, bakedRole: row.role, reason: rejectReason, email: normalizedEmail },
+      });
+      return err(
+        'This hotel has already been set up — ask your admin for a new invite.',
+        { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
   }
 
   // ── Atomic CAS increment (May 2026 audit pass-4) ──────────────────────
@@ -313,21 +382,78 @@ export async function POST(req: NextRequest) {
   //
   // GM signups do NOT transfer owner_id. The GM has property_access
   // (full read/write) but isn't the owner of record.
+  //
+  // Why only the OWNER path has a concurrent-claim CAS + rollback (below) and
+  // the GM path does not: owner_id is EXCLUSIVE — two redeemers can't both be
+  // owner of record, so a concurrent-claim loser MUST be rejected. GM access
+  // is ADDITIVE (it only appends property_access; it displaces no one). A GM
+  // invite redeemed in the same instant a hotel is claimed simply yields "this
+  // admin-invited GM now manages this hotel" — the intended end state, not a
+  // violation. Rolling that back would throw a spurious error at a legitimate
+  // invitee for no security gain. The read-time unclaimed-guard above already
+  // blocks the real threat (a privileged code redeemed on an ALREADY-claimed /
+  // completed hotel); leaked-link-before-first-use is the email-bind follow-up.
   if (finalRole === 'owner') {
-    const { error: ownerXferErr } = await supabaseAdmin
-      .from('properties')
-      .update({ owner_id: authData.user.id })
-      .eq('id', row.hotel_id);
-    if (ownerXferErr) {
-      // Non-fatal: account is created; owner_id semantic is wrong but
-      // the user can still operate the hotel via property_access.
-      // Log so ops can repair manually.
-      log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
-        requestId,
-        hotelId: row.hotel_id,
-        newOwner: authData.user.id,
-        err: ownerXferErr,
+    if (!placeholderOwnerId) {
+      // Unreachable in practice: owner codes always pass the unclaimed-guard
+      // above, which sets placeholderOwnerId. If we somehow got here without
+      // it, REFUSE to transfer rather than risk an unconditional overwrite
+      // (the displacement vector). The account still has property_access.
+      log.error('[use-join-code] owner transfer skipped — no verified placeholder (unexpected)', {
+        requestId, hotelId: row.hotel_id, newOwner: authData.user.id,
       });
+    } else {
+      // Anti-displacement CAS: only transfer ownership while the hotel is
+      // STILL the unclaimed placeholder we verified above. If a concurrent
+      // redemption claimed it between the guard and here, this matches zero
+      // rows and we do NOT overwrite the new owner.
+      const { data: xferred, error: ownerXferErr } = await supabaseAdmin
+        .from('properties')
+        .update({ owner_id: authData.user.id })
+        .eq('id', row.hotel_id)
+        .eq('owner_id', placeholderOwnerId)
+        .is('onboarding_completed_at', null)
+        .select('id')
+        .maybeSingle();
+      if (ownerXferErr) {
+        // Non-fatal: account is created; owner_id semantic is wrong but the
+        // user can still operate the hotel via property_access. Log so ops
+        // can repair manually.
+        log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
+          requestId, hotelId: row.hotel_id, newOwner: authData.user.id, err: ownerXferErr,
+        });
+      } else if (!xferred) {
+        // CAS matched no rows → the hotel was claimed concurrently (e.g. a
+        // second owner code for the same hotel won the race). owner_id
+        // displacement was prevented — but we must NOT leave this redeemer
+        // holding an owner-ROLE account with property_access to a hotel
+        // someone else now owns. Roll the whole redemption back: delete the
+        // account + auth user, release the code slot, and fail the request.
+        await logSecurityEvent({
+          action: 'auth.owner_transfer_cas_missed',
+          propertyId: row.hotel_id,
+          requestId,
+          metadata: { codeId: row.id, attemptedOwner: authData.user.id, expectedPlaceholder: placeholderOwnerId },
+        });
+        log.warn('[use-join-code] owner_id CAS matched no rows — rolling back redemption (concurrent claim)', {
+          requestId, hotelId: row.hotel_id, newOwner: authData.user.id,
+        });
+        await supabaseAdmin.from('accounts').delete().eq('data_user_id', authData.user.id);
+        await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+          log.error('[use-join-code] AUTH ROLLBACK FAILED (cas-miss path)', {
+            auth_user_id: authData.user.id, email: normalizedEmail, err: rollErr, requestId,
+          });
+          captureException(rollErr, {
+            subsystem: 'auth', failure_mode: 'rollback_failed',
+            auth_user_id: authData.user.id, flow: 'use-join-code',
+          });
+        });
+        await releaseSlot();
+        return err(
+          'This hotel was just claimed by someone else — ask your admin for a new invite.',
+          { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+        );
+      }
     }
   }
 

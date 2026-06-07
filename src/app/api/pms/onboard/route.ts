@@ -29,6 +29,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { callerManagesHotel } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
@@ -57,17 +58,19 @@ export async function POST(req: NextRequest) {
     return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // Ownership: caller must own the property.
+  // Capability: caller must be management (owner / GM / admin) WITH access to
+  // this property. 0273 enables GM self-onboarding, so PMS setup is no longer
+  // owner-only — but staff still can't kick a PMS onboarding job.
+  if (!(await callerManagesHotel(session.userId, pidV.value!))) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
   const { data: property } = await supabaseAdmin
     .from('properties')
-    .select('id, owner_id')
+    .select('id')
     .eq('id', pidV.value!)
     .maybeSingle();
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   // The credentials-save RPC should have bootstrapped property_sessions

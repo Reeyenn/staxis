@@ -50,7 +50,16 @@ export async function GET(req: NextRequest) {
     log.error('[join-codes:GET] failed', { requestId, msg: errToString(qErr) });
     return err('Failed to load codes', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
-  return ok({ codes: data ?? [] }, { requestId });
+  // Never expose admin-issued owner/GM invite codes (secret one-time ownership
+  // grants, mintable since migration 0273) to a non-admin manager via this
+  // staff-code listing. A GM/owner with property_access could otherwise read a
+  // pending owner code and redeem it to take over a still-unclaimed hotel. This
+  // route uses service-role, which BYPASSES the hotel_join_codes RLS that hides
+  // those rows from the browser client — so filter here too. Admins see all.
+  const codes = (data ?? []).filter(
+    (c) => caller.isAdmin || (c.role !== 'owner' && c.role !== 'general_manager'),
+  );
+  return ok({ codes }, { requestId });
 }
 
 export async function POST(req: NextRequest) {

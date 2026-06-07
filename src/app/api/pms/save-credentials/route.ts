@@ -19,6 +19,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { callerManagesHotel } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
@@ -121,22 +122,20 @@ export async function POST(req: NextRequest) {
     return err('invalid pmsType', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // ─── Capability: caller must own this property ──────────────────────────
+  // ─── Capability: management (owner / GM / admin) WITH access ─────────────
+  // 0273 enables GM self-onboarding, so saving PMS credentials is no longer
+  // owner-only — but it stays management-only (staff can't write the hotel's
+  // PMS login). callerManagesHotel fails closed and excludes staff roles.
+  if (!(await callerManagesHotel(session.userId, pidV.value!))) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
   const { data: property } = await supabaseAdmin
     .from('properties')
-    .select('id, owner_id')
+    .select('id')
     .eq('id', pidV.value!)
     .maybeSingle();
-
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
-  // Explicit null check — a property with owner_id=NULL (orphaned, e.g.
-  // from a manual data fix or pre-auth migration) shouldn't pass
-  // ownership. Without this check the !== comparison would still return
-  // true (NULL !== userId) but the semantics are murky; be explicit.
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   // ─── Rate limit ─────────────────────────────────────────────────────────

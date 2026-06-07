@@ -56,3 +56,32 @@ export function canManageHotel(caller: TeamCaller, hotelId: string): boolean {
   if (caller.isAdmin) return true;
   return caller.propertyAccess.includes(hotelId);
 }
+
+/**
+ * Capability check for property-scoped MANAGEMENT routes that already hold a
+ * validated session (from requireSession) and want to authorize owner / GM /
+ * admin — but NOT staff — for a specific hotel.
+ *
+ * Returns true iff the account behind `authUserId` is a management role
+ * (canManageTeam) AND (is admin OR has hotelId in property_access).
+ *
+ * Why this exists alongside verifyTeamManager: some routes (e.g. the PMS
+ * onboarding wizard endpoints) need requireSession's typed 401 + token-
+ * refresh behaviour and just want to layer "management-with-access" authz on
+ * top, rather than collapse no-session and not-a-manager into one null/403.
+ * Before migration 0273 those routes gated on owner_id === session.userId,
+ * which dead-ended GM self-onboarding; this keeps them management-only while
+ * letting an invited GM (or the owner) complete PMS setup. Fails CLOSED.
+ */
+export async function callerManagesHotel(authUserId: string, hotelId: string): Promise<boolean> {
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('role, property_access')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (error || !account) return false;
+  const role = account.role as AppRole;
+  if (!canManageTeam(role)) return false;
+  if (role === 'admin') return true;
+  return ((account.property_access ?? []) as string[]).includes(hotelId);
+}

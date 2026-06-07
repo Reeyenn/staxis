@@ -139,14 +139,14 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         }}>
           <div>
-            <Caps>{result ? 'Invite created' : 'Invite a hotel'}</Caps>
+            <Caps>{result ? (result.signupUrl ? 'Invite created' : 'Invite incomplete') : 'Invite a hotel'}</Caps>
             <h2 style={{
               fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
               letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
               lineHeight: 1.15, display: 'flex', alignItems: 'center', gap: 8,
             }}>
               <Building2 size={18} color={T.caramelDeep} />
-              {result ? 'Send the' : 'Generate an'} <span style={{ fontStyle: 'italic' }}>{result ? 'signup link' : 'onboarding link'}</span>
+              {result?.signupUrl ? 'Send the' : 'Generate an'} <span style={{ fontStyle: 'italic' }}>{result?.signupUrl ? 'signup link' : 'onboarding link'}</span>
             </h2>
           </div>
           <button
@@ -276,18 +276,36 @@ function SuccessView({
 }) {
   return (
     <div>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '12px 14px', marginBottom: 18,
-        background: T.sageDim, borderRadius: 12,
-        border: `1px solid rgba(104,131,114,0.30)`,
-        color: T.sageDeep, fontSize: 13, lineHeight: 1.5,
-      }}>
-        <Check size={16} />
-        {result.emailSent
-          ? 'Invite emailed. Link below is a copyable backup — expires in 7 days.'
-          : 'Onboarding link ready. Send it to the hotel — it expires in 7 days.'}
-      </div>
+      {/* Only claim success when a real signup link came back. If the join
+          code failed to mint, signupUrl is null — show an honest failure
+          state (the warning block below carries the retry hint) instead of
+          a green "link ready" banner that points at nothing. */}
+      {result.signupUrl ? (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 14px', marginBottom: 18,
+          background: T.sageDim, borderRadius: 12,
+          border: `1px solid rgba(104,131,114,0.30)`,
+          color: T.sageDeep, fontSize: 13, lineHeight: 1.5,
+        }}>
+          <Check size={16} />
+          {result.emailSent
+            ? 'Invite emailed. Link below is a copyable backup — expires in 7 days.'
+            : 'Onboarding link ready. Send it to the hotel — it expires in 7 days.'}
+        </div>
+      ) : (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 14px', marginBottom: 18,
+          background: T.warmDim, borderRadius: 12,
+          border: `1px solid rgba(184,92,61,0.25)`,
+          color: T.warm, fontSize: 13, lineHeight: 1.5,
+        }}>
+          <AlertCircle size={16} />
+          Invite link couldn&apos;t be generated. The hotel was created but has no
+          working signup link yet — see the note below, then retry from the hotel&apos;s page.
+        </div>
+      )}
 
       {result.emailSent === false && result.emailError && (
         <div style={{

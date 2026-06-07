@@ -24,6 +24,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { callerManagesHotel } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
@@ -69,16 +70,18 @@ export async function POST(req: NextRequest) {
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  // Capability — caller owns this property.
+  // Capability — management (owner / GM / admin) WITH access to this property.
+  // 0273 enables GM self-onboarding, so finishing onboarding (services + staff)
+  // is management-with-access, not owner-only; staff roles are still excluded.
+  if (!(await callerManagesHotel(session.userId, pidV.value!))) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
   const { data: property } = await supabaseAdmin
     .from('properties')
-    .select('id, owner_id')
+    .select('id')
     .eq('id', pidV.value!)
     .maybeSingle();
   if (!property) return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
 
   // ─── services_enabled ───────────────────────────────────────────────────
   // Build a clean object — silently drop unknown keys.

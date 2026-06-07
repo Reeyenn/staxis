@@ -28,6 +28,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { callerManagesHotel } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
@@ -59,15 +60,12 @@ export async function GET(req: NextRequest) {
     return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // In v4 jobId == propertyId. Ownership check first — never leak the
-  // existence of another owner's session via 404 vs 403 ambiguity.
-  const { data: property } = await supabaseAdmin
-    .from('properties')
-    .select('owner_id')
-    .eq('id', idV.value!)
-    .maybeSingle();
-
-  if (!property || !property.owner_id || (property.owner_id as string) !== session.userId) {
+  // In v4 jobId == propertyId. Capability check first — never leak the
+  // existence of another hotel's session via 404 vs 403 ambiguity, so a
+  // non-manager (or a manager of a different hotel) always gets a flat 403.
+  // 0273 enables GM self-onboarding: management-with-access, not owner-only,
+  // but still never staff. Fails closed.
+  if (!(await callerManagesHotel(session.userId, idV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
