@@ -34,6 +34,13 @@ export function CommsApp() {
   const [tasks, setTasks] = React.useState<TaskDTO[]>([]);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  // `pid` comes from a client-only context (reads localStorage), so it's null
+  // during SSR but already set on the first client render. Branching the render
+  // on it directly made the server HTML ("Select a property…") disagree with the
+  // client (the full app) → React hydration mismatch (#418). Gate the pid branch
+  // on `mounted` so SSR and the first client render produce identical markup.
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => { setMounted(true); }, []);
 
   const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
@@ -116,6 +123,10 @@ export function CommsApp() {
     if (r.data?.conversationId) { await loadBoot(); selectConversation(r.data.conversationId); setShowNew(false); setSearchOpen(false); }
   };
 
+  if (!mounted) {
+    // Stable neutral shell for SSR + first client render (pid unknown yet).
+    return <div style={{ height: 'calc(100vh - 64px)', background: T.bg }} />;
+  }
   if (!pid) {
     return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{L('Select a property to use Communications.', 'Selecciona una propiedad para usar Comunicaciones.')}</div>;
   }
