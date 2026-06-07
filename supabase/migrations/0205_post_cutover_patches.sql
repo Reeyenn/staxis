@@ -36,11 +36,39 @@
 
 -- ─── Part A: empty stub tables (legacy schema, no data) ─────────────────
 
--- public.rooms stub NEUTRALIZED (feature/pms-rooms-retire): the legacy rooms
--- table is retired in migration 0272 — pms_* is the single source of truth.
--- On a from-scratch replay this CREATE is intentionally skipped so 0272's
--- `DROP TABLE IF EXISTS rooms` is a clean no-op. Prod created it under the
--- original 0205; 0272 drops it there.
+-- public.rooms stub is KEPT here (NOT neutralized): although 0272 drops the
+-- table at merge, it must EXIST as an empty stub from 0205 through 0271 because
+-- many later migrations alter it unconditionally (0222 `alter table
+-- public.rooms ...`, 0224/0225/0227/0228 + the `'public.rooms'::regclass`
+-- cast). Removing the create here breaks a from-scratch replay at 0222
+-- ("relation public.rooms does not exist"). 0272's DROP TABLE drops it last.
+create table if not exists public.rooms (
+  id                uuid primary key default gen_random_uuid(),
+  property_id       uuid references public.properties(id) on delete cascade,
+  number            text,
+  date              date,
+  type              text,
+  priority          text default 'standard',
+  status            text default 'dirty',
+  assigned_to       uuid,
+  assigned_name     text,
+  started_at        timestamptz,
+  completed_at      timestamptz,
+  issue_note        text,
+  inspected_by      text,
+  inspected_at      timestamptz,
+  is_dnd            boolean default false,
+  dnd_note          text,
+  arrival           text,
+  stayover_day      integer,
+  stayover_minutes  integer,
+  help_requested    boolean default false,
+  checklist         jsonb,
+  photo_url         text,
+  last_synced_at    timestamptz,
+  created_at        timestamptz default now(),
+  updated_at        timestamptz default now()
+);
 
 create table if not exists public.work_orders (
   id                     uuid primary key default gen_random_uuid(),
@@ -147,11 +175,12 @@ do $$
 declare
   tbl text;
 begin
-  -- rooms / scraper_status removed from this list — neutralized above and
-  -- dropped in 0272. plan_snapshots is KEPT (ML-unit dependency) so it stays
-  -- in the RLS loop. (Prod set rooms/scraper_status RLS under the original
-  -- 0205; 0272 removes them + their policies.)
+  -- scraper_status removed from this list — neutralized above (zero post-0205
+  -- references) and dropped in 0272. rooms + plan_snapshots stay in the loop:
+  -- rooms must exist as a stub through 0206-0271 (many migrations alter it) and
+  -- is dropped in 0272; plan_snapshots is KEPT (ML-unit dependency).
   for tbl in select unnest(array[
+    'rooms',
     'work_orders',
     'plan_snapshots',
     'dashboard_by_date',
