@@ -87,7 +87,7 @@ export default function FinancialsPage() {
   if (authLoading || propLoading || !allowed) {
     return (
       <AppLayout>
-        <div style={{ padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
+        <div style={{ background: T.bg, minHeight: 'calc(100dvh - 64px)', padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
       </AppLayout>
     );
   }
@@ -95,7 +95,7 @@ export default function FinancialsPage() {
   if (!activePropertyId) {
     return (
       <AppLayout>
-        <div style={{ padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
+        <div style={{ background: T.bg, minHeight: 'calc(100dvh - 64px)', padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
       </AppLayout>
     );
   }
@@ -114,7 +114,8 @@ export default function FinancialsPage() {
 
   return (
     <AppLayout>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '28px clamp(16px,3vw,40px) 96px' }}>
+      <div style={{ background: T.bg, minHeight: 'calc(100dvh - 64px)' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto', padding: '28px clamp(16px,3vw,40px) 96px' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
           <div>
@@ -222,6 +223,7 @@ export default function FinancialsPage() {
           {tab === 'checkbook' && <CheckbookTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={loadSummary} />}
           {tab === 'budget' && <BudgetTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={loadSummary} />}
           {tab === 'capex' && <CapexTab pid={activePropertyId} lang={lang as Lang} onChanged={loadSummary} />}
+        </div>
         </div>
       </div>
     </AppLayout>
