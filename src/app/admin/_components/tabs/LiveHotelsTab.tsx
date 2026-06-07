@@ -188,7 +188,7 @@ export function LiveHotelsTab() {
             }}>
               <SerifNum size={48} italic c={T.ink}>{pagination?.totalMatching ?? summary.total}</SerifNum>
               {' '}
-              <span style={{ fontStyle: 'italic', color: T.ink2 }}>hotels live</span>
+              <span style={{ fontStyle: 'italic', color: T.ink2 }}>{(pagination?.totalMatching ?? summary.total) === 1 ? 'hotel live' : 'hotels live'}</span>
             </h2>
           </div>
           <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>

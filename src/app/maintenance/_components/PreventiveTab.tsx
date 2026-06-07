@@ -315,7 +315,7 @@ export function PreventiveTab() {
       <PageHead
         eyebrow={es ? 'Preventivo · programado' : 'Preventive · scheduled'}
         lead={overdueCount > 0 ? `${overdueCount} ${es ? 'vencidas' : 'overdue'}` : (es ? 'Todo al día' : 'All on track')}
-        rest={`${tasks.length} ${es ? 'tareas recurrentes' : 'recurring tasks'}`}
+        rest={`${tasks.length} ${tasks.length === 1 ? (es ? 'tarea recurrente' : 'recurring task') : (es ? 'tareas recurrentes' : 'recurring tasks')}`}
         actions={<>
           <Btn variant="ghost" onClick={() => setRegistryOpen(true)}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {es ? 'Activos' : 'Equipment assets'}</span>

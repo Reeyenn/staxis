@@ -170,6 +170,15 @@ export function makeUpsertByIdReducer<T extends { id: string }>(opts: {
   };
 }
 
+// Per-subscription sequence so every subscribeTable() call gets its OWN
+// Supabase channel, even when two components subscribe to the same logical
+// name (e.g. `staff:<pid>`). Supabase's `.channel(name)` returns the EXISTING
+// already-subscribed channel for a duplicate name, and calling `.on()` on a
+// subscribed channel throws "cannot add postgres_changes callbacks after
+// subscribe()" — which crashed the Front Desk → Complaints tab and surfaced
+// as CHANNEL_ERROR elsewhere. Unique names = one channel per subscriber.
+let __subscriptionSeq = 0;
+
 export function subscribeTable<T>(
   channelName: string,
   table: string,
@@ -191,6 +200,8 @@ export function subscribeTable<T>(
   applyPayload?: ApplyPayloadReducer<T>,
 ): () => void {
   let active = true;
+  // Unique channel id for this subscription (see __subscriptionSeq note above).
+  const uniqueChannelName = `${channelName}#${++__subscriptionSeq}`;
   // 2026-05-12 (Codex audit): every realtime event fires its own doFetch
   // with no sequencing. If fetch A starts, fetch B starts before A
   // resolves, and A resolves AFTER B, we publish A's older snapshot on
@@ -318,7 +329,7 @@ export function subscribeTable<T>(
   };
 
   let channel = supabase
-    .channel(channelName)
+    .channel(uniqueChannelName)
     .on('postgres_changes' as never, filterSpec, onChange as never)
     .subscribe(onSubscribeStatus);
 
@@ -346,7 +357,7 @@ export function subscribeTable<T>(
     if (state === 'closed' || state === 'errored') {
       try { void supabase.removeChannel(channel); } catch { /* best effort */ }
       channel = supabase
-        .channel(channelName)
+        .channel(uniqueChannelName)
         .on('postgres_changes' as never, filterSpec, onChange as never)
         .subscribe(onSubscribeStatus);
     }

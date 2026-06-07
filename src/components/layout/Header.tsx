@@ -9,7 +9,7 @@ import { t } from '@/lib/translations';
 import { canViewFinancials } from '@/lib/roles';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LogOut, Globe, Settings, Bell } from 'lucide-react';
+import { LogOut, Globe, Settings } from 'lucide-react';
 import { LanguageMenu } from '@/components/i18n/LanguageMenu';
 
 // Snow design system — chevron mark from the locked Dashboard
@@ -141,20 +141,6 @@ export function Header() {
 
         {/* Right: controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-
-          {/* Notifications bell */}
-          <button
-            style={{
-              padding: '8px', borderRadius: '8px', border: 'none',
-              background: 'transparent', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'background 0.15s',
-            }}
-            onClick={() => {}}
-            aria-label={lang === 'es' ? 'Notificaciones' : 'Notifications'}
-          >
-            <Bell size={18} color={ink2} />
-          </button>
 
           {/* Language menu — app-wide 5-language switcher */}
           <LanguageMenu compact />

@@ -43,7 +43,6 @@ import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/co
 import type { ComplianceSummary } from '@/lib/compliance/types';
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
-import StaleDataBanner from '@/components/StaleDataBanner';
 import type { Room, WorkOrder } from '@/types';
 import {
   RANGES, METRIC_DEFS, buildHistory, seriesFor,
@@ -584,8 +583,6 @@ export default function DashboardPage() {
         `}</style>
 
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 26 }}>
-
-          <StaleDataBanner />
 
           {/* date (Reports lives in Settings → Reports) */}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
