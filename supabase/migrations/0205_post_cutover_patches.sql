@@ -65,13 +65,47 @@ create table if not exists public.work_orders (
   resolved_at            timestamptz
 );
 
--- public.plan_snapshots stub NEUTRALIZED (feature/pms-rooms-retire) —
--- retired in migration 0272 (replaced by pms_reservations / the
--- today_property_counts_v1 RPC). CREATE intentionally skipped on replay.
+-- public.plan_snapshots is KEPT (NOT dropped in 0272): the Python ML service
+-- (ml-service/src/{inference,training}/*.py) still queries it directly, so the
+-- empty stub must remain until that unit is migrated off it.
+create table if not exists public.plan_snapshots (
+  property_id                       uuid references public.properties(id) on delete cascade,
+  date                              date,
+  pulled_at                         timestamptz default now(),
+  pull_type                         text,
+  total_rooms                       integer default 0,
+  checkouts                         integer default 0,
+  stayovers                         integer default 0,
+  stayover_day1                     integer default 0,
+  stayover_day2                     integer default 0,
+  stayover_arrival_day              integer default 0,
+  stayover_unknown                  integer default 0,
+  arrivals                          integer default 0,
+  vacant_clean                      integer default 0,
+  vacant_dirty                      integer default 0,
+  ooo                               integer default 0,
+  checkout_minutes                  integer default 0,
+  stayover_day1_minutes             integer default 0,
+  stayover_day2_minutes             integer default 0,
+  vacant_dirty_minutes              integer default 0,
+  total_cleaning_minutes            integer default 0,
+  recommended_hks                   numeric default 0,
+  checkout_room_numbers             text[] default '{}',
+  stayover_day1_room_numbers        text[] default '{}',
+  stayover_day2_room_numbers        text[] default '{}',
+  stayover_arrival_room_numbers     text[] default '{}',
+  arrival_room_numbers              text[] default '{}',
+  vacant_clean_room_numbers         text[] default '{}',
+  vacant_dirty_room_numbers         text[] default '{}',
+  ooo_room_numbers                  text[] default '{}',
+  rooms                             jsonb default '[]'::jsonb,
+  primary key (property_id, date)
+);
 
 -- public.scraper_status stub NEUTRALIZED (feature/pms-rooms-retire) —
--- retired in migration 0272 (replaced by pms_room_status_log freshness +
--- the CUA session-health checks). CREATE + seed intentionally skipped on replay.
+-- dropped in migration 0272 (no functional reader: the cua-service refs are
+-- comments and the doctor's only reader was the obsolete Railway-CRON check).
+-- CREATE + seed intentionally skipped on replay.
 
 create table if not exists public.dashboard_by_date (
   date                 date,
@@ -113,11 +147,13 @@ do $$
 declare
   tbl text;
 begin
-  -- rooms / plan_snapshots / scraper_status removed from this list — they are
-  -- neutralized above and dropped in 0272. (Prod set their RLS under the
-  -- original 0205; the drop in 0272 removes them and their policies.)
+  -- rooms / scraper_status removed from this list — neutralized above and
+  -- dropped in 0272. plan_snapshots is KEPT (ML-unit dependency) so it stays
+  -- in the RLS loop. (Prod set rooms/scraper_status RLS under the original
+  -- 0205; 0272 removes them + their policies.)
   for tbl in select unnest(array[
     'work_orders',
+    'plan_snapshots',
     'dashboard_by_date',
     'pull_metrics'
   ])

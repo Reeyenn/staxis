@@ -81,17 +81,23 @@ begin
    where id = p_inspection_id
    returning * into v_row;
 
-  -- 2) Room side-effect → pms_housekeeping_assignments (latest plan date).
+  -- 2) Room side-effect → pms_housekeeping_assignments. Target the latest
+  --    assignment ON OR BEFORE the inspection's own date so a pre-loaded
+  --    FUTURE assignment (tomorrow's plan) can never be mutated by today's
+  --    inspection. completed_at is coalesced so a passed room always carries
+  --    a completion timestamp (deriveStatus reads inspected_at + completed).
   if v_row.room_number is not null then
     if p_result = 'pass' then
       update public.pms_housekeeping_assignments a
          set status       = 'completed',
+             completed_at = coalesce(a.completed_at, now()),
              inspected_at = now()
        where a.property_id = p_property_id
          and a.room_number = v_row.room_number
          and a.date = (
            select max(date) from public.pms_housekeeping_assignments
             where property_id = p_property_id and room_number = v_row.room_number
+              and date <= coalesce((v_row.started_at)::date, current_date)
          );
     else  -- fail
       update public.pms_housekeeping_assignments a
@@ -104,6 +110,7 @@ begin
          and a.date = (
            select max(date) from public.pms_housekeeping_assignments
             where property_id = p_property_id and room_number = v_row.room_number
+              and date <= coalesce((v_row.started_at)::date, current_date)
          );
     end if;
   end if;
@@ -270,6 +277,18 @@ begin
   );
 end;
 $function$;
+
+-- Lock both SECURITY DEFINER functions to service_role only. CREATE OR REPLACE
+-- preserves the prior ACL on the live apply path (so prod is unchanged), but
+-- on a from-scratch replay a freshly-created function defaults to PUBLIC
+-- EXECUTE — these bypass RLS, so without this they'd be anon/authenticated
+-- callable on a new install. Mirrors the original 0225 / 0135 lockdown + the
+-- house standard (0253 staxis_enqueue_pms_write).
+revoke all on function public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text) from public, anon, authenticated;
+grant execute on function public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text) to service_role;
+
+revoke all on function public.staxis_seed_shift_assignments(uuid, date, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.staxis_seed_shift_assignments(uuid, date, jsonb, jsonb) to service_role;
 
 insert into applied_migrations (version, description)
 values ('0271', 'repoint complete_inspection_atomic + staxis_seed_shift_assignments off rooms onto pms_housekeeping_assignments')

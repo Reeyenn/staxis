@@ -217,7 +217,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     // next post overwrites. UPDATE-only (not upsert) so a note on a room with
     // no assignment row doesn't materialize a phantom 'dirty' tile.
     try {
-      const { error: mirrorErr } = await supabaseAdmin
+      const { data: mirrorRows, error: mirrorErr } = await supabaseAdmin
         .from('pms_housekeeping_assignments')
         .update({
           manager_notes: noteText,
@@ -226,10 +226,17 @@ export async function POST(req: NextRequest): Promise<Response> {
         })
         .eq('property_id', pid)
         .eq('room_number', roomNumber)
-        .eq('date', businessDate);
+        .eq('date', businessDate)
+        .select('room_number');
       if (mirrorErr) {
         log.warn('room-notes: manager_notes mirror failed (non-fatal)', {
           requestId, err: mirrorErr.message,
+        });
+      } else if (!mirrorRows || mirrorRows.length === 0) {
+        // No assignment row for the date — the display mirror didn't persist
+        // (UPDATE-only). The canonical note is still saved in manager_room_notes.
+        log.warn('room-notes: no assignment row for the date — manager_notes mirror skipped', {
+          requestId, roomNumber, businessDate,
         });
       }
     } catch (mirrorErr) {

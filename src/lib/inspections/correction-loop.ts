@@ -247,7 +247,9 @@ const CALLER_BUG_PREFIXES = [
   'E_NOT_FOUND',
   'E_ALREADY_FINALIZED',
   'E_BAD_RESULT',
-  'E_ROOM_PROPERTY_MISMATCH',
+  // E_ROOM_PROPERTY_MISMATCH removed: 0271 repointed the room side-effect to
+  // pms_housekeeping_assignments scoped by (property_id, room_number) and
+  // dropped the strict exactly-one-row guard, so the RPC can no longer raise it.
   'E_TASK_PROPERTY_MISMATCH',
 ] as const;
 

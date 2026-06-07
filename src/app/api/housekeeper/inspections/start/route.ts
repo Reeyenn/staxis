@@ -63,13 +63,16 @@ export async function POST(req: NextRequest) {
   }
   const roomNumber = roomNumberV.value!;
 
+  // roomId is optional. It is the pms_* merge's composite "${date}:${number}"
+  // id (parseRoomId-able) or a legacy uuid; accept either since the
+  // linked-housekeeper lookup parses it. The required roomNumber is the real key.
   let roomId: string | null = null;
-  if (body.roomId !== undefined && body.roomId !== null && body.roomId !== '') {
-    const v = validateUuid(body.roomId, 'roomId');
-    if (v.error) {
-      return err(v.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  if (typeof body.roomId === 'string' && body.roomId !== '') {
+    if (parseRoomId(body.roomId) || /^[0-9a-f-]{36}$/i.test(body.roomId)) {
+      roomId = body.roomId;
+    } else {
+      return err('invalid roomId', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
-    roomId = v.value!;
   }
 
   let parentInspectionId: string | null = null;

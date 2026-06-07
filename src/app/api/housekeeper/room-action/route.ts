@@ -339,6 +339,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       date: mergedRoom.date,
       assigned_to: mergedRoom.assignedTo ?? null,
     };
+    // Belt-and-suspenders: mergePmsRoomsForDate is already scoped to `pid`, so
+    // a cross-property room never appears in `mergedRoom` (it 404s at the
+    // !mergedRoom check above). This branch can no longer fire for the
+    // cross-property case but is kept as a defensive invariant.
     if (room.property_id !== pid) {
       return err('room/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
@@ -349,6 +353,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // other housekeeper picking up that work — a real recovery flow.
     // Only reject when the room is ACTIVELY assigned to a DIFFERENT
     // staff member.
+    //
+    // Capability note (rooms→pms_*): `assigned_to` is now derived by the merge
+    // resolving pms_housekeeping_assignments.housekeeper_name back to a staff
+    // UUID (collision-aware name match), not a hard FK. If a PMS-written name
+    // fails to resolve, assigned_to is undefined → the room reads as
+    // unassigned (fail-open, any active property staff may act on it).
+    // Deliberately NOT failed-closed: failing closed would lock a housekeeper
+    // out of her OWN rooms whenever her name doesn't normalize-match. The
+    // enumeration surface is narrower than the old rooms.assigned_to FK
+    // (requires guessing the composite date:number id, not just a staff UUID).
     if (room.assigned_to && room.assigned_to !== staffId) {
       // Same response shape as room/property mismatch so we don't reveal
       // which side of the pair was wrong to an enumerator.

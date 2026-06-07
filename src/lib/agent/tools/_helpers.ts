@@ -109,14 +109,19 @@ export function computeOccupancySummary(
  * (findRoomByNumber is the only consumer, and it tolerates the fallback).
  */
 export async function getCurrentRoomsDate(propertyId: string): Promise<string> {
+  // Bound to ON OR BEFORE today: a pre-loaded FUTURE assignment (tomorrow's
+  // plan) must never become the default mutation date, or agent/voice commands
+  // (mark clean, reset, DND, flag, assign) would silently write tomorrow's row.
+  const today = todayStr();
   const { data } = await supabaseAdmin
     .from('pms_housekeeping_assignments')
     .select('date')
     .eq('property_id', propertyId)
+    .lte('date', today)
     .order('date', { ascending: false })
     .limit(1);
   const d = data?.[0]?.date;
-  return typeof d === 'string' ? d : todayStr();
+  return typeof d === 'string' ? d : today;
 }
 
 /**

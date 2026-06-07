@@ -454,6 +454,14 @@ export async function applyRoomUpdate(
       });
     }
   } else {
+    // Insert-if-absent (or pure-field update on an existing row). Note: a
+    // pure-field write (assignedTo / notes / rush) on a room that has an
+    // inventory row but NO assignment row for `date` MATERIALIZES the row with
+    // the table's default status 'not_started' → the merge derives 'dirty'. For
+    // assign_room that's the intended signal (assigning a room puts it on the
+    // HK plan = needs cleaning); callers that must NOT create a tile (e.g.
+    // front-desk rush, manager room-notes) deliberately UPDATE-only at the
+    // route layer instead of calling applyRoomUpdate.
     const { error: assignErr } = await supabaseAdmin
       .from('pms_housekeeping_assignments')
       .upsert(

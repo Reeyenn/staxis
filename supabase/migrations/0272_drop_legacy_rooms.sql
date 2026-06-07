@@ -11,6 +11,15 @@
 -- property/room/date with no rooms FK), work_orders (Staxis tickets, separate
 -- from pms_work_orders_v2), dashboard_by_date, pull_metrics.
 --
+-- plan_snapshots is NOT dropped here even though the brief grouped it with
+-- rooms/scraper_status: the Python ML service (ml-service/src/{inference,
+-- training}/*.py) still `from plan_snapshots` directly. Dropping it would turn
+-- those (currently empty-result) queries into hard "relation does not exist"
+-- errors and break the ML unit. The stub stays until the ML service is
+-- migrated off it (separate Railway-unit task) — see RUNBOOKS / follow-up.
+-- scraper_status has no functional reader (the cua-service refs are comments;
+-- the doctor's only reader was the obsolete Railway-CRON check, now removed).
+--
 -- ⚠️ APPLY TO PROD AT MERGE, not before: once `rooms` is gone, any pre-merge
 -- main code still doing `.from('rooms')` would error instead of returning
 -- empty. 0270 (additive) and 0271 (backward-compatible rewrites) are safe to
@@ -36,13 +45,13 @@ drop function if exists public.staxis_checklist_toggle(uuid, uuid, boolean) casc
 -- 3) Drop the legacy tables. IF EXISTS so a from-scratch replay (where 0205's
 --    creates are neutralized) is a clean no-op; CASCADE removes their RLS
 --    policies / indexes. rooms is dropped LAST — after room_pause_events so
---    its inbound FK is already gone.
-drop table if exists public.plan_snapshots cascade;
+--    its inbound FK is already gone. plan_snapshots is intentionally NOT
+--    dropped (ML-unit dependency — see header).
 drop table if exists public.scraper_status cascade;
 drop table if exists public.rooms cascade;
 
 insert into applied_migrations (version, description)
-values ('0272', 'drop legacy rooms/plan_snapshots/scraper_status + room_pause_events audit + 4 dead rooms RPCs (pms_* is the single source)')
+values ('0272', 'drop legacy rooms + scraper_status + room_pause_events audit + 4 dead rooms RPCs (pms_* is the single source; plan_snapshots kept pending ML migration)')
 on conflict (version) do nothing;
 
 notify pgrst, 'reload schema';

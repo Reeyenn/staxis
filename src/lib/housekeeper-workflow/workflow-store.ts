@@ -11,6 +11,16 @@
  * (parseRoomId). The matching assignment row always exists when this is
  * called — the endpoints first resolve the room via loadRoomForStaff, which
  * only returns rooms that have an assignment for this staff.
+ *
+ * Write-back budget (intentional): this helper upserts pms_housekeeping_assignments
+ * ONLY. Unlike applyRoomUpdate it deliberately does NOT append a
+ * pms_room_status_log row or enqueue a staxis_enqueue_pms_write job on a
+ * status flip. That is by design — the migration brief called out that routing
+ * every housekeeper tap through the write-back enqueue would burn the
+ * `pms-writeback-enqueue` limiter; the assignment row is the authoritative
+ * source the board/AI/dashboard read, and PMS push-back (gated on
+ * properties.pms_writeback_enabled, OFF by default) is driven by the
+ * manager/AI applyRoomUpdate path + CUA reconciliation, not per-tap.
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';

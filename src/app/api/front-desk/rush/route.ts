@@ -142,18 +142,28 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     // UPDATE-only (not upsert) on today's assignment row so a rush on a room
     // with no assignment doesn't materialize a phantom 'dirty' tile.
-    const { error: updErr } = await supabaseAdmin
+    const { data: rushRows, error: updErr } = await supabaseAdmin
       .from('pms_housekeeping_assignments')
       .update(updatePayload)
       .eq('property_id', pid)
       .eq('room_number', roomNumber)
-      .eq('date', date);
+      .eq('date', date)
+      .select('room_number');
     if (updErr) {
       log.error('front-desk/rush: assignment update failed', {
         requestId, err: errToString(updErr),
       });
       return err('Internal server error', {
         requestId, status: 500, code: ApiErrorCode.InternalError, headers,
+      });
+    }
+    if (!rushRows || rushRows.length === 0) {
+      // Room is in inventory but has no HK assignment row for today, so the
+      // rush didn't persist (UPDATE-only, to avoid materializing a phantom
+      // dirty tile). Surface it so a "Housekeeper notified" isn't silently a
+      // no-op. Rare in practice — rushed rooms are checkouts already on the plan.
+      log.warn('front-desk/rush: no assignment row for today — rush not persisted', {
+        requestId, pid, roomNumber, date,
       });
     }
 
