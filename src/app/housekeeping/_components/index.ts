@@ -4,4 +4,4 @@
 export { ScheduleTab } from './ScheduleTab';
 export { RoomsTab } from './RoomsTab';
 export { DeepCleanTab } from './DeepCleanTab';
-export { PerformanceTab } from './PerformanceTab';
+export { QualityTab } from './QualityTab';

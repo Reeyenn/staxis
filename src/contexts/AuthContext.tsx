@@ -18,7 +18,7 @@
 // un-routable so Supabase's deliverability checks can't send mail to it.
 // ───────────────────────────────────────────────────────────────────────────
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { migrateLegacySessionIfPresent } from '@/lib/auth-storage-migration';
 import type { AppRole } from '@/lib/roles';
@@ -49,18 +49,40 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 // Fetch the accounts row for the current auth user and translate to AppUser.
-// Returns null if no accounts row exists (dangling auth user — treat as
-// unauthenticated and sign out).
+//
+// Return-value contract — load-bearing, callers depend on the distinction:
+//   • AppUser  → row found.
+//   • null     → query SUCCEEDED but found no row. This is a genuinely
+//                orphaned auth user (e.g. a half-finished signup) — safe to
+//                sign out.
+//   • THROWS   → the query itself failed (network blip, momentary Supabase /
+//                RLS error, a token-refresh race). This is TRANSIENT and must
+//                NOT be treated as "no account". Returning null on a failed
+//                query (the old behaviour) made a one-off hiccup during the
+//                hourly token refresh indistinguishable from a deleted
+//                account, so it tripped the sign-out path and logged live
+//                users out for real. We retry once, then throw so callers can
+//                keep the still-valid session. 2026-06-03.
 async function loadAppUser(authUid: string): Promise<AppUser | null> {
-  const { data, error } = await supabase
+  const fetchRow = () => supabase
     .from('accounts')
     .select('id, username, display_name, role, property_access, data_user_id, staff_id')
     .eq('data_user_id', authUid)
     .maybeSingle();
 
+  let result = await fetchRow();
+  if (result.error) {
+    // One short-backoff retry. Most failures here are a single transient
+    // blip; retrying once makes them invisible instead of surfacing as a
+    // spurious logout.
+    await new Promise(resolve => setTimeout(resolve, 400));
+    result = await fetchRow();
+  }
+  const { data, error } = result;
+
   if (error) {
-    console.error('AuthContext: failed to load accounts row', error);
-    return null;
+    console.error('AuthContext: failed to load accounts row (after retry)', error);
+    throw error;
   }
   if (!data) return null;
 
@@ -87,6 +109,14 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Mirror `user` into a ref so the async token-refresh handler can read the
+  // *current* user synchronously without being torn down and rebuilt on every
+  // change. Used to decide whether an empty accounts-row read means a
+  // genuinely orphaned auth user (no established user → sign out) or just a
+  // transient blip on a live session (user already established → keep them).
+  const userRef = useRef<AppUser | null>(null);
+  useEffect(() => { userRef.current = user; }, [user]);
 
   useEffect(() => {
     let active = true;
@@ -215,13 +245,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               }
               return appUser;
             });
-          } else {
+          } else if (!userRef.current) {
+            // Valid session, no accounts row, and no user was ever established
+            // this session → genuinely orphaned auth user (e.g. a half-finished
+            // signup). Signing out to avoid a "logged in with no permissions"
+            // limbo is correct here.
             await supabase.auth.signOut();
             setUser(null);
+          } else {
+            // We already had a signed-in user and this token-refresh read came
+            // back empty. An account doesn't vanish mid-session — treat the
+            // empty result as a transient RLS / auth.uid() race during the
+            // refresh and KEEP the user signed in instead of bouncing them to
+            // /signin. 2026-06-03.
+            console.warn('AuthContext: empty accounts row on refresh for an established user — keeping session');
           }
         } catch (err) {
-          console.error('AuthContext: onAuthStateChange deferred handler error', err);
-          if (active) setUser(null);
+          // Transient failure (network blip, the 6s timeout, a momentary
+          // Supabase error) during a token refresh. The event that triggered
+          // this handler was a SUCCESSFUL refresh, so the session itself is
+          // still valid. Do NOT sign out and do NOT clear an established user:
+          // that would turn a one-off hiccup into a hard logout (signOut() even
+          // revokes the refresh token, so a reload can't recover it). This was
+          // the dominant cause of "I keep getting randomly logged out." Keep
+          // what we have; the next auth event or user action retries.
+          console.error('AuthContext: onAuthStateChange deferred handler error — keeping current session', err);
         }
       }, 0);
     });

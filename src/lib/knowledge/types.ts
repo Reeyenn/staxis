@@ -13,12 +13,36 @@ export type KnowledgeSection = 'sops' | 'documents' | 'contacts' | 'calendar';
 export type ContactCategory = 'vendor' | 'emergency' | 'brand' | 'local';
 export const CONTACT_CATEGORIES: readonly ContactCategory[] = ['vendor', 'emergency', 'brand', 'local'];
 
+/**
+ * Per-document/article visibility. `all_staff` (default) is readable by every
+ * authenticated user on the property; `managers` restricts to canManageTeam
+ * roles (admin / owner / general_manager). Enforced in search, list, AND
+ * signed-URL minting — see core.ts canRoleSeeManagerOnly.
+ */
+export type KnowledgeVisibility = 'all_staff' | 'managers';
+export const KNOWLEDGE_VISIBILITIES: readonly KnowledgeVisibility[] = ['all_staff', 'managers'];
+
+/**
+ * Document extraction lifecycle (the state machine). Source of truth for the
+ * type lives here (client-safe); extraction.ts owns the logic + the
+ * EXTRACTED_TEXT_MAX / TERMINAL list. KnowledgePane derives its badge from this.
+ */
+export type ExtractionStatus =
+  | 'pending'
+  | 'processing'
+  | 'ready'
+  | 'partial'
+  | 'failed'
+  | 'unsupported';
+
 /** A SOP article as returned to the client. */
 export interface KnowledgeArticleDTO {
   id: string;
   title: string;
   body: string;
   category: string | null;
+  /** Who may read this SOP. Defaults 'all_staff'. */
+  visibility: KnowledgeVisibility;
   createdByName: string | null;
   updatedByName: string | null;
   createdAt: string;
@@ -31,11 +55,16 @@ export interface KnowledgeDocumentDTO {
   title: string;
   mimeType: string | null;
   sizeBytes: number | null;
-  /** True when extracted_text is present (so the doc's *content* is AI-searchable, not just its title). */
+  /** True when the doc's *content* is AI-searchable (status ready|partial). */
   hasText: boolean;
+  /** Extraction lifecycle — drives the EN/ES badge in KnowledgePane. */
+  extractionStatus: ExtractionStatus;
+  /** Who may read this document. Defaults 'all_staff'. */
+  visibility: KnowledgeVisibility;
   uploadedByName: string | null;
   createdAt: string;
-  /** Short-lived signed download URL, minted server-side. Null if the file couldn't be signed. */
+  /** Short-lived signed download URL, minted server-side. Null if the file
+   *  couldn't be signed OR the caller's role can't see this document. */
   downloadUrl: string | null;
 }
 

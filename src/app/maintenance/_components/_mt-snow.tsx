@@ -10,9 +10,13 @@
 
 import React, { useEffect, useRef } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF } from '@/app/housekeeping/_components/_snow';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card,
+} from '@/app/housekeeping/_components/_snow';
 
-export { T, FONT_SANS, FONT_MONO, FONT_SERIF };
+// Re-export the shared Snow primitives so the maintenance tabs have a single
+// import source (tokens + Caps/Pill/Btn/Card live in housekeeping/_snow).
+export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card };
 export type Priority = 'urgent' | 'normal' | 'low';
 
 // ── Priority colors ────────────────────────────────────────────────────────
@@ -58,8 +62,18 @@ export function PrioPill({ p, style = {} }: { p: Priority; style?: React.CSSProp
 }
 
 // ── Avatar — initials in a tinted circle ──────────────────────────────────
+// Deterministic color from a name: the same person always lands on the same
+// tone (mirrors staffTone in housekeeping/_snow). Callers can still override
+// with an explicit `tone`.
+const AVATAR_TONES = ['#B8775E', '#688372', '#7B6A97', '#8C6A33', '#5E7A8C', '#6A8C70'];
+export function toneFor(name: string): string {
+  let h = 0;
+  for (const ch of (name || '')) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return AVATAR_TONES[Math.abs(h) % AVATAR_TONES.length];
+}
+
 export function Avatar({
-  name, tone = T.ink2, size = 28, style = {},
+  name, tone, size = 28, style = {},
 }: {
   name: string; tone?: string; size?: number; style?: React.CSSProperties;
 }) {
@@ -72,7 +86,7 @@ export function Avatar({
   return (
     <span style={{
       width: size, height: size, borderRadius: '50%',
-      background: tone, color: '#fff',
+      background: tone ?? toneFor(name), color: '#fff',
       fontFamily: FONT_SANS, fontSize: Math.round(size * 0.36), fontWeight: 600,
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       flexShrink: 0, ...style,
@@ -358,8 +372,159 @@ export function daysBetween(a: Date, b: Date): number {
   return Math.round((bb.getTime() - aa.getTime()) / (24 * 60 * 60 * 1000));
 }
 
+// Due-relative string from "days until due" (negative = overdue). Used on the
+// Preventive board cards. Spanish variants for the bilingual UI.
+export function relDue(days: number, es = false): string {
+  if (days === 0)  return es ? 'vence hoy'    : 'due today';
+  if (days < 0)    return es ? `${-days}d vencido` : `${-days}d overdue`;
+  if (days === 1)  return es ? 'vence mañana' : 'due tomorrow';
+  if (days <= 7)   return es ? `en ${days}d`  : `in ${days}d`;
+  if (days <= 60)  return es ? `en ${Math.round(days / 7)}sem` : `in ${Math.round(days / 7)}w`;
+  return es ? `en ${Math.round(days / 30)}mes` : `in ${Math.round(days / 30)}mo`;
+}
+
+// Format a location for display: bare room numbers get a "Rm " prefix; named
+// areas ("Lobby", "Pool Deck") pass through verbatim.
+export function displayLoc(loc: string, es = false): string {
+  const t = (loc || '').trim();
+  return /^\d{1,4}$/.test(t) ? `${es ? 'Hab' : 'Rm'} ${t}` : t;
+}
+
+// ── Board primitives (shared by the three maintenance tabs) ────────────────
+
+// Page header: mono eyebrow + serif headline (italic lead · faint rest) +
+// right-aligned actions. Mirrors the prototype's PageHead.
+export function PageHead({
+  eyebrow, lead, rest, actions,
+}: {
+  eyebrow: string; lead: string; rest?: string; actions?: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+      marginBottom: 20, gap: 24, flexWrap: 'wrap',
+    }}>
+      <div>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.16em', textTransform: 'uppercase', fontWeight: 500 }}>
+          {eyebrow}
+        </span>
+        <h1 style={{ fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400 }}>
+          <span style={{ fontStyle: 'italic' }}>{lead}</span>
+          {rest && <span style={{ color: T.ink3 }}> · {rest}</span>}
+        </h1>
+      </div>
+      {actions && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
+    </div>
+  );
+}
+
+// Board column: lane dot + mono CAPS label in the lane color + right-aligned
+// serif-italic count, over a 2px lane-color underline. Empty lanes show a
+// faint serif-italic note.
+export function BoardColumn({
+  color, label, count, empty, children,
+}: {
+  color: string; label: string; count: number;
+  empty?: string; children: React.ReactNode;
+}) {
+  const hasItems = React.Children.count(children) > 0;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 2px 11px', borderBottom: `2px solid ${color}`, marginBottom: 12 }}>
+        <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>
+          {label}
+        </span>
+        <span style={{ marginLeft: 'auto', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color, lineHeight: 1 }}>{count}</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+        {hasItems
+          ? children
+          : <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 16, color: T.ink3, padding: '6px 2px' }}>{empty || 'Nothing here.'}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Board card: white, hairline border, 14px radius, 4px left accent bar. Hover
+// darkens the border and lifts 1px. Clickable when onClick is provided.
+export function BoardCard({
+  accent, onClick, children, dataId,
+}: {
+  accent: string;
+  onClick?: () => void;
+  children: React.ReactNode;
+  /** Stamped as data-wo-id — used by the Work Orders FLIP animation. */
+  dataId?: string;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      data-wo-id={dataId}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+      onMouseEnter={onClick ? (e) => { e.currentTarget.style.borderColor = 'rgba(31,35,28,0.18)'; e.currentTarget.style.transform = 'translateY(-1px)'; } : undefined}
+      onMouseLeave={onClick ? (e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; } : undefined}
+      style={{
+        textAlign: 'left', cursor: onClick ? 'pointer' : 'default',
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
+        padding: '14px 16px 13px 19px', display: 'flex', flexDirection: 'column', gap: 9,
+        width: '100%', position: 'relative', overflow: 'hidden',
+        transition: 'border-color 0.14s, transform 0.14s',
+      }}
+    >
+      <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: accent }} />
+      {children}
+    </div>
+  );
+}
+
+// Centered board: lays out non-empty bands in a row that centers whatever
+// remains (each column 280–392px). Used by Preventive + Equipment.
+export function CenteredBoard({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', gap: 22, alignItems: 'flex-start', justifyContent: 'center', flexWrap: 'wrap' }}>
+      {React.Children.map(children, (c) => (
+        // Grow each band to fill wide screens (up to 520px) while staying
+        // centered when there are only one or two bands.
+        <div style={{ flex: '1 1 0', minWidth: 280, maxWidth: 520 }}>{c}</div>
+      ))}
+    </div>
+  );
+}
+
+// Error boundary: catches a render error in the maintenance subtree and shows
+// a recover card instead of a blank screen (the white-screen-on-tab bug class).
+export class MaintenanceErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { err: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { err: null };
+  }
+  static getDerivedStateFromError(err: Error) { return { err }; }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.bg, fontFamily: FONT_SANS, padding: 24 }}>
+          <div style={{ maxWidth: 420, textAlign: 'center', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '32px 28px' }}>
+            <div style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, fontStyle: 'italic' }}>Something hiccuped.</div>
+            <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, lineHeight: 1.5, margin: '10px 0 18px' }}>
+              The page hit a snag — your data is safe. Reload to pick back up.
+            </p>
+            <Btn variant="primary" onClick={() => location.reload()}>↻ Reload</Btn>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── Maintenance sub-tab bar ────────────────────────────────────────────────
-export type MaintenanceTabKey = 'work' | 'preventive' | 'compliance' | 'parts';
+export type MaintenanceTabKey = 'work' | 'preventive' | 'equipment';
 
 export function MTSubTabBar({
   tab, onTab,
@@ -372,8 +537,7 @@ export function MTSubTabBar({
   const tabs: { key: MaintenanceTabKey; label: string }[] = [
     { key: 'work',       label: es ? 'Órdenes de trabajo' : 'Work orders' },
     { key: 'preventive', label: es ? 'Preventivo'         : 'Preventive'  },
-    { key: 'compliance', label: es ? 'Cumplimiento'       : 'Compliance'  },
-    { key: 'parts',      label: es ? 'Repuestos'          : 'Parts'       },
+    { key: 'equipment',  label: es ? 'Equipo'             : 'Equipment'   },
   ];
   return (
     <div style={{

@@ -7,7 +7,7 @@ import { useSearchParams } from 'next/navigation';
 import * as Sentry from '@sentry/nextjs';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
-import { AlertTriangle, CheckCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Bell } from 'lucide-react';
 
 import {
   subscribeToRoomsForStaff,
@@ -26,9 +26,7 @@ import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 import InspectorView from './_components/InspectorView';
 import VoiceIssueButton from './_components/VoiceIssueButton';
 import { SickReportButton } from './SickReportButton';
-import { JobCard } from './_components/JobCard';
 import { LanguageSwitcher } from './_components/LanguageSwitcher';
-import { HousekeeperMessages } from './_components/HousekeeperMessages';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
 import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
 import { AddNoteButton, MarkForInspectionButton } from './_components/RoomCardActionButtons';
@@ -44,6 +42,11 @@ import { ChecklistModal, type ChecklistItem } from './_components/ChecklistModal
 import { ExceptionDropdown } from './_components/ExceptionDropdown';
 import { LunchBreakButton } from './_components/LunchBreakButton';
 import { DailySummary } from './_components/DailySummary';
+import { RoomAccordionCard } from './_components/redesign/RoomAccordionCard';
+import { BottomTabBar, type HkTab } from './_components/redesign/BottomTabBar';
+import { MessagesTab } from './_components/redesign/MessagesTab';
+import { AllRoomsCleanCard } from './_components/redesign/AllRoomsCleanCard';
+import { confettiBurst } from './_components/redesign/confetti';
 
 type RoomRow = Room;
 type GroupBy = 'floor' | 'number';
@@ -94,7 +97,8 @@ export default function HousekeeperRoomPage({
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
   const [reservationsByRoom, setReservationsByRoom] = useState<Record<string, RoomReservationContext>>({});
-  const [groupBy, setGroupBy] = useState<GroupBy>('floor');
+  // Always sort by room number (the floor/number toggle was removed per design).
+  const [groupBy] = useState<GroupBy>('number');
 
   const lastRefetchAtRef = useRef<number>(0);
   const [loading, setLoading] = useState(true);
@@ -151,6 +155,12 @@ export default function HousekeeperRoomPage({
 
   // ── Magic-link consumption ─────────────────────────────────────────────
   const [authReady, setAuthReady] = useState(false);
+
+  // ── Redesign shell state (Claude Design handoff, June 2026) ──
+  const [activeTab, setActiveTab] = useState<HkTab>('rooms');
+  const [openRoomId, setOpenRoomId] = useState<string | null>(null); // accordion: one open at a time
+  const [messagesUnread, setMessagesUnread] = useState(0);
+  const roomsScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     let cancelled = false;
     const code = searchParams.get('code');
@@ -571,14 +581,13 @@ export default function HousekeeperRoomPage({
       if (!pid) return;
       setSavingReset(room.id);
       try {
-        const res = await fetch('/api/housekeeper/room-action', {
+        const res = await fetch('/api/housekeeper/reset-clean', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             pid,
             staffId: housekeeperId,
             roomId: room.id,
-            action: 'reset',
           }),
         });
         const json = await res.json().catch(() => ({}));
@@ -714,6 +723,18 @@ export default function HousekeeperRoomPage({
 
   const exceptionRoom = exceptionRoomId ? rooms.find((r) => r.id === exceptionRoomId) : null;
 
+  // Default the accordion to the in-progress room (else the first room), and
+  // keep the open id valid as the room list changes. Only auto-picks when the
+  // current open id is gone — never fights a deliberate collapse mid-render.
+  useEffect(() => {
+    if (visibleRooms.length === 0) return;
+    setOpenRoomId((cur) => {
+      if (cur && visibleRooms.some((r) => r.id === cur)) return cur;
+      const active = visibleRooms.find((r) => r.status === 'in_progress');
+      return active ? active.id : visibleRooms[0].id;
+    });
+  }, [visibleRooms]);
+
   // ── Guards ─────────────────────────────────────────────────────────────
   if (!pid || !housekeeperId) {
     return (
@@ -837,36 +858,34 @@ export default function HousekeeperRoomPage({
         style={{
           maxWidth: '768px',
           margin: '0 auto',
-          minHeight: '100dvh',
-          background: 'var(--green-bg, #F0FDF4)',
+          width: '100%',
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          background: '#F4F5F7',
         }}
       >
-        {/* ── Header ── */}
+        {activeTab === 'rooms' ? (
+        <div
+          ref={roomsScrollRef}
+          data-confetti-host
+          style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: '#F4F5F7' }}
+        >
+        {/* ── Header (redesign: white) ── */}
         <div
           style={{
-            background:
-              'linear-gradient(135deg, var(--navy, #0F172A) 0%, var(--navy-light, #2563EB) 100%)',
-            padding: '20px 16px 28px',
-            color: 'white',
+            background: 'white',
+            padding: 'calc(env(safe-area-inset-top, 0px) + 18px) 16px 14px',
+            borderBottom: '1px solid #EDEEF1',
+            color: 'var(--text-primary)',
           }}
         >
-          <p
-            style={{
-              fontSize: '11px',
-              fontWeight: 600,
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              opacity: 0.55,
-              marginBottom: '6px',
-            }}
-          >
-            Staxis
-          </p>
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
-            <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <div style={{ minWidth: 0 }}>
               <h1
                 style={{
-                  fontSize: '20px',
+                  fontSize: '21px',
                   fontWeight: 800,
                   letterSpacing: '-0.02em',
                   marginBottom: '2px',
@@ -875,77 +894,80 @@ export default function HousekeeperRoomPage({
               >
                 {`${t('cxHelloPrefix', lang)}, ${firstName}`}
               </h1>
-              <p style={{ fontSize: '12px', opacity: 0.7, fontWeight: 500 }}>
+              <p style={{ fontSize: '12.5px', color: 'var(--text-muted)', fontWeight: 500, marginTop: 2 }}>
                 {(() => {
                   const [y, m, d] = activeDate.split('-').map(Number);
                   const dateObj = new Date(y, (m ?? 1) - 1, d ?? 1);
                   const formatted = format(dateObj, 'EEEE, MMMM d', {
                     locale: lang === 'es' ? esLocale : undefined,
                   });
-                  if (activeDate === today) return formatted;
-                  return activeDate > today
-                    ? `${t('hkNextShiftPrefix', lang)}${formatted}`
-                    : `${t('hkLastShiftPrefix', lang)}${formatted}`;
+                  const base =
+                    activeDate === today
+                      ? formatted
+                      : activeDate > today
+                        ? `${t('hkNextShiftPrefix', lang)}${formatted}`
+                        : `${t('hkLastShiftPrefix', lang)}${formatted}`;
+                  return total > 0
+                    ? `${base} · ${done}/${total} ${t('lndProgressDone', lang)}`
+                    : base;
                 })()}
               </p>
             </div>
-            <LanguageSwitcher
-              current={lang}
-              onChange={async (next) => {
-                setLang(next);
-                if (housekeeperId && pid) {
-                  try {
-                    // `saveStaffLanguagePublic` is typed to the bilingual
-                    // Language for legacy callers; the server endpoint
-                    // accepts the wider locale set per migration 0225.
-                    // Cast the new locale to the helper's bilingual type
-                    // — the runtime call just stringifies it.
-                    await saveStaffLanguagePublic(
-                      pid,
-                      housekeeperId,
-                      next as 'en' | 'es',
-                    );
-                  } catch {
-                    // silent
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+              <LanguageSwitcher
+                current={lang}
+                onChange={async (next) => {
+                  setLang(next);
+                  if (housekeeperId && pid) {
+                    try {
+                      // server accepts the wider locale set (migration 0225);
+                      // helper is typed to the bilingual Language for legacy callers.
+                      await saveStaffLanguagePublic(
+                        pid,
+                        housekeeperId,
+                        next as 'en' | 'es',
+                      );
+                    } catch {
+                      // silent
+                    }
                   }
-                }
-              }}
-            />
-            {pid && (
-              <HousekeeperMessages pid={pid} staffId={housekeeperId} lang={lang} />
-            )}
+                }}
+              />
+              <button
+                onClick={() => roomsScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+                aria-label={t('hkAlerts', lang)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  height: 38,
+                  padding: '0 12px',
+                  borderRadius: 11,
+                  border: '1px solid #ECEDF0',
+                  background: 'white',
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <Bell size={16} /> {t('hkAlerts', lang)}
+              </button>
+            </div>
           </div>
 
           {total > 0 && (
-            <div style={{ marginTop: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ fontSize: '14px', fontWeight: 600 }}>
-                  {`${done} ${t('lndProgressOf', lang)} ${total} ${t('lndProgressDone', lang)}`}
-                  {exceptionCount > 0 ? ` · ${exceptionCount} ${t('hkException', lang).toLowerCase()}` : ''}
-                  {inProgress > 0 ? ` · ${inProgress} ${t('inProgress', lang).toLowerCase()}` : ''}
-                </span>
-                <span style={{ fontSize: '14px', fontWeight: 700, opacity: 0.9 }}>
-                  {progressPct}%
-                </span>
-              </div>
+            <div style={{ height: 6, borderRadius: 99, background: '#EDEEF1', marginTop: 14, overflow: 'hidden' }}>
               <div
                 style={{
-                  height: '10px',
-                  background: 'rgba(255,255,255,0.2)',
-                  borderRadius: '99px',
-                  overflow: 'hidden',
+                  height: '100%',
+                  width: `${progressPct}%`,
+                  background: progressPct === 100 ? 'var(--green)' : 'var(--teal)',
+                  borderRadius: 99,
+                  transition: 'width .6s cubic-bezier(.2,.8,.2,1)',
                 }}
-              >
-                <div
-                  style={{
-                    height: '100%',
-                    width: `${progressPct}%`,
-                    background: progressPct === 100 ? 'var(--green)' : 'var(--green-light, #86EFAC)',
-                    borderRadius: '99px',
-                    transition: 'width 500ms cubic-bezier(0.4,0,0.2,1)',
-                  }}
-                />
-              </div>
+              />
             </div>
           )}
         </div>
@@ -1014,98 +1036,23 @@ export default function HousekeeperRoomPage({
             </button>
           )}
 
-          {/* Lunch break button */}
-          {total > 0 && (
-            <LunchBreakButton
-              pid={pid}
-              staffId={housekeeperId}
-              businessDate={activeDate}
-              lang={lang}
-              openBreakStartedAt={openBreakStartedAt}
-              onChange={({ onBreak, startedAt }) =>
-                setOpenBreakStartedAt(onBreak ? (startedAt ?? new Date().toISOString()) : null)
-              }
-            />
-          )}
-
-          {/* Sick / callout entry */}
-          {pid && housekeeperId && total > 0 && !allDone && (
-            <SickReportButton
-              pid={pid}
-              staffId={housekeeperId}
-              businessDate={activeDate}
-              language={lang}
-              isMidShift={inProgress > 0}
-              onCalloutChange={() => {
-                lastRefetchAtRef.current = Date.now();
-              }}
-            />
-          )}
-
-          {/* Grouping toggle */}
+          {/* "Your rooms · tap to open" eyebrow */}
           {total > 0 && !allDone && (
             <div
               style={{
-                display: 'flex',
-                gap: '8px',
-                background: 'white',
-                padding: '6px',
-                borderRadius: '12px',
-                border: '1.5px solid var(--border-light, #E5E7EB)',
+                fontSize: 11.5,
+                fontWeight: 800,
+                color: '#9CA0A8',
+                letterSpacing: '.1em',
+                textTransform: 'uppercase',
+                padding: '0 2px',
               }}
             >
-              <ToggleButton
-                active={groupBy === 'floor'}
-                onClick={() => setGroupBy('floor')}
-                label={t('hkGroupByFloor', lang)}
-              />
-              <ToggleButton
-                active={groupBy === 'number'}
-                onClick={() => setGroupBy('number')}
-                label={t('hkGroupByRoom', lang)}
-              />
+              {t('hkYourRooms', lang)} · {t('hkTapToOpen', lang)}
             </div>
           )}
 
-          {allDone && (
-            <div
-              style={{
-                textAlign: 'center',
-                padding: '32px 24px',
-                background: 'white',
-                borderRadius: '20px',
-                boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-              }}
-            >
-              <div
-                style={{
-                  width: '64px',
-                  height: '64px',
-                  borderRadius: '50%',
-                  background: 'var(--green-dim)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  margin: '0 auto 14px',
-                }}
-              >
-                <CheckCircle size={32} color="var(--green)" />
-              </div>
-              <h2
-                style={{
-                  fontSize: '22px',
-                  fontWeight: 800,
-                  color: 'var(--text-primary)',
-                  marginBottom: '6px',
-                }}
-              >
-                {t('allDone', lang)}
-              </h2>
-              <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                {`${t('cxGreatWorkToday', lang)}, ${firstName}! 🎉`}
-              </p>
-            </div>
-          )}
+          {allDone && <AllRoomsCleanCard count={total} firstName={firstName} lang={lang} />}
 
           {total === 0 && (
             <div
@@ -1151,77 +1098,137 @@ export default function HousekeeperRoomPage({
                 const checklistTotal = checklist?.items.length ?? 0;
                 const compLink = componentForRoom(room.number, componentLinks);
                 return (
-                  <JobCard
+                  <RoomAccordionCard
                     key={room.id}
                     room={room}
-                    index={indexByRoomId.get(room.id) ?? 0}
                     lang={lang}
-                      reservation={reservationsByRoom[room.number]}
-                      isSavingStart={savingStart === room.id}
-                      isSavingPause={savingPause === room.id}
-                      isSavingResume={savingResume === room.id}
-                      isSavingComplete={savingComplete === room.id}
-                      isResetting={savingReset === room.id}
-                      checklistChecked={checklistChecked}
-                      checklistTotal={checklistTotal}
-                      onStart={() => handleStart(room)}
-                      onPause={() => handlePause(room)}
-                      onResume={() => handleResume(room)}
-                      onComplete={() => handleComplete(room)}
-                      onReset={() => handleReset(room)}
-                      onOpenChecklist={() => {
-                        void ensureChecklistLoaded(cleaningTypeKey);
-                        setChecklistRoomId(room.id);
-                      }}
-                      onOpenException={() => setExceptionRoomId(room.id)}
-                      onReportIssue={() => {
-                        setIssueRoomId(room.id);
-                        setIssueNote(room.issueNote ?? '');
-                      }}
-                      extraTopSlot={compLink ? (
-                        <div style={{ marginBottom: 10 }}>
-                          <ComponentRoomBadge link={compLink} lang={lang} />
-                        </div>
-                      ) : undefined}
-                      extraActionsSlot={
-                        <>
-                          <AddNoteButton
-                            pid={pid}
-                            staffId={housekeeperId}
-                            roomId={room.id}
-                            lang={lang}
-                            enqueueIfOffline={offline.enqueueIfOffline}
-                            onError={showActionError}
-                            initialNote={room.housekeeperNote ?? null}
-                          />
-                          <MarkForInspectionButton
-                            pid={pid}
-                            staffId={housekeeperId}
-                            roomId={room.id}
-                            lang={lang}
-                            enqueueIfOffline={offline.enqueueIfOffline}
-                            onError={showActionError}
-                            markedAt={
-                              room.markedForInspectionAt
-                                ? new Date(room.markedForInspectionAt).toISOString()
-                                : null
-                            }
-                          />
-                          <ReportFoundItemButton
-                            pid={pid}
-                            staffId={housekeeperId}
-                            roomNumber={room.number}
-                            lang={lang}
-                            enqueueIfOffline={offline.enqueueIfOffline}
-                            onError={showActionError}
-                          />
-                        </>
-                      }
-                    />
-                  );
+                    reservation={reservationsByRoom[room.number]}
+                    open={openRoomId === room.id}
+                    onToggle={() => setOpenRoomId((o) => (o === room.id ? null : room.id))}
+                    isSavingStart={savingStart === room.id}
+                    isSavingPause={savingPause === room.id}
+                    isSavingResume={savingResume === room.id}
+                    isSavingComplete={savingComplete === room.id}
+                    isResetting={savingReset === room.id}
+                    checklistChecked={checklistChecked}
+                    checklistTotal={checklistTotal}
+                    checklistLabels={(checklist?.items ?? []).map((it) =>
+                      lang === 'es' ? it.itemEs : it.itemEn,
+                    )}
+                    onStart={() => handleStart(room)}
+                    onPause={() => handlePause(room)}
+                    onResume={() => handleResume(room)}
+                    onComplete={(e) => {
+                      confettiBurst(e.currentTarget, { count: 24 });
+                      void handleComplete(room);
+                      // auto-advance: open the next still-dirty room (design behavior)
+                      const next = visibleRooms.find(
+                        (r) => r.id !== room.id && r.status === 'dirty',
+                      );
+                      window.setTimeout(() => setOpenRoomId(next ? next.id : null), 420);
+                    }}
+                    onReset={() => handleReset(room)}
+                    onOpenChecklist={() => {
+                      void ensureChecklistLoaded(cleaningTypeKey);
+                      setChecklistRoomId(room.id);
+                    }}
+                    onReportIssue={() => {
+                      setIssueRoomId(room.id);
+                      setIssueNote(room.issueNote ?? '');
+                    }}
+                    extraTopSlot={compLink ? (
+                      <div style={{ marginBottom: 10 }}>
+                        <ComponentRoomBadge link={compLink} lang={lang} />
+                      </div>
+                    ) : undefined}
+                    extraActionsSlot={
+                      <>
+                        <AddNoteButton
+                          pid={pid}
+                          staffId={housekeeperId}
+                          roomId={room.id}
+                          lang={lang}
+                          enqueueIfOffline={offline.enqueueIfOffline}
+                          onError={showActionError}
+                          initialNote={room.housekeeperNote ?? null}
+                        />
+                        <MarkForInspectionButton
+                          pid={pid}
+                          staffId={housekeeperId}
+                          roomId={room.id}
+                          lang={lang}
+                          enqueueIfOffline={offline.enqueueIfOffline}
+                          onError={showActionError}
+                          markedAt={
+                            room.markedForInspectionAt
+                              ? new Date(room.markedForInspectionAt).toISOString()
+                              : null
+                          }
+                        />
+                        <ReportFoundItemButton
+                          pid={pid}
+                          staffId={housekeeperId}
+                          roomNumber={room.number}
+                          lang={lang}
+                          enqueueIfOffline={offline.enqueueIfOffline}
+                          onError={showActionError}
+                        />
+                        {/* exceptions (DND / NSR / late checkout …) — kept reachable
+                            from the expanded card since the redesign drops the ⋯ menu */}
+                        <button
+                          onClick={() => setExceptionRoomId(room.id)}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '6px 10px',
+                            border: '1px solid #E5E7EB',
+                            borderRadius: 8,
+                            background: 'white',
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: '#6B7280',
+                            cursor: 'pointer',
+                            WebkitTapHighlightColor: 'transparent',
+                          }}
+                        >
+                          ⋯ {t('hkException', lang)}
+                        </button>
+                      </>
+                    }
+                  />
+                );
                 })}
               </div>
           ))}
+
+          {/* footer — Lunch + Report sick (2-col, moved below the list per redesign) */}
+          {total > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9, marginTop: 2 }}>
+              <LunchBreakButton
+                pid={pid}
+                staffId={housekeeperId}
+                businessDate={activeDate}
+                lang={lang}
+                openBreakStartedAt={openBreakStartedAt}
+                onChange={({ onBreak, startedAt }) =>
+                  setOpenBreakStartedAt(onBreak ? (startedAt ?? new Date().toISOString()) : null)
+                }
+              />
+              {!allDone && (
+                <SickReportButton
+                  pid={pid}
+                  staffId={housekeeperId}
+                  businessDate={activeDate}
+                  language={lang}
+                  isMidShift={inProgress > 0}
+                  onCalloutChange={() => {
+                    lastRefetchAtRef.current = Date.now();
+                  }}
+                />
+              )}
+            </div>
+          )}
 
           {pid && housekeeperId && allDone && (
             <DailySummary
@@ -1233,6 +1240,20 @@ export default function HousekeeperRoomPage({
             />
           )}
         </div>
+        </div>
+        ) : (
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: '#fff' }}>
+            <MessagesTab pid={pid} staffId={housekeeperId} lang={lang} onUnreadChange={setMessagesUnread} />
+          </div>
+        )}
+
+        <BottomTabBar
+          active={activeTab}
+          unread={messagesUnread}
+          onRooms={() => setActiveTab('rooms')}
+          onMessages={() => setActiveTab('messages')}
+          lang={lang}
+        />
 
         {/* ── Modals ── */}
         {checklistRoom && checklistData && (
@@ -1294,36 +1315,5 @@ export default function HousekeeperRoomPage({
         })()}
       </div>
     </div>
-  );
-}
-
-function ToggleButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        flex: 1,
-        height: '38px',
-        border: 'none',
-        borderRadius: '8px',
-        background: active ? 'var(--navy-light, #2563EB)' : 'transparent',
-        color: active ? 'white' : '#4B5563',
-        fontSize: '13px',
-        fontWeight: 700,
-        cursor: 'pointer',
-        WebkitTapHighlightColor: 'transparent',
-        touchAction: 'manipulation',
-      }}
-    >
-      {label}
-    </button>
   );
 }

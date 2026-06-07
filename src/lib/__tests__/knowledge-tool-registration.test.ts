@@ -32,3 +32,16 @@ test('search_knowledge is reachable on the chat surface for floor + manager role
     );
   }
 });
+
+test('fetch_document_section is registered read-only and reachable for all assistant roles', () => {
+  const tool = listAllTools().find((t) => t.name === 'fetch_document_section');
+  assert.ok(tool, 'fetch_document_section should be registered');
+  assert.notEqual(tool!.mutates, true, 'fetch_document_section must be read-only');
+  assert.ok(tool!.inputSchema.required?.includes('sourceType'), 'requires sourceType');
+  assert.ok(tool!.inputSchema.required?.includes('sourceId'), 'requires sourceId');
+  const roles = ['housekeeping', 'maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const;
+  for (const role of roles) {
+    const names = getToolsForRole(role, 'chat').map((t) => t.name);
+    assert.ok(names.includes('fetch_document_section'), `role "${role}" should see fetch_document_section`);
+  }
+});

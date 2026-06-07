@@ -22,6 +22,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import {
   transition,
   EXCEPTION_TYPES,
@@ -104,32 +105,27 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const note = (body.note ?? '').slice(0, 500) || null;
 
-  const updatePayload: Record<string, unknown> = {
+  // Persist to the pms assignment row (Plan-v4; migration 0269). The
+  // transition resets workflow state when a new exception is set; is_dnd
+  // mirrors exception_type==='dnd' for the legacy dnd_active readers.
+  const w = await writeWorkflowFields(gate.pid, body.roomId, {
     exception_type: result.next.exceptionType,
     exception_note: result.next.exceptionType ? note : null,
     exception_at: result.next.exceptionType ? now : null,
-    // Transition also resets workflow state on a new exception.
     status: result.next.status,
     started_at: result.next.startedAt,
     completed_at: result.next.completedAt,
     is_paused: result.next.isPaused,
     paused_at: result.next.pausedAt,
     total_paused_seconds: result.next.totalPausedSeconds,
-    // Keep legacy is_dnd in sync for any dashboard reads not yet upgraded.
     is_dnd: result.next.exceptionType === 'dnd',
-    dnd_note: result.next.exceptionType === 'dnd' ? note : null,
-  };
-
-  const { error: updErr } = await supabaseAdmin
-    .from('rooms')
-    .update(updatePayload)
-    .eq('id', body.roomId);
-  if (updErr) {
-    log.error('exception: room update failed', {
+  });
+  if (!w.ok) {
+    log.error('exception: write failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(updErr),
+      err: w.error,
     });
     return err('Internal server error', {
       requestId: gate.requestId,

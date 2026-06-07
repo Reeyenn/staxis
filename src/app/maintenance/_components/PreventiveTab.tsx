@@ -1,6 +1,14 @@
-// Maintenance → Preventive tab.
-// Scheduled recurring tasks (inspections, filter swaps, fire-extinguisher
-// checks). Color-coded by closeness to due. Sorted overdue-first.
+// Maintenance → Preventive tab. Centered three-band board (Claude Design
+// handoff, Jun 2026): Overdue · Due this month · Upcoming. Only the non-empty
+// bands render, centered. Tap a card to edit its cadence / last-done / notes,
+// or hit "Done today" to bump the next-due.
+//
+// Wired to the real preventive_tasks data layer (realtime subscription +
+// addPreventiveTask / completePreventiveTask / updatePreventiveTask).
+//
+// The physical equipment-ASSET registry (HVAC units, pumps — the `equipment`
+// table, not the storeroom "Equipment" tab) still lives behind the "Equipment
+// assets" button up top, exactly as before.
 
 'use client';
 
@@ -9,493 +17,251 @@ import { Wrench } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { supabase } from '@/lib/supabase';
 import {
-  subscribeToPreventiveTasks, addPreventiveTask, completePreventiveTask,
+  subscribeToPreventiveTasks, addPreventiveTask, completePreventiveTask, updatePreventiveTask,
 } from '@/lib/db';
 import type { PreventiveTask } from '@/types';
-import { Btn, Caps } from '@/app/housekeeping/_components/_snow';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
-  Modal, Field, TextInput, TextArea, PhotoSlot,
-  StorageImage, fmtDate, relTime, daysBetween,
+  Caps, Pill, Btn, Modal, Field, TextInput, TextArea,
+  PageHead, BoardColumn, BoardCard, CenteredBoard,
+  relDue, fmtDate, fmtDateShort, daysBetween,
 } from './_mt-snow';
 import { EquipmentRegistry } from './EquipmentRegistry';
-import { EquipmentPicker } from './EquipmentPicker';
 
-type Band = 'overdue' | 'due-soon' | 'fresh';
-const bandTone: Record<Band, { color: string; bg: string; bd: string; label: string }> = {
-  overdue:    { color: '#B85C3D', bg: 'rgba(184,92,61,0.10)',  bd: 'rgba(184,92,61,0.30)',  label: 'Overdue'  },
-  'due-soon': { color: '#C99644', bg: 'rgba(201,150,68,0.12)', bd: 'rgba(201,150,68,0.32)', label: 'Due soon' },
-  fresh:      { color: '#5C7A60', bg: 'rgba(92,122,96,0.10)',  bd: 'rgba(92,122,96,0.28)',  label: 'Fresh'    },
+const DAY = 24 * 60 * 60 * 1000;
+
+type Band = 'overdue' | 'soon' | 'upcoming';
+const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
+  overdue:  { color: T.warm,     tone: 'warm',    en: 'Overdue',        es: 'Vencidas' },
+  soon:     { color: T.caramel,  tone: 'caramel', en: 'Due this month', es: 'Este mes' },
+  upcoming: { color: T.sageDeep, tone: 'sage',    en: 'Upcoming',       es: 'Próximas' },
 };
+const BAND_ORDER: Band[] = ['overdue', 'soon', 'upcoming'];
 
-// Derive next-due Date from the task's last-completed timestamp + cadence.
-// Tasks with no last_completed_at are treated as due today (so they surface
-// in the overdue band).
+const UNITS = [
+  { value: 'days',   mult: 1,   en: 'days',   es: 'días' },
+  { value: 'weeks',  mult: 7,   en: 'weeks',  es: 'semanas' },
+  { value: 'months', mult: 30,  en: 'months', es: 'meses' },
+  { value: 'years',  mult: 365, en: 'years',  es: 'años' },
+] as const;
+type Unit = typeof UNITS[number]['value'];
+
 function nextDueDate(t: PreventiveTask): Date {
   if (!t.lastCompletedAt) return new Date();
-  return new Date(t.lastCompletedAt.getTime() + t.frequencyDays * 24 * 60 * 60 * 1000);
+  return new Date(t.lastCompletedAt.getTime() + t.frequencyDays * DAY);
+}
+function bandFor(t: PreventiveTask): Band {
+  const d = daysBetween(new Date(), nextDueDate(t));
+  if (d < 0) return 'overdue';
+  if (d <= 30) return 'soon';
+  return 'upcoming';
+}
+// Best count+unit for a day-count (prefilling the editor): largest unit that
+// divides evenly.
+function daysToCountUnit(d: number): { count: number; unit: Unit } {
+  if (d % 365 === 0) return { count: d / 365, unit: 'years' };
+  if (d % 30 === 0)  return { count: d / 30,  unit: 'months' };
+  if (d % 7 === 0)   return { count: d / 7,   unit: 'weeks' };
+  return { count: d, unit: 'days' };
+}
+function cadenceLabel(days: number, es: boolean): string {
+  if (days >= 365 && days % 365 === 0) { const n = days / 365; return es ? `cada ${n} año${n > 1 ? 's' : ''}` : `every ${n} yr`; }
+  if (days >= 30) { const n = Math.round(days / 30); return es ? `cada ${n} mes${n > 1 ? 'es' : ''}` : `every ${n} mo`; }
+  if (days >= 7 && days % 7 === 0) { const n = days / 7; return es ? `cada ${n} sem` : `every ${n} wk`; }
+  return es ? `cada ${days} días` : `every ${days} days`;
 }
 
-function bandFor(t: PreventiveTask, today: Date = new Date()): Band {
-  const days = daysBetween(today, nextDueDate(t));
-  if (days < 0)  return 'overdue';
-  if (days <= 7) return 'due-soon';
-  return 'fresh';
-}
-
-// Human label for frequency. "Every 90 days" / "Every 2 weeks" / "Yearly".
-function freqLabel(days: number): string {
-  if (days === 1) return 'Daily';
-  if (days === 7) return 'Weekly';
-  if (days === 14) return 'Every 2 weeks';
-  if (days === 30) return 'Monthly';
-  if (days === 365) return 'Yearly';
-  if (days % 30 === 0) return `Every ${days / 30} months`;
-  if (days % 7 === 0)  return `Every ${days / 7} weeks`;
-  return `Every ${days} days`;
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// ROW
-// ─────────────────────────────────────────────────────────────────────────
-function PMRow({ t, onOpen }: { t: PreventiveTask; onOpen: (t: PreventiveTask) => void }) {
-  const band = bandFor(t);
-  const tone = bandTone[band];
-  const due = nextDueDate(t);
-  const days = daysBetween(new Date(), due);
-
+// ── frequency editor: number box + segmented unit control ──────────────────
+function FreqEditor({
+  count, unit, onCount, onUnit, es,
+}: {
+  count: string; unit: Unit; onCount: (v: string) => void; onUnit: (u: Unit) => void; es: boolean;
+}) {
   return (
-    <button onClick={() => onOpen(t)} style={{
-      textAlign: 'left', cursor: 'pointer', width: '100%',
-      background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
-      padding: '16px 22px 16px 26px', display: 'grid',
-      gridTemplateColumns: 'minmax(220px, 1.6fr) 130px 150px auto',
-      gap: 18, alignItems: 'center', overflow: 'hidden', position: 'relative',
-    }}>
-      {/* status accent bar */}
-      <span style={{
-        position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: tone.color,
-      }}/>
-
-      {/* task name + area */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400 }}>
-          {t.name}
-        </span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, letterSpacing: '0.04em' }}>
-          {t.area ? `${t.area} · ` : ''}{freqLabel(t.frequencyDays)}
-        </span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{es ? 'Cada' : 'Every'}</span>
+      <input
+        value={count} onChange={(e) => onCount(e.target.value)} type="number" min={1}
+        style={{ width: 92, height: 44, textAlign: 'center', borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: T.ink, outline: 'none' }}
+      />
+      <div style={{ display: 'inline-flex', gap: 2, padding: 4, borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg }}>
+        {UNITS.map((u) => {
+          const on = unit === u.value;
+          return (
+            <button key={u.value} type="button" onClick={() => onUnit(u.value)}
+              style={{ border: 'none', background: on ? T.paper : 'transparent', boxShadow: on ? '0 1px 2px rgba(31,35,28,0.12)' : 'none', cursor: 'pointer', padding: '8px 16px', borderRadius: 9, fontFamily: FONT_SANS, fontSize: 14, fontWeight: on ? 600 : 500, color: on ? T.ink : T.ink2 }}>
+              {es ? u.es : u.en}
+            </button>
+          );
+        })}
       </div>
-
-      {/* status pill */}
-      <span style={{
-        padding: '5px 12px', borderRadius: 999, height: 24,
-        display: 'inline-flex', alignItems: 'center', gap: 6, justifySelf: 'start',
-        background: tone.bg, color: tone.color, border: `1px solid ${tone.bd}`,
-        fontFamily: FONT_SANS, fontSize: 12, fontWeight: 600,
-      }}>
-        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: tone.color }} />
-        {tone.label}
-      </span>
-
-      {/* due date */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>
-          Due {fmtDate(due)}
-        </span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: tone.color, fontWeight: 600 }}>
-          {relTime(days)}
-        </span>
-      </div>
-
-      <span style={{
-        fontFamily: FONT_SERIF, fontSize: 24, color: T.ink2, fontStyle: 'italic',
-        letterSpacing: '-0.02em', lineHeight: 1, justifySelf: 'end',
-      }}>→</span>
-    </button>
+    </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// ADD MODAL
-// ─────────────────────────────────────────────────────────────────────────
-function AddModal({
-  open, onClose, onAdd,
+// ── new task modal ───────────────────────────────────────────────────────────
+function NewTaskModal({
+  open, onClose, onCreate,
 }: {
   open: boolean;
   onClose: () => void;
-  onAdd: (t: {
-    name: string;
-    area: string;
-    frequencyDays: number;
-    lastCompletedISO: string;
-    notes?: string;
-    equipmentId?: string | null;
-  }) => Promise<void>;
+  onCreate: (args: { name: string; area: string; frequencyDays: number; lastCompletedISO: string | null }) => Promise<void>;
 }) {
-  const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const es = lang === 'es';
   const [name, setName] = useState('');
   const [area, setArea] = useState('');
-  const [freqN, setFreqN] = useState('90');
-  const [freqUnit, setFreqUnit] = useState<'days' | 'weeks' | 'months' | 'years'>('days');
-  const [lastDate, setLastDate] = useState('');
-  const [notes, setNotes] = useState('');
-  const [equipmentId, setEquipmentId] = useState<string | null>(null);
+  const [count, setCount] = useState('1');
+  const [unit, setUnit] = useState<Unit>('months');
+  const [last, setLast] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const reset = () => {
-    setName(''); setArea(''); setFreqN('90'); setFreqUnit('days');
-    setLastDate(''); setNotes(''); setEquipmentId(null); setBusy(false);
-  };
+  const reset = () => { setName(''); setArea(''); setCount('1'); setUnit('months'); setLast(''); setBusy(false); };
   const close = () => { reset(); onClose(); };
 
-  const freqDays = useMemo(() => {
-    const n = parseInt(freqN, 10) || 0;
-    const mult: Record<typeof freqUnit, number> = { days: 1, weeks: 7, months: 30, years: 365 };
-    return n * mult[freqUnit];
-  }, [freqN, freqUnit]);
-
-  const nextDuePreview = useMemo(() => {
-    if (!lastDate) return null;
-    const d = new Date(lastDate);
-    if (isNaN(d.getTime())) return null;
-    return new Date(d.getTime() + freqDays * 24 * 60 * 60 * 1000);
-  }, [lastDate, freqDays]);
-
-  const computedDaysUntil = nextDuePreview ? daysBetween(new Date(), nextDuePreview) : null;
-
-  const canSubmit = !!name.trim() && !!area.trim() && freqDays > 0 && !!lastDate && !busy;
+  const mult = UNITS.find((u) => u.value === unit)!.mult;
+  const n = parseInt(count, 10) || 0;
+  const freqDays = Math.max(1, n) * mult;
+  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
+  const nextDue = new Date(lastDate.getTime() + freqDays * DAY);
+  const can = name.trim() && area.trim() && n > 0 && !busy;
 
   const submit = async () => {
-    if (!canSubmit) return;
+    if (!can) return;
     setBusy(true);
     try {
-      await onAdd({
-        name: name.trim(),
-        area: area.trim(),
-        frequencyDays: freqDays,
-        lastCompletedISO: new Date(lastDate).toISOString(),
-        notes: notes.trim() || undefined,
-        equipmentId,
-      });
+      await onCreate({ name: name.trim(), area: area.trim(), frequencyDays: freqDays, lastCompletedISO: last ? new Date(`${last}T00:00:00`).toISOString() : null });
       reset();
       onClose();
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   return (
     <Modal
-      open={open}
-      onClose={close}
-      title="Add a preventive task"
-      subtitle="Recurring inspections, scheduled cleanings, anything that comes around again."
-      width={580}
-      footer={
-        <>
-          <Btn variant="ghost" size="md" onClick={close}>Cancel</Btn>
-          <Btn
-            variant="primary"
-            size="md"
-            onClick={submit}
-            disabled={!canSubmit}
-            style={{ opacity: canSubmit ? 1 : 0.4 }}
-          >
-            {busy ? 'Adding…' : 'Add task'}
-          </Btn>
-        </>
-      }
+      open={open} onClose={close}
+      title={es ? 'Nueva tarea preventiva' : 'New preventive task'}
+      subtitle={es ? 'Un trabajo recurrente que vuelve según un calendario.' : 'A recurring job that comes back on a schedule.'}
+      width={600}
+      footer={<>
+        <Btn variant="ghost" onClick={close}>{es ? 'Cancelar' : 'Cancel'}</Btn>
+        <Btn variant="primary" disabled={!can} onClick={submit}>{busy ? (es ? 'Agregando…' : 'Adding…') : (es ? 'Agregar tarea' : 'Add task')}</Btn>
+      </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Field label="Task name" required>
-          <TextInput value={name} onChange={setName} placeholder={'e.g. "Elevator inspection"'} />
+        <Field label={es ? 'Tarea' : 'Task'} required><TextInput value={name} onChange={setName} placeholder={es ? 'ej. "Revisión de extintores"' : 'e.g. "Fire extinguisher check"'} /></Field>
+        <Field label={es ? 'Área' : 'Area'} required><TextInput value={area} onChange={setArea} placeholder={es ? 'ej. "Edificio" o "Piscina"' : 'e.g. "Building" or "Pool"'} /></Field>
+        <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
+          <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
         </Field>
-
-        <Field label="Location / area" required>
-          <TextInput value={area} onChange={setArea} placeholder={'e.g. "Floor 2" or "Building"'} />
+        <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'Para configurar por primera vez' : 'For backfilling on first setup'}>
+          <input type="date" value={last} onChange={(e) => setLast(e.target.value)}
+            style={{ height: 44, padding: '0 14px', borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_SANS, fontSize: 15, color: last ? T.ink : T.ink3, width: '100%', boxSizing: 'border-box', outline: 'none' }} />
         </Field>
-
-        <Field label="Frequency" required hint="How often does it come around?">
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>Every</span>
-            <input
-              type="number"
-              min={1}
-              value={freqN}
-              onChange={e => setFreqN(e.target.value)}
-              style={{
-                width: 80, height: 40, padding: '0 12px', borderRadius: 10,
-                background: T.bg, border: `1px solid ${T.rule}`,
-                fontFamily: FONT_MONO, fontSize: 14, color: T.ink, outline: 'none', textAlign: 'center',
-              }}
-            />
-            <div style={{
-              display: 'flex', gap: 4, padding: 4,
-              background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10,
-            }}>
-              {(['days', 'weeks', 'months', 'years'] as const).map(u => (
-                <button
-                  key={u}
-                  type="button"
-                  onClick={() => setFreqUnit(u)}
-                  style={{
-                    padding: '6px 12px', borderRadius: 6, cursor: 'pointer',
-                    background: freqUnit === u ? T.paper : 'transparent',
-                    border: 'none',
-                    color: freqUnit === u ? T.ink : T.ink2,
-                    fontFamily: FONT_SANS, fontSize: 12, fontWeight: 500,
-                    boxShadow: freqUnit === u ? '0 1px 2px rgba(31,35,28,0.08)' : 'none',
-                  }}
-                >{u}</button>
-              ))}
-            </div>
-          </div>
-        </Field>
-
-        <Field label="Last completed" required hint="For backfilling on first setup">
-          <input
-            type="date"
-            value={lastDate}
-            onChange={e => setLastDate(e.target.value)}
-            style={{
-              height: 40, padding: '0 14px', borderRadius: 10,
-              background: T.bg, border: `1px solid ${T.rule}`,
-              fontFamily: FONT_SANS, fontSize: 14, color: T.ink, outline: 'none',
-              width: '100%', boxSizing: 'border-box',
-            }}
-          />
-        </Field>
-
-        {/* auto-calc preview */}
-        <div style={{
-          background: T.sageDim, border: '1px solid rgba(92,122,96,0.18)',
-          borderRadius: 12, padding: '12px 16px',
-          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-        }}>
-          <Caps c={T.sageDeep} size={9}>Auto-calculated</Caps>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>
-            Next due:{' '}
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 18, fontStyle: 'italic', color: T.sageDeep, fontWeight: 400 }}>
-              {nextDuePreview ? fmtDate(nextDuePreview) : '—'}
-            </span>
+        <div style={{ background: T.sageDim, border: '1px solid rgba(104,131,114,0.22)', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Caps size={10} c={T.sageDeep} weight={600}>{es ? 'Calculado' : 'Auto-calculated'}</Caps>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink }}>
+            {es ? 'Próxima: ' : 'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue) : '—'}</strong>
           </span>
-          {computedDaysUntil != null && (
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>
-              · {relTime(computedDaysUntil)}
-            </span>
-          )}
         </div>
-
-        <Field
-          label={lang === 'es' ? 'Equipo (opcional)' : 'Equipment (optional)'}
-          hint={lang === 'es' ? 'Vincular a un activo del registro' : 'Link to an asset in the registry'}
-        >
-          {activePropertyId && (
-            <EquipmentPicker pid={activePropertyId} value={equipmentId} onChange={setEquipmentId} lang={lang} />
-          )}
-        </Field>
-
-        <Field label="Notes" hint="Optional. Brand standard, what to check, anything that helps.">
-          <TextArea
-            value={notes}
-            onChange={setNotes}
-            placeholder="e.g. Press test button on each, replace 9V if chirping."
-            rows={2}
-          />
-        </Field>
       </div>
     </Modal>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// DETAIL MODAL — view + complete with date choice
-// ─────────────────────────────────────────────────────────────────────────
-function DetailModal({
-  t, open, onClose, onComplete, todayISO,
+// ── editable task detail modal ───────────────────────────────────────────────
+function TaskModal({
+  task, open, onClose, onSave, onCompleteToday,
 }: {
-  t: PreventiveTask | null;
+  task: PreventiveTask | null;
   open: boolean;
   onClose: () => void;
-  onComplete: (id: string, completedISO: string, args: { photo: File | null }) => Promise<void>;
-  todayISO: string;
+  onSave: (id: string, args: { frequencyDays: number; lastCompletedISO: string; notes: string }) => Promise<void>;
+  onCompleteToday: (id: string, args: { frequencyDays: number; notes: string }) => Promise<void>;
 }) {
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [pickedDate, setPickedDate] = useState('');
+  const { lang } = useLang();
+  const es = lang === 'es';
+  const [count, setCount] = useState('1');
+  const [unit, setUnit] = useState<Unit>('months');
+  const [last, setLast] = useState('');
+  const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (!open) { setPhoto(null); setPickedDate(''); setBusy(false); } }, [open]);
-
-  if (!t) return null;
-
-  const band = bandFor(t);
-  const tone = bandTone[band];
-  const due = nextDueDate(t);
-  const days = daysBetween(new Date(), due);
-  const todayLabel = fmtDate(new Date(todayISO));
-  const pickedLabel = pickedDate ? fmtDate(new Date(pickedDate)) : null;
-
-  const close = () => { setPhoto(null); setPickedDate(''); onClose(); };
-
-  const doComplete = async (iso: string) => {
-    setBusy(true);
-    try {
-      await onComplete(t.id, iso, { photo });
-      setPhoto(null); setPickedDate('');
-      onClose();
-    } finally {
-      setBusy(false);
+  // Re-seed the editor only when the modal opens or switches tasks — NOT on
+  // every realtime update, which would clobber the user's in-progress edits.
+  useEffect(() => {
+    if (task) {
+      const cu = daysToCountUnit(task.frequencyDays);
+      setCount(String(cu.count)); setUnit(cu.unit);
+      setLast(task.lastCompletedAt ? new Date(task.lastCompletedAt.getTime() - task.lastCompletedAt.getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '');
+      setNotes(task.notes || '');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.id, open]);
+
+  if (!task) return null;
+
+  const mult = UNITS.find((u) => u.value === unit)!.mult;
+  const n = parseInt(count, 10) || 0;
+  const freqDays = Math.max(1, n) * mult;
+  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
+  const nextDue = new Date(lastDate.getTime() + freqDays * DAY);
+  const du = daysBetween(new Date(), nextDue);
+  const band: Band = du < 0 ? 'overdue' : du <= 30 ? 'soon' : 'upcoming';
+  const meta = BAND[band];
+
+  const save = async () => {
+    setBusy(true);
+    try { await onSave(task.id, { frequencyDays: freqDays, lastCompletedISO: lastDate.toISOString(), notes: notes.trim() }); onClose(); }
+    finally { setBusy(false); }
+  };
+  const completeToday = async () => {
+    setBusy(true);
+    try { await onCompleteToday(task.id, { frequencyDays: freqDays, notes: notes.trim() }); onClose(); }
+    finally { setBusy(false); }
   };
 
   return (
     <Modal
-      open={open}
-      onClose={close}
-      title={t.name}
-      subtitle={`${t.area ? `${t.area} · ` : ''}${freqLabel(t.frequencyDays)}`}
-      width={580}
-      footer={<Btn variant="ghost" size="md" onClick={close}>Close</Btn>}
+      open={open} onClose={onClose}
+      title={task.name} subtitle={task.area} width={580}
+      footer={<>
+        <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
+        <Btn variant="sage" disabled={busy} onClick={completeToday}>{busy ? '…' : (es ? '✓ Hecho hoy' : '✓ Done today')}</Btn>
+        <Btn variant="primary" disabled={busy} onClick={save}>{busy ? '…' : (es ? 'Guardar' : 'Save changes')}</Btn>
+      </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        {/* status banner */}
-        <div style={{
-          background: tone.bg, border: `1px solid ${tone.bd}`, borderRadius: 12,
-          padding: '12px 16px',
-        }}>
-          <Caps c={tone.color} size={9}>{tone.label}</Caps>
-          <p style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, margin: '4px 0 0', lineHeight: 1.3, fontWeight: 400, letterSpacing: '-0.01em' }}>
-            Due <span style={{ fontStyle: 'italic' }}>{fmtDate(due)}</span>
-            <span style={{ color: tone.color, fontSize: 14, marginLeft: 8 }}>· {relTime(days)}</span>
-          </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
+          <Caps size={11} tracking="0.06em">{es ? 'Próxima' : 'Next due'} {fmtDate(nextDue)} · {relDue(du, es)}</Caps>
         </div>
-
-        {/* last completed */}
-        <div style={{ padding: '0 0 14px', borderBottom: `1px solid ${T.ruleSoft}` }}>
-          <Caps size={9}>Last completed</Caps>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, margin: '4px 0 0', fontWeight: 500 }}>
-            {t.lastCompletedAt ? fmtDate(t.lastCompletedAt) : 'Never'}
-          </p>
-          <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, margin: '2px 0 0', letterSpacing: '0.04em' }}>
-            {t.lastCompletedBy ? `by ${t.lastCompletedBy} · ` : ''}cadence {freqLabel(t.frequencyDays).toLowerCase()}
-          </p>
-        </div>
-
-        {t.notes && (
-          <div>
-            <Caps size={9}>Notes</Caps>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '6px 0 0', lineHeight: 1.5, fontStyle: 'italic' }}>
-              {t.notes}
-            </p>
-          </div>
-        )}
-
-        {/* previous completion photo (if any) */}
-        {t.completionPhotoPath && (
-          <div>
-            <Caps size={9}>Last photo</Caps>
-            <div style={{ marginTop: 8 }}>
-              <StorageImage path={t.completionPhotoPath} height={140} alt="last completion photo" />
-            </div>
-          </div>
-        )}
-
-        {/* completion photo (new) */}
-        <div>
-          <Caps size={9}>Photo for this completion (optional)</Caps>
-          <div style={{ marginTop: 8 }}>
-            <PhotoSlot file={photo} onFileChange={setPhoto} label="Completion photo (optional)" height={100} />
-          </div>
-        </div>
-
-        {/* TWO completion buttons */}
-        <div style={{ padding: '18px 0 0', borderTop: `1px solid ${T.rule}` }}>
-          <Caps>When was it done?</Caps>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 14px', fontStyle: 'italic' }}>
-            We&apos;ll bump the next-due by {freqLabel(t.frequencyDays).toLowerCase()} from whichever date you pick.
-          </p>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {/* Today */}
-            <button
-              onClick={() => doComplete(todayISO)}
-              disabled={busy}
-              style={{
-                cursor: busy ? 'wait' : 'pointer', textAlign: 'left',
-                background: T.ink, color: T.bg, border: 'none', borderRadius: 12,
-                padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 4,
-                opacity: busy ? 0.6 : 1,
-              }}
-            >
-              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: 'rgba(255,255,255,0.65)', letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 500 }}>
-                Most common
-              </span>
-              <span style={{ fontFamily: FONT_SANS, fontSize: 14, fontWeight: 600 }}>
-                ✓ Mark completed today
-              </span>
-              <span style={{ fontFamily: FONT_SERIF, fontSize: 13, color: 'rgba(255,255,255,0.75)', fontStyle: 'italic' }}>
-                {todayLabel}
-              </span>
-            </button>
-
-            {/* Pick a date */}
-            <div style={{
-              background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12,
-              padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6,
-            }}>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 500 }}>
-                Or a different date
-              </span>
-              <input
-                type="date"
-                value={pickedDate}
-                max={todayISO}
-                onChange={e => setPickedDate(e.target.value)}
-                style={{
-                  height: 36, padding: '0 12px', borderRadius: 8,
-                  background: T.paper, border: `1px solid ${T.rule}`,
-                  fontFamily: FONT_SANS, fontSize: 13, color: T.ink, outline: 'none',
-                }}
-              />
-              <button
-                onClick={() => pickedDate && doComplete(new Date(pickedDate).toISOString())}
-                disabled={!pickedDate || busy}
-                style={{
-                  height: 32, padding: '0 12px', borderRadius: 8,
-                  cursor: pickedDate && !busy ? 'pointer' : 'not-allowed',
-                  background: pickedDate ? T.ink : 'transparent',
-                  color: pickedDate ? T.bg : T.ink3,
-                  border: `1px solid ${pickedDate ? T.ink : T.rule}`,
-                  fontFamily: FONT_SANS, fontSize: 12, fontWeight: 600,
-                  marginTop: 2,
-                  opacity: busy ? 0.6 : 1,
-                }}
-              >
-                {pickedLabel ? `✓ Mark completed on ${pickedLabel}` : 'Pick a date first'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
+          <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
+        </Field>
+        <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'La próxima se calcula desde aquí.' : 'Next due is calculated from here.'}>
+          <input type="date" value={last} onChange={(e) => setLast(e.target.value)}
+            style={{ height: 44, padding: '0 14px', borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_SANS, fontSize: 15, color: last ? T.ink : T.ink3, width: '100%', boxSizing: 'border-box', outline: 'none' }} />
+        </Field>
+        <Field label={es ? 'Notas' : 'Notes'} hint={es ? 'Lo que la próxima persona debería saber.' : 'What the next person should know.'}>
+          <TextArea value={notes} onChange={setNotes} placeholder={es ? 'ej. MERV 8, 20×25×1. La caja está en el cuarto de máquinas.' : 'e.g. MERV 8, 20×25×1. Box is in the mechanical room.'} rows={3} />
+        </Field>
       </div>
     </Modal>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// ROOT
-// ─────────────────────────────────────────────────────────────────────────
+// ── root ─────────────────────────────────────────────────────────────────────
 export function PreventiveTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const es = lang === 'es';
+
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
-  const [addOpen, setAddOpen] = useState(false);
-  const [detail, setDetail] = useState<PreventiveTask | null>(null);
-  const [equipmentOpen, setEquipmentOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
+  const [selId, setSelId] = useState<string | null>(null);
+  const [registryOpen, setRegistryOpen] = useState(false);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -503,135 +269,106 @@ export function PreventiveTab() {
     return () => unsub();
   }, [user, activePropertyId]);
 
-  // Keep the open Detail modal's data fresh as tasks update.
-  const detailRow = useMemo(
-    () => (detail ? tasks.find(t => t.id === detail.id) ?? detail : null),
-    [detail, tasks],
-  );
+  const sel = selId ? tasks.find((t) => t.id === selId) ?? null : null;
+  const overdueCount = useMemo(() => tasks.filter((t) => bandFor(t) === 'overdue').length, [tasks]);
+  const liveBands = BAND_ORDER.filter((b) => tasks.some((t) => bandFor(t) === b));
 
-  const todayISO = new Date().toISOString().slice(0, 10);
-
-  const sorted = useMemo(() => {
-    return [...tasks].sort((a, b) => {
-      const da = daysBetween(new Date(), nextDueDate(a));
-      const db = daysBetween(new Date(), nextDueDate(b));
-      return da - db;
-    });
-  }, [tasks]);
-
-  const overdue = sorted.filter(t => bandFor(t) === 'overdue');
-  const dueSoon = sorted.filter(t => bandFor(t) === 'due-soon');
-  const fresh   = sorted.filter(t => bandFor(t) === 'fresh');
-
-  const uploadPhoto = async (file: File): Promise<string | null> => {
-    if (!activePropertyId) return null;
-    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
-    const path = `${activePropertyId}/pm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
-    const { error } = await supabase.storage
-      .from('maintenance-photos')
-      .upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false });
-    if (error) {
-      console.error('preventive photo upload failed', error);
-      return null;
-    }
-    return path;
-  };
-
-  const handleAdd = async (args: {
-    name: string;
-    area: string;
-    frequencyDays: number;
-    lastCompletedISO: string;
-    notes?: string;
-    equipmentId?: string | null;
-  }) => {
+  const handleCreate = async (args: { name: string; area: string; frequencyDays: number; lastCompletedISO: string | null }) => {
     if (!user || !activePropertyId) return;
     await addPreventiveTask(user.uid, activePropertyId, {
       propertyId: activePropertyId,
       name: args.name,
       area: args.area,
       frequencyDays: args.frequencyDays,
-      lastCompletedAt: new Date(args.lastCompletedISO),
+      lastCompletedAt: args.lastCompletedISO ? new Date(args.lastCompletedISO) : new Date(),
       lastCompletedBy: user.displayName,
-      notes: args.notes,
-      equipmentId: args.equipmentId ?? null,
+      notes: undefined,
+      equipmentId: null,
     });
   };
 
-  const handleComplete = async (id: string, completedISO: string, args: { photo: File | null }) => {
-    if (!user) return;
-    let photoPath: string | undefined;
-    if (args.photo) {
-      const path = await uploadPhoto(args.photo);
-      if (path) photoPath = path;
+  const handleSave = async (id: string, args: { frequencyDays: number; lastCompletedISO: string; notes: string }) => {
+    if (!user || !activePropertyId) return;
+    await updatePreventiveTask(user.uid, activePropertyId, id, {
+      frequencyDays: args.frequencyDays,
+      lastCompletedAt: new Date(args.lastCompletedISO),
+      notes: args.notes || undefined,
+    });
+  };
+
+  // Quick-complete (card button or modal "Done today"): stamp last_completed,
+  // persisting any cadence/notes edits first.
+  const handleCompleteToday = async (id: string, edits?: { frequencyDays: number; notes: string }) => {
+    if (!user || !activePropertyId) return;
+    if (edits) {
+      await updatePreventiveTask(user.uid, activePropertyId, id, { frequencyDays: edits.frequencyDays, notes: edits.notes || undefined });
     }
-    await completePreventiveTask(id, {
-      completedISO,
-      completedByName: user.displayName,
-      photoPath,
-    });
+    await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
   };
 
-  // Equipment registry opens in-tab (NOT a 4th sub-tab). When open it replaces
-  // the PM list; "← Back to preventive" inside it restores this view unchanged.
-  if (equipmentOpen) {
-    return <EquipmentRegistry onBack={() => setEquipmentOpen(false)} />;
+  if (registryOpen) {
+    return <EquipmentRegistry onBack={() => setRegistryOpen(false)} />;
   }
 
   return (
-    <div style={{
-      padding: '24px 48px 48px', background: T.bg, color: T.ink,
-      fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
-    }}>
-      {/* header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18, gap: 24, flexWrap: 'wrap' }}>
-        <div>
-          <Caps>Preventive maintenance</Caps>
-          <h1 style={{ fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400, whiteSpace: 'nowrap' }}>
-            <span style={{ fontStyle: 'italic', color: overdue.length > 0 ? T.warm : T.ink }}>
-              {overdue.length} overdue
-            </span>
-            <span style={{ color: T.ink3 }}>
-              {' · '}{dueSoon.length} due soon · {fresh.length} fresh
-            </span>
-          </h1>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="ghost" size="md" onClick={() => setEquipmentOpen(true)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <Wrench size={14} /> {lang === 'es' ? 'Equipos' : 'Equipment'}
-            </span>
+    <div style={{ padding: '28px 48px 64px', background: T.bg, color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+      <PageHead
+        eyebrow={es ? 'Preventivo · programado' : 'Preventive · scheduled'}
+        lead={overdueCount > 0 ? `${overdueCount} ${es ? 'vencidas' : 'overdue'}` : (es ? 'Todo al día' : 'All on track')}
+        rest={`${tasks.length} ${tasks.length === 1 ? (es ? 'tarea recurrente' : 'recurring task') : (es ? 'tareas recurrentes' : 'recurring tasks')}`}
+        actions={<>
+          <Btn variant="ghost" onClick={() => setRegistryOpen(true)}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {es ? 'Activos' : 'Equipment assets'}</span>
           </Btn>
-          <Btn variant="primary" size="md" onClick={() => setAddOpen(true)}>＋ {lang === 'es' ? 'Agregar tarea' : 'Add task'}</Btn>
+          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Nueva tarea' : 'New task'}</Btn>
+        </>}
+      />
+
+      {tasks.length === 0 ? (
+        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
+          <span style={{ fontFamily: FONT_SERIF, fontSize: 26, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}</span>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
+            {es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
+          </p>
+          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>
         </div>
-      </div>
+      ) : (
+        <CenteredBoard>
+          {liveBands.map((b) => {
+            const meta = BAND[b];
+            const items = tasks.filter((t) => bandFor(t) === b)
+              .sort((a, c) => daysBetween(new Date(), nextDueDate(a)) - daysBetween(new Date(), nextDueDate(c)));
+            return (
+              <BoardColumn key={b} color={meta.color} label={es ? meta.es : meta.en} count={items.length}>
+                {items.map((t) => {
+                  const du = daysBetween(new Date(), nextDueDate(t));
+                  return (
+                    <BoardCard key={t.id} accent={meta.color} onClick={() => setSelId(t.id)}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+                        <span style={{ fontFamily: FONT_SERIF, fontSize: 21, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 400 }}>{t.name}</span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du, es)}</span>
+                      </div>
+                      <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays, es)}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
+                        <Caps size={10} tracking="0.06em" c={T.ink3}>{es ? 'próx' : 'next'} · {fmtDateShort(nextDueDate(t))}</Caps>
+                        <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); void handleCompleteToday(t.id); }}>✓ {es ? 'Hecho hoy' : 'Done today'}</Btn>
+                      </div>
+                    </BoardCard>
+                  );
+                })}
+              </BoardColumn>
+            );
+          })}
+        </CenteredBoard>
+      )}
 
-      {/* task list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sorted.length === 0 && (
-          <div style={{
-            background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-            padding: '48px 24px', textAlign: 'center',
-          }}>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: T.ink, fontStyle: 'italic' }}>
-              No preventive tasks yet.
-            </span>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '8px 0 18px' }}>
-              Add inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.
-            </p>
-            <Btn variant="primary" size="md" onClick={() => setAddOpen(true)}>＋ Add your first task</Btn>
-          </div>
-        )}
-        {sorted.map(t => <PMRow key={t.id} t={t} onOpen={(tt) => setDetail(tt)} />)}
-      </div>
-
-      <AddModal open={addOpen} onClose={() => setAddOpen(false)} onAdd={handleAdd} />
-      <DetailModal
-        t={detailRow}
-        open={!!detail}
-        onClose={() => setDetail(null)}
-        onComplete={handleComplete}
-        todayISO={todayISO}
+      <NewTaskModal open={newOpen} onClose={() => setNewOpen(false)} onCreate={handleCreate} />
+      <TaskModal
+        task={sel}
+        open={!!sel}
+        onClose={() => setSelId(null)}
+        onSave={handleSave}
+        onCompleteToday={(id, edits) => handleCompleteToday(id, edits)}
       />
     </div>
   );

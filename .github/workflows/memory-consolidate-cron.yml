@@ -1,0 +1,47 @@
+name: Memory consolidate (sharded)
+
+# Sharded fan-out for the nightly memory-consolidation engine
+# (/api/cron/agent-consolidate-memory), the same job the Vercel nightly cron
+# runs once unsharded.
+#
+# WHY THIS EXISTS — scale-out path. The Vercel nightly cron hits the route with
+# no shard params (shard_count=1) and, thanks to per-property early-exits +
+# concurrency, comfortably processes a few-hundred-hotel fleet inside the route's
+# maxDuration=300. This workflow is the headroom for when the fleet outgrows a
+# single 300s invocation: it dispatches N parallel jobs, each handling
+# properties.filter((_, i) => i % N === shard). Each property is pinned to one
+# shard, so shards never overlap.
+#
+# DELIBERATELY workflow_dispatch ONLY (no schedule:) so it does NOT double-fire
+# alongside the Vercel nightly cron. To make it the primary scheduler at large
+# scale: add a `schedule:` block here, register it in cron-schedule-registry.ts,
+# and thin the Vercel cron to a fallback. Until then it's a manual catch-up /
+# scale tool runnable from the Actions tab.
+#
+# Auth: Bearer ${{ secrets.CRON_SECRET }} (same value as Vercel + the route's
+# requireCronSecret gate).
+
+on:
+  workflow_dispatch: {}
+
+# shard_count is hard-coded to 4 to match the matrix below. To change the shard
+# count, edit BOTH the matrix and the shard_count query param together (keeping
+# them in lockstep avoids unprocessed shards / out-of-range offsets).
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Hit /api/cron/agent-consolidate-memory (shard ${{ matrix.shard }}/4)
+        run: |
+          # --max-time 310 covers the route's maxDuration=300 with a small buffer.
+          curl -fsS --max-time 310 --retry 1 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://getstaxis.com/api/cron/agent-consolidate-memory?shard_offset=${{ matrix.shard }}&shard_count=4" \
+            | tee /tmp/result.json
+          # Fail the job only if the route itself errored (envelope ok=false).
+          jq -e '.ok == true' /tmp/result.json

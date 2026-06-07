@@ -1,15 +1,15 @@
 'use client';
 
 import React from 'react';
-import { T, fonts } from './tokens';
+import { T, fonts, type StockBucket } from './tokens';
 import { Btn } from './Btn';
-import type { StockBucket } from './tokens';
 
 interface FilterBarProps {
   bucket: StockBucket;
   onBucket: (b: StockBucket) => void;
   query: string;
   onQuery: (q: string) => void;
+  allCount: number;
   generalCount: number;
   breakfastCount: number;
   onAdd: () => void;
@@ -20,49 +20,59 @@ export function FilterBar({
   onBucket,
   query,
   onQuery,
+  allCount,
   generalCount,
   breakfastCount,
   onAdd,
 }: FilterBarProps) {
-  const buckets: Array<{ key: StockBucket; label: string; count: number }> = [
+  const segments: Array<{ key: StockBucket; label: string; count: number }> = [
+    { key: 'all', label: 'All', count: allCount },
     { key: 'general', label: 'General inventory', count: generalCount },
     { key: 'breakfast', label: 'Breakfast inventory', count: breakfastCount },
   ];
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {buckets.map((b) => {
-          const active = bucket === b.key;
+      {/* Bucket toggle — one segmented control, segments split by hairlines */}
+      <div
+        style={{
+          display: 'inline-flex',
+          border: `1px solid ${T.rule}`,
+          borderRadius: 10,
+          overflow: 'hidden',
+        }}
+      >
+        {segments.map((seg, i) => {
+          const active = bucket === seg.key;
           return (
             <button
-              key={b.key}
+              key={seg.key}
               type="button"
-              onClick={() => onBucket(b.key)}
+              onClick={() => onBucket(seg.key)}
               style={{
-                padding: '7px 14px',
-                borderRadius: 8,
+                padding: '9px 15px',
                 cursor: 'pointer',
-                background: active ? T.ink : T.paper,
+                background: active ? T.ink : T.bg,
                 color: active ? T.bg : T.ink2,
-                border: `1px solid ${active ? T.ink : T.rule}`,
+                border: 'none',
+                borderLeft: i ? `1px solid ${T.rule}` : 'none',
                 fontFamily: fonts.sans,
-                fontSize: 12,
-                fontWeight: 500,
+                fontSize: 12.5,
+                fontWeight: active ? 600 : 500,
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 8,
               }}
             >
-              {b.label}
+              {seg.label}
               <span
                 style={{
                   fontFamily: fonts.mono,
                   fontSize: 10,
-                  fontWeight: 600,
-                  color: active ? 'rgba(255,255,255,0.7)' : T.ink3,
+                  fontWeight: 700,
+                  color: active ? 'rgba(255,255,255,0.6)' : T.dim,
                 }}
               >
-                {b.count}
+                {seg.count}
               </span>
             </button>
           );
@@ -76,10 +86,10 @@ export function FilterBar({
         style={{
           flex: 1,
           minWidth: 140,
-          height: 32,
-          padding: '0 12px',
-          borderRadius: 8,
-          background: T.paper,
+          height: 38,
+          padding: '0 13px',
+          borderRadius: 9,
+          background: T.bg,
           border: `1px solid ${T.rule}`,
           fontFamily: fonts.sans,
           fontSize: 13,
@@ -87,7 +97,7 @@ export function FilterBar({
           outline: 'none',
         }}
       />
-      <Btn variant="ghost" size="sm" onClick={onAdd}>
+      <Btn variant="ghost" size="md" onClick={onAdd}>
         + Add item
       </Btn>
     </div>

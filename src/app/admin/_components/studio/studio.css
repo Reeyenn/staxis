@@ -1,0 +1,126 @@
+/* ───────────────────────────────────────────────────────────────────────
+   Staxis Admin Studio — scoped brand tokens + base type styles.
+
+   EVERYTHING is namespaced under `.admin-studio` so it can never leak into
+   the rest of the app (globals.css already owns :root --bg / --snow-* and
+   would be clobbered if we put these on :root). The studio shell wraps its
+   whole subtree in <div className="admin-studio">, so any descendant can
+   reference var(--forest) / .caps / .serif-num exactly like the prototype.
+
+   Fonts (--font-newsreader / --font-hanken / --font-jetbrains) are loaded
+   once in src/app/layout.tsx via next/font and only fetched by the browser
+   on pages that actually render these families (i.e. /admin).
+   ─────────────────────────────────────────────────────────────────────── */
+
+.admin-studio {
+  /* Surfaces */
+  --bg:            #FFFFFF;
+  --bg-card:       #FFFFFF;
+
+  /* Ink */
+  --ink:           #181611;
+  --ink-soft:      #3A372F;
+  --dim:           #928C7F;
+  --dim2:          #B4AEA2;
+
+  /* Hairlines */
+  --rule:          rgba(24, 22, 17, 0.12);
+  --rule-soft:     rgba(24, 22, 17, 0.06);
+  --rule-strong:   rgba(24, 22, 17, 0.22);
+
+  /* Brand status colors */
+  --forest:        #3C9C68;
+  --forest-deep:   #2F7E53;
+  --forest-dim:    rgba(60, 156, 104, 0.12);
+  --terracotta:    #C2562E;
+  --terracotta-deep:#9F4322;
+  --terracotta-dim:rgba(194, 86, 46, 0.12);
+  --gold:          #C99A2E;
+  --gold-deep:     #9A741F;
+  --gold-dim:      rgba(201, 154, 46, 0.14);
+  --teal:          #3389A0;
+  --teal-deep:     #266B7E;
+  --teal-dim:      rgba(51, 137, 160, 0.12);
+
+  /* Type — fall back to the project's existing families if the studio
+     fonts haven't loaded yet (Instrument Serif ≈ Newsreader, Geist ≈
+     Hanken, Geist Mono ≈ JetBrains Mono). */
+  --serif:  var(--font-newsreader), var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+  --sans:   var(--font-hanken), var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono:   var(--font-jetbrains), var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --shadow-sm: 0 1px 2px rgba(24,22,17,.04), 0 1px 1px rgba(24,22,17,.03);
+  --shadow-md: 0 2px 8px rgba(24,22,17,.06), 0 1px 2px rgba(24,22,17,.04);
+  --shadow-lg: 0 18px 48px -20px rgba(24,22,17,.22), 0 4px 12px rgba(24,22,17,.06);
+
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+}
+
+.admin-studio *,
+.admin-studio *::before,
+.admin-studio *::after { box-sizing: border-box; }
+
+/* Tiny uppercase mono label */
+.admin-studio .caps {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* Editorial serif number */
+.admin-studio .serif-num {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+  color: var(--ink);
+  font-variant-numeric: lining-nums;
+}
+
+.admin-studio .mono  { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.admin-studio .serif { font-family: var(--serif); }
+
+/* Quiet scrollbars inside the studio */
+.admin-studio ::-webkit-scrollbar { width: 10px; height: 10px; }
+.admin-studio ::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+.admin-studio ::-webkit-scrollbar-thumb:hover { background: var(--rule-strong); background-clip: padding-box; }
+.admin-studio ::-webkit-scrollbar-track { background: transparent; }
+
+.admin-studio input,
+.admin-studio select,
+.admin-studio button,
+.admin-studio textarea { font-family: inherit; }
+
+.admin-studio ::selection { background: rgba(60,156,104,0.18); }
+
+/* Studio spinner — adopts the local --rule/--ink, so it reads correctly
+   on light AND dark surfaces (on dark, callers override borderTopColor). */
+.admin-studio .spinner {
+  border: 2px solid var(--rule);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: studio-spin .8s linear infinite;
+}
+@keyframes studio-spin { to { transform: rotate(360deg); } }
+
+/* The signature "live" pulse used by status dots / the header heartbeat. */
+@keyframes studio-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+/* Reduced-motion: kill the looping CSS animations. WAAPI tweens are gated
+   in JS (kit.tsx) and always leave the correct resting state. */
+@media (prefers-reduced-motion: reduce) {
+  .admin-studio .spinner { animation-duration: 2.4s; }
+  .admin-studio [data-studio-pulse] { animation: none !important; opacity: 1 !important; }
+}

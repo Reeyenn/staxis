@@ -1,7 +1,46 @@
 'use client';
 
 import React from 'react';
-import { catColor, T, type InvCat } from './tokens';
+import { catColor, fonts, monogram, T, type InvCat } from './tokens';
+
+// Monogram thumbnail (Triage board) — a category-tinted chip with the item's
+// two-letter initials. The category accent ONLY tints this chip; status color
+// always drives stock bars / day labels / pills.
+export function Thumb({
+  name,
+  cat,
+  size = 32,
+  radius,
+}: {
+  name: string;
+  cat: InvCat;
+  size?: number;
+  radius?: number;
+}) {
+  const c = catColor[cat] ?? T.ink2;
+  return (
+    <span
+      style={{
+        width: size,
+        height: size,
+        flex: 'none',
+        borderRadius: radius == null ? Math.round(size * 0.28) : radius,
+        background: `${c}1A`,
+        color: c,
+        border: `1px solid ${c}33`,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: fonts.mono,
+        fontSize: size * 0.32,
+        fontWeight: 700,
+        letterSpacing: '0.02em',
+      }}
+    >
+      {monogram(name)}
+    </span>
+  );
+}
 
 // 13 hand-picked CSS abstract shapes. Each item picks one in `thumbKindFor`.
 // Pure CSS — no emoji, no SVG illustration. Matches inventory-shared.jsx.

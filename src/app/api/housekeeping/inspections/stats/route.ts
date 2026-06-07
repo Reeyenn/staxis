@@ -1,7 +1,7 @@
 /**
  * GET /api/housekeeping/inspections/stats?pid=
  *
- * Returns aggregated stats for the InspectionsTab sidebar.
+ * Returns aggregated stats for the Quality tab (QualityTab) stat band.
  *  - today pass rate
  *  - week pass rate
  *  - re-clean rate

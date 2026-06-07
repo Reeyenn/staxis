@@ -262,7 +262,7 @@ function Masthead({
             {selected ? (
               <>{selected.name}<span style={{ color: T.ink3 }}>, alone.</span></>
             ) : (
-              <>{hotelCount ?? '—'} hotels, learning every hour.</>
+              <>{hotelCount ?? '—'} {hotelCount === 1 ? 'hotel' : 'hotels'}, learning every hour.</>
             )}
           </h1>
         </div>

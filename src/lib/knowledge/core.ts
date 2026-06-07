@@ -13,11 +13,18 @@ import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import type { AppRole } from '@/lib/roles';
 import { KNOWLEDGE_LIMITS } from './types';
 import type {
   KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeContactDTO,
-  KnowledgeEventDTO, ContactCategory,
+  KnowledgeEventDTO, ContactCategory, KnowledgeVisibility, ExtractionStatus,
 } from './types';
+import { getDefaultEmbedder, toVectorLiteral, type Embedder } from './embeddings';
+import { meterEmbeddingCost } from './indexing';
+import {
+  canRoleSeeManagerOnly, sanitizeSearchTerm, makeSnippet, blendChunkHits,
+  type ChunkHit, type BlendedPassage,
+} from './search-helpers';
 
 const BUCKET = 'knowledge-docs';
 const SIGNED_URL_TTL = 60 * 60; // 1h download URLs
@@ -43,9 +50,6 @@ const EXT_TO_MIME: Record<string, string> = {
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
-/** Mimes whose *content* we extract into extracted_text for AI search in v1. */
-const TEXT_EXTRACTABLE = new Set(['text/plain', 'text/markdown', 'text/csv']);
-
 function extOf(filename: string): string {
   const dot = filename.lastIndexOf('.');
   if (dot < 0) return '';
@@ -76,6 +80,7 @@ function toArticleDTO(r: Record<string, unknown>): KnowledgeArticleDTO {
     title: (r.title as string) ?? '',
     body: (r.body as string) ?? '',
     category: (r.category as string | null) ?? null,
+    visibility: ((r.visibility as KnowledgeVisibility | null) ?? 'all_staff'),
     createdByName: (r.created_by_name as string | null) ?? null,
     updatedByName: (r.updated_by_name as string | null) ?? null,
     createdAt: r.created_at as string,
@@ -111,22 +116,28 @@ function toEventDTO(r: Record<string, unknown>): KnowledgeEventDTO {
 
 // ── Articles (SOPs) ────────────────────────────────────────────────────────────
 
-const ARTICLE_COLS = 'id, title, body, category, created_by_name, updated_by_name, created_at, updated_at';
+const ARTICLE_COLS = 'id, title, body, category, visibility, created_by_name, updated_by_name, created_at, updated_at';
 
-export async function listArticles(pid: string): Promise<KnowledgeArticleDTO[]> {
-  const { data, error } = await supabaseAdmin
+/**
+ * List SOPs visible to `role`. Manager-only SOPs are filtered out for floor
+ * staff at the QUERY level (not just hidden in the UI), so a non-manager never
+ * receives a manager-only row. Default-open for callers that don't pass a role
+ * is deliberately NOT offered — role is required so a missing arg can't leak.
+ */
+export async function listArticles(pid: string, role: AppRole): Promise<KnowledgeArticleDTO[]> {
+  let q = supabaseAdmin
     .from('knowledge_articles')
     .select(ARTICLE_COLS)
-    .eq('property_id', pid)
-    .order('updated_at', { ascending: false })
-    .limit(500);
+    .eq('property_id', pid);
+  if (!canRoleSeeManagerOnly(role)) q = q.eq('visibility', 'all_staff');
+  const { data, error } = await q.order('updated_at', { ascending: false }).limit(500);
   if (error) log.warn('knowledge.listArticles failed', { err: error.message });
   return ((data ?? []) as Record<string, unknown>[]).map(toArticleDTO);
 }
 
 export async function createArticle(
   pid: string,
-  input: { title: string; body: string; category: string | null },
+  input: { title: string; body: string; category: string | null; visibility: KnowledgeVisibility },
   actor: KnowledgeActor,
 ): Promise<{ id: string }> {
   const { data, error } = await supabaseAdmin
@@ -136,6 +147,7 @@ export async function createArticle(
       title: clean(input.title),
       body: clean(input.body),
       category: input.category ? clean(input.category) : null,
+      visibility: input.visibility,
       created_by: actor.accountId,
       created_by_name: actor.name,
       updated_by: actor.accountId,
@@ -150,7 +162,7 @@ export async function createArticle(
 export async function updateArticle(
   pid: string,
   id: string,
-  input: { title: string; body: string; category: string | null },
+  input: { title: string; body: string; category: string | null; visibility: KnowledgeVisibility },
   actor: KnowledgeActor,
 ): Promise<boolean> {
   const { data } = await supabaseAdmin
@@ -159,6 +171,7 @@ export async function updateArticle(
       title: clean(input.title),
       body: clean(input.body),
       category: input.category ? clean(input.category) : null,
+      visibility: input.visibility,
       updated_by: actor.accountId,
       updated_by_name: actor.name,
     })
@@ -166,7 +179,19 @@ export async function updateArticle(
     .eq('property_id', pid)
     .select('id')
     .maybeSingle();
-  return !!data;
+  if (!data) return false;
+  // SECURITY: flip the existing chunks' denormalized visibility SYNCHRONOUSLY,
+  // before returning. The route then schedules a full re-embed via after(), but
+  // that runs asynchronously — without this synchronous flip there would be a
+  // window where an SOP just tightened to managers-only is still searchable by
+  // floor staff through its stale all_staff chunks (Codex review HIGH-1/HIGH-2).
+  const { error: visErr } = await supabaseAdmin
+    .from('knowledge_chunks')
+    .update({ visibility: input.visibility })
+    .eq('article_id', id)
+    .eq('property_id', pid);
+  if (visErr) log.warn('knowledge.updateArticle chunk-visibility sync failed', { err: visErr.message });
+  return true;
 }
 
 export async function deleteArticle(pid: string, id: string): Promise<boolean> {
@@ -182,19 +207,26 @@ export async function deleteArticle(pid: string, id: string): Promise<boolean> {
 
 // ── Documents ──────────────────────────────────────────────────────────────────
 
-const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extracted_text, uploaded_by_name, created_at';
+const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extraction_status, visibility, uploaded_by_name, created_at';
 
-export async function listDocuments(pid: string): Promise<KnowledgeDocumentDTO[]> {
-  const { data, error } = await supabaseAdmin
+/**
+ * List documents visible to `role`, each with a short-lived signed download
+ * URL. Manager-only documents are filtered out at the QUERY level for floor
+ * staff — they never receive the row, so the signed URL is never minted for a
+ * doc they can't see (enforces the "signed-URL endpoint" permission). The
+ * badge state comes from extraction_status.
+ */
+export async function listDocuments(pid: string, role: AppRole): Promise<KnowledgeDocumentDTO[]> {
+  let q = supabaseAdmin
     .from('knowledge_documents')
     .select(DOC_COLS)
-    .eq('property_id', pid)
-    .order('created_at', { ascending: false })
-    .limit(500);
+    .eq('property_id', pid);
+  if (!canRoleSeeManagerOnly(role)) q = q.eq('visibility', 'all_staff');
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(500);
   if (error) log.warn('knowledge.listDocuments failed', { err: error.message });
   const rows = (data ?? []) as Record<string, unknown>[];
-  // Mint a short-lived signed download URL for each file (server-side; the
-  // bucket is private). Done in parallel; a failure leaves downloadUrl null.
+  // Mint a short-lived signed download URL for each VISIBLE file (server-side;
+  // the bucket is private). Done in parallel; a failure leaves downloadUrl null.
   return Promise.all(rows.map(async (r): Promise<KnowledgeDocumentDTO> => {
     const path = r.file_path as string;
     let downloadUrl: string | null = null;
@@ -202,12 +234,15 @@ export async function listDocuments(pid: string): Promise<KnowledgeDocumentDTO[]
       const { data: signed } = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL);
       downloadUrl = signed?.signedUrl ?? null;
     } catch { /* leave null */ }
+    const status = ((r.extraction_status as ExtractionStatus | null) ?? 'pending');
     return {
       id: r.id as string,
       title: (r.title as string) ?? '',
       mimeType: (r.mime_type as string | null) ?? null,
       sizeBytes: (r.size_bytes as number | null) ?? null,
-      hasText: !!(r.extracted_text as string | null),
+      hasText: status === 'ready' || status === 'partial',
+      extractionStatus: status,
+      visibility: ((r.visibility as KnowledgeVisibility | null) ?? 'all_staff'),
       uploadedByName: (r.uploaded_by_name as string | null) ?? null,
       createdAt: r.created_at as string,
       downloadUrl,
@@ -248,7 +283,7 @@ export async function presignDocument(
  */
 export async function registerDocument(
   pid: string,
-  input: { title: string; path: string; mimeType: string; sizeBytes: number | null },
+  input: { title: string; path: string; mimeType: string; sizeBytes: number | null; visibility: KnowledgeVisibility },
   actor: KnowledgeActor,
 ): Promise<{ id: string } | { error: string }> {
   // Enforce the EXACT shape presignDocument mints: <pid>/knowledge/<uuid>.<ext>.
@@ -265,11 +300,9 @@ export async function registerDocument(
     return { error: 'unsupported document type' };
   }
 
-  let extractedText: string | null = null;
-  if (TEXT_EXTRACTABLE.has(input.mimeType)) {
-    extractedText = await extractTextFromObject(input.path);
-  }
-
+  // Insert the row as `pending` FIRST (no extraction inline). The upload route
+  // schedules indexDocument() via after() so a slow PDF/embedding never blocks
+  // the response — the UI shows pending → processing → ready/partial/etc.
   const { data, error } = await supabaseAdmin
     .from('knowledge_documents')
     .insert({
@@ -278,7 +311,9 @@ export async function registerDocument(
       file_path: input.path,
       mime_type: input.mimeType,
       size_bytes: input.sizeBytes,
-      extracted_text: extractedText,
+      extracted_text: null,
+      extraction_status: 'pending',
+      visibility: input.visibility,
       uploaded_by: actor.accountId,
       uploaded_by_name: actor.name,
     })
@@ -292,22 +327,6 @@ export async function registerDocument(
     return { error: (error as { code?: string } | null)?.code === '23505' ? 'This file was already added.' : 'Could not save the document.' };
   }
   return { id: data.id as string };
-}
-
-/** Download a text-like object and return its (capped) text content, or null. */
-async function extractTextFromObject(path: string): Promise<string | null> {
-  try {
-    const { data, error } = await supabaseAdmin.storage.from(BUCKET).download(path);
-    if (error || !data) return null;
-    const raw = await data.text();
-    // Postgres `text` cannot store NUL bytes — strip them (split/join avoids a
-    // literal control char in source). Then cap length so a huge file doesn't
-    // bloat the row or the ILIKE scan.
-    const cleaned = raw.split(String.fromCharCode(0)).join(' ').slice(0, KNOWLEDGE_LIMITS.EXTRACTED_TEXT_MAX).trim();
-    return cleaned.length ? cleaned : null;
-  } catch {
-    return null;
-  }
 }
 
 export async function deleteDocument(pid: string, id: string): Promise<boolean> {
@@ -436,16 +455,33 @@ export async function deleteEvent(pid: string, id: string): Promise<boolean> {
   return !!data;
 }
 
-// ── AI search (shared by /api/knowledge/search + the search_knowledge tool) ──
+// ── AI search — HYBRID semantic (pgvector) ⊕ keyword (ILIKE) over chunks ──────
 //
-// Keyword/ILIKE search over the property's knowledge (v1). A full embedding /
-// vector RAG is a future upgrade — the point here is that the assistant can
-// FIND and quote the hotel's own SOPs, contacts, events, and plain-text/markdown
-// document content. ALWAYS scoped to a single property_id (the caller's), so the
-// AI tool can never leak another tenant's knowledge.
+// Used by the search_knowledge chat tool. The query is embedded and matched by
+// cosine similarity against knowledge_chunks (the embedded passages of every
+// uploaded document + SOP), BLENDED with a keyword arm for exact terms (part
+// numbers, proper names). ALWAYS scoped to a single property_id AND the asker's
+// role: manager-only documents/SOPs are invisible to floor staff in BOTH arms
+// (the RPC filters in SQL; the keyword arm adds the same visibility predicate).
+// Contacts + calendar are shared directory/calendar data (no per-row visibility,
+// by design — a contract that must stay private belongs in a managers-only
+// document or SOP).
+
+/** A chunk-level answer the assistant should quote/cite. */
+export interface KnowledgePassage {
+  sourceType: 'document' | 'article';
+  sourceId: string;
+  title: string;
+  section: string | null;
+  snippet: string;
+  /** Cosine similarity (0..1) when found semantically; null for keyword-only. */
+  similarity: number | null;
+}
 
 export interface KnowledgeSearchResult {
   query: string;
+  /** The relevant passages (chunks) with their document/SOP + section refs. */
+  passages: KnowledgePassage[];
   articles: { id: string; title: string; category: string | null; snippet: string }[];
   documents: { id: string; title: string; snippet: string | null; hasText: boolean }[];
   contacts: { id: string; name: string; company: string | null; phone: string | null; email: string | null; category: string | null; notes: string | null }[];
@@ -453,31 +489,10 @@ export interface KnowledgeSearchResult {
   note: string;
 }
 
-/**
- * Strip everything that isn't a letter, number, space, dot, or hyphen. This
- * removes LIKE wildcards (`%` and underscore) so a user query can't widen the
- * match to "everything", and removes characters that have meaning to PostgREST.
- * The sanitized term is then passed as a *value* to `.ilike()` (never
- * interpolated into a filter string), so it can't break out of the query.
- */
-function sanitizeSearchTerm(q: string): string {
-  return q.replace(/[^\p{L}\p{N}\s.\-]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
-}
+const PASSAGE_SNIPPET_MAX = 600;
+const VECTOR_MATCH_COUNT = 12;
 
-function makeSnippet(text: string | null | undefined, term: string, max = 240): string | null {
-  if (!text) return null;
-  const flat = text.replace(/\s+/g, ' ').trim();
-  if (!flat) return null;
-  const idx = flat.toLowerCase().indexOf(term.toLowerCase());
-  if (idx < 0) {
-    return flat.length > max ? flat.slice(0, max) + '…' : flat;
-  }
-  const start = Math.max(0, idx - 60);
-  const end = Math.min(flat.length, idx + max - 60);
-  return (start > 0 ? '…' : '') + flat.slice(start, end) + (end < flat.length ? '…' : '');
-}
-
-/** Merge two row arrays by id, preserving the first array's order (priority matches first). */
+/** Merge two row arrays by id, preserving the first array's order. */
 function mergeById(primary: Record<string, unknown>[], secondary: Record<string, unknown>[], cap: number): Record<string, unknown>[] {
   const seen = new Set<string>();
   const out: Record<string, unknown>[] = [];
@@ -491,43 +506,130 @@ function mergeById(primary: Record<string, unknown>[], secondary: Record<string,
   return out;
 }
 
-export async function searchKnowledge(pid: string, rawQuery: string): Promise<KnowledgeSearchResult> {
+export interface SearchKnowledgeOpts {
+  /** Asker's accounts.id — for metering the query-embedding cost to the
+   *  property ledger. Omit to skip metering (e.g. internal callers). */
+  accountId?: string;
+  /** Inject a fake embedder in tests. */
+  embedder?: Embedder;
+}
+
+/**
+ * Hybrid knowledge search. `role` is REQUIRED — it gates manager-only content.
+ */
+export async function searchKnowledge(
+  pid: string,
+  rawQuery: string,
+  role: AppRole,
+  opts: SearchKnowledgeOpts = {},
+): Promise<KnowledgeSearchResult> {
   const term = sanitizeSearchTerm(rawQuery);
-  const baseNote = 'Keyword search over this property\'s SOPs, documents (plain-text/markdown content + all titles), contacts, and calendar. Quote the source title when you answer.';
+  const includeManagerOnly = canRoleSeeManagerOnly(role);
   if (term.length < 2) {
     return {
-      query: term, articles: [], documents: [], contacts: [], events: [],
+      query: term, passages: [], articles: [], documents: [], contacts: [], events: [],
       note: 'Search term too short — ask the user to be more specific.',
     };
   }
   const pattern = `%${term}%`;
   const A = 'knowledge_articles', D = 'knowledge_documents', C = 'knowledge_contacts', E = 'knowledge_events';
 
-  // Per-column ILIKE queries (no filter-string concatenation → injection-safe).
-  // Title/name matches are the "primary" set so they rank ahead of body matches.
-  const [
-    artTitle, artBody, docTitle, docText, conName, conCompany, evtTitle, evtNotes,
-  ] = await Promise.all([
-    supabaseAdmin.from(A).select('id, title, category, body').eq('property_id', pid).ilike('title', pattern).limit(5),
-    supabaseAdmin.from(A).select('id, title, category, body').eq('property_id', pid).ilike('body', pattern).limit(5),
-    supabaseAdmin.from(D).select('id, title, extracted_text').eq('property_id', pid).ilike('title', pattern).limit(5),
-    supabaseAdmin.from(D).select('id, title, extracted_text').eq('property_id', pid).ilike('extracted_text', pattern).limit(5),
+  // ── Vector arm: embed the query, then cosine-match over chunks via the RPC.
+  let vectorHits: ChunkHit[] = [];
+  let semantic = false;
+  try {
+    const embedder = opts.embedder ?? getDefaultEmbedder();
+    const res = await embedder.embed([term]);
+    if (opts.accountId) {
+      await meterEmbeddingCost({ accountId: opts.accountId, propertyId: pid, totalTokens: res.totalTokens, model: res.model });
+    }
+    const qvec = res.vectors[0];
+    if (qvec && qvec.length) {
+      const { data, error } = await supabaseAdmin.rpc('staxis_search_knowledge_chunks', {
+        p_property_id: pid,
+        p_query_embedding: toVectorLiteral(qvec),
+        p_include_manager_only: includeManagerOnly,
+        p_match_count: VECTOR_MATCH_COUNT,
+      });
+      if (error) {
+        log.warn('knowledge.searchKnowledge vector RPC failed', { err: error.message });
+      } else {
+        semantic = true;
+        vectorHits = ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+          id: r.id as string,
+          documentId: (r.document_id as string | null) ?? null,
+          articleId: (r.article_id as string | null) ?? null,
+          sourceType: r.source_type as 'document' | 'article',
+          content: (r.content as string) ?? '',
+          section: (r.section as string | null) ?? null,
+          similarity: typeof r.similarity === 'number' ? r.similarity : Number(r.similarity ?? 0),
+        }));
+      }
+    }
+  } catch (e) {
+    // Embedding unavailable (no key / network / quota) → keyword-only fallback.
+    log.warn('knowledge.searchKnowledge embed failed; keyword-only', { err: e instanceof Error ? e.message : String(e) });
+  }
+
+  // ── Keyword arm over chunk content + parent titles/names/notes. All arms
+  // apply the same visibility predicate for managers-only content.
+  let chunkKw = supabaseAdmin
+    .from('knowledge_chunks')
+    .select('id, document_id, article_id, source_type, content, section, visibility')
+    .eq('property_id', pid)
+    .ilike('content', pattern);
+  let artTitleQ = supabaseAdmin.from(A).select('id, title, category, body, visibility').eq('property_id', pid).ilike('title', pattern);
+  let docTitleQ = supabaseAdmin.from(D).select('id, title, visibility, extraction_status').eq('property_id', pid).ilike('title', pattern);
+  if (!includeManagerOnly) {
+    chunkKw = chunkKw.eq('visibility', 'all_staff');
+    artTitleQ = artTitleQ.eq('visibility', 'all_staff');
+    docTitleQ = docTitleQ.eq('visibility', 'all_staff');
+  }
+
+  const [chunkKwRes, artTitle, docTitle, conName, conCompany, evtTitle, evtNotes] = await Promise.all([
+    chunkKw.limit(8),
+    artTitleQ.limit(5),
+    docTitleQ.limit(5),
     supabaseAdmin.from(C).select('id, name, company, phone, email, category, notes').eq('property_id', pid).ilike('name', pattern).limit(5),
     supabaseAdmin.from(C).select('id, name, company, phone, email, category, notes').eq('property_id', pid).ilike('company', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('title', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('notes', pattern).limit(5),
   ]);
 
-  const articleRows = mergeById(
-    (artTitle.data ?? []) as Record<string, unknown>[],
-    (artBody.data ?? []) as Record<string, unknown>[],
-    5,
-  );
-  const docRows = mergeById(
-    (docTitle.data ?? []) as Record<string, unknown>[],
-    (docText.data ?? []) as Record<string, unknown>[],
-    5,
-  );
+  const keywordHits: ChunkHit[] = ((chunkKwRes.data ?? []) as Record<string, unknown>[]).map((r) => ({
+    id: r.id as string,
+    documentId: (r.document_id as string | null) ?? null,
+    articleId: (r.article_id as string | null) ?? null,
+    sourceType: r.source_type as 'document' | 'article',
+    content: (r.content as string) ?? '',
+    section: (r.section as string | null) ?? null,
+    similarity: null,
+  }));
+
+  // Blend the two arms into ranked passages, then resolve parent titles.
+  const blended: BlendedPassage[] = blendChunkHits(vectorHits, keywordHits, { limit: 6 });
+  const docIds = [...new Set(blended.filter((b) => b.documentId).map((b) => b.documentId as string))];
+  const artIds = [...new Set(blended.filter((b) => b.articleId).map((b) => b.articleId as string))];
+  const [docTitleRows, artTitleRows] = await Promise.all([
+    docIds.length
+      ? supabaseAdmin.from(D).select('id, title').eq('property_id', pid).in('id', docIds)
+      : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+    artIds.length
+      ? supabaseAdmin.from(A).select('id, title').eq('property_id', pid).in('id', artIds)
+      : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+  ]);
+  const docTitleMap = new Map<string, string>(((docTitleRows.data ?? []) as Record<string, unknown>[]).map((r) => [r.id as string, (r.title as string) ?? '']));
+  const artTitleMap = new Map<string, string>(((artTitleRows.data ?? []) as Record<string, unknown>[]).map((r) => [r.id as string, (r.title as string) ?? '']));
+
+  const passages: KnowledgePassage[] = blended.map((b) => {
+    const sourceId = (b.documentId ?? b.articleId) as string;
+    const title = (b.documentId ? docTitleMap.get(b.documentId) : artTitleMap.get(b.articleId as string)) ?? '';
+    const snippet = b.content.replace(/\s+/g, ' ').trim().slice(0, PASSAGE_SNIPPET_MAX);
+    return { sourceType: b.sourceType, sourceId, title, section: b.section, snippet, similarity: b.similarity };
+  });
+
+  const articleRows = ((artTitle.data ?? []) as Record<string, unknown>[]);
+  const docRows = ((docTitle.data ?? []) as Record<string, unknown>[]);
   const contactRows = mergeById(
     (conName.data ?? []) as Record<string, unknown>[],
     (conCompany.data ?? []) as Record<string, unknown>[],
@@ -539,20 +641,28 @@ export async function searchKnowledge(pid: string, rawQuery: string): Promise<Kn
     8,
   );
 
+  const note = semantic
+    ? 'Hybrid semantic + keyword search over this property\'s SOPs and documents (and the contact directory + calendar). The `passages` are the most relevant excerpts — quote the document/SOP title (and section) when you answer. If passages is empty, it isn\'t documented yet — say so; don\'t invent.'
+    : 'Keyword search over this property\'s knowledge (semantic search was unavailable this turn). Quote the source title when you answer; if nothing matched, say it isn\'t documented yet.';
+
   return {
     query: term,
+    passages,
     articles: articleRows.map((r) => ({
       id: r.id as string,
       title: (r.title as string) ?? '',
       category: (r.category as string | null) ?? null,
       snippet: makeSnippet(r.body as string, term) ?? '',
     })),
-    documents: docRows.map((r) => ({
-      id: r.id as string,
-      title: (r.title as string) ?? '',
-      snippet: makeSnippet(r.extracted_text as string | null, term),
-      hasText: !!(r.extracted_text as string | null),
-    })),
+    documents: docRows.map((r) => {
+      const status = (r.extraction_status as ExtractionStatus | null) ?? 'pending';
+      return {
+        id: r.id as string,
+        title: (r.title as string) ?? '',
+        snippet: null,
+        hasText: status === 'ready' || status === 'partial',
+      };
+    }),
     contacts: contactRows.map((r) => ({
       id: r.id as string,
       name: (r.name as string) ?? '',
@@ -569,6 +679,75 @@ export async function searchKnowledge(pid: string, rawQuery: string): Promise<Kn
       endDate: (r.end_date as string | null) ?? null,
       notes: makeSnippet(r.notes as string | null, term, 200),
     })),
-    note: baseNote,
+    note,
+  };
+}
+
+// ── fetch_document_section — pull more of a document/SOP within the tool cap ──
+//
+// The assistant calls this after search_knowledge when a passage looks right
+// but it needs more surrounding context. Returns a window of the source's text,
+// permission-checked against the caller's role.
+
+export interface DocumentSectionResult {
+  sourceType: 'document' | 'article';
+  sourceId: string;
+  title: string;
+  section: string | null;
+  text: string;
+  hasMore: boolean;
+  note: string;
+}
+
+const SECTION_WINDOW_MAX = 4000;
+
+/**
+ * Return a window of a document's or SOP's text. `role` gates visibility — a
+ * manager-only source returns null for floor staff (same gate as search/list).
+ */
+export async function getDocumentSection(
+  pid: string,
+  role: AppRole,
+  input: { sourceType: 'document' | 'article'; sourceId: string; offset?: number },
+): Promise<DocumentSectionResult | { error: string }> {
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const includeManagerOnly = canRoleSeeManagerOnly(role);
+
+  if (input.sourceType === 'document') {
+    const { data, error } = await supabaseAdmin
+      .from('knowledge_documents')
+      .select('id, title, visibility, extracted_text, extraction_status')
+      .eq('id', input.sourceId)
+      .eq('property_id', pid)
+      .maybeSingle();
+    if (error || !data) return { error: 'Document not found.' };
+    const visibility = ((data.visibility as KnowledgeVisibility | null) ?? 'all_staff');
+    if (visibility === 'managers' && !includeManagerOnly) return { error: 'Document not found.' };
+    const full = (data.extracted_text as string | null) ?? '';
+    if (!full) return { error: 'This document has no readable text (it may be a scanned image or still processing).' };
+    const slice = full.slice(offset, offset + SECTION_WINDOW_MAX);
+    return {
+      sourceType: 'document', sourceId: data.id as string, title: (data.title as string) ?? '',
+      section: null, text: slice, hasMore: offset + SECTION_WINDOW_MAX < full.length,
+      note: 'Excerpt of the document text. Quote the document title when you answer.',
+    };
+  }
+
+  // article
+  const { data, error } = await supabaseAdmin
+    .from('knowledge_articles')
+    .select('id, title, body, category, visibility')
+    .eq('id', input.sourceId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  if (error || !data) return { error: 'SOP not found.' };
+  const visibility = ((data.visibility as KnowledgeVisibility | null) ?? 'all_staff');
+  if (visibility === 'managers' && !includeManagerOnly) return { error: 'SOP not found.' };
+  const full = (data.body as string | null) ?? '';
+  const slice = full.slice(offset, offset + SECTION_WINDOW_MAX);
+  return {
+    sourceType: 'article', sourceId: data.id as string, title: (data.title as string) ?? '',
+    section: (data.category as string | null) ?? null, text: slice, hasMore: offset + SECTION_WINDOW_MAX < full.length,
+    note: 'Excerpt of the SOP. Quote the SOP title when you answer.',
   };
 }

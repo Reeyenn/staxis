@@ -4,7 +4,7 @@ import React, { useEffect } from 'react';
 import { Header } from './Header';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
-import { FloatingChatButton } from '@/components/agent/FloatingChatButton';
+import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
 import { WakeWord } from '@/components/agent/WakeWord';
 import { VoicePanelProvider } from '@/components/agent/VoicePanelContext';
 import { VoiceModeOverlay } from '@/components/agent/VoiceModeOverlay';
@@ -91,7 +91,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
       <FeedbackButton />
-      <FloatingChatButton />
+      <AskStaxisBar />
       {voiceSurfaceAvailable && <WakeWord />}
       {voiceSurfaceAvailable && <VoiceModeMount />}
     </div>

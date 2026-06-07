@@ -286,6 +286,17 @@ interface AssignmentRow {
   started_at: string | null;
   completed_at: string | null;
   dnd_active: boolean | null;
+  // Workflow state (migration 0269) — persisted by the housekeeper
+  // start/pause/resume/complete/exception + checklist endpoints. Optional so
+  // callers/tests that build a minimal assignment shape still satisfy the type.
+  is_paused?: boolean | null;
+  paused_at?: string | null;
+  total_paused_seconds?: number | null;
+  exception_type?: string | null;
+  exception_note?: string | null;
+  exception_at?: string | null;
+  checklist_template_id?: string | null;
+  checklist_progress?: string[] | null;
 }
 
 interface ReservationRow {
@@ -373,7 +384,7 @@ export async function mergePmsRoomsForDate(
       .order('changed_at', { ascending: false }),
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active')
+      .select('room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress')
       .eq('property_id', pid)
       .eq('date', date),
     // M4 fix — deterministic order so double-bookings produce the
@@ -511,6 +522,7 @@ export async function mergePmsRoomsForDate(
         ? { completedAt: new Date(assignment.completed_at) }
         : {}),
       ...(assignment?.dnd_active === true ? { isDnd: true } : {}),
+      ...workflowStateFields(assignment),
       ...(arrival ? { arrival } : {}),
       ...(stayoverDay !== undefined ? { stayoverDay } : {}),
       // isOutOfService: distinct out-of-service flag so dirty/ready counts
@@ -523,6 +535,29 @@ export async function mergePmsRoomsForDate(
   }
 
   return rooms;
+}
+
+// Map the workflow-state columns (migration 0269) onto the Room shape. Shared
+// by both the single-date and cross-date merges so the housekeeper page sees
+// pause / checklist / exception state persisted by the workflow endpoints.
+function workflowStateFields(assignment: AssignmentRow | undefined): Partial<Room> {
+  if (!assignment) return {};
+  const out: Partial<Room> = {};
+  if (assignment.is_paused === true) out.isPaused = true;
+  if (assignment.paused_at) out.pausedAt = new Date(assignment.paused_at);
+  if (assignment.total_paused_seconds && assignment.total_paused_seconds > 0) {
+    out.totalPausedSeconds = assignment.total_paused_seconds;
+  }
+  if (assignment.exception_type) {
+    out.exceptionType = assignment.exception_type as Room['exceptionType'];
+  }
+  if (assignment.exception_note) out.exceptionNote = assignment.exception_note;
+  if (assignment.exception_at) out.exceptionAt = new Date(assignment.exception_at);
+  if (assignment.checklist_template_id) out.checklistTemplateId = assignment.checklist_template_id;
+  if (assignment.checklist_progress && assignment.checklist_progress.length > 0) {
+    out.checklistProgress = assignment.checklist_progress;
+  }
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -584,7 +619,7 @@ export async function mergePmsRoomsForStaff(
   const [assignRes, staffListRes] = await Promise.allSettled([
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active')
+      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress')
       .eq('property_id', pid)
       .gte('date', windowBack)
       .lte('date', windowAhead),
@@ -712,6 +747,7 @@ export async function mergePmsRoomsForStaff(
       ...(assignment.started_at ? { startedAt: new Date(assignment.started_at) } : {}),
       ...(assignment.completed_at ? { completedAt: new Date(assignment.completed_at) } : {}),
       ...(assignment.dnd_active === true ? { isDnd: true } : {}),
+      ...workflowStateFields(assignment),
       ...(arrival ? { arrival } : {}),
       ...(stayoverDay !== undefined ? { stayoverDay } : {}),
     });

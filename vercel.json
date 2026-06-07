@@ -38,6 +38,10 @@
       "schedule": "*/30 * * * *"
     },
     {
+      "path": "/api/cron/agent-consolidate-memory",
+      "schedule": "0 5 * * *"
+    },
+    {
       "path": "/api/cron/agent-heal-counters",
       "schedule": "0 4 * * *"
     },

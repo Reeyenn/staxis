@@ -13,10 +13,12 @@
  * implementation.
  */
 
-import type { NextRequest } from 'next/server';
+import type { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { errToString } from '@/lib/utils';
+import type { Room } from '@/types';
+import { mergePmsRoomsForStaff } from '@/lib/pms-rooms-server';
 import { log, getOrMintRequestId } from '@/lib/log';
 import {
   checkAndIncrementRateLimit,
@@ -216,29 +218,33 @@ export async function loadRoomForStaff(args: {
   roomId: string;
   requestId: string;
   headers: Record<string, string>;
-}): Promise<{ ok: true; room: RoomRowForWorkflow } | { ok: false; response: Response }> {
+}): Promise<{ ok: true; room: RoomRowForWorkflow } | { ok: false; response: NextResponse }> {
   const { pid, staffId, roomId, requestId, headers } = args;
 
-  // The select string is wide enough that the supabase-js type inference
-  // gives up and returns a GenericStringError shape. We cast the result
-  // to our own RoomRowForWorkflow shape — we know the columns exist per
-  // migration 0214; if a migration drops one, the runtime cast becomes
-  // `undefined` and the route fails closed at the property/assignment
-  // checks below.
-  const queryRes = await supabaseAdmin
-    .from('rooms')
-    .select(
-      'id, property_id, number, date, type, priority, status, assigned_to, assigned_name, ' +
-        'started_at, completed_at, is_dnd, is_paused, paused_at, total_paused_seconds, ' +
-        'exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, ' +
-        'manager_notes, is_rush, rush_due_by, marked_for_inspection_at, floor, stayover_day',
-    )
-    .eq('id', roomId)
-    .maybeSingle();
-  const roomErr = queryRes.error;
-  const room = queryRes.data as RoomRowForWorkflow | null;
-
-  if (roomErr || !room) {
+  // Plan-v4: rooms live in the pms_* schema, not the (empty) legacy `rooms`
+  // table. Read through the same merge the page uses — it applies the staff
+  // capability filter (only rooms assigned to this staff by name) and
+  // surfaces the workflow-state columns (migration 0269). A roomId that
+  // isn't in this staff's set → 404 (also blocks cross-staff enumeration).
+  let rooms: Room[];
+  try {
+    rooms = await mergePmsRoomsForStaff(pid, staffId);
+  } catch (e) {
+    log.error('[loadRoomForStaff] pms read failed', {
+      requestId, pid, staffId, msg: errToString(e),
+    });
+    return {
+      ok: false,
+      response: err('Internal server error', {
+        requestId,
+        status: 500,
+        code: ApiErrorCode.InternalError,
+        headers,
+      }),
+    };
+  }
+  const room = rooms.find((r) => r.id === roomId);
+  if (!room) {
     return {
       ok: false,
       response: err('room not found', {
@@ -249,27 +255,41 @@ export async function loadRoomForStaff(args: {
       }),
     };
   }
-  if (room.property_id !== pid) {
-    return {
-      ok: false,
-      response: err('room/property mismatch', {
-        requestId,
-        status: 403,
-        code: ApiErrorCode.Forbidden,
-        headers,
-      }),
-    };
-  }
-  if (room.assigned_to && room.assigned_to !== staffId) {
-    return {
-      ok: false,
-      response: err('room not assigned to this staff', {
-        requestId,
-        status: 403,
-        code: ApiErrorCode.Forbidden,
-        headers,
-      }),
-    };
-  }
-  return { ok: true, room };
+  return { ok: true, room: roomToWorkflowRow(room, pid) };
+}
+
+// Map the merged Room (pms read shape) onto the legacy RoomRowForWorkflow the
+// workflow endpoints' state-machine logic expects — so those routes keep
+// working unchanged while reading from pms_*.
+function roomToWorkflowRow(room: Room, pid: string): RoomRowForWorkflow {
+  const iso = (d: Date | string | null | undefined): string | null =>
+    d ? new Date(d).toISOString() : null;
+  return {
+    id: room.id,
+    property_id: pid,
+    number: room.number,
+    date: room.date,
+    type: room.type,
+    priority: room.priority,
+    status: room.status,
+    assigned_to: room.assignedTo ?? null,
+    assigned_name: room.assignedName ?? null,
+    started_at: iso(room.startedAt),
+    completed_at: iso(room.completedAt),
+    is_dnd: room.isDnd ?? null,
+    is_paused: room.isPaused ?? null,
+    paused_at: iso(room.pausedAt),
+    total_paused_seconds: room.totalPausedSeconds ?? null,
+    exception_type: room.exceptionType ?? null,
+    exception_note: room.exceptionNote ?? null,
+    exception_at: iso(room.exceptionAt),
+    checklist_template_id: room.checklistTemplateId ?? null,
+    checklist_progress: room.checklistProgress ?? null,
+    manager_notes: room.managerNotes ?? null,
+    is_rush: room.isRush ?? null,
+    rush_due_by: iso(room.rushDueBy),
+    marked_for_inspection_at: iso(room.markedForInspectionAt),
+    floor: room.floor ?? null,
+    stayover_day: room.stayoverDay ?? null,
+  };
 }

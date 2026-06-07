@@ -74,6 +74,8 @@ interface StaffRow {
   is_senior: boolean | null;
   is_active: boolean | null;
   scheduled_today: boolean | null;
+  schedule_priority: string | null;
+  phone: string | null;
   department: string | null;
 }
 
@@ -162,7 +164,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // 3. Housekeeping staff.
     const { data: staffRows, error: staffErr } = await supabaseAdmin
       .from('staff')
-      .select('id, name, language, is_senior, is_active, scheduled_today, department')
+      .select('id, name, language, is_senior, is_active, scheduled_today, schedule_priority, phone, department')
       .eq('property_id', propertyId)
       .eq('department', 'housekeeping');
     if (staffErr) {
@@ -244,6 +246,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       is_senior: s.is_senior === true,
       is_active: s.is_active !== false,
       scheduled_today: s.scheduled_today !== false,
+      // Surfaced for the board's Priority modal (current chip state) and
+      // the Send-links action (needs a phone to text the shift link).
+      schedule_priority: (['priority', 'normal', 'excluded'].includes(s.schedule_priority ?? '')
+        ? s.schedule_priority
+        : 'normal') as 'priority' | 'normal' | 'excluded',
+      has_phone: typeof s.phone === 'string' && s.phone.trim().length > 0,
+      phone: s.phone ?? null,
       workload_minutes: workloadByHk.get(s.id) ?? 0,
     }));
 

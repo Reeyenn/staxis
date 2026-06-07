@@ -35,6 +35,7 @@ import { errToString } from '@/lib/utils';
 // proceeds.
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import {
   transition,
   activeDurationMinutes,
@@ -126,48 +127,26 @@ export async function POST(req: NextRequest): Promise<Response> {
   const totalPaused = result.next.totalPausedSeconds;
   const durationMin = activeDurationMinutes(startedAt, completedAt, totalPaused);
 
-  // ─── Update rooms (conditional) ────────────────────────────────────────
-  // The conditional .eq('status', 'in_progress') closes the race where
-  // two devices race to complete the same room: the second tap finds 0
-  // rows updated and we 409 + skip the cleaning_events insert. Without
-  // it, the dedupe lookup races (read-before-write) could let both taps
-  // through and write two cleaning_events rows whose completed_at differ
-  // by milliseconds — Performance tab would double-count the clean.
-  const { data: updated, error: updErr } = await supabaseAdmin
-    .from('rooms')
-    .update({
-      status: 'clean',
-      started_at: startedAt,
-      completed_at: completedAt,
-      is_paused: false,
-      paused_at: null,
-      total_paused_seconds: totalPaused,
-    })
-    .eq('id', body.roomId)
-    .eq('status', 'in_progress')
-    .select('id');
-  if (updErr) {
-    log.error('complete-clean: room update failed', {
+  // ─── Persist completion to the pms assignment (Plan-v4; migration 0269) ──
+  const w = await writeWorkflowFields(gate.pid, body.roomId, {
+    status: 'clean',
+    started_at: startedAt,
+    completed_at: completedAt,
+    is_paused: false,
+    paused_at: null,
+    total_paused_seconds: totalPaused,
+  });
+  if (!w.ok) {
+    log.error('complete-clean: write failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(updErr),
+      err: w.error,
     });
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
-      headers: gate.headers,
-    });
-  }
-  if (!updated || updated.length === 0) {
-    // Race: another device completed (or reset) the room between our
-    // transition() check and this UPDATE. The other completion already
-    // wrote the cleaning_events row; nothing for us to do.
-    return err('room state changed', {
-      requestId: gate.requestId,
-      status: 409,
-      code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
   }
@@ -198,9 +177,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         : [];
       if (children.length > 0 && room.date) {
         await supabaseAdmin
-          .from('rooms')
+          .from('pms_housekeeping_assignments')
           .update({
-            status: 'clean',
+            status: 'completed',
             started_at: startedAt,
             completed_at: completedAt,
             is_paused: false,
@@ -208,10 +187,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           })
           .eq('property_id', gate.pid)
           .eq('date', room.date)
-          .in('number', children)
+          .in('room_number', children)
           // Only flip rooms that are still dirty/in-progress — don't
           // accidentally re-clean a sub-room someone already inspected.
-          .in('status', ['dirty', 'in_progress']);
+          .in('status', ['not_started', 'in_progress']);
       }
     } catch (fanoutErr) {
       log.warn('complete-clean: component-room fanout failed (non-fatal)', {

@@ -427,7 +427,10 @@ export function calcROI(totalSaved: number, monthlyPrice: number, monthsUsed: nu
 /** Returns how many days since a room's last deep clean (Infinity if never) */
 export function daysSinceDeepClean(roomNumber: string, records: DeepCleanRecord[], today: Date = new Date()): number {
   const rec = records.find(r => r.roomNumber === roomNumber);
-  if (!rec) return Infinity;
+  // No record, or a scheduled-but-never-cleaned record (last_deep_clean NULL →
+  // mapped to '') → treat as never deep-cleaned. Without the empty guard,
+  // parseISO('') yields an Invalid Date and differenceInDays returns NaN.
+  if (!rec || !rec.lastDeepClean) return Infinity;
   return differenceInDays(today, parseISO(rec.lastDeepClean));
 }
 

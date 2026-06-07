@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { fonts, statusColor, statusLabel, type StockStatus } from './tokens';
+import { fonts, statusColor, statusTint, statusLabel, type StockStatus } from './tokens';
 
 export function StatusDot({
   s,
@@ -31,11 +31,15 @@ export function StatusDot({
   );
 }
 
+// Mono uppercase status pill (Triage). `filled` paints it solid in the status
+// color (white text); otherwise a soft tint with a leading dot.
 export function StatusPill({
   s,
+  filled = false,
   style,
 }: {
   s: StockStatus;
+  filled?: boolean;
   style?: React.CSSProperties;
 }) {
   const c = statusColor[s];
@@ -45,20 +49,21 @@ export function StatusPill({
         display: 'inline-flex',
         alignItems: 'center',
         gap: 6,
-        padding: '3px 10px 3px 8px',
+        padding: '2px 9px 2px 7px',
         borderRadius: 999,
-        height: 22,
-        background: `${c}14`,
-        color: c,
-        border: `1px solid ${c}33`,
-        fontFamily: fonts.sans,
-        fontSize: 11,
+        background: filled ? c : statusTint[s],
+        color: filled ? '#fff' : c,
+        border: filled ? 'none' : `1px solid ${c}33`,
+        fontFamily: fonts.mono,
+        fontSize: 9.5,
         fontWeight: 600,
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
         whiteSpace: 'nowrap',
         ...style,
       }}
     >
-      <StatusDot s={s} size={6} />
+      {!filled && <StatusDot s={s} size={6} />}
       {statusLabel[s]}
     </span>
   );

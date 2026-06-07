@@ -19,6 +19,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import { transition, inferCleaningType } from '@/lib/housekeeper-workflow/state-machine';
 
 export const runtime = 'nodejs';
@@ -97,51 +98,30 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (tpl?.id) templateId = tpl.id as string;
   }
 
-  // Conditional UPDATE: only flip to in_progress if the row is still
-  // exactly the dirty/no-exception state we read above. If a second
-  // device already started the room (or set an exception, or completed
-  // it), the row count comes back 0 and we 409 — preventing two devices
-  // from both racing into in_progress and stomping each other's
-  // started_at + checklist_progress.
-  const { data: updated, error: updErr } = await supabaseAdmin
-    .from('rooms')
-    .update({
-      status: result.next.status,
-      started_at: result.next.startedAt,
-      completed_at: null,
-      is_paused: false,
-      paused_at: null,
-      total_paused_seconds: 0,
-      checklist_template_id: templateId,
-      checklist_progress: [],
-    })
-    .eq('id', body.roomId)
-    .eq('status', 'dirty')
-    .is('exception_type', null)
-    .select('id');
-
-  if (updErr) {
-    log.error('start-clean: update failed', {
+  // Persist to the pms assignment row (Plan-v4; migration 0269). The state
+  // machine above already validated the dirty/no-exception precondition off
+  // the freshly-read row, so we write the new state directly.
+  const w = await writeWorkflowFields(gate.pid, body.roomId, {
+    status: result.next.status,
+    started_at: result.next.startedAt,
+    completed_at: null,
+    is_paused: false,
+    paused_at: null,
+    total_paused_seconds: 0,
+    checklist_template_id: templateId,
+    checklist_progress: [],
+  });
+  if (!w.ok) {
+    log.error('start-clean: write failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(updErr),
+      err: w.error,
     });
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
-      headers: gate.headers,
-    });
-  }
-  if (!updated || updated.length === 0) {
-    // Room state shifted under us between the read and the conditional
-    // write — another device already started, an exception was set, or
-    // the room moved past dirty. Surface a 409 so the client can refetch.
-    return err('room state changed', {
-      requestId: gate.requestId,
-      status: 409,
-      code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
   }

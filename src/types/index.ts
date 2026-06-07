@@ -446,6 +446,15 @@ export interface WorkOrder {
   equipmentId?: string | null;  // optional link to an equipment asset (registry 0249)
   repairCost?: number | null;   // optional $ spent resolving — summed per-asset (0249)
 
+  // "Call in a professional" lane (migration 0262). needsPro routes the card to
+  // the Professional column regardless of priority; the pro* fields record the
+  // contractor that was called (all optional).
+  needsPro?: boolean;
+  proTrade?: string | null;     // "Plumbing", "Electrical", "HVAC", …
+  proCompany?: string | null;   // who was called
+  proPhone?: string | null;
+  proCalledAt?: Date | null;
+
   createdAt: Date | null;
   updatedAt: Date | null;
 }

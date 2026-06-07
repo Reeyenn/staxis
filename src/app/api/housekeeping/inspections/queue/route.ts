@@ -10,7 +10,7 @@
  *                        room has since been re-cleaned (room.completedAt
  *                        > inspection.completedAt).
  *
- * Used by the manager InspectionsTab. requireSession + property access
+ * Used by the manager Quality tab (QualityTab). requireSession + property access
  * gate. Standard envelope response.
  */
 
@@ -94,6 +94,11 @@ async function buildQueue(pid: string, date: string): Promise<InspectionQueueRoo
   // that's what the queue logic considers.
   const latestByRoom = new Map<string, ReturnType<typeof fromInspectionRow>>();
   for (const insp of inspections) {
+    // A cancelled inspection is a non-event — the inspector opened the
+    // checklist then backed out (drawer "Close"). It must NOT count as the
+    // room's latest inspection, otherwise the room would be hidden from the
+    // queue for the whole 48h window and could never be inspected again.
+    if (insp.result === 'cancelled') continue;
     if (!latestByRoom.has(insp.roomNumber)) latestByRoom.set(insp.roomNumber, insp);
   }
 

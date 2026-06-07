@@ -1,171 +1,283 @@
-// Maintenance → Work Orders tab.
-// "The book replacement." Two statuses only: open + done.
-// Submit → Open list (grouped by priority) → tap → Mark Done → History.
+// Maintenance → Work Orders tab. Four-lane triage board (Claude Design
+// handoff, Jun 2026): Low · Normal · Urgent · Professional. Submit → the card
+// arrives with a glow; re-prioritise from the detail modal and it flies to its
+// new lane; mark it done and it drops into the History popup.
+//
+// Wired to the real work_orders data layer (realtime subscription + the
+// addWorkOrder / markWorkOrderDone / updateWorkOrder helpers). The "Professional"
+// lane is backed by the needs_pro / pro_* columns (migration 0262).
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import {
-  subscribeToWorkOrders, addWorkOrder, markWorkOrderDone,
+  subscribeToWorkOrders, addWorkOrder, markWorkOrderDone, updateWorkOrder,
 } from '@/lib/db';
 import type { WorkOrder, WorkOrderPriority } from '@/types';
-import { Btn, Caps, Pill } from '@/app/housekeeping/_components/_snow';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
-  PrioDot, PrioPill, prioColor, prioLabel, prioOrder,
-  Avatar, Modal, Field, TextInput, TextArea, ChipChoose, PhotoSlot,
-  StorageImage, fmtDate, fmtDateShort, fmtSubmittedAt,
+  Caps, Pill, Btn, Avatar, Modal, Field, TextInput, TextArea, ChipChoose,
+  StorageImage, PageHead, displayLoc, fmtDateShort, fmtSubmittedAt,
+  prioColor, prioLabel,
 } from './_mt-snow';
 import { EquipmentPicker } from './EquipmentPicker';
 
-// Friendlier "role" labels for the byline. AppRole is admin/staff; we map
-// to the language operators actually use.
-function roleLabel(role: string | undefined): string {
-  if (role === 'admin') return 'General manager';
-  return 'Staff';
+// ── placement: the 4-way choice (3 priorities + "professional") ────────────
+type Placement = WorkOrderPriority | 'professional';
+
+function hasContractor(w: WorkOrder): boolean {
+  return !!(w.proCompany || w.proTrade || w.proPhone);
+}
+function placementOf(w: WorkOrder): Placement {
+  return w.needsPro || hasContractor(w) ? 'professional' : w.priority;
 }
 
-// Format the location for display. If it looks like just a room number,
-// prefix "Rm "; otherwise show verbatim.
-function displayLoc(loc: string): string {
-  const trimmed = (loc || '').trim();
-  if (/^\d{1,4}$/.test(trimmed)) return `Rm ${trimmed}`;
-  return trimmed;
+function roleLabel(role: string | undefined, es: boolean): string {
+  if (role === 'admin') return es ? 'Gerente general' : 'General manager';
+  return es ? 'Personal' : 'Staff';
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// CARD — used in the Open list
-// ─────────────────────────────────────────────────────────────────────────
-function OpenCard({ w, onOpen }: { w: WorkOrder; onOpen: (w: WorkOrder) => void }) {
-  return (
-    <button onClick={() => onOpen(w)} style={{
-      textAlign: 'left', cursor: 'pointer',
-      background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
-      padding: '16px 22px 16px 26px', display: 'grid',
-      gridTemplateColumns: 'minmax(140px, 1fr) 2fr auto', gap: 18, alignItems: 'center',
-      width: '100%', position: 'relative', overflow: 'hidden',
-    }}>
-      {/* slim priority accent bar on the left edge */}
+// Lane colors: the three priority colors + purple for the professional lane.
+const LANE_COLOR: Record<Placement, string> = {
+  low: prioColor.low, normal: prioColor.normal, urgent: prioColor.urgent, professional: T.purple,
+};
+
+const reduceMotion = () =>
+  typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ── purple "pro" pill ──────────────────────────────────────────────────────
+function ProPill({ w, es }: { w: WorkOrder; es: boolean }) {
+  if (hasContractor(w)) {
+    return (
       <span style={{
-        position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
-        background: prioColor[w.priority],
-      }}/>
+        display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999, height: 22,
+        background: T.purpleDim, color: T.purple, border: '1px solid rgba(123,106,151,0.3)',
+        fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+      }}>☎ {w.proTrade || w.proCompany}</span>
+    );
+  }
+  if (w.needsPro) {
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999, height: 22,
+        background: 'transparent', color: T.purple, border: '1px dashed rgba(123,106,151,0.5)',
+        fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+      }}>{es ? 'Necesita un profesional' : 'Needs a professional'}</span>
+    );
+  }
+  return null;
+}
 
-      {/* location */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400 }}>
-          {displayLoc(w.location)}
+// ── open card (with the "arrive & glow" entrance animation) ────────────────
+function OpenCard({
+  w, onOpen, isEnter, es,
+}: {
+  w: WorkOrder; onOpen: (w: WorkOrder) => void; isEnter: boolean; es: boolean;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const played = useRef(false);
+
+  useEffect(() => {
+    if (!isEnter || played.current || !ref.current || reduceMotion()) return;
+    played.current = true;
+    const card = ref.current;
+    const accent = (w.needsPro || hasContractor(w)) ? T.purple : prioColor[w.priority];
+    card.animate(
+      [{ transform: 'translateY(-10px)', opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }],
+      { duration: 380, easing: 'cubic-bezier(0.22,1,0.36,1)' },
+    );
+    card.animate(
+      [
+        { boxShadow: `0 0 0 0 ${accent}00` },
+        { boxShadow: `0 0 0 4px ${accent}59`, offset: 0.5 },
+        { boxShadow: '0 1px 2px rgba(31,35,28,0.05)' },
+      ],
+      { duration: 1100, delay: 160, easing: 'ease-out' },
+    );
+    const sweep = document.createElement('span');
+    sweep.style.cssText = 'position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.85) 50%, transparent 70%);';
+    card.appendChild(sweep);
+    const s = sweep.animate(
+      [{ transform: 'translateX(-120%)' }, { transform: 'translateX(120%)' }],
+      { duration: 720, delay: 220, easing: 'ease-in-out' },
+    );
+    s.onfinish = () => sweep.remove();
+  }, [isEnter, w.needsPro, w.priority, w]);
+
+  const showPro = w.needsPro || hasContractor(w);
+
+  return (
+    <button
+      ref={ref}
+      data-wo-id={w.id}
+      onClick={() => onOpen(w)}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(31,35,28,0.18)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; }}
+      style={{
+        textAlign: 'left', cursor: 'pointer', background: T.paper, border: `1px solid ${T.rule}`,
+        borderRadius: 14, padding: '14px 16px 13px 19px', display: 'flex', flexDirection: 'column', gap: 9,
+        width: '100%', position: 'relative', overflow: 'hidden', transition: 'border-color 0.14s, transform 0.14s',
+      }}
+    >
+      <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: prioColor[w.priority] }} />
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 400 }}>
+          {displayLoc(w.location, es)}
         </span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.06em' }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.06em', flexShrink: 0 }}>
           {w.id.slice(0, 8)}
         </span>
       </div>
-
-      {/* description + submitter */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-        <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, fontWeight: 500, lineHeight: 1.4 }}>
-          {w.description}
+      <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, lineHeight: 1.42, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+        {w.description}
+      </span>
+      {showPro && <div><ProPill w={w} es={es} /></div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 1 }}>
+        <Avatar name={w.submittedByName || '?'} size={20} />
+        <span style={{ fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink2, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {(w.submittedByName || '').split(' ')[0] || (es ? 'Alguien' : 'Someone')}
         </span>
-        <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          {w.submitterPhotoPath && (
-            <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              📷 photo
-            </span>
-          )}
-          <span>
-            {w.submittedByName || 'Unknown'}
-            {w.submitterRole ? ` · ${w.submitterRole}` : ''}
-          </span>
-          <span style={{ color: T.ink3 }}>·</span>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>
-            {fmtSubmittedAt(w.createdAt)}
-          </span>
+        {w.submitterPhotoPath && <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.ink3 }}>📷</span>}
+        <span style={{ marginLeft: 'auto', fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, whiteSpace: 'nowrap', flexShrink: 0 }}>
+          {fmtSubmittedAt(w.createdAt).replace(' · today', '').replace(/ ago$/, '')}
         </span>
       </div>
-
-      {/* chevron */}
-      <span style={{
-        fontFamily: FONT_SERIF, fontSize: 24, color: T.ink2, fontStyle: 'italic',
-        letterSpacing: '-0.02em', lineHeight: 1,
-      }}>→</span>
     </button>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// ROW — History
-// ─────────────────────────────────────────────────────────────────────────
-function HistoryRow({ w }: { w: WorkOrder }) {
+// ── board column ────────────────────────────────────────────────────────────
+function Lane({
+  color, label, items, onOpen, enterId, es,
+}: {
+  color: string; label: string; items: WorkOrder[];
+  onOpen: (w: WorkOrder) => void; enterId: string | null; es: boolean;
+}) {
   return (
-    <div style={{
-      display: 'grid', gridTemplateColumns: '120px 1fr 130px 110px 80px',
-      gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`,
-      alignItems: 'center',
-    }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400 }}>
-          {displayLoc(w.location)}
-        </span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.04em' }}>{w.id.slice(0, 8)}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 2px 11px', borderBottom: `2px solid ${color}`, marginBottom: 12 }}>
+        <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>{label}</span>
+        <span style={{ marginLeft: 'auto', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color, lineHeight: 1 }}>{items.length}</span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-        <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.description}</span>
-        {w.completionNote && (
-          <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, fontStyle: 'italic' }}>
-            “{w.completionNote}”
-          </span>
-        )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+        {items.length === 0
+          ? <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 16, color: T.ink3, padding: '6px 2px' }}>{es ? 'Nada aquí.' : 'Nothing here.'}</span>
+          : items.map((w) => <OpenCard key={w.id} w={w} onOpen={onOpen} isEnter={w.id === enterId} es={es} />)}
       </div>
-      <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>
-        {w.completedByName || '—'}
-      </span>
-      <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>
-        {w.completedAt ? fmtDateShort(w.completedAt) : '—'}
-      </span>
-      <Pill tone="sage">✓ Done</Pill>
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// SUBMIT FORM — modal
-// ─────────────────────────────────────────────────────────────────────────
+// ── photo dropzone (holds a File, previews via object URL) ─────────────────
+function DropPhoto({
+  value, onChange, busy, es,
+}: {
+  value: File | null; onChange: (f: File | null) => void; busy?: boolean; es: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [drag, setDrag] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!value) { setUrl(null); return; }
+    const u = URL.createObjectURL(value);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [value]);
+
+  const take = (file: File | null | undefined) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    onChange(file);
+  };
+
+  if (value && url) {
+    return (
+      <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', border: `1px solid ${T.rule}`, background: T.bg }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt="" style={{ display: 'block', width: '100%', height: 188, objectFit: 'cover' }} />
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '20px 12px 9px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: 'linear-gradient(to top, rgba(31,35,28,0.62), transparent)' }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {busy ? (es ? 'Subiendo…' : 'Uploading…') : value.name}
+          </span>
+          <button type="button" onClick={() => onChange(null)} disabled={busy} style={{ flexShrink: 0, height: 28, padding: '0 12px', borderRadius: 999, cursor: busy ? 'wait' : 'pointer', background: 'rgba(255,255,255,0.92)', color: T.ink, border: 'none', fontFamily: FONT_SANS, fontSize: 12, fontWeight: 500 }}>
+            {es ? 'Quitar' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={(e) => { e.preventDefault(); setDrag(false); take(e.dataTransfer.files?.[0]); }}
+      style={{ cursor: 'pointer', borderRadius: 12, border: `1.5px dashed ${drag ? T.sageDeep : 'rgba(31,35,28,0.18)'}`, background: drag ? T.sageDim : T.bg, padding: '22px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, textAlign: 'center', transition: 'background 0.14s, border-color 0.14s' }}
+    >
+      <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={drag ? T.sageDeep : T.ink3} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="11" r="2" /><path d="M3 17l5-4 4 3 3-2 6 5" /></svg>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, fontWeight: 500 }}>{es ? 'Agregar foto' : 'Add a photo'}</span>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3 }}>{es ? 'Tómala o arrastra una imagen · opcional' : 'Snap it or drag an image here · optional'}</span>
+      <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={(e) => { take(e.target.files?.[0]); if (e.target) e.target.value = ''; }} style={{ display: 'none' }} />
+    </div>
+  );
+}
+
+// ── priority / placement chip chooser ──────────────────────────────────────
+function PlacementChips({ value, onChange, es }: { value: Placement; onChange: (v: Placement) => void; es: boolean }) {
+  const opts: { value: Placement; label: string }[] = [
+    { value: 'low',          label: es ? 'Baja'    : 'Low' },
+    { value: 'normal',       label: es ? 'Normal'  : 'Normal' },
+    { value: 'urgent',       label: es ? 'Urgente' : 'Urgent' },
+    { value: 'professional', label: es ? 'Llamar a un profesional' : 'Call in a professional' },
+  ];
+  return (
+    <ChipChoose<Placement>
+      options={opts}
+      value={value}
+      onChange={onChange}
+      render={(opt) => opt.value === 'professional'
+        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>☎ {opt.label}</span>
+        : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: prioColor[opt.value as WorkOrderPriority] }} />
+            {opt.label}
+          </span>}
+    />
+  );
+}
+
+// ── submit modal ────────────────────────────────────────────────────────────
 function SubmitModal({
   open, onClose, onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
   onSubmit: (args: {
-    location: string;
-    description: string;
-    priority: WorkOrderPriority;
-    photo: File | null;
-    equipmentId?: string | null;
-    repairCost?: number | null;
+    location: string; description: string; placement: Placement;
+    photo: File | null; equipmentId: string | null; repairCost: number | null;
   }) => Promise<void>;
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const es = lang === 'es';
   const [loc, setLoc] = useState('');
-  const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<WorkOrderPriority>('normal');
+  const [desc, setDesc] = useState('');
+  const [placement, setPlacement] = useState<Placement>('normal');
   const [photo, setPhoto] = useState<File | null>(null);
   const [equipmentId, setEquipmentId] = useState<string | null>(null);
   const [repairCost, setRepairCost] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const reset = () => {
-    setLoc(''); setDescription(''); setPriority('normal'); setPhoto(null);
-    setEquipmentId(null); setRepairCost('');
-  };
+  const reset = () => { setLoc(''); setDesc(''); setPlacement('normal'); setPhoto(null); setEquipmentId(null); setRepairCost(''); };
   const close = () => { reset(); onClose(); };
-
-  const canSubmit = loc.trim().length > 0 && description.trim().length > 0 && !busy;
+  const canSubmit = loc.trim().length > 0 && desc.trim().length > 0 && !busy;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -173,12 +285,8 @@ function SubmitModal({
     try {
       const rc = repairCost.trim() === '' ? null : Number(repairCost);
       await onSubmit({
-        location: loc.trim(),
-        description: description.trim(),
-        priority,
-        photo,
-        equipmentId,
-        repairCost: rc != null && Number.isFinite(rc) ? rc : null,
+        location: loc.trim(), description: desc.trim(), placement, photo,
+        equipmentId, repairCost: rc != null && Number.isFinite(rc) ? rc : null,
       });
       reset();
       onClose();
@@ -189,98 +297,45 @@ function SubmitModal({
 
   return (
     <Modal
-      open={open}
-      onClose={close}
-      title="What's broken?"
-      subtitle="Anyone on the team can submit. It goes straight to the open list."
+      open={open} onClose={close}
+      title={es ? '¿Qué se dañó?' : "What's broken?"}
+      subtitle={es ? 'Cualquiera del equipo puede enviarla. Va directo a la lista de abiertas.' : 'Anyone on the team can submit. It goes straight to the open list.'}
       width={580}
-      footer={
-        <>
-          <Btn variant="ghost" size="md" onClick={close}>Cancel</Btn>
-          <Btn
-            variant="primary"
-            size="md"
-            onClick={submit}
-            disabled={!canSubmit}
-            style={{ opacity: canSubmit ? 1 : 0.4 }}
-          >
-            {busy ? 'Submitting…' : 'Submit work order'}
-          </Btn>
-        </>
-      }
+      footer={<>
+        <Btn variant="ghost" onClick={close}>{es ? 'Cancelar' : 'Cancel'}</Btn>
+        <Btn variant="primary" disabled={!canSubmit} onClick={submit}>
+          {busy ? (es ? 'Enviando…' : 'Submitting…') : (es ? 'Enviar orden' : 'Submit work order')}
+        </Btn>
+      </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        {/* location */}
-        <Field label="Location" required hint="Room number, common area, anything specific.">
-          <TextInput value={loc} onChange={setLoc} placeholder='e.g. "Room 312" or "Lobby"' />
+        <Field label={es ? 'Ubicación' : 'Location'} required hint={es ? 'Número de habitación, área común, algo específico.' : 'Room number, common area, anything specific.'}>
+          <TextInput value={loc} onChange={setLoc} placeholder={es ? 'ej. "Habitación 312" o "Lobby"' : 'e.g. "Room 312" or "Lobby"'} />
         </Field>
-
-        {/* description */}
-        <Field label="What's wrong?" required hint="Plain words. The way you'd write it in the book.">
-          <TextArea
-            value={description}
-            onChange={setDescription}
-            placeholder="e.g. AC blowing warm air. Filter looked dirty."
-            rows={3}
-          />
+        <Field label={es ? '¿Qué pasa?' : "What's wrong?"} required hint={es ? 'En tus palabras. Como lo anotarías en el cuaderno.' : "Plain words. The way you'd write it in the book."}>
+          <TextArea value={desc} onChange={setDesc} placeholder={es ? 'ej. El aire sopla caliente. El filtro se veía sucio.' : 'e.g. AC blowing warm air. Filter looked dirty.'} rows={3} />
         </Field>
-
-        {/* priority */}
-        <Field label="Priority">
-          <ChipChoose<WorkOrderPriority>
-            options={[
-              { value: 'urgent', label: 'Urgent' },
-              { value: 'normal', label: 'Normal' },
-              { value: 'low',    label: 'Low'    },
-            ]}
-            value={priority}
-            onChange={setPriority}
-            render={(opt) => (
-              <>
-                <PrioDot p={opt.value} size={10} />
-                {opt.label}
-              </>
-            )}
-          />
+        <Field label={es ? 'Prioridad' : 'Priority'} hint={es ? 'Elige un carril — o pásala a un profesional externo.' : 'Pick a lane — or hand it to an outside professional.'}>
+          <PlacementChips value={placement} onChange={setPlacement} es={es} />
         </Field>
-
-        {/* equipment link (optional) */}
-        <Field
-          label={lang === 'es' ? 'Equipo (opcional)' : 'Equipment (optional)'}
-          hint={lang === 'es' ? 'El activo afectado' : 'The asset this is about'}
-        >
-          {activePropertyId && (
-            <EquipmentPicker pid={activePropertyId} value={equipmentId} onChange={setEquipmentId} lang={lang} />
-          )}
+        <Field label={es ? 'Equipo (opcional)' : 'Equipment (optional)'} hint={es ? 'El activo afectado' : 'The asset this is about'}>
+          {activePropertyId && <EquipmentPicker pid={activePropertyId} value={equipmentId} onChange={setEquipmentId} lang={lang} />}
         </Field>
-
-        {/* repair cost (optional) — powers per-asset total spend */}
-        <Field
-          label={lang === 'es' ? 'Costo de reparación ($, opcional)' : 'Repair cost ($, optional)'}
-          hint={lang === 'es' ? 'Si se conoce (cotización/proveedor)' : 'If known (quote / vendor)'}
-        >
+        <Field label={es ? 'Costo de reparación ($, opcional)' : 'Repair cost ($, optional)'} hint={es ? 'Si se conoce (cotización/proveedor)' : 'If known (quote / vendor)'}>
           <TextInput value={repairCost} onChange={setRepairCost} type="number" min={0} step="0.01" placeholder="—" />
         </Field>
-
-        {/* photo */}
-        <Field label="Photo" hint="Optional. A picture saves a thousand words.">
-          <PhotoSlot file={photo} onFileChange={setPhoto} />
+        <Field label={es ? 'Foto' : 'Photo'} hint={es ? 'Ayuda a quien lo arregla a saber qué encontrará.' : "Helps the fixer know what they're walking into."}>
+          <DropPhoto value={photo} onChange={setPhoto} es={es} />
         </Field>
-
-        {/* submitter (autofill) */}
-        <div style={{
-          background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10,
-          padding: '10px 14px',
-          display: 'flex', alignItems: 'center', gap: 12,
-        }}>
-          <Avatar name={user?.displayName || 'You'} tone="#688372" size={28} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
+        <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Avatar name={user?.displayName || 'You'} size={28} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>
-              Submitted by {user?.displayName || 'you'}
+              {es ? 'Enviado por' : 'Submitted by'} {user?.displayName || (es ? 'ti' : 'you')}
             </span>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              {roleLabel(user?.role)} · auto-filled · timestamp set on submit
-            </span>
+            <Caps size={10} tracking="0.06em" c={T.ink3}>
+              {roleLabel(user?.role, es)} · {es ? 'autocompletado · hora al enviar' : 'auto-filled · timestamp set on submit'}
+            </Caps>
           </div>
         </div>
       </div>
@@ -288,382 +343,363 @@ function SubmitModal({
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// DETAIL MODAL — view + mark done
-// ─────────────────────────────────────────────────────────────────────────
+// ── contractor panel (editable, shown when the order is in the pro lane) ────
+function ContractorPanel({
+  w, onSave, es,
+}: {
+  w: WorkOrder; onSave: (args: { trade: string; company: string; phone: string }) => Promise<void>; es: boolean;
+}) {
+  const [trade, setTrade] = useState(w.proTrade || '');
+  const [company, setCompany] = useState(w.proCompany || '');
+  const [phone, setPhone] = useState(w.proPhone || '');
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Re-sync when switching to a different order while the modal is mounted.
+  useEffect(() => { setTrade(w.proTrade || ''); setCompany(w.proCompany || ''); setPhone(w.proPhone || ''); setSavedAt(null); }, [w.id, w.proTrade, w.proCompany, w.proPhone]);
+
+  const dirty = trade !== (w.proTrade || '') || company !== (w.proCompany || '') || phone !== (w.proPhone || '');
+  const save = async () => {
+    setBusy(true);
+    try { await onSave({ trade: trade.trim(), company: company.trim(), phone: phone.trim() }); setSavedAt(Date.now()); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ background: T.purpleDim, border: '1px solid rgba(123,106,151,0.28)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <Caps size={10} c={T.purple} weight={600}>☎ {es ? 'Profesional' : 'Professional'}{w.proTrade ? ` · ${w.proTrade}` : ''}</Caps>
+        {w.proCalledAt && <Caps size={10} c={T.ink3}>{fmtSubmittedAt(w.proCalledAt)}</Caps>}
+      </div>
+      {!hasContractor(w) && (
+        <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2 }}>
+          {es ? 'Esta es para un contratista externo. Anota a quién llamaste.' : "This one's with an outside contractor. Note who you called."}
+        </span>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <Field label={es ? 'Oficio' : 'Trade'}><TextInput value={trade} onChange={setTrade} placeholder={es ? 'ej. Plomería' : 'e.g. Plumbing'} /></Field>
+        <Field label={es ? 'Empresa' : 'Company'}><TextInput value={company} onChange={setCompany} placeholder={es ? 'ej. Plomería Acme' : 'e.g. Acme Plumbing'} /></Field>
+      </div>
+      <Field label={es ? 'Teléfono' : 'Phone'}><TextInput value={phone} onChange={setPhone} type="tel" placeholder="(409) 555-0142" /></Field>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+        {savedAt && !dirty && <Caps size={10} c={T.sageDeep}>{es ? 'Guardado' : 'Saved'}</Caps>}
+        <Btn variant="sage" size="sm" disabled={busy || !dirty} onClick={save}>
+          {busy ? (es ? 'Guardando…' : 'Saving…') : (es ? 'Guardar contratista' : 'Save contractor')}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── detail modal ────────────────────────────────────────────────────────────
 function DetailModal({
-  w, open, onClose, onDone,
+  w, open, onClose, onDone, onSetPlacement, onAttachPhoto, onSaveContractor,
 }: {
   w: WorkOrder | null;
   open: boolean;
   onClose: () => void;
-  onDone: (id: string, args: { note: string; completionPhoto: File | null }) => Promise<void>;
+  onDone: (id: string, note: string) => Promise<void>;
+  onSetPlacement: (w: WorkOrder, v: Placement) => void;
+  onAttachPhoto: (id: string, file: File) => Promise<void>;
+  onSaveContractor: (id: string, args: { trade: string; company: string; phone: string }) => Promise<void>;
 }) {
+  const { lang } = useLang();
+  const es = lang === 'es';
   const [note, setNote] = useState('');
-  const [completionPhoto, setCompletionPhoto] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attaching, setAttaching] = useState(false);
 
-  useEffect(() => { if (!open) { setNote(''); setCompletionPhoto(null); setBusy(false); } }, [open]);
-
+  useEffect(() => { if (!open) { setNote(''); setBusy(false); setAttaching(false); } }, [open]);
   if (!w) return null;
 
-  const close = () => { setNote(''); setCompletionPhoto(null); onClose(); };
+  const placement = placementOf(w);
   const done = async () => {
     setBusy(true);
-    try {
-      await onDone(w.id, { note: note.trim(), completionPhoto });
-      setNote(''); setCompletionPhoto(null);
-      onClose();
-    } finally {
-      setBusy(false);
-    }
+    try { await onDone(w.id, note.trim()); setNote(''); onClose(); }
+    finally { setBusy(false); }
+  };
+  const attach = async (file: File | null) => {
+    if (!file) return;
+    setAttaching(true);
+    try { await onAttachPhoto(w.id, file); }
+    finally { setAttaching(false); }
   };
 
   return (
     <Modal
-      open={open}
-      onClose={close}
-      title={displayLoc(w.location)}
-      subtitle={w.id.slice(0, 8)}
-      width={580}
-      footer={
-        <>
-          <Btn variant="ghost" size="md" onClick={close}>Close</Btn>
-          <Btn variant="primary" size="md" onClick={done} disabled={busy}>
-            {busy ? 'Saving…' : '✓ Mark done'}
-          </Btn>
-        </>
-      }
+      open={open} onClose={onClose}
+      title={displayLoc(w.location, es)} subtitle={w.id.slice(0, 8)} width={580}
+      footer={<>
+        <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
+        <Btn variant="primary" disabled={busy} onClick={done}>{busy ? (es ? 'Guardando…' : 'Saving…') : (es ? '✓ Marcar lista' : '✓ Mark done')}</Btn>
+      </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        {/* priority + age */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <PrioPill p={w.priority} />
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-            Open · submitted {fmtSubmittedAt(w.createdAt)}
-          </span>
-        </div>
+        <Caps size={11} tracking="0.06em">{es ? 'Abierta · enviada' : 'Open · submitted'} {fmtSubmittedAt(w.createdAt)}</Caps>
 
-        {/* description */}
+        <Field label={es ? 'Prioridad' : 'Priority'}>
+          <PlacementChips value={placement} onChange={(v) => onSetPlacement(w, v)} es={es} />
+        </Field>
+
         <div>
-          <Caps>What&apos;s wrong</Caps>
-          <p style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, margin: '8px 0 0', lineHeight: 1.35, fontWeight: 400, letterSpacing: '-0.01em' }}>
-            {w.description}
-          </p>
+          <Caps>{es ? '¿Qué pasa?' : "What's wrong"}</Caps>
+          <p style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, margin: '8px 0 0', lineHeight: 1.35, fontWeight: 400 }}>{w.description}</p>
         </div>
 
-        {/* photo */}
-        {w.submitterPhotoPath && (
-          <div>
-            <Caps>Photo</Caps>
-            <div style={{ marginTop: 8 }}>
-              <StorageImage path={w.submitterPhotoPath} alt="submitter photo" />
-            </div>
-          </div>
+        <Field label={es ? 'Foto' : 'Photo'} hint={w.submitterPhotoPath ? undefined : (es ? 'Tómala o arrastra una — opcional.' : 'Snap or drag one in — optional.')}>
+          {w.submitterPhotoPath
+            ? <StorageImage path={w.submitterPhotoPath} alt="work order photo" />
+            : <DropPhoto value={null} onChange={attach} busy={attaching} es={es} />}
+        </Field>
+
+        {placement === 'professional' && (
+          <ContractorPanel w={w} es={es} onSave={(args) => onSaveContractor(w.id, args)} />
         )}
 
-        {/* submitter */}
-        <div style={{
-          background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10,
-          padding: '10px 14px',
-          display: 'flex', alignItems: 'center', gap: 12,
-        }}>
-          <Avatar name={w.submittedByName || '?'} tone={T.ink2} size={28} />
+        <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Avatar name={w.submittedByName || '?'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>
-              {w.submittedByName || 'Unknown'}
-            </span>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              {w.submitterRole || 'Staff'} · {fmtSubmittedAt(w.createdAt)}
-            </span>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.submittedByName || (es ? 'Desconocido' : 'Unknown')}</span>
+            <Caps size={10} tracking="0.06em" c={T.ink3}>{w.submitterRole || (es ? 'Personal' : 'Staff')} · {fmtSubmittedAt(w.createdAt)}</Caps>
           </div>
         </div>
 
-        {/* completion note */}
         <div style={{ padding: '18px 0 0', borderTop: `1px solid ${T.rule}` }}>
-          <Caps>When you&apos;re done</Caps>
+          <Caps>{es ? 'Cuando termines' : "When you're done"}</Caps>
           <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px', fontStyle: 'italic' }}>
-            Optional. Future-you will thank present-you for the note.
+            {es ? 'Opcional. El tú del futuro agradecerá la nota.' : 'Optional. Future-you will thank present-you for the note.'}
           </p>
-          <TextArea
-            value={note}
-            onChange={setNote}
-            placeholder={'e.g. "Replaced filter, unit is old, will need full replacement soon"'}
-            rows={2}
-          />
-          <div style={{ marginTop: 10 }}>
-            <PhotoSlot
-              file={completionPhoto}
-              onFileChange={setCompletionPhoto}
-              label="Completion photo (optional)"
-              height={100}
-            />
-          </div>
+          <TextArea value={note} onChange={setNote} placeholder={es ? 'ej. "Cambié el filtro, la unidad es vieja, pronto necesitará reemplazo"' : 'e.g. "Replaced filter, unit is old, will need full replacement soon"'} rows={2} />
         </div>
       </div>
     </Modal>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// HISTORY VIEW
-// ─────────────────────────────────────────────────────────────────────────
-function HistoryView({ orders, onBack }: { orders: WorkOrder[]; onBack: () => void }) {
-  const [q, setQ] = useState('');
-
-  const done = orders.filter(o => o.status === 'done');
-  const filtered = done.filter(o => {
-    if (!q) return true;
-    const hay = `${o.location} ${o.description} ${o.completedByName ?? ''} ${o.id}`.toLowerCase();
-    return hay.includes(q.toLowerCase());
-  });
-
+// ── history popup ────────────────────────────────────────────────────────────
+function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () => void; done: WorkOrder[]; es: boolean }) {
+  const cols = '120px 1fr 130px 96px 78px';
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18, gap: 24, flexWrap: 'wrap' }}>
+    <Modal
+      open={open} onClose={onClose}
+      title={es ? 'Historial de órdenes' : 'Work order history'}
+      subtitle={es ? `${done.length} resueltas · todo cerrado` : `${done.length} resolved · everything closed out`}
+      width={820}
+      footer={<Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>}
+    >
+      {done.length === 0 ? (
+        <p style={{ fontFamily: FONT_SERIF, fontSize: 20, color: T.ink3, fontStyle: 'italic', margin: '8px 0', textAlign: 'center' }}>
+          {es ? 'Nada cerrado aún.' : 'Nothing closed yet.'}
+        </p>
+      ) : (
         <div>
-          <Caps>Work orders · history</Caps>
-          <h1 style={{ fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400, whiteSpace: 'nowrap' }}>
-            <span style={{ fontStyle: 'italic' }}>{done.length} resolved</span>
-            <span style={{ color: T.ink3 }}> · everything ever done</span>
-          </h1>
-        </div>
-        <Btn variant="ghost" size="sm" onClick={onBack}>← Back to open</Btn>
-      </div>
-
-      <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '18px 24px' }}>
-        {/* search + date range + export */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 14, borderBottom: `1px solid ${T.rule}`, flexWrap: 'wrap' }}>
-          <input
-            type="text"
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            placeholder="Search room, description, or who fixed it…"
-            style={{
-              flex: 1, minWidth: 240, height: 36, padding: '0 14px', borderRadius: 10,
-              background: T.bg, border: `1px solid ${T.rule}`,
-              fontFamily: FONT_SANS, fontSize: 13, color: T.ink, outline: 'none',
-            }}
-          />
-          <Btn variant="ghost" size="sm">Date range ▾</Btn>
-          <Btn variant="ghost" size="sm">Export ↓</Btn>
-        </div>
-
-        {/* column headers */}
-        <div style={{
-          display: 'grid', gridTemplateColumns: '120px 1fr 130px 110px 80px',
-          gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`,
-        }}>
-          <Caps size={9}>Where</Caps>
-          <Caps size={9}>What & note</Caps>
-          <Caps size={9}>Fixed by</Caps>
-          <Caps size={9}>Completed</Caps>
-          <Caps size={9}>Status</Caps>
-        </div>
-
-        {filtered.length === 0 && (
-          <div style={{ padding: '40px 0', textAlign: 'center' }}>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink2, fontStyle: 'italic' }}>
-              {q ? 'Nothing matches that search.' : 'Nothing done yet.'}
-            </span>
+          <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '0 0 12px', borderBottom: `1px solid ${T.rule}` }}>
+            <Caps size={9}>{es ? 'Dónde' : 'Where'}</Caps>
+            <Caps size={9}>{es ? 'Qué y nota' : 'What & note'}</Caps>
+            <Caps size={9}>{es ? 'Resuelta por' : 'Fixed by'}</Caps>
+            <Caps size={9}>{es ? 'Completada' : 'Completed'}</Caps>
+            <Caps size={9}>{es ? 'Estado' : 'Status'}</Caps>
           </div>
-        )}
-        {filtered.map(w => <HistoryRow key={w.id} w={w} />)}
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// OPEN VIEW
-// ─────────────────────────────────────────────────────────────────────────
-function OpenView({
-  orders, onOpen, onShowHistory, onSubmit,
-}: {
-  orders: WorkOrder[];
-  onOpen: (w: WorkOrder) => void;
-  onShowHistory: () => void;
-  onSubmit: () => void;
-}) {
-  const open = orders.filter(o => o.status === 'open');
-  const done = orders.filter(o => o.status === 'done');
-
-  // Group by priority, oldest-first within each group.
-  const groups = prioOrder.map(p => ({
-    p,
-    items: open
-      .filter(o => o.priority === p)
-      .sort((a, b) =>
-        (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0)
-      ),
-  })).filter(g => g.items.length > 0);
-
-  return (
-    <div>
-      {/* header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18, gap: 24, flexWrap: 'wrap' }}>
-        <div>
-          <Caps>Work orders · today</Caps>
-          <h1 style={{ fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400, whiteSpace: 'nowrap' }}>
-            <span style={{ fontStyle: 'italic' }}>{open.length} open</span>
-            <span style={{ color: T.ink3 }}> · {done.length} done</span>
-          </h1>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="ghost" size="md" onClick={onShowHistory}>History ({done.length}) →</Btn>
-          <Btn variant="primary" size="md" onClick={onSubmit}>＋ New work order</Btn>
-        </div>
-      </div>
-
-      {/* empty state */}
-      {open.length === 0 && (
-        <div style={{
-          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-          padding: '48px 24px', textAlign: 'center',
-        }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', fontWeight: 400, lineHeight: 1.3 }}>
-            All caught up.
-          </span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
-            Nothing open. Nice work.
-          </p>
-          <Btn variant="primary" size="md" onClick={onSubmit}>＋ New work order</Btn>
+          {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => (
+            <div key={w.id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400 }}>{displayLoc(w.location, es)}</span>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{w.id.slice(0, 8)}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.description}</span>
+                {w.completionNote && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, fontStyle: 'italic' }}>“{w.completionNote}”</span>}
+              </div>
+              <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt) : '—'}</span>
+              <Pill tone="sage">✓ {es ? 'Lista' : 'Done'}</Pill>
+            </div>
+          ))}
         </div>
       )}
-
-      {/* priority groups */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-        {groups.map(g => (
-          <div key={g.p}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, padding: '0 4px' }}>
-              <PrioDot p={g.p} size={10} />
-              <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: prioColor[g.p], letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 600 }}>
-                {prioLabel[g.p]}
-              </span>
-              <span style={{ flex: 1, height: 1, background: T.rule }} />
-              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>
-                {g.items.length}
-              </span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {g.items.map(w => <OpenCard key={w.id} w={w} onOpen={onOpen} />)}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+    </Modal>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// ROOT
-// ─────────────────────────────────────────────────────────────────────────
+// ── root ─────────────────────────────────────────────────────────────────────
 export function WorkOrdersTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
-  const [orders, setOrders] = useState<WorkOrder[]>([]);
-  const [view, setView] = useState<'open' | 'history'>('open');
-  const [submitOpen, setSubmitOpen] = useState(false);
-  const [detail, setDetail] = useState<WorkOrder | null>(null);
+  const { lang } = useLang();
+  const es = lang === 'es';
 
-  // Subscribe to realtime work orders for the active property.
+  const [orders, setOrders] = useState<WorkOrder[]>([]);
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [enterId, setEnterId] = useState<string | null>(null);
+
+  const boardRef = useRef<HTMLDivElement>(null);
+  const flipRef = useRef<{ id: string; first: DOMRect } | null>(null);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
     const unsub = subscribeToWorkOrders(user.uid, activePropertyId, setOrders);
     return () => unsub();
   }, [user, activePropertyId]);
 
-  // Keep the open Detail modal's data fresh as orders update.
-  const detailRow = useMemo(
-    () => (detail ? orders.find(o => o.id === detail.id) ?? detail : null),
-    [detail, orders],
-  );
+  const open = useMemo(() => orders.filter((o) => o.status === 'open'), [orders]);
+  const doneList = useMemo(() => orders.filter((o) => o.status === 'done'), [orders]);
+  const detail = detailId ? orders.find((o) => o.id === detailId) ?? null : null;
 
-  // Upload a photo file to the maintenance-photos bucket. Returns the
-  // storage path on success, null on failure.
-  const uploadPhoto = async (file: File, kind: 'submitter' | 'completion'): Promise<string | null> => {
+  // Animation B — "lift · slide · drop": FLIP the moved card from its recorded
+  // position to wherever it lands after the board re-renders. Because the move
+  // round-trips through the DB, we keep the pending flip until the card has
+  // actually shifted (dx/dy ≠ 0), then consume it.
+  useLayoutEffect(() => {
+    const f = flipRef.current;
+    if (!f || !boardRef.current || reduceMotion()) return;
+    const node = boardRef.current.querySelector<HTMLElement>(`[data-wo-id="${f.id}"]`);
+    if (!node) return;
+    const last = node.getBoundingClientRect();
+    const dx = f.first.left - last.left, dy = f.first.top - last.top;
+    if (!dx && !dy) return; // hasn't moved yet — wait for the realtime update
+    flipRef.current = null;
+    node.style.zIndex = '5';
+    const a = node.animate([
+      { transform: `translate(${dx}px, ${dy}px) scale(1)`, boxShadow: '0 1px 2px rgba(31,35,28,0.06)' },
+      { transform: `translate(${dx}px, ${dy - 14}px) scale(1.05)`, boxShadow: '0 18px 32px rgba(31,35,28,0.20)', offset: 0.24 },
+      { transform: 'translate(0px, -14px) scale(1.05)', boxShadow: '0 18px 32px rgba(31,35,28,0.20)', offset: 0.64 },
+      { transform: 'translate(0,0) scale(1)', boxShadow: '0 1px 2px rgba(31,35,28,0.06)' },
+    ], { duration: 880, easing: 'cubic-bezier(0.5,0,0.2,1)' });
+    a.onfinish = () => { node.style.zIndex = ''; node.style.boxShadow = ''; };
+  });
+
+  const uploadPhoto = async (file: File): Promise<string | null> => {
     if (!activePropertyId) return null;
     const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
-    const path = `${activePropertyId}/${Date.now()}-${kind}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
-    const { error } = await supabase.storage
-      .from('maintenance-photos')
-      .upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false });
-    if (error) {
-      console.error('photo upload failed', error);
-      return null;
-    }
+    const path = `${activePropertyId}/${Date.now()}-submitter-${Math.random().toString(36).slice(2, 7)}.${ext}`;
+    const { error } = await supabase.storage.from('maintenance-photos').upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false });
+    if (error) { console.error('photo upload failed', error); return null; }
     return path;
   };
 
   const handleSubmit = async (args: {
-    location: string;
-    description: string;
-    priority: WorkOrderPriority;
-    photo: File | null;
-    equipmentId?: string | null;
-    repairCost?: number | null;
+    location: string; description: string; placement: Placement;
+    photo: File | null; equipmentId: string | null; repairCost: number | null;
   }) => {
     if (!user || !activePropertyId) return;
     let submitterPhotoPath: string | undefined;
-    if (args.photo) {
-      const path = await uploadPhoto(args.photo, 'submitter');
-      if (path) submitterPhotoPath = path;
-    }
-    await addWorkOrder(user.uid, activePropertyId, {
+    if (args.photo) { const p = await uploadPhoto(args.photo); if (p) submitterPhotoPath = p; }
+    const isPro = args.placement === 'professional';
+    const newId = await addWorkOrder(user.uid, activePropertyId, {
       propertyId: activePropertyId,
       location: args.location,
       description: args.description,
-      priority: args.priority,
+      priority: args.placement === 'professional' ? 'normal' : args.placement,
       status: 'open',
       submittedByName: user.displayName,
-      submitterRole: roleLabel(user.role),
+      submitterRole: roleLabel(user.role, es),
       submitterPhotoPath,
       equipmentId: args.equipmentId ?? null,
       repairCost: args.repairCost ?? null,
+      needsPro: isPro,
     });
+    // Trigger the "arrive & glow" once the new card mounts from the subscription.
+    if (newId) {
+      setEnterId(newId);
+      window.setTimeout(() => setEnterId((cur) => (cur === newId ? null : cur)), 1600);
+    }
   };
 
-  const handleDone = async (id: string, args: { note: string; completionPhoto: File | null }) => {
+  const handleDone = async (id: string, note: string) => {
     if (!user) return;
-    let completionPhotoPath: string | undefined;
-    if (args.completionPhoto) {
-      const path = await uploadPhoto(args.completionPhoto, 'completion');
-      if (path) completionPhotoPath = path;
-    }
     await markWorkOrderDone(id, {
       completedByName: user.displayName,
-      completionNote: args.note || undefined,
-      completionPhotoPath,
+      completionNote: note || undefined,
+    });
+    setDetailId(null);
+  };
+
+  const setPlacement = (w: WorkOrder, val: Placement) => {
+    if (!user || !activePropertyId) return;
+    if (placementOf(w) === val) return;
+    // Record the FLIP start position before the board re-renders.
+    const node = boardRef.current?.querySelector<HTMLElement>(`[data-wo-id="${w.id}"]`);
+    if (node) {
+      flipRef.current = { id: w.id, first: node.getBoundingClientRect() };
+      window.setTimeout(() => { if (flipRef.current?.id === w.id) flipRef.current = null; }, 2000);
+    }
+    setDetailId(null);
+    const patch = val === 'professional'
+      ? { needsPro: true }
+      : { priority: val, needsPro: false, proTrade: null, proCompany: null, proPhone: null, proCalledAt: null };
+    void updateWorkOrder(user.uid, activePropertyId, w.id, patch);
+  };
+
+  const attachPhoto = async (id: string, file: File) => {
+    if (!user || !activePropertyId) return;
+    const path = await uploadPhoto(file);
+    if (path) await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
+  };
+
+  const saveContractor = async (id: string, args: { trade: string; company: string; phone: string }) => {
+    if (!user || !activePropertyId) return;
+    await updateWorkOrder(user.uid, activePropertyId, id, {
+      needsPro: true,
+      proTrade: args.trade || null,
+      proCompany: args.company || null,
+      proPhone: args.phone || null,
+      proCalledAt: new Date(),
     });
   };
 
+  const laneItems = (p: Placement) => {
+    if (p === 'professional') {
+      return open.filter((o) => o.needsPro || hasContractor(o)).sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
+    }
+    return open.filter((o) => o.priority === p && !o.needsPro && !hasContractor(o)).sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
+  };
+
+  const lanes: { key: Placement; label: string }[] = [
+    { key: 'low',          label: es ? 'Baja'         : prioLabel.low },
+    { key: 'normal',       label: es ? 'Normal'       : prioLabel.normal },
+    { key: 'urgent',       label: es ? 'Urgente'      : prioLabel.urgent },
+    { key: 'professional', label: es ? 'Profesional'  : 'Professional' },
+  ];
+
   return (
-    <div style={{
-      padding: '24px 48px 48px', background: T.bg, color: T.ink,
-      fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
-    }}>
-      {view === 'open' ? (
-        <OpenView
-          orders={orders}
-          onOpen={(w) => setDetail(w)}
-          onShowHistory={() => setView('history')}
-          onSubmit={() => setSubmitOpen(true)}
-        />
+    <div style={{ padding: '28px 48px 64px', background: T.bg, color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+      <PageHead
+        eyebrow={es ? 'Órdenes de trabajo · hoy' : 'Work orders · today'}
+        lead={`${open.length} ${es ? 'abiertas' : 'open'}`}
+        rest={`${doneList.length} ${es ? 'listas' : 'done'}`}
+        actions={<>
+          <Btn variant="ghost" onClick={() => setHistoryOpen(true)}>{es ? 'Historial' : 'History'} ({doneList.length}) →</Btn>
+          <Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
+        </>}
+      />
+
+      {open.length === 0 ? (
+        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
+          <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Todo al día.' : 'All caught up.'}</span>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>{es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}</p>
+          <Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
+        </div>
       ) : (
-        <HistoryView orders={orders} onBack={() => setView('open')} />
+        <div ref={boardRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, alignItems: 'start' }}>
+          {lanes.map((l) => (
+            <Lane key={l.key} color={LANE_COLOR[l.key]} label={l.label} items={laneItems(l.key)} onOpen={(w) => setDetailId(w.id)} enterId={enterId} es={es} />
+          ))}
+        </div>
       )}
 
-      <SubmitModal
-        open={submitOpen}
-        onClose={() => setSubmitOpen(false)}
-        onSubmit={handleSubmit}
-      />
+      <SubmitModal open={submitOpen} onClose={() => setSubmitOpen(false)} onSubmit={handleSubmit} />
       <DetailModal
-        w={detailRow}
+        w={detail}
         open={!!detail}
-        onClose={() => setDetail(null)}
+        onClose={() => setDetailId(null)}
         onDone={handleDone}
+        onSetPlacement={setPlacement}
+        onAttachPhoto={attachPhoto}
+        onSaveContractor={saveContractor}
       />
+      <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} done={doneList} es={es} />
     </div>
   );
 }
