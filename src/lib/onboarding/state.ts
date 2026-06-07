@@ -8,6 +8,16 @@
 
 export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
+/**
+ * Placeholder name a property is created with when the admin generates an
+ * onboarding link WITHOUT naming the hotel (the lean admin flow — the
+ * owner names the hotel themselves in the wizard's "Hotel Details" step).
+ * The wizard UI shows a friendly fallback ("your hotel") while the stored
+ * name still equals this sentinel, and Step 4's PATCH overwrites it with
+ * the owner's real hotel name.
+ */
+export const PLACEHOLDER_HOTEL_NAME = 'New hotel';
+
 export interface OnboardingState {
   /**
    * Current step the wizard should resume to. Default 1 (welcome) for

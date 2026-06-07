@@ -21,6 +21,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { validateBody } from '@/app/api/admin/properties/create/route';
+import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
 
 // ─── HAPPY PATH ────────────────────────────────────────────────────────────
 
@@ -97,18 +98,31 @@ describe('validateBody — happy path', () => {
       assert.equal(result.values.ownerEmail, null);
     }
   });
+
+  test('accepts a BARE invite payload (no hotel details) — the lean admin flow', () => {
+    // The admin link-generator sends only invite fields; name / rooms /
+    // timezone are filled in by the owner during onboarding (Step 4).
+    const result = validateBody({ inviteRole: 'owner' });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.values.name, PLACEHOLDER_HOTEL_NAME);
+      assert.equal(result.values.totalRooms, 1);
+      assert.equal(result.values.timezone, 'America/Chicago');
+      assert.equal(result.values.inviteRole, 'owner');
+    }
+  });
 });
 
 // ─── NAME ──────────────────────────────────────────────────────────────────
 
 describe('validateBody — name field', () => {
-  test('rejects missing name', () => {
+  test('accepts MISSING name — the owner names the hotel in the wizard; we use a placeholder', () => {
     const result = validateBody({
       totalRooms: 50,
       timezone: 'America/Chicago',
     });
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.reason, /name/i);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.name, PLACEHOLDER_HOTEL_NAME);
   });
 
   test('rejects non-string name', () => {
@@ -198,6 +212,12 @@ describe('validateBody — totalRooms field (mirrors DB CHECK from Phase K)', ()
       assert.equal(result.ok, true, `totalRooms=${n} should pass`);
     }
   });
+
+  test('accepts MISSING totalRooms — defaults to 1 (owner sets the real count in the wizard)', () => {
+    const result = validateBody({ name: 'Test', timezone: 'America/Chicago' });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.totalRooms, 1);
+  });
 });
 
 // ─── TIMEZONE (mirrors Phase L IANA validator) ─────────────────────────────
@@ -238,13 +258,14 @@ describe('validateBody — timezone field', () => {
     assert.equal(result.ok, false);
   });
 
-  test('rejects empty timezone', () => {
+  test('accepts EMPTY timezone — defaults to America/Chicago (owner sets it in the wizard)', () => {
     const result = validateBody({
       name: 'Test',
       totalRooms: 50,
       timezone: '',
     });
-    assert.equal(result.ok, false);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.timezone, 'America/Chicago');
   });
 
   test('rejects non-string timezone', () => {

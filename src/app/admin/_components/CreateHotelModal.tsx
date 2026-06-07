@@ -1,27 +1,28 @@
 'use client';
 
 /**
- * Phase M1 (2026-05-14) — admin "Create new hotel" modal.
+ * Admin "Invite a hotel" modal.
  *
- * The only path that creates a property in the product. Posts to
- * /api/admin/properties/create which:
- *   1. Inserts the property with the admin as owner_id placeholder
- *   2. Mints a single-use, 7-day owner-role join code
+ * Phase M1 (2026-05-14) created hotels here by keying in name + rooms +
+ * timezone + PMS + brand. Reworked 2026-06-07 into a LEAN invite generator:
+ * at 300+ hotels the admin shouldn't hand-key each property's details. This
+ * screen now does exactly one thing — generate (or email) a single-use
+ * onboarding link. The hotel's owner enters their hotel name, room count,
+ * timezone, and connects their PMS THEMSELVES during the onboarding wizard
+ * (Step 4 "Hotel Details" + Step 6 "Connect PMS").
+ *
+ * Posts to /api/admin/properties/create which:
+ *   1. Creates the property with a PLACEHOLDER name (owner renames it in the
+ *      wizard) + the admin as owner_id placeholder
+ *   2. Mints a single-use, 7-day owner/GM-role join code
  *   3. Returns the join code + signup URL for the admin to share
  *
- * UI design intent: the form is intentionally short (5 required fields,
- * 4 optional). At 300 hotels we're going to fill this out 3+ times a day
- * — every extra field is friction. PMS connection, billing, branding can
- * happen post-creation in the per-property triage view.
- *
- * The signup URL is shown after success in a copyable block. Owner gets
- * the URL out-of-band (Slack, email — admin's choice).
+ * The signup URL is shown after success in a copyable block (or emailed).
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { X, Building2, Check, Copy, AlertCircle } from 'lucide-react';
-import { parseRoomList } from '@/lib/api-validate';
 import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn } from './_snow';
 
 interface Props {
@@ -36,7 +37,6 @@ interface CreatedResult {
   signupUrl: string | null;
   expiresAt: string | null;
   warning?: string;
-  // Phase M1.5 additions:
   emailSent?: boolean;
   emailError?: string | null;
   inviteRole?: 'owner' | 'general_manager';
@@ -44,51 +44,9 @@ interface CreatedResult {
 
 type DeliveryMode = 'copy' | 'email';
 
-// Browser default timezone (admin's local) is the right initial guess —
-// most Staxis admins create hotels in their own timezone or near-by.
-function defaultTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Chicago';
-  } catch {
-    return 'America/Chicago';
-  }
-}
-
-// Curated list of common US hotel timezones, plus the user's detected
-// browser timezone if it isn't already in the list. Full IANA list via
-// Intl.supportedValuesOf is 400+ entries which is overkill for a hotel
-// admin form — they'd scroll forever. The "Other..." escape hatch lets
-// them type any IANA name they need.
-function buildTimezoneOptions(detected: string): string[] {
-  const common = [
-    'America/New_York',     // Eastern
-    'America/Chicago',      // Central
-    'America/Denver',       // Mountain
-    'America/Phoenix',      // Mountain (no DST — Arizona)
-    'America/Los_Angeles',  // Pacific
-    'America/Anchorage',    // Alaska
-    'Pacific/Honolulu',     // Hawaii
-    'America/Puerto_Rico',  // Atlantic
-    'UTC',
-  ];
-  if (!common.includes(detected)) common.unshift(detected);
-  return common;
-}
-
 export function CreateHotelModal({ open, onClose, onCreated }: Props) {
-  const [name, setName] = useState('');
-  const [totalRooms, setTotalRooms] = useState<number | ''>('');
-  const [roomNumbersInput, setRoomNumbersInput] = useState('');
-  const initialTz = defaultTimezone();
-  const [timezone, setTimezone] = useState(initialTz);
-  const [tzMode, setTzMode] = useState<'preset' | 'custom'>('preset');
-  const [customTz, setCustomTz] = useState('');
-  const [pmsType, setPmsType] = useState<string>('');
-  const [brand, setBrand] = useState('');
-  const [propertyKind, setPropertyKind] = useState('limited_service');
   const [ownerEmail, setOwnerEmail] = useState('');
   const [isTest, setIsTest] = useState(false);
-  // Phase M1.5: invite role + delivery mode
   const [inviteRole, setInviteRole] = useState<'owner' | 'general_manager'>('owner');
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('copy');
 
@@ -97,29 +55,9 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
   const [result, setResult] = useState<CreatedResult | null>(null);
   const [copied, setCopied] = useState<'code' | 'url' | null>(null);
 
-  // Live preview of the parsed room list. Empty input → null preview
-  // (nothing shown). Parse error → red helper text. Match/mismatch
-  // with totalRooms → green/amber feedback.
-  //
-  // MUST be declared before the `if (!open)` early return — Rules of
-  // Hooks require hook calls in the exact same order each render.
-  const roomNumbersPreview = useMemo(() => {
-    const trimmed = roomNumbersInput.trim();
-    if (!trimmed) return null;
-    const parsed = parseRoomList(trimmed);
-    if (parsed.error) return { kind: 'error' as const, message: parsed.error };
-    const list = parsed.value ?? [];
-    const dupes = list.length - new Set(list).size;
-    if (dupes > 0) return { kind: 'error' as const, message: `${dupes} duplicate room number${dupes === 1 ? '' : 's'} — remove the duplicates.` };
-    return { kind: 'ok' as const, list };
-  }, [roomNumbersInput]);
-
   if (!open) return null;
 
   const reset = () => {
-    setName(''); setTotalRooms(''); setRoomNumbersInput('');
-    setTimezone(initialTz); setTzMode('preset');
-    setCustomTz(''); setPmsType(''); setBrand(''); setPropertyKind('limited_service');
     setOwnerEmail(''); setIsTest(false);
     setInviteRole('owner'); setDeliveryMode('copy');
     setSubmitting(false); setError(null); setResult(null); setCopied(null);
@@ -129,31 +67,13 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
 
   const submit = async () => {
     setError(null);
-    const finalTz = tzMode === 'custom' ? customTz.trim() : timezone;
-    if (!name.trim() || name.trim().length < 3) { setError('Name must be at least 3 characters.'); return; }
-    if (typeof totalRooms !== 'number' || totalRooms < 1) { setError('Total rooms must be at least 1.'); return; }
-    if (!finalTz) { setError('Timezone is required.'); return; }
-    // Phase M1.5: if delivery is "email", the email field is required.
+    // The only thing this flow validates: when delivering by email, an
+    // email address is required. Everything else (hotel name, room count,
+    // timezone, PMS…) is collected from the owner during onboarding.
     if (deliveryMode === 'email') {
       const emailTrimmed = ownerEmail.trim();
       if (!emailTrimmed || !emailTrimmed.includes('@')) {
         setError('Email is required when sending the invite by email.');
-        return;
-      }
-    }
-
-    // Room numbers — optional. If provided, must parse cleanly and match
-    // totalRooms. Server re-validates so we can't bypass; this is the
-    // first-line UX so the operator gets feedback before hitting submit.
-    let roomNumbers: string[] = [];
-    if (roomNumbersInput.trim().length > 0) {
-      if (!roomNumbersPreview || roomNumbersPreview.kind === 'error') {
-        setError(`Fix the room number list: ${roomNumbersPreview?.message ?? 'invalid input'}`);
-        return;
-      }
-      roomNumbers = roomNumbersPreview.list;
-      if (roomNumbers.length !== totalRooms) {
-        setError(`Room numbers list has ${roomNumbers.length} entries but Total rooms is ${totalRooms}. They must match.`);
         return;
       }
     }
@@ -164,17 +84,10 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim(),
-          totalRooms,
-          timezone: finalTz,
-          pmsType: pmsType || undefined,
-          brand: brand.trim() || undefined,
-          propertyKind,
           isTest,
           ownerEmail: ownerEmail.trim() || undefined,
           inviteRole,
           sendEmail: deliveryMode === 'email',
-          ...(roomNumbers.length > 0 ? { roomNumbers } : {}),
         }),
       });
       const json = await res.json();
@@ -197,12 +110,10 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
       setCopied(kind);
       setTimeout(() => setCopied(null), 1500);
     } catch {
-      // clipboard API rejects in non-secure contexts; fall back to alert.
+      // clipboard API rejects in non-secure contexts; fall back to prompt.
       window.prompt('Copy this:', text);
     }
   };
-
-  const tzOptions = buildTimezoneOptions(initialTz);
 
   return (
     <div
@@ -228,14 +139,14 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         }}>
           <div>
-            <Caps>{result ? 'Hotel created' : 'New hotel'}</Caps>
+            <Caps>{result ? 'Invite created' : 'Invite a hotel'}</Caps>
             <h2 style={{
               fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
               letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
               lineHeight: 1.15, display: 'flex', alignItems: 'center', gap: 8,
             }}>
               <Building2 size={18} color={T.caramelDeep} />
-              {result ? 'Send the' : 'Add a'} <span style={{ fontStyle: 'italic' }}>{result ? 'signup link' : 'new hotel'}</span>
+              {result ? 'Send the' : 'Generate an'} <span style={{ fontStyle: 'italic' }}>{result ? 'signup link' : 'onboarding link'}</span>
             </h2>
           </div>
           <button
@@ -268,125 +179,15 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                 </div>
               )}
 
-              <Field label="Hotel name *">
-                <input
-                  type="text" value={name} onChange={(e) => setName(e.target.value)}
-                  className="input" placeholder="e.g. Hampton Inn Beaumont"
-                  maxLength={100}
-                />
-              </Field>
+              <p style={{
+                fontSize: 13.5, color: T.ink2, lineHeight: 1.6, margin: '0 0 18px',
+                fontFamily: FONT_SERIF, fontStyle: 'italic',
+              }}>
+                Generate a one-time link and send it to the hotel. They enter their
+                hotel name, room count, and connect their PMS themselves during
+                onboarding — you don&apos;t fill any of that in here.
+              </p>
 
-              <Field label="Total rooms *">
-                <input
-                  type="number" value={totalRooms} onChange={(e) => {
-                    const v = e.target.value;
-                    setTotalRooms(v === '' ? '' : Number(v));
-                  }}
-                  className="input" placeholder="e.g. 80"
-                  min={1} max={2000}
-                />
-              </Field>
-
-              <Field label="Room numbers (optional)">
-                <textarea
-                  value={roomNumbersInput}
-                  onChange={(e) => setRoomNumbersInput(e.target.value)}
-                  className="input"
-                  placeholder="e.g. 101-112, 114-122, 201-222 (commas + ranges OK; leave blank to capture later via PMS)"
-                  rows={3}
-                  style={{ resize: 'vertical', minHeight: '60px', fontFamily: 'monospace', fontSize: '12px' }}
-                />
-                {roomNumbersPreview && (
-                  <div style={{
-                    marginTop: 6,
-                    fontFamily: FONT_MONO,
-                    fontSize: 11,
-                    letterSpacing: '0.04em',
-                    color:
-                      roomNumbersPreview.kind === 'error'
-                        ? T.warm
-                        : (typeof totalRooms === 'number' && roomNumbersPreview.list.length === totalRooms
-                            ? T.sageDeep
-                            : T.caramelDeep),
-                  }}>
-                    {roomNumbersPreview.kind === 'error'
-                      ? roomNumbersPreview.message
-                      : typeof totalRooms === 'number' && roomNumbersPreview.list.length === totalRooms
-                        ? `✓ ${roomNumbersPreview.list.length} rooms — matches Total rooms`
-                        : `Parsed ${roomNumbersPreview.list.length} rooms${typeof totalRooms === 'number' ? ` — Total rooms says ${totalRooms} (must match)` : ''}`}
-                  </div>
-                )}
-                <p style={{ marginTop: 4, fontSize: 11.5, color: T.ink3, fontStyle: 'italic', fontFamily: FONT_SERIF, lineHeight: 1.5 }}>
-                  Master list of every room number at this property. Without it, vacant-clean rooms
-                  won&apos;t render on the Rooms tab until the PMS syncs. Most US hotels skip 13s:
-                  101&ndash;112, 114&ndash;122 etc.
-                </p>
-              </Field>
-
-              <Field label="Timezone *">
-                {tzMode === 'preset' ? (
-                  <>
-                    <select
-                      value={timezone}
-                      onChange={(e) => {
-                        if (e.target.value === '__other__') { setTzMode('custom'); }
-                        else setTimezone(e.target.value);
-                      }}
-                      className="input"
-                    >
-                      {tzOptions.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
-                      <option value="__other__">Other (enter IANA name)…</option>
-                    </select>
-                  </>
-                ) : (
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      type="text" value={customTz} onChange={(e) => setCustomTz(e.target.value)}
-                      className="input" placeholder="e.g. Europe/Madrid"
-                      style={{ flex: 1 }}
-                    />
-                    <Btn variant="ghost" size="md" onClick={() => setTzMode('preset')}>
-                      Pick from list
-                    </Btn>
-                  </div>
-                )}
-              </Field>
-
-              <div style={{ height: 1, background: T.rule, margin: '18px 0' }} />
-              <Caps style={{ marginBottom: 12, display: 'block' }}>Optional</Caps>
-
-              <Field label="PMS">
-                <select
-                  value={pmsType} onChange={(e) => setPmsType(e.target.value)}
-                  className="input"
-                >
-                  <option value="">— None / set up later —</option>
-                  <option value="choice_advantage">Choice Advantage</option>
-                  <option value="manual_csv">Manual CSV upload</option>
-                </select>
-              </Field>
-
-              <Field label="Brand">
-                <input
-                  type="text" value={brand} onChange={(e) => setBrand(e.target.value)}
-                  className="input" placeholder="e.g. Marriott, Hilton, IHG"
-                  maxLength={100}
-                />
-              </Field>
-
-              <Field label="Property kind">
-                <select
-                  value={propertyKind} onChange={(e) => setPropertyKind(e.target.value)}
-                  className="input"
-                >
-                  <option value="limited_service">Limited service</option>
-                  <option value="full_service">Full service</option>
-                  <option value="extended_stay">Extended stay</option>
-                  <option value="resort">Resort</option>
-                </select>
-              </Field>
-
-              <div style={{ height: 1, background: T.rule, margin: '18px 0' }} />
               <Caps style={{ marginBottom: 12, display: 'block' }}>
                 Invite the {inviteRole === 'owner' ? 'owner' : 'general manager'}
               </Caps>
@@ -451,10 +252,10 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                 <Btn
                   variant="primary" size="md"
                   onClick={submit}
-                  disabled={submitting || !name.trim() || totalRooms === '' || totalRooms < 1}
+                  disabled={submitting}
                   style={{ flex: 1, justifyContent: 'center' }}
                 >
-                  {submitting ? 'Creating…' : 'Create hotel'}
+                  {submitting ? 'Creating…' : (deliveryMode === 'email' ? 'Create & email link' : 'Create & copy link')}
                 </Btn>
               </div>
             </>
@@ -484,8 +285,8 @@ function SuccessView({
       }}>
         <Check size={16} />
         {result.emailSent
-          ? 'Hotel created and invite emailed. Link below is a copyable backup — expires in 7 days.'
-          : 'Hotel created. Send the owner the signup link below — it expires in 7 days.'}
+          ? 'Invite emailed. Link below is a copyable backup — expires in 7 days.'
+          : 'Onboarding link ready. Send it to the hotel — it expires in 7 days.'}
       </div>
 
       {result.emailSent === false && result.emailError && (

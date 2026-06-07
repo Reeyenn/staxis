@@ -35,6 +35,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { Loader2, Check, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles } from 'lucide-react';
+import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
 
 // ─── Types mirroring the wizard API response ───────────────────────────
 
@@ -116,7 +117,17 @@ function OnboardWizard() {
         router.push('/dashboard');
         return;
       }
-      setWizard(data);
+      // The lean admin flow creates hotels with a placeholder name the
+      // owner hasn't replaced yet (they do it in Step 4). Show a friendly
+      // fallback in the welcome/header/celebration instead of the raw
+      // placeholder; Step 4's own prefill stays empty so they type theirs.
+      setWizard({
+        ...data,
+        propertyName:
+          data.propertyName && data.propertyName !== PLACEHOLDER_HOTEL_NAME
+            ? data.propertyName
+            : 'your hotel',
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error loading invite');
     } finally {
@@ -414,7 +425,7 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
 
 function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
   const d = wizard.hotelDefaults;
-  const [name, setName] = useState(d?.name ?? '');
+  const [name, setName] = useState(d?.name && d.name !== PLACEHOLDER_HOTEL_NAME ? d.name : '');
   const [totalRooms, setTotalRooms] = useState<number>(d?.totalRooms ?? 0);
   const [timezone, setTimezone] = useState(d?.timezone ?? 'America/Chicago');
   const [brand, setBrand] = useState(d?.brand ?? '');

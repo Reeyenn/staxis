@@ -49,6 +49,7 @@ import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
 import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
 import { validateRoomNumbers } from '@/lib/api-validate';
 import { env } from '@/lib/env';
+import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -124,15 +125,38 @@ function isValidIANATimezone(tz: string): boolean {
 }
 
 export function validateBody(body: CreateBody): ValidationResult | { ok: false; reason: string } {
-  if (typeof body.name !== 'string' || body.name.trim().length < 3 || body.name.length > 100) {
-    return { ok: false, reason: 'name must be a string between 3 and 100 characters' };
+  // name — OPTIONAL in the lean admin flow. The owner names the hotel
+  // themselves in the wizard (Step 4 "Hotel Details"), so the admin
+  // link-generator no longer collects it. When provided it must be valid;
+  // when omitted/blank we create with a placeholder the owner overwrites.
+  let name = PLACEHOLDER_HOTEL_NAME;
+  if (body.name !== undefined && body.name !== null && body.name !== '') {
+    if (typeof body.name !== 'string' || body.name.trim().length < 3 || body.name.length > 100) {
+      return { ok: false, reason: 'name must be a string between 3 and 100 characters' };
+    }
+    name = body.name.trim();
   }
-  if (typeof body.totalRooms !== 'number' || !Number.isInteger(body.totalRooms) ||
-      body.totalRooms < 1 || body.totalRooms > 2000) {
-    return { ok: false, reason: 'totalRooms must be an integer between 1 and 2000' };
+
+  // totalRooms — OPTIONAL (owner sets it in the wizard). Default 1 — the DB
+  // CHECK requires > 0 and the wizard's Step 4 overwrites it with the real
+  // room count. A provided value is still strictly validated.
+  let totalRooms = 1;
+  if (body.totalRooms !== undefined && body.totalRooms !== null && body.totalRooms !== '') {
+    if (typeof body.totalRooms !== 'number' || !Number.isInteger(body.totalRooms) ||
+        body.totalRooms < 1 || body.totalRooms > 2000) {
+      return { ok: false, reason: 'totalRooms must be an integer between 1 and 2000' };
+    }
+    totalRooms = body.totalRooms;
   }
-  if (typeof body.timezone !== 'string' || !isValidIANATimezone(body.timezone)) {
-    return { ok: false, reason: `timezone must be a valid IANA name (got: ${String(body.timezone)})` };
+
+  // timezone — OPTIONAL (owner sets it in the wizard). Default America/Chicago.
+  // A provided value is still validated against the IANA database.
+  let timezone = 'America/Chicago';
+  if (body.timezone !== undefined && body.timezone !== null && body.timezone !== '') {
+    if (typeof body.timezone !== 'string' || !isValidIANATimezone(body.timezone)) {
+      return { ok: false, reason: `timezone must be a valid IANA name (got: ${String(body.timezone)})` };
+    }
+    timezone = body.timezone;
   }
 
   // Optional fields.
@@ -201,10 +225,10 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
     const r = validateRoomNumbers(body.roomNumbers, { label: 'roomNumbers' });
     if (r.error) return { ok: false, reason: r.error };
     roomNumbers = r.value!;
-    if (roomNumbers.length > 0 && roomNumbers.length !== body.totalRooms) {
+    if (roomNumbers.length > 0 && roomNumbers.length !== totalRooms) {
       return {
         ok: false,
-        reason: `roomNumbers count (${roomNumbers.length}) must match totalRooms (${body.totalRooms}). ` +
+        reason: `roomNumbers count (${roomNumbers.length}) must match totalRooms (${totalRooms}). ` +
                 `Either fix the list or change totalRooms.`,
       };
     }
@@ -213,9 +237,9 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
   return {
     ok: true,
     values: {
-      name: body.name.trim(),
-      totalRooms: body.totalRooms,
-      timezone: body.timezone,
+      name,
+      totalRooms,
+      timezone,
       pmsType,
       brand,
       propertyKind,
@@ -427,7 +451,10 @@ export async function POST(req: NextRequest) {
   if (v.sendEmail && v.ownerEmail) {
     const emailResult = await sendOnboardingInvite({
       to: v.ownerEmail,
-      hotelName: v.name,
+      // The lean flow doesn't collect a hotel name up front — keep the
+      // invite email reading naturally ("set up your hotel") until the
+      // owner names it in the wizard.
+      hotelName: v.name === PLACEHOLDER_HOTEL_NAME ? 'your hotel' : v.name,
       signupUrl,
       inviteRole: v.inviteRole,
       expiresAt: joinCodeRow.expires_at,
