@@ -12,6 +12,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import { transition } from '@/lib/housekeeper-workflow/state-machine';
 
 export const runtime = 'nodejs';
@@ -70,39 +71,23 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Conditional UPDATE: row must still be in_progress AND paused. Race
-  // window: complete-clean could have closed the room while the user
-  // tapped Resume on a stale UI.
-  const { data: updated, error: updErr } = await supabaseAdmin
-    .from('rooms')
-    .update({
-      is_paused: false,
-      paused_at: null,
-      total_paused_seconds: result.next.totalPausedSeconds,
-    })
-    .eq('id', body.roomId)
-    .eq('status', 'in_progress')
-    .eq('is_paused', true)
-    .select('id');
-  if (updErr) {
-    log.error('resume-clean: room update failed', {
+  // Persist to the pms assignment row (Plan-v4; migration 0269).
+  const w = await writeWorkflowFields(gate.pid, body.roomId, {
+    is_paused: false,
+    paused_at: null,
+    total_paused_seconds: result.next.totalPausedSeconds,
+  });
+  if (!w.ok) {
+    log.error('resume-clean: write failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(updErr),
+      err: w.error,
     });
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
-      headers: gate.headers,
-    });
-  }
-  if (!updated || updated.length === 0) {
-    return err('room state changed', {
-      requestId: gate.requestId,
-      status: 409,
-      code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
   }

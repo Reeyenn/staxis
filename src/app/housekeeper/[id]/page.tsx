@@ -581,14 +581,13 @@ export default function HousekeeperRoomPage({
       if (!pid) return;
       setSavingReset(room.id);
       try {
-        const res = await fetch('/api/housekeeper/room-action', {
+        const res = await fetch('/api/housekeeper/reset-clean', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             pid,
             staffId: housekeeperId,
             roomId: room.id,
-            action: 'reset',
           }),
         });
         const json = await res.json().catch(() => ({}));
@@ -1244,7 +1243,7 @@ export default function HousekeeperRoomPage({
         </div>
         ) : (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: '#fff' }}>
-            <MessagesTab lang={lang} onUnreadChange={setMessagesUnread} />
+            <MessagesTab pid={pid} staffId={housekeeperId} lang={lang} onUnreadChange={setMessagesUnread} />
           </div>
         )}
 

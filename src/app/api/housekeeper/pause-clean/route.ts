@@ -18,6 +18,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 import { transition } from '@/lib/housekeeper-workflow/state-machine';
 
 export const runtime = 'nodejs';
@@ -77,38 +78,22 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Conditional UPDATE: only set is_paused=true if the row is still
-  // in_progress AND not already paused. A racing complete-clean tap
-  // could have flipped the room to 'clean' between our read and write —
-  // applying is_paused=true to that row would leave a clean room
-  // erroneously marked as paused.
-  const { data: updated, error: updErr } = await supabaseAdmin
-    .from('rooms')
-    .update({ is_paused: true, paused_at: now })
-    .eq('id', body.roomId)
-    .eq('status', 'in_progress')
-    .eq('is_paused', false)
-    .select('id');
-
-  if (updErr) {
-    log.error('pause-clean: room update failed', {
+  // Persist to the pms assignment row (Plan-v4; migration 0269).
+  const w = await writeWorkflowFields(gate.pid, body.roomId, {
+    is_paused: true,
+    paused_at: now,
+  });
+  if (!w.ok) {
+    log.error('pause-clean: write failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(updErr),
+      err: w.error,
     });
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
-      headers: gate.headers,
-    });
-  }
-  if (!updated || updated.length === 0) {
-    return err('room state changed', {
-      requestId: gate.requestId,
-      status: 409,
-      code: ApiErrorCode.ValidationFailed,
       headers: gate.headers,
     });
   }

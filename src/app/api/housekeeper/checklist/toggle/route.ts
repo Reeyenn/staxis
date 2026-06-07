@@ -21,6 +21,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -69,20 +70,21 @@ export async function POST(req: NextRequest): Promise<Response> {
     ? body.checked
     : !currentList.includes(body.itemId);
 
-  const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc(
-    'staxis_checklist_toggle',
-    {
-      p_room_id: body.roomId,
-      p_item_id: body.itemId,
-      p_checked: nextChecked,
-    },
-  );
-  if (rpcErr) {
-    log.error('checklist-toggle: rpc failed', {
+  // Plan-v4: persist checklist progress on the pms assignment row
+  // (migration 0269) instead of the legacy `rooms` jsonb + RPC.
+  const nextList = nextChecked
+    ? Array.from(new Set([...currentList, body.itemId]))
+    : currentList.filter((x) => x !== body.itemId);
+
+  const w = await writeWorkflowFields(gate.pid, body.roomId, {
+    checklist_progress: nextList,
+  });
+  if (!w.ok) {
+    log.error('checklist-toggle: write failed', {
       requestId: gate.requestId,
       pid: gate.pid,
       staffId: gate.staffId,
-      err: errToString(rpcErr),
+      err: w.error,
     });
     return err('Internal server error', {
       requestId: gate.requestId,
@@ -92,30 +94,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  type ToggleRow = {
-    new_checked_count: number;
-    is_checked: boolean;
-    template_mismatch: boolean;
-  };
-  const row = Array.isArray(rpcResult) && rpcResult.length > 0
-    ? (rpcResult[0] as ToggleRow)
-    : null;
-
-  if (row?.template_mismatch) {
-    return err('checklist item does not belong to this room\'s template', {
-      requestId: gate.requestId,
-      status: 409,
-      code: ApiErrorCode.ValidationFailed,
-      headers: gate.headers,
-    });
-  }
-
   return ok(
     {
       roomId: body.roomId,
       itemId: body.itemId,
-      checked: row?.is_checked ?? nextChecked,
-      checkedCount: row?.new_checked_count ?? 0,
+      checked: nextChecked,
+      checkedCount: nextList.length,
     },
     { requestId: gate.requestId, headers: gate.headers },
   );

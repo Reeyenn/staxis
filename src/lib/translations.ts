@@ -93,6 +93,7 @@ type TranslationKey =
   | 'hkTabRooms' | 'hkTabMessages' | 'hkNewMessage' | 'hkBack' | 'hkSend'
   | 'hkMessagePlaceholder' | 'hkSearchPeople' | 'hkPeople' | 'hkOnlyManagersPost'
   | 'hkFromManagement' | 'hkMembers' | 'hkDirectMessage' | 'hkJustNow' | 'hkAnnouncementsFromMgmt'
+  | 'hkNoMessages'
   // Navigation
   | 'dashboard' | 'morningSetup' | 'rooms' | 'analytics' | 'roi' | 'settings' | 'staffing' | 'maintenance'
   // Room status / type / priority
@@ -709,6 +710,7 @@ const translations: TranslationMaps = {
     hkDirectMessage: 'Direct message',
     hkJustNow: 'Just now',
     hkAnnouncementsFromMgmt: 'Announcements from management',
+    hkNoMessages: 'No messages yet',
     hkUndoShort: 'Undo',
     hkCompleteShort: 'Complete',
     hkOffline: "You're offline. Changes won't save until you're back online.",
@@ -1528,6 +1530,7 @@ const translations: TranslationMaps = {
     hkDirectMessage: 'Mensaje directo',
     hkJustNow: 'Ahora mismo',
     hkAnnouncementsFromMgmt: 'Anuncios de la gerencia',
+    hkNoMessages: 'Sin mensajes aún',
     hkUndoShort: 'Quitar',
     hkCompleteShort: 'Completar',
     hkOffline: 'Sin conexión. Tus cambios no se guardarán hasta volver a estar en línea.',
@@ -2097,6 +2100,7 @@ const translations: TranslationMaps = {
     hkDirectMessage: 'Mesaj dirèk',
     hkJustNow: 'Kounye a',
     hkAnnouncementsFromMgmt: 'Anons soti nan jesyon an',
+    hkNoMessages: 'Poko gen mesaj',
     hkUndoShort: 'Anile',
     // Checklist
     hkOpenChecklist: 'Ouvri lis',
@@ -2294,6 +2298,7 @@ const translations: TranslationMaps = {
     hkDirectMessage: 'Direktang mensahe',
     hkJustNow: 'Ngayon lang',
     hkAnnouncementsFromMgmt: 'Mga anunsyo mula sa pamamahala',
+    hkNoMessages: 'Wala pang mensahe',
     hkUndoShort: 'Bawiin',
     hkOpenChecklist: 'Buksan ang listahan',
     hkChecklistTitle: 'Listahan ng paglilinis',
@@ -2476,6 +2481,7 @@ const translations: TranslationMaps = {
     hkDirectMessage: 'Tin nhắn trực tiếp',
     hkJustNow: 'Vừa xong',
     hkAnnouncementsFromMgmt: 'Thông báo từ ban quản lý',
+    hkNoMessages: 'Chưa có tin nhắn',
     hkUndoShort: 'Hoàn tác',
     hkOpenChecklist: 'Mở danh sách',
     hkChecklistTitle: 'Danh sách làm sạch',
