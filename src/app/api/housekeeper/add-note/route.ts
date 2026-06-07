@@ -13,6 +13,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -80,17 +81,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   const now = new Date();
 
   try {
-    const { error: updErr } = await supabaseAdmin
-      .from('rooms')
-      .update({
-        housekeeper_note: noteText || null,
-        housekeeper_note_at: noteText ? now.toISOString() : null,
-      })
-      .eq('id', body.roomId);
-    if (updErr) {
+    const w = await writeWorkflowFields(gate.pid, body.roomId, {
+      housekeeper_note: noteText || null,
+      housekeeper_note_at: noteText ? now.toISOString() : null,
+    });
+    if (!w.ok) {
       log.error('add-note: update failed', {
         requestId: gate.requestId,
-        err: errToString(updErr),
+        err: w.error,
       });
       return err('Internal server error', {
         requestId: gate.requestId,

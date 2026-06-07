@@ -22,8 +22,9 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
-import { errToString } from '@/lib/utils';
+import { errToString, todayStr } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import {
   checkAndIncrementRateLimit,
@@ -110,32 +111,17 @@ export async function POST(req: NextRequest): Promise<Response> {
   const dueByIso = isClear ? null : new Date(now.getTime() + DUE_OFFSET_MS[body.due_label!]).toISOString();
 
   try {
-    // Find every rooms row for this number today + the assigned staff
-    // (typically there's one but stayover/checkout can produce more). We
-    // also want the assigned staff for the SMS.
-    type RoomRow = { id: string; date: string | null; assigned_to: string | null; number: string };
-    const { data: roomRows, error: roomErr } = await supabaseAdmin
-      .from('rooms')
-      .select('id, date, assigned_to, number')
-      .eq('property_id', pid)
-      .eq('number', roomNumber);
-    if (roomErr) {
-      log.error('front-desk/rush: rooms read failed', {
-        requestId, err: errToString(roomErr),
-      });
-      return err('Internal server error', {
-        requestId, status: 500, code: ApiErrorCode.InternalError, headers,
-      });
-    }
-
-    const rooms = (roomRows ?? []) as RoomRow[];
-    if (rooms.length === 0) {
+    // Find the room on today's board via the pms_* merge (single source) —
+    // also yields the assigned housekeeper for the SMS.
+    const date = todayStr();
+    const merged = await mergePmsRoomsForDate(pid, date);
+    const room = merged.find((r) => r.number === roomNumber);
+    if (!room) {
       return err('room not found', {
         requestId, status: 404, code: ApiErrorCode.NotFound, headers,
       });
     }
 
-    const roomIds = rooms.map((r) => r.id);
     const updatePayload: Record<string, unknown> = isClear
       ? {
           is_rush: false,
@@ -154,12 +140,16 @@ export async function POST(req: NextRequest): Promise<Response> {
           rush_duration_label: body.due_label,
         };
 
+    // UPDATE-only (not upsert) on today's assignment row so a rush on a room
+    // with no assignment doesn't materialize a phantom 'dirty' tile.
     const { error: updErr } = await supabaseAdmin
-      .from('rooms')
+      .from('pms_housekeeping_assignments')
       .update(updatePayload)
-      .in('id', roomIds);
+      .eq('property_id', pid)
+      .eq('room_number', roomNumber)
+      .eq('date', date);
     if (updErr) {
-      log.error('front-desk/rush: rooms update failed', {
+      log.error('front-desk/rush: assignment update failed', {
         requestId, err: errToString(updErr),
       });
       return err('Internal server error', {
@@ -209,9 +199,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     // delivery. Twilio failures are logged on the SMS endpoint itself.
     let smsQueued = false;
     if (!isClear) {
-      const assignedStaffIds = rooms
-        .map((r) => r.assigned_to)
-        .filter((s): s is string => !!s);
+      const assignedStaffIds = room.assignedTo ? [room.assignedTo] : [];
       if (assignedStaffIds.length > 0) {
         smsQueued = true;
         const origin = new URL(req.url).origin;
@@ -259,7 +247,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // does NOT mean Twilio confirmed delivery. The client UI shows
         // "Housekeeper notified" optimistically.
         smsSent: smsQueued,
-        roomsUpdated: rooms.length,
+        roomsUpdated: 1,
       },
       { requestId, headers },
     );

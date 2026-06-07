@@ -24,7 +24,7 @@ export function subscribeToRoomsForStaff(
   callback: (rooms: Room[]) => void,
 ): () => void {
   // Initial fetch + refetch-on-change goes through /api/housekeeper/rooms
-  // (server-side, service-role) instead of supabase.from('rooms') directly.
+  // (server-side, service-role) instead of the browser rooms-table client.
   //
   // Why: this helper powers the public /housekeeper/[id] page. Housekeepers
   // open it via SMS link with no Staxis login. The browser supabase client

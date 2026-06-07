@@ -19,6 +19,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
+import { mergePmsRoomsForStaff } from '@/lib/pms-rooms-server';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -76,16 +77,12 @@ export async function GET(req: NextRequest): Promise<Response> {
       });
     }
 
-    // Step 1: pull the room numbers assigned to this housekeeper today.
-    type AssignedRoom = { number: string | null };
-    const { data: rooms, error: roomsErr } = await supabaseAdmin
-      .from('rooms')
-      .select('number')
-      .eq('property_id', pid)
-      .eq('assigned_to', staffId)
-      .eq('date', date);
-    if (roomsErr) throw roomsErr;
-    const roomNumbers = ((rooms ?? []) as AssignedRoom[])
+    // Step 1: pull the room numbers assigned to this housekeeper for the
+    // date, from the pms_* merge (single source — resolves the staff UUID
+    // to the assignment's housekeeper_name, collision-aware).
+    const assignedRooms = await mergePmsRoomsForStaff(pid, staffId);
+    const roomNumbers = assignedRooms
+      .filter((r) => r.date === date)
       .map((r) => r.number)
       .filter((n): n is string => !!n);
     if (roomNumbers.length === 0) {

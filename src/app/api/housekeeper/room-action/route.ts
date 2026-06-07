@@ -4,7 +4,7 @@
  * THE PROBLEM (discovered 2026-04-28 pre-launch verification):
  *   /housekeeper/[id] is a publicly-linkable page (Mario sends the URL via
  *   SMS — recipients open it on their phones with no Staxis login). The
- *   page used to call supabase.from('rooms').update(...) directly via the
+ *   page used to update the legacy rooms table directly via the
  *   browser client. With no auth.uid(), RLS's user_owns_property check
  *   returns false. Postgres responds: 200 OK with an empty result body.
  *   The supabase JS client treats that as success — no exception, no
@@ -44,6 +44,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 // that can't be derived returns null; cleaning_events insert proceeds.
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
 import { deriveStartedAtPure } from '@/lib/cleaning-event-derivation';
+import { parseRoomId, mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -314,14 +316,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // rooms (via /api/housekeeper/rooms, which filters by
     // assigned_to=staffId), so applying the same scoping on the write
     // path closes the gap without breaking legitimate UI flows.
-    const { data: room, error: roomErr } = await supabaseAdmin
-      .from('rooms')
-      .select('id, property_id, type, started_at, completed_at, number, date, assigned_to')
-      .eq('id', roomId)
-      .maybeSingle();
-    if (roomErr || !room) {
+    // Load the room from the pms_* merge (single source). roomId is the
+    // composite "${date}:${room_number}"; parse it, merge that date, find the
+    // room. (The legacy rooms-by-uuid read 404'd here once that table was
+    // stubbed empty — this is the composite-id contract fix.)
+    const parsedRid = parseRoomId(roomId);
+    if (!parsedRid) {
       return err('room not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
     }
+    const mergedRooms = await mergePmsRoomsForDate(pid, parsedRid.date);
+    const mergedRoom = mergedRooms.find((r) => r.number === parsedRid.roomNumber);
+    if (!mergedRoom) {
+      return err('room not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
+    }
+    const room = {
+      id: mergedRoom.id,
+      property_id: mergedRoom.propertyId,
+      type: (mergedRoom.type as string | null) ?? null,
+      started_at: mergedRoom.startedAt ? new Date(mergedRoom.startedAt).toISOString() : null,
+      completed_at: mergedRoom.completedAt ? new Date(mergedRoom.completedAt).toISOString() : null,
+      number: mergedRoom.number,
+      date: mergedRoom.date,
+      assigned_to: mergedRoom.assignedTo ?? null,
+    };
     if (room.property_id !== pid) {
       return err('room/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
@@ -460,15 +477,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // shows the same duration as Performance tab); preserve any legacy
       // value otherwise; fall back to completedAt for vacant.
       const roomStartedAt = derivedStartedAt ?? room.started_at ?? completedAt;
-      const { error: roomUpdErr } = await supabaseAdmin
-        .from('rooms')
-        .update({
+      try {
+        await applyRoomUpdate(pid, roomId, {
           status: 'clean',
-          completed_at: completedAt,
-          started_at: roomStartedAt,
-        })
-        .eq('id', roomId);
-      if (roomUpdErr) {
+          completedAt: new Date(completedAt),
+          startedAt: new Date(roomStartedAt),
+        });
+      } catch (roomUpdErr) {
         // Don't leak raw DB error text (column names, constraint names, schema
         // hints) to a public-link caller. Log internally; respond generically.
         log.error('room-action: room update failed (finish)', { requestId, pid, staffId, err: errToString(roomUpdErr) });
@@ -590,11 +605,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // regardless of age. Vacant rooms have no cleaning_events row to
     // discard, so the lookup just returns null and we're done.
     if (action === 'reset') {
-      const { error: roomResetErr } = await supabaseAdmin
-        .from('rooms')
-        .update({ status: 'dirty', started_at: null, completed_at: null })
-        .eq('id', roomId);
-      if (roomResetErr) {
+      try {
+        await applyRoomUpdate(pid, roomId, { status: 'dirty' });
+      } catch (roomResetErr) {
         log.error('room-action: room update failed (reset)', { requestId, pid, staffId, err: errToString(roomResetErr) });
         return err('Internal server error', {
           requestId, status: 500, code: ApiErrorCode.InternalError, headers,
@@ -640,11 +653,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // ─── DND_ON ────────────────────────────────────────────────────────
     if (action === 'dnd_on') {
-      const { error: dndOnErr } = await supabaseAdmin
-        .from('rooms')
-        .update({ is_dnd: true, dnd_note: body.dndNote ?? null })
-        .eq('id', roomId);
-      if (dndOnErr) {
+      try {
+        await applyRoomUpdate(pid, roomId, { isDnd: true, dndNote: body.dndNote ?? null });
+      } catch (dndOnErr) {
         log.error('room-action: room update failed (dnd_on)', { requestId, pid, staffId, err: errToString(dndOnErr) });
         return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
@@ -653,11 +664,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // ─── DND_OFF ───────────────────────────────────────────────────────
     if (action === 'dnd_off') {
-      const { error: dndOffErr } = await supabaseAdmin
-        .from('rooms')
-        .update({ is_dnd: false, dnd_note: null })
-        .eq('id', roomId);
-      if (dndOffErr) {
+      try {
+        await applyRoomUpdate(pid, roomId, { isDnd: false, dndNote: null });
+      } catch (dndOffErr) {
         log.error('room-action: room update failed (dnd_off)', { requestId, pid, staffId, err: errToString(dndOffErr) });
         return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
@@ -669,11 +678,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // would break the layout. Trim to 500 chars to be safe.
     if (action === 'issue') {
       const note = (body.issueNote ?? '').slice(0, 500);
-      const { error: issueErr } = await supabaseAdmin
-        .from('rooms')
-        .update({ issue_note: note || null })
-        .eq('id', roomId);
-      if (issueErr) {
+      try {
+        await applyRoomUpdate(pid, roomId, { issueNote: note || null });
+      } catch (issueErr) {
         log.error('room-action: room update failed (issue)', { requestId, pid, staffId, err: errToString(issueErr) });
         return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }

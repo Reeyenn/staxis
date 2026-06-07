@@ -19,6 +19,7 @@ import {
 } from '@/lib/db/inspections';
 import { selectChecklist } from '@/lib/inspections';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { parseRoomId, mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -192,17 +193,15 @@ async function lookupLinkedTaskAndHousekeeper(
 
   let housekeeperStaffId: string | null = null;
   if (roomId) {
-    try {
-      const { data } = await supabaseAdmin
-        .from('rooms')
-        .select('assigned_to')
-        .eq('id', roomId)
-        .maybeSingle();
-      if (data) {
-        housekeeperStaffId = (data as { assigned_to: string | null }).assigned_to;
+    const parsed = parseRoomId(roomId);
+    if (parsed) {
+      try {
+        const merged = await mergePmsRoomsForDate(pid, parsed.date);
+        const room = merged.find((r) => r.number === parsed.roomNumber);
+        housekeeperStaffId = room?.assignedTo ?? null;
+      } catch {
+        // non-fatal
       }
-    } catch {
-      // non-fatal
     }
   }
 

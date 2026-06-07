@@ -51,9 +51,15 @@
 //       name when assignedTo is provided; fails closed if not on property)
 //   isDnd
 //     → pms_housekeeping_assignments.dnd_active
-//   issueNote, inspectedBy, inspectedAt, dndNote, helpRequested,
+//   issueNote, dndNote, helpRequested, inspectedBy, inspectedAt,
+//   managerNotes, housekeeperNote, isRush, rushDueBy, markedForInspectionAt
+//     → pms_housekeeping_assignments workflow columns (migrations 0269 +
+//       0270). Note/rush *_at metadata the Room type doesn't carry is
+//       auto-stamped here; callers needing exact metadata
+//       (manager_notes_by_account_id, rush_set_by) write via
+//       writeWorkflowFields (housekeeper-workflow/workflow-store).
 //   checklist, photoUrl
-//     → NOT PERSISTED (no destination column; logged + skipped)
+//     → NOT PERSISTED (legacy unused; logged + skipped)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabaseAdmin } from './supabase-admin';
@@ -67,12 +73,11 @@ import {
   composeRoomId,
 } from './pms-rooms-server';
 
+// Truly legacy-unused Room fields with no pms_* home. The former workflow
+// fields (issueNote / dndNote / helpRequested / inspectedBy / inspectedAt +
+// manager/housekeeper notes + rush + marked_for_inspection) now persist on
+// the assignment row (migrations 0269 + 0270) and are handled below.
 const UNSUPPORTED_UPDATE_FIELDS = [
-  'issueNote',
-  'inspectedBy',
-  'inspectedAt',
-  'dndNote',
-  'helpRequested',
   'checklist',
   'photoUrl',
 ] as const;
@@ -348,14 +353,49 @@ export async function applyRoomUpdate(
 
   const cleaningType = partial.type !== undefined ? reverseMapType(partial.type) : undefined;
 
+  // Workflow-state fields (migrations 0269 + 0270) that previously had no
+  // pms_* home and were logged-and-skipped. Map the Room-shaped fields onto
+  // the assignment columns. Note/rush *_at metadata the Room type doesn't
+  // carry is auto-stamped here; callers needing exact metadata
+  // (manager_notes_by_account_id, rush_set_by) write via writeWorkflowFields.
+  const nowIso = new Date().toISOString();
+  const workflowPatch: Record<string, unknown> = {};
+  if (partial.issueNote !== undefined) workflowPatch.issue_note = partial.issueNote ?? null;
+  if (partial.dndNote !== undefined) workflowPatch.dnd_note = partial.dndNote ?? null;
+  if (partial.helpRequested !== undefined) workflowPatch.help_requested = Boolean(partial.helpRequested);
+  if (partial.inspectedBy !== undefined) workflowPatch.inspected_by = partial.inspectedBy ?? null;
+  if (partial.inspectedAt !== undefined) {
+    workflowPatch.inspected_at = toIso(partial.inspectedAt as Date | string | null);
+  }
+  if (partial.managerNotes !== undefined) {
+    workflowPatch.manager_notes = partial.managerNotes ?? null;
+    workflowPatch.manager_notes_at = partial.managerNotes ? nowIso : null;
+  }
+  if (partial.housekeeperNote !== undefined) {
+    workflowPatch.housekeeper_note = partial.housekeeperNote ?? null;
+    workflowPatch.housekeeper_note_at = partial.housekeeperNote ? nowIso : null;
+  }
+  if (partial.isRush !== undefined) {
+    workflowPatch.is_rush = Boolean(partial.isRush);
+    workflowPatch.rush_set_at = partial.isRush ? nowIso : null;
+    if (!partial.isRush) workflowPatch.rush_due_by = null;
+  }
+  if (partial.rushDueBy !== undefined) {
+    workflowPatch.rush_due_by = toIso(partial.rushDueBy as Date | string | null);
+  }
+  if (partial.markedForInspectionAt !== undefined) {
+    workflowPatch.marked_for_inspection_at = toIso(partial.markedForInspectionAt as Date | string | null);
+  }
+  const hasWorkflowField = Object.keys(workflowPatch).length > 0;
+
   // ── No-op pre-check (Codex Major #1) ─────────────────────────────────
-  // If the existing assignment row already matches every requested field,
-  // skip both writes entirely. This eliminates the race window for the
-  // most common double-tap case ("Mark cleaning" tapped twice in quick
-  // succession) — the second call detects "already in_progress with this
-  // started_at" and exits cleanly. The first writer's timestamp wins.
+  // If the existing assignment row already matches every requested
+  // lifecycle field, skip both writes. Forced off when a workflow field is
+  // present — its prior value isn't in the cheap pre-fetch, so we can't
+  // prove it's a no-op; note/rush/flag updates must always land.
   const isNoOpUpdate = (() => {
     if (!existing) return false;
+    if (hasWorkflowField) return false;
     if (statusPatch.status !== undefined && statusPatch.status !== existing.status) return false;
     if (statusPatch.started_at !== undefined && statusPatch.started_at !== existing.started_at) return false;
     if (statusPatch.completed_at !== undefined && statusPatch.completed_at !== existing.completed_at) return false;
@@ -371,25 +411,61 @@ export async function applyRoomUpdate(
     return;
   }
 
-  // ── Write 1: upsert pms_housekeeping_assignments ──────────────────────
-  const upsert: Record<string, unknown> = {
-    property_id: pid,
-    date,
-    room_number: roomNumber,
+  // ── Write 1: persist to pms_housekeeping_assignments ──────────────────
+  // Atomic conditional-update guard (replaces the read-then-upsert TOCTOU
+  // race). When the row already exists AND this is a status transition,
+  // UPDATE only if the status is still what we read (optimistic
+  // concurrency) — two devices flipping the same room can't both win, and
+  // the loser suppresses its now-stale status_log append. Pure-field
+  // updates (notes/rush/flags, no status change) and the insert-if-absent
+  // path stay last-writer-wins on the (property_id, date, room_number) key.
+  const assignmentPatch: Record<string, unknown> = {
     ...statusPatch,
     ...(cleaningType !== undefined ? { cleaning_type: cleaningType } : {}),
     ...(housekeeperName !== undefined ? { housekeeper_name: housekeeperName || null } : {}),
     ...(partial.isDnd !== undefined ? { dnd_active: Boolean(partial.isDnd) } : {}),
+    ...workflowPatch,
   };
 
-  const { error: assignErr } = await supabaseAdmin
-    .from('pms_housekeeping_assignments')
-    .upsert(upsert, { onConflict: 'property_id,date,room_number' });
-  if (assignErr) {
-    log.error('[pms-rooms-writes] applyRoomUpdate assignments upsert failed', {
-      pid, rid, date, roomNumber, msg: assignErr.message,
-    });
-    throw assignErr;
+  let statusRaceLost = false;
+  if (existing && statusPatch.status !== undefined) {
+    let q = supabaseAdmin
+      .from('pms_housekeeping_assignments')
+      .update(assignmentPatch)
+      .eq('property_id', pid)
+      .eq('date', date)
+      .eq('room_number', roomNumber);
+    // Guard on the status we read — null-safe (PostgREST .eq(null) matches
+    // nothing; use .is for a null prior status).
+    q = existing.status === null ? q.is('status', null) : q.eq('status', existing.status);
+    const { data: updatedRows, error: updErr } = await q.select('room_number');
+    if (updErr) {
+      log.error('[pms-rooms-writes] applyRoomUpdate conditional update failed', {
+        pid, rid, date, roomNumber, msg: updErr.message,
+      });
+      throw updErr;
+    }
+    if (!updatedRows || updatedRows.length === 0) {
+      // Lost the optimistic-concurrency race: another writer moved this
+      // room's status since our read. Don't append a stale status_log row.
+      statusRaceLost = true;
+      log.warn('[pms-rooms-writes] applyRoomUpdate: status changed concurrently — skipping (race lost)', {
+        pid, rid, date, roomNumber, expected: existing.status, target: statusPatch.status,
+      });
+    }
+  } else {
+    const { error: assignErr } = await supabaseAdmin
+      .from('pms_housekeeping_assignments')
+      .upsert(
+        { property_id: pid, date, room_number: roomNumber, ...assignmentPatch },
+        { onConflict: 'property_id,date,room_number' },
+      );
+    if (assignErr) {
+      log.error('[pms-rooms-writes] applyRoomUpdate assignments upsert failed', {
+        pid, rid, date, roomNumber, msg: assignErr.message,
+      });
+      throw assignErr;
+    }
   }
 
   // ── Write 2: append pms_room_status_log when status flips PMS-visible ──
@@ -397,7 +473,7 @@ export async function applyRoomUpdate(
   // current status, so resetting an occupied stayover to "dirty" writes
   // 'occupied_dirty' rather than the misleading 'vacant_dirty'.
   const logValue = statusToLogValue(partial.status, currentRawStatus);
-  if (logValue !== null && logValue !== currentRawStatus) {
+  if (!statusRaceLost && logValue !== null && logValue !== currentRawStatus) {
     // Phase 3: append the manual status row AND — when write-back is enabled
     // for this property — enqueue a robot job to push it into the real PMS,
     // atomically (staxis_enqueue_pms_write). We read the flag first so we only

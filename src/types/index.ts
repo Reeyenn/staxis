@@ -144,11 +144,11 @@ export interface Room {
   completedAt?: Date | null;
   date: string;                 // YYYY-MM-DD
   propertyId: string;
-  issueNote?: string;           // reported by housekeeper via mobile view
-  inspectedBy?: string;         // name of supervisor who signed off
+  issueNote?: string | null;    // reported by housekeeper via mobile view (null clears)
+  inspectedBy?: string | null;  // name of supervisor who signed off
   inspectedAt?: Date | null;    // timestamp of inspection sign-off
   isDnd?: boolean;              // Do Not Disturb flag
-  dndNote?: string;             // optional DND note
+  dndNote?: string | null;      // optional DND note (null clears)
   arrival?: string;             // guest arrival date "M/D/YY" (from CSV pull)
   stayoverDay?: number;         // 0 = arrival day, 1 = light, 2 = full, 3 = light, … (null if checkout/vacant)
   stayoverMinutes?: number;     // classified cleaning time (0/15/20) — written by CSV scraper

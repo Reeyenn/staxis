@@ -3953,23 +3953,13 @@ async function checkRoomsTodaySeeded(): Promise<Omit<Check, 'name' | 'durationMs
       const expected = Math.max(inventoryLength, totalRooms);
       if (expected === 0) continue;
 
-      // property-local today
-      let date: string;
-      try {
-        date = prop.timezone
-          ? new Intl.DateTimeFormat('en-CA', {
-              timeZone: prop.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-            }).format(new Date())
-          : new Date().toISOString().slice(0, 10);
-      } catch {
-        date = new Date().toISOString().slice(0, 10);
-      }
-
+      // Plan v4: the canonical room list is pms_rooms_inventory (synced by
+      // the persistent CUA), not a per-day `rooms` seed. Count it against the
+      // expected floor size to catch a PMS inventory that hasn't fully synced.
       const { count, error: cntErr } = await supabaseAdmin
-        .from('rooms')
+        .from('pms_rooms_inventory')
         .select('*', { count: 'exact', head: true })
-        .eq('property_id', prop.id)
-        .eq('date', date);
+        .eq('property_id', prop.id);
       if (cntErr) {
         return { status: 'warn', detail: `Could not count rooms for ${propName}: ${cntErr.message}` };
       }

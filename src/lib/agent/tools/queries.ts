@@ -4,8 +4,8 @@
 // Plan v4 data source (2026-06): the legacy `rooms` table was dropped /
 // emptied. Live room status now flows into the service-role-only `pms_*`
 // tables written by the persistent CUA browser per hotel. These tools used
-// to read `.from('rooms')` (which now returns ZERO rows, so the agent saw
-// nothing). They now read through the canonical server-only bridges:
+// to read the legacy rooms table (which now returns ZERO rows, so the agent
+// saw nothing). They now read through the canonical server-only bridges:
 //
 //   • Per-room LIST  → mergePmsRoomsForDate(pid, date) — returns Room[] in
 //     the legacy camel-cased shape (pms_rooms_inventory + status_log +

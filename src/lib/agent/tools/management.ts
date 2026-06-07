@@ -6,6 +6,7 @@ import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, findStaffByName } from './_helpers';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
 
 // ─── assign_room ──────────────────────────────────────────────────────────
 
@@ -37,11 +38,14 @@ registerTool<{ roomNumber: string; staffName: string }>({
       };
     }
 
-    const { error } = await supabaseAdmin
-      .from('rooms')
-      .update({ assigned_to: staff.id })
-      .eq('id', room.id);
-    if (error) return { ok: false, error: 'Failed to assign room.' };
+    // Repoints rooms.assigned_to → pms_housekeeping_assignments.housekeeper_name
+    // (applyRoomUpdate resolves the staff UUID to the canonical name and fails
+    // closed if the staff isn't on this property).
+    try {
+      await applyRoomUpdate(ctx.propertyId, room.id, { assignedTo: staff.id });
+    } catch {
+      return { ok: false, error: 'Failed to assign room.' };
+    }
 
     return {
       ok: true,

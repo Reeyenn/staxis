@@ -3,7 +3,7 @@
  *
  * Why this exists:
  *   Plan v4 (migration 0204) dropped the legacy `rooms` table. The manager
- *   tile-cycling writes used to call supabase.from('rooms').update directly
+ *   tile-cycling writes used to update the legacy rooms table directly
  *   from the browser. RLS deny-all on pms_* blocks that, so writes now go
  *   through this server route, which uses supabaseAdmin to write to
  *   pms_housekeeping_assignments (canonical state) + pms_room_status_log

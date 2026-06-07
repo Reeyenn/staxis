@@ -9,6 +9,8 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import { todayStr } from '@/lib/utils';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { translateMessagesForReader } from './translate';
 import type {
   ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
@@ -1247,18 +1249,13 @@ export async function createComplaintForComms(
 /** Best-effort current status of a room by number (for @Staxis). */
 export async function getRoomStatus(pid: string, roomNumber: string): Promise<string | null> {
   try {
-    const { data } = await supabaseAdmin
-      .from('rooms')
-      .select('number, status, type, assigned_name, date')
-      .eq('property_id', pid)
-      .eq('number', roomNumber)
-      .order('date', { ascending: false })
-      .limit(1);
-    const row = (data ?? [])[0] as { number: string; status: string | null; type: string | null; assigned_name: string | null } | undefined;
-    if (!row) return null;
-    const parts = [`Room ${row.number}: status ${row.status ?? 'unknown'}`];
-    if (row.type) parts.push(`type ${row.type}`);
-    if (row.assigned_name) parts.push(`assigned to ${row.assigned_name}`);
+    // pms_* merge is the single source. "Current" = today's board.
+    const rooms = await mergePmsRoomsForDate(pid, todayStr());
+    const room = rooms.find((r) => r.number === roomNumber);
+    if (!room) return null;
+    const parts = [`Room ${room.number}: status ${room.status ?? 'unknown'}`];
+    if (room.type) parts.push(`type ${room.type}`);
+    if (room.assignedName) parts.push(`assigned to ${room.assignedName}`);
     return parts.join(', ');
   } catch {
     return null;

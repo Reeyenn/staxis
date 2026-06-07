@@ -37,6 +37,24 @@ export interface WorkflowPatch {
   exception_note?: string | null;
   exception_at?: string | null;
   is_dnd?: boolean; // mirrors exception_type==='dnd' for legacy dnd_active readers
+  // Workflow-state remainder (migration 0270). Snake-case so routes with
+  // metadata the Room type doesn't carry (manager_notes_by_account_id,
+  // rush_set_by, *_at) can set them exactly.
+  manager_notes?: string | null;
+  manager_notes_at?: string | null;
+  manager_notes_by_account_id?: string | null;
+  housekeeper_note?: string | null;
+  housekeeper_note_at?: string | null;
+  is_rush?: boolean;
+  rush_due_by?: string | null;
+  rush_set_at?: string | null;
+  rush_set_by?: string | null;
+  marked_for_inspection_at?: string | null;
+  inspected_by?: string | null;
+  inspected_at?: string | null;
+  issue_note?: string | null;
+  help_requested?: boolean;
+  dnd_note?: string | null;
 }
 
 /**
@@ -69,6 +87,26 @@ export async function writeWorkflowFields(
   if (patch.exception_note !== undefined) row.exception_note = patch.exception_note;
   if (patch.exception_at !== undefined) row.exception_at = patch.exception_at;
   if (patch.is_dnd !== undefined) row.dnd_active = patch.is_dnd;
+  // Workflow-state remainder (migration 0270).
+  if (patch.manager_notes !== undefined) row.manager_notes = patch.manager_notes;
+  if (patch.manager_notes_at !== undefined) row.manager_notes_at = patch.manager_notes_at;
+  if (patch.manager_notes_by_account_id !== undefined) {
+    row.manager_notes_by_account_id = patch.manager_notes_by_account_id;
+  }
+  if (patch.housekeeper_note !== undefined) row.housekeeper_note = patch.housekeeper_note;
+  if (patch.housekeeper_note_at !== undefined) row.housekeeper_note_at = patch.housekeeper_note_at;
+  if (patch.is_rush !== undefined) row.is_rush = patch.is_rush;
+  if (patch.rush_due_by !== undefined) row.rush_due_by = patch.rush_due_by;
+  if (patch.rush_set_at !== undefined) row.rush_set_at = patch.rush_set_at;
+  if (patch.rush_set_by !== undefined) row.rush_set_by = patch.rush_set_by;
+  if (patch.marked_for_inspection_at !== undefined) {
+    row.marked_for_inspection_at = patch.marked_for_inspection_at;
+  }
+  if (patch.inspected_by !== undefined) row.inspected_by = patch.inspected_by;
+  if (patch.inspected_at !== undefined) row.inspected_at = patch.inspected_at;
+  if (patch.issue_note !== undefined) row.issue_note = patch.issue_note;
+  if (patch.help_requested !== undefined) row.help_requested = patch.help_requested;
+  if (patch.dnd_note !== undefined) row.dnd_note = patch.dnd_note;
 
   const { error } = await supabaseAdmin
     .from('pms_housekeeping_assignments')

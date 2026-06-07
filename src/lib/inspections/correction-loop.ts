@@ -37,6 +37,22 @@ import type {
   InspectionFailedItem,
 } from '@/types/inspections';
 import { ESCALATION_THRESHOLD } from '@/types/inspections';
+import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
+import { parseRoomId, composeRoomId } from '@/lib/pms-rooms-server';
+
+/**
+ * Resolve the pms_* composite room id ("${date}:${roomNumber}") for an
+ * inspection's room. roomId may already be the composite (housekeeper
+ * redesign) — use it when it parses; otherwise rebuild from roomNumber +
+ * the inspection's completion/start date. Returns null when neither yields
+ * a valid (date, roomNumber) pair.
+ */
+function inspectionRoomRid(inspection: Inspection): string | null {
+  if (inspection.roomId && parseRoomId(inspection.roomId)) return inspection.roomId;
+  const date = (inspection.completedAt ?? inspection.startedAt ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !inspection.roomNumber) return null;
+  return composeRoomId(date, inspection.roomNumber);
+}
 
 export interface CompleteInspectionInput {
   inspectionId: string;
@@ -281,18 +297,15 @@ async function tryAtomicFinalize(args: TryAtomicArgs): Promise<AtomicOutcome> {
  * row doesn't block the cleaning_task flip and vice versa.
  */
 export async function applyPassSideEffects(inspection: Inspection): Promise<void> {
-  if (inspection.roomId) {
-    await supabaseAdmin
-      .from('rooms')
-      .update({
-        status: 'inspected',
-        inspected_at: new Date().toISOString(),
-      })
-      .eq('id', inspection.roomId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
+  const rid = inspectionRoomRid(inspection);
+  if (rid) {
+    await applyRoomUpdate(inspection.propertyId, rid, {
+      status: 'inspected',
+      inspectedAt: new Date(),
+    }).then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   if (inspection.cleaningTaskId) {
@@ -320,19 +333,15 @@ export async function applyPassSideEffects(inspection: Inspection): Promise<void
 export async function applyFailSideEffects(inspection: Inspection): Promise<void> {
   const note = buildCorrectionNote(inspection.failedItems);
 
-  if (inspection.roomId) {
-    await supabaseAdmin
-      .from('rooms')
-      .update({
-        status: 'dirty',
-        completed_at: null,
-        issue_note: note,
-      })
-      .eq('id', inspection.roomId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
+  const rid = inspectionRoomRid(inspection);
+  if (rid) {
+    await applyRoomUpdate(inspection.propertyId, rid, {
+      status: 'dirty',
+      issueNote: note,
+    }).then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   if (inspection.cleaningTaskId) {

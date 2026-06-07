@@ -33,6 +33,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, assertFloorRoleCanMutateRoom } from './_helpers';
+import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
 
 const ACTION_VALUES = ['REPAIR', 'REPLACE', 'CLEAN', 'INSPECT'] as const;
 const SEVERITY_VALUES = ['MINOR', 'MAJOR', 'URGENT'] as const;
@@ -382,10 +383,10 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
       const noteForCard = (`${summary}${note ? ` — ${note}` : ''}`).slice(0, 500);
       const room = await findRoomByNumber(ctx.propertyId, resolvedRoomNumber);
       if (room && !(room.issue_note && room.issue_note.trim().length > 0)) {
-        await supabaseAdmin
-          .from('rooms')
-          .update({ issue_note: noteForCard })
-          .eq('id', room.id);
+        // Mirror onto pms_housekeeping_assignments.issue_note (best-effort).
+        await applyRoomUpdate(ctx.propertyId, room.id, { issueNote: noteForCard }).catch(
+          () => undefined,
+        );
       }
     }
 

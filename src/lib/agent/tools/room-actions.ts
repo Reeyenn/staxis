@@ -17,6 +17,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, assertFloorRoleCanMutateRoom } from './_helpers';
+import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
 import { getNudgeRecipients } from '../nudges';
 
 // JSON Schema fragment reused by every tool that takes a room number. The
@@ -69,15 +70,15 @@ registerTool<{ roomNumber: string }>({
       };
     }
 
-    const { error } = await supabaseAdmin
-      .from('rooms')
-      .update({
+    try {
+      await applyRoomUpdate(ctx.propertyId, room.id, {
         status: 'clean',
-        completed_at: now,
-        started_at: room.started_at ?? now,
-      })
-      .eq('id', room.id);
-    if (error) return { ok: false, error: 'Failed to mark room clean. Please try again.' };
+        completedAt: new Date(now),
+        startedAt: room.started_at ? new Date(room.started_at) : new Date(now),
+      });
+    } catch {
+      return { ok: false, error: 'Failed to mark room clean. Please try again.' };
+    }
 
     return {
       ok: true,
@@ -119,11 +120,11 @@ registerTool<{ roomNumber: string }>({
       };
     }
 
-    const { error } = await supabaseAdmin
-      .from('rooms')
-      .update({ status: 'dirty', started_at: null, completed_at: null })
-      .eq('id', room.id);
-    if (error) return { ok: false, error: 'Failed to reset room.' };
+    try {
+      await applyRoomUpdate(ctx.propertyId, room.id, { status: 'dirty' });
+    } catch {
+      return { ok: false, error: 'Failed to reset room.' };
+    }
 
     return {
       ok: true,
@@ -167,16 +168,17 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
     // for every subsequent agent turn. 500 chars is the same ceiling
     // flag_issue uses for the same surface (free-text room note).
     const cappedNote = on && note ? note.slice(0, 500) : null;
-    const updates: Record<string, unknown> = { is_dnd: on };
-    updates.dnd_note = cappedNote;
 
     // Codex post-merge review 2026-05-13 (F2): dryRun gate.
     if (ctx.dryRun) {
       return { ok: true, data: { dryRun: true, roomNumber: room.number, dnd: on, note: cappedNote } };
     }
 
-    const { error } = await supabaseAdmin.from('rooms').update(updates).eq('id', room.id);
-    if (error) return { ok: false, error: 'Failed to toggle DND.' };
+    try {
+      await applyRoomUpdate(ctx.propertyId, room.id, { isDnd: on, dndNote: cappedNote });
+    } catch {
+      return { ok: false, error: 'Failed to toggle DND.' };
+    }
 
     return { ok: true, data: { roomNumber: room.number, dnd: on, note: cappedNote } };
   },
@@ -211,11 +213,11 @@ registerTool<{ roomNumber: string; note: string }>({
       return { ok: true, data: { dryRun: true, roomNumber: room.number, issue: trimmed } };
     }
 
-    const { error } = await supabaseAdmin
-      .from('rooms')
-      .update({ issue_note: trimmed || null })
-      .eq('id', room.id);
-    if (error) return { ok: false, error: 'Failed to flag issue.' };
+    try {
+      await applyRoomUpdate(ctx.propertyId, room.id, { issueNote: trimmed || null });
+    } catch {
+      return { ok: false, error: 'Failed to flag issue.' };
+    }
 
     return { ok: true, data: { roomNumber: room.number, issue: trimmed } };
   },
@@ -255,7 +257,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
         // Codex post-merge review 2026-05-13 (F2): dryRun skips the
         // room-help_requested update.
         if (!ctx.dryRun) {
-          await supabaseAdmin.from('rooms').update({ help_requested: true }).eq('id', room.id);
+          await applyRoomUpdate(ctx.propertyId, room.id, { helpRequested: true });
         }
         roomFlagged = room.number;
       }

@@ -3,11 +3,9 @@
 // are consistent across the catalog.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import {
-  parseStringField,
-  parseBoolField,
-  parseOptionalUnionField,
-} from '@/lib/db-mappers';
+import { parseStringField, parseBoolField } from '@/lib/db-mappers';
+import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { todayStr } from '@/lib/utils';
 import type { AppRole } from '@/lib/roles';
 import type { ToolContext } from '../tools';
 
@@ -25,40 +23,6 @@ export interface RoomRow {
   started_at: string | null;
   completed_at: string | null;
   type: 'checkout' | 'stayover' | 'vacant' | null;
-}
-
-const ROOM_TYPES = ['checkout', 'stayover', 'vacant'] as const;
-
-/**
- * Validate that a Supabase row has the shape `findRoomByNumber` expects.
- * Returns the typed RoomRow on success, null otherwise. Used to gate the
- * agent tool's mutation paths so a future SELECT-vs-interface drift can't
- * silently feed `undefined` into `assertFloorRoleCanMutateRoom`. Audit
- * finding H2 (2026-05-17).
- */
-function parseRoomRow(raw: unknown): RoomRow | null {
-  if (typeof raw !== 'object' || raw === null) return null;
-  const r = raw as Record<string, unknown>;
-  const id = parseStringField(r.id);
-  const property_id = parseStringField(r.property_id);
-  const number = parseStringField(r.number);
-  const status = parseStringField(r.status);
-  if (!id || !property_id || !number || !status) return null;
-  return {
-    id,
-    property_id,
-    number,
-    status,
-    date: parseStringField(r.date) ?? null,
-    assigned_to: parseStringField(r.assigned_to) ?? null,
-    is_dnd: parseBoolField(r.is_dnd) ?? false,
-    dnd_note: parseStringField(r.dnd_note) ?? null,
-    issue_note: parseStringField(r.issue_note) ?? null,
-    help_requested: parseBoolField(r.help_requested) ?? false,
-    started_at: parseStringField(r.started_at) ?? null,
-    completed_at: parseStringField(r.completed_at) ?? null,
-    type: parseOptionalUnionField(r.type, ROOM_TYPES) ?? null,
-  };
 }
 
 /**
@@ -129,37 +93,37 @@ export function computeOccupancySummary(
 }
 
 /**
- * Pick the property's "current" rooms-table date.
+ * Pick the property's "current" operational date in the pms_* schema.
  *
- * The `rooms` table is composite-keyed on (property_id, date, number) — one
- * row per room per day. Any agent-facing query that wants "today's room
- * state" MUST filter by a single date or it will sum every historical day
- * together and report e.g. "557 dirty rooms" for a 100-room hotel.
+ * pms_housekeeping_assignments is composite-keyed on (property_id, date,
+ * room_number) — one row per room per day. Any agent-facing query that wants
+ * "today's room state" MUST filter by a single date or it would sum every
+ * historical day together.
  *
- * We deliberately use "most recent date that has rows" instead of
- * `new Date().toISOString().slice(0,10)` (UTC today) because:
- *   - The daily seeding job may not have run yet at the moment we query.
- *   - UTC today disagrees with the property's local date for ~5 hours of
- *     every evening in CST/CDT (where most pilot hotels live).
- * Picking the latest seeded date sidesteps both classes of drift.
- *
- * Returns null when the property has zero rooms in the DB.
+ * We use "most recent date that has an assignment row" rather than UTC today
+ * because (a) the CUA may not have written today's plan yet, and (b) UTC
+ * today disagrees with the property's local date for ~5 hours every evening
+ * in CST/CDT. Falls back to the property-local today (`todayStr`) so room
+ * lookups still resolve against today's inventory before any assignment
+ * exists — the legacy `null`-when-empty contract had no remaining callers
+ * (findRoomByNumber is the only consumer, and it tolerates the fallback).
  */
-export async function getCurrentRoomsDate(propertyId: string): Promise<string | null> {
+export async function getCurrentRoomsDate(propertyId: string): Promise<string> {
   const { data } = await supabaseAdmin
-    .from('rooms')
+    .from('pms_housekeeping_assignments')
     .select('date')
     .eq('property_id', propertyId)
     .order('date', { ascending: false })
     .limit(1);
   const d = data?.[0]?.date;
-  return typeof d === 'string' ? d : null;
+  return typeof d === 'string' ? d : todayStr();
 }
 
 /**
- * Find the canonical room row for a given (property, room number). If multiple
- * date-bucketed rows exist (e.g. rooms.date='2026-05-12' and '2026-05-13'),
- * prefer today's. If today's isn't there, fall back to the most recent.
+ * Find the canonical room for a given (property, room number) on the current
+ * operational date, sourced from the pms_* merge layer (single source of
+ * truth). Returns a RoomRow whose `id` is the composite "${date}:${number}"
+ * the write tools re-key on via parseRoomId.
  *
  * Returns null when no room matches — the tool surfaces "I don't see room X
  * in this property" to the user.
@@ -171,18 +135,32 @@ export async function findRoomByNumber(
   // Claude usually emits roomNumber as a string per our JSON Schema, but
   // occasionally returns a JSON number (e.g., `302` instead of `"302"`).
   // Coerce defensively so a string-only method like .trim() doesn't blow up.
-  // Codex review fix #6, 2026-05-13.
   const normalized = String(roomNumber ?? '').trim();
   if (!normalized) return null;
-  const { data, error } = await supabaseAdmin
-    .from('rooms')
-    .select('id, property_id, number, status, date, assigned_to, is_dnd, dnd_note, issue_note, help_requested, started_at, completed_at, type')
-    .eq('property_id', propertyId)
-    .eq('number', normalized)
-    .order('date', { ascending: false, nullsFirst: false })
-    .limit(1);
-  if (error || !data?.length) return null;
-  return parseRoomRow(data[0]);
+  const date = await getCurrentRoomsDate(propertyId);
+  let rooms;
+  try {
+    rooms = await mergePmsRoomsForDate(propertyId, date);
+  } catch {
+    return null;
+  }
+  const room = rooms.find((r) => String(r.number) === normalized);
+  if (!room) return null;
+  return {
+    id: room.id,
+    property_id: room.propertyId,
+    number: room.number,
+    status: room.status,
+    date: room.date ?? null,
+    assigned_to: room.assignedTo ?? null,
+    is_dnd: room.isDnd ?? false,
+    dnd_note: room.dndNote ?? null,
+    issue_note: room.issueNote ?? null,
+    help_requested: room.helpRequested ?? false,
+    started_at: room.startedAt ? new Date(room.startedAt).toISOString() : null,
+    completed_at: room.completedAt ? new Date(room.completedAt).toISOString() : null,
+    type: room.type,
+  };
 }
 
 /**
@@ -223,7 +201,7 @@ export interface StaffRow {
   is_active: boolean;
 }
 
-/** Same shape-validation gate as parseRoomRow. Audit finding H2. */
+/** Shape-validation gate for a raw staff row from Supabase. Audit finding H2. */
 function parseStaffRow(raw: unknown): StaffRow | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>;

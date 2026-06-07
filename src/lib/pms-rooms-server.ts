@@ -52,11 +52,14 @@
 //                     departure), date - arrival_date in nights
 //   stayoverMinutes ← undefined (Optii-style time classification not in
 //                     the new schema)
-//   issueNote, inspectedBy, inspectedAt, dndNote, helpRequested,
+//   issueNote, dndNote, helpRequested, managerNotes, housekeeperNote,
+//   isRush, rushDueBy, markedForInspectionAt, inspectedBy, inspectedAt
+//                   ← pms_housekeeping_assignments workflow columns
+//                     (migrations 0269 + 0270). These were Maria-set
+//                     fields on the legacy `rooms` table; they now have a
+//                     pms_* home and round-trip through workflowStateFields().
 //   checklist, photoUrl
-//                   ← undefined (no clean source in new schema; these
-//                     were Maria-set fields on the legacy `rooms` table.
-//                     Writes will land in a separate branch.)
+//                   ← undefined (legacy unused; no source in new schema)
 //
 // "Current status" dedupe:
 //   pms_room_status_log is append-only. We fetch the last 90 days of rows
@@ -94,6 +97,13 @@ function deriveStatus(
     // 'not_started' | 'in_progress' | 'completed' | 'refused' | 'skipped'.
     // Plus the started_at / completed_at timestamps which can be set
     // independently by the CUA.
+    // Inspection sign-off (migration 0270 gives inspected_at a pms_* home)
+    // wins over plain 'clean' so the board shows the distinct 'inspected'
+    // state — but only while the room is still in a completed state, so a
+    // re-dirtied room with a stale inspected_at doesn't read as inspected.
+    if (assignment.inspected_at && (assignment.status === 'completed' || assignment.completed_at)) {
+      return 'inspected';
+    }
     if (assignment.status === 'completed' || assignment.completed_at) {
       return 'clean';
     }
@@ -297,6 +307,19 @@ interface AssignmentRow {
   exception_at?: string | null;
   checklist_template_id?: string | null;
   checklist_progress?: string[] | null;
+  // Workflow-state remainder (migration 0270) — the legacy `rooms` workflow
+  // fields that previously had no pms_* home. Optional so minimal assignment
+  // shapes built by callers/tests still satisfy the type.
+  manager_notes?: string | null;
+  housekeeper_note?: string | null;
+  is_rush?: boolean | null;
+  rush_due_by?: string | null;
+  marked_for_inspection_at?: string | null;
+  inspected_by?: string | null;
+  inspected_at?: string | null;
+  issue_note?: string | null;
+  help_requested?: boolean | null;
+  dnd_note?: string | null;
 }
 
 interface ReservationRow {
@@ -384,7 +407,7 @@ export async function mergePmsRoomsForDate(
       .order('changed_at', { ascending: false }),
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress')
+      .select('room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note')
       .eq('property_id', pid)
       .eq('date', date),
     // M4 fix — deterministic order so double-bookings produce the
@@ -557,6 +580,20 @@ function workflowStateFields(assignment: AssignmentRow | undefined): Partial<Roo
   if (assignment.checklist_progress && assignment.checklist_progress.length > 0) {
     out.checklistProgress = assignment.checklist_progress;
   }
+  // Workflow-state remainder (migration 0270): the previously-orphaned legacy
+  // `rooms` workflow fields now persisted on the assignment row.
+  if (assignment.issue_note) out.issueNote = assignment.issue_note;
+  if (assignment.dnd_note) out.dndNote = assignment.dnd_note;
+  if (assignment.help_requested === true) out.helpRequested = true;
+  if (assignment.manager_notes) out.managerNotes = assignment.manager_notes;
+  if (assignment.housekeeper_note) out.housekeeperNote = assignment.housekeeper_note;
+  if (assignment.is_rush === true) out.isRush = true;
+  if (assignment.rush_due_by) out.rushDueBy = new Date(assignment.rush_due_by);
+  if (assignment.marked_for_inspection_at) {
+    out.markedForInspectionAt = new Date(assignment.marked_for_inspection_at);
+  }
+  if (assignment.inspected_by) out.inspectedBy = assignment.inspected_by;
+  if (assignment.inspected_at) out.inspectedAt = new Date(assignment.inspected_at);
   return out;
 }
 
@@ -619,7 +656,7 @@ export async function mergePmsRoomsForStaff(
   const [assignRes, staffListRes] = await Promise.allSettled([
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress')
+      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note')
       .eq('property_id', pid)
       .gte('date', windowBack)
       .lte('date', windowAhead),

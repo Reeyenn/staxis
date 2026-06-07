@@ -210,24 +210,30 @@ export async function POST(req: NextRequest): Promise<Response> {
       });
     }
 
-    // Mirror the latest note onto rooms.manager_notes (existing display
-    // column from migration 0222) so the housekeeper's JobCard renders
-    // the most recent guidance without a second fetch. The
-    // manager_room_notes table remains the auditable history; this
-    // column is a display convenience that next post will overwrite.
+    // Mirror the latest note onto pms_housekeeping_assignments.manager_notes
+    // (workflow column, migration 0270) so the housekeeper's JobCard renders
+    // the most recent guidance without a second fetch. manager_room_notes
+    // remains the auditable history; this column is a display convenience the
+    // next post overwrites. UPDATE-only (not upsert) so a note on a room with
+    // no assignment row doesn't materialize a phantom 'dirty' tile.
     try {
-      await supabaseAdmin
-        .from('rooms')
+      const { error: mirrorErr } = await supabaseAdmin
+        .from('pms_housekeeping_assignments')
         .update({
           manager_notes: noteText,
           manager_notes_at: data?.posted_at ?? new Date().toISOString(),
           manager_notes_by_account_id: session.userId,
         })
         .eq('property_id', pid)
-        .eq('number', roomNumber)
+        .eq('room_number', roomNumber)
         .eq('date', businessDate);
+      if (mirrorErr) {
+        log.warn('room-notes: manager_notes mirror failed (non-fatal)', {
+          requestId, err: mirrorErr.message,
+        });
+      }
     } catch (mirrorErr) {
-      log.warn('room-notes: rooms.manager_notes mirror failed (non-fatal)', {
+      log.warn('room-notes: manager_notes mirror failed (non-fatal)', {
         requestId, err: errToString(mirrorErr),
       });
     }

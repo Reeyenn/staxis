@@ -17,6 +17,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
+import { mergePmsRoomsForStaff } from '@/lib/pms-rooms-server';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -81,16 +82,13 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 
   try {
-    type RoomSum = { status: string | null; type: string | null };
     type EventSum = { duration_minutes: number | null; started_at: string | null; completed_at: string | null };
     type BreakSum = { break_type: string; started_at: string; ended_at: string | null };
-    const [roomsRes, cleaningRes, breakRes] = await Promise.all([
-      supabaseAdmin
-        .from('rooms')
-        .select('status, type')
-        .eq('property_id', pid)
-        .eq('assigned_to', staffId)
-        .eq('date', date),
+    const [assignedRooms, cleaningRes, breakRes] = await Promise.all([
+      // Rooms assigned to this housekeeper for the date, from the pms_*
+      // merge (single source — resolves the staff UUID to the assignment
+      // housekeeper_name). Filter to the requested date below.
+      mergePmsRoomsForStaff(pid, staffId),
       supabaseAdmin
         .from('cleaning_events')
         .select('duration_minutes, started_at, completed_at')
@@ -106,11 +104,10 @@ export async function GET(req: NextRequest): Promise<Response> {
         .eq('business_date', date),
     ]);
 
-    if (roomsRes.error) throw roomsRes.error;
     if (cleaningRes.error) throw cleaningRes.error;
     if (breakRes.error) throw breakRes.error;
 
-    const rooms = (roomsRes.data ?? []) as RoomSum[];
+    const rooms = assignedRooms.filter((r) => r.date === date);
     const events = (cleaningRes.data ?? []) as EventSum[];
     const breaks = (breakRes.data ?? []) as BreakSum[];
 
