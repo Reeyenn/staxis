@@ -17,3 +17,8 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 WEBHOOK_URL = "https://getstaxis.com/api/pms-inbox/inbound"
 MAX_BYTES = "262144"
+# Trusted receiver authserv-id(s). Only the Authentication-Results header added
+# by a matching receiver is believed. Confirm Cloudflare's actual authserv-id
+# with `wrangler tail` on a real inbound message and set it exactly if it isn't
+# a *.cloudflare.net value.
+TRUSTED_AUTHSERV_IDS = "cloudflare.net"

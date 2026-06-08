@@ -53,10 +53,14 @@ _dmarc.pms.getstaxis.com  TXT  "v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s;"
 ## Security
 
 - **Sender authenticity** is enforced by the webhook on the forwarded verdict:
-  DMARC=pass (or DKIM aligned to an allowlisted domain — `okta.com` /
-  `choicehotels.com`). The Worker reads the verdict from the **first**
-  `Authentication-Results` header (the one Cloudflare prepends), not a
-  sender-supplied one.
+  DMARC=pass (or DKIM aligned to the allowlisted sender domain — `okta.com`,
+  which publishes DMARC `p=reject`). `choicehotels.com` is deliberately NOT
+  allowlisted (it isn't the OTP sender and its DMARC is `p=none`).
+- **Verdict trust:** the Worker believes ONLY the `Authentication-Results`
+  header whose authserv-id matches `TRUSTED_AUTHSERV_IDS` (Cloudflare). A
+  sender can inject a forged AR header, but can't remove Cloudflare's real one,
+  so two matches = tampering → the Worker forwards no verdict and the webhook
+  fail-closed rejects. It never trusts the first/last raw header.
 - **No backscatter:** the Worker never `setReject()`s or bounces these — it acks
   and forwards, so a probing sender learns nothing.
 - **Size-capped** and attachments are not forwarded (only subject/text/bounded

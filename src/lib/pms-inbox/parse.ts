@@ -177,8 +177,11 @@ function cleanCandidate(raw: string): string {
 // Okta-style phrasing. Liberal on wording, strict on the digits.
 const KEYWORD =
   '(?:verification code|one[- ]?time (?:passcode|password|code|pin)|security code|access code|sign[- ]?in code|login code|passcode|your code(?: is)?|code is|otp|one[- ]?time pin)';
-// 6 digits, optionally split as 3+3 ("123 456"); or a plain 4–8 digit run.
-const DIGITS = '(\\d{3}[\\s-]?\\d{3}|\\d{4,8})';
+// A full 4–8 digit run, OR a separated 3+3 ("123 456"). Digit boundaries on
+// BOTH sides so a 7/8-digit code is never truncated to its first 6, and a
+// longer/phone-style number isn't partially captured. The plain run is tried
+// first so "1234567" matches whole; the 3+3 form requires a real separator.
+const DIGITS = '(?<!\\d)(\\d{4,8}|\\d{3}[\\s-]\\d{3})(?!\\d)';
 
 function collectAnchored(text: string): Set<string> {
   const out = new Set<string>();
@@ -241,4 +244,56 @@ export function maskCode(code: string): string {
   const c = code ?? '';
   if (c.length <= 2) return '••';
   return '•'.repeat(Math.max(2, c.length - 2)) + c.slice(-2);
+}
+
+// ─── Authentication-Results selection + parsing ────────────────────────────
+// SECURITY-CRITICAL. The Email Worker uses the same logic (kept in sync in
+// email-worker/src/index.ts). An inbound message can carry sender-forged
+// `Authentication-Results` headers; only the one added by our trusted receiver
+// (Cloudflare, by authserv-id) may be believed. The attacker can inject a
+// header spoofing that authserv-id, but cannot remove the receiver's real one,
+// so MORE THAN ONE match = tampering and is treated as unauthenticated.
+
+/** The authserv-id is the token before the first ';' in an Authentication-Results value. */
+export function authservIdOf(headerValue: string): string {
+  return (headerValue.split(';')[0] ?? '').trim().toLowerCase();
+}
+
+/**
+ * From all Authentication-Results header VALUES on a message, return the single
+ * one whose authserv-id belongs to a trusted receiver, or null if zero or more
+ * than one match (the latter means an injected look-alike — refuse to trust).
+ */
+export function selectTrustedAuthResults(
+  headerValues: string[],
+  trustedAuthservIds: string[],
+): string | null {
+  const trusted = trustedAuthservIds.map((s) => s.toLowerCase().replace(/^\./, '').trim()).filter(Boolean);
+  const matches = headerValues.filter((v) => {
+    const id = authservIdOf(v);
+    return trusted.some((t) => id === t || id.endsWith('.' + t));
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Parse a single Authentication-Results value into discrete verdicts. */
+export function parseAuthResults(headerValue: string | null | undefined): InboundVerdict {
+  const lower = (headerValue ?? '').toLowerCase();
+  const get = (re: RegExp): string | null => re.exec(lower)?.[1] ?? null;
+  const dkim = get(/\bdkim=(\w+)/);
+  const spf = get(/\bspf=(\w+)/);
+  const dmarc = get(/\bdmarc=(\w+)/);
+  // Prefer the header.d from the dkim=pass segment; fall back to any header.d.
+  let dkimDomain: string | null = null;
+  for (const seg of lower.split(';')) {
+    if (seg.includes('dkim=pass')) {
+      const m = /header\.d=([a-z0-9.\-]+)/.exec(seg);
+      if (m) {
+        dkimDomain = m[1];
+        break;
+      }
+    }
+  }
+  if (!dkimDomain) dkimDomain = get(/header\.d=([a-z0-9.\-]+)/);
+  return { dkim, spf, dmarc, dkimDomain };
 }

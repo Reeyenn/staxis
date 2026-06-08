@@ -45,9 +45,14 @@ export const maxDuration = 10;
 // The catch-all subdomain we receive 2FA mail on. Recipients on any other
 // domain are rejected.
 const INBOX_DOMAIN = 'pms.getstaxis.com';
-// Production sender allowlist. Overridable via env (e.g. to add a verified Okta
-// sub-processor domain, or a controlled test sender during verification).
-const DEFAULT_ALLOWED_SENDERS = ['okta.com', 'choicehotels.com'];
+// Production sender allowlist. Okta sends the OTP from okta.com / the tenant
+// subdomain (e.g. choicehotels.okta.com — matched by the subdomain rule), which
+// publishes DMARC p=reject. We deliberately do NOT include choicehotels.com
+// (the corporate domain): it isn't the OTP sender and its DMARC is p=none, so
+// Cloudflare would deliver spoofed mail From: it — an injection vector. Override
+// via env only to add a *verified* Okta sub-processor domain, or a controlled
+// test sender during verification.
+const DEFAULT_ALLOWED_SENDERS = ['okta.com'];
 // Drop forwards whose Worker timestamp is more than this far from now.
 const TIMESTAMP_TOLERANCE_MS = 10 * 60 * 1000;
 // Secondary guard; the Worker is the primary size gate.

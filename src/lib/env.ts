@@ -170,13 +170,16 @@ const ServerSchema = z.object({
   // unset so a misconfigured deploy can't accept unsigned inbound. The *_NEXT
   // slot lets us rotate the secret in Cloudflare and Vercel independently
   // without a drop (the route accepts EITHER during the overlap window).
-  // 32-char floor so a placeholder can't pass as a real secret.
-  PMS_INBOX_WEBHOOK_SECRET: z.string().min(32).optional(),
-  PMS_INBOX_WEBHOOK_SECRET_NEXT: z.string().min(32).optional(),
-  // CSV sender-domain allowlist for inbound 2FA mail. Defaults to
-  // okta.com,choicehotels.com when unset (see src/lib/pms-inbox/parse.ts).
-  // Override only to add a verified Okta sub-processor domain, or to add a
-  // controlled test sender during end-to-end verification.
+  // NOT length-validated here on purpose: env is a re-parsing Proxy, so a
+  // `.min(32)` would make a too-short value throw on EVERY route (app-wide
+  // 500), not just this one. The doctor's pms_inbox_config check warns on a
+  // short secret instead; the webhook constant-time-compares any value.
+  PMS_INBOX_WEBHOOK_SECRET: z.string().optional(),
+  PMS_INBOX_WEBHOOK_SECRET_NEXT: z.string().optional(),
+  // CSV sender-domain allowlist for inbound 2FA mail. Defaults to okta.com when
+  // unset (see src/app/api/pms-inbox/inbound/route.ts). Override only to add a
+  // verified Okta sub-processor domain, or a controlled test sender during
+  // end-to-end verification.
   PMS_INBOX_ALLOWED_SENDER_DOMAINS: z.string().optional(),
 
   // ── Sentry ────────────────────────────────────────────

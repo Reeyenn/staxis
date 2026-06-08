@@ -3564,11 +3564,20 @@ async function checkResendWebhookSecretConfigured(): Promise<Omit<Check, 'name' 
  * "none yet" / "stale" is normal, not an error.
  */
 async function checkPmsInboxConfig(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const secretSet = !!(env.PMS_INBOX_WEBHOOK_SECRET ?? '').trim();
-  if (!secretSet) {
+  const secret = (env.PMS_INBOX_WEBHOOK_SECRET ?? '').trim();
+  if (!secret) {
     return {
       status: 'skipped',
       detail: 'PMS auth-code inbox not configured (PMS_INBOX_WEBHOOK_SECRET unset) — Okta 2FA email reader inactive.',
+    };
+  }
+  // Length is validated here (not in env.ts): env is a re-parsing Proxy, so a
+  // schema .min() on a too-short value would 500 every route, not just this one.
+  if (secret.length < 32) {
+    return {
+      status: 'warn',
+      detail: `PMS_INBOX_WEBHOOK_SECRET is short (${secret.length} chars) — weak shared secret for the inbox webhook.`,
+      fix: 'Generate a 32+ char random secret; set the SAME value in Vercel env and the Cloudflare Worker (wrangler secret put PMS_INBOX_WEBHOOK_SECRET).',
     };
   }
   try {

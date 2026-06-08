@@ -17,6 +17,9 @@ import {
   domainAllowed,
   extractOtpCode,
   maskCode,
+  parseAuthResults,
+  selectTrustedAuthResults,
+  authservIdOf,
 } from '@/lib/pms-inbox/parse';
 
 const ALLOW = ['okta.com', 'choicehotels.com'];
@@ -134,6 +137,13 @@ describe('extractOtpCode', () => {
   test('folds fullwidth digits to ASCII (NFKC)', () => {
     assert.equal(extractOtpCode({ text: 'Your verification code is １２３４５６.' }), '123456');
   });
+  test('does NOT truncate a 7- or 8-digit code to its first 6', () => {
+    assert.equal(extractOtpCode({ text: 'Your verification code is 1234567' }), '1234567');
+    assert.equal(extractOtpCode({ text: 'Your verification code is 12345678.' }), '12345678');
+  });
+  test('does not mistake a phone-style 3-4 split for a code', () => {
+    assert.equal(extractOtpCode({ text: 'Call us at your code line 555-1234 for help.' }), null);
+  });
   test('REFUSES when two different anchored codes appear (ambiguous)', () => {
     assert.equal(
       extractOtpCode({ text: 'Your verification code is 111111. Your security code is 222222.' }),
@@ -156,5 +166,50 @@ describe('maskCode', () => {
   test('reveals only the last 2 digits', () => {
     assert.equal(maskCode('928104'), '••••04');
     assert.equal(maskCode('12'), '••');
+  });
+});
+
+describe('Authentication-Results selection + parsing (anti-forgery)', () => {
+  const CF = 'mx2.cloudflare.net; dkim=pass header.d=okta.com header.s=s1; spf=pass smtp.mailfrom=okta.com; dmarc=pass header.from=okta.com';
+  const ATTACKER = 'attacker-mx.evil.com; dkim=pass header.d=choicehotels.com; spf=pass; dmarc=pass header.from=choicehotels.com';
+  const SPOOFED_CF = 'mx.cloudflare.net; dkim=pass header.d=evil.com; dmarc=pass header.from=okta.com';
+  const TRUST = ['cloudflare.net'];
+
+  test('authservIdOf extracts the id before the first ;', () => {
+    assert.equal(authservIdOf(CF), 'mx2.cloudflare.net');
+    assert.equal(authservIdOf(ATTACKER), 'attacker-mx.evil.com');
+  });
+
+  test('parseAuthResults reads the verdict + verified signing domain', () => {
+    assert.deepEqual(parseAuthResults(CF), { dkim: 'pass', spf: 'pass', dmarc: 'pass', dkimDomain: 'okta.com' });
+  });
+
+  test('selects Cloudflare’s header and ignores an attacker’s (order-independent)', () => {
+    // Attacker header placed FIRST (postal-mime reverses headers — must not matter).
+    assert.equal(selectTrustedAuthResults([ATTACKER, CF], TRUST), CF);
+    assert.equal(selectTrustedAuthResults([CF, ATTACKER], TRUST), CF);
+  });
+
+  test('REFUSES when a header spoofs the trusted authserv-id (two matches → null)', () => {
+    // Real Cloudflare AR + an injected one claiming a *.cloudflare.net authserv-id.
+    assert.equal(selectTrustedAuthResults([SPOOFED_CF, CF], TRUST), null);
+    assert.equal(selectTrustedAuthResults([CF, SPOOFED_CF], TRUST), null);
+  });
+
+  test('returns null when no trusted header is present', () => {
+    assert.equal(selectTrustedAuthResults([ATTACKER], TRUST), null);
+    assert.equal(selectTrustedAuthResults([], TRUST), null);
+  });
+
+  test('end-to-end: a forged-verdict message yields NO authentic verdict', () => {
+    // Simulates the Worker: only the trusted header is parsed; the attacker's
+    // forged dkim=pass for choicehotels.com never reaches the verdict.
+    const selected = selectTrustedAuthResults([ATTACKER], TRUST); // attacker only, no real CF header
+    const verdict = parseAuthResults(selected); // all-null
+    const result = verifyInboundAuthenticity(
+      { from: 'noreply@choicehotels.com', ...verdict },
+      ['okta.com'],
+    );
+    assert.equal(result.ok, false); // sender not allowlisted AND no verdict — rejected
   });
 });
