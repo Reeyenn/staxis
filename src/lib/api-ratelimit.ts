@@ -297,7 +297,15 @@ export type RateLimitEndpoint =
   // CRUD is intentionally left un-limited: this list scopes to billing / SMS /
   // public / heavy-IO endpoints, not generic authenticated manager CRUD.
   | 'knowledge-presign'
-  | 'knowledge-write';
+  | 'knowledge-write'
+  // ── PMS auth-code inbox (Okta 2FA email reader; migration 0274) ────────────
+  // Cloudflare Email Worker → /api/pms-inbox/inbound. Keyed on the RESOLVED RAW
+  // property id (api_limits.property_id has an FK to properties(id), so a hashed
+  // pseudo-UUID would FK-violate → fail closed). Real Okta sends are a handful a
+  // day; 60/hr/property bounds a forged flood to a known inbox. NOT billing-
+  // impacting (a DB-write webhook) → fail OPEN so a Supabase blip never drops a
+  // real login code.
+  | 'pms-inbox-inbound';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -550,6 +558,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // a runaway/stolen session caps fast.
   'knowledge-presign':          120,
   'knowledge-write':            120,
+  // PMS auth-code inbox — per-property (raw pid). Real Okta sends are a few a
+  // day; 60/hr bounds a forged flood to a known inbox without ever dropping a
+  // legitimate burst of re-login codes.
+  'pms-inbox-inbound':           60,
 };
 
 /**

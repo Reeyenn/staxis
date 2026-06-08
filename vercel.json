@@ -78,6 +78,10 @@
       "schedule": "15 4 * * *"
     },
     {
+      "path": "/api/cron/pms-auth-codes-purge",
+      "schedule": "45 4 * * *"
+    },
+    {
       "path": "/api/cron/vercel-watchdog",
       "schedule": "*/5 * * * *"
     },

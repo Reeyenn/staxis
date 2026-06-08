@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
-    "cua-service"
+    "cua-service",
+    "email-worker"
   ]
 }

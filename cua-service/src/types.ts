@@ -20,6 +20,46 @@ export interface PMSCredentials {
   password: string;
 }
 
+// ─── Auth-code inbox (Okta 2FA email reader; migration 0274) ───────────────
+// Source-agnostic so an SMS factor can be added later without touching
+// callers. Mirror in src/lib/pms/ when that shared package exists (see header).
+
+export type AuthCodeSource = 'email' | 'sms';
+
+/** A stored one-time login code (pms_auth_codes row, worker-facing subset). */
+export interface PmsAuthCode {
+  propertyId: string;
+  code: string;
+  source: AuthCodeSource;
+  receivedAt: string;
+  consumedAt?: string | null;
+}
+
+export interface RecordAuthCodeInput {
+  propertyId: string;
+  code: string;
+  source?: AuthCodeSource;
+  emailTo: string;
+  sender?: string | null;
+  subject?: string | null;
+  rawRef?: string | null;
+}
+
+export interface FetchAuthCodeOptions {
+  /** Only consider codes received within this many seconds (default 180). */
+  maxAgeSeconds?: number;
+  /** Give up after this long, returning null (default 90_000). */
+  timeoutMs?: number;
+  /** Delay between polls (default 3_000). */
+  pollMs?: number;
+  /**
+   * Login watermark: only accept codes received at/after this instant (ISO).
+   * The login recipe stamps when it triggered the Okta send so a flood of
+   * earlier/forged codes can't be grabbed. Optional until that wiring lands.
+   */
+  notBefore?: string | null;
+}
+
 export type RoomCondition =
   | 'occupied' | 'vacant_clean' | 'vacant_dirty' | 'inspected' | 'out_of_order' | 'unknown';
 

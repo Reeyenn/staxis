@@ -304,6 +304,9 @@ const checks: Array<[string, CheckFn]> = [
   // RESEND_WEBHOOK_SECRET isn't, which means async bounces / complaints
   // go un-tracked. Complements the live /api/resend-webhook route.
   ['resend_webhook_secret_configured', checkResendWebhookSecretConfigured],
+  // PMS auth-code inbox (Okta 2FA email reader; 0274). Skipped until the
+  // webhook secret is set, so it never reds the doctor before go-live.
+  ['pms_inbox_config',                 checkPmsInboxConfig],
   // 2026-05-22 monitoring/logging/secrets hardening — three follow-on
   // checks that complement the DSN shape check:
   //   1. sentry_auth_token_present: source-map upload gated on the token
@@ -2052,6 +2055,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'claude-sessions-purge',         cadenceHours: 24,    description: 'daily 3:30am claude_sessions retention sweep — deletes rows older than 24h so random-sessionId floods can\'t grow the table (security audit M2)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   { name: 'webhook-dedup-purge',           cadenceHours: 24,    description: 'daily 4:15am purge of expired webhook-dedup keys (auth-storage-cookies-and-middleware)' },
+  { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
@@ -3547,6 +3551,57 @@ async function checkResendWebhookSecretConfigured(): Promise<Omit<Check, 'name' 
     status: 'ok',
     detail: 'Resend API key + webhook secret both configured.',
   };
+}
+
+/**
+ * pms_inbox_config — Okta 2FA email-reader inbox (migration 0274).
+ *
+ * The CUA robot reads its own Okta login codes from pms_auth_codes, fed by
+ * /api/pms-inbox/inbound (a Cloudflare Email Worker POSTs to it with the
+ * shared PMS_INBOX_WEBHOOK_SECRET). Optional / not-yet-live, so this NEVER
+ * returns 'fail': skipped when unconfigured, ok/warn once the secret is set.
+ * The freshness line is informational — codes only arrive during a login, so
+ * "none yet" / "stale" is normal, not an error.
+ */
+async function checkPmsInboxConfig(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const secretSet = !!(env.PMS_INBOX_WEBHOOK_SECRET ?? '').trim();
+  if (!secretSet) {
+    return {
+      status: 'skipped',
+      detail: 'PMS auth-code inbox not configured (PMS_INBOX_WEBHOOK_SECRET unset) — Okta 2FA email reader inactive.',
+    };
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pms_auth_codes')
+      .select('received_at')
+      .order('received_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      return {
+        status: 'warn',
+        detail: `Inbox secret set but pms_auth_codes read failed: ${error.message}`,
+        fix: 'Confirm migration 0274 is applied to prod (table pms_auth_codes + RPC claim_pms_auth_code).',
+      };
+    }
+    if (!data) {
+      return {
+        status: 'ok',
+        detail: 'PMS auth-code inbox configured. No codes received yet (expected until a robot login fires).',
+      };
+    }
+    const ageMin = Math.round((Date.now() - new Date(data.received_at as string).getTime()) / 60000);
+    return {
+      status: 'ok',
+      detail: `PMS auth-code inbox configured. Last code received ${ageMin} min ago.`,
+    };
+  } catch (e) {
+    return {
+      status: 'warn',
+      detail: `Inbox secret set but freshness probe threw: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 }
 
 /**

@@ -164,6 +164,21 @@ const ServerSchema = z.object({
   // accept unsigned bounce/complaint POSTs.
   RESEND_WEBHOOK_SECRET: z.string().optional(),
 
+  // ── PMS auth-code inbox (Okta 2FA email reader; migration 0274) ───────────
+  // Shared secret the Cloudflare Email Worker presents to /api/pms-inbox/inbound
+  // (Authorization: Bearer …). Optional — the route fail-closes (503) when
+  // unset so a misconfigured deploy can't accept unsigned inbound. The *_NEXT
+  // slot lets us rotate the secret in Cloudflare and Vercel independently
+  // without a drop (the route accepts EITHER during the overlap window).
+  // 32-char floor so a placeholder can't pass as a real secret.
+  PMS_INBOX_WEBHOOK_SECRET: z.string().min(32).optional(),
+  PMS_INBOX_WEBHOOK_SECRET_NEXT: z.string().min(32).optional(),
+  // CSV sender-domain allowlist for inbound 2FA mail. Defaults to
+  // okta.com,choicehotels.com when unset (see src/lib/pms-inbox/parse.ts).
+  // Override only to add a verified Okta sub-processor domain, or to add a
+  // controlled test sender during end-to-end verification.
+  PMS_INBOX_ALLOWED_SENDER_DOMAINS: z.string().optional(),
+
   // ── Sentry ────────────────────────────────────────────
   SENTRY_DSN: z.string().url().optional(),
   NEXT_PUBLIC_SENTRY_DSN: z.string().url().optional(),
