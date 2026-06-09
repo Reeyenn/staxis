@@ -160,7 +160,10 @@ export function OnboardingSurface() {
             Everything <span style={{ fontStyle: 'italic' }}>inbound to live</span>
           </h1>
         </div>
-        <Btn variant="ghost" size="lg" onClick={() => setCreateOpen(true)} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>+ New hotel</Btn>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Btn variant="ghost" size="lg" href="/admin/pms-inbox" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>PMS inbox</Btn>
+          <Btn variant="ghost" size="lg" onClick={() => setCreateOpen(true)} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>+ New hotel</Btn>
+        </div>
       </header>
 
       {/* Depth track */}
