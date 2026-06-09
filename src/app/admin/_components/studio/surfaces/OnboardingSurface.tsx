@@ -367,7 +367,12 @@ interface PanelDetail {
   } | null;
   knowledge: { version: number; learnedAt: string | null } | null;
   feeds: { key: string; label: string; lastSyncedAt: string | null; hasError: boolean }[];
-  mapperJob: { id: string; kind: string; status: string; attempts: number; maxAttempts: number; costMicros: number; createdAt: string } | null;
+  mapperJob: {
+    id: string; kind: string; status: string; attempts: number; maxAttempts: number;
+    costMicros: number; createdAt: string;
+    /** Robot parked on a 2FA screen — render the code box. */
+    awaiting2fa: boolean; awaiting2faSince: string | null;
+  } | null;
   lastHiccup: string | null;
 }
 
@@ -408,6 +413,84 @@ function feedTone(iso: string | null): { tone: DotTone; text: string } {
   if (sec <= 120) return { tone: 'forest', text: `${age(iso)} ago` };
   if (sec <= 900) return { tone: 'gold', text: `${age(iso)} ago` };
   return { tone: 'terracotta', text: `${age(iso)} ago` };
+}
+
+/**
+ * 2FA code box — shown while a learning run is parked on the PMS's
+ * verification screen (mapperJob.awaiting2fa). The PMS texted a code to
+ * Reeyen's phone; he types it here and the robot picks it up within ~3s
+ * and keeps going. Emailed codes never need this — the robot reads the
+ * hotel's @getstaxis.com inbox itself.
+ */
+function MfaCodeBox({ propertyId, onDelivered }: { propertyId: string; onDelivered: () => void }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+
+  const send = async () => {
+    const trimmed = code.replace(/[\s-]/g, '');
+    if (!/^\d{4,8}$/.test(trimmed)) {
+      setNote({ tone: 'err', text: 'Codes are 4-8 digits.' });
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/pms-auth-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId, code: trimmed }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setCode('');
+        setNote({ tone: 'ok', text: 'Handed to the robot — it types it in within a few seconds.' });
+        onDelivered();
+      } else {
+        setNote({ tone: 'err', text: json.error ?? 'Could not send the code.' });
+      }
+    } catch (e) {
+      setNote({ tone: 'err', text: `Network error: ${(e as Error).message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void send(); }}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="Code from your phone"
+          maxLength={10}
+          className="mono"
+          style={{
+            flex: 1, minWidth: 0, fontSize: 13, letterSpacing: '.18em', padding: '7px 10px',
+            background: 'rgba(0,0,0,.3)', color: '#fff', border: `1px solid ${dim(.3)}`,
+            borderRadius: 8, outline: 'none',
+          }}
+        />
+        <Btn
+          size="sm"
+          variant="ghost"
+          onClick={() => void send()}
+          disabled={busy || code.trim() === ''}
+          style={{ color: 'var(--gold)', borderColor: 'rgba(201,154,46,.5)', background: 'rgba(201,154,46,.12)' }}
+        >
+          {busy ? '…' : 'Send to robot'}
+        </Btn>
+      </div>
+      {note && (
+        <div style={{ fontSize: 10.5, marginTop: 5, color: note.tone === 'ok' ? 'var(--forest)' : 'var(--terracotta)' }}>
+          {note.text}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
@@ -505,6 +588,14 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
   const attentionCol = (
     <div>
       <PanelCaps>Attention</PanelCaps>
+      {d.mapperJob?.awaiting2fa && (
+        <NoteBox tone="gold">
+          <span style={{ fontWeight: 700, color: 'var(--gold)' }}>Waiting on a 2FA code.</span>{' '}
+          The PMS just sent a verification code{d.mapperJob.awaiting2faSince ? ` (${age(d.mapperJob.awaiting2faSince)} ago)` : ''}.
+          If it was texted to your phone, type it below — emailed codes are read automatically.
+          <MfaCodeBox propertyId={propertyId} onDelivered={() => void fetchDetail()} />
+        </NoteBox>
+      )}
       {d.mapperJob && (
         <NoteBox tone="teal">
           Learning this PMS — attempt {d.mapperJob.attempts || 1}/{d.mapperJob.maxAttempts} · {usdFromMicros(d.mapperJob.costMicros)} so far

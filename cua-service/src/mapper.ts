@@ -7,8 +7,9 @@
  * (with Set-of-Mark numbered badges overlaid for grounding), and records
  * recipe steps as `click_at` / `type_text`.
  *
- * Cost expectation: ~$15-25 per full mapping run (login + ~13 targets) on
- * Sonnet 4.6 with extended thinking. One-time per PMS family — all
+ * Cost expectation: ~$20-40 per full mapping run (login + ~13 targets) on
+ * Opus 4.8 with adaptive thinking (per-job cap $40 via
+ * CUA_FULL_LEARN_COST_CAP_MICROS). One-time per PMS family — all
  * downstream hotels on the same PMS reuse the recipe via deterministic
  * Playwright replay (recipe-runner.ts, no Claude in the loop).
  */
@@ -16,7 +17,7 @@
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
-import { anthropic, getModeConfig } from './anthropic-client.js';
+import { anthropic, getModeConfig, type MapperModelId } from './anthropic-client.js';
 import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
 import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
 import { safeGoto } from './browser-utils/navigate.js';
@@ -26,6 +27,9 @@ import { supabase } from './supabase.js';
 import { env } from './env.js';
 import { ActionLoopDetector, actionFingerprint, pageFingerprint } from './loop-detector.js';
 import { judgeStepOutcome, captureScreenshotForCritic } from './critic.js';
+import { clickTrustDeviceIfPresent } from './mfa-handler.js';
+import { fetchLatestAuthCode } from './auth-code-helpers.js';
+import { sendAdminSms } from './admin-sms.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
 // Each phase has its own token + wallclock budget (~$2.40 max per phase),
@@ -75,16 +79,15 @@ const PHASE_WALLCLOCK_BUDGET_MS = 15 * 60_000;
 // each action, few enough that input-token cost stays bounded.
 const HISTORY_KEEP_RECENT = 3;
 
-// Extended thinking budget (Anthropic best-practices for computer/browser
-// use: https://claude.com/blog/best-practices-for-computer-and-browser-use-
-// with-claude). 2000 tokens is the documented "medium" effort default for
-// Sonnet 4.6 — Anthropic notes that even "low" thinking uses fewer total
-// output tokens than disabling thinking entirely (the model is more
-// deliberate, fewer dead-end clicks).
-//
-// Invariant: must be < MAX_OUTPUT_TOKENS_PER_TURN (Anthropic API rejects
-// budget_tokens >= max_tokens). 2000 < 4096 ✓.
-const THINKING_BUDGET_TOKENS = 2000;
+// Adaptive-thinking headroom (2026-06-09 model upgrade). Opus 4.8 / Fable 5
+// removed fixed `budget_tokens` (the API 400s on it) — `thinking: adaptive`
+// lets the model decide per-turn how much to think, and those thinking
+// tokens are drawn from max_tokens. This headroom keeps the VISIBLE-output
+// ceiling at MAX_OUTPUT_TOKENS_PER_TURN (4096, sized for the final
+// parse-hint JSON) even on a turn where the model thinks a lot. Thinking
+// stays cheap on click-loop turns (the model thinks briefly or not at all);
+// the per-job cost cap bounds the cumulative worst case.
+const THINKING_HEADROOM_TOKENS = 8192;
 
 /**
  * Plan v8 Phase B P0-2 — when the floor-met `{unavailable: true}` fires,
@@ -248,7 +251,7 @@ interface MapperOptions {
    * Claude model. Sonnet 4.6 is the default; admin can opt into Opus 4.7
    * per-job for hard PMSes via workflow_jobs.payload.model.
    */
-  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  model?: MapperModelId;
   /**
    * Plan v8 self-repair — when the live polling finds a broken selector
    * for one feed, fire a tiny vision-Claude re-learn for JUST that
@@ -318,6 +321,122 @@ async function persistTargetProgress(
   await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
 }
 
+/**
+ * Flag (or clear) "this learning run is parked on a 2FA screen waiting
+ * for a code" on the job row. The admin Launch Bay panel polls
+ * /api/admin/onboarding-detail every 5s and renders a code-entry box
+ * while this flag is set, so Reeyen can type in a code that the PMS
+ * texted to his phone. Same select-then-merge pattern as
+ * persistTargetProgress — never clobbers actionsSoFar.
+ */
+async function setAwaitingMfa(
+  jobId: string | null | undefined,
+  awaiting: boolean,
+): Promise<void> {
+  if (!jobId) return;
+  const { data: row, error: selErr } = await supabase
+    .from('workflow_jobs')
+    .select('result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (selErr || !row) return;
+  const existingResult = (row.result as Record<string, unknown>) ?? {};
+  const newResult = {
+    ...existingResult,
+    awaiting_2fa: awaiting ? { since: new Date().toISOString() } : null,
+  };
+  await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
+}
+
+/**
+ * Acquire a one-time 2FA code for the login the mapper is stuck on.
+ *
+ * Sequence: tick any "trust this device" checkbox (so the saved session
+ * skips MFA for the next 30-90 days), flag the job awaiting_2fa for the
+ * Launch Bay code box, nudge the admin by SMS (best-effort), then poll
+ * pms_auth_codes for up to CUA_MFA_CODE_WAIT_MS. Codes arrive two ways:
+ * Okta-style EMAILED codes land automatically via the getstaxis.com
+ * inbox pipeline (seconds); codes TEXTED to the admin's phone arrive
+ * when he types them into the hotel's Launch Bay panel.
+ *
+ * Returns the code, or null on timeout. Always clears the awaiting flag.
+ */
+async function acquireMfaCode(
+  page: Page,
+  ctx: { propertyId: string; jobId: string | null },
+): Promise<string | null> {
+  await clickTrustDeviceIfPresent(page).catch(() => ({ clicked: false, selector: null }));
+  await setAwaitingMfa(ctx.jobId, true);
+
+  // Fire-and-forget nudge — the PMS's own code text already pings the
+  // admin's phone; this just tells him WHERE to type it.
+  void (async () => {
+    let hotelName = 'A hotel';
+    try {
+      const { data } = await supabase
+        .from('properties')
+        .select('name')
+        .eq('id', ctx.propertyId)
+        .maybeSingle();
+      if (data?.name) hotelName = data.name;
+    } catch { /* best-effort */ }
+    await sendAdminSms(
+      `Staxis: ${hotelName} hit a 2FA screen while the robot was learning its PMS. ` +
+      `If a code was texted to you, open Admin → Onboarding, click the hotel, and type it in. ` +
+      `Emailed codes are read automatically — no action needed.`,
+    );
+  })();
+
+  try {
+    // notBefore 2 min back: the PMS sends the code AFTER the login attempt
+    // that landed us here, so anything older is a stale/foreign code. The
+    // 15-min maxAge covers slow human round-trips within the wait window.
+    const code = await fetchLatestAuthCode(ctx.propertyId, {
+      maxAgeSeconds: 900,
+      timeoutMs: env.CUA_MFA_CODE_WAIT_MS,
+      pollMs: 3_000,
+      notBefore: new Date(Date.now() - 120_000).toISOString(),
+    });
+    return code;
+  } finally {
+    await setAwaitingMfa(ctx.jobId, false).catch(() => {});
+  }
+}
+
+/**
+ * Persist the mapper browser's cookies/localStorage to scraper_session
+ * after a successful login, so the per-hotel session-driver boots with
+ * the SAME trusted-device state and (usually) skips MFA entirely on its
+ * first poll login. Same row shape as SessionDriver.saveStorageState.
+ */
+async function saveTrustedSession(propertyId: string | null, page: Page): Promise<void> {
+  if (!propertyId) return;
+  try {
+    const state = await page.context().storageState();
+    const { error } = await supabase
+      .from('scraper_session')
+      .upsert(
+        {
+          property_id: propertyId,
+          state: state as unknown as Record<string, unknown>,
+          refreshed_at: new Date().toISOString(),
+        },
+        { onConflict: 'property_id' },
+      );
+    if (error) {
+      log.warn('mapper: saveTrustedSession upsert failed (non-fatal)', {
+        propertyId, err: error.message,
+      });
+    } else {
+      log.info('mapper: trusted session saved for session-driver handoff', { propertyId });
+    }
+  } catch (err) {
+    log.warn('mapper: saveTrustedSession failed (non-fatal)', {
+      propertyId, err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function isJobOverBudget(
   jobId: string | null,
   /** Plan v8 review P0-A — per-job cap override (falls back to env default). */
@@ -362,6 +481,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
 
     const postLoginUrl = page.url();
     log.info('login mapped', { postLoginUrl, steps: loginResult.steps.steps.length });
+
+    // Hand the trusted-device cookies to the per-hotel session-driver so
+    // its first poll login (usually) skips MFA entirely. Non-fatal.
+    await saveTrustedSession(opts.propertyId ?? null, page);
 
     // Cumulative-cost guard — see JOB_COST_CAP_MICROS comment for rationale.
     // checkBudget queries claude_usage_log for spend so far on this job;
@@ -567,7 +690,7 @@ async function mapLogin(
     propertyId: string | null;
     jobId: string | null;
     signal?: AbortSignal;
-    model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+    model?: MapperModelId;
     /** Plan v8 review P0-A — per-job cap override. */
     jobCostCapMicros?: number;
   },
@@ -645,6 +768,19 @@ async function mapLogin(
   // the 4th identical (action, page) tuple within the last 8 turns.
   const loopDetector = new ActionLoopDetector();
 
+  // ── 2FA resolution state (2026-06-09) ──
+  // mfaCodePending: a fetched code is in the agent's hands, waiting for it
+  //   to be typed + submitted. While set, $auth_code substitution is live
+  //   and detection doesn't re-fire.
+  // suppressRecording: MFA-screen actions (trust tick, code typing, verify
+  //   click) are excluded from the recorded login playbook — replaying a
+  //   one-time code is meaningless, and the saved trusted-device cookie
+  //   (saveTrustedSession) makes future logins skip MFA instead.
+  let mfaCodePending = false;
+  let pendingAuthCode: string | null = null;
+  let suppressRecording = false;
+  let mfaResolutions = 0;
+
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS_LOGIN; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       log.warn('mapper exceeded input token budget', { totalInputTokens, totalOutputTokens, stepIdx });
@@ -682,24 +818,79 @@ async function mapLogin(
       }
     }
 
-    // MFA / OTP detection. If the PMS bounced us to a one-time-code screen,
-    // the agent will otherwise spin until the step/wallclock budget runs out
-    // and report a vague "took too long". Detect a visible OTP prompt (any of
-    // the common verification-code phrasings, or a 6-digit code input) and
-    // bail with a DISTINCT reason so the admin UI can show "PMS requires MFA"
-    // instead of a misleading timeout. Best-effort: any evaluate error just
-    // skips the check and the loop proceeds as before.
-    {
+    // MFA / OTP handling (2026-06-09 — was a hard abort before). When the
+    // PMS bounces us to a one-time-code screen: tick trust-device, flag the
+    // job awaiting_2fa (the Launch Bay panel shows a code box + the admin
+    // gets an SMS nudge), and wait for the code to land in pms_auth_codes —
+    // emailed codes arrive automatically via the getstaxis.com inbox
+    // pipeline; texted codes arrive when the admin types them in. The code
+    // is handed to the agent as the "$auth_code" placeholder (substituted
+    // at type time, so the digits never enter the Claude conversation).
+    if (mfaCodePending) {
+      // A code is in the agent's hands. Watch for the screen to change;
+      // once we're off the MFA page, resume recording playbook steps.
+      const stillOnMfa = await detectMfaScreen(page);
+      if (!stillOnMfa) {
+        mfaCodePending = false;
+        pendingAuthCode = null;
+        suppressRecording = false;
+        log.info('login mapper: 2FA cleared — resuming step recording', {
+          jobId: ctx.jobId ?? undefined, stepIdx,
+        });
+      }
+    } else {
       const mfaDetected = await detectMfaScreen(page);
       if (mfaDetected) {
-        log.warn('login mapper aborting — PMS requires MFA', { jobId: ctx.jobId ?? undefined, stepIdx });
-        return {
-          ok: false,
-          userMessage:
-            'Your PMS asked for a one-time verification code (multi-factor login). ' +
-            'We can\'t complete the code step automatically — please contact support to finish connecting.',
-          detail: { phase: 'login_mapping', reason: 'mfa_required', currentUrl: page.url() },
-        };
+        mfaResolutions += 1;
+        if (!ctx.propertyId || mfaResolutions > 2) {
+          // No property to look codes up for (one-off dev run), or the PMS
+          // re-prompted after two resolved codes — give up with the
+          // distinct reason the admin UI knows.
+          log.warn('login mapper aborting — MFA unresolvable', {
+            jobId: ctx.jobId ?? undefined, stepIdx, mfaResolutions, hasProperty: Boolean(ctx.propertyId),
+          });
+          return {
+            ok: false,
+            userMessage:
+              'Your PMS asked for a one-time verification code (multi-factor login) ' +
+              'and we couldn\'t complete it automatically. Please contact support to finish connecting.',
+            detail: { phase: 'login_mapping', reason: 'mfa_required', currentUrl: page.url() },
+          };
+        }
+        log.info('login mapper: 2FA screen detected — waiting for a code', {
+          jobId: ctx.jobId ?? undefined, stepIdx, attempt: mfaResolutions,
+        });
+        const code = await acquireMfaCode(page, { propertyId: ctx.propertyId, jobId: ctx.jobId });
+        if (!code) {
+          log.warn('login mapper aborting — no 2FA code arrived in time', {
+            jobId: ctx.jobId ?? undefined, stepIdx, waitedMs: env.CUA_MFA_CODE_WAIT_MS,
+          });
+          return {
+            ok: false,
+            userMessage:
+              'Your PMS asked for a one-time verification code and none arrived in time. ' +
+              'If the code goes to your phone, open the hotel on the Onboarding page and type it ' +
+              'into the 2FA box there, then start the learning run again.',
+            detail: { phase: 'login_mapping', reason: 'mfa_code_timeout', currentUrl: page.url() },
+          };
+        }
+        pendingAuthCode = code;
+        mfaCodePending = true;
+        suppressRecording = true;
+        messages.push({
+          role: 'user',
+          content: [{
+            type: 'text',
+            text:
+              'A one-time verification code for this 2FA screen has been retrieved. ' +
+              'Do this now: (1) if a "remember/trust this device" checkbox is visible and ' +
+              'unchecked, click it; (2) click the code input field; (3) send ' +
+              '{action: "type", text: "$auth_code"} — the tool substitutes the real digits; ' +
+              '(4) click the verify/submit button; (5) take a screenshot and continue logging in.',
+          }],
+        });
+        // Fall through to the model call — this instruction is the next
+        // thing the agent sees.
       }
     }
 
@@ -724,15 +915,15 @@ async function mapLogin(
     // fall back to a URL-only fingerprint inside the helper.
     const turnPageFingerprint = await pageFingerprint(page);
 
-    // Extended thinking — Anthropic best-practices: 2000-token "medium"
-    // budget for Sonnet 4.6. Thinking tokens consume from max_tokens —
-    // bump max_tokens by the thinking budget so the VISIBLE-output cap
-    // remains MAX_OUTPUT_TOKENS_PER_TURN (4096), the pre-thinking
-    // ceiling. Without this bump, a long final JSON could truncate.
+    // Adaptive thinking (Opus 4.8 / Fable 5 surface — budget_tokens 400s
+    // there). Thinking tokens consume from max_tokens — the headroom keeps
+    // the VISIBLE-output cap at MAX_OUTPUT_TOKENS_PER_TURN (4096) so a
+    // long final JSON can't truncate. Prompt caching is GA — cache_control
+    // needs no beta header.
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS,
-      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS },
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_HEADROOM_TOKENS,
+      thinking: { type: 'adaptive' },
       system: [
         {
           type: 'text',
@@ -742,7 +933,7 @@ async function mapLogin(
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: maybePruneHistory(messages, pruneState, stepIdx, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
+      betas: cfg.betas,
     }, {
       ...(ctx.signal ? { signal: ctx.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -867,8 +1058,10 @@ async function mapLogin(
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
-      const exec = await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login');
-      if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      const exec = await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login', {
+        authCode: pendingAuthCode,
+      });
+      if (exec.recordedStep && !suppressRecording) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
 
@@ -917,7 +1110,7 @@ async function mapAction(args: {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
-  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  model?: MapperModelId;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
@@ -1074,10 +1267,8 @@ async function mapAction(args: {
       ? `${args.jobId}:${args.actionName}:${stepIdx}`
       : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
 
-    // Extended thinking — 2000-token "medium" budget per Anthropic's
-    // best-practices blog for computer/browser use. Thinking tokens
-    // consume from max_tokens — bump max_tokens by the thinking budget
-    // so the VISIBLE-output cap remains 4096 (Codex review finding 2).
+    // Adaptive thinking — see THINKING_HEADROOM_TOKENS. The headroom keeps
+    // the VISIBLE-output cap at 4096 (Codex review finding 2).
 
     // Loop-detector input #1 — fingerprint the page state Claude is
     // about to reason on. Used after toolResults are built to record
@@ -1089,8 +1280,8 @@ async function mapAction(args: {
 
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS,
-      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS },
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_HEADROOM_TOKENS,
+      thinking: { type: 'adaptive' },
       system: [
         {
           type: 'text',
@@ -1100,7 +1291,7 @@ async function mapAction(args: {
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: maybePruneHistory(messages, pruneState, stepIdx, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
+      betas: cfg.betas,
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },
@@ -1405,7 +1596,7 @@ async function mapDrillDownAction(args: {
   propertyId: string | null;
   jobId: string | null;
   signal?: AbortSignal;
-  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  model?: MapperModelId;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
@@ -1533,19 +1724,18 @@ async function mapDrillDownAction(args: {
     // so it matches the screenshot the model acts on.
     const turnPageFingerprint = await pageFingerprint(args.page);
 
-    // Extended thinking — 2000-token "medium" budget per Anthropic's
-    // best-practices blog. Bump max_tokens by the thinking budget so the
-    // VISIBLE-output cap stays MAX_OUTPUT_TOKENS_PER_TURN (4096).
+    // Adaptive thinking — see THINKING_HEADROOM_TOKENS. The headroom keeps
+    // the VISIBLE-output cap at MAX_OUTPUT_TOKENS_PER_TURN (4096).
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
-      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_BUDGET_TOKENS,
-      thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS },
+      max_tokens: MAX_OUTPUT_TOKENS_PER_TURN + THINKING_HEADROOM_TOKENS,
+      thinking: { type: 'adaptive' },
       system: [
         { type: 'text', text: cfg.systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
       tools: [cfg.tool as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: maybePruneHistory(messages, pruneState, stepIdx, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
-      betas: ['prompt-caching-2024-07-31', ...cfg.betas],
+      betas: cfg.betas,
     }, {
       ...(args.signal ? { signal: args.signal } : {}),
       headers: { 'idempotency-key': idempotencyKey },

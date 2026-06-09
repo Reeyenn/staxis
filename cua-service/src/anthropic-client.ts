@@ -35,21 +35,33 @@ export const anthropic = new Anthropic({
 });
 
 /**
- * Sonnet 4.6 — the default for the vision mapper.
- *
- * Why Sonnet 4.6 (not Opus 4.7 / not Sonnet 4.5):
- *   - Sonnet 4.6 is materially cheaper than Opus 4.7 (~3-5x), and
- *     navigating a PMS doesn't require Opus-level reasoning — the agent
- *     mostly does "screenshot → find link → click → repeat" loops.
- *   - Anthropic's own best-practices blog explicitly recommends Sonnet 4.6
- *     for the mechanical click precision needed by computer-use tasks;
- *     Opus 4.7 wins only when high-resolution source images are at play.
- *
- * If a future PMS turns out to need stronger reasoning, swap this to
- * `claude-opus-4-7` and re-test. Per-job override via
- * workflow_jobs.payload.model.
+ * Models the mapper is priced + typed for. Keep in sync with
+ * usage-log.ts PRICE_PER_1M_TOKENS — a model missing from the price
+ * table would compute $0 spend and blind the cost caps.
  */
-export const CLAUDE_MODEL = 'claude-sonnet-4-6';
+export type MapperModelId =
+  | 'claude-opus-4-8'
+  | 'claude-sonnet-4-6'
+  | 'claude-fable-5';
+
+/**
+ * Opus 4.8 — the default for the vision mapper (2026-06-09 decision).
+ *
+ * Why Opus 4.8 (not Sonnet 4.6, the previous default):
+ *   - A learning run is ONE-TIME PER PMS FAMILY and its output (the
+ *     knowledge file) is replayed by every hotel on that family. A
+ *     mis-identified report or fragile selector silently corrupts data
+ *     fleet-wide, so per-run quality dominates the ~2x price difference
+ *     ($5/$25 vs $3/$15 per MTok ≈ $20-40 vs $10-25 per full learn).
+ *   - Opus 4.8 is markedly stronger at long-horizon agentic work and at
+ *     verifying its own outcomes (right report? right columns?) than
+ *     Sonnet 4.6. All three MapperModelId models were live-probed
+ *     2026-06-09 with computer_20251124 + adaptive thinking: all OK.
+ *
+ * Sonnet 4.6 remains the right choice for cheap single-target repair
+ * jobs ($1-2). Per-job override via workflow_jobs.payload.model.
+ */
+export const CLAUDE_MODEL: MapperModelId = 'claude-opus-4-8';
 
 /**
  * Vision tool definition. Pass in `messages.create({tools: [VISION_TOOL]})`.
@@ -147,11 +159,15 @@ export const MAPPING_SYSTEM_PROMPT =
   `3. Modals — dismiss any cookie banner, "what's new" dialog, or "session ` +
   `active" warning by clicking Close / X / Continue / OK.\n` +
   `   MFA/2FA is the EXCEPTION: if you hit a two-factor / one-time-code / ` +
-  `verification-code prompt, do NOT try to dismiss or bypass it — you ` +
-  `cannot complete it. Stop and emit an ask_admin help-request JSON ` +
-  `({"ask_admin": true, "question": "Hit a 2FA/MFA prompt — needs a human ` +
-  `to enter the code", "what_ive_tried": [...], "suggested_paths": []}) so ` +
-  `a Staxis admin can resolve it.\n` +
+  `verification-code prompt, do NOT try to dismiss, bypass, or guess it. ` +
+  `The system detects the 2FA screen and retrieves the real code for you ` +
+  `(from the hotel's email inbox, or typed in by a Staxis admin). You will ` +
+  `receive a message containing the literal placeholder "$auth_code" — ` +
+  `when it arrives: tick any "remember/trust this device" checkbox if one ` +
+  `is visible, click the code input field, send {action: "type", text: ` +
+  `"$auth_code"} (the tool substitutes the real digits), then click ` +
+  `verify/submit. Until that message arrives, just take a screenshot and ` +
+  `wait — do not loop or improvise on a 2FA screen.\n` +
   `4. To find a specific page, click the most likely menu item, screenshot, ` +
   `check. Don't explore breadth-first.\n\n` +
 
@@ -184,8 +200,8 @@ export const MAPPING_SYSTEM_PROMPT =
 /**
  * Resolve the tool + system prompt + beta header + model for a single
  * Claude call. Vision-only now (Plan v8 D.2 deleted DOM mode); the
- * model can still be overridden per-job (admin opts into Opus 4.7 for
- * hard PMSes).
+ * model can still be overridden per-job (Sonnet 4.6 for cheap repairs,
+ * Fable 5 for an unusually hard PMS).
  *
  * Use as:
  *   const cfg = getModeConfig(jobModelOverride);
@@ -207,7 +223,7 @@ export interface ModeConfig {
 }
 
 export function getModeConfig(
-  modelOverride?: 'claude-sonnet-4-6' | 'claude-opus-4-7',
+  modelOverride?: MapperModelId,
 ): ModeConfig {
   return {
     tool: VISION_TOOL,

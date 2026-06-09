@@ -38,16 +38,21 @@ import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
+import type { MapperModelId } from './anthropic-client.js';
 
 export interface MappingJobInput {
   pms_family: string;
   property_id: string;
-  /** Optional: override the global cost cap for this specific run.
-   *  Useful for re-running a partial map with a higher budget. */
+  /** Optional: override the cost cap for this specific run. Repair jobs
+   *  set a tight $2; when absent, a FULL learn defaults to
+   *  CUA_FULL_LEARN_COST_CAP_MICROS ($40) — sized so a complete
+   *  12-target Opus 4.8 run (~$20-40) finishes instead of dying at the
+   *  generic $5 per-job default. */
   cost_cap_micros?: number;
-  /** Plan v8 Phase A — per-job Claude model. Defaults to claude-sonnet-4-6.
-   *  Admin opts into Opus for hard PMSes per-job. */
-  model?: 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  /** Plan v8 Phase A — per-job Claude model. Defaults to CLAUDE_MODEL
+   *  (claude-opus-4-8 since 2026-06-09). Sonnet 4.6 for cheap repairs,
+   *  Fable 5 for an unusually hard PMS. */
+  model?: MapperModelId;
   /** Plan v8 self-repair — pre-populated actions accumulator. mapPMS
    *  uses this to SKIP targets already in the existing active recipe,
    *  iterating only the ones that need re-learning (typically one).
@@ -279,6 +284,11 @@ export async function runMappingJob(
   // 2. Run mapPMS. The mapper opens its own browser via chromium.launch.
   // Plan v8 review P0-A: thread per-job cost cap through. Without this
   // vision-mode jobs would hit the DOM mode's $5 env default and abort.
+  // 2026-06-09: when the trigger didn't set a cap (auto-enqueue from
+  // paused_no_knowledge_file, admin regenerate), default a FULL learn to
+  // CUA_FULL_LEARN_COST_CAP_MICROS ($40) — a complete 12-target Opus 4.8
+  // run costs ~$20-40, so the generic $5 default would kill it half-way
+  // and park a partial recipe.
   const result = await mapPMS({
     credentials,
     pmsType: input.pms_family as PMSType,
@@ -286,7 +296,7 @@ export async function runMappingJob(
     jobId,
     signal,
     model: input.model,
-    jobCostCapMicros: input.cost_cap_micros,
+    jobCostCapMicros: input.cost_cap_micros ?? env.CUA_FULL_LEARN_COST_CAP_MICROS,
     // Plan v8 self-repair — pre-seed the actions accumulator so the
     // mapper only iterates targets NOT in this set. Empty for full
     // mappings (fresh PMS family); populated for repairs.

@@ -14,38 +14,11 @@
 
 import { supabase } from './supabase.js';
 import { log } from './log.js';
+// Pricing math lives in usage-pricing.ts (pure, no Supabase import) so
+// unit tests can exercise it without the Node<22 RealtimeClient throw.
+import { computeCostMicros, type AnthropicUsage } from './usage-pricing.js';
 
-// Sonnet 4 / 4.5 / 4.6 pricing (per Anthropic public price list, USD per
-// million tokens). Update if/when we change CLAUDE_MODEL.
-const PRICE_PER_1M_TOKENS = {
-  'claude-sonnet-4-6': {
-    input: 3,
-    output: 15,
-    cacheWrite5m: 3.75,
-    cacheRead: 0.30,
-  },
-  'claude-sonnet-4-5': {
-    input: 3,
-    output: 15,
-    cacheWrite5m: 3.75,
-    cacheRead: 0.30,
-  },
-  'claude-opus-4-7': {
-    input: 15,
-    output: 75,
-    cacheWrite5m: 18.75,
-    cacheRead: 1.50,
-  },
-} as const;
-
-type ModelId = keyof typeof PRICE_PER_1M_TOKENS;
-
-interface AnthropicUsage {
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  cache_creation_input_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
-}
+export { computeCostMicros } from './usage-pricing.js';
 
 interface LogContext {
   workload:
@@ -82,30 +55,6 @@ interface LogContext {
  */
 const IN_PROC_COST_BY_JOB = new Map<string, number>();
 const IN_PROC_COST_CAP = 1000;
-
-/**
- * Compute cost in micro-dollars from a usage object.
- * 1 micro-dollar = $0.000001 = 0.0001 cents.
- */
-function computeCostMicros(usage: AnthropicUsage, model: string): number {
-  const prices = PRICE_PER_1M_TOKENS[model as ModelId];
-  if (!prices) return 0;
-
-  const input = usage.input_tokens ?? 0;
-  const output = usage.output_tokens ?? 0;
-  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
-
-  // micro-dollars = (tokens / 1_000_000) * price_per_1M * 1_000_000
-  //               = tokens * price_per_1M
-  const total =
-    input * prices.input +
-    output * prices.output +
-    cacheWrite * prices.cacheWrite5m +
-    cacheRead * prices.cacheRead;
-
-  return Math.round(total);
-}
 
 /**
  * Sum cost_micros for a given job. Checks the in-process map FIRST

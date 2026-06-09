@@ -25,6 +25,21 @@ const Schema = z.object({
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
+  // Budget for one FULL learning run (login + all 12 targets) when the
+  // trigger didn't set payload.cost_cap_micros. Sized 2026-06-09 for
+  // Opus 4.8 at ~2x the expected $20-40 spend of a clean full learn —
+  // the generic $5 CUA_JOB_COST_CAP_MICROS is per-phase/repair-scale
+  // and would kill a full learn half-way. Org-wide daily wall below
+  // (CUA_DAILY_MAPPING_SPEND_CAP_MICROS) still bounds the aggregate.
+  CUA_FULL_LEARN_COST_CAP_MICROS: z.coerce.number().int().positive().default(40_000_000),
+
+  // How long a learning run waits at a 2FA screen for a one-time code
+  // to show up in pms_auth_codes (emailed codes land in seconds; codes
+  // texted to Reeyen's phone need him to open Launch Bay and type them
+  // in). 10 min default — generous for a human round-trip but bounded
+  // so an abandoned run doesn't camp on the login page forever.
+  CUA_MFA_CODE_WAIT_MS: z.coerce.number().int().positive().default(600_000),
+
   // 2026-05-24: CUA_SHADOW_MODE removed. Legacy CA normalizers + the
   // 7-day parity gate were retired so the new generic-table-writer
   // (persistence/generic-table-writer.ts) is the only write path now.
@@ -132,6 +147,16 @@ const Schema = z.object({
   // Per-ping fetch timeout. The pinger fails quiet on timeout; the
   // 5-min cron is the safety net.
   RULES_ENGINE_PING_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+
+  // ── Admin SMS nudge (optional — all four required to send) ──────────
+  // When a learning run hits a 2FA screen, text the admin so he opens
+  // Launch Bay and types the code in. No-ops unless ALL FOUR are set
+  // (admin-sms.ts checks). Same Twilio account as the web app; set via
+  // `fly secrets set TWILIO_ACCOUNT_SID=... -a staxis-cua` etc.
+  TWILIO_ACCOUNT_SID: z.string().min(10).optional(),
+  TWILIO_AUTH_TOKEN: z.string().min(10).optional(),
+  TWILIO_FROM_NUMBER: z.string().min(8).optional(),
+  ADMIN_ALERT_PHONE: z.string().min(8).optional(),
 
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

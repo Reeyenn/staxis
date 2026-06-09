@@ -48,6 +48,10 @@ export type RateLimitEndpoint =
   // hit them, a compromised admin account or scripted retry storm
   // could rack up real spend. Cap at 10/hr per property.
   | 'admin-regenerate-recipe'
+  // Manual 2FA code entry from the Launch Bay panel. Costs nothing,
+  // but it feeds the robot's login — cap retries so a scripted storm
+  // can't spray guesses into pms_auth_codes.
+  | 'admin-pms-auth-code'
   // Invoice OCR — Claude Vision call per image ($0.003-0.01/scan).
   // Maria might scan 5-10 invoices a week in normal use; 50/hr per
   // property is generous headroom. A compromised session or buggy
@@ -320,6 +324,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Admin recipe regeneration costs $1-3 each. 10/hour/property is
   // generous for legitimate ops use; tight enough to stop a runaway.
   'admin-regenerate-recipe':    10,
+  // Manual 2FA code entry — a human typo-retries a few times at most.
+  'admin-pms-auth-code':        30,
   // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs
   // legitimate use (Maria scanning a stack of weekly invoices) but
   // caps runaway loops fast.

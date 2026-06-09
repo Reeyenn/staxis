@@ -360,6 +360,10 @@ export async function executeVisionAction(
   action: VisionAction,
   creds: PMSCredentials,
   phase: MappingPhase = 'login',
+  /** Per-call secrets beyond the login credentials. `authCode` powers the
+   *  `$auth_code` placeholder during 2FA resolution — substituted at type
+   *  time so the one-time digits never enter the Claude conversation. */
+  extras?: { authCode?: string | null },
 ): Promise<VisionActionResult> {
   try {
     // Log every action for ops visibility. The read-only invariant is
@@ -557,31 +561,47 @@ export async function executeVisionAction(
 
       case 'type': {
         // Credential substitution — same pattern as browser-tool.ts:386-415.
-        // The agent sees the placeholder ('$username' / '$password') in
-        // its system prompt's login goal; we expand to real creds only at
-        // the moment of typing into the page. Recipe records placeholder.
+        // The agent sees the placeholder ('$username' / '$password' /
+        // '$auth_code') in its goal message; we expand to the real value
+        // only at the moment of typing into the page. Recipe records the
+        // placeholder. '$auth_code' is the one-time 2FA code fetched by the
+        // mapper (mapper.ts acquireMfaCode) — it's only live while a 2FA
+        // resolution is in flight; outside that window the literal string
+        // is typed (and the agent is never told about it).
         const requested = action.text;
         const isUsernamePh = requested === '$username';
         const isPasswordPh = requested === '$password';
+        const authCode = extras?.authCode ?? null;
+        const isAuthCodePh = requested === '$auth_code' && authCode !== null;
         const value = isUsernamePh
           ? creds.username
           : isPasswordPh
             ? creds.password
-            : requested;
-        let recorded: '$username' | '$password' | string = isUsernamePh
+            : isAuthCodePh
+              ? authCode
+              : requested;
+        let recorded: '$username' | '$password' | '$auth_code' | string = isUsernamePh
           ? '$username'
           : isPasswordPh
             ? '$password'
-            : requested;
-        // Defensive: if agent typed literal creds (echoed from prior context),
-        // still record as placeholder.
-        if (!isUsernamePh && !isPasswordPh) {
+            : isAuthCodePh
+              ? '$auth_code'
+              : requested;
+        // Defensive: if agent typed literal secrets (echoed from prior
+        // context), still record as placeholder.
+        if (!isUsernamePh && !isPasswordPh && !isAuthCodePh) {
           if (value === creds.username) recorded = '$username';
           if (value === creds.password) recorded = '$password';
+          if (authCode !== null && value === authCode) recorded = '$auth_code';
         }
         await page.keyboard.type(value);
+        const masked = isPasswordPh || value === creds.password
+          ? '<password>'
+          : recorded === '$auth_code'
+            ? '<verification code>'
+            : value;
         return {
-          output: `Typed ${isPasswordPh || value === creds.password ? '<password>' : value}.`,
+          output: `Typed ${masked}.`,
           recordedStep: { kind: 'type_text', value: recorded },
         };
       }

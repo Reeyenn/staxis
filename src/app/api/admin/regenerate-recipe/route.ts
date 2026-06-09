@@ -2,23 +2,29 @@
  * POST /api/admin/regenerate-recipe
  *
  * Triggered by Reeyen from /admin/properties/[id] when a PMS UI change
- * has broken the existing recipe. Queues a fresh CUA mapping job with
- * force_remap=true.
+ * has broken the existing playbook. Queues a fresh full learning run.
  *
  * Body: { propertyId, reason? }
  *
  * Effects:
- *   - Inserts an onboarding_jobs row with force_remap=true. The
- *     cua-service worker will run the mapper even though an active
- *     recipe exists, then atomically swap the new recipe in via
- *     staxis_swap_active_recipe() AT SUCCESS TIME.
+ *   - Inserts a `workflow_jobs` row (kind mapper.learn_pms_family) —
+ *     the queue the Plan-v8 CUA worker actually polls. (2026-06-09 fix:
+ *     this route previously inserted into the legacy `onboarding_jobs`
+ *     table, which nothing consumes since the v8 rebuild — the button
+ *     was a no-op.)
  *
- *     Critically: we do NOT eager-demote the existing active recipe.
- *     Recipes are scoped per-pms_type (not per-property), so demoting
- *     the cloudbeds recipe for one property would break cloudbeds for
- *     every other cloudbeds property until the new mapping run lands.
- *     The atomic swap at success time means the fleet is never
- *     recipe-less, even mid-regeneration. (Pass-3 fix — H7.)
+ *   - We do NOT eager-demote the existing active knowledge file.
+ *     Knowledge files are scoped per-pms_family (not per-property), so
+ *     demoting would break every hotel on that family until the new run
+ *     lands. mapping-driver's promotion gate atomically swaps
+ *     (demote old active → promote new draft) at success time, so the
+ *     fleet is never playbook-less mid-regeneration.
+ *
+ *   - Idempotency key is time-salted: workflow_jobs has a GLOBAL
+ *     (property_id, idempotency_key) unique constraint, so reusing the
+ *     auto-enqueue key (`mapper.learn_pms_family:<family>`) would 23505
+ *     against a completed historical row and silently never re-learn.
+ *     The 10/hr rate limit bounds repeat-clicking.
  *
  * Returns: { jobId }
  */
@@ -87,20 +93,31 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Queue a fresh onboarding job with force_remap=true. The worker will
-  // run the mapper regardless of existing recipe, then atomically swap
-  // (demote old + promote new) inside staxis_swap_active_recipe at
-  // success time. The current recipe stays active and the fleet keeps
-  // working until the new one is ready.
+  // Queue a fresh FULL learning run on the v8 workflow queue. The
+  // promotion gate in mapping-driver atomically swaps the new knowledge
+  // file in at success time; the current one stays active until then.
   const { data: job, error: insertErr } = await supabaseAdmin
-    .from('onboarding_jobs')
+    .from('workflow_jobs')
     .insert({
       property_id: pidV.value!,
-      pms_type: creds.pms_type as string,
-      status: 'queued',
-      step: `Admin re-mapping requested${reasonV.value ? `: ${reasonV.value}` : ''}`,
-      progress_pct: 0,
-      force_remap: true,
+      kind: 'mapper.learn_pms_family',
+      // Time-salted — see header. The global unique (property_id, key)
+      // would otherwise collide with completed historical runs.
+      idempotency_key: `mapper.learn_pms_family:${creds.pms_type}:regen:${Date.now()}`,
+      // Plan v8 final review B1 — a failed re-learn needs an explicit
+      // admin re-trigger, never a silent money-burning auto-retry.
+      max_attempts: 1,
+      triggered_by: `admin:${auth.accountId}:regenerate-recipe`,
+      payload: {
+        pms_family: creds.pms_type as string,
+        property_id: pidV.value!,
+        // Full-learn budget — matches CUA_FULL_LEARN_COST_CAP_MICROS
+        // ($40, ~2x a clean Opus 4.8 full learn). Explicit here so the
+        // admin path is self-documenting; the worker would apply the
+        // same default if omitted.
+        cost_cap_micros: 40_000_000,
+        regen_reason: reasonV.value ?? null,
+      },
     })
     .select('id')
     .single();
@@ -121,7 +138,7 @@ export async function POST(req: NextRequest) {
     action: 'cua.recipe.regenerate',
     actorUserId: auth.userId,
     actorEmail: auth.email ?? undefined,
-    targetType: 'cua_onboarding_job',
+    targetType: 'workflow_job',
     targetId: job.id as string,
     hotelId: pidV.value!,
     metadata: {

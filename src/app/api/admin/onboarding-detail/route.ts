@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
       : Promise.resolve({ data: null, error: null }),
     supabaseAdmin
       .from('workflow_jobs')
-      .select('id, kind, status, attempts, max_attempts, claude_cost_micros, created_at')
+      .select('id, kind, status, attempts, max_attempts, claude_cost_micros, created_at, result')
       .eq('property_id', propertyId)
       .like('kind', 'mapper.%')
       .in('status', ['queued', 'running'])
@@ -182,6 +182,12 @@ export async function GET(req: NextRequest) {
           maxAttempts: mapperRow.max_attempts,
           costMicros: mapperRow.claude_cost_micros ?? 0,
           createdAt: mapperRow.created_at,
+          // The robot is parked on a 2FA screen waiting for a one-time
+          // code (mapper.ts setAwaitingMfa). The panel renders a code box
+          // while this is set; POST /api/admin/pms-auth-code feeds it.
+          awaiting2fa: Boolean((mapperRow.result as { awaiting_2fa?: unknown } | null)?.awaiting_2fa),
+          awaiting2faSince:
+            ((mapperRow.result as { awaiting_2fa?: { since?: string } } | null)?.awaiting_2fa?.since) ?? null,
         }
       : null,
     lastHiccup,
