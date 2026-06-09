@@ -262,7 +262,14 @@ const MAX_LINKS = 50;
 const MAX_HREF_LEN = 2048;
 const MAX_LABEL_LEN = 200;
 // Bound the markup we scan so a pathological body can't cost unbounded regex time.
-const MAX_SCAN_LEN = 200_000;
+// 32 KiB comfortably covers a real Okta email (the Worker caps forwarded html at
+// ~20 KiB); combined with the bounded anchor-regex quantifiers below this keeps
+// extractLinks linear in input size (no ReDoS on a hostile body).
+const MAX_SCAN_LEN = 32_768;
+// Control chars (incl. CR/LF) are stripped from an href before validation so a
+// split/obfuscated URL can't reach the viewer. Built via RegExp() to keep this
+// source file ASCII (no literal control bytes).
+const STRIP_CONTROL = new RegExp('[\\u0000-\\u001F\\u007F]', 'g');
 
 /** Decode the handful of HTML entities that appear in real href/label text. */
 function decodeEntities(s: string): string {
@@ -301,7 +308,9 @@ export function extractLinks(html?: string | null, text?: string | null): Extrac
 
   const push = (rawHref: string, rawLabel: string): void => {
     if (out.length >= MAX_LINKS) return;
-    const href = decodeEntities(norm(rawHref).trim()).slice(0, MAX_HREF_LEN);
+    const href = decodeEntities(norm(rawHref).trim())
+      .replace(STRIP_CONTROL, '')
+      .slice(0, MAX_HREF_LEN);
     if (!isSafeHttpUrl(href)) return;
     const key = href.toLowerCase();
     if (seen.has(key)) return;
@@ -312,9 +321,12 @@ export function extractLinks(html?: string | null, text?: string | null): Extrac
   };
 
   // 1. Anchors in html — href + inner text (nested tags stripped) as label.
+  // Quantifiers are BOUNDED (no open-ended `[^>]*?`) so a hostile `<a `-spam body
+  // can't drive O(n^2) backtracking — extractLinks stays linear. 2 KiB of attrs /
+  // href and an 8 KiB label window are far beyond any real anchor.
   const h = norm((html ?? '').slice(0, MAX_SCAN_LEN));
   const anchorRe =
-    /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s">]+))[^>]*>([\s\S]*?)<\/a>/gi;
+    /<a\b[^>]{0,2048}?\bhref\s*=\s*(?:"([^"]{0,2048})"|'([^']{0,2048})'|([^\s">]{0,2048}))[^>]{0,2048}>([\s\S]{0,8192}?)<\/a>/gi;
   for (const m of h.matchAll(anchorRe)) {
     const href = m[1] ?? m[2] ?? m[3] ?? '';
     const label = (m[4] ?? '').replace(/<[^>]+>/g, ' ');

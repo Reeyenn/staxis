@@ -280,10 +280,32 @@ describe('extractLinks (admin viewer XSS gate)', () => {
     assert.deepEqual(extractLinks('<p>no links here</p>', 'just text'), []);
   });
 
-  test('caps href length defensively', () => {
-    const huge = 'https://okta.com/' + 'a'.repeat(5000);
-    const links = extractLinks(`<a href="${huge}">x</a>`, null);
-    assert.equal(links.length, 1);
-    assert.ok(links[0].href.length <= 2048);
+  test('handles an over-long href safely (anchor dropped; bare-text URL truncated)', () => {
+    const huge = 'https://okta.com/' + 'a'.repeat(5000); // > 2048 chars
+    // HTML anchor: the bounded capture means an absurd href isn't extracted at
+    // all (a truncated URL would be a broken link anyway). Real setup links are
+    // a few hundred chars — far under the bound.
+    assert.deepEqual(extractLinks(`<a href="${huge}">x</a>`, null), []);
+    // Bare URL in text: matched then capped to MAX_HREF_LEN (still a valid URL).
+    const fromText = extractLinks(null, `Visit ${huge}`);
+    assert.equal(fromText.length, 1);
+    assert.ok(fromText[0].href.length <= 2048);
+  });
+
+  test('strips control chars (CR/LF/tab) from an href', () => {
+    // A split URL must not survive into the viewer as a clickable link.
+    const links = extractLinks('<a href="https://okta.com/a\r\n\tb">x</a>', null);
+    assert.deepEqual(links, [{ href: 'https://okta.com/ab', label: 'x' }]);
+  });
+
+  test('is not ReDoS-able on a hostile <a>-spam body (stays fast + bounded)', () => {
+    // Pre-fix this regex was O(n^2): 120 KB took ~2 s. Bounded quantifiers +
+    // MAX_SCAN_LEN keep it linear. Generous 1 s ceiling (real time ~ a few ms).
+    const hostile = '<a '.repeat(50_000); // ~150 KB of unterminated anchors
+    const start = Date.now();
+    const links = extractLinks(hostile, null);
+    const ms = Date.now() - start;
+    assert.deepEqual(links, []); // no valid links
+    assert.ok(ms < 1000, `extractLinks took ${ms}ms — possible ReDoS regression`);
   });
 });
