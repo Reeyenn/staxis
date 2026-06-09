@@ -10,6 +10,9 @@ name = "staxis-pms-inbox"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
+# Email-triggered only (Email Routing catch-all) — no HTTP route, so don't
+# require a workers.dev subdomain.
+workers_dev = false
 
 # Non-secret vars. WEBHOOK_URL points at the live webhook (override to a Vercel
 # preview URL during end-to-end testing). PMS_INBOX_WEBHOOK_SECRET is a SECRET —
