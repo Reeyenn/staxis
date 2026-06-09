@@ -44,6 +44,10 @@ interface PropertyRow {
   property_kind: string | null;
   created_at: string;
   brand: string | null;
+  // jsonb map of step → ISO timestamp (accountCreatedAt, emailVerifiedAt, …).
+  // Drives the live onboarding-timeline on the admin surface.
+  onboarding_state: Record<string, string | null> | null;
+  onboarding_completed_at: string | null;
 }
 
 export async function GET(req: NextRequest) {
@@ -72,7 +76,8 @@ export async function GET(req: NextRequest) {
     .select(`
       id, name, total_rooms, subscription_status, trial_ends_at,
       pms_type, pms_connected, last_synced_at,
-      onboarding_source, property_kind, created_at, brand
+      onboarding_source, property_kind, created_at, brand,
+      onboarding_state, onboarding_completed_at
     `, { count: 'exact' })
     .order('created_at', { ascending: false });
 
@@ -221,6 +226,11 @@ export async function GET(req: NextRequest) {
       sessionStatus: session?.status ?? null,
       sessionPausedReason: session?.paused_reason ?? null,
       latestJob: mapped,
+      // Live onboarding-timeline inputs: the customer's per-step timestamps
+      // and the wizard-finished marker. The admin surface derives the
+      // 1-of-9 journey position from these + sessionStatus.
+      onboardingState: p.onboarding_state ?? null,
+      onboardingCompletedAt: p.onboarding_completed_at ?? null,
     };
   });
 

@@ -29,6 +29,15 @@ import {
 } from '../kit';
 
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
+interface OnbState {
+  accountCreatedAt?: string | null;
+  emailVerifiedAt?: string | null;
+  hotelDetailsAt?: string | null;
+  servicesAt?: string | null;
+  pmsCredentialsAt?: string | null;
+  mappingCompletedAt?: string | null;
+  staffAt?: string | null;
+}
 interface PropertyRow {
   id: string;
   name: string | null;
@@ -39,6 +48,8 @@ interface PropertyRow {
   createdAt: string;
   sessionStatus: string | null;
   sessionPausedReason: string | null;
+  onboardingState: OnbState | null;
+  onboardingCompletedAt: string | null;
 }
 interface JobRow {
   id: string; propertyId: string; propertyName: string | null;
@@ -67,24 +78,55 @@ interface LaneRow { id: string; name: string; pms: string | null; kind?: HelpKin
 const HELP_DOT: Record<HelpKind, DotTone> = { mfa: 'gold', mapper: 'teal', cost: 'gold', login: 'terracotta', stopped: 'terracotta' };
 const CTA_LABEL: Record<HelpKind, string> = { mfa: 'Enter MFA code', mapper: 'View mapper', cost: 'Resume now', login: 'Edit credentials', stopped: 'Restart' };
 
-function bucketByStage(props: PropertyRow[]) {
-  const signedUp: LaneRow[] = [], wizardDone: LaneRow[] = [], connecting: LaneRow[] = [], needsHelp: LaneRow[] = [];
-  for (const p of props) {
-    const base = { id: p.id, name: p.name ?? '(unnamed)', pms: p.pmsType };
-    switch (p.sessionStatus) {
-      case 'paused_mfa': needsHelp.push({ ...base, kind: 'mfa', sub: 'Waiting for MFA — click to resolve.', href: `/admin/mfa-resume/${p.id}` }); continue;
-      case 'paused_no_knowledge_file': needsHelp.push({ ...base, kind: 'mapper', sub: 'Awaiting mapper — PMS not learned.', href: '/admin/property-sessions' }); continue;
-      case 'paused_cost_cap': needsHelp.push({ ...base, kind: 'cost', sub: 'Cost cap — auto-resumes at midnight.', href: '/admin/property-sessions' }); continue;
-      case 'paused_circuit_breaker':
-      case 'failed_restart': needsHelp.push({ ...base, kind: 'login', sub: p.sessionPausedReason ?? 'Login failing — edit credentials.', href: '/admin/property-sessions' }); continue;
-      case 'starting': connecting.push({ ...base, sub: 'CUA logging in…', href: `/admin/properties/${p.id}` }); continue;
-      case 'stopped': needsHelp.push({ ...base, kind: 'stopped', sub: 'Stopped — click to restart.', href: '/admin/property-sessions' }); continue;
-    }
-    if (p.pmsConnected) connecting.push({ ...base, sub: 'Creds saved, awaiting session.', href: `/admin/properties/${p.id}` });
-    else if (p.staffCount > 0) wizardDone.push({ ...base, href: `/admin/properties/${p.id}` });
-    else signedUp.push({ ...base, href: `/admin/properties/${p.id}` });
+// ── The 9-step onboarding journey (mirrors the /onboard customer wizard) ─
+const STEP_LABELS = ['Welcome', 'Account', 'Email', 'Details', 'Services', 'PMS', 'Connect', 'Team', 'Live'] as const;
+const TOTAL_STEPS = STEP_LABELS.length; // 9
+
+interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; kind?: HelpKind; }
+
+// Latest activity timestamp across a customer's saved step timestamps —
+// used to sort the most-active onboarding to the top + gate live polling.
+function latestStateTs(s: OnbState | null): number {
+  if (!s) return 0;
+  let m = 0;
+  for (const v of Object.values(s)) { if (v) { const t = Date.parse(v); if (Number.isFinite(t) && t > m) m = t; } }
+  return m;
+}
+
+// "Live" = off the timeline, in the green core. True once the wizard is
+// finalized OR the CUA session is alive and polling.
+function isLive(p: PropertyRow): boolean {
+  return !!p.onboardingCompletedAt || p.sessionStatus === 'alive';
+}
+
+// Map a hotel to its 1-of-9 journey position. Back half (steps 6-9) is
+// driven by the live CUA session state; front half (1-5) by the wizard's
+// saved per-step timestamps. `needsYou` flags steps a chip-click unblocks.
+function journeyOf(p: PropertyRow): Journey {
+  const propHref = `/admin/properties/${p.id}`;
+  switch (p.sessionStatus) {
+    case 'paused_mfa':  return { step: 7, label: 'Needs your code', sub: 'Robot hit 2-factor — click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
+    case 'paused_no_knowledge_file': return { step: 7, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/property-sessions', needsYou: false, kind: 'mapper' };
+    case 'paused_cost_cap': return { step: 7, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/property-sessions', needsYou: false, kind: 'cost' };
+    case 'paused_circuit_breaker':
+    case 'failed_restart': return { step: 7, label: 'Login failing', sub: p.sessionPausedReason ?? 'Sign-in keeps failing — check the credentials.', href: '/admin/property-sessions', needsYou: true, kind: 'login' };
+    case 'stopped': return { step: 7, label: 'Stopped', sub: 'Session stopped — click to restart.', href: '/admin/property-sessions', needsYou: true, kind: 'stopped' };
+    case 'starting': return { step: 7, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
   }
-  return { signedUp, wizardDone, connecting, needsHelp };
+  const s = p.onboardingState;
+  if (!s || !s.accountCreatedAt) return { step: 1, label: 'Just landed', sub: 'Opened the invite — not started yet.', href: propHref, needsYou: false };
+  if (!s.emailVerifiedAt)   return { step: 3, label: 'Verifying email', sub: 'Account made — confirming their email.', href: propHref, needsYou: false };
+  if (!s.hotelDetailsAt)    return { step: 4, label: 'Hotel details', sub: 'Entering rooms, brand, timezone.', href: propHref, needsYou: false };
+  if (!s.servicesAt)        return { step: 5, label: 'Choosing services', sub: 'Picking housekeeping, laundry, etc.', href: propHref, needsYou: false };
+  if (!s.pmsCredentialsAt)  return { step: 6, label: 'Connecting PMS', sub: 'About to enter their PMS login.', href: propHref, needsYou: false };
+  if (!s.mappingCompletedAt) return { step: 7, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
+  if (!s.staffAt)           return { step: 8, label: 'Adding team', sub: 'Connected — owner is adding staff.', href: propHref, needsYou: false };
+  return { step: 9, label: 'Wrapping up', sub: 'Final step — almost live.', href: propHref, needsYou: false };
+}
+
+// Journey → the LaneRow shape the existing chip-detail modal already renders.
+function toLane(p: PropertyRow, j: Journey): LaneRow {
+  return { id: p.id, name: p.name ?? '(unnamed)', pms: p.pmsType, kind: j.needsYou ? j.kind : undefined, sub: j.sub, href: j.href };
 }
 
 function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string } {
@@ -96,6 +138,11 @@ function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string 
 
 const card = { bg: 'rgba(255,255,255,.06)', br: 'rgba(255,255,255,.14)' };
 const dim = (a: number) => `rgba(255,255,255,${a})`;
+// Timeline row layout — header labels + each hotel row share these so the
+// step labels line up exactly above the node dots.
+const NAME_W = 150;   // left "hotel name" column (px)
+const STATUS_W = 140; // right "current step" column (px)
+const ROW_GAP = 12;   // gap between name · rail · status
 
 export function OnboardingSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
@@ -126,30 +173,31 @@ export function OnboardingSurface() {
     }
   };
   useEffect(() => { void load(); }, []);
-  // Auto-refresh while CUA sessions are in flight.
+  // Auto-refresh while anything is moving: a CUA session in flight OR any
+  // hotel still mid-wizard. This keeps the timeline advancing in real time
+  // as a customer walks the 9 steps (the early steps have no CUA session).
   useEffect(() => {
-    if (!liveJobs || liveJobs.length === 0) return;
+    const inFlight = (liveJobs?.length ?? 0) > 0;
+    const inWizard = (props ?? []).some((p) => !isLive(p));
+    if (!inFlight && !inWizard) return;
     refreshTimer.current = setTimeout(() => { void load(); }, 5000);
     return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); };
-  }, [liveJobs]);
+  }, [props, liveJobs]);
 
   if (error) return <DarkShell><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></DarkShell>;
   if (!props || !liveJobs || !pms) {
     return <DarkShell><div style={{ padding: '80px 0', textAlign: 'center' }}><span className="spinner" style={{ width: 22, height: 22, display: 'inline-block', borderTopColor: '#fff' }} /></div></DarkShell>;
   }
 
-  const inOnb = props.filter((p) => p.sessionStatus !== 'alive');
-  const b = bucketByStage(inOnb);
-  const liveCount = props.length - inOnb.length;
+  // Hotels still on the timeline (not yet live), most-recently-active first
+  // so the one a customer is actively walking sits at the top.
+  const journeyRows = props
+    .filter((p) => !isLive(p))
+    .map((p) => ({ p, j: journeyOf(p), ts: latestStateTs(p.onboardingState) }))
+    .sort((a, c) => (c.ts - a.ts) || (Date.parse(c.p.createdAt) - Date.parse(a.p.createdAt)));
+  const liveCount = props.filter(isLive).length;
   const learnedPms = pms.filter((p) => p.recipe !== null);
   const activeProspects = (prospects ?? []).filter((p) => p.status !== 'onboarded' && p.status !== 'dropped');
-
-  const lanes = [
-    { key: 'signedUp', title: 'Signed up', rows: b.signedUp, accent: '' },
-    { key: 'wizardDone', title: 'Wizard done', rows: b.wizardDone, accent: '' },
-    { key: 'connecting', title: 'Connecting', rows: b.connecting, accent: 'var(--gold)' },
-    { key: 'needsHelp', title: 'Needs help', rows: b.needsHelp, accent: 'var(--terracotta)' },
-  ];
 
   return (
     <DarkShell>
@@ -166,27 +214,31 @@ export function OnboardingSurface() {
         </div>
       </header>
 
-      {/* Depth track */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr)) 150px', gap: 14, alignItems: 'stretch', position: 'relative', perspective: 1200 }}>
-        {lanes.map((ln) => (
-          <div key={ln.key} style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: ln.accent || dim(.85) }}>{ln.title}</span>
-              <span className="mono" style={{ fontSize: 10, color: dim(.4) }}>{ln.rows.length}</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-              {ln.rows.length === 0
-                ? <div style={{ padding: '14px 0', textAlign: 'center', color: dim(.25), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>—</div>
-                : ln.rows.map((r) => <BayChip key={r.id} r={r} onClick={() => setSelChip(r)} />)}
-            </div>
-          </div>
-        ))}
-        {/* Live core */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(180deg, rgba(60,156,104,.25), rgba(60,156,104,.08))', border: '1px solid rgba(60,156,104,.4)', borderRadius: 16, padding: '18px 10px' }}>
-          <span className="caps" style={{ color: dim(.6) }}>Live</span>
+      {/* ── Live onboarding journey — one rail per hotel, fills as they move ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <span className="caps" style={{ color: dim(.55) }}>Onboarding · live journey</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '4px 12px 4px 11px', borderRadius: 999, background: 'rgba(60,156,104,.15)', border: '1px solid rgba(60,156,104,.4)' }}>
+          <Dot tone="forest" size={7} />
           <BayLiveCount n={liveCount} />
-          <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 12, color: dim(.7) }}>polling</span>
+          <span className="mono" style={{ fontSize: 9, color: dim(.6), letterSpacing: '.08em' }}>LIVE · POLLING</span>
+        </span>
+      </div>
+
+      {/* step-label header — lines up exactly above the node dots below */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: ROW_GAP, padding: '0 14px 7px' }}>
+        <div style={{ width: NAME_W, flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'space-between' }}>
+          {STEP_LABELS.map((l, i) => (
+            <span key={i} className="mono" style={{ fontSize: 8.5, color: i === STEP_LABELS.length - 1 ? 'rgba(60,156,104,.85)' : dim(.42), letterSpacing: '.02em', whiteSpace: 'nowrap' }}>{l}</span>
+          ))}
         </div>
+        <div style={{ width: STATUS_W, flexShrink: 0 }} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {journeyRows.length === 0
+          ? <Empty text="No hotels onboarding right now — “+ New hotel” to start one." />
+          : journeyRows.map(({ p, j }) => <JourneyRow key={p.id} p={p} j={j} onClick={() => setSelChip(toLane(p, j))} />)}
       </div>
 
       {/* Sessions · PMS · Prospects */}
@@ -242,20 +294,54 @@ function Empty({ text }: { text: string }) {
   return <div style={{ padding: '16px 14px', textAlign: 'center', border: `1px dashed ${dim(.18)}`, borderRadius: 12, color: dim(.45), fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13 }}>{text}</div>;
 }
 
-function BayChip({ r, onClick }: { r: LaneRow; onClick: () => void }) {
-  const ref = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (el && typeof el.animate === 'function') el.animate([{ opacity: 0, transform: 'translateZ(-40px)' }, { opacity: 1, transform: 'translateZ(0)' }], { duration: 480, easing: 'cubic-bezier(.16,1,.3,1)', fill: 'both' });
-  }, []);
-  const help = !!r.kind;
+// One hotel = one row: name · a 9-node rail that fills to the live step · the
+// current step label. The fill bar + current node animate when the step
+// advances (every poll), so you watch a hotel travel the whole journey.
+function JourneyRow({ p, j, onClick }: { p: PropertyRow; j: Journey; onClick: () => void }) {
+  const rowRef = useRef<HTMLButtonElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const current = j.step - 1; // 0-based index of the in-progress node
+  const fillPct = TOTAL_STEPS > 1 ? (current / (TOTAL_STEPS - 1)) * 100 : 0;
+  useEffect(() => { riseIn(rowRef.current, { dy: 10, dur: 420 }); }, []);
+  useEffect(() => { sweepWidth(fillRef.current, fillPct, { dur: 700 }); }, [fillPct]);
+  const accentTone: DotTone = j.needsYou && j.kind ? HELP_DOT[j.kind] : 'gold';
+  const accent = `var(--${accentTone})`;
+  const ring = accentTone === 'terracotta' ? 'rgba(194,86,46,.22)' : accentTone === 'teal' ? 'rgba(51,137,160,.22)' : 'rgba(201,154,46,.22)';
   return (
-    <button ref={ref} onClick={onClick} style={{ textAlign: 'left', background: dim(.06), border: `1px solid ${help ? 'rgba(194,86,46,.45)' : dim(.14)}`, borderRadius: 11, padding: '10px 12px', cursor: 'pointer', color: '#fff' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {help && <Dot tone={HELP_DOT[r.kind!]} size={6} />}
-        <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+    <button ref={rowRef} onClick={onClick} style={{
+      display: 'flex', alignItems: 'center', gap: ROW_GAP, width: '100%', textAlign: 'left',
+      background: j.needsYou ? 'rgba(194,86,46,.07)' : dim(.04),
+      border: `1px solid ${j.needsYou ? 'rgba(194,86,46,.4)' : dim(.12)}`,
+      borderRadius: 12, padding: '12px 14px', cursor: 'pointer', color: '#fff',
+    }}>
+      {/* hotel */}
+      <div style={{ width: NAME_W, flexShrink: 0, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name ?? '(unnamed)'}</div>
+        {p.pmsType && <div className="mono" style={{ fontSize: 9, color: dim(.4), marginTop: 2, letterSpacing: '.03em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.pmsType}</div>}
       </div>
-      {r.pms && <div className="mono" style={{ fontSize: 9, color: dim(.45), marginTop: 3, letterSpacing: '.04em' }}>{r.pms}</div>}
+      {/* rail */}
+      <div style={{ flex: 1, minWidth: 0, position: 'relative', height: 16, display: 'flex', alignItems: 'center' }}>
+        <div style={{ position: 'absolute', left: 5, right: 5, top: '50%', height: 2, transform: 'translateY(-50%)', background: dim(.13), borderRadius: 2 }} />
+        <div ref={fillRef} style={{ position: 'absolute', left: 5, top: '50%', height: 2, transform: 'translateY(-50%)', width: 0, maxWidth: 'calc(100% - 10px)', background: j.needsYou ? 'var(--terracotta)' : 'linear-gradient(90deg, var(--forest), var(--gold))', borderRadius: 2 }} />
+        <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', width: '100%', zIndex: 1 }}>
+          {STEP_LABELS.map((_, i) => {
+            const done = i < current, cur = i === current;
+            const sz = cur ? 11 : done ? 8 : 7;
+            return <span key={i} style={{
+              width: sz, height: sz, borderRadius: '50%', flexShrink: 0,
+              background: done ? 'var(--forest)' : cur ? accent : dim(.16),
+              boxShadow: cur ? `0 0 0 4px ${ring}` : 'none',
+              border: (!done && !cur) ? `1px solid ${dim(.26)}` : 'none',
+              transition: 'background .3s ease, box-shadow .3s ease, width .2s ease',
+            }} />;
+          })}
+        </div>
+      </div>
+      {/* current step */}
+      <div style={{ width: STATUS_W, flexShrink: 0, textAlign: 'right', minWidth: 0 }}>
+        <div style={{ fontSize: 11.5, fontWeight: 600, color: j.needsYou ? 'var(--terracotta)' : '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.label}{j.needsYou ? ' ›' : ''}</div>
+        <div className="mono" style={{ fontSize: 9.5, color: dim(.45), marginTop: 2 }}>{j.step} / {TOTAL_STEPS}</div>
+      </div>
     </button>
   );
 }
