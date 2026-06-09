@@ -71,11 +71,21 @@ comment on policy pms_inbox_messages_deny_all_browser on public.pms_inbox_messag
 -- ── Data fix: move existing inbox addresses to the apex ────────────────────
 -- The robot's Okta user email moved from `<code>@pms.getstaxis.com` (rejected by
 -- Choice's form) to the apex `<code>@getstaxis.com`. Rewrite any stored address
--- so the webhook's recipient → property lookup keeps resolving. The 0274
--- unique-lower index on pms_login_email still holds (apex values stay unique).
+-- so the webhook's recipient → property lookup keeps resolving. lower() because
+-- the webhook normalizes the recipient to lowercase before the equality lookup,
+-- so the stored value must be lowercase to match. The 0274 unique-lower index on
+-- pms_login_email still holds (apex values stay unique).
 update public.scraper_credentials
-   set pms_login_email = regexp_replace(pms_login_email, '@pms\.getstaxis\.com$', '@getstaxis.com')
+   set pms_login_email = lower(regexp_replace(pms_login_email, '@pms\.getstaxis\.com$', '@getstaxis.com'))
  where pms_login_email like '%@pms.getstaxis.com';
+
+-- Back the webhook's `pms_login_email = <lowercased recipient>` lookup with a
+-- plain btree. The 0274 index is on lower(pms_login_email) (an expression index
+-- a raw-column equality can't use); without this the lookup seq-scans every
+-- inbound email. Stored values are lowercase (data fix above), so a raw equality
+-- on the normalized recipient is both correct and index-backed.
+create index if not exists scraper_credentials_pms_login_email_idx
+  on public.scraper_credentials (pms_login_email);
 
 -- PostgREST caches the schema; force a reload so the new table is queryable.
 notify pgrst, 'reload schema';

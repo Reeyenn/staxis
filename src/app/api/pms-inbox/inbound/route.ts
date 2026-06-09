@@ -165,6 +165,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     log.warn('[pms-inbox] unresolvable recipient', { requestId });
     return ok({ stored: false, reason: 'bad_recipient' }, { requestId });
   }
+  // `recipient` is normalized lowercase by normalizeRecipient; pms_login_email is
+  // stored lowercase (migration 0275) and indexed (scraper_credentials_pms_login_email_idx),
+  // so this raw equality both matches case-insensitively-in-practice and is index-backed.
   const { data: cred, error: credErr } = await supabaseAdmin
     .from('scraper_credentials')
     .select('property_id')
