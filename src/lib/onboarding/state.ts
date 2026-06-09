@@ -65,7 +65,12 @@ export interface OnboardingState {
  *   8 → 9 (team → done) requires staffAt
  */
 export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
-  if (!state.accountCreatedAt) return 1;
+  // The welcome→account hop is the only transition with no completion
+  // timestamp — Step 1 persists `step: 2` when "Begin" is clicked, and we
+  // honor exactly that value here. Anything later still requires the real
+  // completion timestamps below, so a client can't skip ahead by sending
+  // a bigger `step` (it falls back to 1 until accountCreatedAt exists).
+  if (!state.accountCreatedAt) return state.step === 2 ? 2 : 1;
   if (!state.emailVerifiedAt) return 3;
   if (!state.hotelDetailsAt) return 4;
   if (!state.servicesAt) return 5;

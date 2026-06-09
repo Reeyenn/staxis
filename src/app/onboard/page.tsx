@@ -160,7 +160,7 @@ function OnboardWizard() {
 
   return (
     <WizardLayout step={wizard.currentStep} hotelName={wizard.propertyName}>
-      {wizard.currentStep === 1 && <Step1Welcome wizard={wizard} onNext={advance} />}
+      {wizard.currentStep === 1 && <Step1Welcome code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 2 && <Step2CreateAccount code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 3 && <Step3VerifyEmail code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 4 && <Step4HotelDetails code={code} wizard={wizard} onNext={advance} />}
@@ -268,8 +268,26 @@ function FullPage({ children }: { children: React.ReactNode }) {
 
 // ─── Step 1: Welcome ────────────────────────────────────────────────────
 
-function Step1Welcome({ wizard, onNext }: { wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
   const role = wizard.inviteRole === 'general_manager' ? 'General Manager' : 'Owner';
+  const [starting, setStarting] = useState(false);
+  // The welcome→account hop has no completion timestamp, so "Begin"
+  // persists `step: 2` explicitly — deriveCurrentStep honors exactly that
+  // value pre-account. Without this PATCH the refetch re-derives step 1
+  // forever and the button appears dead.
+  const begin = async () => {
+    setStarting(true);
+    try {
+      await fetch('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code, partialState: { step: 2 } }),
+      });
+      await onNext();
+    } finally {
+      setStarting(false);
+    }
+  };
   return (
     <div>
       <Building2 size={32} color="var(--amber, #d49040)" style={{ marginBottom: '16px' }} />
@@ -282,8 +300,8 @@ function Step1Welcome({ wizard, onNext }: { wizard: WizardStateResponse; onNext:
       <p style={{ color: 'var(--text-muted)', marginBottom: '32px', lineHeight: 1.5, fontSize: '13px' }}>
         We&apos;ll walk you through 9 quick steps (account, hotel info, services, PMS connection). Takes about 10 minutes.
       </p>
-      <button className="btn btn-primary" onClick={onNext} style={{ width: '100%', justifyContent: 'center' }}>
-        Begin →
+      <button className="btn btn-primary" onClick={begin} disabled={starting} style={{ width: '100%', justifyContent: 'center' }}>
+        {starting ? 'Starting…' : 'Begin →'}
       </button>
     </div>
   );

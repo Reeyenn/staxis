@@ -34,6 +34,7 @@ import {
 
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
 interface OnbState {
+  step?: number;
   accountCreatedAt?: string | null;
   emailVerifiedAt?: string | null;
   hotelDetailsAt?: string | null;
@@ -116,7 +117,10 @@ function journeyOf(p: PropertyRow): Journey {
     case 'starting': return { step: 7, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
   }
   const s = p.onboardingState;
-  if (!s || !s.accountCreatedAt) return { step: 1, label: 'Just landed', sub: 'Opened the invite — not started yet.', href: propHref, needsYou: false };
+  if (!s || !s.accountCreatedAt) {
+    if (s?.step === 2) return { step: 2, label: 'Creating account', sub: 'Clicked Begin — making their login now.', href: propHref, needsYou: false };
+    return { step: 1, label: 'Just landed', sub: 'Opened the invite — not started yet.', href: propHref, needsYou: false };
+  }
   if (!s.emailVerifiedAt)   return { step: 3, label: 'Verifying email', sub: 'Account made — confirming their email.', href: propHref, needsYou: false };
   if (!s.hotelDetailsAt)    return { step: 4, label: 'Hotel details', sub: 'Entering rooms, brand, timezone.', href: propHref, needsYou: false };
   if (!s.servicesAt)        return { step: 5, label: 'Choosing services', sub: 'Picking housekeeping, laundry, etc.', href: propHref, needsYou: false };

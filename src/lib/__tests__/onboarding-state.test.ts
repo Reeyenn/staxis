@@ -21,9 +21,32 @@ describe('deriveCurrentStep — fresh wizard', () => {
 
   test('only step field set → still step 1', () => {
     // Defensive: client-sent step shouldn't matter — we re-derive from
-    // the completion timestamps.
+    // the completion timestamps. (Exception: step 2, the welcome hop —
+    // see the dedicated describe below.)
     assert.equal(deriveCurrentStep({ step: 5 }), 1);
     assert.equal(deriveCurrentStep({ step: 9 }), 1);
+  });
+});
+
+describe('deriveCurrentStep — the welcome→account hop (step 2)', () => {
+  // Step 1→2 is the only transition with no completion timestamp, so
+  // "Begin" persists `step: 2` and derive honors exactly that value.
+  // Regression test for the dead Begin button (2026-06-09): derive could
+  // never return 2, so the welcome screen refetched itself forever.
+  test('step 2 persisted, no account yet → step 2 (account form)', () => {
+    assert.equal(deriveCurrentStep({ step: 2 }), 2);
+  });
+
+  test('step 2 persisted but account already created → timestamps win (step 3)', () => {
+    assert.equal(
+      deriveCurrentStep({ step: 2, accountCreatedAt: '2026-06-09T00:00:00Z' }),
+      3,
+    );
+  });
+
+  test('steps beyond 2 still cannot be skipped into pre-account', () => {
+    assert.equal(deriveCurrentStep({ step: 3 }), 1);
+    assert.equal(deriveCurrentStep({ step: 7 }), 1);
   });
 });
 
