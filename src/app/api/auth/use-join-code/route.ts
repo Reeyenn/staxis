@@ -100,33 +100,54 @@ export async function POST(req: NextRequest) {
   if (new Date(row.expires_at).getTime() <= Date.now()) return err('Code has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   if (row.used_count >= row.max_uses) return err('Code has been used up', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
 
-  // F-06: legacy owner/GM-baked codes are an ownership-transfer primitive.
-  // The redeem path below unconditionally rewrites properties.owner_id when
-  // finalRole === 'owner' (line 251-267), so possession of an unrevoked
-  // legacy owner code lets the redeemer displace the current owner of an
-  // existing hotel. GM codes are nearly as bad — GMs can issue further
-  // invites/codes (canManageTeam returns true for them). New-flow codes
-  // always insert role=null (join-codes/route.ts) so this only affects
-  // legacy/manual rows. Migration 0150 revokes existing legacy owner/GM
-  // rows; this gate is defense-in-depth in case any sneak in later or
-  // ride a service-role write past the CHECK constraint.
+  // F-06: owner/GM-baked codes are an ownership-assignment primitive. The
+  // redeem path below rewrites properties.owner_id when finalRole==='owner'
+  // (transfer block further down), so an owner code is the lever that
+  // claims (or, in the wrong hands, *displaces* the owner of) a hotel.
   //
-  // Reject BEFORE the CAS increment so a probe doesn't burn a slot.
+  // The lean self-onboarding flow legitimately needs exactly one such
+  // code: /api/admin/properties/create mints a SINGLE-USE owner/GM code on
+  // a freshly-created hotel whose owner_id is still the admin placeholder
+  // and whose onboarding hasn't finished — and the redeemer becomes the
+  // real owner. We allow precisely that, and keep the lock for the actual
+  // attack surface:
+  //   • multi-use owner codes (the DB CHECK already forbids these, belt +
+  //     suspenders here), and
+  //   • owner codes aimed at a hotel that has ALREADY completed onboarding
+  //     (a live, claimed hotel) — the displacement vector.
+  // Single-use is self-limiting too: the CAS increment below consumes the
+  // code on first redeem, so it can only ever assign ownership once.
+  //
+  // Evaluate BEFORE the CAS increment so a rejected probe doesn't burn a slot.
   if (row.role === 'owner' || row.role === 'general_manager') {
-    await logSecurityEvent({
-      action: 'auth.legacy_privileged_code_rejected',
-      propertyId: row.hotel_id,
-      requestId,
-      metadata: {
-        codeId: row.id,
-        bakedRole: row.role,
-        email: normalizedEmail,
-      },
-    });
-    return err(
-      'Owner and General Manager roles cannot be assigned via shared join codes — ask your admin for an emailed invite instead.',
-      { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
-    );
+    const { data: claimTarget } = await supabaseAdmin
+      .from('properties')
+      .select('onboarding_completed_at')
+      .eq('id', row.hotel_id)
+      .maybeSingle();
+    const isSingleUseOnboardingInvite =
+      row.max_uses === 1 && !claimTarget?.onboarding_completed_at;
+
+    if (!isSingleUseOnboardingInvite) {
+      await logSecurityEvent({
+        action: 'auth.legacy_privileged_code_rejected',
+        propertyId: row.hotel_id,
+        requestId,
+        metadata: {
+          codeId: row.id,
+          bakedRole: row.role,
+          email: normalizedEmail,
+          maxUses: row.max_uses,
+          onboardingComplete: !!claimTarget?.onboarding_completed_at,
+        },
+      });
+      return err(
+        'Owner and General Manager roles cannot be assigned via shared join codes — ask your admin for an emailed invite instead.',
+        { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+    // Legitimate single-use onboarding invite for an unclaimed hotel —
+    // fall through to redeem + owner_id transfer.
   }
 
   // ── Atomic CAS increment (May 2026 audit pass-4) ──────────────────────

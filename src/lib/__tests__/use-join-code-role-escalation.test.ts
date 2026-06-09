@@ -3,24 +3,29 @@
  *
  * Two gates are load-bearing for this route's security:
  *
- *   1. Legacy join codes baked with role=owner or role=general_manager
- *      are REJECTED at line 115 of route.ts (audit finding F-06, plus
- *      migration 0150 revoking historical rows). Possession of such a
- *      code used to be an ownership-transfer primitive — the redeem
- *      path unconditionally rewrites properties.owner_id when
- *      finalRole='owner'.
+ *   1. Owner / general_manager codes are an ownership-ASSIGNMENT primitive:
+ *      the redeem path rewrites properties.owner_id when finalRole='owner'.
+ *      The lean self-onboarding flow (admin "+ New hotel") legitimately
+ *      needs exactly one — a SINGLE-USE owner/GM code on a hotel that hasn't
+ *      finished onboarding yet (owner_id still the admin placeholder). That
+ *      is ALLOWED. Everything else stays locked (audit finding F-06):
+ *        • multi-use owner/GM codes  → 410 (displacement vector), and
+ *        • owner/GM code on a hotel that already COMPLETED onboarding
+ *          (a live, claimed hotel) → 410 (can't displace an established
+ *          owner).
  *
- *   2. New-flow codes (row.role=null) let the user pick their role
- *      from the request body, but the route restricts that choice to
- *      STAFF_SIGNUP_ROLES (front_desk, housekeeping, maintenance).
- *      Asking for role='admin' or 'owner' or 'general_manager' in the
- *      body returns 400 without creating an account. Without this,
- *      anyone with any shared code could self-promote.
+ *   2. New-flow codes (row.role=null) let the user pick their role from the
+ *      request body, but the route restricts that choice to
+ *      STAFF_SIGNUP_ROLES (front_desk, housekeeping, maintenance). Asking
+ *      for role='admin'/'owner'/'general_manager' in the body returns 400
+ *      without creating an account.
  *
- * The audit added these tests after observing the route doesn't have a
- * regression test for either. Strategy: mock supabaseAdmin.from for the
- * tables the route touches (api_limits, hotel_join_codes) and call
- * the POST handler with crafted payloads.
+ * Strategy: mock supabaseAdmin.from for the tables the route touches
+ * (api_limits, hotel_join_codes, properties, app_events) and mock
+ * auth.admin.createUser so the "allowed" path returns a clean failure past
+ * the guard instead of hitting real Supabase. The end-to-end happy path
+ * (account actually created + owner_id transferred) is verified live
+ * against the deployed endpoint with throwaway data — it needs real auth.
  */
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
@@ -31,6 +36,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type FromFn = typeof supabaseAdmin.from;
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
+const adminAuth = supabaseAdmin.auth.admin as unknown as {
+  createUser: (...args: unknown[]) => Promise<{ data: { user: unknown }; error: unknown }>;
+};
+const originalCreateUser = adminAuth.createUser.bind(adminAuth);
 
 interface JoinCodeRow {
   id: string;
@@ -45,24 +54,34 @@ interface JoinCodeRow {
 interface MockState {
   joinCode: JoinCodeRow | null;
   casConflict: boolean;
+  /** Drives the properties.onboarding_completed_at lookup in the F-06 gate. */
+  propertyOnboardingCompletedAt: string | null;
   insertedEvents: Array<{ event_type: string; metadata: Record<string, unknown> }>;
 }
 
 const state: MockState = {
   joinCode: null,
   casConflict: false,
+  propertyOnboardingCompletedAt: null,
   insertedEvents: [],
 };
 
 beforeEach(() => {
   state.joinCode = null;
   state.casConflict = false;
+  state.propertyOnboardingCompletedAt = null;
   state.insertedEvents = [];
+
+  // Mock createUser so any test that gets PAST the F-06 gate returns a
+  // clean "Failed to create account" (400) instead of hitting real auth.
+  adminAuth.createUser = async () => ({
+    data: { user: null },
+    error: { message: 'mocked: no real auth in unit tests' },
+  });
 
   // @ts-expect-error monkey-patch
   supabaseAdmin.from = (table: string) => {
     if (table === 'api_limits') {
-      // Rate limit: just return "allowed" (no existing row, insert succeeds).
       return {
         select: () => ({
           eq: () => ({
@@ -101,6 +120,20 @@ beforeEach(() => {
         }),
       };
     }
+    if (table === 'properties') {
+      // The F-06 gate reads onboarding_completed_at to tell an unclaimed
+      // onboarding hotel from a live, claimed one.
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { onboarding_completed_at: state.propertyOnboardingCompletedAt },
+              error: null,
+            }),
+          }),
+        }),
+      };
+    }
     if (table === 'app_events' || table === 'audit_log') {
       return {
         insert: async (row: { event_type?: string; metadata?: Record<string, unknown> }) => {
@@ -129,6 +162,7 @@ beforeEach(() => {
 
 afterEach(() => {
   supabaseAdmin.from = originalFrom;
+  adminAuth.createUser = originalCreateUser;
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -149,25 +183,25 @@ const FUTURE_EXP = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 
-describe('use-join-code — legacy privileged code rejection (F-06)', () => {
-  test('legacy code baked with role=owner → 410, security event logged, no auth user created', async () => {
+describe('use-join-code — F-06 displacement lock (still enforced)', () => {
+  test('MULTI-USE owner code → 410, security event logged, no account', async () => {
     state.joinCode = {
-      id: 'code-legacy-owner',
+      id: 'code-multi-owner',
       hotel_id: HOTEL_ID,
       role: 'owner',
       expires_at: FUTURE_EXP,
-      max_uses: 1,
+      max_uses: 2,           // not single-use → displacement vector → blocked
       used_count: 0,
       revoked_at: null,
     };
 
     const res = await POST(
       mockReq({
-        code: 'LEGACY01',
+        code: 'MULTI001',
         email: 'attacker@example.com',
         displayName: 'A',
         password: 'pw_long_enough',
-        role: 'housekeeping',  // ignored — legacy code's role wins
+        role: 'housekeeping',
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 410);
@@ -176,22 +210,51 @@ describe('use-join-code — legacy privileged code rejection (F-06)', () => {
     );
     assert.ok(refused, 'auth.legacy_privileged_code_rejected must be logged');
     assert.equal(refused?.metadata.bakedRole, 'owner');
+    assert.equal(refused?.metadata.maxUses, 2);
   });
 
-  test('legacy code baked with role=general_manager → 410, event logged', async () => {
+  test('single-use owner code on an ALREADY-ONBOARDED hotel → 410 (no hijack of a live hotel)', async () => {
     state.joinCode = {
-      id: 'code-legacy-gm',
+      id: 'code-owner-live',
+      hotel_id: HOTEL_ID,
+      role: 'owner',
+      expires_at: FUTURE_EXP,
+      max_uses: 1,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.propertyOnboardingCompletedAt = '2026-06-01T00:00:00Z'; // hotel is live/claimed
+
+    const res = await POST(
+      mockReq({
+        code: 'LIVE0001',
+        email: 'attacker@example.com',
+        displayName: 'A',
+        password: 'pw_long_enough',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    assert.equal(res.status, 410);
+    const refused = state.insertedEvents.find(
+      (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
+    );
+    assert.ok(refused, 'displacement attempt on a live hotel must be logged + blocked');
+    assert.equal(refused?.metadata.onboardingComplete, true);
+  });
+
+  test('MULTI-USE general_manager code → 410, event logged', async () => {
+    state.joinCode = {
+      id: 'code-multi-gm',
       hotel_id: HOTEL_ID,
       role: 'general_manager',
       expires_at: FUTURE_EXP,
-      max_uses: 1,
+      max_uses: 3,
       used_count: 0,
       revoked_at: null,
     };
 
     const res = await POST(
       mockReq({
-        code: 'LEGACY02',
+        code: 'MULTI002',
         email: 'attacker@example.com',
         displayName: 'A',
         password: 'pw_long_enough',
@@ -203,6 +266,38 @@ describe('use-join-code — legacy privileged code rejection (F-06)', () => {
     );
     assert.ok(refused);
     assert.equal(refused?.metadata.bakedRole, 'general_manager');
+  });
+});
+
+describe('use-join-code — lean single-use owner invite (now allowed)', () => {
+  test('single-use owner code on an UNCLAIMED (mid-onboarding) hotel passes F-06', async () => {
+    state.joinCode = {
+      id: 'code-lean-owner',
+      hotel_id: HOTEL_ID,
+      role: 'owner',
+      expires_at: FUTURE_EXP,
+      max_uses: 1,           // single-use
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.propertyOnboardingCompletedAt = null; // unclaimed — onboarding not done
+
+    const res = await POST(
+      mockReq({
+        code: 'LEAN0001',
+        email: 'realowner@example.com',
+        displayName: 'Real Owner',
+        password: 'pw_long_enough',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    // It must NOT be rejected by the F-06 gate. (It then fails at the mocked
+    // createUser with 400 — proving it got PAST the gate; the real happy
+    // path is verified live.)
+    assert.notEqual(res.status, 410);
+    const refused = state.insertedEvents.find(
+      (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
+    );
+    assert.equal(refused, undefined, 'a legitimate single-use onboarding invite must NOT be F-06-rejected');
   });
 });
 
