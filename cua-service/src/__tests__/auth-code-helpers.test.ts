@@ -45,7 +45,7 @@ test('recordAuthCode inserts the mapped row', async () => {
     {
       propertyId: 'p1',
       code: '123456',
-      emailTo: 'txa32@pms.getstaxis.com',
+      emailTo: 'txa32@getstaxis.com',
       source: 'email',
       sender: 'noreply@okta.com',
       subject: 'Your verification code',
@@ -58,7 +58,7 @@ test('recordAuthCode inserts the mapped row', async () => {
   assert.equal(rows[0].property_id, 'p1');
   assert.equal(rows[0].code, '123456');
   assert.equal(rows[0].source, 'email');
-  assert.equal(rows[0].email_to, 'txa32@pms.getstaxis.com');
+  assert.equal(rows[0].email_to, 'txa32@getstaxis.com');
   assert.equal(rows[0].raw_ref, 'msg-1');
 });
 
@@ -68,14 +68,14 @@ test('recordAuthCode defaults source to email', async () => {
     captured = row;
     return { error: null };
   });
-  await recordAuthCode({ propertyId: 'p1', code: '123456', emailTo: 'x@pms.getstaxis.com' }, db);
+  await recordAuthCode({ propertyId: 'p1', code: '123456', emailTo: 'x@getstaxis.com' }, db);
   assert.equal(captured.source, 'email');
 });
 
 test('recordAuthCode treats a duplicate (23505) as success', async () => {
   const db = insertFake(() => ({ error: { code: '23505', message: 'duplicate key value' } }));
   const res = await recordAuthCode(
-    { propertyId: 'p1', code: '123456', emailTo: 'x@pms.getstaxis.com', rawRef: 'dup' },
+    { propertyId: 'p1', code: '123456', emailTo: 'x@getstaxis.com', rawRef: 'dup' },
     db,
   );
   assert.deepEqual(res, { ok: true });
@@ -83,7 +83,7 @@ test('recordAuthCode treats a duplicate (23505) as success', async () => {
 
 test('recordAuthCode surfaces a real insert error', async () => {
   const db = insertFake(() => ({ error: { code: 'XX000', message: 'boom' } }));
-  const res = await recordAuthCode({ propertyId: 'p1', code: '123456', emailTo: 'x@pms.getstaxis.com' }, db);
+  const res = await recordAuthCode({ propertyId: 'p1', code: '123456', emailTo: 'x@getstaxis.com' }, db);
   assert.deepEqual(res, { ok: false, error: 'boom' });
 });
 

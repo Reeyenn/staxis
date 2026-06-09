@@ -3,12 +3,16 @@
 export const dynamic = 'force-dynamic';
 
 /**
- * /admin/pms-inbox — last N Okta 2FA codes the robot received (MASKED).
+ * /admin/pms-inbox — PMS Okta inbox viewer (migrations 0274 + 0275).
  *
- * A pilot/debug viewer for the auth-code inbox (migration 0274). Confirms the
- * Cloudflare Email Routing → /api/pms-inbox/inbound → pms_auth_codes pipeline
- * is delivering codes. Codes are masked SERVER-SIDE (last 2 digits only) by
- * /api/admin/pms-inbox — the full code never reaches the browser.
+ * Two views, both fed by /api/admin/pms-inbox (the only read path — the inbox
+ * tables are service-role-only):
+ *   - Auth codes: last N Okta 2FA codes the robot received, MASKED server-side
+ *     (last 2 digits only; the full code never reaches the browser).
+ *   - Full messages: the complete inbound emails per hotel, so the onboarding
+ *     admin can click the Okta account-SETUP link ("set your password" / enroll
+ *     MFA) right here. The raw email HTML is never rendered — the body is shown
+ *     as escaped plain text and only scheme-validated http(s) links are clickable.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -16,7 +20,7 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { ChevronLeft, RefreshCw, ShieldCheck, CheckCircle2, Clock } from 'lucide-react';
+import { ChevronLeft, RefreshCw, ShieldCheck, CheckCircle2, Clock, Mail, ExternalLink } from 'lucide-react';
 
 interface CodeRow {
   id: string;
@@ -28,6 +32,22 @@ interface CodeRow {
   subject: string | null;
   receivedAt: string;
   consumedAt: string | null;
+}
+
+interface LinkItem {
+  href: string;
+  label: string;
+}
+
+interface MessageRow {
+  id: string;
+  propertyId: string;
+  emailTo: string;
+  fromAddr: string | null;
+  subject: string | null;
+  bodyText: string | null;
+  links: LinkItem[];
+  receivedAt: string;
 }
 
 function ago(iso: string): string {
@@ -42,6 +62,7 @@ function ago(iso: string): string {
 export default function PmsInboxPage() {
   const { user, loading: authLoading } = useAuth();
   const [rows, setRows] = useState<CodeRow[]>([]);
+  const [messages, setMessages] = useState<MessageRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +78,7 @@ export default function PmsInboxPage() {
         return;
       }
       setRows(json.data.codes as CodeRow[]);
+      setMessages((json.data.messages as MessageRow[]) ?? []);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -74,6 +96,14 @@ export default function PmsInboxPage() {
   if (authLoading) return <AppLayout><div className="p-8">Loading…</div></AppLayout>;
   if (!user) return <AppLayout><div className="p-8">Not signed in</div></AppLayout>;
 
+  // Group full messages by hotel inbox (emailTo is 1:1 with property).
+  const byInbox = new Map<string, MessageRow[]>();
+  for (const m of messages) {
+    const list = byInbox.get(m.emailTo) ?? [];
+    list.push(m);
+    byInbox.set(m.emailTo, list);
+  }
+
   return (
     <AppLayout>
       <div className="px-6 py-8 max-w-6xl mx-auto">
@@ -83,11 +113,11 @@ export default function PmsInboxPage() {
               <ChevronLeft className="h-4 w-4 mr-1" /> Admin
             </Link>
             <h1 className="text-2xl font-semibold flex items-center gap-2">
-              <ShieldCheck className="h-6 w-6 text-green-600" /> PMS Auth-Code Inbox
+              <ShieldCheck className="h-6 w-6 text-green-600" /> PMS Inbox
             </h1>
             <p className="text-sm text-gray-600 mt-1">
-              Okta 2FA codes the robot received, for its unattended PMS login. Codes are masked — only the
-              last 2 digits are shown, and the full code never leaves the server.
+              The hotel-login mailbox at <span className="font-mono">…@getstaxis.com</span>. Setup emails show
+              below with clickable links; ongoing 2FA codes (masked) go to the robot.
             </p>
           </div>
           <button
@@ -101,6 +131,91 @@ export default function PmsInboxPage() {
         {error && (
           <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
         )}
+
+        {/* ── Full messages (setup links) ─────────────────────────────────── */}
+        <h2 className="text-lg font-semibold flex items-center gap-2 mb-1">
+          <Mail className="h-5 w-5 text-blue-600" /> Account setup &amp; full messages
+        </h2>
+        <p className="text-sm text-gray-600 mb-3">
+          Click the link inside an Okta setup email to set the password / enroll MFA. Links are shown in full so
+          you can verify the destination before clicking; the email&apos;s own formatting is stripped for safety.
+        </p>
+
+        {byInbox.size === 0 && !loading && !error ? (
+          <div className="rounded border border-gray-200 bg-gray-50 px-4 py-10 text-center text-sm text-gray-500 mb-10">
+            No messages yet. The full Okta setup email appears here the moment it arrives.
+          </div>
+        ) : (
+          <div className="space-y-6 mb-10">
+            {[...byInbox.entries()].map(([inbox, msgs]) => (
+              <div key={inbox} className="rounded border border-gray-200">
+                <div className="bg-gray-50 px-4 py-2 text-xs font-mono text-gray-700 border-b border-gray-200">
+                  {inbox}
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {msgs.map((m) => (
+                    <div key={m.id} className="px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium text-sm text-gray-900 break-words">
+                            {m.subject || '(no subject)'}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-0.5">
+                            from {m.fromAddr || '—'}
+                          </div>
+                        </div>
+                        <div className="text-xs text-gray-500 whitespace-nowrap" title={m.receivedAt}>
+                          {ago(m.receivedAt)}
+                        </div>
+                      </div>
+
+                      {m.links.length > 0 && (
+                        <div className="mt-2 rounded border border-blue-100 bg-blue-50 px-3 py-2">
+                          <div className="text-xs font-medium text-blue-800 mb-1">
+                            Links in this email
+                          </div>
+                          <ul className="space-y-1">
+                            {m.links.map((lk, i) => (
+                              <li key={i} className="text-xs">
+                                <a
+                                  href={lk.href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-start gap-1 text-blue-700 underline break-all"
+                                >
+                                  <ExternalLink className="h-3 w-3 mt-0.5 shrink-0" />
+                                  <span className="break-all">{lk.href}</span>
+                                </a>
+                                {lk.label && lk.label !== lk.href && (
+                                  <span className="text-gray-500"> — {lk.label}</span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {m.bodyText && (
+                        <pre className="mt-2 whitespace-pre-wrap break-words text-xs text-gray-700 bg-gray-50 rounded px-3 py-2 max-h-64 overflow-auto">
+                          {m.bodyText}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Masked 2FA codes (robot path) ───────────────────────────────── */}
+        <h2 className="text-lg font-semibold flex items-center gap-2 mb-1">
+          <ShieldCheck className="h-5 w-5 text-green-600" /> 2FA codes (robot)
+        </h2>
+        <p className="text-sm text-gray-600 mb-3">
+          Okta login codes the robot received, masked — only the last 2 digits are shown, and the full code never
+          leaves the server.
+        </p>
 
         {rows.length === 0 && !loading && !error ? (
           <div className="rounded border border-gray-200 bg-gray-50 px-4 py-10 text-center text-sm text-gray-500">

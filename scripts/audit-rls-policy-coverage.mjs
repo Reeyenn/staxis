@@ -194,6 +194,12 @@ const SERVICE_ROLE_ONLY = new Set([
   'component_rooms',
   'housekeeper_audit_log',
   'offline_action_replays',
+  // ─── Migration 0275 — PMS inbox full-message capture. ────────────────
+  // RLS enabled + REVOKE + explicit `pms_inbox_messages_deny_all_browser`
+  // policy with `using (false)` (mirrors pms_auth_codes 0274). The webhook
+  // (/api/pms-inbox/inbound) writes via supabaseAdmin; the admin viewer reads
+  // via the requireAdmin-gated /api/admin/pms-inbox. Never user-readable.
+  'pms_inbox_messages',
 ]);
 
 function listMigrations() {

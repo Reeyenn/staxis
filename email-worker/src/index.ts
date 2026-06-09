@@ -1,7 +1,7 @@
 /**
  * Staxis PMS auth-code inbox — Cloudflare Email Worker.
  *
- * Bound as the CATCH-ALL destination for Email Routing on pms.getstaxis.com.
+ * Bound as the CATCH-ALL destination for Email Routing on the getstaxis.com apex.
  * For each inbound message it: size-caps, parses the MIME (postal-mime),
  * extracts the TRUSTED DKIM/SPF/DMARC verdict, and POSTs the relevant fields
  * to the Next.js webhook with a shared Bearer secret.

@@ -17,6 +17,7 @@ import {
   domainAllowed,
   extractOtpCode,
   maskCode,
+  extractLinks,
   parseAuthResults,
   selectTrustedAuthResults,
   authservIdOf,
@@ -88,19 +89,22 @@ describe('verifyInboundAuthenticity', () => {
 });
 
 describe('normalizeRecipient', () => {
-  const D = 'pms.getstaxis.com';
-  test('lowercases and accepts the inbox domain', () => {
-    assert.equal(normalizeRecipient('TXA32@PMS.getstaxis.com', D), 'txa32@pms.getstaxis.com');
+  // The inbox moved to the apex (Choice's Okta form rejects subdomained emails).
+  const D = 'getstaxis.com';
+  test('lowercases and accepts the apex inbox domain', () => {
+    assert.equal(normalizeRecipient('TXA32@GetStaxis.com', D), 'txa32@getstaxis.com');
   });
   test('strips plus-addressing', () => {
-    assert.equal(normalizeRecipient('txa32+anything@pms.getstaxis.com', D), 'txa32@pms.getstaxis.com');
+    assert.equal(normalizeRecipient('txa32+anything@getstaxis.com', D), 'txa32@getstaxis.com');
   });
   test('extracts from a Name <addr> form', () => {
-    assert.equal(normalizeRecipient('Staxis AI <txa32@pms.getstaxis.com>', D), 'txa32@pms.getstaxis.com');
+    assert.equal(normalizeRecipient('Staxis AI <txa32@getstaxis.com>', D), 'txa32@getstaxis.com');
   });
-  test('rejects other domains and malformed input', () => {
-    assert.equal(normalizeRecipient('txa32@getstaxis.com', D), null);
+  test('rejects the retired subdomain, other domains, and malformed input', () => {
+    // The old pms.getstaxis.com scheme no longer resolves.
+    assert.equal(normalizeRecipient('txa32@pms.getstaxis.com', D), null);
     assert.equal(normalizeRecipient('txa32@evil.com', D), null);
+    assert.equal(normalizeRecipient('txa32@notgetstaxis.com', D), null);
     assert.equal(normalizeRecipient('garbage', D), null);
     assert.equal(normalizeRecipient('', D), null);
   });
@@ -211,5 +215,75 @@ describe('Authentication-Results selection + parsing (anti-forgery)', () => {
       ['okta.com'],
     );
     assert.equal(result.ok, false); // sender not allowlisted AND no verdict — rejected
+  });
+});
+
+describe('extractLinks (admin viewer XSS gate)', () => {
+  test('extracts an http(s) anchor with its label', () => {
+    const links = extractLinks(
+      '<p>Welcome — <a href="https://choicehotels.okta.com/activate?token=abc">Set your password</a> now.</p>',
+      null,
+    );
+    assert.deepEqual(links, [
+      { href: 'https://choicehotels.okta.com/activate?token=abc', label: 'Set your password' },
+    ]);
+  });
+
+  test('extracts a bare URL from plain text (label falls back to href)', () => {
+    const links = extractLinks(null, 'Activate here: https://okta.com/welcome/xyz');
+    assert.deepEqual(links, [
+      { href: 'https://okta.com/welcome/xyz', label: 'https://okta.com/welcome/xyz' },
+    ]);
+  });
+
+  test('REJECTS javascript:/data:/vbscript:/file:/mailto:/tel:/relative/protocol-relative hrefs', () => {
+    const html = [
+      '<a href="javascript:alert(1)">x</a>',
+      '<a href="data:text/html,<script>alert(1)</script>">y</a>',
+      '<a href="vbscript:msgbox(1)">z</a>',
+      '<a href="file:///etc/passwd">f</a>',
+      '<a href="mailto:a@b.com">m</a>',
+      '<a href="tel:+15551234">t</a>',
+      '<a href="/activate">rel</a>',
+      '<a href="//evil.com/x">protocol-rel</a>',
+    ].join('');
+    assert.deepEqual(extractLinks(html, null), []);
+  });
+
+  test('decodes &amp; in an href query string', () => {
+    const links = extractLinks('<a href="https://okta.com/a?x=1&amp;y=2">go</a>', null);
+    assert.equal(links[0].href, 'https://okta.com/a?x=1&y=2');
+  });
+
+  test('dedups identical hrefs across html and text', () => {
+    const links = extractLinks(
+      '<a href="https://okta.com/setup">Set up</a>',
+      'Or paste: https://okta.com/setup',
+    );
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, 'https://okta.com/setup');
+  });
+
+  test('strips nested tags from the anchor label', () => {
+    const links = extractLinks('<a href="https://okta.com/go"><b>Click</b> here</a>', null);
+    assert.deepEqual(links, [{ href: 'https://okta.com/go', label: 'Click here' }]);
+  });
+
+  test('trims trailing sentence punctuation off a bare URL', () => {
+    const links = extractLinks(null, 'Visit https://okta.com/done. Thanks!');
+    assert.equal(links[0].href, 'https://okta.com/done');
+  });
+
+  test('returns [] for empty / no-link input', () => {
+    assert.deepEqual(extractLinks(null, null), []);
+    assert.deepEqual(extractLinks('', ''), []);
+    assert.deepEqual(extractLinks('<p>no links here</p>', 'just text'), []);
+  });
+
+  test('caps href length defensively', () => {
+    const huge = 'https://okta.com/' + 'a'.repeat(5000);
+    const links = extractLinks(`<a href="${huge}">x</a>`, null);
+    assert.equal(links.length, 1);
+    assert.ok(links[0].href.length <= 2048);
   });
 });

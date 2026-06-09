@@ -3554,14 +3554,15 @@ async function checkResendWebhookSecretConfigured(): Promise<Omit<Check, 'name' 
 }
 
 /**
- * pms_inbox_config — Okta 2FA email-reader inbox (migration 0274).
+ * pms_inbox_config — PMS Okta inbox (migrations 0274 + 0275).
  *
- * The CUA robot reads its own Okta login codes from pms_auth_codes, fed by
- * /api/pms-inbox/inbound (a Cloudflare Email Worker POSTs to it with the
- * shared PMS_INBOX_WEBHOOK_SECRET). Optional / not-yet-live, so this NEVER
- * returns 'fail': skipped when unconfigured, ok/warn once the secret is set.
- * The freshness line is informational — codes only arrive during a login, so
- * "none yet" / "stale" is normal, not an error.
+ * The CUA robot reads its own Okta login codes from pms_auth_codes, and full
+ * setup emails land in pms_inbox_messages — both fed by /api/pms-inbox/inbound
+ * (a Cloudflare Email Worker POSTs to it with the shared PMS_INBOX_WEBHOOK_SECRET).
+ * Optional / not-yet-live, so this NEVER returns 'fail': skipped when
+ * unconfigured, ok/warn once the secret is set. The freshness line is
+ * informational — codes only arrive during a login, so "none yet" / "stale" is
+ * normal, not an error.
  */
 async function checkPmsInboxConfig(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const secret = (env.PMS_INBOX_WEBHOOK_SECRET ?? '').trim();
@@ -3592,6 +3593,15 @@ async function checkPmsInboxConfig(): Promise<Omit<Check, 'name' | 'durationMs'>
         status: 'warn',
         detail: `Inbox secret set but pms_auth_codes read failed: ${error.message}`,
         fix: 'Confirm migration 0274 is applied to prod (table pms_auth_codes + RPC claim_pms_auth_code).',
+      };
+    }
+    // Full-message table (0275) readability — warn-only (same all-or-nothing posture).
+    const { error: msgErr } = await supabaseAdmin.from('pms_inbox_messages').select('id').limit(1);
+    if (msgErr) {
+      return {
+        status: 'warn',
+        detail: `Inbox configured but pms_inbox_messages read failed: ${msgErr.message}`,
+        fix: 'Confirm migration 0275 is applied to prod (table pms_inbox_messages).',
       };
     }
     if (!data) {

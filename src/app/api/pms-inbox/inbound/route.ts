@@ -2,27 +2,33 @@
 // webhook (Bearer PMS_INBOX_WEBHOOK_SECRET, constant-time). Not a user/session
 // route; it resolves the property itself from the verified recipient address.
 /**
- * POST /api/pms-inbox/inbound — Okta 2FA email reader (migration 0274).
+ * POST /api/pms-inbox/inbound — PMS Okta inbox reader (migrations 0274 + 0275).
  *
- * Cloudflare Email Routing (catch-all on pms.getstaxis.com) hands each inbound
- * message to an Email Worker, which parses it and POSTs the relevant fields
- * here with `Authorization: Bearer <PMS_INBOX_WEBHOOK_SECRET>`. We store the
- * one-time code so the CUA robot can read it for an unattended PMS login.
+ * Cloudflare Email Routing (catch-all on the getstaxis.com apex) hands each
+ * inbound message to an Email Worker, which parses it and POSTs the relevant
+ * fields here with `Authorization: Bearer <PMS_INBOX_WEBHOOK_SECRET>`. We:
+ *   - store the FULL message (subject/from/body/links) in pms_inbox_messages so
+ *     an admin can click the Okta account-setup link in /admin/pms-inbox, and
+ *   - extract any 6-digit code into pms_auth_codes for the CUA robot's login.
  *
  * Security (this is the boundary of record — the Worker is just a courier):
  *   1. Constant-time shared-secret check; fail-closed (503) if unset.
  *   2. Timestamp tolerance — drop stale forwards (replay defense-in-depth).
  *   3. Sender authenticity — DMARC/DKIM aligned to an allowlisted domain
- *      (okta.com / choicehotels.com), from Cloudflare's verified verdict.
- *      Never the spoofable From string, never a bare "dkim=pass" substring.
+ *      (okta.com), from Cloudflare's verified verdict. Never the spoofable
+ *      From string, never a bare "dkim=pass" substring.
  *   4. Resolve the recipient → property via scraper_credentials.pms_login_email.
  *   5. Per-property rate-limit on the RAW property id.
- *   6. Extract the code (anchored, ambiguity-refusing) and store it. A UNIQUE
- *      raw_ref (messageId) dedups replayed/duplicate deliveries.
+ *   6. Store the full message (NON-FATAL — a hiccup here never blocks the code).
+ *   7. Extract the code (anchored, ambiguity-refusing) and store it. A UNIQUE
+ *      message-id dedups replayed/duplicate deliveries on both tables.
  *
- * Every accepted-but-dropped path returns a uniform 2xx (no enumeration / no
- * SMTP backscatter). 401 is reserved for a bad secret, 5xx for genuine server
- * errors (which legitimately invite a Worker retry). Codes are never logged.
+ * NOTHING is stored until steps 1–4 pass (authenticated sender + known
+ * recipient), so junk/forged mail to the apex catch-all is dropped, never
+ * persisted. Every accepted-but-dropped path returns a uniform 2xx (no
+ * enumeration / no SMTP backscatter). 401 is reserved for a bad secret, 5xx for
+ * genuine server errors (which legitimately invite a Worker retry). Codes and
+ * message bodies are never logged.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -42,13 +48,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-// The catch-all subdomain we receive 2FA mail on. Recipients on any other
-// domain are rejected.
-const INBOX_DOMAIN = 'pms.getstaxis.com';
-// Production sender allowlist. Okta sends the OTP from okta.com / the tenant
-// subdomain (e.g. choicehotels.okta.com — matched by the subdomain rule), which
-// publishes DMARC p=reject. We deliberately do NOT include choicehotels.com
-// (the corporate domain): it isn't the OTP sender and its DMARC is p=none, so
+// The single domain we receive PMS Okta mail on (apex). Recipients on any other
+// domain are rejected. Defaults to getstaxis.com; override only via env for tests.
+const DEFAULT_INBOX_DOMAIN = 'getstaxis.com';
+// Production sender allowlist. Okta sends the OTP / setup mail from okta.com / the
+// tenant subdomain (e.g. choicehotels.okta.com — matched by the subdomain rule),
+// which publishes DMARC p=reject. We deliberately do NOT include choicehotels.com
+// (the corporate domain): it isn't the sender and its DMARC is p=none, so
 // Cloudflare would deliver spoofed mail From: it — an injection vector. Override
 // via env only to add a *verified* Okta sub-processor domain, or a controlled
 // test sender during verification.
@@ -57,6 +63,10 @@ const DEFAULT_ALLOWED_SENDERS = ['okta.com'];
 const TIMESTAMP_TOLERANCE_MS = 10 * 60 * 1000;
 // Secondary guard; the Worker is the primary size gate.
 const MAX_BODY_BYTES = 512 * 1024;
+// Per-column caps for the stored full message (defense-in-depth; the Worker
+// already caps html ~20 KB and the body is bounded at MAX_BODY_BYTES above).
+const MAX_STORED_TEXT = 100_000;
+const MAX_STORED_HTML = 100_000;
 
 function allowedSenderDomains(): string[] {
   const raw = (env.PMS_INBOX_ALLOWED_SENDER_DOMAINS ?? '').trim();
@@ -66,6 +76,11 @@ function allowedSenderDomains(): string[] {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   return list.length ? list : DEFAULT_ALLOWED_SENDERS;
+}
+
+/** The apex domain we accept inbox mail on (env override for tests; defaults apex). */
+function inboxDomain(): string {
+  return (env.PMS_INBOX_DOMAIN ?? '').trim().toLowerCase() || DEFAULT_INBOX_DOMAIN;
 }
 
 interface InboundBody {
@@ -145,7 +160,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // ── 5. Resolve recipient → property ───────────────────────────────────────
-  const recipient = normalizeRecipient(str(body.to), INBOX_DOMAIN);
+  const recipient = normalizeRecipient(str(body.to), inboxDomain());
   if (!recipient) {
     log.warn('[pms-inbox] unresolvable recipient', { requestId });
     return ok({ stored: false, reason: 'bad_recipient' }, { requestId });
@@ -177,6 +192,54 @@ export async function POST(req: NextRequest): Promise<Response> {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
+  // The provider Message-Id dedups replayed/duplicate deliveries on BOTH tables.
+  const messageId = str(body.messageId) || null;
+
+  // ── 6.5 Store the FULL message (NON-FATAL: never block the 2FA code path) ──
+  // Captures setup-LINK mail (which carries no code) so an admin can click the
+  // Okta "set password" / MFA-enroll link in /admin/pms-inbox. Runs only after
+  // the sender is authenticated (step 4) and the property resolved (step 5), so
+  // nothing unauthenticated is ever persisted. A messages-table error is logged
+  // and swallowed — the operationally-critical code path (steps 7–8) still runs.
+  try {
+    const { error: msgErr } = await supabaseAdmin.from('pms_inbox_messages').insert({
+      property_id: propertyId,
+      email_to: recipient,
+      from_addr: fromRaw.slice(0, 320) || null,
+      subject: str(body.subject).slice(0, 500) || null,
+      body_text: str(body.text).slice(0, MAX_STORED_TEXT) || null,
+      body_html: str(body.html).slice(0, MAX_STORED_HTML) || null,
+      message_id: messageId,
+    });
+    if (msgErr) {
+      if ((msgErr as { code?: string }).code === '23505') {
+        log.info('[pms-inbox] duplicate full-message ignored', { requestId, propertyId });
+      } else {
+        // NON-FATAL — log and fall through to the code path.
+        log.error('[pms-inbox] full-message store failed (continuing)', {
+          requestId,
+          propertyId,
+          err: msgErr.message,
+        });
+      }
+    } else {
+      // Sizes only — NEVER body/subject content (log.ts does not scrub).
+      log.info('[pms-inbox] stored full message', {
+        requestId,
+        propertyId,
+        textLen: str(body.text).length,
+        htmlLen: str(body.html).length,
+        messageId: messageId ? messageId.slice(0, 80) : null,
+      });
+    }
+  } catch (e) {
+    log.error('[pms-inbox] full-message store threw (continuing)', {
+      requestId,
+      propertyId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+
   // ── 7. Extract the code (authenticated content only) ──────────────────────
   const code = extractOtpCode({
     subject: str(body.subject),
@@ -188,8 +251,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ stored: false, reason: 'no_code' }, { requestId });
   }
 
-  // ── 8. Store (UNIQUE raw_ref dedups a replayed/duplicate delivery) ────────
-  const messageId = str(body.messageId) || null;
+  // ── 8. Store the code (UNIQUE raw_ref dedups a replayed/duplicate delivery) ─
   const { error: insErr } = await supabaseAdmin.from('pms_auth_codes').insert({
     property_id: propertyId,
     email_to: recipient,

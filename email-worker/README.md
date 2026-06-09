@@ -1,22 +1,29 @@
 # Staxis PMS auth-code inbox — Cloudflare Email Worker
 
-Receives the Okta 2FA emails for the CUA robot's PMS login and forwards them to
+Receives the Okta mail for the CUA robot's PMS login and forwards each message to
 the Staxis webhook. One Worker serves every hotel via a **catch-all** on the
-`pms.getstaxis.com` subdomain — `<propertycode>@pms.getstaxis.com` (Beaumont =
-`txa32@pms.getstaxis.com`).
+`getstaxis.com` **apex** — `<propertycode>@getstaxis.com` (Beaumont =
+`txa32@getstaxis.com`). The inbox lives on the apex because Choice's Okta user
+form rejects subdomained emails (`…@pms.getstaxis.com` → "Enter a valid email").
 
 ```
-Okta → txa32@pms.getstaxis.com → Cloudflare Email Routing (catch-all)
+Okta → txa32@getstaxis.com → Cloudflare Email Routing (apex catch-all)
      → THIS Worker (parse + verdict + size-cap)
      → POST {to,from,subject,text,html,messageId,ts,dkim,spf,dmarc,dkimDomain}
        + Authorization: Bearer <PMS_INBOX_WEBHOOK_SECRET>
-     → https://getstaxis.com/api/pms-inbox/inbound → pms_auth_codes (migration 0274)
+     → https://getstaxis.com/api/pms-inbox/inbound
+       → pms_inbox_messages  (full email + account-setup links, migration 0275)
+       → pms_auth_codes       (6-digit codes for the robot,       migration 0274)
 ```
 
 The Worker is a **thin courier**. Every security decision (sender allowlist,
 DMARC/DKIM enforcement, code extraction, dedup, storage) is made by the webhook,
 which re-verifies everything and is the boundary of record. The Worker only:
 size-caps, parses the MIME, reads Cloudflare's verified auth verdict, and POSTs.
+It forwards **every** message the apex catch-all receives; the webhook is the
+sole authority on which recipient maps to a hotel (it silently drops unknown
+recipients), so junk to `noreply@`/`support@`/bounces is harmless — and any
+sender that isn't DMARC/DKIM-aligned to `okta.com` is rejected before storage.
 
 ## Deploy
 
@@ -27,9 +34,10 @@ npx wrangler secret put PMS_INBOX_WEBHOOK_SECRET   # same value as the Vercel en
 npx wrangler deploy
 ```
 
-Then bind it as the catch-all destination (Cloudflare dashboard or API):
-**Email → Email Routing → Routing rules → Catch-all address → Send to a Worker →
-`staxis-pms-inbox`.**
+Then bind it as the **apex** zone's catch-all destination (Cloudflare dashboard):
+**getstaxis.com → Email → Email Routing → Routing rules → Catch-all address →
+Send to a Worker → `staxis-pms-inbox`.** This is the only live change to flip the
+inbox on — the apex was previously catch-all → "Drop".
 
 ### Config
 
@@ -39,16 +47,21 @@ Then bind it as the catch-all destination (Cloudflare dashboard or API):
 | `MAX_BYTES` | `wrangler.toml` `[vars]` | Max raw message size to forward. Default 256 KiB (Okta code mails are tiny). |
 | `PMS_INBOX_WEBHOOK_SECRET` | `wrangler secret` | Shared Bearer secret. **Must equal** the Vercel `PMS_INBOX_WEBHOOK_SECRET`. Never commit it. |
 
-DNS for the subdomain (created by Email Routing's "Add subdomain" flow — apex
-`getstaxis.com` MX is **never** touched):
+### DNS — no record changes needed
 
-```
-pms.getstaxis.com   MX   route1.mx.cloudflare.net
-pms.getstaxis.com   MX   route2.mx.cloudflare.net
-pms.getstaxis.com   MX   route3.mx.cloudflare.net
-pms.getstaxis.com   TXT  "v=spf1 include:_spf.mx.cloudflare.net ~all"
-_dmarc.pms.getstaxis.com  TXT  "v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s;"
-```
+The apex `getstaxis.com` **already** has Email Routing MX (`route1/2/3.mx.cloudflare.net`)
+and the apex SPF — mail to the apex already arrives at Cloudflare; it was just
+hitting a "Drop" catch-all. Flipping the catch-all action to this Worker (above)
+is the **only** change. **Do NOT edit any DNS record.**
+
+Crucially, the apex MX is independent of the **sending** records, which must stay
+intact: `resend._domainkey.getstaxis.com` (Resend DKIM), `send.getstaxis.com` MX
+→ `feedback-smtp.us-east-1.amazonses.com` + its SPF. The app sends its login/2FA
+mail from `noreply@getstaxis.com` via Resend; receiving (this Worker) does not
+touch any of that.
+
+The old `pms.getstaxis.com` subdomain routing is now unused. It's harmless to
+leave; remove its MX/TXT/`_dmarc` records later if you want to tidy up.
 
 ## Security
 

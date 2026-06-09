@@ -2,7 +2,7 @@
   "name": "staxis-pms-inbox-worker",
   "private": true,
   "version": "1.0.0",
-  "description": "Cloudflare Email Worker: parses inbound Okta 2FA mail on pms.getstaxis.com and POSTs it to the Staxis webhook.",
+  "description": "Cloudflare Email Worker: parses inbound Okta mail on the getstaxis.com apex and POSTs it to the Staxis webhook.",
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",

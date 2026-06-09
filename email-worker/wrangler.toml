@@ -1,6 +1,6 @@
 # Staxis PMS auth-code inbox — Cloudflare Email Worker.
 #
-# Bound as the catch-all destination for Email Routing on pms.getstaxis.com.
+# Bound as the catch-all destination for Email Routing on the getstaxis.com apex.
 # Deploy:  npm install && npx wrangler deploy
 # Secret:  npx wrangler secret put PMS_INBOX_WEBHOOK_SECRET   (same value as Vercel env)
 # Then in the Cloudflare dashboard: Email → Email Routing → Routing rules →

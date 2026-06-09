@@ -246,6 +246,91 @@ export function maskCode(code: string): string {
   return '•'.repeat(Math.max(2, c.length - 2)) + c.slice(-2);
 }
 
+// ─── Link extraction (for the admin full-message viewer) ───────────────────
+// SECURITY: the admin viewer renders these as clickable <a href>. The XSS gate
+// is `new URL(href).protocol` ∈ {http,https} — javascript:/data:/vbscript:/
+// file:/mailto:/tel: and relative URLs (which throw on parse) are all dropped.
+// The email's raw HTML is NEVER rendered; only these validated links + the
+// React-escaped plain text reach the browser.
+
+export interface ExtractedLink {
+  href: string;
+  label: string;
+}
+
+const MAX_LINKS = 50;
+const MAX_HREF_LEN = 2048;
+const MAX_LABEL_LEN = 200;
+// Bound the markup we scan so a pathological body can't cost unbounded regex time.
+const MAX_SCAN_LEN = 200_000;
+
+/** Decode the handful of HTML entities that appear in real href/label text. */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#x0*2f;/gi, '/');
+}
+
+/**
+ * True ONLY for absolute http(s) URLs. Everything else — javascript:, data:,
+ * vbscript:, file:, mailto:, tel:, protocol-relative, relative, malformed —
+ * is rejected. This is the XSS boundary for the admin viewer's links.
+ */
+function isSafeHttpUrl(href: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(href);
+  } catch {
+    return false;
+  }
+  return u.protocol === 'http:' || u.protocol === 'https:';
+}
+
+/**
+ * Extract clickable http(s) links from an email's html (preferred — with anchor
+ * text as the label) and plain text (bare URLs). Validates the scheme, dedups by
+ * lowercased href, and caps count/length. Returns [] when there's nothing safe.
+ */
+export function extractLinks(html?: string | null, text?: string | null): ExtractedLink[] {
+  const out: ExtractedLink[] = [];
+  const seen = new Set<string>();
+
+  const push = (rawHref: string, rawLabel: string): void => {
+    if (out.length >= MAX_LINKS) return;
+    const href = decodeEntities(norm(rawHref).trim()).slice(0, MAX_HREF_LEN);
+    if (!isSafeHttpUrl(href)) return;
+    const key = href.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const label =
+      (decodeEntities(norm(rawLabel)).replace(/\s+/g, ' ').trim() || href).slice(0, MAX_LABEL_LEN);
+    out.push({ href, label });
+  };
+
+  // 1. Anchors in html — href + inner text (nested tags stripped) as label.
+  const h = norm((html ?? '').slice(0, MAX_SCAN_LEN));
+  const anchorRe =
+    /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s">]+))[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const m of h.matchAll(anchorRe)) {
+    const href = m[1] ?? m[2] ?? m[3] ?? '';
+    const label = (m[4] ?? '').replace(/<[^>]+>/g, ' ');
+    push(href, label);
+  }
+
+  // 2. Bare URLs in plain text (no label → falls back to the href).
+  const t = norm((text ?? '').slice(0, MAX_SCAN_LEN));
+  for (const m of t.matchAll(/\bhttps?:\/\/[^\s<>"')]+/gi)) {
+    // Trim trailing sentence punctuation that isn't part of the URL.
+    push(m[0].replace(/[.,;:!?)\]]+$/, ''), '');
+  }
+
+  return out;
+}
+
 // ─── Authentication-Results selection + parsing ────────────────────────────
 // SECURITY-CRITICAL. The Email Worker uses the same logic (kept in sync in
 // email-worker/src/index.ts). An inbound message can carry sender-forged

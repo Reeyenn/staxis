@@ -1,11 +1,14 @@
 /**
- * GET /api/admin/pms-inbox — last N Okta 2FA codes, MASKED (admin-only).
+ * GET /api/admin/pms-inbox — recent inbox activity (admin-only).
  *
- * Lets an admin confirm the inbox pipeline is delivering codes (e.g. during
- * the pilot) without ever exposing a usable code. Masking happens HERE, on the
- * server — the full `code` column is read but only the last-2-digit mask is
- * serialized to the browser. The table itself is service-role-only (0274), so
- * this admin route is the only read path.
+ * Two views over the service-role-only inbox tables, both read here via
+ * supabaseAdmin (the only read path):
+ *   - `codes`    — last N Okta 2FA codes (0274), MASKED server-side (last 2
+ *     digits only; the full code NEVER leaves the server) for the robot path.
+ *   - `messages` — last N FULL inbound emails (0275) so an admin can click the
+ *     Okta account-setup link. The raw `body_html` is NEVER serialized to the
+ *     browser; we extract validated http(s) links from it HERE (extractLinks'
+ *     scheme allowlist is the XSS gate) and ship only `bodyText` + `links`.
  */
 
 import { NextRequest } from 'next/server';
@@ -13,7 +16,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { maskCode } from '@/lib/pms-inbox/parse';
+import { maskCode, extractLinks } from '@/lib/pms-inbox/parse';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,5 +49,28 @@ export async function GET(req: NextRequest) {
     consumedAt: (r.consumed_at as string | null) ?? null,
   }));
 
-  return ok({ codes }, { requestId });
+  // Full messages (0275). Read body_html ONLY to derive safe links — it is
+  // never returned to the browser.
+  const { data: msgData, error: msgError } = await supabaseAdmin
+    .from('pms_inbox_messages')
+    .select('id, property_id, email_to, from_addr, subject, body_text, body_html, received_at')
+    .order('received_at', { ascending: false })
+    .limit(50);
+  if (msgError) {
+    return err(`pms-inbox messages query failed: ${msgError.message}`, { requestId, status: 500 });
+  }
+
+  const messages = (msgData ?? []).map((r) => ({
+    id: r.id as string,
+    propertyId: r.property_id as string,
+    emailTo: r.email_to as string,
+    fromAddr: (r.from_addr as string | null) ?? null,
+    subject: (r.subject as string | null) ?? null,
+    bodyText: (r.body_text as string | null) ?? null,
+    // Scheme-validated http(s) links extracted server-side; raw HTML is dropped.
+    links: extractLinks(r.body_html as string | null, r.body_text as string | null),
+    receivedAt: r.received_at as string,
+  }));
+
+  return ok({ codes, messages }, { requestId });
 }

@@ -181,6 +181,12 @@ const ServerSchema = z.object({
   // verified Okta sub-processor domain, or a controlled test sender during
   // end-to-end verification.
   PMS_INBOX_ALLOWED_SENDER_DOMAINS: z.string().optional(),
+  // The single domain the inbox receives on. Optional — the webhook defaults to
+  // `getstaxis.com` (the apex) when unset, which is correct for prod. The robot's
+  // Okta user is `<propertycode>@getstaxis.com` (Beaumont = txa32@getstaxis.com).
+  // Only set this to point at a different domain during testing; setting it to the
+  // retired `pms.getstaxis.com` subdomain would make the route reject all apex mail.
+  PMS_INBOX_DOMAIN: z.string().optional(),
 
   // ── Sentry ────────────────────────────────────────────
   SENTRY_DSN: z.string().url().optional(),

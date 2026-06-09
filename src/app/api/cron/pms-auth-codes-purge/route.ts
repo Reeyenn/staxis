@@ -1,14 +1,15 @@
 /**
  * GET /api/cron/pms-auth-codes-purge
  *
- * Runs daily. Purges old rows from pms_auth_codes (migration 0274). Codes are
- * single-use and operationally valid for only minutes, but we keep a short
- * audit trail for the masked /admin/pms-inbox viewer, then delete. 7 days is
- * comfortably past any operational use and keeps the (sensitive) table — and
- * the count of spent 2FA codes lingering at rest — bounded.
+ * Runs daily. Purges old rows from pms_auth_codes (0274) and pms_inbox_messages
+ * (0275). Codes are single-use and valid for only minutes — we keep 7 days for
+ * the masked /admin/pms-inbox viewer, then delete. Full setup emails are needed
+ * during the onboarding window, so they get a longer 30-day retention, then are
+ * purged too. Both bound the (sensitive) tables — spent 2FA codes and setup
+ * links — at rest.
  *
  * Auth: CRON_SECRET bearer.
- * Returns: { purged: n, cutoff: ISO }
+ * Returns: { purged, cutoff, retentionDays, messagesPurged, msgCutoff, messagesRetentionDays }
  */
 
 import { NextRequest } from 'next/server';
@@ -23,6 +24,8 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
 const RETENTION_DAYS = 7;
+// Setup-link emails are needed during onboarding, so they live longer than codes.
+const MSG_RETENTION_DAYS = 30;
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -55,7 +58,32 @@ export async function GET(req: NextRequest) {
   }
 
   const purged = (data ?? []).length;
-  await writeCronHeartbeat('pms-auth-codes-purge', { requestId, notes: { purged } });
 
-  return ok({ purged, cutoff, retentionDays: RETENTION_DAYS }, { requestId });
+  // Full-message purge (0275). NON-FATAL relative to the codes purge above —
+  // the codes are already deleted; a messages-table hiccup must not fail the run.
+  const msgCutoff = new Date(Date.now() - MSG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { data: msgData, error: msgError } = await supabaseAdmin
+    .from('pms_inbox_messages')
+    .delete()
+    .lt('received_at', msgCutoff)
+    .select('id');
+  let messagesPurged = (msgData ?? []).length;
+  if (msgError) {
+    log.error('[cron/pms-auth-codes-purge] messages delete failed', { requestId, error: msgError.message });
+    messagesPurged = -1; // sentinel: codes purged OK, messages purge failed (see logs)
+  }
+
+  await writeCronHeartbeat('pms-auth-codes-purge', { requestId, notes: { purged, messagesPurged } });
+
+  return ok(
+    {
+      purged,
+      cutoff,
+      retentionDays: RETENTION_DAYS,
+      messagesPurged,
+      msgCutoff,
+      messagesRetentionDays: MSG_RETENTION_DAYS,
+    },
+    { requestId },
+  );
 }
