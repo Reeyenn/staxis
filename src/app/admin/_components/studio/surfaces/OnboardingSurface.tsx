@@ -15,9 +15,13 @@
    Mutations kept: create hotel + signup link (CreateHotelModal), repair PMS
    feed (~$2 re-learn), prospect add/edit/delete, blocker-resolve deep-links.
 
-   Funnel bucketing mirrors the prior tab's bucketByStage (property_sessions
-   .status is the source of truth). Blocker CTAs deep-link to the real
-   resolve pages (/admin/mfa-resume/[id], /admin/property-sessions).
+   Layout: one live 9-step timeline row per onboarding hotel (journeyOf maps
+   wizard onboarding_state + property_sessions.status → a 1-of-9 position).
+   Clicking a row expands a mission-control panel (JourneyPanel) fed by
+   /api/admin/onboarding-detail — robot status + 5-feed freshness + blocker
+   actions for the PMS phase, person/details for the wizard phase. Blocker
+   CTAs deep-link to /admin/mfa-resume/[id], /admin/property-sessions, and
+   the live mapper console.
    ─────────────────────────────────────────────────────────────────────── */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -72,11 +76,9 @@ interface Prospect {
   created_at: string; updated_at: string;
 }
 
-// ── Lane bucketing (= prior bucketByStage, with kind/cta for the dark UI) ─
+// ── Blocker kinds → accent tones (used by the timeline rows + panel) ─────
 type HelpKind = 'mfa' | 'mapper' | 'cost' | 'login' | 'stopped';
-interface LaneRow { id: string; name: string; pms: string | null; kind?: HelpKind; sub?: string; href: string; }
 const HELP_DOT: Record<HelpKind, DotTone> = { mfa: 'gold', mapper: 'teal', cost: 'gold', login: 'terracotta', stopped: 'terracotta' };
-const CTA_LABEL: Record<HelpKind, string> = { mfa: 'Enter MFA code', mapper: 'View mapper', cost: 'Resume now', login: 'Edit credentials', stopped: 'Restart' };
 
 // ── The 9-step onboarding journey (mirrors the /onboard customer wizard) ─
 const STEP_LABELS = ['Welcome', 'Account', 'Email', 'Details', 'Services', 'PMS', 'Connect', 'Team', 'Live'] as const;
@@ -124,10 +126,6 @@ function journeyOf(p: PropertyRow): Journey {
   return { step: 9, label: 'Wrapping up', sub: 'Final step — almost live.', href: propHref, needsYou: false };
 }
 
-// Journey → the LaneRow shape the existing chip-detail modal already renders.
-function toLane(p: PropertyRow, j: Journey): LaneRow {
-  return { id: p.id, name: p.name ?? '(unnamed)', pms: p.pmsType, kind: j.needsYou ? j.kind : undefined, sub: j.sub, href: j.href };
-}
 
 function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string } {
   if (p.recipe && p.recipe.coveragePct === 100) return { tone: 'forest', label: 'Ready', note: 'Ready. Future hotels onboard free.' };
@@ -151,7 +149,7 @@ export function OnboardingSurface() {
   const [prospects, setProspects] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [selChip, setSelChip] = useState<LaneRow | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selPms, setSelPms] = useState<PMSCoverage | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -238,7 +236,12 @@ export function OnboardingSurface() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {journeyRows.length === 0
           ? <Empty text="No hotels onboarding right now — “+ New hotel” to start one." />
-          : journeyRows.map(({ p, j }) => <JourneyRow key={p.id} p={p} j={j} onClick={() => setSelChip(toLane(p, j))} />)}
+          : journeyRows.map(({ p, j }) => (
+            <div key={p.id}>
+              <JourneyRow p={p} j={j} expanded={expandedId === p.id} onClick={() => setExpandedId(expandedId === p.id ? null : p.id)} />
+              {expandedId === p.id && <JourneyPanel propertyId={p.id} j={j} />}
+            </div>
+          ))}
       </div>
 
       {/* Sessions · PMS · Prospects */}
@@ -272,7 +275,6 @@ export function OnboardingSurface() {
         </div>
       </div>
 
-      {selChip && <BayDetail r={selChip} onClose={() => setSelChip(null)} />}
       {selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
       <CreateHotelModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={() => { void load(); }} />
     </DarkShell>
@@ -297,7 +299,7 @@ function Empty({ text }: { text: string }) {
 // One hotel = one row: name · a 9-node rail that fills to the live step · the
 // current step label. The fill bar + current node animate when the step
 // advances (every poll), so you watch a hotel travel the whole journey.
-function JourneyRow({ p, j, onClick }: { p: PropertyRow; j: Journey; onClick: () => void }) {
+function JourneyRow({ p, j, expanded, onClick }: { p: PropertyRow; j: Journey; expanded: boolean; onClick: () => void }) {
   const rowRef = useRef<HTMLButtonElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const current = j.step - 1; // 0-based index of the in-progress node
@@ -308,11 +310,11 @@ function JourneyRow({ p, j, onClick }: { p: PropertyRow; j: Journey; onClick: ()
   const accent = `var(--${accentTone})`;
   const ring = accentTone === 'terracotta' ? 'rgba(194,86,46,.22)' : accentTone === 'teal' ? 'rgba(51,137,160,.22)' : 'rgba(201,154,46,.22)';
   return (
-    <button ref={rowRef} onClick={onClick} style={{
+    <button ref={rowRef} onClick={onClick} aria-expanded={expanded} style={{
       display: 'flex', alignItems: 'center', gap: ROW_GAP, width: '100%', textAlign: 'left',
-      background: j.needsYou ? 'rgba(194,86,46,.07)' : dim(.04),
-      border: `1px solid ${j.needsYou ? 'rgba(194,86,46,.4)' : dim(.12)}`,
-      borderRadius: 12, padding: '12px 14px', cursor: 'pointer', color: '#fff',
+      background: j.needsYou ? 'rgba(194,86,46,.07)' : expanded ? dim(.07) : dim(.04),
+      border: `1px solid ${j.needsYou ? 'rgba(194,86,46,.4)' : expanded ? dim(.22) : dim(.12)}`,
+      borderRadius: expanded ? '12px 12px 0 0' : 12, padding: '12px 14px', cursor: 'pointer', color: '#fff',
     }}>
       {/* hotel */}
       <div style={{ width: NAME_W, flexShrink: 0, minWidth: 0 }}>
@@ -340,9 +342,241 @@ function JourneyRow({ p, j, onClick }: { p: PropertyRow; j: Journey; onClick: ()
       {/* current step */}
       <div style={{ width: STATUS_W, flexShrink: 0, textAlign: 'right', minWidth: 0 }}>
         <div style={{ fontSize: 11.5, fontWeight: 600, color: j.needsYou ? 'var(--terracotta)' : '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.label}{j.needsYou ? ' ›' : ''}</div>
-        <div className="mono" style={{ fontSize: 9.5, color: dim(.45), marginTop: 2 }}>{j.step} / {TOTAL_STEPS}</div>
+        <div className="mono" style={{ fontSize: 9.5, color: dim(.45), marginTop: 2 }}>{j.step} / {TOTAL_STEPS} · {expanded ? 'close ▴' : 'detail ▾'}</div>
       </div>
     </button>
+  );
+}
+
+// ── Mission-control panel — expands under a clicked row. Shows what
+//    matters for the step the hotel is on; refreshes every 5s while open. ─
+interface PanelDetail {
+  property: {
+    id: string; name: string | null; totalRooms: number | null; brand: string | null;
+    timezone: string | null; pmsType: string | null;
+    servicesEnabled: Record<string, boolean> | null; createdAt: string;
+    onboardingState: OnbState | null; onboardingCompletedAt: string | null;
+  };
+  owner: { name: string | null; email: string | null; phone: string | null } | null;
+  staff: { name: string; department: string | null }[];
+  session: {
+    pmsFamily: string; status: string; pausedReason: string | null;
+    lastAliveAt: string | null; lastSuccessfulReadAt: string | null;
+    currentBrowserUrl: string | null; dailySpendMicros: number; capMicros: number;
+    restartCount: number; readFailureStreak: number;
+  } | null;
+  knowledge: { version: number; learnedAt: string | null } | null;
+  feeds: { key: string; label: string; lastSyncedAt: string | null; hasError: boolean }[];
+  mapperJob: { id: string; kind: string; status: string; attempts: number; maxAttempts: number; costMicros: number; createdAt: string } | null;
+  lastHiccup: string | null;
+}
+
+const SESSION_DOT: Record<string, DotTone> = {
+  alive: 'forest', starting: 'gold', paused_mfa: 'gold', paused_no_knowledge_file: 'teal',
+  paused_cost_cap: 'gold', paused_circuit_breaker: 'terracotta', failed_restart: 'terracotta', stopped: 'muted',
+};
+const SESSION_LABEL: Record<string, string> = {
+  alive: 'Alive — polling', starting: 'Connecting…', paused_mfa: 'Waiting on 2FA code',
+  paused_no_knowledge_file: 'Learning this PMS', paused_cost_cap: 'Paused — daily AI cap',
+  paused_circuit_breaker: 'Paused — repeated failures', failed_restart: 'Login failing', stopped: 'Stopped',
+};
+const usdFromMicros = (m: number) => `$${(m / 1_000_000).toFixed(2)}`;
+
+function PanelCaps({ children }: { children: React.ReactNode }) {
+  return <div className="mono" style={{ fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: dim(.45), marginBottom: 8 }}>{children}</div>;
+}
+function KV({ k, v, tone }: { k: string; v: React.ReactNode; tone?: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0', minWidth: 0 }}>
+      <span style={{ fontSize: 11, color: dim(.5), flexShrink: 0 }}>{k}</span>
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: tone ?? '#fff', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
+    </div>
+  );
+}
+function NoteBox({ tone, children }: { tone: 'gold' | 'terracotta' | 'teal' | 'forest'; children: React.ReactNode }) {
+  const bg: Record<string, string> = { gold: 'rgba(201,154,46,.1)', terracotta: 'rgba(194,86,46,.1)', teal: 'rgba(51,137,160,.1)', forest: 'rgba(60,156,104,.1)' };
+  const br: Record<string, string> = { gold: 'rgba(201,154,46,.35)', terracotta: 'rgba(194,86,46,.4)', teal: 'rgba(51,137,160,.35)', forest: 'rgba(60,156,104,.35)' };
+  return <div style={{ background: bg[tone], border: `1px solid ${br[tone]}`, borderRadius: 10, padding: '9px 11px', fontSize: 11.5, lineHeight: 1.45, color: dim(.85), marginBottom: 8 }}>{children}</div>;
+}
+
+// Freshness tone for a feed: green ≤2 min (healthy at ~30s polls), amber
+// ≤15 min (lagging), red beyond (stalled), muted when no data yet.
+function feedTone(iso: string | null): { tone: DotTone; text: string } {
+  if (!iso) return { tone: 'muted', text: 'no data yet' };
+  const sec = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!isFinite(sec)) return { tone: 'muted', text: 'no data yet' };
+  if (sec <= 120) return { tone: 'forest', text: `${age(iso)} ago` };
+  if (sec <= 900) return { tone: 'gold', text: `${age(iso)} ago` };
+  return { tone: 'terracotta', text: `${age(iso)} ago` };
+}
+
+function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
+  const [d, setD] = useState<PanelDetail | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  const fetchDetail = React.useCallback(async () => {
+    try {
+      const res = await fetchWithAuth(`/api/admin/onboarding-detail?propertyId=${propertyId}`);
+      const json = await res.json();
+      if (json.ok) { setD(json.data); setErr(null); }
+      else setErr(json.error ?? 'Could not load detail');
+    } catch (e) { setErr(`Network error: ${(e as Error).message}`); }
+  }, [propertyId]);
+
+  useEffect(() => { riseIn(panelRef.current, { dy: 6, dur: 360 }); }, []);
+  useEffect(() => {
+    void fetchDetail();
+    const t = setInterval(() => { void fetchDetail(); }, 5000);
+    return () => clearInterval(t);
+  }, [fetchDetail]);
+
+  // Robot actions — same API the robot console uses.
+  const act = async (action: 'resume_mfa' | 'reset_cost_cap' | 'stop' | 'restart') => {
+    setBusy(action);
+    try {
+      await fetchWithAuth('/api/admin/cua-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ propertyId, action }) });
+      await fetchDetail();
+    } finally { setBusy(null); }
+  };
+
+  const shell: React.CSSProperties = {
+    border: `1px solid ${dim(.22)}`, borderTop: 'none', borderRadius: '0 0 12px 12px',
+    background: dim(.03), padding: '14px 16px 16px',
+  };
+  if (err) return <div ref={panelRef} style={shell}><span style={{ fontSize: 12, color: 'var(--terracotta)' }}>{err}</span></div>;
+  if (!d) return <div ref={panelRef} style={shell}><span className="spinner" style={{ width: 14, height: 14, display: 'inline-block', borderTopColor: '#fff' }} /></div>;
+
+  const grid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 18 };
+  const s = d.session;
+  const pmsPhase = j.step === 6 || j.step === 7;
+
+  // ── Column: the robot (PMS phase) ──
+  const robotCol = (
+    <div>
+      <PanelCaps>Robot</PanelCaps>
+      {s ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+            <Dot tone={SESSION_DOT[s.status] ?? 'muted'} size={7} />
+            <span style={{ fontSize: 12.5, fontWeight: 700 }}>{SESSION_LABEL[s.status] ?? s.status}</span>
+          </div>
+          <KV k="Heartbeat" v={s.lastAliveAt ? `${age(s.lastAliveAt)} ago` : 'never'} tone={s.lastAliveAt && (Date.now() - new Date(s.lastAliveAt).getTime()) < 300_000 ? undefined : 'var(--terracotta)'} />
+          <KV k="Last good read" v={s.lastSuccessfulReadAt ? `${age(s.lastSuccessfulReadAt)} ago` : 'none yet'} />
+          <KV k="AI spend today" v={`${usdFromMicros(s.dailySpendMicros)} / ${usdFromMicros(s.capMicros)}`} tone={s.dailySpendMicros > s.capMicros * 0.8 ? 'var(--gold)' : undefined} />
+          <KV k="PMS playbook" v={d.knowledge ? `v${d.knowledge.version} active` : 'not learned yet'} tone={d.knowledge ? undefined : 'var(--teal)'} />
+          <KV k="Restarts · fails" v={`${s.restartCount} · ${s.readFailureStreak}`} tone={s.readFailureStreak > 0 ? 'var(--gold)' : undefined} />
+          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+            {s.status === 'paused_mfa' && <Btn size="sm" variant="terracotta" href={`/admin/mfa-resume/${propertyId}`}>Enter 2FA code</Btn>}
+            {s.status === 'paused_cost_cap' && <Btn size="sm" variant="forest" onClick={() => void act('reset_cost_cap')} disabled={busy !== null}>{busy === 'reset_cost_cap' ? '…' : 'Reset cap'}</Btn>}
+            {(s.status === 'stopped' || s.status === 'failed_restart' || s.status === 'paused_circuit_breaker') && <Btn size="sm" variant="forest" onClick={() => void act('restart')} disabled={busy !== null}>{busy === 'restart' ? '…' : 'Restart'}</Btn>}
+            {(s.status === 'alive' || s.status === 'starting') && <Btn size="sm" variant="ghost" onClick={() => void act('stop')} disabled={busy !== null} style={{ color: '#fff', borderColor: dim(.25) }}>{busy === 'stop' ? '…' : 'Stop'}</Btn>}
+            <Btn size="sm" variant="ghost" href="/admin/property-sessions" style={{ color: dim(.7), borderColor: dim(.2) }}>Robot console</Btn>
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>
+          No robot yet — it spawns the moment they save their PMS login.
+        </div>
+      )}
+    </div>
+  );
+
+  // ── Column: the 5 feeds (PMS phase) ──
+  const feedsCol = (
+    <div>
+      <PanelCaps>Feeds · live every ~30s</PanelCaps>
+      {d.feeds.map((f) => {
+        const t = feedTone(f.lastSyncedAt);
+        return (
+          <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+            <Dot tone={t.tone} size={6} />
+            <span style={{ fontSize: 11.5, color: dim(.85), flex: 1, minWidth: 0 }}>{f.label}{f.hasError ? ' ⚠' : ''}</span>
+            <span className="mono" style={{ fontSize: 9.5, color: t.tone === 'muted' ? dim(.35) : `var(--${t.tone})` }}>{t.text}</span>
+          </div>
+        );
+      })}
+      {d.feeds.some((f) => f.hasError) && <div style={{ fontSize: 10, color: 'var(--gold)', marginTop: 6 }}>⚠ bad read — kept the last good numbers</div>}
+    </div>
+  );
+
+  // ── Column: needs-you + last hiccup (PMS phase) ──
+  const attentionCol = (
+    <div>
+      <PanelCaps>Attention</PanelCaps>
+      {d.mapperJob && (
+        <NoteBox tone="teal">
+          Learning this PMS — attempt {d.mapperJob.attempts || 1}/{d.mapperJob.maxAttempts} · {usdFromMicros(d.mapperJob.costMicros)} so far
+          <div style={{ marginTop: 7 }}><Btn size="sm" variant="ghost" href={`/admin/properties/mapper/${d.mapperJob.id}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Watch it learn →</Btn></div>
+        </NoteBox>
+      )}
+      {j.needsYou && (
+        <NoteBox tone="terracotta">
+          {j.sub}
+          <div style={{ marginTop: 7 }}><Btn size="sm" variant="terracotta" href={j.href}>Fix it →</Btn></div>
+        </NoteBox>
+      )}
+      {d.lastHiccup
+        ? <NoteBox tone="gold"><span className="mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--gold)' }}>LAST HICCUP · </span>{d.lastHiccup}</NoteBox>
+        : (!j.needsYou && !d.mapperJob && <NoteBox tone="forest">Running clean — no hiccups.</NoteBox>)}
+    </div>
+  );
+
+  // ── Column: who is onboarding (wizard phase) ──
+  const personCol = (
+    <div>
+      <PanelCaps>Who</PanelCaps>
+      {d.owner ? (
+        <>
+          <KV k="Name" v={d.owner.name ?? '—'} />
+          <KV k="Email" v={d.owner.email ?? '—'} />
+          <KV k="Phone" v={d.owner.phone ?? '—'} />
+        </>
+      ) : (
+        <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No account yet — they haven’t finished step 2.</div>
+      )}
+      <KV k="Invited" v={`${age(d.property.createdAt)} ago`} />
+    </div>
+  );
+
+  // ── Column: what they've entered so far (wizard phase) ──
+  const services = d.property.servicesEnabled
+    ? Object.entries(d.property.servicesEnabled).filter(([, on]) => on).map(([k]) => k.replace(/_/g, ' '))
+    : [];
+  const enteredCol = (
+    <div>
+      <PanelCaps>Entered so far</PanelCaps>
+      <KV k="Hotel" v={d.property.name ?? '—'} />
+      <KV k="Rooms" v={d.property.totalRooms ?? '—'} />
+      <KV k="Brand" v={d.property.brand ?? '—'} />
+      <KV k="Timezone" v={d.property.timezone ?? '—'} />
+      <KV k="PMS" v={d.property.pmsType ?? 'not picked yet'} />
+      <KV k="Services" v={services.length ? services.join(', ') : '—'} />
+    </div>
+  );
+
+  // ── Column: team (steps 8-9) ──
+  const teamCol = (
+    <div>
+      <PanelCaps>Team · {d.staff.length}</PanelCaps>
+      {d.staff.length === 0
+        ? <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No staff added yet.</div>
+        : d.staff.slice(0, 8).map((m, i) => <KV key={i} k={m.name} v={m.department ?? '—'} />)}
+      {d.staff.length > 8 && <div className="mono" style={{ fontSize: 9.5, color: dim(.4), marginTop: 4 }}>+{d.staff.length - 8} more</div>}
+    </div>
+  );
+
+  return (
+    <div ref={panelRef} style={shell}>
+      <div style={grid}>
+        {pmsPhase
+          ? <>{robotCol}{feedsCol}{attentionCol}</>
+          : j.step >= 8
+            ? <>{teamCol}{robotCol}{feedsCol}</>
+            : <>{personCol}{enteredCol}{attentionCol}</>}
+      </div>
+    </div>
   );
 }
 
@@ -395,26 +629,6 @@ function BayProspect({ p, onSaved }: { p: Prospect; onSaved: () => Promise<void>
       </button>
       {open && <ProspectModal p={p} onClose={() => setOpen(false)} onSaved={onSaved} />}
     </>
-  );
-}
-
-// ── Chip detail modal (light card, dark backdrop) ───────────────────────
-function BayDetail({ r, onClose }: { r: LaneRow; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { riseIn(ref.current, { dy: 30, dur: 460 }); }, []);
-  const help = !!r.kind;
-  return (
-    <Backdrop onClose={onClose}>
-      <div ref={ref} onClick={(e) => e.stopPropagation()} style={modalCard}>
-        <Caps>{r.pms ?? 'No PMS yet'}</Caps>
-        <h3 style={{ fontFamily: FONT_SERIF, fontSize: 26, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 6px' }}><span style={{ fontStyle: 'italic' }}>{r.name}</span></h3>
-        <p style={{ fontSize: 13, color: 'var(--dim)', lineHeight: 1.5, marginBottom: 18 }}>{r.sub ?? 'In onboarding.'}</p>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Btn variant={help ? 'terracotta' : 'primary'} href={r.href}>{help ? CTA_LABEL[r.kind!] : 'Property page →'}</Btn>
-          <Btn variant="ghost" onClick={onClose}>Close</Btn>
-        </div>
-      </div>
-    </Backdrop>
   );
 }
 
