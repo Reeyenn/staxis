@@ -26,6 +26,11 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChevronLeft, RefreshCw, ShieldCheck, Mail, ExternalLink } from 'lucide-react';
 import { FONT_SERIF, FONT_MONO, Caps, Pill, Btn } from '@/app/admin/_components/studio/kit';
+// The dark studio palette (--ink/--gold/--forest/--serif/--mono) + kit helper
+// classes live here, scoped under `.admin-studio`. This page renders OUTSIDE
+// the StudioShell, so it must import the stylesheet itself or the wrapper's
+// className="admin-studio" resolves every var to nothing (white-on-white).
+import '@/app/admin/_components/studio/studio.css';
 
 const dim = (a: number) => `rgba(255,255,255,${a})`;
 
