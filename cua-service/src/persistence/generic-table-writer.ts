@@ -105,7 +105,10 @@ interface ValidationOutcome {
   rejected: Array<{ rowIndex: number; row: Record<string, unknown>; reason: string }>;
 }
 
-function validateRows(
+// Exported for unit tests (fix/mapper-field-contract) — proves a learned
+// column map produces rows that pass/fail both validation layers offline,
+// without a DB round-trip through saveGenericTable.
+export function validateRows(
   rows: Array<Record<string, unknown>>,
   descriptor: TableSchemaDescriptor,
 ): ValidationOutcome {
