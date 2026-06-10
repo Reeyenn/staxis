@@ -57,12 +57,22 @@ interface WizardStateResponse {
 }
 
 const REGION_OPTIONS = ['US-East', 'US-Central', 'US-Mountain', 'US-West', 'Hawaii', 'Other'];
-const CLIMATE_OPTIONS = ['Tropical', 'Subtropical', 'Temperate', 'Cold'];
 const PROPERTY_KINDS = [
   { value: 'limited_service', label: 'Limited service' },
+  { value: 'select_service', label: 'Select service' },
   { value: 'full_service', label: 'Full service' },
-  { value: 'extended_stay', label: 'Extended stay' },
-  { value: 'resort', label: 'Resort' },
+];
+
+// US timezones only (no international hotels yet) — a dropdown beats
+// free-typing an IANA string the owner has to get exactly right.
+const US_TIMEZONES = [
+  { value: 'America/New_York', label: 'Eastern (New York)' },
+  { value: 'America/Chicago', label: 'Central (Chicago)' },
+  { value: 'America/Denver', label: 'Mountain (Denver)' },
+  { value: 'America/Phoenix', label: 'Mountain — no DST (Phoenix)' },
+  { value: 'America/Los_Angeles', label: 'Pacific (Los Angeles)' },
+  { value: 'America/Anchorage', label: 'Alaska (Anchorage)' },
+  { value: 'Pacific/Honolulu', label: 'Hawaii (Honolulu)' },
 ];
 
 function deriveSizeTier(totalRooms: number | null): string {
@@ -400,8 +410,33 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
     if (!pendingEmail) { setErr('Missing email — refresh and try again.'); return; }
     setSubmitting(true);
     try {
-      const { error } = await supabase.auth.verifyOtp({ email: pendingEmail, token: otp, type: 'email' });
-      if (error) { setErr(error.message); return; }
+      const { data, error } = await supabase.auth.verifyOtp({ email: pendingEmail, token: otp, type: 'email' });
+      if (error || !data.session) { setErr(error?.message ?? 'Verification failed — try the code again.'); return; }
+
+      // CRITICAL: trust this device, exactly like /signin/verify does.
+      // The OTP gives a valid session, but the server's 2FA layer
+      // (requireSession) ALSO requires a `staxis_device` cookie on the
+      // first authenticated save (step 4's propertyUpdates PATCH). Without
+      // this call the cookie is never issued, requireSession returns
+      // requires_2fa → fetchWithAuth signs the user out ("Your session
+      // ended") mid-wizard. The onboarding flow skipped this step entirely.
+      try {
+        await fetch('/api/auth/trust-device', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${data.session.access_token}` },
+          credentials: 'include',
+        });
+        // Refresh so the JWT carries the mfa_verified claim the auth hook
+        // mints (needed for the dashboard's RLS/realtime reads later).
+        await supabase.auth.refreshSession();
+      } catch (trustErr) {
+        // Surface, don't swallow — a failed trust here is exactly what
+        // caused the silent "session ended" before.
+        setErr('Could not finish securing your session — refresh and re-enter the code.');
+        console.warn('onboard trust-device failed', trustErr);
+        return;
+      }
+
       await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -449,7 +484,6 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
   const [brand, setBrand] = useState(d?.brand ?? '');
   const [propertyKind, setPropertyKind] = useState(d?.propertyKind ?? 'limited_service');
   const [region, setRegion] = useState('');
-  const [climateZone, setClimateZone] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -472,7 +506,6 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
             brand: brand.trim() || null,
             property_kind: propertyKind,
             region: region || null,
-            climate_zone: climateZone || null,
             size_tier: deriveSizeTier(totalRooms),
           },
         }),
@@ -503,7 +536,9 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
         <input className="input" type="number" value={totalRooms || ''} min={1} onChange={(e) => setTotalRooms(Number(e.target.value) || 0)} />
       </Field>
       <Field label="Timezone *">
-        <input className="input" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="America/Chicago" />
+        <select className="input" value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+          {US_TIMEZONES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
       </Field>
       <Field label="Brand (optional)">
         <input className="input" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="e.g. Hilton, Marriott, IHG" />
@@ -517,12 +552,6 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
         <select className="input" value={region} onChange={(e) => setRegion(e.target.value)}>
           <option value="">— Select —</option>
           {REGION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-        </select>
-      </Field>
-      <Field label="Climate zone (optional)">
-        <select className="input" value={climateZone} onChange={(e) => setClimateZone(e.target.value)}>
-          <option value="">— Select —</option>
-          {CLIMATE_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </Field>
       <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '12px' }}>
