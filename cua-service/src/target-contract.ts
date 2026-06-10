@@ -41,7 +41,12 @@ export interface TargetColumnContract {
   table: string;
   /** Descriptor columns the model MUST learn (required & scraped, snake_case). */
   requiredLearned: string[];
-  /** Descriptor columns worth learning but not required (never gate/re-ask on these). */
+  /** Descriptor columns worth learning but not required (never gate/re-ask on
+   *  these). This is a DESCRIPTOR RECORD, not a prompt list — numeric/boolean
+   *  optionals (e.g. num_nights, rate_per_night_cents) must NOT be added to a
+   *  target's goal-prose column list until value-normalization parsers exist,
+   *  because the DOM/CSV extractors return raw strings and validateRows rejects
+   *  the WHOLE row on a string-for-integer/boolean type mismatch (Wave-2). */
   optionalLearned: string[];
 }
 

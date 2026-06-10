@@ -200,6 +200,19 @@ describe('room_status + work_orders snake_case rows pass; raw values document Wa
     assert.equal(v.valid.length, 0);
     assert.match(v.rejected[0]!.reason, /out_of_order/);
   });
+
+  test('GAP (Wave-2): a string num_nights rejects the WHOLE reservation row — why numeric optionals are not prompted', () => {
+    // Raw DOM/CSV scrape gives "2" (string); descriptor num_nights is integer →
+    // type mismatch rejects the entire row, not just the field. This is why
+    // num_nights was removed from the arrivals/departures goal prose.
+    const row = {
+      property_id: PID, pms_reservation_id: 'CONF-2', guest_name: 'Jane Doe',
+      arrival_date: '2026-06-10', departure_date: '2026-06-12', num_nights: '2',
+    };
+    const v = validateRows([row], RESERVATIONS_DESCRIPTOR);
+    assert.equal(v.valid.length, 0);
+    assert.match(v.rejected[0]!.reason, /num_nights/);
+  });
 });
 
 // ─── Test 4 — contract helper unit behavior ──────────────────────────────────

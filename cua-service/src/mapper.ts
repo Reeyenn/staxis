@@ -2263,8 +2263,14 @@ const ARRIVALS_GOAL =
   `  - arrival_date (required)\n` +
   `  - departure_date (required)\n` +
   `  - room_number (optional — may be blank before assignment)\n` +
-  `  - num_nights (optional — number of nights)\n` +
   `  - status (optional — reservation status if shown)`;
+// NOTE: numeric optionals (num_nights, rate_per_night_cents) are intentionally
+// NOT prompted for here. The DOM/CSV extractors return raw strings and no value
+// parser is wired yet (recipe-adapter never sets field.parser), so a learned
+// `num_nights` selector would feed validateRows a string for an `integer`
+// descriptor column → the WHOLE reservation row is rejected (re-creating the
+// zero-rows bug for an OPTIONAL field the gate doesn't even check). Re-add only
+// once value-normalization parsers land (Wave-2). Codex review finding.
 
 const DEPARTURES_GOAL =
   `Find today's DEPARTURES list — sometimes called "Departures", "Check-Outs", ` +
@@ -2277,8 +2283,9 @@ const DEPARTURES_GOAL =
   `  - guest_name (required)\n` +
   `  - arrival_date (required)\n` +
   `  - departure_date (required)\n` +
-  `  - room_number (optional)\n` +
-  `  - num_nights (optional — number of nights)`;
+  `  - room_number (optional)`;
+// num_nights deliberately omitted — see the note on ARRIVALS_GOAL (numeric
+// optionals need a value parser before they're safe to learn).
 
 // STAFF_GOAL removed in v8 Phase D.1 along with the getStaffRoster target.
 
