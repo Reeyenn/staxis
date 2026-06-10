@@ -175,10 +175,33 @@ export interface TableRowHint {
   skipSelector?: string;
 }
 
+/** A learned STRUCTURED-DATA endpoint — the JSON the page itself fetches under
+ *  the hood. The mapper emits this (mode:'api') only after capturing the call
+ *  AND verifying its rows reconcile with the DOM-scraped "oracle" for the same
+ *  feed (silent-wrong-data guard). recipe-adapter translates it to a runtime
+ *  fetch_api source (extractors/fetch-api.ts), replayed via
+ *  page.evaluate(fetch,{credentials:'include'}) every poll (cookies ride along). */
+export interface ApiHint {
+  /** Endpoint URL the page calls (same-origin; replayed with the live session). */
+  url: string;
+  method: 'GET' | 'POST';
+  /** POST body. MAY contain {today} / {date} placeholders the runtime re-templates
+   *  to the current date each poll — the stale-date guard (a frozen date silently
+   *  returns yesterday's data). GET date params live in the url the same way. */
+  bodyTemplate?: string;
+  headers?: Record<string, string>;
+  /** Dot-path to the row array inside the JSON (e.g. 'data.reservations').
+   *  Empty = response is already the array, or a {rows|results|data} envelope. */
+  jsonPath?: string;
+  /** our snake_case descriptor column name → the JSON key on each row. */
+  columns: Record<string, string>;
+}
+
 export type ParseHint =
   | { mode: 'csv';   hint: CsvHint }
   | { mode: 'table'; hint: TableRowHint }
-  | { mode: 'inline_text'; fields: Record<string, string> };
+  | { mode: 'inline_text'; fields: Record<string, string> }
+  | { mode: 'api';   hint: ApiHint };
 
 export interface ActionRecipe {
   steps: RecipeStep[];

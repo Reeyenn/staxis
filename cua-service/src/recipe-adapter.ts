@@ -51,14 +51,15 @@ interface ActionRoute {
   keys: string[];
   writeStrategy: WriteStrategy;
   snapshotScope: SnapshotScope;
-  /** Extraction mode the legacy ParseHint implies. */
-  modeFromParseHint(parseHintMode: 'csv' | 'table' | 'inline_text'): ExtractionMode;
+  /** Extraction mode the ParseHint implies. */
+  modeFromParseHint(parseHintMode: 'csv' | 'table' | 'inline_text' | 'api'): ExtractionMode;
 }
 
-const PARSE_HINT_TO_MODE: Record<'csv' | 'table' | 'inline_text', ExtractionMode> = {
+const PARSE_HINT_TO_MODE: Record<'csv' | 'table' | 'inline_text' | 'api', ExtractionMode> = {
   csv:         'csv_download',
   table:       'dom_table',
   inline_text: 'dom_inline',
+  api:         'fetch_api',
 };
 
 const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
@@ -248,6 +249,8 @@ export function actionRecipeToTableTemplate(
   const mode = route.modeFromParseHint(action.parse.mode);
   let selectors: Record<string, string> = {};
   let columns: Record<string, string> = {};
+  let apiUrl: string | undefined;
+  let extra: Record<string, unknown> | undefined;
   if (action.parse.mode === 'csv') {
     columns = action.parse.hint.columns;
     if (action.parse.hint.requiredColumn) {
@@ -261,15 +264,30 @@ export function actionRecipeToTableTemplate(
     }
   } else if (action.parse.mode === 'inline_text') {
     columns = action.parse.fields;
+  } else if (action.parse.mode === 'api') {
+    // Structured endpoint (mode:'api') → runtime fetch_api source. FOUNDATION
+    // SKELETON — Chat 1 (Plumbing) hardens: jsonPath wiring into the extractor,
+    // per-poll date/param re-templating, header/CSRF freshness, and tests.
+    const h = action.parse.hint;
+    apiUrl = h.url;
+    columns = h.columns;
+    extra = {
+      method: h.method,
+      ...(h.bodyTemplate ? { body: h.bodyTemplate } : {}),
+      ...(h.headers ? { headers: h.headers } : {}),
+      ...(h.jsonPath ? { jsonPath: h.jsonPath } : {}),
+      expectJson: true,
+    };
   }
 
   // Single source for non-drill-down targets.
   const sources: TableTemplateSource[] = [{
     name: 'primary',
-    url: sourceUrl,
+    url: apiUrl ?? sourceUrl,
     mode,
     selectors,
     columns,
+    ...(extra ? { extra } : {}),
   }];
   const fields: Record<string, TableTemplateField> = {};
   for (const [col, selectorOrColumn] of Object.entries(columns)) {
