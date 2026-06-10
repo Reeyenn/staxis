@@ -73,12 +73,13 @@ const CLICKABLE_SELECTOR = [
  * Adversarial review P1 — exclude privacy-sensitive inputs from SoM marking.
  *
  * Uses the SHARED `SENSITIVE_FIELD_SELECTOR` (./screenshot-privacy.ts) — the
- * exact list `captureHardenedScreenshot` paints opaque overlays over — so the
- * marking-exclusion list and the screenshot-redaction list can never drift.
+ * exact list `captureHardenedScreenshot` masks (blacks out) in screenshots —
+ * so the marking-exclusion list and the screenshot-redaction list can't drift.
  *
  * Why exclude them at the MARKING layer rather than just the visual layer:
- * even with the privacy overlay on top, the badge entry in BadgeInfo still
- * points at the input's center coordinate. An agent (or a future prompt-
+ * even though the screenshot blacks out the field, the badge entry in
+ * BadgeInfo still points at the input's center coordinate. An agent (or a
+ * future prompt-
  * injection) requesting `left_click {text: "#N"}` for that badge would
  * focus the password field — at which point a `type` action could write
  * into it. Cleanest fix: never enroll the field in the badge map at all.

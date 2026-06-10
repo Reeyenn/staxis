@@ -17,15 +17,15 @@
  *   - claude-opus-4-5
  *
  * Privacy hardening: every screenshot goes through
- * `captureHardenedScreenshot` (./screenshot-privacy.ts), which paints opaque
- * overlays over `input[type="password"]`, `[data-sensitive]`, `.ssn`,
- * `.credit-card` in EVERY frame, GATES the capture on those overlays
- * provably covering each visible field (retry-after-settle on a navigation
- * race), and WITHHOLDS the frame entirely if it can't guarantee redaction —
- * so passwords + credential PII never reach the Anthropic conversation
- * history, the realtime broadcast channel, or the help-request DB row. Guest
- * names/emails in ordinary table text are intentionally NOT masked (the agent
- * must read tables to learn columns) — see screenshot-privacy.ts.
+ * `captureHardenedScreenshot` (./screenshot-privacy.ts), which uses
+ * Playwright's native masking to black out `input[type="password"]`,
+ * `[data-sensitive]`, `.ssn`, `.credit-card` in EVERY frame as part of the
+ * capture itself (so there is no unmasked window), retries-after-settle on a
+ * navigation race, and WITHHOLDS the frame entirely if it can't produce a
+ * masked image — so passwords + credential PII never reach the Anthropic
+ * conversation history, the realtime broadcast channel, or the help-request DB
+ * row. Guest names/emails in ordinary table text are intentionally NOT masked
+ * (the agent must read tables to learn columns) — see screenshot-privacy.ts.
  *
  * Navigation: no `navigate` action in the vision tool. The agent navigates
  * by clicking visible menu links / typing into input fields.
@@ -399,21 +399,21 @@ export async function executeVisionAction(
     switch (action.action) {
       case 'screenshot': {
         // Set-of-Mark visual grounding (Plan v9 F1): draw numbered badges
-        // on every clickable element BEFORE the privacy overlay + screenshot,
-        // stash the badge map so the next left_click can resolve `#N`.
+        // on every clickable element BEFORE the screenshot, stash the badge
+        // map so the next left_click can resolve `#N`.
         //
         // Order matters:
         //   1. Clear any leftover SoM badges from a prior screenshot.
         //   2. Apply SoM — captures the badge map, paints the page.
-        //   3. captureHardenedScreenshot paints privacy overlays (z-index
-        //      2147483647 vs SoM's 2147483646, so passwords stay blanked even
-        //      if a SoM badge overlaps a sensitive input), GATES the capture
-        //      on verified coverage across every frame, and clears its own
-        //      privacy overlays afterward. SoM badges (a separate marker) are
-        //      deliberately left for the agent's next screenshot.
-        //   4. If it returns null, redaction couldn't be guaranteed (e.g. the
-        //      page was mid-navigation): withhold the frame — send NO image —
-        //      and tell the agent to retry, rather than risk leaking an
+        //   3. captureHardenedScreenshot takes the screenshot with Playwright's
+        //      native mask, blacking out every credential/SSN/CC field (all
+        //      frames) directly on the output image — drawn over everything,
+        //      so a SoM badge overlapping a sensitive input is covered too.
+        //      SoM badges (separate DOM, not sensitive) are deliberately left
+        //      for the agent's next screenshot.
+        //   4. If it returns null, a reliably-masked image couldn't be produced
+        //      (e.g. the page was mid-navigation): withhold the frame — send NO
+        //      image — and tell the agent to retry, rather than risk leaking an
         //      unredacted screenshot to Claude.
         await clearSetOfMark(page);
         const badges = await applySetOfMark(page);

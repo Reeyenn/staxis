@@ -312,38 +312,29 @@ describe('judgeStepOutcome — cost logging', () => {
   });
 });
 
-// ─── captureScreenshotForCritic — privacy + cleanup invariants ────────────
+// ─── captureScreenshotForCritic — masked-capture contract ─────────────────
 //
-// captureScreenshotForCritic now delegates to the shared, frame-aware
-// captureHardenedScreenshot (screenshot-privacy.ts), so the fake Page exposes
-// frames()/mainFrame()/waitForTimeout and dispatches each frame.evaluate by
-// inspecting the function source: 'appendChild' → paint, 'remove(' → cleanup,
-// else → verify (here always reports 0 uncovered = coverage verified). The
-// race / drift / fail-closed / iframe cases live in screenshot-privacy.test.ts;
-// here we pin the critic-facing contract: base64-on-success, null-on-failure,
-// cleanup-always-runs.
+// captureScreenshotForCritic now delegates to the shared
+// captureHardenedScreenshot (screenshot-privacy.ts), which takes the screenshot
+// with Playwright's native per-frame `mask`. The fake Page records whether each
+// screenshot() carried a mask, so we can prove the critic never captures a bare
+// frame. (The full race / iframe / deadline / never-reject matrix lives in
+// screenshot-privacy.test.ts.) Here we pin the critic-facing contract:
+// base64-on-success, null-on-failure, and always-masked.
 
 interface FakePageState {
-  ops: Array<string>; // 'paint' | 'verify' | 'cleanup'
   screenshotShouldThrow?: boolean;
   screenshotCalled?: boolean;
+  lastMaskLen?: number;
 }
 
 function fakePage(state: FakePageState): Page {
-  const frame = {
-    evaluate: async (fn: unknown, _arg?: unknown) => {
-      const src = String(fn);
-      if (src.includes('appendChild')) { state.ops.push('paint'); return undefined; }
-      if (src.includes('remove(')) { state.ops.push('cleanup'); return undefined; }
-      state.ops.push('verify');
-      return 0; // 0 uncovered sensitive fields → coverage verified
-    },
-  };
+  const frames = [{ locator: (sel: string) => ({ sel }) }];
   return {
-    frames: () => [frame],
-    mainFrame: () => frame,
-    screenshot: async () => {
+    frames: () => frames,
+    screenshot: async (opts: { mask?: unknown[] }) => {
       state.screenshotCalled = true;
+      state.lastMaskLen = Array.isArray(opts?.mask) ? opts.mask.length : -1;
       if (state.screenshotShouldThrow) throw new Error('screenshot failed');
       // 1×1 transparent PNG bytes.
       return Buffer.from(TINY_PNG_B64, 'base64');
@@ -353,35 +344,21 @@ function fakePage(state: FakePageState): Page {
 }
 
 describe('captureScreenshotForCritic — happy path', () => {
-  test('returns a base64 PNG string', async () => {
-    const state: FakePageState = { ops: [] };
+  test('returns a base64 PNG string, captured WITH a mask', async () => {
+    const state: FakePageState = {};
     const result = await captureScreenshotForCritic(fakePage(state));
     assert.ok(result, 'returns base64 string on success');
     assert.equal(typeof result, 'string');
     assert.equal(state.screenshotCalled, true);
-  });
-
-  test('paints overlays, verifies coverage, then cleans up (single attempt)', async () => {
-    const state: FakePageState = { ops: [] };
-    await captureScreenshotForCritic(fakePage(state));
-    assert.deepEqual(state.ops, ['paint', 'verify', 'cleanup'],
-      'add-overlay → verify-coverage → cleanup; missing the cleanup leaves stale overlays');
+    assert.equal(state.lastMaskLen, 1, 'critic screenshot must be masked, never bare');
   });
 });
 
 describe('captureScreenshotForCritic — failure modes', () => {
-  test('returns null when screenshot itself throws', async () => {
-    const state: FakePageState = { ops: [], screenshotShouldThrow: true };
+  test('returns null when the (masked) screenshot throws', async () => {
+    const state: FakePageState = { screenshotShouldThrow: true };
     const result = await captureScreenshotForCritic(fakePage(state));
     assert.equal(result, null);
-  });
-
-  test('still runs cleanup even if screenshot throws', async () => {
-    const state: FakePageState = { ops: [], screenshotShouldThrow: true };
-    await captureScreenshotForCritic(fakePage(state));
-    assert.ok(state.ops.includes('cleanup'),
-      'cleanup must run in the finally block — leaking overlays would block future clicks');
-    assert.ok(!state.ops.includes('verify'),
-      'verify is skipped when the capture itself threw (no buffer to verify)');
+    assert.equal(state.lastMaskLen, 1, 'even the doomed attempt was masked, never bare');
   });
 });

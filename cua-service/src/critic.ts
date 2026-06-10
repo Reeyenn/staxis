@@ -230,12 +230,12 @@ async function logCriticUsage(
  *
  * Thin wrapper over the shared `captureHardenedScreenshot`
  * (./screenshot-privacy.ts) — the single source of truth for masking
- * credential/SSN/CC fields (every frame), gating the capture on verified
- * coverage, and withholding the frame if redaction can't be guaranteed.
- * Returns base64 PNG on success, or `null` when no usable redacted frame
- * could be produced (navigation race, coverage miss, screenshot error). The
- * caller (mapper.ts) already fail-opens on `null` — it skips the critic check
- * for that one action; the critic itself is never disabled by this.
+ * credential/SSN/CC fields (every frame) as part of the capture, and
+ * withholding the frame if a masked image can't be produced. Returns base64
+ * PNG on success, or `null` when no usable redacted frame could be produced
+ * (navigation race, screenshot error, deadline). The caller (mapper.ts)
+ * already fail-opens on `null` — it skips the critic check for that one
+ * action; the critic itself is never disabled by this.
  */
 export async function captureScreenshotForCritic(page: Page): Promise<string | null> {
   const buf = await captureHardenedScreenshot(page);
