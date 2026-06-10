@@ -233,6 +233,7 @@ export function OnboardingSurface() {
           </h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Btn variant="ghost" size="lg" href="/admin/live-mapper" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>Live Mapper</Btn>
           <Btn variant="ghost" size="lg" href="/admin/pms-inbox" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>PMS inbox</Btn>
           <Btn variant="ghost" size="lg" onClick={() => setCreateOpen(true)} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>+ New hotel</Btn>
         </div>
