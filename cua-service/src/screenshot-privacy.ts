@@ -77,9 +77,9 @@ const MASK_COLOR = '#000000';
  * native mask covers each sensitive element's bounding box; this stops the
  * element from painting credential pixels OUTSIDE that box — overflowing text,
  * text/box shadows, filters (glow), and ::before/::after pseudo-content — so
- * the box-shaped mask is actually sufficient. Applies to the top document only
- * (CSS can't cross frame boundaries); for sub-frames the bounding-box mask
- * stands alone, an accepted narrow residual for paint-outside inside iframes.
+ * the box-shaped mask is actually sufficient. Playwright's `style` pierces the
+ * Shadow DOM AND inner frames, so the suppression applies in sub-frames too
+ * (verified empirically against a cross-origin iframe).
  */
 const REDACTION_STYLE =
   `${SENSITIVE_FIELD_SELECTOR}{overflow:hidden !important;text-shadow:none !important;` +
@@ -104,37 +104,50 @@ function sensitiveMaskLocators(frames: ReadonlyArray<Frame>): Locator[] {
   return frames.map((frame) => frame.locator(SENSITIVE_FIELD_SELECTOR));
 }
 
-async function captureHardenedScreenshotInner(page: Page): Promise<Buffer | null> {
+async function captureHardenedScreenshotInner(page: Page, deadlineAt: number): Promise<Buffer | null> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // Cooperative deadline: never START a new attempt past the hard cap, so the
+    // loop can't keep taking screenshots in the background after withTimeout
+    // already returned null to the caller.
+    if (Date.now() >= deadlineAt) break;
+
+    // Frame-mutation guard (TOCTOU): watch the whole frame tree for the entire
+    // capture. If any frame attaches / navigates / detaches while the screenshot
+    // is being taken, we can't prove the image is fully masked (an iframe not in
+    // the mask set, or a frame that rendered a credential mid-navigation, could
+    // be in the pixels) — so discard and retry. This catches attach-paint-detach
+    // and same-frame navigation, which a before/after frame-list diff misses.
+    let frameMutated = false;
+    const onMutate = () => {
+      frameMutated = true;
+    };
+    page.on('frameattached', onMutate);
+    page.on('framenavigated', onMutate);
+    page.on('framedetached', onMutate);
     try {
-      // Snapshot the frame tree, build a mask for exactly those frames, and
-      // capture. The mask + style are intrinsic to this single page.screenshot
-      // call — there is no code path that takes a screenshot WITHOUT them, so
-      // either we get a redacted image or we throw and retry/withhold.
-      const framesBefore = page.frames();
+      // The mask + style are intrinsic to this single page.screenshot call —
+      // there is no code path that takes a screenshot WITHOUT them, so either we
+      // get a redacted image or we throw / discard and retry/withhold.
       const buf = await page.screenshot({
         fullPage: false,
-        mask: sensitiveMaskLocators(framesBefore),
+        mask: sensitiveMaskLocators(page.frames()),
         maskColor: MASK_COLOR,
         style: REDACTION_STYLE,
         timeout: SCREENSHOT_TIMEOUT_MS,
       });
-      // New-frame guard (TOCTOU): if an iframe attached DURING the capture it
-      // wasn't in the mask set, so we can't prove its credentials were masked.
-      // Discard and retry — the next attempt's snapshot includes it.
-      const before = new Set(framesBefore);
-      if (page.frames().some((f) => !before.has(f))) {
-        log.warn('screenshot-privacy: a frame attached during capture — discarding for retry');
-      } else {
-        return buf;
-      }
+      if (!frameMutated) return buf;
+      log.warn('screenshot-privacy: frame tree mutated during capture — discarding for retry');
     } catch (err) {
       log.warn('screenshot-privacy: masked screenshot failed — will retry/withhold', {
         attempt,
         message: (err as Error).message,
       });
+    } finally {
+      page.off('frameattached', onMutate);
+      page.off('framenavigated', onMutate);
+      page.off('framedetached', onMutate);
     }
-    if (attempt < MAX_ATTEMPTS) {
+    if (attempt < MAX_ATTEMPTS && Date.now() < deadlineAt) {
       // Let an in-flight navigation commit + render before the next attempt.
       await page.waitForTimeout(SETTLE_MS).catch(() => {});
     }
@@ -174,10 +187,14 @@ export async function captureHardenedScreenshot(
   page: Page,
   opts?: { deadlineMs?: number },
 ): Promise<Buffer | null> {
+  const deadlineMs = opts?.deadlineMs ?? DEADLINE_MS;
   try {
+    // The inner loop honours `deadlineAt` cooperatively (won't start a new
+    // attempt past it); withTimeout is the hard backstop that guarantees the
+    // CALLER gets `null` promptly even if one in-flight screenshot is finishing.
     return await withTimeout(
-      captureHardenedScreenshotInner(page),
-      opts?.deadlineMs ?? DEADLINE_MS,
+      captureHardenedScreenshotInner(page, Date.now() + deadlineMs),
+      deadlineMs,
       null,
     );
   } catch (err) {

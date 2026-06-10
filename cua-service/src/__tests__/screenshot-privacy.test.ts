@@ -45,11 +45,11 @@ interface ScreenshotCall {
 }
 
 interface PageState {
-  frames: number;                 // how many frames page.frames() returns initially
+  frames: number;                 // how many frames page.frames() returns
   framesThrows?: boolean;         // page.frames() throws (closed page)
   screenshotThrowFirst?: number;  // throw on the first N screenshot calls
   hangScreenshot?: boolean;       // screenshot never resolves (deadline test)
-  addFrameOnScreenshot?: number;  // simulate an iframe attaching DURING the first N captures
+  mutateFrameOnScreenshot?: number; // fire a frame-mutation event DURING the first N captures
   screenshotCalls: number;
   calls: ScreenshotCall[];        // options every screenshot() saw
   waitCalls: number;
@@ -65,12 +65,18 @@ function frameStub(i: number) {
 }
 
 function makeFakePage(st: PageState): Page {
-  let frameObjs = Array.from({ length: st.frames }, (_unused, i) => frameStub(i));
-  let nextFrameId = st.frames;
+  const frameObjs = Array.from({ length: st.frames }, (_unused, i) => frameStub(i));
+  const handlers: Record<string, Array<() => void>> = {};
   return {
     frames: () => {
       if (st.framesThrows) throw new Error('Target page, context or browser has been closed');
       return frameObjs;
+    },
+    on: (ev: string, h: () => void) => {
+      (handlers[ev] ??= []).push(h);
+    },
+    off: (ev: string, h: () => void) => {
+      handlers[ev] = (handlers[ev] ?? []).filter((x) => x !== h);
     },
     screenshot: async (opts: {
       mask?: Array<{ __sel: string }>;
@@ -88,10 +94,11 @@ function makeFakePage(st: PageState): Page {
         style: opts?.style,
       });
       if (st.hangScreenshot) return new Promise<Buffer>(() => {}); // never resolves
-      // Simulate an iframe attaching DURING this capture (after the mask set
-      // was snapshotted) — exercises the post-capture new-frame guard.
-      if (st.addFrameOnScreenshot && st.screenshotCalls <= st.addFrameOnScreenshot) {
-        frameObjs = [...frameObjs, frameStub(nextFrameId++)];
+      // Simulate a frame attaching/navigating/detaching DURING this capture —
+      // exercises the frame-mutation guard (the guard's listener is registered
+      // before this call, so firing it here flips its frameMutated flag).
+      if (st.mutateFrameOnScreenshot && st.screenshotCalls <= st.mutateFrameOnScreenshot) {
+        for (const h of handlers['frameattached'] ?? []) h();
       }
       if (st.screenshotThrowFirst && st.screenshotCalls <= st.screenshotThrowFirst) {
         throw new Error('Execution context was destroyed, most likely because of a navigation');
@@ -157,24 +164,24 @@ describe('captureHardenedScreenshot — navigation race', () => {
   });
 });
 
-describe('captureHardenedScreenshot — new-frame TOCTOU guard', () => {
-  test('an iframe attaching DURING the capture is discarded, then succeeds on retry', async () => {
-    // Frame attaches on attempt 1's capture (not in that attempt's mask set);
-    // attempt 2 snapshots the now-stable tree and returns the buffer.
-    const st = pageState({ addFrameOnScreenshot: 1 });
+describe('captureHardenedScreenshot — frame-mutation TOCTOU guard', () => {
+  test('a frame mutating DURING the capture is discarded, then succeeds on retry', async () => {
+    // A frame attaches/navigates during attempt 1's capture (so we can't trust
+    // that image); attempt 2 captures a stable tree and returns the buffer.
+    const st = pageState({ mutateFrameOnScreenshot: 1 });
     const result = await captureHardenedScreenshot(makeFakePage(st));
     assert.ok(Buffer.isBuffer(result), 'recovers once the frame tree settles');
     assert.equal(st.screenshotCalls, 2, 'first capture discarded, second kept');
     assert.ok(st.waitCalls >= 1, 'settled before retrying');
   });
 
-  test('a page that keeps attaching frames every capture → withholds (null)', async () => {
-    const st = pageState({ addFrameOnScreenshot: 99 });
+  test('a page whose frames keep mutating every capture → withholds (null)', async () => {
+    const st = pageState({ mutateFrameOnScreenshot: 99 });
     const result = await captureHardenedScreenshot(makeFakePage(st));
-    assert.equal(result, null, 'never trust a capture whose frame set changed under it');
+    assert.equal(result, null, 'never trust a capture whose frame tree changed under it');
     assert.equal(st.screenshotCalls, 3, 'bounded to MAX_ATTEMPTS');
-    // Every attempt still masked the frames it knew about — never a bare capture.
-    st.calls.forEach((c, i) => assertMaskedCall(c, st.frames + i));
+    // Every attempt was still masked — there is never a bare capture.
+    st.calls.forEach((c) => assertMaskedCall(c, st.frames));
   });
 });
 

@@ -332,6 +332,8 @@ function fakePage(state: FakePageState): Page {
   const frames = [{ locator: (sel: string) => ({ sel }) }];
   return {
     frames: () => frames,
+    on: () => {}, // frame-mutation guard registers listeners; no mutation fired here
+    off: () => {},
     screenshot: async (opts: { mask?: unknown[] }) => {
       state.screenshotCalled = true;
       state.lastMaskLen = Array.isArray(opts?.mask) ? opts.mask.length : -1;

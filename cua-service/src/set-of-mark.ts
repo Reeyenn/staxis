@@ -17,8 +17,10 @@
  *   they leak past `clearSetOfMark` (defense-in-depth — the caller is
  *   responsible for clearing, but we still want the page interactive if
  *   cleanup races a navigation).
- * - z-index is one less than the privacy-overlay z-index so password
- *   blanking still wins when both are active (privacy-first).
+ * - A very high z-index keeps badges above PMS chrome. Credential fields are
+ *   redacted separately at capture time by screenshot-privacy.ts's Playwright
+ *   mask (painted over the final image), so a badge overlapping a sensitive
+ *   input is still covered — privacy wins regardless of badge z-index.
  * - `data-staxis-som-badge` attribute scopes our DOM mutations — we never
  *   touch unrelated elements during clear.
  * - We use `document.elementsFromPoint(cx, cy)` to filter elements that
@@ -27,8 +29,8 @@
  *   modal covers half the menu — only badge what the user could click.
  * - Badge color is high-contrast pink + white text. We deliberately
  *   chose a color that's unlikely to clash with PMS UI chrome (most use
- *   blue/gray/green corporate palettes). z-index 2147483646 sits one below
- *   the privacy overlay's 2147483647.
+ *   blue/gray/green corporate palettes). z-index 2147483646 sits above page
+ *   chrome; the screenshot mask redacts credentials over the top of it.
  */
 
 import type { Page } from 'playwright';
@@ -252,7 +254,7 @@ export async function applySetOfMark(page: Page): Promise<Map<number, BadgeInfo>
           badge.style.textAlign = 'center';
           badge.style.border = '1px solid #FFFFFF';
           badge.style.boxShadow = '0 1px 2px rgba(0,0,0,0.4)';
-          badge.style.zIndex = '2147483646';  // one below the privacy overlay (2147483647)
+          badge.style.zIndex = '2147483646';  // above PMS chrome; screenshot mask redacts over it
           badge.style.pointerEvents = 'none';  // never block clicks reaching the underlying element
           badge.style.userSelect = 'none';
           document.body.appendChild(badge);
