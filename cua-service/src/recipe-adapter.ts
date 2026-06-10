@@ -38,6 +38,7 @@ import type {
   ExtractionMode,
 } from './types.js';
 import { log } from './log.js';
+import { parserForLearnedColumn } from './target-contract.js';
 
 // ─── Per-action → table mapping ───────────────────────────────────────────
 //
@@ -215,10 +216,17 @@ export function actionRecipeToTableTemplate(
   }];
   const fields: Record<string, TableTemplateField> = {};
   for (const [col, selectorOrColumn] of Object.entries(columns)) {
+    // Attach a value parser driven by the descriptor type (date→ca_date,
+    // integer→ca_integer, *_cents→ca_currency, boolean→ca_boolean_yn, enum
+    // overrides) so the DOM/CSV-scraped string is normalized to the type
+    // validateRows expects — otherwise a string for an integer/boolean/date
+    // column rejects the WHOLE row. undefined for plain-text + non-core cols.
+    const parser = parserForLearnedColumn(actionKey, col);
     fields[col] = {
       origin: 'list_row',
       source: 'primary',
       selectorOrColumn,
+      ...(parser ? { parser } : {}),
     };
   }
 
@@ -240,10 +248,12 @@ export function actionRecipeToTableTemplate(
     // above don't linger as orphans pointing at a discarded source.
     for (const col of Object.keys(fields)) delete fields[col];
     for (const [col, selectorOrColumn] of Object.entries(action.drillDown.listColumns)) {
+      const parser = parserForLearnedColumn(actionKey, col);
       fields[col] = {
         origin: 'list_row',
         source: 'primary',
         selectorOrColumn,
+        ...(parser ? { parser } : {}),
       };
     }
   }

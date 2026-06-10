@@ -29,9 +29,13 @@ import {
   missingFromList,
   missingRequiredColumns,
   requiredLearnedFor,
+  parserForColumn,
+  parserForLearnedColumn,
   MAX_COMPLETENESS_REASKS,
 } from '../target-contract.js';
 import { evaluatePromotionGate } from '../mapping-driver.js';
+import { getParser } from '../parsers/registry.js';
+import '../parsers/ca.js'; // side-effect: registers ca_date/ca_currency/ca_status/ca_integer/ca_boolean_yn
 import type { Recipe, ActionRecipe } from '../types.js';
 
 const PID = '00000000-0000-0000-0000-000000000001';
@@ -170,9 +174,13 @@ describe('recipe → recipeToTableTemplates → applyTemplateParsers → validat
   });
 });
 
-// ─── Test 3 — room status + work orders (+ documented value-normalization gap)
+// ─── Test 3 — validateRows is STRICT on raw values (motivates the parser layer)
+// These call validateRows DIRECTLY (no parser). They prove that a raw scraped
+// string for a typed/enum column rejects the WHOLE row — which is exactly why
+// recipe-adapter attaches value parsers. The end-to-end tests further below
+// prove the parser layer bridges this.
 
-describe('room_status + work_orders snake_case rows pass; raw values document Wave-2 gap', () => {
+describe('validateRows is strict on raw values (well-typed rows pass, raw strings reject)', () => {
   test('room_status row (stamped changed_at + enum status) PASSES', () => {
     const row = { property_id: PID, room_number: '204', status: 'occupied', changed_at: '2026-06-10T12:00:00.000Z' };
     const v = validateRows([row], ROOM_STATUS_DESCRIPTOR);
@@ -201,10 +209,11 @@ describe('room_status + work_orders snake_case rows pass; raw values document Wa
     assert.match(v.rejected[0]!.reason, /out_of_order/);
   });
 
-  test('GAP (Wave-2): a string num_nights rejects the WHOLE reservation row — why numeric optionals are not prompted', () => {
+  test('a RAW string num_nights rejects the whole reservation row (→ ca_integer parser needed)', () => {
     // Raw DOM/CSV scrape gives "2" (string); descriptor num_nights is integer →
-    // type mismatch rejects the entire row, not just the field. This is why
-    // num_nights was removed from the arrivals/departures goal prose.
+    // type mismatch rejects the ENTIRE row, not just the field. recipe-adapter
+    // now attaches ca_integer so the end-to-end path normalizes "2"→2 (proven
+    // in the value-normalization tests below).
     const row = {
       property_id: PID, pms_reservation_id: 'CONF-2', guest_name: 'Jane Doe',
       arrival_date: '2026-06-10', departure_date: '2026-06-12', num_nights: '2',
@@ -258,21 +267,33 @@ describe('target-contract helpers', () => {
 // ─── Test 5 — drift guard: contract == 0207 descriptor required non-ts cols ───
 
 describe('contract drift guard vs migration 0207', () => {
-  test('each core requiredLearned == descriptor (required && type!=timestamptz)', () => {
-    const cases: Array<[keyof Recipe['actions'], TableSchemaDescriptor]> = [
-      ['getArrivals', RESERVATIONS_DESCRIPTOR],
-      ['getDepartures', RESERVATIONS_DESCRIPTOR],
-      ['getRoomStatus', ROOM_STATUS_DESCRIPTOR],
-      ['getWorkOrders', WORK_ORDERS_DESCRIPTOR],
-    ];
-    for (const [key, desc] of cases) {
+  const CORE_CASES: Array<[keyof Recipe['actions'], TableSchemaDescriptor]> = [
+    ['getArrivals', RESERVATIONS_DESCRIPTOR],
+    ['getDepartures', RESERVATIONS_DESCRIPTOR],
+    ['getRoomStatus', ROOM_STATUS_DESCRIPTOR],
+    ['getWorkOrders', WORK_ORDERS_DESCRIPTOR],
+  ];
+
+  test('contract columns (name+type+required) == descriptor, minus writer-stamped timestamptz', () => {
+    const norm = (cols: Array<{ name: string; type: string; required: boolean }>) =>
+      cols.map((c) => `${c.name}:${c.type}:${c.required}`).sort();
+    for (const [key, desc] of CORE_CASES) {
+      // Learnable descriptor columns = all columns minus required timestamptz
+      // (changed_at etc., which the writer auto-stamps and the model never learns).
+      const expected = norm(desc.columns.filter((c) => c.type !== 'timestamptz'));
+      const actual = norm(CORE_TARGET_CONTRACTS[key]!.columns);
+      assert.deepEqual(actual, expected, `${key} columns/types drifted from descriptor`);
+      assert.equal(CORE_TARGET_CONTRACTS[key]!.table, desc.table_name, `${key} table drifted`);
+    }
+  });
+
+  test('requiredLearned == descriptor (required && type!=timestamptz)', () => {
+    for (const [key, desc] of CORE_CASES) {
       const expected = desc.columns
         .filter((c) => c.required && c.type !== 'timestamptz')
         .map((c) => c.name)
         .sort();
-      const actual = [...requiredLearnedFor(key)].sort();
-      assert.deepEqual(actual, expected, `${key} requiredLearned drifted from descriptor`);
-      assert.equal(CORE_TARGET_CONTRACTS[key]!.table, desc.table_name, `${key} table drifted`);
+      assert.deepEqual([...requiredLearnedFor(key)].sort(), expected, `${key} requiredLearned drifted`);
     }
   });
 });
@@ -333,5 +354,186 @@ describe('evaluatePromotionGate column-completeness', () => {
     // getRevenueDaily is not a REQUIRED_TARGET → never column-gated.
     const g = evaluatePromotionGate(fullRecipe({ getRevenueDaily: tableAction({ date: '' }) }));
     assert.equal(g.decision, 'auto_promote');
+  });
+});
+
+// ─── Test 7 — END-TO-END value normalization (the deliverable) ───────────────
+// Realistic CA DOM strings flow recipe → recipe-adapter (attaches parsers) →
+// template-runner (applies them) → validateRows and PASS, producing a valid row
+// for each core table. Without the wired parsers these raw strings would reject.
+
+/** Build a 1-action recipe so recipe-adapter sees the action key (and so
+ *  attaches the descriptor-driven parsers for that target). */
+function recipeFor(actionKey: keyof Recipe['actions'], columns: Record<string, string>): Recipe {
+  const action: ActionRecipe = {
+    steps: [{ kind: 'goto', url: 'https://pms.example.com/x' }],
+    parse: { mode: 'table', hint: { rowSelector: 'tr', columns } },
+  };
+  const actions = {} as Recipe['actions'];
+  actions[actionKey] = action;
+  return {
+    schema: 1,
+    login: { startUrl: 'https://pms.example.com/login', steps: [{ kind: 'click', selector: 'b' }], successSelectors: ['.d'] },
+    actions,
+  };
+}
+
+/** Run columns (key→selector) + a raw scraped row (selector→string) through the
+ *  full adapter+runner pipeline and return the parsed row. */
+function pipelineRow(
+  actionKey: keyof Recipe['actions'],
+  table: string,
+  columns: Record<string, string>,
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const tmpl = recipeToTableTemplates(recipeFor(actionKey, columns)).templates.find((t) => t.tableName === table);
+  assert.ok(tmpl, `expected a ${table} template`);
+  return applyTemplateParsers(raw, tmpl!, 'list_row');
+}
+
+describe('end-to-end: CA DOM strings → parsers → validateRows PASS', () => {
+  test('pms_reservations: "6/10/2026" / nights "2" normalize and write a valid row', () => {
+    const cols = {
+      pms_reservation_id: 's.conf', guest_name: 's.name', arrival_date: 's.arr',
+      departure_date: 's.dep', room_number: 's.room', num_nights: 's.nights',
+    };
+    const raw = {
+      's.conf': 'CA-100245', 's.name': 'Jane Doe', 's.arr': '6/10/2026',
+      's.dep': '6/12/2026', 's.room': '204', 's.nights': '2',
+    };
+    const row = pipelineRow('getArrivals', 'pms_reservations', cols, raw);
+    assert.equal(row.arrival_date, '2026-06-10');   // ca_date normalized the slash date
+    assert.equal(row.departure_date, '2026-06-12');
+    assert.equal(row.num_nights, 2);                // ca_integer "2" → number (was the regression)
+    const v = validateRows([{ ...row, property_id: PID }], RESERVATIONS_DESCRIPTOR);
+    assert.equal(v.rejected.length, 0, JSON.stringify(v.rejected));
+    assert.equal(v.valid.length, 1);
+  });
+
+  test('pms_room_status_log: status "OCC" normalizes to the enum and writes', () => {
+    const cols = { room_number: 's.room', status: 's.status' };
+    const raw = { 's.room': '204', 's.status': 'OCC' };
+    const row = pipelineRow('getRoomStatus', 'pms_room_status_log', cols, raw);
+    assert.equal(row.status, 'occupied'); // ca_status
+    // changed_at is writer-stamped (required timestamptz) — mirror that here.
+    const v = validateRows([{ ...row, property_id: PID, changed_at: '2026-06-10T12:00:00.000Z' }], ROOM_STATUS_DESCRIPTOR);
+    assert.equal(v.rejected.length, 0, JSON.stringify(v.rejected));
+    assert.equal(v.valid.length, 1);
+  });
+
+  test('pms_work_orders_v2: out_of_order "N" normalizes to boolean false and writes', () => {
+    const cols = { pms_work_order_id: 's.id', description: 's.desc', status: 's.status', out_of_order: 's.ooo' };
+    const raw = { 's.id': 'WO-42', 's.desc': 'Leaky faucet', 's.status': 'open', 's.ooo': 'N' };
+    const row = pipelineRow('getWorkOrders', 'pms_work_orders_v2', cols, raw);
+    assert.equal(row.out_of_order, false); // ca_boolean_yn
+    const v = validateRows([{ ...row, property_id: PID }], WORK_ORDERS_DESCRIPTOR);
+    assert.equal(v.rejected.length, 0, JSON.stringify(v.rejected));
+    assert.equal(v.valid.length, 1);
+  });
+
+  test('contrast: the SAME raw reservation row WITHOUT parsers rejects', () => {
+    // Prove the parsers are load-bearing: feed validateRows the raw strings
+    // directly (no template-runner) and it rejects on the date type check.
+    const v = validateRows([{
+      property_id: PID, pms_reservation_id: 'CA-100245', guest_name: 'Jane Doe',
+      arrival_date: '6/10/2026', departure_date: '6/12/2026',
+    }], RESERVATIONS_DESCRIPTOR);
+    assert.equal(v.valid.length, 0);
+    assert.match(v.rejected[0]!.reason, /arrival_date/);
+  });
+});
+
+// ─── Test 8 — parser selection (driven by descriptor type) ───────────────────
+
+describe('parser selection', () => {
+  test('parserForColumn maps by type, with the room-status enum override', () => {
+    assert.equal(parserForColumn('pms_reservations', { name: 'arrival_date', type: 'date' }), 'ca_date');
+    assert.equal(parserForColumn('pms_reservations', { name: 'num_nights', type: 'integer' }), 'ca_integer');
+    assert.equal(parserForColumn('pms_reservations', { name: 'rate_per_night_cents', type: 'bigint' }), 'ca_currency');
+    assert.equal(parserForColumn('pms_x', { name: 'big_count', type: 'bigint' }), 'ca_integer'); // bigint not *_cents
+    assert.equal(parserForColumn('pms_work_orders_v2', { name: 'out_of_order', type: 'boolean' }), 'ca_boolean_yn');
+    assert.equal(parserForColumn('pms_reservations', { name: 'guest_name', type: 'text' }), undefined);
+    assert.equal(parserForColumn('pms_room_status_log', { name: 'status', type: 'text' }), 'ca_status'); // enum override
+    assert.equal(parserForColumn('pms_reservations', { name: 'status', type: 'text' }), undefined); // no override → text
+  });
+
+  test('parserForLearnedColumn resolves via contract; undefined for non-core / extra fields', () => {
+    assert.equal(parserForLearnedColumn('getArrivals', 'arrival_date'), 'ca_date');
+    assert.equal(parserForLearnedColumn('getArrivals', 'num_nights'), 'ca_integer');
+    assert.equal(parserForLearnedColumn('getRoomStatus', 'status'), 'ca_status');
+    assert.equal(parserForLearnedColumn('getWorkOrders', 'out_of_order'), 'ca_boolean_yn');
+    assert.equal(parserForLearnedColumn('getArrivals', 'guest_name'), undefined); // text
+    assert.equal(parserForLearnedColumn('getArrivals', 'adults'), undefined);     // extra field not in descriptor
+    assert.equal(parserForLearnedColumn('getRevenueDaily', 'date'), undefined);   // non-core target
+  });
+
+  test('every parser the contract derives is actually registered', () => {
+    for (const contract of Object.values(CORE_TARGET_CONTRACTS)) {
+      for (const col of contract!.columns) {
+        const name = parserForColumn(contract!.table, col);
+        if (name) assert.ok(getParser(name), `parser "${name}" for ${contract!.table}.${col.name} is not registered`);
+      }
+    }
+  });
+});
+
+// ─── Test 9 — ca.ts parser robustness ────────────────────────────────────────
+
+describe('ca parsers — robustness fixes', () => {
+  const date = getParser('ca_date')!;
+  const cur = getParser('ca_currency')!;
+  const int = getParser('ca_integer')!;
+  const status = getParser('ca_status')!;
+  const bool = getParser('ca_boolean_yn')!;
+
+  test('ca_date: ISO / 4-digit slash + dash', () => {
+    assert.equal(date('2026-06-10'), '2026-06-10');
+    assert.equal(date('6/10/2026'), '2026-06-10');
+    assert.equal(date('06-10-2026'), '2026-06-10');
+  });
+  test('ca_date: 2-digit year (M/D/YY and M-D-YY)', () => {
+    assert.equal(date('6/10/26'), '2026-06-10');
+    assert.equal(date('6-10-26'), '2026-06-10');
+  });
+  test('ca_date: textual months, month-first and day-first', () => {
+    assert.equal(date('Jun 10, 2026'), '2026-06-10');
+    assert.equal(date('June 10 2026'), '2026-06-10');
+    assert.equal(date('10 Jun 2026'), '2026-06-10');
+  });
+  test('ca_date: unrecognized → null', () => {
+    assert.equal(date('not a date'), null);
+    assert.equal(date(''), null);
+    assert.equal(date('Smarch 10 2026'), null); // unknown month name → null
+  });
+
+  test('ca_currency: lowercase "n/a" sentinel caught after trim+uppercase', () => {
+    assert.equal(cur('$1,234.56'), 123456);
+    assert.equal(cur('  n/a '), null);
+    assert.equal(cur('--'), null);
+  });
+  test('ca_integer: lowercase "n/a" sentinel caught after trim+uppercase', () => {
+    assert.equal(int('12,345'), 12345);
+    assert.equal(int(' n/a'), null);
+    assert.equal(int('2'), 2);
+  });
+
+  test('ca_status: known codes incl. vacant_dirty; unrecognized → unknown', () => {
+    assert.equal(status('OCC'), 'occupied');
+    assert.equal(status('Occupied'), 'occupied');
+    assert.equal(status('VAC'), 'vacant_clean');
+    assert.equal(status('VC'), 'vacant_clean');
+    assert.equal(status('VD'), 'vacant_dirty');
+    assert.equal(status('Vacant Dirty'), 'vacant_dirty'); // not mislabeled vacant_clean
+    assert.equal(status('OOO'), 'out_of_order');
+    assert.equal(status('Inspected'), 'inspected');
+    assert.equal(status('ZZZ'), 'unknown'); // unrecognized → 'unknown' (also log.warns)
+  });
+
+  test('ca_boolean_yn: Y/N/true/false/booleans', () => {
+    assert.equal(bool('N'), false);
+    assert.equal(bool('Y'), true);
+    assert.equal(bool('yes'), true);
+    assert.equal(bool(false), false);
+    assert.equal(bool('maybe'), null);
   });
 });
