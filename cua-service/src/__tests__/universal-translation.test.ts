@@ -21,7 +21,7 @@ import './ws-polyfill.js';
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { inferDateFormat, sanitizeEnumMapping } from '../value-learning.js';
+import { inferDateFormat, sanitizeEnumMapping, pickDateFormat } from '../value-learning.js';
 import { recipeToTableTemplates } from '../recipe-adapter.js';
 import { resolveColumnParser } from '../target-contract.js';
 import { applyTemplateParsers } from '../extractors/template-runner.js';
@@ -92,6 +92,17 @@ describe('PMS X — date format is LEARNED, not guessed', () => {
     assert.equal(gd('25.12.2026', { dateFormat: fmt }), '2026-12-25');
     // calendar-invalid → null (NEVER a fake ISO string that explodes at Postgres)
     assert.equal(gd('32.01.2026', { dateFormat: fmt }), null);
+  });
+
+  test('pickDateFormat never lets a low-confidence repair downgrade a high-confidence seed', () => {
+    const highDMY = { order: 'DMY' as const, confidence: 'high' as const };
+    const lowMDY = { order: 'MDY' as const, confidence: 'low' as const };
+    assert.equal(pickDateFormat(highDMY, lowMDY)?.order, 'DMY');          // fresh high wins
+    assert.equal(pickDateFormat(lowMDY, highDMY)?.order, 'DMY');          // fresh low must NOT clobber a high seed
+    assert.equal(pickDateFormat(lowMDY, highDMY)?.confidence, 'high');
+    assert.equal(pickDateFormat(lowMDY, { order: 'YMD', confidence: 'low' })?.order, 'MDY'); // both low → fresh
+    assert.equal(pickDateFormat(null, highDMY)?.order, 'DMY');            // no fresh → seed
+    assert.equal(pickDateFormat(null, null), undefined);
   });
 
   test('learning PREVENTS silent corruption of an ambiguous date', () => {

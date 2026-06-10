@@ -716,26 +716,28 @@ describe('ca parsers — robustness fixes', () => {
   });
 
   const wos = getParser('ca_work_order_status')!;
-  test('ca_work_order_status: normalizes to the enum; unrecognized → open', () => {
+  test('ca_work_order_status: normalizes to the LIVE enum {open,in_progress,closed,deferred,resolved}', () => {
     assert.equal(wos('Open'), 'open');
     assert.equal(wos('In Progress'), 'in_progress');
     assert.equal(wos('in_progress'), 'in_progress');
-    assert.equal(wos('Closed'), 'resolved');
+    assert.equal(wos('Deferred'), 'deferred');
+    assert.equal(wos('On Hold'), 'deferred');
+    assert.equal(wos('Closed'), 'closed');     // 'closed' is now a valid distinct value
     assert.equal(wos('Completed'), 'resolved');
-    assert.equal(wos('Cancelled'), 'cancelled');
+    assert.equal(wos('Cancelled'), 'closed');  // 'cancelled' isn't valid → 'closed' (Codex #1)
     assert.equal(wos('Pending'), 'open');
     assert.equal(wos('Weird State'), 'open'); // unrecognized → 'open' (also log.warns)
     assert.equal(wos(''), null);
   });
 
   const prio = getParser('ca_priority')!;
-  test('ca_priority: normalizes to the enum; blank → null; unrecognized → unknown', () => {
+  test('ca_priority: normalizes to the LIVE enum {urgent,high,medium,low}; blank/unrecognized → null', () => {
     assert.equal(prio('Low'), 'low');
     assert.equal(prio('High'), 'high');
-    assert.equal(prio('Urgent'), 'critical');
-    assert.equal(prio('Critical'), 'critical');
+    assert.equal(prio('Urgent'), 'urgent');
+    assert.equal(prio('Critical'), 'urgent');  // 'critical' isn't valid → 'urgent' (Codex #1)
     assert.equal(prio('Normal'), 'medium');
     assert.equal(prio(''), null);              // optional → null skips the field, row survives
-    assert.equal(prio('Whatever'), 'unknown'); // unrecognized → 'unknown' (also log.warns)
+    assert.equal(prio('Whatever'), null);      // unrecognized → null (not a CHECK-invalid 'unknown')
   });
 });

@@ -126,3 +126,22 @@ export function mergeValueTranslation(
   acc[tableCol] = { ...(acc[tableCol] ?? {}), ...mapping };
   return acc;
 }
+
+/**
+ * Choose the date format to persist when finalizing a recipe, merging this
+ * run's inference with a prior-recipe seed (partial self-repair). Confidence-
+ * aware so a repair that only saw AMBIGUOUS samples — and therefore inferred a
+ * LOW-confidence guess — can NEVER downgrade a HIGH-confidence seed from the
+ * full mapping (Codex re-review #5):
+ *   - a fresh HIGH-confidence inference always wins (the PMS's format may change);
+ *   - else keep a HIGH-confidence seed;
+ *   - else prefer the fresh low/absent inference, falling back to the seed.
+ */
+export function pickDateFormat(
+  fresh: LearnedDateFormat | null | undefined,
+  seed: LearnedDateFormat | null | undefined,
+): LearnedDateFormat | undefined {
+  if (fresh?.confidence === 'high') return fresh;
+  if (seed?.confidence === 'high') return seed;
+  return fresh ?? seed ?? undefined;
+}

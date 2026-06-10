@@ -43,7 +43,7 @@ const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS } from './target-contract.js';
-import { inferDateFormat, sanitizeEnumMapping, mergeValueTranslation } from './value-learning.js';
+import { inferDateFormat, sanitizeEnumMapping, mergeValueTranslation, pickDateFormat } from './value-learning.js';
 import type { LearnedValueTranslations, LearnedDateFormat } from './types.js';
 import {
   createPruneState,
@@ -688,9 +688,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
 
     // feat/pms-universal-translate — finalize the learned date order from the
     // pooled samples (null/low-confidence when ambiguous → runtime heuristic).
-    // On a partial repair that re-learned no date columns, keep the prior
-    // recipe's learned format rather than dropping to none.
-    const learnedDateFormat = inferDateFormat(learnedDateSamples) ?? opts.seedDateFormat;
+    // Confidence-aware merge with any prior-recipe seed (partial repair): a
+    // low-confidence repair inference must never downgrade a high-confidence
+    // seed (Codex re-review #5).
+    const learnedDateFormat = pickDateFormat(inferDateFormat(learnedDateSamples), opts.seedDateFormat);
     if (learnedDateFormat) {
       log.info('mapper: learned date format', {
         jobId: opts.jobId ?? undefined,
@@ -2608,8 +2609,8 @@ const WORK_ORDERS_GOAL =
   `  - pms_work_order_id (required)\n` +
   `  - room_number (required if room-scoped)\n` +
   `  - description (required)\n` +
-  `  - priority (nice-to-have — "high" / "medium" / "low")\n` +
-  `  - status (required — "open" / "in_progress" / "resolved")\n` +
+  `  - priority (nice-to-have — "urgent" / "high" / "medium" / "low")\n` +
+  `  - status (required — "open" / "in_progress" / "closed" / "deferred" / "resolved")\n` +
   `  - assigned_to (nice-to-have)\n` +
   `  - out_of_order (required — boolean: does this take the room offline?)`;
 

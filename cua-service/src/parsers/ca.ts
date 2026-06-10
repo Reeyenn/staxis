@@ -193,8 +193,13 @@ registerParser('ca_work_order_status', (raw: unknown): string | null => {
   const s = String(raw).trim().toUpperCase().replace(/[_-]/g, ' ');
   if (s === 'OPEN' || s === 'NEW' || s === 'PENDING' || s === 'ACTIVE') return 'open';
   if (s.includes('PROGRESS') || s === 'WIP' || s === 'STARTED' || s === 'ASSIGNED') return 'in_progress';
-  if (s === 'RESOLVED' || s === 'CLOSED' || s === 'COMPLETE' || s === 'COMPLETED' || s === 'DONE' || s === 'FIXED') return 'resolved';
-  if (s === 'CANCELLED' || s === 'CANCELED' || s === 'VOID' || s === 'VOIDED') return 'cancelled';
+  if (s === 'DEFERRED' || s === 'ON HOLD' || s === 'HOLD' || s === 'WAITING') return 'deferred';
+  if (s === 'RESOLVED' || s === 'COMPLETE' || s === 'COMPLETED' || s === 'DONE' || s === 'FIXED') return 'resolved';
+  // The LIVE pms_work_orders_v2.status CHECK is {open,in_progress,closed,
+  // deferred,resolved} — there is NO 'cancelled'. Map cancelled/void/closed →
+  // 'closed' (the valid "no longer active" value) so the row writes instead of
+  // being silently rejected by validateRows / the DB CHECK (Codex re-review #1).
+  if (s === 'CLOSED' || s === 'CANCELLED' || s === 'CANCELED' || s === 'VOID' || s === 'VOIDED') return 'closed';
   log.warn('ca_work_order_status: unrecognized status — defaulting to "open"', { raw: s.slice(0, 40) });
   return 'open';
 });
@@ -202,11 +207,12 @@ registerParser('ca_work_order_status', (raw: unknown): string | null => {
 // ─── Priority enum ─────────────────────────────────────────────────────
 
 /**
- * Normalize a work-order priority to the pms_work_orders_v2.priority enum
- * {low, medium, high, critical, unknown} (migration 0207). priority is
- * OPTIONAL, so a blank → null (field skipped, row survives); an unrecognized
- * value → 'unknown' rather than rejecting the whole row over a non-required
- * field. "urgent"/"emergency" collapse to the nearest enum value, 'critical'.
+ * Normalize a work-order priority to the LIVE pms_work_orders_v2.priority enum
+ * {urgent, high, medium, low} (widened past the 0207 seed). priority is
+ * OPTIONAL, so a blank → null (field skipped, row survives). "critical"/
+ * "emergency" collapse to the nearest valid value, 'urgent'. An unrecognized
+ * value → null (NOT a made-up 'unknown', which the DB CHECK would reject and
+ * lose the whole row over a non-required field) (Codex re-review #1).
  */
 registerParser('ca_priority', (raw: unknown): string | null => {
   if (raw == null) return null;
@@ -215,7 +221,7 @@ registerParser('ca_priority', (raw: unknown): string | null => {
   if (s === 'LOW') return 'low';
   if (s === 'MEDIUM' || s === 'MED' || s === 'NORMAL' || s === 'STANDARD') return 'medium';
   if (s === 'HIGH') return 'high';
-  if (s === 'CRITICAL' || s === 'URGENT' || s === 'EMERGENCY') return 'critical';
-  log.warn('ca_priority: unrecognized priority — defaulting to "unknown"', { raw: s.slice(0, 40) });
-  return 'unknown';
+  if (s === 'URGENT' || s === 'CRITICAL' || s === 'EMERGENCY') return 'urgent';
+  log.warn('ca_priority: unrecognized priority — nulling (optional field skipped)', { raw: s.slice(0, 40) });
+  return null;
 });
