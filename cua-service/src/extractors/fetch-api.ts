@@ -24,6 +24,7 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
+import { hostsAreSameSite } from '../browser-utils/navigate.js';
 import type { FeedSpec } from '../knowledge-file.js';
 import type { LearnedDateFormat } from '../types.js';
 import { renderDatePlaceholders, renderBodyDatePlaceholders } from './date-template.js';
@@ -31,6 +32,11 @@ import { renderDatePlaceholders, renderBodyDatePlaceholders } from './date-templ
 export interface FetchApiOptions {
   page: Page;
   feedSpec: FeedSpec;
+  /** Recipe's pinned PMS host. When set, absolute URLs outside this site are
+   *  REFUSED — the in-page fetch rides the authenticated session cookies
+   *  (credentials:'include'), so a poisoned/drifted recipe must never be able
+   *  to point it cross-origin (same Pattern B stance as safeGoto). */
+  allowedHost?: string;
   signal?: AbortSignal;
 }
 
@@ -60,6 +66,13 @@ export function resolveJsonPath(
     if (current === null || current === undefined || typeof current !== 'object') {
       return { found: false, stoppedAt: walked.join('.') };
     }
+    // OWN properties only: a malicious/odd response must not let a path like
+    // '__proto__' or 'constructor' resolve through the prototype chain to a
+    // non-data object and masquerade as a row. (JSON.parse'd "__proto__"
+    // keys are own properties and still resolve — that's real data.)
+    if (!Object.prototype.hasOwnProperty.call(current, seg)) {
+      return { found: false, stoppedAt: walked.join('.') };
+    }
     current = (current as Record<string, unknown>)[seg];
     if (current === undefined) {
       return { found: false, stoppedAt: walked.join('.') };
@@ -69,10 +82,40 @@ export function resolveJsonPath(
 }
 
 export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiResult> {
-  const { page, feedSpec, signal } = opts;
+  const { page, feedSpec, allowedHost, signal } = opts;
   const rawUrl = feedSpec.url;
   if (!rawUrl) {
     return { ok: false, data: null, reason: 'feedSpec missing url' };
+  }
+
+  // Host pin: relative URLs resolve against the (already host-pinned) page;
+  // absolute URLs must stay on the recipe's PMS site. Any non-http(s) scheme
+  // is refused outright. Protocol-relative forms (//host/…, and \\host/… —
+  // WHATWG URL treats backslashes as slashes) carry a HOST without a scheme,
+  // so they're pinned like absolute URLs.
+  const trimmedUrl = rawUrl.trim();
+  const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(trimmedUrl);
+  if (schemeMatch && !/^https?$/i.test(schemeMatch[1]!)) {
+    return { ok: false, data: null, reason: `refused non-http(s) scheme "${schemeMatch[1]}"` };
+  }
+  const isProtocolRelative = !schemeMatch && /^[/\\]{2}/.test(trimmedUrl);
+  if ((schemeMatch || isProtocolRelative) && allowedHost) {
+    let host: string;
+    try {
+      host = schemeMatch
+        ? new URL(trimmedUrl).host
+        : new URL(`https://${trimmedUrl.replace(/^[/\\]+/, '')}`).host;
+    } catch {
+      return { ok: false, data: null, reason: 'unparseable absolute url' };
+    }
+    if (!hostsAreSameSite(host, allowedHost)) {
+      log.warn('extractor:fetch_api: refused cross-site fetch', { host, allowedHost });
+      return {
+        ok: false,
+        data: null,
+        reason: `refused cross-site fetch: "${host}" is outside the recipe's pinned site "${allowedHost}"`,
+      };
+    }
   }
 
   const method = (feedSpec.extra?.method as string | undefined) ?? 'GET';
@@ -83,15 +126,20 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
   const dateRender = feedSpec.extra?.dateRender as LearnedDateFormat | undefined;
   const timezone = feedSpec.extra?.timezone as string | undefined;
 
-  // Stale-date guard: render {today}/{date} NOW, per call.
+  // Stale-date guard: render {today}/{date} NOW, per call. ONE clock for
+  // url + body so a poll straddling local midnight can't send yesterday's
+  // date in one and today's in the other.
+  const now = new Date();
   const url = renderDatePlaceholders(rawUrl, {
     context: 'url',
     learnedFormat: dateRender,
     timezone,
+    now,
   });
   const body = renderBodyDatePlaceholders(rawBody, {
     learnedFormat: dateRender,
     timezone,
+    now,
   });
 
   if (signal?.aborted) return { ok: false, data: null, reason: 'aborted' };

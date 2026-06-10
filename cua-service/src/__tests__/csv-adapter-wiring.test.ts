@@ -162,6 +162,29 @@ describe('adapter csv wiring', () => {
       false,
       'credential steps must never reach the runtime source',
     );
+    // The learned headers double as the extractor's schema-drift check.
+    assert.deepEqual(src.extra?.expectedHeaderColumns, ['Conf', 'Guest', 'Arrival', 'Departure']);
+    // The learned PMS date format rides every mode (Codex P1) — a csv report
+    // URL with {today} must render in the PMS's format, not ISO.
+    assert.deepEqual(src.extra?.dateRender, { order: 'MDY', separator: '/', confidence: 'high' });
+  });
+
+  test('TRIGGERLESS csv flow IS flagged incomplete (Codex P1 — it can never download)', () => {
+    const recipe = csvRecipe();
+    recipe.actions.getArrivals!.steps = [{ kind: 'goto', url: 'https://pms.example/reports' }];
+    const { templates } = recipeToTableTemplates(recipe);
+    const tmpl = templates.find((t) => t.tableName === 'pms_reservations')!;
+    assert.equal(tmpl.incomplete, true);
+  });
+
+  test('fills into credential-looking fields are dropped at derivation (Codex P1)', () => {
+    const flow = deriveCsvFlowFromSteps([
+      { kind: 'goto', url: 'https://pms.example/r' },
+      { kind: 'fill', selector: '#report-password', value: 'literal-secret' },
+      { kind: 'fill', selector: '#room-range', value: '100-200' },
+      { kind: 'click', selector: '#dl' },
+    ]);
+    assert.deepEqual(flow.preSteps, [{ kind: 'fill', selector: '#room-range', value: '100-200' }]);
   });
 
   test('REGRESSION: dom_table with interaction steps still flags incomplete', () => {
@@ -210,6 +233,7 @@ describe('parsePreSteps / replayPreSteps', () => {
     const page = fakeCsvPage('');
     const r = await replayPreSteps(page, [
       { kind: 'fill', selector: '#u', value: '$username' },
+      { kind: 'fill', selector: 'input[name=pwd]', value: 'literal-secret' },
       { kind: 'click', selector: '#go' },
     ]);
     assert.equal(r.ok, true);
@@ -261,6 +285,22 @@ describe('csv end-to-end from an adapter-built source', () => {
     assert.equal(canonical[0]!.guest_name, 'Jane Doe');
     assert.equal(canonical[0]!.arrival_date, '2026-06-10');   // learned MDY → ISO
     assert.equal(canonical[1]!.departure_date, '2026-06-13');
+  });
+
+  test('a RENAMED PMS column fails the feed with a schema-drift reason', async () => {
+    const { templates } = recipeToTableTemplates(csvRecipe());
+    const tmpl = templates.find((t) => t.tableName === 'pms_reservations')!;
+    const src = tmpl.sources[0]!;
+    // PMS renamed "Conf" → "Confirmation" — the learned column map no longer
+    // lines up with the export.
+    const page = fakeCsvPage('Confirmation,Guest,Arrival,Departure\nCONF-1,Jane,06/10/2026,06/12/2026\n');
+    const result = await extractCsvDownload({
+      page,
+      feedSpec: { mode: 'csv_download', url: '', selectors: src.selectors, columns: src.columns, extra: src.extra },
+      allowedHost: 'pms.example',
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.reason!, /schema drift: missing columns \[Conf\]/);
   });
 
   test('a flow with NO trigger fails loudly (not a silent empty success)', async () => {

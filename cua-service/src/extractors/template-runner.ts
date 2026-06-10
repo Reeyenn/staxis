@@ -55,15 +55,17 @@ function sourceToFeedSpec(source: TableTemplateSource): {
   columns?: Record<string, string>;
   extra?: Record<string, unknown>;
 } {
-  // Stale-date guard, layer 2 of 2: render {today}/{date} placeholders in the
-  // source URL at RUN time, for every mode (runSource is called per poll).
-  // fetch-api.ts renders again at fetch time — idempotent, since a rendered
-  // URL has no placeholders left. Either layer alone prevents a frozen date.
-  const url = renderDatePlaceholders(source.url, {
-    context: 'url',
-    learnedFormat: source.extra?.dateRender as LearnedDateFormat | undefined,
-    timezone: source.extra?.timezone as string | undefined,
-  });
+  // Stale-date guard: render {today}/{date} placeholders in the source URL
+  // at RUN time (runSource is called per poll). fetch_api is EXEMPT here —
+  // its extractor renders url + body together with a single clock, so a
+  // poll straddling local midnight can't split dates between the two.
+  const url = source.mode === 'fetch_api'
+    ? source.url
+    : renderDatePlaceholders(source.url, {
+        context: 'url',
+        learnedFormat: source.extra?.dateRender as LearnedDateFormat | undefined,
+        timezone: source.extra?.timezone as string | undefined,
+      });
   return {
     mode: source.mode,
     url,
@@ -103,7 +105,7 @@ async function runSource(
       return { ok: true, rows: r.rows as Array<Record<string, unknown>> };
     }
     case 'fetch_api': {
-      const r = await extractFetchApi({ page, feedSpec, signal });
+      const r = await extractFetchApi({ page, feedSpec, allowedHost, signal });
       if (!r.ok) return { ok: false, rows: [], reason: r.reason };
       // fetch_api returns opaque JSON; if it's an array, treat as rows;
       // if it's a single object with .rows or .results, unwrap; else

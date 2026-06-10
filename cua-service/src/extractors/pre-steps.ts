@@ -49,6 +49,10 @@ function isCredentialValue(value: string): boolean {
   return value.includes('$username') || value.includes('$password');
 }
 
+/** Mirror of recipe-adapter's CREDENTIAL_SELECTOR_RE — defense-in-depth for
+ *  hand-written knowledge files that bypass the adapter's derivation. */
+const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|token|apikey|api[-_]key/i;
+
 /**
  * Parse an untyped `extra.preSteps` payload (jsonb from the knowledge file)
  * into validated PreSteps. Malformed entries make the WHOLE list invalid —
@@ -135,6 +139,10 @@ export async function replayPreSteps(
         case 'fill':
           if (isCredentialValue(step.value)) {
             log.warn('pre-steps: skipping fill that references credentials (never replayed in extraction)', { stepIndex: i });
+            break;
+          }
+          if (CREDENTIAL_SELECTOR_RE.test(step.selector)) {
+            log.warn('pre-steps: skipping fill into a credential-looking field', { stepIndex: i, selector: step.selector });
             break;
           }
           await page.fill(step.selector, step.value, { timeout: step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS });

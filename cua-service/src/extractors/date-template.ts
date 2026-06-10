@@ -11,9 +11,9 @@
  * Placeholder grammar (100% PMS-agnostic):
  *   {today}              today's date, format resolved below
  *   {date}               alias of {today} (the poll runtime always wants "now")
- *   {today:MM/DD/YYYY}   explicit format — tokens YYYY MM DD M D, any literal
- *                        separators. Use when the mapper knows the exact
- *                        format the endpoint was captured with.
+ *   {today:MM/DD/YYYY}   explicit format — tokens YYYY YY MM DD M D, any
+ *                        literal separators. Use when the mapper knows the
+ *                        exact format the endpoint was captured with.
  *
  * Format resolution for the bare form: explicit token format (none) →
  * learned PMS-wide date format (LearnedDateFormat, high confidence only) →
@@ -65,10 +65,13 @@ export function todayParts(timezone: string, now: Date = new Date()): {
 }
 
 /** Render one date value according to an explicit token format string.
- *  Tokens: YYYY, MM, DD, M, D. Everything else is a literal. */
+ *  Tokens: YYYY, YY, MM, DD, M, D. Everything else is a literal. */
 function renderTokenFormat(fmt: string, p: { year: string; month: string; day: string }): string {
   return fmt
     .replace(/YYYY/g, p.year)
+    // 2-digit year AFTER the 4-digit form so "YYYY" never half-matches —
+    // plenty of PMS report URLs carry e.g. `start=06/10/26`.
+    .replace(/YY/g, p.year.slice(-2))
     .replace(/MM/g, p.month)
     .replace(/DD/g, p.day)
     // Single-token forms AFTER the double forms so "MM" never half-matches.
@@ -129,10 +132,27 @@ export function hasDatePlaceholder(input: string): boolean {
 }
 
 /**
+ * Frozen-date detector: does a query/body VALUE look like a full calendar
+ * date literal? Used to warn when a learned url/body carries a concrete
+ * mapping-day date the mapper failed to turn into a {today} placeholder —
+ * that feed silently re-fetches mapping day forever. Deliberately
+ * conservative (4-digit-year shapes only, value positions only) so version
+ * strings ("v2.1.3") and numeric ids don't trip it.
+ */
+const DATE_LITERAL_VALUE_RE =
+  /(?:^|[=&?,;{[:\s"'])(\d{4}-\d{2}-\d{2}|\d{1,2}(?:\/|%2F|\.|-)\d{1,2}(?:\/|%2F|\.|-)\d{4})(?=$|[&,;\s"'}\]&])/i;
+
+export function looksLikeLiteralDateValue(input: string): boolean {
+  if (!input) return false;
+  return DATE_LITERAL_VALUE_RE.test(input);
+}
+
+/**
  * Render placeholders inside a request body. Strings render directly
  * (JSON-looking bodies render raw; form-encoded bodies render encoded);
- * object bodies (legacy knowledge-file feeds) render each string value
- * raw — they get JSON.stringify'd by the fetch layer.
+ * object bodies (legacy knowledge-file feeds) render every string LEAF
+ * recursively (nested filter objects like {filter:{start:'{today}'}} are
+ * common in JSON APIs) — they get JSON.stringify'd by the fetch layer.
  */
 export function renderBodyDatePlaceholders(
   body: string | Record<string, unknown> | undefined,
@@ -144,11 +164,30 @@ export function renderBodyDatePlaceholders(
     const isJson = trimmed.startsWith('{') || trimmed.startsWith('[');
     return renderDatePlaceholders(body, { ...opts, context: isJson ? 'json' : 'form' });
   }
+  return renderValueDeep(body, opts, 0) as Record<string, unknown>;
+}
+
+/** Depth cap for body recursion — captured request bodies are shallow; a
+ *  pathological self-referencing object must not stack-overflow a poll. */
+const MAX_BODY_DEPTH = 8;
+
+function renderValueDeep(
+  value: unknown,
+  opts: Omit<RenderDateOptions, 'context'>,
+  depth: number,
+): unknown {
+  if (typeof value === 'string') {
+    return renderDatePlaceholders(value, { ...opts, context: 'json' });
+  }
+  if (depth >= MAX_BODY_DEPTH || value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => renderValueDeep(v, opts, depth + 1));
+  }
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(body)) {
-    out[k] = typeof v === 'string'
-      ? renderDatePlaceholders(v, { ...opts, context: 'json' })
-      : v;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = renderValueDeep(v, opts, depth + 1);
   }
   return out;
 }

@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 import {
   validateRows,
   findAllBlankRequiredColumns,
+  saveGenericTable,
   type TableSchemaDescriptor,
 } from '../persistence/generic-table-writer.js';
 import { requiredLearnedFor } from '../target-contract.js';
@@ -139,5 +140,29 @@ describe('findAllBlankRequiredColumns: the all-rows feed-failure detector', () =
       findAllBlankRequiredColumns(rows, RESERVATIONS_DESCRIPTOR),
       ['pms_reservation_id', 'guest_name'],
     );
+  });
+
+  test('0 and false are VALUES, not blanks', () => {
+    const descriptor: TableSchemaDescriptor = {
+      ...RESERVATIONS_DESCRIPTOR,
+      columns: [
+        { name: 'count', type: 'integer', required: true, nullable: false },
+        { name: 'flag', type: 'boolean', required: true, nullable: false },
+      ],
+    };
+    const rows = [{ count: 0, flag: false }, { count: 0, flag: false }];
+    assert.deepEqual(findAllBlankRequiredColumns(rows, descriptor), []);
+  });
+});
+
+describe('saveGenericTable: empty batch is a healthy no-op (Codex P1)', () => {
+  test('zero rows return ok:true with zero writes and never touch the DB', async () => {
+    // Returns before the descriptor load — works offline against the
+    // placeholder Supabase env, proving no network round-trip happens.
+    const result = await saveGenericTable(PID, 'pms_cancellations', []);
+    assert.equal(result.ok, true);
+    assert.equal(result.inserted, 0);
+    assert.equal(result.rejected, 0);
+    assert.deepEqual(result.errors, []);
   });
 });

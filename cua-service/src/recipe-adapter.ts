@@ -241,6 +241,12 @@ interface DerivedCsvFlow {
   downloadClickAt?: { x: number; y: number };
 }
 
+/** Fields whose NAME smells like a credential. A learned report flow has no
+ *  business filling one; if the mapper recorded it (e.g. a literal secret
+ *  typed mid-flow), it must not be replayed every poll. Conservative on
+ *  purpose — report filters are dates/rooms/formats, never "password". */
+const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|token|apikey|api[-_]key/i;
+
 export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
   const lastGotoIdx = steps.reduce((acc, s, i) => (s.kind === 'goto' ? i : acc), -1);
   const inPage = steps.slice(lastGotoIdx + 1);
@@ -258,6 +264,15 @@ export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
       case 'fill':
         if (s.value === '$username' || s.value === '$password') {
           log.warn('recipe-adapter: dropping csv pre-step fill that references credentials', {});
+          break;
+        }
+        if (CREDENTIAL_SELECTOR_RE.test(s.selector)) {
+          // A literal value into a credential-looking field — the value may
+          // BE a recorded secret (Codex P1). Never carry it into the runtime
+          // source (and never log the value).
+          log.warn('recipe-adapter: dropping csv pre-step fill into a credential-looking field', {
+            selector: s.selector,
+          });
           break;
         }
         mapped.push({ kind: 'fill', selector: s.selector, value: s.value });
@@ -321,6 +336,9 @@ export function actionRecipeToTableTemplate(
   const route = ACTION_ROUTES[actionKey];
   if (!route) return null;
 
+  // Set in the csv branch below; drives the incomplete-flag logic at the end.
+  let csvTriggerless = false;
+
   // Build a TableTemplate field, attaching the UNIVERSAL value parser + its
   // learned config (date order / enum mapping from the knowledge file). The
   // generic parsers normalize ANY PMS's scraped string to the type validateRows
@@ -358,12 +376,19 @@ export function actionRecipeToTableTemplate(
     // extractors/csv-download.ts hard-requires. Previously dropped: a learned
     // csv feed always died with "feedSpec missing selectors.downloadButton".
     const flow = deriveCsvFlowFromSteps(action.steps);
+    csvTriggerless = !flow.downloadButton && !flow.downloadClickAt;
     if (flow.downloadButton) {
       selectors.downloadButton = flow.downloadButton;
     }
+    // The learned column map's VALUES are the CSV header names we depend on —
+    // hand them to the extractor's schema-drift check (case-insensitive) so a
+    // renamed PMS column fails the feed with a precise reason at download
+    // time instead of surfacing as all-blank columns downstream.
+    const expectedHeaderColumns = Object.values(action.parse.hint.columns);
     const csvExtra: Record<string, unknown> = {
       ...(flow.preSteps.length > 0 ? { preSteps: flow.preSteps } : {}),
       ...(flow.downloadClickAt ? { downloadClickAt: flow.downloadClickAt } : {}),
+      ...(expectedHeaderColumns.length > 0 ? { expectedHeaderColumns } : {}),
     };
     if (Object.keys(csvExtra).length > 0) extra = csvExtra;
   } else if (action.parse.mode === 'table') {
@@ -394,14 +419,21 @@ export function actionRecipeToTableTemplate(
     };
   }
 
-  // Single source for non-drill-down targets.
+  // Single source for non-drill-down targets. The learned PMS date format
+  // rides EVERY mode's extra (Codex P1): a csv/dom report URL can carry a
+  // {today} placeholder too, and rendering it in ISO when the PMS expects
+  // MDY would silently pull wrong-date (or empty) reports each poll.
+  const mergedExtra: Record<string, unknown> = {
+    ...(learned?.dateFormat ? { dateRender: learned.dateFormat } : {}),
+    ...(extra ?? {}),
+  };
   const sources: TableTemplateSource[] = [{
     name: 'primary',
     url: apiUrl ?? sourceUrl,
     mode,
     selectors,
     columns,
-    ...(extra ? { extra } : {}),
+    ...(Object.keys(mergedExtra).length > 0 ? { extra: mergedExtra } : {}),
   }];
   const fields: Record<string, TableTemplateField> = {};
   for (const [col, selectorOrColumn] of Object.entries(columns)) {
@@ -458,6 +490,18 @@ export function actionRecipeToTableTemplate(
   //   - 'api': runtime calls the learned endpoint directly with the page's
   //     cookies — the recorded steps were only the mapping-time trigger that
   //     made the page fire the request we captured.
+  //
+  // EXCEPTION (Codex P1): a csv flow with NO recorded trigger click can never
+  // download anything — the extractor would fail "missing downloadButton"
+  // every poll. Flag it incomplete so it surfaces in admin review instead of
+  // silently churning.
+  if (action.parse.mode === 'csv' && csvTriggerless) {
+    template.incomplete = true;
+    log.warn(
+      'recipe-adapter: csv flow has no download trigger click — flagged incomplete for operator review',
+      { actionKey, tableName: route.tableName },
+    );
+  }
   if (action.parse.mode !== 'api' && action.parse.mode !== 'csv') {
     const NON_INTERACTION_KINDS = new Set(['goto', 'screenshot', 'wait_ms']);
     const interactionKinds = [

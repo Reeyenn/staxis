@@ -104,6 +104,16 @@ describe('resolveJsonPath', () => {
     assert.deepEqual(resolveJsonPath(doc, 'data.count.x'), { found: false, stoppedAt: 'data.count.x' });
     assert.deepEqual(resolveJsonPath(null, 'a'), { found: false, stoppedAt: 'a' });
   });
+
+  test('inherited properties never resolve — own keys only (Codex P2)', () => {
+    assert.deepEqual(resolveJsonPath({}, '__proto__'), { found: false, stoppedAt: '__proto__' });
+    assert.deepEqual(resolveJsonPath({ a: {} }, 'a.constructor'), { found: false, stoppedAt: 'a.constructor' });
+    // JSON.parse'd "__proto__" is an OWN key — that's real data and resolves.
+    assert.deepEqual(
+      resolveJsonPath(JSON.parse('{"__proto__": {"rows": [1]}}'), '__proto__.rows'),
+      { found: true, value: [1] },
+    );
+  });
 });
 
 // ─── extractFetchApi behavior ──────────────────────────────────────────────
@@ -243,6 +253,79 @@ describe('extractFetchApi', () => {
     const result = await extractFetchApi({ page: fakePage(), feedSpec: { mode: 'fetch_api' } });
     assert.equal(result.ok, false);
     assert.match(result.reason!, /missing url/);
+  });
+
+  test('host pin: cross-site absolute URL is REFUSED (cookies must not ride out)', async () => {
+    const { result, requests } = await withFetchStub(
+      () => ({ json: [] }),
+      () => extractFetchApi({
+        page: fakePage(),
+        feedSpec: feedSpec({ url: 'https://attacker.example/steal' }),
+        allowedHost: 'pms.example',
+      }),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason!, /cross-site fetch/);
+    assert.equal(requests.length, 0, 'no request may be sent');
+  });
+
+  test('host pin: same-site subdomain and relative URLs are allowed', async () => {
+    const sub = await withFetchStub(
+      () => ({ json: [] }),
+      () => extractFetchApi({
+        page: fakePage(),
+        feedSpec: feedSpec({ url: 'https://api.pms.example/v1/rows' }),
+        allowedHost: 'app.pms.example',
+      }),
+    );
+    assert.equal(sub.result.ok, true, sub.result.reason);
+
+    const rel = await withFetchStub(
+      () => ({ json: [] }),
+      () => extractFetchApi({
+        page: fakePage(),
+        feedSpec: feedSpec({ url: '/api/rows?d={today}' }),
+        allowedHost: 'pms.example',
+      }),
+    );
+    assert.equal(rel.result.ok, true, rel.result.reason);
+  });
+
+  test('host pin: protocol-relative and backslash forms cannot smuggle a host', async () => {
+    for (const url of ['//attacker.example/x', '\\\\attacker.example/x']) {
+      const { result, requests } = await withFetchStub(
+        () => ({ json: [] }),
+        () => extractFetchApi({
+          page: fakePage(),
+          feedSpec: feedSpec({ url }),
+          allowedHost: 'pms.example',
+        }),
+      );
+      assert.equal(result.ok, false, `expected refusal for ${url}`);
+      assert.match(result.reason!, /cross-site fetch/);
+      assert.equal(requests.length, 0);
+    }
+    // Same-site protocol-relative stays allowed.
+    const ok = await withFetchStub(
+      () => ({ json: [] }),
+      () => extractFetchApi({
+        page: fakePage(),
+        feedSpec: feedSpec({ url: '//api.pms.example/v1/rows' }),
+        allowedHost: 'pms.example',
+      }),
+    );
+    assert.equal(ok.result.ok, true, ok.result.reason);
+  });
+
+  test('host pin: non-http(s) schemes are refused outright', async () => {
+    const result = await extractFetchApi({
+      page: fakePage(),
+      // eslint-disable-next-line no-script-url
+      feedSpec: feedSpec({ url: 'javascript:alert(1)' }),
+      allowedHost: 'pms.example',
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.reason!, /non-http\(s\) scheme/);
   });
 });
 

@@ -266,6 +266,15 @@ export async function saveGenericTable(
   rows: Array<Record<string, unknown>>,
   options: SaveGenericTableOptions = {},
 ): Promise<SaveGenericTableResult> {
+  // A zero-row batch is a HEALTHY no-op (no cancellations today, empty
+  // lost-and-found…), not a write failure. Returning ok:false here made
+  // every poll of a legitimately-empty feed look broken in the results log
+  // (Codex P1). The all-blank feed-integrity guard below deliberately only
+  // fires when rows EXIST.
+  if (rows.length === 0) {
+    return { ok: true, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: 0, errors: [] };
+  }
+
   const descriptor = await loadDescriptor(tableName);
   if (!descriptor) {
     return {

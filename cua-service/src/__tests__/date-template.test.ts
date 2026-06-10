@@ -68,6 +68,17 @@ describe('renderDatePlaceholders', () => {
     assert.equal(out, 'd=6/10/2026');
   });
 
+  test('YY token renders a 2-digit year (and never half-eats YYYY)', () => {
+    assert.equal(
+      renderDatePlaceholders('d={today:MM/DD/YY}', { context: 'json', now: NOON_UTC }),
+      'd=06/10/26',
+    );
+    assert.equal(
+      renderDatePlaceholders('d={today:YYYY}', { context: 'json', now: NOON_UTC }),
+      'd=2026',
+    );
+  });
+
   test('timezone, not UTC: late evening in Chicago is still TODAY', () => {
     const out = renderDatePlaceholders('d={today}', { context: 'json', now: LATE_EVENING });
     // UTC date at this instant is 2026-06-11; the hotel's business date is 06-10.
@@ -126,6 +137,23 @@ describe('renderBodyDatePlaceholders', () => {
     assert.equal(out.start, '06/10/2026');
     assert.equal(out.count, 5);
     assert.equal(out.nested, null);
+  });
+
+  test('NESTED object/array body placeholders render too (Codex P2)', () => {
+    const out = renderBodyDatePlaceholders(
+      {
+        filter: { dateRange: { start: '{today}', end: '{today}' } },
+        sorts: [{ field: 'date', asOf: '{date}' }],
+        flags: { active: true },
+      },
+      { now: NOON_UTC },
+    ) as Record<string, unknown>;
+    const filter = out.filter as { dateRange: { start: string; end: string } };
+    assert.equal(filter.dateRange.start, '2026-06-10');
+    assert.equal(filter.dateRange.end, '2026-06-10');
+    const sorts = out.sorts as Array<{ asOf: string }>;
+    assert.equal(sorts[0]!.asOf, '2026-06-10');
+    assert.deepEqual(out.flags, { active: true });
   });
 
   test('undefined body stays undefined', () => {
