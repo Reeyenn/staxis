@@ -29,6 +29,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { Page } from 'playwright';
 import { anthropic } from './anthropic-client.js';
+import { captureHardenedScreenshot } from './screenshot-privacy.js';
 import { log } from './log.js';
 // Importing env for its side effect: schema validation at module load
 // (so a deployment misconfig fails fast). The runtime enabled-check
@@ -227,58 +228,18 @@ async function logCriticUsage(
 /**
  * Capture a privacy-hardened screenshot for the critic.
  *
- * Adds black overlays over `input[type="password"], [data-sensitive],
- * .ssn, .credit-card` before screenshotting, then removes them. Mirrors
- * the privacy step in browser-tool-vision.ts (whose helpers are not
- * exported, so we own a copy here — keep in sync if the selector list
- * changes there).
- *
- * Returns base64 PNG on success, or `null` if the page eval / screenshot
- * itself fails — caller should fail-open and skip the critic for this
- * action. Always cleans up overlays in a finally block.
+ * Thin wrapper over the shared `captureHardenedScreenshot`
+ * (./screenshot-privacy.ts) — the single source of truth for masking
+ * credential/SSN/CC fields (every frame) as part of the capture, and
+ * withholding the frame if a masked image can't be produced. Returns base64
+ * PNG on success, or `null` when no usable redacted frame could be produced
+ * (navigation race, screenshot error, deadline). The caller (mapper.ts)
+ * already fail-opens on `null` — it skips the critic check for that one
+ * action; the critic itself is never disabled by this.
  */
 export async function captureScreenshotForCritic(page: Page): Promise<string | null> {
-  // 1. Apply privacy overlays. Best-effort — log + continue on failure.
-  try {
-    await page.evaluate(() => {
-      const SELECTOR = 'input[type="password"], [data-sensitive], .ssn, .credit-card';
-      document.querySelectorAll(SELECTOR).forEach((el) => {
-        const h = el as HTMLElement;
-        const rect = h.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return;
-        const overlay = document.createElement('div');
-        overlay.dataset.staxisCriticPrivacy = '1';
-        overlay.style.position = 'fixed';
-        overlay.style.left = `${rect.left}px`;
-        overlay.style.top = `${rect.top}px`;
-        overlay.style.width = `${rect.width}px`;
-        overlay.style.height = `${rect.height}px`;
-        overlay.style.background = '#000';
-        overlay.style.zIndex = '2147483647';
-        overlay.style.pointerEvents = 'none';
-        document.body.appendChild(overlay);
-      });
-    });
-  } catch (err) {
-    log.warn('critic: privacy overlay add failed', { err: (err as Error).message });
-  }
-
-  // 2. Screenshot + always clear overlays, even if screenshot throws.
-  try {
-    const buf = await page.screenshot({ fullPage: false });
-    return buf.toString('base64');
-  } catch (err) {
-    log.warn('critic: screenshot capture failed', { err: (err as Error).message });
-    return null;
-  } finally {
-    try {
-      await page.evaluate(() => {
-        document.querySelectorAll('[data-staxis-critic-privacy]').forEach((el) => el.remove());
-      });
-    } catch (err) {
-      log.warn('critic: privacy overlay cleanup failed', { err: (err as Error).message });
-    }
-  }
+  const buf = await captureHardenedScreenshot(page);
+  return buf ? buf.toString('base64') : null;
 }
 
 /**

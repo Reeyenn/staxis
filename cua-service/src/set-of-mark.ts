@@ -17,8 +17,10 @@
  *   they leak past `clearSetOfMark` (defense-in-depth — the caller is
  *   responsible for clearing, but we still want the page interactive if
  *   cleanup races a navigation).
- * - z-index is one less than the privacy-overlay z-index so password
- *   blanking still wins when both are active (privacy-first).
+ * - A very high z-index keeps badges above PMS chrome. Credential fields are
+ *   redacted separately at capture time by screenshot-privacy.ts's Playwright
+ *   mask (painted over the final image), so a badge overlapping a sensitive
+ *   input is still covered — privacy wins regardless of badge z-index.
  * - `data-staxis-som-badge` attribute scopes our DOM mutations — we never
  *   touch unrelated elements during clear.
  * - We use `document.elementsFromPoint(cx, cy)` to filter elements that
@@ -27,12 +29,13 @@
  *   modal covers half the menu — only badge what the user could click.
  * - Badge color is high-contrast pink + white text. We deliberately
  *   chose a color that's unlikely to clash with PMS UI chrome (most use
- *   blue/gray/green corporate palettes). z-index 2147483646 sits one below
- *   the privacy overlay's 2147483647.
+ *   blue/gray/green corporate palettes). z-index 2147483646 sits above page
+ *   chrome; the screenshot mask redacts credentials over the top of it.
  */
 
 import type { Page } from 'playwright';
 import { log } from './log.js';
+import { SENSITIVE_FIELD_SELECTOR } from './screenshot-privacy.js';
 
 /** Per-badge metadata stashed on the page-keyed WeakMap. */
 export interface BadgeInfo {
@@ -71,18 +74,18 @@ const CLICKABLE_SELECTOR = [
 /**
  * Adversarial review P1 — exclude privacy-sensitive inputs from SoM marking.
  *
- * Keep this list in sync with `browser-tool-vision.ts:hardenScreenshotPrivacy`
- * which paints opaque overlays over the same targets at a higher z-index.
+ * Uses the SHARED `SENSITIVE_FIELD_SELECTOR` (./screenshot-privacy.ts) — the
+ * exact list `captureHardenedScreenshot` masks (blacks out) in screenshots —
+ * so the marking-exclusion list and the screenshot-redaction list can't drift.
  *
  * Why exclude them at the MARKING layer rather than just the visual layer:
- * even with the privacy overlay on top, the badge entry in BadgeInfo still
- * points at the input's center coordinate. An agent (or a future prompt-
+ * even though the screenshot blacks out the field, the badge entry in
+ * BadgeInfo still points at the input's center coordinate. An agent (or a
+ * future prompt-
  * injection) requesting `left_click {text: "#N"}` for that badge would
  * focus the password field — at which point a `type` action could write
  * into it. Cleanest fix: never enroll the field in the badge map at all.
  */
-const PRIVACY_EXCLUDE_SELECTOR =
-  'input[type="password"], [data-sensitive], .ssn, .credit-card';
 
 /** Cap on badge count — past this point the screenshot turns into a
  *  numbered confetti pile and the agent struggles to read individual IDs.
@@ -251,7 +254,7 @@ export async function applySetOfMark(page: Page): Promise<Map<number, BadgeInfo>
           badge.style.textAlign = 'center';
           badge.style.border = '1px solid #FFFFFF';
           badge.style.boxShadow = '0 1px 2px rgba(0,0,0,0.4)';
-          badge.style.zIndex = '2147483646';  // one below the privacy overlay (2147483647)
+          badge.style.zIndex = '2147483646';  // above PMS chrome; screenshot mask redacts over it
           badge.style.pointerEvents = 'none';  // never block clicks reaching the underlying element
           badge.style.userSelect = 'none';
           document.body.appendChild(badge);
@@ -263,7 +266,7 @@ export async function applySetOfMark(page: Page): Promise<Map<number, BadgeInfo>
       },
       {
         selector: CLICKABLE_SELECTOR,
-        excludeSelector: PRIVACY_EXCLUDE_SELECTOR,
+        excludeSelector: SENSITIVE_FIELD_SELECTOR,
         maxBadges: MAX_BADGES,
       },
     );

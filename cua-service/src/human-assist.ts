@@ -367,6 +367,13 @@ export async function checkHelpFlood(jobId: string): Promise<boolean> {
  *
  * Bucket: 'mapping-screenshots' (private). RLS on the bucket gates
  * downloads to admin role; cua-service writes via service role.
+ *
+ * PRIVACY CONTRACT: `pngBuffer` MUST already be privacy-hardened. The only
+ * caller (mapper.ts help-card) produces it via `captureHardenedScreenshot`
+ * (screenshot-privacy.ts), which masks credential/SSN/CC fields and withholds
+ * the frame entirely if it can't produce a masked image — so this row never
+ * holds an unredacted credential snapshot. Do not call this with a raw
+ * page.screenshot.
  */
 export async function saveScreenshotToStorage(
   jobId: string,

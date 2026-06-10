@@ -16,10 +16,16 @@
  *   - claude-sonnet-4-6 (our default)
  *   - claude-opus-4-5
  *
- * Privacy hardening (P1-4): before EVERY screenshot, paint a black
- * overlay across `input[type="password"]`, `[data-sensitive]`, `.ssn`,
- * `.credit-card`. Keeps passwords + PII out of the Anthropic conversation
- * history, the realtime broadcast channel, and the help-request DB row.
+ * Privacy hardening: every screenshot goes through
+ * `captureHardenedScreenshot` (./screenshot-privacy.ts), which uses
+ * Playwright's native masking to black out `input[type="password"]`,
+ * `[data-sensitive]`, `.ssn`, `.credit-card` in EVERY frame as part of the
+ * capture itself (so there is no unmasked window), retries-after-settle on a
+ * navigation race, and WITHHOLDS the frame entirely if it can't produce a
+ * masked image — so passwords + credential PII never reach the Anthropic
+ * conversation history, the realtime broadcast channel, or the help-request DB
+ * row. Guest names/emails in ordinary table text are intentionally NOT masked
+ * (the agent must read tables to learn columns) — see screenshot-privacy.ts.
  *
  * Navigation: no `navigate` action in the vision tool. The agent navigates
  * by clicking visible menu links / typing into input fields.
@@ -37,6 +43,7 @@ import type { Page } from 'playwright';
 import type { PMSCredentials, RecipeStep } from './types.js';
 import { log } from './log.js';
 import { applySetOfMark, clearSetOfMark, type BadgeInfo } from './set-of-mark.js';
+import { captureHardenedScreenshot } from './screenshot-privacy.js';
 
 /**
  * Mapping phase — passed through for logging. The DOM-mode-era
@@ -392,39 +399,43 @@ export async function executeVisionAction(
     switch (action.action) {
       case 'screenshot': {
         // Set-of-Mark visual grounding (Plan v9 F1): draw numbered badges
-        // on every clickable element BEFORE the privacy overlay + screenshot,
-        // stash the badge map so the next left_click can resolve `#N`.
+        // on every clickable element BEFORE the screenshot, stash the badge
+        // map so the next left_click can resolve `#N`.
         //
         // Order matters:
         //   1. Clear any leftover SoM badges from a prior screenshot.
         //   2. Apply SoM — captures the badge map, paints the page.
-        //   3. Apply privacy hardening — its overlays sit above SoM badges
-        //      (z-index 2147483647 vs SoM's 2147483646) so passwords stay
-        //      blanked even if a SoM badge happens to overlap a sensitive
-        //      input.
-        //   4. Take the screenshot.
-        //   5. ALWAYS remove privacy overlays in finally. SoM badges are
-        //      removed at the start of the next non-screenshot action
-        //      (see top of executeVisionAction) — leaving them visible in
-        //      the agent's last screenshot is the WHOLE POINT of SoM, so
-        //      we deliberately do NOT clear them here.
+        //   3. captureHardenedScreenshot takes the screenshot with Playwright's
+        //      native mask, blacking out every credential/SSN/CC field (all
+        //      frames) directly on the output image — drawn over everything,
+        //      so a SoM badge overlapping a sensitive input is covered too.
+        //      SoM badges (separate DOM, not sensitive) are deliberately left
+        //      for the agent's next screenshot.
+        //   4. If it returns null, a reliably-masked image couldn't be produced
+        //      (e.g. the page was mid-navigation): withhold the frame — send NO
+        //      image — and tell the agent to retry, rather than risk leaking an
+        //      unredacted screenshot to Claude.
         await clearSetOfMark(page);
         const badges = await applySetOfMark(page);
         setOfMarkStore.set(page, badges);
-        await hardenScreenshotPrivacy(page);
-        try {
-          const buf = await page.screenshot({ fullPage: false });
+        const buf = await captureHardenedScreenshot(page);
+        if (!buf) {
           return {
             output:
-              badges.size > 0
-                ? `Screenshot captured. Set-of-Mark applied: ${badges.size} clickable element(s) labeled with numbered badges. ` +
-                  `Click a badge by sending {action: "left_click", coordinate: [x, y], text: "#N"} where N is the badge number.`
-                : 'Screenshot captured. (No clickable elements detected for Set-of-Mark — click by pixel coordinate as usual.)',
-            screenshotB64: buf.toString('base64'),
+              'Screenshot withheld: the page was still navigating and sensitive ' +
+              'fields could not be reliably masked, so no image was captured. ' +
+              'Wait briefly, then take another screenshot.',
+            isError: true,
           };
-        } finally {
-          await clearScreenshotPrivacyOverlays(page);
         }
+        return {
+          output:
+            badges.size > 0
+              ? `Screenshot captured. Set-of-Mark applied: ${badges.size} clickable element(s) labeled with numbered badges. ` +
+                `Click a badge by sending {action: "left_click", coordinate: [x, y], text: "#N"} where N is the badge number.`
+              : 'Screenshot captured. (No clickable elements detected for Set-of-Mark — click by pixel coordinate as usual.)',
+          screenshotB64: buf.toString('base64'),
+        };
       }
 
       case 'left_click': {
@@ -695,73 +706,13 @@ export async function executeVisionAction(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
-/**
- * Privacy hardening (P1-4): blank password inputs + tagged sensitive
- * elements BEFORE every screenshot. Keeps creds + PII out of Anthropic /
- * realtime / DB.
- *
- * Best-effort: if page.evaluate throws (e.g. cross-origin iframe), we
- * proceed with the unmodified screenshot — the system prompt's untrusted-
- * content boundary still applies. Logged as a warning so we notice if a
- * PMS has a structural reason this fails consistently.
- */
-/**
- * Plan v8 review P0-B fix: VISUAL-ONLY masking. Earlier version mutated
- * `input.value = '••••••'`, which corrupted the real password if a
- * screenshot fired between type + submit (login would fail with the
- * masked string). Now we only paint the field opaque — the underlying
- * value is untouched.
- *
- * Strategy: position:relative + an absolute black overlay that exactly
- * covers each sensitive element. Overlays are removed by a cleanup pass
- * the caller MUST invoke after page.screenshot returns. We use a
- * data-attribute marker to find and remove them without affecting
- * unrelated DOM.
- */
-async function hardenScreenshotPrivacy(page: Page): Promise<void> {
-  try {
-    await page.evaluate(() => {
-      const SELECTOR = 'input[type="password"], [data-sensitive], .ssn, .credit-card';
-      document.querySelectorAll(SELECTOR).forEach((el) => {
-        const h = el as HTMLElement;
-        const rect = h.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return;
-        const overlay = document.createElement('div');
-        overlay.dataset.staxisPrivacyOverlay = '1';
-        overlay.style.position = 'fixed';
-        overlay.style.left = `${rect.left}px`;
-        overlay.style.top = `${rect.top}px`;
-        overlay.style.width = `${rect.width}px`;
-        overlay.style.height = `${rect.height}px`;
-        overlay.style.background = '#000';
-        overlay.style.zIndex = '2147483647';
-        overlay.style.pointerEvents = 'none';
-        document.body.appendChild(overlay);
-      });
-    });
-  } catch (err) {
-    log.warn('hardenScreenshotPrivacy: overlay-add evaluate failed', {
-      message: (err as Error).message,
-    });
-  }
-}
-
-/**
- * Companion to hardenScreenshotPrivacy: remove the overlays we added
- * just before the screenshot. Always call in a try/finally around the
- * screenshot to ensure no stale overlays linger if screenshot throws.
- */
-async function clearScreenshotPrivacyOverlays(page: Page): Promise<void> {
-  try {
-    await page.evaluate(() => {
-      document.querySelectorAll('[data-staxis-privacy-overlay]').forEach((el) => el.remove());
-    });
-  } catch (err) {
-    log.warn('clearScreenshotPrivacyOverlays: evaluate failed', {
-      message: (err as Error).message,
-    });
-  }
-}
+// Screenshot privacy redaction — painting sensitive-field overlays, GATING
+// the capture on verified coverage (every frame), retry-after-settle, and
+// withholding the frame on failure — now lives in ./screenshot-privacy.ts as
+// `captureHardenedScreenshot`, the single source shared by the screenshot
+// action, the critic, and the help-card snapshot. The old swallow-and-proceed
+// `hardenScreenshotPrivacy` was removed: it let an unredacted frame through
+// whenever the overlay-add lost a race with a navigation.
 
 /**
  * Normalize a key-name to Playwright's expected format. Mirrors the

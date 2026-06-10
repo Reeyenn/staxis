@@ -312,62 +312,55 @@ describe('judgeStepOutcome — cost logging', () => {
   });
 });
 
-// ─── captureScreenshotForCritic — privacy + cleanup invariants ────────────
+// ─── captureScreenshotForCritic — masked-capture contract ─────────────────
+//
+// captureScreenshotForCritic now delegates to the shared
+// captureHardenedScreenshot (screenshot-privacy.ts), which takes the screenshot
+// with Playwright's native per-frame `mask`. The fake Page records whether each
+// screenshot() carried a mask, so we can prove the critic never captures a bare
+// frame. (The full race / iframe / deadline / never-reject matrix lives in
+// screenshot-privacy.test.ts.) Here we pin the critic-facing contract:
+// base64-on-success, null-on-failure, and always-masked.
 
 interface FakePageState {
-  evalCalls: Array<string>;
   screenshotShouldThrow?: boolean;
   screenshotCalled?: boolean;
+  lastMaskLen?: number;
 }
 
 function fakePage(state: FakePageState): Page {
+  const frames = [{ locator: (sel: string) => ({ sel }) }];
   return {
-    evaluate: async (_fn: unknown) => {
-      // We don't run the function — just record that evaluate was called.
-      // The function body itself is too DOM-heavy to execute in a unit
-      // test (would need a real Playwright Page or jsdom). State-tracking
-      // is enough to verify the SEQUENCE: privacy-add → screenshot →
-      // privacy-clear.
-      state.evalCalls.push('evaluate');
-      return undefined;
-    },
-    screenshot: async () => {
+    frames: () => frames,
+    on: () => {}, // frame-mutation guard registers listeners; no mutation fired here
+    off: () => {},
+    screenshot: async (opts: { mask?: unknown[] }) => {
       state.screenshotCalled = true;
+      state.lastMaskLen = Array.isArray(opts?.mask) ? opts.mask.length : -1;
       if (state.screenshotShouldThrow) throw new Error('screenshot failed');
       // 1×1 transparent PNG bytes.
       return Buffer.from(TINY_PNG_B64, 'base64');
     },
+    waitForTimeout: async () => {},
   } as unknown as Page;
 }
 
 describe('captureScreenshotForCritic — happy path', () => {
-  test('returns a base64 PNG string', async () => {
-    const state: FakePageState = { evalCalls: [] };
+  test('returns a base64 PNG string, captured WITH a mask', async () => {
+    const state: FakePageState = {};
     const result = await captureScreenshotForCritic(fakePage(state));
     assert.ok(result, 'returns base64 string on success');
     assert.equal(typeof result, 'string');
     assert.equal(state.screenshotCalled, true);
-  });
-
-  test('calls evaluate TWICE — once to add overlays, once to remove them', async () => {
-    const state: FakePageState = { evalCalls: [] };
-    await captureScreenshotForCritic(fakePage(state));
-    assert.equal(state.evalCalls.length, 2,
-      'add-overlay + cleanup-overlay are the two evaluate calls; missing the second leaves stale overlays');
+    assert.equal(state.lastMaskLen, 1, 'critic screenshot must be masked, never bare');
   });
 });
 
 describe('captureScreenshotForCritic — failure modes', () => {
-  test('returns null when screenshot itself throws', async () => {
-    const state: FakePageState = { evalCalls: [], screenshotShouldThrow: true };
+  test('returns null when the (masked) screenshot throws', async () => {
+    const state: FakePageState = { screenshotShouldThrow: true };
     const result = await captureScreenshotForCritic(fakePage(state));
     assert.equal(result, null);
-  });
-
-  test('still runs cleanup evaluate even if screenshot throws', async () => {
-    const state: FakePageState = { evalCalls: [], screenshotShouldThrow: true };
-    await captureScreenshotForCritic(fakePage(state));
-    assert.equal(state.evalCalls.length, 2,
-      'cleanup must run in the finally block — leaking overlays would block future clicks');
+    assert.equal(state.lastMaskLen, 1, 'even the doomed attempt was masked, never bare');
   });
 });
