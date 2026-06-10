@@ -16,10 +16,16 @@
  * decides how to map header names to canonical fields.
  *
  * Selectors used (all optional, set per knowledge file):
- *   - selectors.preStepClick[]:  list of selectors clicked in order before download
- *                                 (e.g. open the report link, set room range)
+ *   - extra.preSteps[]:          typed interaction steps replayed in order before
+ *                                 the download (click/select/fill/wait…) — what
+ *                                 recipe-adapter derives from a learned csv
+ *                                 recipe's recorded steps (see pre-steps.ts)
+ *   - extra.preStepClick[]:      legacy list of bare selectors clicked in order
+ *                                 (0203-era knowledge files; kept for back-compat)
  *   - selectors.csvCheckbox:     checkbox to enable CSV output
  *   - selectors.downloadButton:  the button that triggers the download
+ *   - extra.downloadClickAt:     {x,y} fallback trigger when the mapper recorded
+ *                                 the final click as a coordinate (no selector)
  *
  * extra.csvDelimiter ('comma'|'tab') defaults to comma.
  * extra.expectedHeaderColumns?: string[] — if set, an exact match must be
@@ -30,6 +36,7 @@ import type { Page, Download } from 'playwright';
 import { log } from '../log.js';
 import { safeGoto } from '../browser-utils/navigate.js';
 import type { FeedSpec } from '../knowledge-file.js';
+import { parsePreSteps, replayPreSteps } from './pre-steps.js';
 
 export interface CsvDownloadOptions {
   page: Page;
@@ -64,6 +71,22 @@ export async function extractCsvDownload(opts: CsvDownloadOptions): Promise<CsvD
 
   if (signal?.aborted) return { ok: false, header: [], rows: [], reason: 'aborted' };
 
+  // Typed pre-steps (adapter-derived from the learned recipe): the click-
+  // sequence that reaches the report + generates the export. Replayed before
+  // the legacy bare-selector list. Malformed lists fail the feed loudly — a
+  // half-replayed sequence leaves the page in an unknown state.
+  const parsedPre = parsePreSteps(feedSpec.extra?.preSteps);
+  if (!parsedPre.ok) {
+    return { ok: false, header: [], rows: [], reason: `invalid preSteps: ${parsedPre.reason}` };
+  }
+  if (parsedPre.steps.length > 0) {
+    const replay = await replayPreSteps(page, parsedPre.steps, signal);
+    if (!replay.ok) {
+      return { ok: false, header: [], rows: [], reason: replay.reason };
+    }
+  }
+  if (signal?.aborted) return { ok: false, header: [], rows: [], reason: 'aborted' };
+
   // Pre-step clicks (open report, set filters, etc.).
   const preStepClicks = (feedSpec.extra?.preStepClick as string[] | undefined) ?? [];
   for (const sel of preStepClicks) {
@@ -94,17 +117,24 @@ export async function extractCsvDownload(opts: CsvDownloadOptions): Promise<CsvD
   }
 
   // Set up the download listener BEFORE clicking the submit button —
-  // race-free way to capture a Playwright download.
+  // race-free way to capture a Playwright download. Trigger is either a
+  // selector (preferred) or a recorded coordinate (mapper fallback when the
+  // final click had no resolvable selector).
   const downloadButton = feedSpec.selectors?.downloadButton;
-  if (!downloadButton) {
-    return { ok: false, header: [], rows: [], reason: 'feedSpec missing selectors.downloadButton' };
+  const downloadClickAt = feedSpec.extra?.downloadClickAt as { x: number; y: number } | undefined;
+  const hasCoordTrigger =
+    !!downloadClickAt && typeof downloadClickAt.x === 'number' && typeof downloadClickAt.y === 'number';
+  if (!downloadButton && !hasCoordTrigger) {
+    return { ok: false, header: [], rows: [], reason: 'feedSpec missing selectors.downloadButton (or extra.downloadClickAt)' };
   }
 
   let download: Download;
   try {
     [download] = await Promise.all([
       page.waitForEvent('download', { timeout: DOWNLOAD_TIMEOUT_MS }),
-      page.click(downloadButton, { timeout: 10_000 }),
+      downloadButton
+        ? page.click(downloadButton, { timeout: 10_000 })
+        : page.mouse.click(downloadClickAt!.x, downloadClickAt!.y),
     ]);
   } catch (err) {
     return {

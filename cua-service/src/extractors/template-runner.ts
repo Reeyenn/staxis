@@ -16,7 +16,9 @@ import { log } from '../log.js';
 import { extractDomTable } from './dom-table.js';
 import { extractDomInline } from './dom-inline.js';
 import { extractCsvDownload } from './csv-download.js';
-import { extractFetchApi } from './fetch-api.js';
+import { extractFetchApi, resolveJsonPath } from './fetch-api.js';
+import { renderDatePlaceholders } from './date-template.js';
+import type { LearnedDateFormat } from '../types.js';
 import { applyParser } from '../parsers/registry.js';
 // Side-effect imports — register the value parsers at module load.
 //   generic.js: the PMS-AGNOSTIC default parsers (generic_date/currency/enum…)
@@ -53,9 +55,18 @@ function sourceToFeedSpec(source: TableTemplateSource): {
   columns?: Record<string, string>;
   extra?: Record<string, unknown>;
 } {
+  // Stale-date guard, layer 2 of 2: render {today}/{date} placeholders in the
+  // source URL at RUN time, for every mode (runSource is called per poll).
+  // fetch-api.ts renders again at fetch time — idempotent, since a rendered
+  // URL has no placeholders left. Either layer alone prevents a frozen date.
+  const url = renderDatePlaceholders(source.url, {
+    context: 'url',
+    learnedFormat: source.extra?.dateRender as LearnedDateFormat | undefined,
+    timezone: source.extra?.timezone as string | undefined,
+  });
   return {
     mode: source.mode,
-    url: source.url,
+    url,
     selectors: source.selectors,
     columns: source.columns,
     extra: source.extra,
@@ -125,7 +136,24 @@ function applyTemplateParsers(
   const out: Record<string, unknown> = {};
   for (const [col, field] of Object.entries(template.fields)) {
     if (field.origin !== origin) continue;
-    const raw = row[field.selectorOrColumn];
+    // Lookup chain — extractors key their output rows differently:
+    //   1. row[selectorOrColumn]  — csv header, fetch_api JSON key, legacy
+    //      multi-source field key ('roomCount').
+    //   2. dot-path               — fetch_api rows often NEST the value
+    //      (column key 'guest.name'); a literal flat key always wins first.
+    //   3. row[col]               — dom_table/dom_inline emit rows keyed by
+    //      the CANONICAL field name (out[field] in their $$eval), while the
+    //      template's selectorOrColumn holds the CSS selector. Without this
+    //      fallback every adapter-built dom template parsed to all-null rows
+    //      at runtime (latent split-brain the simulated-row tests masked).
+    let raw = row[field.selectorOrColumn];
+    if (raw === undefined && field.selectorOrColumn.includes('.')) {
+      const resolved = resolveJsonPath(row, field.selectorOrColumn);
+      if (resolved.found) raw = resolved.value;
+    }
+    if (raw === undefined) {
+      raw = row[col];
+    }
     if (raw === undefined) {
       out[col] = null;
       continue;
