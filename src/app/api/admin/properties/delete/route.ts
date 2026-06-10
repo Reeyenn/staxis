@@ -25,6 +25,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { logSecurityEvent } from '@/lib/audit';
+import { classifyAccountsForPropertyDelete, type LinkedAccount } from '@/lib/property-delete';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,19 +65,54 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Figure out which accounts to remove vs keep BEFORE deleting the hotel.
+  // property_access is a uuid[] (not an FK), so the property delete won't
+  // touch these — handle them explicitly so a deleted test hotel frees its
+  // owner's email too. (Classifier is unit-tested for the over-delete
+  // failure modes: never an admin, never a multi-hotel owner.)
+  const { data: linked } = await supabaseAdmin
+    .from('accounts')
+    .select('id, data_user_id, role, property_access')
+    .contains('property_access', [propertyId]);
+  const plan = classifyAccountsForPropertyDelete((linked ?? []) as LinkedAccount[], propertyId);
+
+  // Accounts that also belong to other hotels: just drop this one.
+  for (const p of plan.prune) {
+    await supabaseAdmin.from('accounts').update({ property_access: p.remaining }).eq('id', p.id);
+  }
+
+  // Delete the hotel — 129 FKs cascade (sessions, staff rows, pms_* data,
+  // join codes, …). Re-assert the live guard at write time.
   const { error: delErr } = await supabaseAdmin
     .from('properties')
     .delete()
     .eq('id', propertyId)
-    .is('onboarding_completed_at', null); // re-assert the guard at write time
+    .is('onboarding_completed_at', null);
   if (delErr) return err(`Delete failed: ${delErr.message}`, { requestId, status: 500 });
+
+  // Remove the accounts that existed ONLY for this hotel + free their
+  // emails. Delete the account row first, then the auth user (both
+  // accounts.data_user_id and properties.owner_id CASCADE from auth.users,
+  // but the property is already gone). Best-effort on the auth side — the
+  // orphan-auth sweeper is the backstop if one flakes.
+  let accountsRemoved = 0;
+  for (const uid of plan.deleteUserIds) {
+    await supabaseAdmin.from('accounts').delete().eq('data_user_id', uid);
+    try {
+      const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(uid);
+      if (authErr) console.warn('[admin/properties/delete] deleteUser error', { uid, msg: authErr.message });
+      else accountsRemoved += 1;
+    } catch (e) {
+      console.warn('[admin/properties/delete] deleteUser threw', { uid, msg: (e as Error).message });
+    }
+  }
 
   await logSecurityEvent({
     action: 'admin.property_deleted',
     propertyId,
     requestId,
-    metadata: { name: prop.name },
+    metadata: { name: prop.name, accountsRemoved, accountsPruned: plan.prune.length },
   });
 
-  return ok({ deleted: true, name: prop.name }, { requestId });
+  return ok({ deleted: true, name: prop.name, accountsRemoved }, { requestId });
 }

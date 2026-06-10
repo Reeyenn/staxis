@@ -191,7 +191,7 @@ export function OnboardingSurface() {
   // Hover-✕ delete for a junk/test hotel. Confirmed client-side, and the
   // server refuses to delete a hotel that has finished onboarding.
   const deleteHotel = async (p: PropertyRow) => {
-    if (!window.confirm(`Delete “${p.name ?? 'this hotel'}”? This permanently removes the hotel and all of its data.`)) return;
+    if (!window.confirm(`Delete “${p.name ?? 'this hotel'}”? This permanently removes the hotel, all of its data, and the owner's login (frees the email to re-use).`)) return;
     setDeletingId(p.id);
     try {
       const res = await fetchWithAuth('/api/admin/properties/delete', {
