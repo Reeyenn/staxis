@@ -154,6 +154,8 @@ export function OnboardingSurface() {
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [selPms, setSelPms] = useState<PMSCoverage | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -185,6 +187,26 @@ export function OnboardingSurface() {
     refreshTimer.current = setTimeout(() => { void load(); }, 5000);
     return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); };
   }, [props, liveJobs]);
+
+  // Hover-✕ delete for a junk/test hotel. Confirmed client-side, and the
+  // server refuses to delete a hotel that has finished onboarding.
+  const deleteHotel = async (p: PropertyRow) => {
+    if (!window.confirm(`Delete “${p.name ?? 'this hotel'}”? This permanently removes the hotel and all of its data.`)) return;
+    setDeletingId(p.id);
+    try {
+      const res = await fetchWithAuth('/api/admin/properties/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: p.id }),
+      });
+      const json = await res.json();
+      if (json.ok) { if (expandedId === p.id) setExpandedId(null); await load(); }
+      else window.alert(json.error ?? 'Delete failed');
+    } catch (e) {
+      window.alert(`Delete failed: ${(e as Error).message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   if (error) return <DarkShell><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></DarkShell>;
   if (!props || !liveJobs || !pms) {
@@ -241,8 +263,29 @@ export function OnboardingSurface() {
         {journeyRows.length === 0
           ? <Empty text="No hotels onboarding right now — “+ New hotel” to start one." />
           : journeyRows.map(({ p, j }) => (
-            <div key={p.id}>
+            <div
+              key={p.id}
+              style={{ position: 'relative' }}
+              onMouseEnter={() => setHoverId(p.id)}
+              onMouseLeave={() => setHoverId((h) => (h === p.id ? null : h))}
+            >
               <JourneyRow p={p} j={j} expanded={expandedId === p.id} onClick={() => setExpandedId(expandedId === p.id ? null : p.id)} />
+              {(hoverId === p.id || deletingId === p.id) && (
+                <button
+                  title="Delete this hotel"
+                  aria-label={`Delete ${p.name ?? 'hotel'}`}
+                  onClick={(e) => { e.stopPropagation(); void deleteHotel(p); }}
+                  disabled={deletingId === p.id}
+                  style={{
+                    position: 'absolute', top: 7, right: 7, zIndex: 4,
+                    width: 22, height: 22, borderRadius: 6, padding: 0, lineHeight: 1, fontSize: 14,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'rgba(24,12,9,.92)', color: 'var(--terracotta)',
+                    border: '1px solid rgba(194,86,46,.5)',
+                    cursor: deletingId === p.id ? 'wait' : 'pointer',
+                  }}
+                >{deletingId === p.id ? '·' : '×'}</button>
+              )}
               {expandedId === p.id && <JourneyPanel propertyId={p.id} j={j} />}
             </div>
           ))}
