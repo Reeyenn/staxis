@@ -127,14 +127,18 @@ registerParser('ca_currency', (raw: unknown): number | null => {
 registerParser('ca_status', (raw: unknown): string | null => {
   if (raw == null || raw === '') return null;
   const s = String(raw).trim().toUpperCase();
-  if (s.startsWith('OCC') || s === 'OCCUPIED') return 'occupied';
-  if (s === 'OOO' || s.includes('OUT OF ORDER') || s.includes('OUT-OF-ORDER')) return 'out_of_order';
-  if (s === 'INSP' || s.includes('INSPECT')) return 'inspected';
-  // "DIRTY" anywhere wins over the VAC*/clean catch-all, so "VACANT DIRTY",
-  // "VACANTDIRTY", "VAC/DIRTY" and "VACANT\nDIRTY" all map to vacant_dirty
-  // instead of being silently mislabeled vacant_clean (a sellable-looking room).
-  if (s === 'VD' || s.includes('DIRTY')) return 'vacant_dirty';
-  if (s === 'VC' || s.includes('CLEAN') || s.startsWith('VAC') || s === 'VACANT') return 'vacant_clean';
+  // Separator-agnostic alpha form so "VAC/DIRTY", "VACANT DIRTY", "VACANT\nDIRTY"
+  // all compare equal — without over-matching negations (the trap of a bare
+  // includes(): "Uninspected"/"Needs Cleaning" must NOT read as inspected/clean).
+  const compact = s.replace(/[^A-Z]/g, '');
+  if (compact.startsWith('OCC')) return 'occupied';
+  if (compact === 'OOO' || compact === 'OUTOFORDER') return 'out_of_order';
+  if (compact === 'INSP' || compact === 'INSPECTED') return 'inspected';
+  // "DIRTY" as a trailing token wins over the vacant/clean catch-all so a dirty
+  // room is never silently shown sellable. endsWith (not includes) so it won't
+  // fire on "DIRTYLINENPENDING" or negations like "NOTDIRTY".
+  if (compact === 'VD' || compact.endsWith('DIRTY')) return 'vacant_dirty';
+  if (compact === 'VC' || compact === 'VACANT' || compact.startsWith('VAC') || compact.endsWith('CLEAN')) return 'vacant_clean';
   // Unrecognized — surface as a read-health signal instead of silently
   // emitting 'unknown'. 'unknown' is a valid enum value so the row still
   // writes, but a flood of these means the status column drifted or was

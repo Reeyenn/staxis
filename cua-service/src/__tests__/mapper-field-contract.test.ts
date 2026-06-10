@@ -608,6 +608,10 @@ describe('ca parsers — robustness fixes', () => {
     assert.equal(status('Out of Order'), 'out_of_order');
     assert.equal(status('Inspected'), 'inspected');
     assert.equal(status('ZZZ'), 'unknown'); // unrecognized → 'unknown' (also log.warns)
+    // Negations must NOT positively match (no broad includes()).
+    assert.equal(status('Uninspected'), 'unknown');
+    assert.equal(status('Not Inspected'), 'unknown');
+    assert.equal(status('Needs Cleaning'), 'unknown');
   });
 
   test('ca_boolean_yn: Y/N/true/false/booleans', () => {
