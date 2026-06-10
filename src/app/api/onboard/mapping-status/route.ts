@@ -229,6 +229,64 @@ async function computeNumbers(
   return { anyAvailable, capturedAt, totalRooms, ...metrics };
 }
 
+// ── Per-feed "got vs missing" breakdown ──────────────────────────────────
+// So the operator can judge a learned map at a glance: exactly which feeds the
+// recipe captured (✓) vs didn't (✗), and how many rows each holds live. Counts
+// are null until the map is promoted + the session polls (a park_draft writes
+// nothing yet) — captured-vs-missing is the immediately-useful signal.
+const FEED_CATALOG: { key: string; label: string; table: string }[] = [
+  { key: 'getRoomStatus',     label: 'Room status (clean/dirty/occupied)', table: 'pms_room_status_log' },
+  { key: 'getArrivals',       label: "Today's arrivals",                   table: 'pms_reservations' },
+  { key: 'getDepartures',     label: "Today's departures",                 table: 'pms_reservations' },
+  { key: 'getWorkOrders',     label: 'Maintenance / work orders',          table: 'pms_work_orders_v2' },
+  { key: 'getFutureBookings', label: 'Future bookings',                    table: 'pms_future_bookings' },
+  { key: 'getGuestBalances',  label: 'Guest balances owed',                table: 'pms_guest_balances' },
+  { key: 'getPaymentsDaily',  label: "Today's payments",                   table: 'pms_payments_daily' },
+  { key: 'getNoShows',        label: 'No-shows',                           table: 'pms_no_shows' },
+  { key: 'getCancellations',  label: 'Cancellations',                      table: 'pms_cancellations' },
+];
+
+interface FeedStatus { key: string; label: string; captured: boolean; count: number | null }
+
+async function countTableRows(table: string, propertyId: string): Promise<number | null> {
+  try {
+    const { count, error } = await supabaseAdmin
+      .from(table)
+      .select('id', { count: 'exact', head: true })
+      .eq('property_id', propertyId);
+    return error ? null : (count ?? 0);
+  } catch {
+    return null;
+  }
+}
+
+async function buildFeedBreakdown(
+  propertyId: string, pmsFamily: string, numbers: LiveNumbers | null,
+): Promise<FeedStatus[]> {
+  // Latest knowledge file for the family = this run's learned recipe. Its
+  // `knowledge.actions` keys are the feeds the map actually captured.
+  const { data: kf } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('knowledge')
+    .eq('pms_family', pmsFamily)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const actions = ((kf?.knowledge as Record<string, unknown> | null)?.actions as Record<string, unknown> | undefined) ?? {};
+  const captured = new Set(Object.keys(actions));
+
+  return Promise.all(FEED_CATALOG.map(async (f): Promise<FeedStatus> => {
+    const isCaptured = captured.has(f.key);
+    let count: number | null = null;
+    if (isCaptured) {
+      if (f.key === 'getArrivals') count = numbers?.arrivalsToday.value ?? null;
+      else if (f.key === 'getDepartures') count = numbers?.departuresToday.value ?? null;
+      else count = await countTableRows(f.table, propertyId);
+    }
+    return { key: f.key, label: f.label, captured: isCaptured, count };
+  }));
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const code = new URL(req.url).searchParams.get('code') ?? '';
@@ -373,12 +431,14 @@ export async function GET(req: NextRequest) {
   const channel = workflowJobId ? `mapping:${workflowJobId}` : null;
 
   let numbers: LiveNumbers | null = null;
+  let feeds: FeedStatus[] | null = null;
   if (phase === 'done') {
     numbers = await computeNumbers(propertyId, totalRooms, timezone, requestId);
+    feeds = await buildFeedBreakdown(propertyId, pmsType, numbers);
   }
 
   return ok(
-    { phase, outcome, workflowJobId, channel, pmsLabel, feedsFound, pct, failReason, numbers },
+    { phase, outcome, workflowJobId, channel, pmsLabel, feedsFound, pct, failReason, numbers, feeds },
     { requestId },
   );
 }

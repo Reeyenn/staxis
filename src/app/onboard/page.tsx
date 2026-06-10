@@ -743,6 +743,7 @@ interface MappingNumbers {
   arrivalsToday: StatusMetric;
   departuresToday: StatusMetric;
 }
+interface FeedStatus { key: string; label: string; captured: boolean; count: number | null }
 interface MappingStatus {
   phase: 'preparing' | 'learning' | 'mfa' | 'done' | 'failed';
   outcome: 'auto_promote' | 'park_draft' | 'quarantine' | null;
@@ -753,6 +754,7 @@ interface MappingStatus {
   pct: number | null;
   failReason: 'login' | 'login_url' | 'stopped' | 'generic' | null;
   numbers: MappingNumbers | null;
+  feeds: FeedStatus[] | null;
 }
 
 function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<void>; }) {
@@ -949,17 +951,12 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
     : outcome === 'quarantine' ? t.doneBodyQuarantine
       : t.doneBodyPark;
 
-  // Core feeds the promotion gate GUARANTEES for non-quarantine outcomes
-  // (mapping-driver REQUIRED_TARGETS: room status, arrivals, departures,
-  // work orders). Honest to assert as learned; skipped for quarantine where
-  // a required feed may be missing.
-  const coreKeys = ['rooms', 'arrivals', 'departures', 'maintenance'];
-  const coreFeeds = MILESTONES.filter((m) => coreKeys.includes(m.key));
-  const showFeeds = outcome !== 'quarantine';
-  const extra = resp.feedsFound != null ? resp.feedsFound - coreFeeds.length : null;
-  const feedsHeading = (resp.feedsFound != null
-    ? t.foundFeeds.replace('{n}', String(resp.feedsFound))
-    : t.foundFeedsNoCount).replace('{pms}', pms);
+  // Honest per-feed breakdown — exactly which feeds the learned map captured
+  // (✓ + live row count) vs didn't (✗), so the operator can judge whether the
+  // map is usable. Shown for EVERY outcome (especially quarantine, where seeing
+  // the missing required feeds is the whole point).
+  const feeds = resp.feeds ?? [];
+  const gotCount = feeds.filter((f) => f.captured).length;
 
   return (
     <div>
@@ -967,22 +964,29 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
       <h2 style={{ fontSize: '21px', marginBottom: '6px', fontWeight: 700 }}>{title}</h2>
       <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{body}</p>
 
-      {showFeeds && (
+      {feeds.length > 0 && (
         <div style={{ background: 'var(--bg, #f6f7f9)', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
-          <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 10px 0' }}>{feedsHeading}</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {coreFeeds.map((m) => (
-              <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
-                <Check size={14} color="var(--green, #22c55e)" />
-                <span>{milestoneLabel(m, lang)}</span>
+          <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 10px 0' }}>
+            {`Captured ${gotCount} of ${feeds.length} feeds from ${pms}`}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+            {feeds.map((f) => (
+              <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                {f.captured
+                  ? <Check size={14} color="var(--green, #22c55e)" style={{ flexShrink: 0 }} />
+                  : <span style={{ color: '#c2562e', width: 14, textAlign: 'center', flexShrink: 0, fontWeight: 700 }}>✕</span>}
+                <span style={{ color: f.captured ? 'inherit' : 'var(--text-muted)' }}>{f.label}</span>
+                <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  {f.captured
+                    ? (f.count != null && f.count > 0 ? String(f.count) : 'captured')
+                    : 'not found'}
+                </span>
               </div>
             ))}
-            {extra != null && extra > 0 && (
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)', paddingLeft: '22px' }}>
-                {t.andMore.replace('{n}', String(extra))}
-              </div>
-            )}
           </div>
+          <p style={{ fontSize: '11.5px', color: 'var(--text-muted)', margin: '10px 0 0', lineHeight: 1.45 }}>
+            Numbers fill in once the map goes live. “captured” means the robot learned where the data is.
+          </p>
         </div>
       )}
 
