@@ -1,40 +1,29 @@
 'use client';
 
-export const dynamic = 'force-dynamic';
-
 /**
- * /admin/live-mapper — Live Mapper: the library of the robot's learned PMS maps.
+ * MapsManager — the robot's learned PMS maps + the controls to manage them,
+ * as an embeddable modal. Lives INSIDE the admin Onboarding "Launch bay"
+ * (OnboardingSurface), launched from the "PMS coverage" column, so there's no
+ * separate Live Mapper page/tab — the map controls live next to the coverage
+ * that shows which PMS has a map.
  *
- * Every map the robot has learned, grouped by PMS brand, showing which one is
- * LIVE plus explicit, hard-to-misclick controls to promote / roll back / take
- * offline / delete. All reads + writes go through admin-gated /api/admin/
- * live-mapper/* routes (the pms_knowledge_files table is service-role-only —
- * migration 0201 deny-all-browser policy), so the browser never touches the DB
- * directly and never sees the raw map JSON or the HMAC signature value.
+ * Every map, grouped by PMS brand, with which one is LIVE plus hard-to-misclick
+ * promote / roll back / take offline / delete controls. All reads + writes go
+ * through the admin-gated /api/admin/live-mapper/* routes (pms_knowledge_files
+ * is service-role-only), so the browser never touches the DB directly and never
+ * sees the raw map JSON or the HMAC signature value. Every mutating action is
+ * funneled through a confirm dialog that names the brand + version and spells
+ * out the consequence; the live map can't be deleted (route 409s, UI hides it).
  *
- * Promoting/deprecating changes which map EVERY hotel on that brand uses, so
- * every mutating action is funneled through a confirm dialog that names the
- * brand + version and spells out the consequence in plain English. The live
- * map can't be deleted (the route 409s and the UI doesn't offer it).
- *
- * Styling: dark "studio" admin look (var(--ink) canvas + dim() white-alpha
- * cards + forest/gold/teal accents), wrapped in .admin-studio so the studio CSS
- * vars resolve. Content is width-capped (not full-bleed) to match the other
- * standalone admin pages (e.g. /admin/pms-inbox).
+ * Renders inside the dark studio context (OnboardingSurface), so it does NOT
+ * import studio.css or wrap in AppLayout — the parent provides both.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { AppLayout } from '@/components/layout/AppLayout';
-import { ChevronLeft, RefreshCw, Map as MapIcon, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Map as MapIcon, AlertTriangle, X } from 'lucide-react';
 import { FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn } from '@/app/admin/_components/studio/kit';
 import { Backdrop, MODAL_CARD } from '@/app/admin/_components/studio/surface-kit';
-// Dark studio palette (--ink/--forest/--gold/--teal/--serif/--mono) lives here,
-// scoped under `.admin-studio`. This page renders OUTSIDE StudioShell, so it
-// must import the stylesheet itself or every var resolves to nothing.
-import '@/app/admin/_components/studio/studio.css';
 
 const dim = (a: number) => `rgba(255,255,255,${a})`;
 
@@ -106,29 +95,6 @@ function StatusPill({ status }: { status: string }) {
     default:
       return <Pill tone="neutral">{status}</Pill>;
   }
-}
-
-function DarkPage({ children }: { children: React.ReactNode }) {
-  return (
-    <AppLayout>
-      <div
-        className="admin-studio"
-        style={{
-          background: 'var(--ink)',
-          color: '#fff',
-          marginLeft: 'calc(50% - 50vw)',
-          marginRight: 'calc(50% - 50vw)',
-          minHeight: 'calc(100vh - 64px)',
-          position: 'relative',
-        }}
-      >
-        <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 70% at 100% 0%, rgba(60,156,104,.12), transparent 55%)', pointerEvents: 'none' }} />
-        <div style={{ position: 'relative', maxWidth: 1080, margin: '0 auto', padding: '24px 28px 56px' }}>
-          {children}
-        </div>
-      </div>
-    </AppLayout>
-  );
 }
 
 function Empty({ text }: { text: string }) {
@@ -256,8 +222,11 @@ function ConfirmDialog({ action, busy, error, onCancel, onConfirm }: {
   );
 }
 
-export default function LiveMapperPage() {
-  const { user, loading: authLoading } = useAuth();
+/**
+ * The maps manager as a modal. Launched from the PMS coverage column header in
+ * OnboardingSurface. Renders nothing when `open` is false.
+ */
+export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [families, setFamilies] = useState<FamilyGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -285,9 +254,8 @@ export default function LiveMapperPage() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    void load();
-  }, [user, load]);
+    if (open) void load();
+  }, [open, load]);
 
   const runAction = useCallback(async () => {
     if (!pending) return;
@@ -315,69 +283,80 @@ export default function LiveMapperPage() {
     }
   }, [pending, load]);
 
-  if (authLoading) {
-    return <DarkPage><div style={{ color: dim(.6), padding: 40, fontFamily: FONT_SERIF, fontStyle: 'italic' }}>Loading…</div></DarkPage>;
-  }
-  if (!user || user.role !== 'admin') {
-    return <DarkPage><div style={{ color: dim(.6), padding: 40 }}>Admin access only.</div></DarkPage>;
-  }
+  if (!open) return null;
 
   const totalMaps = families.reduce((n, f) => n + f.maps.length, 0);
 
   return (
-    <DarkPage>
-      <Link href="/admin" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: dim(.5), textDecoration: 'none', marginBottom: 14 }}>
-        <ChevronLeft size={14} /> Admin
-      </Link>
+    <Backdrop onClose={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="admin-studio"
+        style={{
+          width: 'min(720px, 94vw)', maxHeight: '88vh', overflowY: 'auto',
+          background: 'var(--ink)', color: '#fff',
+          border: `1px solid ${dim(.14)}`, borderRadius: 16,
+          padding: '22px 24px 28px', position: 'relative',
+          boxShadow: '0 24px 70px rgba(0,0,0,.5)',
+        }}
+      >
+        <div style={{ position: 'absolute', inset: 0, borderRadius: 16, background: 'radial-gradient(120% 60% at 100% 0%, rgba(60,156,104,.12), transparent 55%)', pointerEvents: 'none' }} />
+        <div style={{ position: 'relative' }}>
+          <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
+            <div>
+              <Caps style={{ color: dim(.5) }}>PMS coverage · Robot brains</Caps>
+              <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400, letterSpacing: '-0.02em', margin: '4px 0 0', color: '#fff', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <MapIcon size={22} style={{ color: 'var(--forest)' }} /> The maps the robot <span style={{ fontStyle: 'italic' }}>has learned</span>
+              </h2>
+              <p style={{ fontSize: 12.5, color: dim(.55), margin: '8px 0 0', maxWidth: 560, lineHeight: 1.55 }}>
+                One map per PMS brand drives every hotel on it. Promote a draft to go live, roll back, take a brand offline, or delete an old map. The live map can’t be deleted — take it offline first.
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Btn variant="ghost" size="sm" onClick={() => void load()} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>
+                <RefreshCw size={13} style={{ marginRight: 5 }} className={loading ? 'animate-spin' : undefined} /> Refresh
+              </Btn>
+              <button aria-label="Close" onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', background: dim(.06), border: `1px solid ${dim(.16)}`, color: '#fff', cursor: 'pointer' }}>
+                <X size={16} />
+              </button>
+            </div>
+          </header>
 
-      <header style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 24 }}>
-        <div>
-          <Caps style={{ color: dim(.5) }}>Onboarding · Robot brains</Caps>
-          <h1 style={{ fontFamily: FONT_SERIF, fontSize: 32, fontWeight: 400, letterSpacing: '-0.02em', margin: '4px 0 0', color: '#fff', display: 'flex', alignItems: 'center', gap: 11 }}>
-            <MapIcon size={26} style={{ color: 'var(--forest)' }} /> The maps the robot <span style={{ fontStyle: 'italic' }}>has learned</span>
-          </h1>
-          <p style={{ fontSize: 13.5, color: dim(.55), margin: '9px 0 0', maxWidth: 660, lineHeight: 1.55 }}>
-            One map per PMS brand drives every hotel on it. Promote a draft to go live, roll back to an earlier version, take a brand offline, or delete an old map. The live map can’t be deleted — take it offline first.
-          </p>
-        </div>
-        <Btn variant="ghost" size="lg" onClick={() => void load()} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>
-          <RefreshCw size={14} style={{ marginRight: 6 }} className={loading ? 'animate-spin' : undefined} /> Refresh
-        </Btn>
-      </header>
+          {error && (
+            <div style={{ marginBottom: 18, borderRadius: 12, border: '1px solid rgba(194,86,46,.42)', background: 'rgba(194,86,46,.10)', padding: '11px 14px', fontSize: 13, color: '#f0b8a6' }}>
+              {error}
+            </div>
+          )}
 
-      {error && (
-        <div style={{ marginBottom: 22, borderRadius: 12, border: '1px solid rgba(194,86,46,.42)', background: 'rgba(194,86,46,.10)', padding: '11px 14px', fontSize: 13, color: '#f0b8a6' }}>
-          {error}
-        </div>
-      )}
-
-      {totalMaps === 0 && !loading && !error ? (
-        <Empty text="No maps learned yet — the robot writes one here the first time it maps a PMS." />
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {families.map((fam) => {
-            const live = fam.maps.find((m) => m.status === 'active');
-            return (
-              <div key={fam.family} style={{ background: dim(.04), border: `1px solid ${dim(.12)}`, borderRadius: 14, overflow: 'hidden' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 16px', borderBottom: `1px solid ${dim(.08)}`, background: dim(.03) }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14.5, fontWeight: 600, color: '#fff' }}>{fam.label}</div>
-                    <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dim(.4), letterSpacing: '.03em', marginTop: 1 }}>
-                      {fam.family} · {fam.maps.length} {fam.maps.length === 1 ? 'version' : 'versions'}
+          {totalMaps === 0 && !loading && !error ? (
+            <Empty text="No maps learned yet — the robot writes one here the first time it maps a PMS." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {families.map((fam) => {
+                const live = fam.maps.find((m) => m.status === 'active');
+                return (
+                  <div key={fam.family} style={{ background: dim(.04), border: `1px solid ${dim(.12)}`, borderRadius: 14, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 16px', borderBottom: `1px solid ${dim(.08)}`, background: dim(.03) }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14.5, fontWeight: 600, color: '#fff' }}>{fam.label}</div>
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dim(.4), letterSpacing: '.03em', marginTop: 1 }}>
+                          {fam.family} · {fam.maps.length} {fam.maps.length === 1 ? 'version' : 'versions'}
+                        </div>
+                      </div>
+                      {live
+                        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 600, color: 'var(--forest)', whiteSpace: 'nowrap' }}><Dot tone="forest" size={7} /> Live · v{live.version}</span>
+                        : <Pill tone="gold">No live map</Pill>}
                     </div>
+                    {fam.maps.map((m, idx) => (
+                      <MapRow key={m.id} map={m} label={fam.label} first={idx === 0} onAction={(a) => { setActionError(null); setPending(a); }} />
+                    ))}
                   </div>
-                  {live
-                    ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 600, color: 'var(--forest)', whiteSpace: 'nowrap' }}><Dot tone="forest" size={7} /> Live · v{live.version}</span>
-                    : <Pill tone="gold">No live map</Pill>}
-                </div>
-                {fam.maps.map((m, idx) => (
-                  <MapRow key={m.id} map={m} label={fam.label} first={idx === 0} onAction={(a) => { setActionError(null); setPending(a); }} />
-                ))}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       {pending && (
         <ConfirmDialog
@@ -388,6 +367,6 @@ export default function LiveMapperPage() {
           onConfirm={() => void runAction()}
         />
       )}
-    </DarkPage>
+    </Backdrop>
   );
 }

@@ -27,6 +27,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
+import { MapsManagerModal } from '@/app/admin/_components/MapsManager';
 import {
   FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn, SerifNum,
   countUp, sweepWidth, riseIn, age, type DotTone,
@@ -153,6 +154,7 @@ export function OnboardingSurface() {
   const [prospects, setProspects] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [mapsOpen, setMapsOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -233,7 +235,6 @@ export function OnboardingSurface() {
           </h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Btn variant="ghost" size="lg" href="/admin/live-mapper" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>Live Mapper</Btn>
           <Btn variant="ghost" size="lg" href="/admin/pms-inbox" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>PMS inbox</Btn>
           <Btn variant="ghost" size="lg" onClick={() => setCreateOpen(true)} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>+ New hotel</Btn>
         </div>
@@ -303,7 +304,15 @@ export function OnboardingSurface() {
           </div>
         </div>
         <div>
-          <span className="caps" style={{ color: dim(.5) }}>PMS coverage</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span className="caps" style={{ color: dim(.5) }}>PMS coverage</span>
+            <button
+              onClick={() => setMapsOpen(true)}
+              className="mono"
+              title="See every learned map and pick / roll back / delete which one is live"
+              style={{ fontSize: 9, letterSpacing: '.06em', color: dim(.62), background: dim(.05), border: `1px solid ${dim(.16)}`, borderRadius: 7, padding: '4px 10px', cursor: 'pointer' }}
+            >Manage maps →</button>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
             {learnedPms.length === 0
               ? <Empty text="No PMSes learned yet." />
@@ -324,6 +333,7 @@ export function OnboardingSurface() {
       </div>
 
       {selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
+      <MapsManagerModal open={mapsOpen} onClose={() => setMapsOpen(false)} />
       <CreateHotelModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={() => { void load(); }} />
     </DarkShell>
   );
