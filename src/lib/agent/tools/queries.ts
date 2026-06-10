@@ -43,7 +43,9 @@ import type { Room } from '@/types';
 // back to UTC today when the property has no timezone set or the zone string
 // is invalid. Replaces the old getCurrentRoomsDate(`rooms`.date max) which
 // can no longer work — `rooms` is empty and has no usable date column.
-async function getPropertyToday(propertyId: string): Promise<string> {
+// Exported so the PMS money/booking feed tools (tools/pms-feeds.ts) share the
+// same property-local "today" derivation.
+export async function getPropertyToday(propertyId: string): Promise<string> {
   let timezone: string | null = null;
   try {
     const { data } = await supabaseAdmin

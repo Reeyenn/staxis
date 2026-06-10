@@ -16,8 +16,13 @@
  */
 
 import { log } from '../log.js';
+import type { ParserConfig } from '../types.js';
 
-export type ParserFn = (raw: unknown) => unknown;
+// feat/pms-universal-translate — parsers now accept an OPTIONAL learned config
+// (date format / enum mapping). Format-only parsers (currency/integer/boolean)
+// and the legacy ca_* parsers ignore the 2nd arg, so this is fully backward
+// compatible: a `(raw) => …` function still satisfies the type.
+export type ParserFn = (raw: unknown, config?: ParserConfig) => unknown;
 
 const REGISTRY = new Map<string, ParserFn>();
 
@@ -37,14 +42,14 @@ export function getParser(name: string): ParserFn | undefined {
  * if the parser isn't registered (logs a warning); the type-check layer
  * in generic-table-writer will reject if the resulting type is wrong.
  */
-export function applyParser(name: string, raw: unknown): unknown {
+export function applyParser(name: string, raw: unknown, config?: ParserConfig): unknown {
   const fn = REGISTRY.get(name);
   if (!fn) {
     log.warn('parser registry: parser not found, passing through raw', { name });
     return raw;
   }
   try {
-    return fn(raw);
+    return fn(raw, config);
   } catch (err) {
     log.warn('parser registry: parser threw, returning null', {
       name,

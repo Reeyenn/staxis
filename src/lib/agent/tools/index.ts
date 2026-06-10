@@ -17,6 +17,7 @@ import './complaints';
 import './compliance';
 import './lost-found';
 import './financials';
+import './pms-feeds';
 import './knowledge';
 import './memory';
 

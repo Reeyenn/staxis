@@ -38,7 +38,7 @@ import type {
   ExtractionMode,
 } from './types.js';
 import { log } from './log.js';
-import { parserForLearnedColumn } from './target-contract.js';
+import { resolveColumnParser, type LearnedTranslations } from './target-contract.js';
 
 // ─── Per-action → table mapping ───────────────────────────────────────────
 //
@@ -171,6 +171,45 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
     snapshotScope: 'full',       // CA fetch returns ALL open + recent
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
+  // feat/pms-universal-translate — 5 net-new feeds (migration 0276). All
+  // `upsert` + `delta`: each is a partial view (only folios with balances /
+  // today's collected / future or recently-cancelled reservations), so we
+  // never want reconcile's destructive auto-resolve.
+  getGuestBalances: {
+    tableName: 'pms_guest_balances',
+    keys: ['property_id', 'pms_folio_id'],
+    writeStrategy: 'upsert',
+    snapshotScope: 'delta',
+    modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
+  },
+  getPaymentsDaily: {
+    tableName: 'pms_payments_daily',
+    keys: ['property_id', 'business_date'],
+    writeStrategy: 'upsert',
+    snapshotScope: 'delta',
+    modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
+  },
+  getFutureBookings: {
+    tableName: 'pms_future_bookings',
+    keys: ['property_id', 'pms_reservation_id'],
+    writeStrategy: 'upsert',
+    snapshotScope: 'delta',
+    modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
+  },
+  getNoShows: {
+    tableName: 'pms_no_shows',
+    keys: ['property_id', 'pms_reservation_id'],
+    writeStrategy: 'upsert',
+    snapshotScope: 'delta',
+    modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
+  },
+  getCancellations: {
+    tableName: 'pms_cancellations',
+    keys: ['property_id', 'pms_reservation_id'],
+    writeStrategy: 'upsert',
+    snapshotScope: 'delta',
+    modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
+  },
 };
 
 // ─── Translate a single ActionRecipe → TableTemplate ─────────────────────
@@ -178,9 +217,27 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
 export function actionRecipeToTableTemplate(
   actionKey: keyof Recipe['actions'],
   action: ActionRecipe,
+  learned?: LearnedTranslations,
 ): TableTemplate | null {
   const route = ACTION_ROUTES[actionKey];
   if (!route) return null;
+
+  // Build a TableTemplate field, attaching the UNIVERSAL value parser + its
+  // learned config (date order / enum mapping from the knowledge file). The
+  // generic parsers normalize ANY PMS's scraped string to the type validateRows
+  // expects — otherwise a raw string for an integer/boolean/date/enum column
+  // rejects the WHOLE row. undefined parser for plain-text + unmapped columns.
+  const buildField = (col: string, selectorOrColumn: string): TableTemplateField => {
+    const resolved = resolveColumnParser(actionKey, col, learned);
+    return {
+      origin: 'list_row',
+      source: 'primary',
+      selectorOrColumn,
+      ...(resolved
+        ? { parser: resolved.parser, ...(resolved.config ? { parserConfig: resolved.config } : {}) }
+        : {}),
+    };
+  };
 
   // Source URL: walk steps for the LAST `goto` step (the URL the agent
   // ultimately landed on). Falls back to the first step's URL.
@@ -216,18 +273,7 @@ export function actionRecipeToTableTemplate(
   }];
   const fields: Record<string, TableTemplateField> = {};
   for (const [col, selectorOrColumn] of Object.entries(columns)) {
-    // Attach a value parser driven by the descriptor type (date→ca_date,
-    // integer→ca_integer, *_cents→ca_currency, boolean→ca_boolean_yn, enum
-    // overrides) so the DOM/CSV-scraped string is normalized to the type
-    // validateRows expects — otherwise a string for an integer/boolean/date
-    // column rejects the WHOLE row. undefined for plain-text + non-core cols.
-    const parser = parserForLearnedColumn(actionKey, col);
-    fields[col] = {
-      origin: 'list_row',
-      source: 'primary',
-      selectorOrColumn,
-      ...(parser ? { parser } : {}),
-    };
+    fields[col] = buildField(col, selectorOrColumn);
   }
 
   // Drill-down — collapse to a SINGLE list-page source.
@@ -248,13 +294,7 @@ export function actionRecipeToTableTemplate(
     // above don't linger as orphans pointing at a discarded source.
     for (const col of Object.keys(fields)) delete fields[col];
     for (const [col, selectorOrColumn] of Object.entries(action.drillDown.listColumns)) {
-      const parser = parserForLearnedColumn(actionKey, col);
-      fields[col] = {
-        origin: 'list_row',
-        source: 'primary',
-        selectorOrColumn,
-        ...(parser ? { parser } : {}),
-      };
+      fields[col] = buildField(col, selectorOrColumn);
     }
   }
 
@@ -399,13 +439,24 @@ export interface RecipeAdapterResult {
   skipped: Array<{ key: string; reason: string }>;
 }
 
-export function recipeToTableTemplates(recipe: Recipe): RecipeAdapterResult {
+export function recipeToTableTemplates(
+  recipe: Recipe,
+  learned?: LearnedTranslations,
+): RecipeAdapterResult {
   const templates: TableTemplate[] = [];
   const skipped: Array<{ key: string; reason: string }> = [];
 
+  // Default the learned translations to the recipe's own (mapper output carries
+  // them inline); session-driver may also pass them explicitly from the loaded
+  // knowledge file. Either way, undefined → ca_* / heuristic fallback.
+  const learnedTranslations: LearnedTranslations = learned ?? {
+    valueTranslations: recipe.valueTranslations,
+    dateFormat: recipe.dateFormat,
+  };
+
   for (const [key, action] of Object.entries(recipe.actions)) {
     if (!action) continue;
-    const template = actionRecipeToTableTemplate(key as keyof Recipe['actions'], action);
+    const template = actionRecipeToTableTemplate(key as keyof Recipe['actions'], action, learnedTranslations);
     if (template) {
       templates.push(template);
     } else {

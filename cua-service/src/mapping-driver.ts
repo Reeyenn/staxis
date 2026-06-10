@@ -641,6 +641,13 @@ async function saveDraftKnowledgeFile(
     login: recipe.login,
     actions: recipe.actions,
     hints: recipe.hints ?? {},
+    // feat/pms-universal-translate — persist self-learned value translation in
+    // the SAME envelope that gets signed (so verifyRecipe at load stays
+    // consistent) and reloaded by the session-driver. Only present when the
+    // mapper actually learned them, so recipes without them keep their exact
+    // prior signed shape.
+    ...(recipe.valueTranslations ? { valueTranslations: recipe.valueTranslations } : {}),
+    ...(recipe.dateFormat ? { dateFormat: recipe.dateFormat } : {}),
   };
 
   // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-

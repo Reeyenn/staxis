@@ -787,7 +787,14 @@ export class SessionDriver {
       login: this.knowledgeFile.knowledge.login as Recipe['login'],
       actions,
     };
-    const adaptResult = recipeToTableTemplates(recipe);
+    // feat/pms-universal-translate — hand the adapter the self-learned VALUE
+    // translation saved in this family's knowledge file (date order + enum
+    // vocabulary) so the generic parsers can normalize this PMS's strings.
+    // Absent (e.g. the seeded Choice Advantage file) → ca_* / heuristic fallback.
+    const adaptResult = recipeToTableTemplates(recipe, {
+      valueTranslations: this.knowledgeFile.knowledge.valueTranslations,
+      dateFormat: this.knowledgeFile.knowledge.dateFormat,
+    });
     if (adaptResult.skipped.length > 0) {
       log.warn('session-driver: some actions skipped by adapter', {
         propertyId: this.propertyId,

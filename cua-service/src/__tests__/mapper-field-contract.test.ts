@@ -27,17 +27,20 @@ import { recipeToTableTemplates } from '../recipe-adapter.js';
 import { applyTemplateParsers } from '../extractors/template-runner.js';
 import {
   CORE_TARGET_CONTRACTS,
+  TARGET_VALUE_CONTRACTS,
   columnsFromAction,
   missingFromList,
   missingRequiredColumns,
   requiredLearnedFor,
   parserForColumn,
   parserForLearnedColumn,
+  resolveColumnParser,
   MAX_COMPLETENESS_REASKS,
 } from '../target-contract.js';
 import { evaluatePromotionGate } from '../mapping-driver.js';
 import { getParser } from '../parsers/registry.js';
-import '../parsers/ca.js'; // side-effect: registers ca_date/ca_currency/ca_status/ca_integer/ca_boolean_yn
+import '../parsers/generic.js'; // side-effect: registers generic_date/currency/integer/number/boolean/enum (the universal default)
+import '../parsers/ca.js'; // side-effect: registers ca_* (now ONLY the enum fallback for the seeded CA file)
 import type { Recipe, ActionRecipe } from '../types.js';
 
 const PID = '00000000-0000-0000-0000-000000000001';
@@ -346,6 +349,69 @@ describe('contract drift guard vs migration 0207', () => {
   });
 });
 
+// ─── Test 5b — value contract drift guard vs migration 0276 (the 5 new feeds) ─
+// Proves the UNIVERSAL value contract for the net-new money/booking feeds
+// mirrors the descriptor that drives the writer — so each feed's date/_cents
+// columns get the right generic parser with no per-PMS code. Parsed from the
+// REAL 0276 migration file (can't pass if both the contract AND the migration
+// drift together).
+
+describe('value contract drift guard vs migration 0276', () => {
+  const MIGRATION_REL_0276 = path.join('supabase', 'migrations', '0276_pms_money_future_noshows_cancellations.sql');
+  const PATH_0276 = [
+    path.resolve(process.cwd(), '..', MIGRATION_REL_0276),
+    path.resolve(process.cwd(), MIGRATION_REL_0276),
+  ].find((p) => existsSync(p));
+  assert.ok(PATH_0276, `0276 migration not found relative to ${process.cwd()}`);
+  const MIG_0276 = readFileSync(PATH_0276, 'utf8');
+
+  const colsFromMig = (table: string): Array<{ name: string; type: string }> => {
+    const start = MIG_0276.indexOf(`('${table}'`);
+    assert.ok(start >= 0, `table ${table} not found in 0276`);
+    const after = MIG_0276.slice(start + 1);
+    const next = after.search(/\('pms_/); // boundary = next table's descriptor literal
+    const block = next >= 0 ? after.slice(0, next) : after;
+    const re = /jsonb_build_object\(\s*'name',\s*'([^']+)',\s*'type',\s*'([^']+)'/g;
+    const cols: Array<{ name: string; type: string }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(block)) !== null) cols.push({ name: m[1]!, type: m[2]! });
+    return cols;
+  };
+
+  const NEW_FEEDS: Array<[keyof Recipe['actions'], string]> = [
+    ['getGuestBalances', 'pms_guest_balances'],
+    ['getPaymentsDaily', 'pms_payments_daily'],
+    ['getFutureBookings', 'pms_future_bookings'],
+    ['getNoShows', 'pms_no_shows'],
+    ['getCancellations', 'pms_cancellations'],
+  ];
+
+  test('TARGET_VALUE_CONTRACTS == 0276 descriptor (name+type, minus writer-stamped captured_at)', () => {
+    const norm = (cols: Array<{ name: string; type: string }>) => cols.map((c) => `${c.name}:${c.type}`).sort();
+    for (const [key, table] of NEW_FEEDS) {
+      const mig = colsFromMig(table).filter((c) => c.type !== 'timestamptz');
+      const contract = TARGET_VALUE_CONTRACTS[key];
+      assert.ok(contract, `${key} missing from TARGET_VALUE_CONTRACTS`);
+      assert.equal(contract!.table, table, `${key} table mismatch`);
+      assert.deepEqual(
+        norm(contract!.columns.map((c) => ({ name: c.name, type: c.type }))),
+        norm(mig),
+        `${key} value contract drifted from 0276`,
+      );
+    }
+  });
+
+  test('core enum canonical sets in TARGET_VALUE_CONTRACTS match the 0207 descriptor allowed_values', () => {
+    const enumOf = (desc: TableSchemaDescriptor, col: string) =>
+      desc.columns.find((c) => c.name === col)?.allowed_values;
+    const vc = (key: keyof Recipe['actions'], col: string) =>
+      TARGET_VALUE_CONTRACTS[key]!.columns.find((c) => c.name === col)?.enumValues;
+    assert.deepEqual(vc('getRoomStatus', 'status'), enumOf(ROOM_STATUS_DESCRIPTOR, 'status'));
+    assert.deepEqual(vc('getWorkOrders', 'status'), enumOf(WORK_ORDERS_DESCRIPTOR, 'status'));
+    assert.deepEqual(vc('getWorkOrders', 'priority'), enumOf(WORK_ORDERS_DESCRIPTOR, 'priority'));
+  });
+});
+
 // ─── Test 6 — promotion gate column-completeness ─────────────────────────────
 
 function tableAction(columns: Record<string, string>): ActionRecipe {
@@ -511,34 +577,55 @@ describe('end-to-end: CA DOM strings → parsers → validateRows PASS', () => {
 // ─── Test 8 — parser selection (driven by descriptor type) ───────────────────
 
 describe('parser selection', () => {
-  test('parserForColumn maps by type, with the room-status enum override', () => {
-    assert.equal(parserForColumn('pms_reservations', { name: 'arrival_date', type: 'date' }), 'ca_date');
-    assert.equal(parserForColumn('pms_reservations', { name: 'num_nights', type: 'integer' }), 'ca_integer');
-    assert.equal(parserForColumn('pms_reservations', { name: 'rate_per_night_cents', type: 'bigint' }), 'ca_currency');
-    assert.equal(parserForColumn('pms_x', { name: 'big_count', type: 'bigint' }), 'ca_integer'); // bigint not *_cents
-    assert.equal(parserForColumn('pms_work_orders_v2', { name: 'out_of_order', type: 'boolean' }), 'ca_boolean_yn');
+  test('parserForColumn maps by type to GENERIC parsers; enum override = ca_* fallback', () => {
+    // Format types → universal generic parsers (no per-PMS code).
+    assert.equal(parserForColumn('pms_reservations', { name: 'arrival_date', type: 'date' }), 'generic_date');
+    assert.equal(parserForColumn('pms_reservations', { name: 'num_nights', type: 'integer' }), 'generic_integer');
+    assert.equal(parserForColumn('pms_reservations', { name: 'rate_per_night_cents', type: 'bigint' }), 'generic_currency');
+    assert.equal(parserForColumn('pms_x', { name: 'big_count', type: 'bigint' }), 'generic_integer'); // bigint not *_cents
+    assert.equal(parserForColumn('pms_x', { name: 'occ_pct', type: 'numeric' }), 'generic_number');
+    assert.equal(parserForColumn('pms_work_orders_v2', { name: 'out_of_order', type: 'boolean' }), 'generic_boolean');
     assert.equal(parserForColumn('pms_reservations', { name: 'guest_name', type: 'text' }), undefined);
-    assert.equal(parserForColumn('pms_room_status_log', { name: 'status', type: 'text' }), 'ca_status'); // enum override
+    // Enum columns keep the ca_* parser as the FALLBACK (no learned context here).
+    assert.equal(parserForColumn('pms_room_status_log', { name: 'status', type: 'text' }), 'ca_status');
     assert.equal(parserForColumn('pms_reservations', { name: 'status', type: 'text' }), undefined); // no override → text
-    // work-order enum overrides (required status + optional priority)
     assert.equal(parserForColumn('pms_work_orders_v2', { name: 'status', type: 'text' }), 'ca_work_order_status');
     assert.equal(parserForColumn('pms_work_orders_v2', { name: 'priority', type: 'text' }), 'ca_priority');
   });
 
-  test('parserForLearnedColumn resolves via contract; undefined for non-core / extra fields', () => {
-    assert.equal(parserForLearnedColumn('getArrivals', 'arrival_date'), 'ca_date');
-    assert.equal(parserForLearnedColumn('getArrivals', 'num_nights'), 'ca_integer');
-    assert.equal(parserForLearnedColumn('getRoomStatus', 'status'), 'ca_status');
-    assert.equal(parserForLearnedColumn('getWorkOrders', 'out_of_order'), 'ca_boolean_yn');
-    assert.equal(parserForLearnedColumn('getWorkOrders', 'status'), 'ca_work_order_status');
-    assert.equal(parserForLearnedColumn('getWorkOrders', 'priority'), 'ca_priority');
+  test('parserForLearnedColumn: generic for format, ca_* enum fallback, NOW covers new feeds', () => {
+    assert.equal(parserForLearnedColumn('getArrivals', 'arrival_date'), 'generic_date');
+    assert.equal(parserForLearnedColumn('getArrivals', 'num_nights'), 'generic_integer');
+    assert.equal(parserForLearnedColumn('getRoomStatus', 'status'), 'ca_status');           // enum fallback (no learned map)
+    assert.equal(parserForLearnedColumn('getWorkOrders', 'out_of_order'), 'generic_boolean');
+    assert.equal(parserForLearnedColumn('getWorkOrders', 'status'), 'ca_work_order_status'); // enum fallback
+    assert.equal(parserForLearnedColumn('getWorkOrders', 'priority'), 'ca_priority');        // enum fallback
     assert.equal(parserForLearnedColumn('getArrivals', 'guest_name'), undefined); // text
     assert.equal(parserForLearnedColumn('getArrivals', 'adults'), undefined);     // extra field not in descriptor
-    assert.equal(parserForLearnedColumn('getRevenueDaily', 'date'), undefined);   // non-core target
+    // The 5 net-new feeds now resolve (the latent "non-core gets no parser" gap is closed).
+    assert.equal(parserForLearnedColumn('getGuestBalances', 'balance_cents'), 'generic_currency');
+    assert.equal(parserForLearnedColumn('getFutureBookings', 'arrival_date'), 'generic_date');
+    assert.equal(parserForLearnedColumn('getCancellations', 'cancelled_date'), 'generic_date');
   });
 
-  test('every parser the contract derives is actually registered', () => {
-    for (const contract of Object.values(CORE_TARGET_CONTRACTS)) {
+  test('resolveColumnParser: a LEARNED enum mapping beats the ca_* fallback (the universality switch)', () => {
+    // With no learned translations, an enum column falls back to ca_*.
+    assert.deepEqual(resolveColumnParser('getRoomStatus', 'status'), { parser: 'ca_status' });
+    // With a self-learned mapping in the knowledge file, it routes to generic_enum
+    // carrying that mapping — exactly how a brand-new PMS translates with no code.
+    const learned = { valueTranslations: { 'pms_room_status_log.status': { 'Frei-Sauber': 'vacant_clean' } } };
+    const resolved = resolveColumnParser('getRoomStatus', 'status', learned);
+    assert.equal(resolved?.parser, 'generic_enum');
+    assert.equal(resolved?.config?.mapping?.['Frei-Sauber'], 'vacant_clean');
+    assert.equal(resolved?.config?.onUnknown, 'unknown'); // 'unknown' ∈ canonical set
+    // A learned date format rides along on date columns.
+    const withDate = resolveColumnParser('getArrivals', 'arrival_date', { dateFormat: { order: 'DMY', confidence: 'high' } });
+    assert.equal(withDate?.parser, 'generic_date');
+    assert.equal(withDate?.config?.dateFormat?.order, 'DMY');
+  });
+
+  test('every parser the contract derives (core + 5 new feeds) is actually registered', () => {
+    for (const contract of Object.values(TARGET_VALUE_CONTRACTS)) {
       for (const col of contract!.columns) {
         const name = parserForColumn(contract!.table, col);
         if (name) assert.ok(getParser(name), `parser "${name}" for ${contract!.table}.${col.name} is not registered`);
