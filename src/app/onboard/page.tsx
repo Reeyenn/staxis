@@ -30,12 +30,14 @@ export const dynamic = 'force-dynamic';
  * owner's session — RLS isolates them from Beaumont automatically.
  */
 
-import React, { useEffect, useState, useCallback, Suspense } from 'react';
+import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
-import { Loader2, Check, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles } from 'lucide-react';
+import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles } from 'lucide-react';
 import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
+import { useLang } from '@/contexts/LanguageContext';
+import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
 
 // ─── Types mirroring the wizard API response ───────────────────────────
 
@@ -176,7 +178,7 @@ function OnboardWizard() {
       {wizard.currentStep === 4 && <Step4HotelDetails code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 5 && <Step5Services code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 6 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 7 && <Step7Mapping code={code} wizard={wizard} onNext={advance} />}
+      {wizard.currentStep === 7 && <Step7Mapping code={code} onNext={advance} />}
       {wizard.currentStep === 8 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 9 && <Step9AllSet code={code} wizard={wizard} />}
     </WizardLayout>
@@ -715,70 +717,346 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
   );
 }
 
-// ─── Step 7: Mapping (CUA progress) ─────────────────────────────────────
+// ─── Step 7: Mapping (live CUA progress) ────────────────────────────────
+//
+// Rebuilt 2026-06-10. The old version polled /api/pms/job-status which only
+// reads the coarse property_sessions.status — that sits at
+// paused_no_knowledge_file (=50%) the whole time the mapper runs and NEVER
+// advances on the common park_draft outcome, so the bar froze forever.
+//
+// Now we poll /api/onboard/mapping-status (code-gated, supabaseAdmin) which
+// bridges propertyId → the mapper workflow_jobs row → { phase, outcome,
+// channel, feedsFound, live numbers }, and ADDITIONALLY subscribe to the
+// mapper's realtime broadcast channel for live per-feed milestones. The
+// polled route is the source of truth; the broadcast is an additive live
+// layer (pub/sub only — not a table read, so the silent-empty RLS bug
+// can't apply).
 
-function Step7Mapping({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
-  const jobId = wizard.state.pmsJobId as string | undefined;
-  const [status, setStatus] = useState<string>('queued');
-  const [step, setStep] = useState<string>('Waiting for a worker…');
-  const [pct, setPct] = useState<number>(0);
-  const [error, setError] = useState<string | null>(null);
+type StatusMetric = { value: number | null; available: boolean };
+interface MappingNumbers {
+  anyAvailable: boolean;
+  capturedAt: string | null;
+  totalRooms: number | null;
+  occupancyPct: StatusMetric;
+  occupiedRooms: StatusMetric;
+  guestsInHouse: StatusMetric;
+  arrivalsToday: StatusMetric;
+  departuresToday: StatusMetric;
+}
+interface MappingStatus {
+  phase: 'preparing' | 'learning' | 'mfa' | 'done' | 'failed';
+  outcome: 'auto_promote' | 'park_draft' | 'quarantine' | null;
+  workflowJobId: string | null;
+  channel: string | null;
+  pmsLabel: string;
+  feedsFound: number | null;
+  pct: number | null;
+  failReason: 'login' | 'login_url' | 'stopped' | 'generic' | null;
+  numbers: MappingNumbers | null;
+}
 
+function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<void>; }) {
+  const { lang } = useLang();
+  const t = mt(lang);
+
+  const [resp, setResp] = useState<MappingStatus | null>(null);
+  const [barPct, setBarPct] = useState(0);
+  const [maxMilestone, setMaxMilestone] = useState(-1);
+  const [pollNonce, setPollNonce] = useState(0);
+  const [advancing, setAdvancing] = useState(false);
+  const [advanceError, setAdvanceError] = useState<string | null>(null);
+  const advancingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  // Poll the bridge endpoint BY CODE (not the legacy pmsJobId — the route
+  // resolves the property + mapper job from the code itself, so the step is
+  // never stuck waiting on a pmsJobId the wizard may not have persisted).
+  // Plain fetch (NOT fetchWithAuth) — the join code is the trust anchor and
+  // fetchWithAuth can sign the user out on a transient 2FA refresh mid-poll.
+  // Self-scheduling so the cadence can flex (3s in flight; 5s × a few after
+  // done to catch late live numbers).
   useEffect(() => {
-    if (!jobId) return;
+    if (!code) return;
     let active = true;
-    const poll = async () => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let slowRefreshes = 0;
+    const tick = async () => {
       try {
-        const res = await fetchWithAuth(`/api/pms/job-status?id=${jobId}`);
+        const res = await fetch(`/api/onboard/mapping-status?code=${encodeURIComponent(code)}`);
         const json = await res.json();
-        if (!active || !json.ok) return;
-        const d = json.data;
-        setStatus(d.status);
-        setStep(d.step ?? 'Working…');
-        setPct(d.progressPct ?? 0);
-        if (d.status === 'complete') {
-          await fetch('/api/onboard/wizard', {
-            method: 'PATCH',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              code,
-              partialState: { mappingCompletedAt: new Date().toISOString() },
-            }),
-          });
-          await onNext();
-        } else if (d.status === 'failed') {
-          setError(d.error ?? 'Mapping failed. Reeyen has been notified.');
+        if (!active) return;
+        if (json.ok) {
+          const d = json.data as MappingStatus;
+          setResp(d);
+          if (typeof d.pct === 'number') setBarPct((p) => Math.max(p, d.pct as number));
+          if (d.phase === 'done') {
+            setMaxMilestone(MILESTONES.length - 1);
+            setBarPct(100);
+            // Refresh a few more times so live numbers that land a beat after
+            // completion (the mapper's data-write) fill in, then stop.
+            if (slowRefreshes < 6) { slowRefreshes += 1; timer = setTimeout(tick, 5000); }
+            return;
+          }
+          if (d.phase === 'failed') return; // terminal — stop polling
         }
-      } catch (e) {
-        if (e instanceof SessionEndedError) return;  // redirect in progress; stop polling
-        // ignore transient network errors; next tick will retry
+        timer = setTimeout(tick, 3000);
+      } catch {
+        if (active) timer = setTimeout(tick, 3000);
       }
     };
-    void poll();
-    const t = setInterval(poll, 3000);
-    return () => { active = false; clearInterval(t); };
-  }, [jobId, code, onNext]);
+    void tick();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [code, pollNonce]);
+
+  // Live milestone layer: subscribe to the mapper's broadcast channel once
+  // the endpoint hands us its name. Mirrors the admin Live Mapping console.
+  // Cleaned up on unmount / channel change.
+  const channel = resp?.channel ?? null;
+  useEffect(() => {
+    if (!channel) return;
+    const ch = supabase
+      .channel(channel)
+      .on('broadcast' as any, { event: '*' }, (msg: { payload?: { label?: string; pct?: number } }) => {
+        const p = msg?.payload;
+        if (p && typeof p.pct === 'number') setBarPct((prev) => Math.max(prev, p.pct as number));
+        if (p && typeof p.label === 'string') {
+          const idx = milestoneIndexForLabel(p.label);
+          if (idx >= 0) setMaxMilestone((prev) => Math.max(prev, idx));
+        }
+      })
+      .subscribe();
+    return () => { void ch.unsubscribe(); };
+  }, [channel]);
+
+  const phase = resp?.phase ?? 'preparing';
+
+  const advance = async () => {
+    if (advancingRef.current) return; // guard double-tap before `disabled` applies
+    advancingRef.current = true;
+    setAdvancing(true);
+    setAdvanceError(null);
+    try {
+      // Mark mapping complete so deriveCurrentStep moves to step 8. All three
+      // done-outcomes advance — onboarding must not block on an admin review
+      // (park_draft / quarantine finish wiring up in the background). Verify
+      // the save landed before advancing, else the click would look dead.
+      const res = await fetch('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code, partialState: { mappingCompletedAt: new Date().toISOString() } }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        setAdvanceError(t.continueError);
+        return;
+      }
+      await onNext();
+    } catch {
+      setAdvanceError(t.continueError);
+    } finally {
+      advancingRef.current = false;
+      if (mountedRef.current) setAdvancing(false);
+    }
+  };
+
+  if (phase === 'done') {
+    return <Step7Done t={t} lang={lang} resp={resp as MappingStatus} advancing={advancing} error={advanceError} onContinue={advance} />;
+  }
+
+  if (phase === 'failed') {
+    const r = resp?.failReason;
+    const msg = r === 'login' ? t.failLogin
+      : r === 'login_url' ? t.failLoginUrl
+        : r === 'stopped' ? t.failStopped
+          : t.failGeneric;
+    return (
+      <div>
+        <AlertCircle size={28} color="var(--red, #ef4444)" style={{ marginBottom: '12px' }} />
+        <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.failTitle}</h2>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{msg}</p>
+        <button
+          className="btn btn-secondary"
+          onClick={() => { setResp(null); setBarPct(0); setMaxMilestone(-1); setPollNonce((n) => n + 1); }}
+          style={{ justifyContent: 'center' }}
+        >
+          {t.checkAgainBtn}
+        </button>
+      </div>
+    );
+  }
+
+  // preparing / learning / mfa
+  const title = phase === 'mfa' ? t.mfaTitle
+    : phase === 'preparing' ? t.preparingTitle
+      : t.learningTitle.replace('{pms}', resp?.pmsLabel ?? 'PMS');
+  const body = phase === 'mfa' ? t.mfaBody
+    : phase === 'preparing' ? t.preparingBody
+      : t.learningBody;
+  const showChecklist = phase === 'learning' && maxMilestone >= 0;
+  const indeterminate = !showChecklist; // no real milestone yet → animated bar
 
   return (
     <div>
       <Loader2 size={28} className="spin" color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
-      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Learning your PMS…</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
-        This usually takes 2–5 minutes. Status updates live below.
-      </p>
-      {error ? (
-        <ErrorBox msg={error} />
-      ) : (
-        <div>
-          <p style={{ fontSize: '14px', marginBottom: '8px' }}>{step}</p>
-          <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
-            <div style={{ width: `${pct}%`, height: '100%', background: 'var(--amber, #d49040)', transition: 'width 0.3s' }} />
-          </div>
-          <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>{status} · {pct}%</p>
+      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{title}</h2>
+      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px', lineHeight: 1.5 }}>{body}</p>
+
+      <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden', marginBottom: '16px' }}>
+        {indeterminate ? (
+          <div className="onboard-indeterminate" style={{ height: '100%', background: 'var(--amber, #d49040)' }} />
+        ) : (
+          <div style={{ width: `${barPct}%`, height: '100%', background: 'var(--amber, #d49040)', transition: 'width 0.4s' }} />
+        )}
+      </div>
+
+      {showChecklist && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {MILESTONES.slice(0, maxMilestone + 1).map((m, i) => (
+            <MilestoneRow key={m.key} label={milestoneLabel(m, lang)} done={i !== maxMilestone} active={i === maxMilestone} />
+          ))}
         </div>
       )}
+
+      <style>{`
+        .onboard-indeterminate { width: 40%; animation: onboardSlide 1.3s ease-in-out infinite; }
+        @keyframes onboardSlide { 0% { margin-left: -40% } 100% { margin-left: 100% } }
+      `}</style>
     </div>
   );
+}
+
+function MilestoneRow({ label, done, active }: { label: string; done: boolean; active: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: active ? 'var(--text-primary, #111)' : 'var(--text-muted)' }}>
+      {done
+        ? <Check size={14} color="var(--green, #22c55e)" />
+        : <Loader2 size={14} className="spin" color="var(--amber, #d49040)" />}
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
+  t: MappingStrings; lang: 'en' | 'es'; resp: MappingStatus; advancing: boolean; error: string | null; onContinue: () => Promise<void>;
+}) {
+  const outcome = resp.outcome ?? 'park_draft';
+  const pms = resp.pmsLabel || 'PMS';
+  const title = outcome === 'auto_promote' ? t.doneTitleAuto
+    : outcome === 'quarantine' ? t.doneTitleQuarantine
+      : t.doneTitlePark;
+  const body = outcome === 'auto_promote' ? t.doneBodyAuto
+    : outcome === 'quarantine' ? t.doneBodyQuarantine
+      : t.doneBodyPark;
+
+  // Core feeds the promotion gate GUARANTEES for non-quarantine outcomes
+  // (mapping-driver REQUIRED_TARGETS: room status, arrivals, departures,
+  // work orders). Honest to assert as learned; skipped for quarantine where
+  // a required feed may be missing.
+  const coreKeys = ['rooms', 'arrivals', 'departures', 'maintenance'];
+  const coreFeeds = MILESTONES.filter((m) => coreKeys.includes(m.key));
+  const showFeeds = outcome !== 'quarantine';
+  const extra = resp.feedsFound != null ? resp.feedsFound - coreFeeds.length : null;
+  const feedsHeading = (resp.feedsFound != null
+    ? t.foundFeeds.replace('{n}', String(resp.feedsFound))
+    : t.foundFeedsNoCount).replace('{pms}', pms);
+
+  return (
+    <div>
+      <CheckCircle2 size={30} color="var(--green, #22c55e)" style={{ marginBottom: '12px' }} />
+      <h2 style={{ fontSize: '21px', marginBottom: '6px', fontWeight: 700 }}>{title}</h2>
+      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{body}</p>
+
+      {showFeeds && (
+        <div style={{ background: 'var(--bg, #f6f7f9)', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
+          <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 10px 0' }}>{feedsHeading}</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {coreFeeds.map((m) => (
+              <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                <Check size={14} color="var(--green, #22c55e)" />
+                <span>{milestoneLabel(m, lang)}</span>
+              </div>
+            ))}
+            {extra != null && extra > 0 && (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', paddingLeft: '22px' }}>
+                {t.andMore.replace('{n}', String(extra))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <LiveNumbersBlock t={t} lang={lang} numbers={resp.numbers} />
+
+      {error && <ErrorBox msg={error} />}
+
+      <button className="btn btn-primary" onClick={onContinue} disabled={advancing} style={{ width: '100%', justifyContent: 'center', marginTop: '4px' }}>
+        {advancing ? <Loader2 size={14} className="spin" /> : null}
+        {advancing ? '…' : (outcome === 'auto_promote' ? t.continuePlain : t.continueBtn)}
+      </button>
+    </div>
+  );
+}
+
+function LiveNumbersBlock({ t, lang, numbers }: { t: MappingStrings; lang: 'en' | 'es'; numbers: MappingNumbers | null }) {
+  if (!numbers || !numbers.anyAvailable) {
+    return (
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: 1.5 }}>
+        {t.numbersNone}
+      </p>
+    );
+  }
+
+  const cards: { label: string; main: string; sub?: string }[] = [];
+  if (numbers.occupancyPct.available && numbers.occupancyPct.value != null) {
+    cards.push({
+      label: t.statOccupancy,
+      main: `${numbers.occupancyPct.value}%`,
+      sub: numbers.occupiedRooms.available && numbers.occupiedRooms.value != null && numbers.totalRooms != null
+        ? t.roomsOfTotal.replace('{occ}', String(numbers.occupiedRooms.value)).replace('{total}', String(numbers.totalRooms))
+        : undefined,
+    });
+  } else if (numbers.occupiedRooms.available && numbers.occupiedRooms.value != null) {
+    cards.push({ label: t.statOccupancy, main: String(numbers.occupiedRooms.value) });
+  }
+  if (numbers.arrivalsToday.available && numbers.arrivalsToday.value != null) cards.push({ label: t.statArrivals, main: String(numbers.arrivalsToday.value) });
+  if (numbers.departuresToday.available && numbers.departuresToday.value != null) cards.push({ label: t.statDepartures, main: String(numbers.departuresToday.value) });
+  if (numbers.guestsInHouse.available && numbers.guestsInHouse.value != null) cards.push({ label: t.statGuests, main: String(numbers.guestsInHouse.value) });
+
+  if (cards.length === 0) {
+    return (
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: 1.5 }}>
+        {t.numbersNone}
+      </p>
+    );
+  }
+
+  const when = numbers.capturedAt ? formatWhen(numbers.capturedAt, lang) : '';
+  return (
+    <div style={{ marginBottom: '16px' }}>
+      <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 4px 0' }}>{t.numbersHeading}</p>
+      <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '0 0 10px 0' }}>{t.numbersCaption.replace('{when}', when)}</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '8px' }}>
+        {cards.map((c) => (
+          <div key={c.label} style={{ background: 'var(--bg, #f6f7f9)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px 12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary, #111)' }}>{c.main}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{c.label}</div>
+            {c.sub ? <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>{c.sub}</div> : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatWhen(iso: string, lang: 'en' | 'es'): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  try {
+    return ' · ' + d.toLocaleTimeString(lang, { hour: 'numeric', minute: '2-digit' });
+  } catch {
+    return '';
+  }
 }
 
 // ─── Step 8: Add team ───────────────────────────────────────────────────
