@@ -216,7 +216,14 @@ const RESERVATION_VALUE_COLUMNS: ValueColumn[] = [
   { name: 'departure_date', type: 'date' },
   { name: 'room_number', type: 'text' },
   { name: 'num_nights', type: 'integer' },
-  { name: 'status', type: 'text' },
+  // pms_reservations.status carries a LIVE DB CHECK (booked/checked_in/
+  // checked_out/cancelled/no_show or null) but its 0207 descriptor has empty
+  // allowed_values, so an un-normalized raw status (e.g. "Due In") batch-loses
+  // the WHOLE arrivals/departures reservation row. Give it the canonical set so
+  // resolveColumnParser routes it through generic_enum: a learned recipe maps
+  // the PMS's words → canonical; anything unknown → null (status is optional, so
+  // the reservation still writes). 'unknown' is NOT a CHECK value → onUnknown=null.
+  { name: 'status', type: 'text', enumValues: ['booked', 'checked_in', 'checked_out', 'cancelled', 'no_show'] },
   { name: 'channel_name', type: 'text' },
   { name: 'rate_per_night_cents', type: 'bigint' },
 ];
