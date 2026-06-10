@@ -41,7 +41,7 @@ import { sendAdminSms } from './admin-sms.js';
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
-import { requiredLearnedFor, missingFromList, MAX_COMPLETENESS_REASKS } from './target-contract.js';
+import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS } from './target-contract.js';
 import {
   createPruneState,
   maybePruneHistory,
@@ -1335,7 +1335,13 @@ async function mapAction(args: {
         // writes 0 rows at runtime. Re-ask the model (bounded) with the exact
         // snake_case key names before accepting blanks; the promotion gate
         // parks the draft if they're still missing after the budget is spent.
-        const missingRequired = missingFromList(args.requiredFields, learnedColumns);
+        //
+        // Scoped to the CORE feeds' descriptor contract (missingRequiredColumns
+        // returns [] for non-core targets, whose requiredFields can include
+        // off-page fields like a forecast run-date the model genuinely can't
+        // supply). This keeps the re-ask symmetric with the promotion gate,
+        // which is also REQUIRED_TARGETS-only.
+        const missingRequired = missingRequiredColumns(args.actionName as keyof Recipe['actions'], learnedColumns);
         if (missingRequired.length > 0 && completenessReasks < MAX_COMPLETENESS_REASKS) {
           completenessReasks++;
           log.warn('mapper: required columns missing/blank — re-asking model', {

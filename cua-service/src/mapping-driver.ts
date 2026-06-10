@@ -442,6 +442,14 @@ export function evaluatePromotionGate(
   // so don't auto-promote it: park as a draft for admin review. (quarantine
   // stays reserved for a missing required KEY above; this is a quality miss, on
   // par with the too-few-business-critical park_draft below.)
+  //
+  // INTENTIONAL on the self-repair path: this scans ALL required targets,
+  // including seeded ones, not just the freshly-relearned target. A repair must
+  // not auto-promote a recipe that still has a dead required feed — if a
+  // pre-existing seeded feed has an incomplete column map (e.g. a recipe
+  // promoted before this fix, with camelCase keys), the repair parks for a full
+  // re-map rather than rubber-stamping a 3/4-dead recipe. Do not narrow this to
+  // the relearned target only.
   const incompleteRequired = REQUIRED_TARGETS
     .map((t) => {
       const action = recipe.actions[t];
