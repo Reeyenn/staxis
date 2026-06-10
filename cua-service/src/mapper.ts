@@ -41,6 +41,7 @@ import { sendAdminSms } from './admin-sms.js';
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
+import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS } from './target-contract.js';
 import {
   createPruneState,
   maybePruneHistory,
@@ -1218,6 +1219,15 @@ async function mapAction(args: {
   // doesn't poison `getDepartures`.
   const loopDetector = new ActionLoopDetector();
 
+  // Completeness re-ask budget (fix/mapper-field-contract). Bounds how many
+  // times the success branch re-prompts the model to fill missing REQUIRED
+  // columns before accepting blanks. Without it a feed can "succeed" with
+  // empty selectors and silently write 0 rows (validateRows rejects every row
+  // for the absent descriptor column). The per-target step/cost/wallclock/
+  // token caps below are the outer backstops; this just stops us accepting a
+  // structurally-incomplete column map on the first emit.
+  let completenessReasks = 0;
+
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
@@ -1318,6 +1328,49 @@ async function mapAction(args: {
 
       // Success path: agent found the page and emitted parse hints.
       if (parsed && typeof parsed.rowSelector === 'string' && parsed.columns && typeof parsed.columns === 'object') {
+        const learnedColumns = parsed.columns as Record<string, string>;
+
+        // Completeness re-ask (fix/mapper-field-contract): a "successful" feed
+        // whose learned column map is missing a REQUIRED descriptor column
+        // writes 0 rows at runtime. Re-ask the model (bounded) with the exact
+        // snake_case key names before accepting blanks; the promotion gate
+        // parks the draft if they're still missing after the budget is spent.
+        //
+        // Scoped to the CORE feeds' descriptor contract (missingRequiredColumns
+        // returns [] for non-core targets, whose requiredFields can include
+        // off-page fields like a forecast run-date the model genuinely can't
+        // supply). This keeps the re-ask symmetric with the promotion gate,
+        // which is also REQUIRED_TARGETS-only.
+        const missingRequired = missingRequiredColumns(args.actionName as keyof Recipe['actions'], learnedColumns);
+        if (missingRequired.length > 0 && completenessReasks < MAX_COMPLETENESS_REASKS) {
+          completenessReasks++;
+          log.warn('mapper: required columns missing/blank — re-asking model', {
+            actionName: args.actionName,
+            missing: missingRequired,
+            attempt: completenessReasks,
+            maxAttempts: MAX_COMPLETENESS_REASKS,
+          });
+          // Same rewind idiom as the unavailable / ask_admin branches: pop the
+          // assistant turn that emitted the incomplete JSON, push a user-turn
+          // hint, reset the exploration floor, re-enter the agent loop.
+          messages.pop();
+          messages.push({
+            role: 'user',
+            content: [{
+              type: 'text',
+              text:
+                `Hint from your supervisor: your "columns" map is missing required ` +
+                `field(s): ${missingRequired.join(', ')}. Re-read the row and add a ` +
+                `CSS selector (relative to the row) for EACH missing field, using ` +
+                `these EXACT key names. If a field genuinely does not appear ` +
+                `anywhere on this page, leave it as an empty string and proceed.`,
+            }],
+          });
+          readPageCount = 0;
+          navigationCount = 0;
+          continue;
+        }
+
         return {
           ok: true,
           action: {
@@ -1326,7 +1379,7 @@ async function mapAction(args: {
               mode: 'table',
               hint: {
                 rowSelector: parsed.rowSelector,
-                columns: parsed.columns as Record<string, string>,
+                columns: learnedColumns,
               },
             },
           },
@@ -2189,16 +2242,13 @@ const HOUSEKEEPING_GOAL =
   `Usually under "Reports", "Front Desk → Reports", or "Housekeeping". ` +
   `You may need to set filters (date=today, all rooms, all statuses) ` +
   `before the report renders.\n\n` +
-  `The right page shows a TABLE with one row per room. Look for these ` +
-  `columns (names vary by PMS — match what's closest):\n` +
-  `  - Room number (required)\n` +
-  `  - Room type / category\n` +
-  `  - Status (Occupied / Vacant)\n` +
-  `  - Condition (Clean / Dirty / Inspected / Out of Order)\n` +
-  `  - Stay/CO indicator (Stayover or Checkout)\n` +
-  `  - Arrival date (for current/incoming guest)\n` +
-  `  - Departure date\n` +
-  `  - Assigned housekeeper (if shown)`;
+  `The right page shows a TABLE with one row per room. Use these EXACT keys ` +
+  `in your "columns" object (column labels vary by PMS — match what's closest):\n` +
+  `  - room_number (required)\n` +
+  `  - status (required — the room's current housekeeping/occupancy state; ` +
+  `pick the single column that best represents it, e.g. Occupied / Vacant / ` +
+  `Clean / Dirty / Inspected / Out of Order)\n` +
+  `  - changed_by (optional — who last changed the status, if shown)`;
 
 const ARRIVALS_GOAL =
   `Find today's ARRIVALS list — sometimes called "Arrivals", "Today's ` +
@@ -2206,26 +2256,35 @@ const ARRIVALS_GOAL =
   `arrival date is today.\n\n` +
   `Usually under "Front Desk", "Reservations", or "View" menu. The right ` +
   `page is a list/table where each row is one reservation.\n\n` +
-  `Columns we need:\n` +
-  `  - Guest name\n` +
-  `  - Room number\n` +
-  `  - Arrival date\n` +
-  `  - Departure date\n` +
-  `  - Number of nights\n` +
-  `  - Number of adults / children\n` +
-  `  - Confirmation number (if shown)`;
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - pms_reservation_id (required — the reservation's unique id; usually the ` +
+  `Confirmation # / Reservation # shown on the row)\n` +
+  `  - guest_name (required)\n` +
+  `  - arrival_date (required)\n` +
+  `  - departure_date (required)\n` +
+  `  - room_number (optional — may be blank before assignment)\n` +
+  `  - status (optional — reservation status if shown)`;
+// num_nights + rate_per_night_cents carry value parsers in the contract (so
+// they're type-safe IF ever learned) but are deliberately left OUT of the prose.
+// validateRows rejects the WHOLE row when an OPTIONAL field's value is out of
+// range / unparseable (a misread "2102" nights exceeds 0207's 0-365 range; a
+// stray char in a cents cell), and the gate doesn't check optionals — so one bad
+// optional value would silently drop a good reservation. num_nights is also
+// derivable from arrival_date/departure_date, so prompting for it gains nothing.
 
 const DEPARTURES_GOAL =
   `Find today's DEPARTURES list — sometimes called "Departures", "Check-Outs", ` +
   `or "Today's Departures". Shows reservations whose departure date is today. ` +
   `Usually right next to Arrivals in the menu.\n\n` +
-  `Columns we need:\n` +
-  `  - Guest name\n` +
-  `  - Room number\n` +
-  `  - Arrival date\n` +
-  `  - Departure date\n` +
-  `  - Confirmation number (if shown)\n` +
-  `  - Checked-out flag (if shown)`;
+  `Use these EXACT keys in your "columns" object (same reservation table as ` +
+  `arrivals):\n` +
+  `  - pms_reservation_id (required — the reservation's unique id; usually the ` +
+  `Confirmation # / Reservation # shown on the row)\n` +
+  `  - guest_name (required)\n` +
+  `  - arrival_date (required)\n` +
+  `  - departure_date (required)\n` +
+  `  - room_number (optional)`;
+// num_nights left out of the prose — see the note on ARRIVALS_GOAL.
 
 // STAFF_GOAL removed in v8 Phase D.1 along with the getStaffRoster target.
 
@@ -2396,7 +2455,10 @@ TARGETS = [
   {
     key: 'getRoomStatus',
     goal: HOUSEKEEPING_GOAL,
-    requiredFields: ['roomNumber', 'roomType', 'status', 'condition'],
+    // Descriptor-aligned snake_case keys (pms_room_status_log). changed_at is
+    // required but timestamptz → writer-stamped, so not learned. See
+    // target-contract.ts.
+    requiredFields: requiredLearnedFor('getRoomStatus'),
     classification: 'list_page',
     optional: false,
     progressLabel: 'Finding the daily housekeeping report…',
@@ -2405,7 +2467,9 @@ TARGETS = [
   {
     key: 'getArrivals',
     goal: ARRIVALS_GOAL,
-    requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
+    // Descriptor-aligned snake_case keys (pms_reservations natural key +
+    // required cols). See target-contract.ts.
+    requiredFields: requiredLearnedFor('getArrivals'),
     classification: 'list_page',
     optional: false,
     progressLabel: "Finding today's arrivals…",
@@ -2414,7 +2478,8 @@ TARGETS = [
   {
     key: 'getDepartures',
     goal: DEPARTURES_GOAL,
-    requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
+    // Same table as arrivals (pms_reservations). See target-contract.ts.
+    requiredFields: requiredLearnedFor('getDepartures'),
     classification: 'list_page',
     optional: false,
     progressLabel: "Finding today's departures…",
@@ -2423,7 +2488,9 @@ TARGETS = [
   {
     key: 'getWorkOrders',
     goal: WORK_ORDERS_GOAL,
-    requiredFields: ['pms_work_order_id', 'description', 'status', 'out_of_order'],
+    // Already snake_case pre-fix; routed through the contract so all 4 core
+    // feeds share one source of truth. See target-contract.ts.
+    requiredFields: requiredLearnedFor('getWorkOrders'),
     classification: 'list_page',
     optional: false,
     progressLabel: 'Finding maintenance + work orders…',

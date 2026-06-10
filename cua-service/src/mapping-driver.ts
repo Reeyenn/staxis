@@ -39,6 +39,7 @@ import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
+import { columnsFromAction, missingRequiredColumns } from './target-contract.js';
 
 export interface MappingJobInput {
   pms_family: string;
@@ -403,7 +404,7 @@ export async function runMappingJob(
 
 // ─── Promotion gate ────────────────────────────────────────────────────
 
-function evaluatePromotionGate(
+export function evaluatePromotionGate(
   recipe: Recipe,
   seedActions?: Recipe['actions'],
 ): {
@@ -431,6 +432,36 @@ function evaluatePromotionGate(
     return {
       decision: 'quarantine',
       reason: `missing required targets: ${missingRequired.join(', ')}`,
+    };
+  }
+
+  // Column-completeness gate (fix/mapper-field-contract). A required feed whose
+  // KEY exists but whose learned column map is missing a required descriptor
+  // column writes ZERO rows at runtime — validateRows rejects every row for the
+  // absent column. Such a feed is structurally "found" but operationally dead,
+  // so don't auto-promote it: park as a draft for admin review. (quarantine
+  // stays reserved for a missing required KEY above; this is a quality miss, on
+  // par with the too-few-business-critical park_draft below.)
+  //
+  // INTENTIONAL on the self-repair path: this scans ALL required targets,
+  // including seeded ones, not just the freshly-relearned target. A repair must
+  // not auto-promote a recipe that still has a dead required feed — if a
+  // pre-existing seeded feed has an incomplete column map (e.g. a recipe
+  // promoted before this fix, with camelCase keys), the repair parks for a full
+  // re-map rather than rubber-stamping a 3/4-dead recipe. Do not narrow this to
+  // the relearned target only.
+  const incompleteRequired = REQUIRED_TARGETS
+    .map((t) => {
+      const action = recipe.actions[t];
+      if (!action) return null; // already handled by the missing-key check above
+      const missingCols = missingRequiredColumns(t, columnsFromAction(action));
+      return missingCols.length > 0 ? `${t} (missing: ${missingCols.join(', ')})` : null;
+    })
+    .filter((x): x is string => x !== null);
+  if (incompleteRequired.length > 0) {
+    return {
+      decision: 'park_draft',
+      reason: `required feed(s) have empty/missing required columns — would write 0 rows: ${incompleteRequired.join('; ')}`,
     };
   }
 
