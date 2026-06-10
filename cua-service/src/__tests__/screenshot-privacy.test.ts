@@ -41,13 +41,15 @@ interface ScreenshotCall {
   maskColor: unknown;
   maskSelectors: string[]; // the selector each mask locator was built from
   fullPage: unknown;
+  style: unknown;          // the atomic paint-outside-suppression CSS
 }
 
 interface PageState {
-  frames: number;                 // how many frames page.frames() returns
+  frames: number;                 // how many frames page.frames() returns initially
   framesThrows?: boolean;         // page.frames() throws (closed page)
   screenshotThrowFirst?: number;  // throw on the first N screenshot calls
   hangScreenshot?: boolean;       // screenshot never resolves (deadline test)
+  addFrameOnScreenshot?: number;  // simulate an iframe attaching DURING the first N captures
   screenshotCalls: number;
   calls: ScreenshotCall[];        // options every screenshot() saw
   waitCalls: number;
@@ -57,17 +59,25 @@ function pageState(over: Partial<PageState> = {}): PageState {
   return { frames: 1, screenshotCalls: 0, calls: [], waitCalls: 0, ...over };
 }
 
+function frameStub(i: number) {
+  // Fake Locator — records the selector it was built from.
+  return { locator: (sel: string) => ({ __frame: i, __sel: sel }) };
+}
+
 function makeFakePage(st: PageState): Page {
-  const frameObjs = Array.from({ length: st.frames }, (_unused, i) => ({
-    // Fake Locator — records the selector it was built from.
-    locator: (sel: string) => ({ __frame: i, __sel: sel }),
-  }));
+  let frameObjs = Array.from({ length: st.frames }, (_unused, i) => frameStub(i));
+  let nextFrameId = st.frames;
   return {
     frames: () => {
       if (st.framesThrows) throw new Error('Target page, context or browser has been closed');
       return frameObjs;
     },
-    screenshot: async (opts: { mask?: Array<{ __sel: string }>; maskColor?: unknown; fullPage?: unknown }) => {
+    screenshot: async (opts: {
+      mask?: Array<{ __sel: string }>;
+      maskColor?: unknown;
+      fullPage?: unknown;
+      style?: unknown;
+    }) => {
       st.screenshotCalls += 1;
       const mask = Array.isArray(opts?.mask) ? opts.mask : null;
       st.calls.push({
@@ -75,8 +85,14 @@ function makeFakePage(st: PageState): Page {
         maskColor: opts?.maskColor,
         maskSelectors: mask ? mask.map((m) => m.__sel) : [],
         fullPage: opts?.fullPage,
+        style: opts?.style,
       });
       if (st.hangScreenshot) return new Promise<Buffer>(() => {}); // never resolves
+      // Simulate an iframe attaching DURING this capture (after the mask set
+      // was snapshotted) — exercises the post-capture new-frame guard.
+      if (st.addFrameOnScreenshot && st.screenshotCalls <= st.addFrameOnScreenshot) {
+        frameObjs = [...frameObjs, frameStub(nextFrameId++)];
+      }
       if (st.screenshotThrowFirst && st.screenshotCalls <= st.screenshotThrowFirst) {
         throw new Error('Execution context was destroyed, most likely because of a navigation');
       }
@@ -88,7 +104,7 @@ function makeFakePage(st: PageState): Page {
   } as unknown as Page;
 }
 
-/** Asserts a recorded screenshot call carried a complete, black, per-frame mask. */
+/** Asserts a recorded screenshot call carried a complete, black, per-frame mask + the suppression style. */
 function assertMaskedCall(call: ScreenshotCall, frames: number) {
   assert.equal(call.maskLen, frames, `screenshot must mask all ${frames} frame(s), never a bare capture`);
   assert.equal(call.maskColor, '#000000', 'mask must be solid black');
@@ -96,6 +112,8 @@ function assertMaskedCall(call: ScreenshotCall, frames: number) {
   for (const sel of call.maskSelectors) {
     assert.equal(sel, SENSITIVE_FIELD_SELECTOR, 'mask built from the sensitive-field selector');
   }
+  assert.equal(typeof call.style, 'string', 'paint-outside-suppression style must be injected');
+  assert.match(call.style as string, /overflow:hidden/, 'style clips overflow on sensitive elements');
 }
 
 describe('captureHardenedScreenshot — happy path', () => {
@@ -136,6 +154,27 @@ describe('captureHardenedScreenshot — navigation race', () => {
     // The whole point: even the doomed attempts were masked — there is no code
     // path that takes an UNmasked screenshot.
     st.calls.forEach((c) => assertMaskedCall(c, 1));
+  });
+});
+
+describe('captureHardenedScreenshot — new-frame TOCTOU guard', () => {
+  test('an iframe attaching DURING the capture is discarded, then succeeds on retry', async () => {
+    // Frame attaches on attempt 1's capture (not in that attempt's mask set);
+    // attempt 2 snapshots the now-stable tree and returns the buffer.
+    const st = pageState({ addFrameOnScreenshot: 1 });
+    const result = await captureHardenedScreenshot(makeFakePage(st));
+    assert.ok(Buffer.isBuffer(result), 'recovers once the frame tree settles');
+    assert.equal(st.screenshotCalls, 2, 'first capture discarded, second kept');
+    assert.ok(st.waitCalls >= 1, 'settled before retrying');
+  });
+
+  test('a page that keeps attaching frames every capture → withholds (null)', async () => {
+    const st = pageState({ addFrameOnScreenshot: 99 });
+    const result = await captureHardenedScreenshot(makeFakePage(st));
+    assert.equal(result, null, 'never trust a capture whose frame set changed under it');
+    assert.equal(st.screenshotCalls, 3, 'bounded to MAX_ATTEMPTS');
+    // Every attempt still masked the frames it knew about — never a bare capture.
+    st.calls.forEach((c, i) => assertMaskedCall(c, st.frames + i));
   });
 });
 

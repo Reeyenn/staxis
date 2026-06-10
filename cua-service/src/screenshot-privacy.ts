@@ -50,7 +50,7 @@
  *   worsened here.
  */
 
-import type { Page, Locator } from 'playwright';
+import type { Page, Locator, Frame } from 'playwright';
 import { log } from './log.js';
 
 /**
@@ -60,11 +60,32 @@ import { log } from './log.js';
  * Set-of-Mark badges so a `#N` click can't focus + type into a credential
  * field). A single const means the redaction list cannot drift between sites.
  */
-export const SENSITIVE_FIELD_SELECTOR =
-  'input[type="password"], [data-sensitive], .ssn, .credit-card';
+const SENSITIVE_PARTS = [
+  'input[type="password"]',
+  '[data-sensitive]',
+  '.ssn',
+  '.credit-card',
+] as const;
+
+export const SENSITIVE_FIELD_SELECTOR = SENSITIVE_PARTS.join(', ');
 
 /** Solid black mask box (Playwright default is pink #FF00FF). */
 const MASK_COLOR = '#000000';
+
+/**
+ * CSS injected (atomically, by Playwright) ONLY during the screenshot. The
+ * native mask covers each sensitive element's bounding box; this stops the
+ * element from painting credential pixels OUTSIDE that box — overflowing text,
+ * text/box shadows, filters (glow), and ::before/::after pseudo-content — so
+ * the box-shaped mask is actually sufficient. Applies to the top document only
+ * (CSS can't cross frame boundaries); for sub-frames the bounding-box mask
+ * stands alone, an accepted narrow residual for paint-outside inside iframes.
+ */
+const REDACTION_STYLE =
+  `${SENSITIVE_FIELD_SELECTOR}{overflow:hidden !important;text-shadow:none !important;` +
+  `box-shadow:none !important;filter:none !important;}` +
+  SENSITIVE_PARTS.map((p) => `${p}::before,${p}::after`).join(',') +
+  `{content:none !important;}`;
 /** Bounded retry: a navigation race usually clears within one settle. */
 const MAX_ATTEMPTS = 3;
 /** Pause between attempts to let an in-flight navigation commit + render. */
@@ -79,22 +100,34 @@ const DEADLINE_MS = 8000;
  * Playwright resolves each at capture time and masks all matched elements; a
  * frame with no sensitive field simply contributes nothing.
  */
-function sensitiveMaskLocators(page: Page): Locator[] {
-  return page.frames().map((frame) => frame.locator(SENSITIVE_FIELD_SELECTOR));
+function sensitiveMaskLocators(frames: ReadonlyArray<Frame>): Locator[] {
+  return frames.map((frame) => frame.locator(SENSITIVE_FIELD_SELECTOR));
 }
 
 async function captureHardenedScreenshotInner(page: Page): Promise<Buffer | null> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      // The mask is intrinsic to this call — there is no code path that takes a
-      // screenshot WITHOUT it. Either we get a masked image, or we throw and
-      // retry/withhold.
-      return await page.screenshot({
+      // Snapshot the frame tree, build a mask for exactly those frames, and
+      // capture. The mask + style are intrinsic to this single page.screenshot
+      // call — there is no code path that takes a screenshot WITHOUT them, so
+      // either we get a redacted image or we throw and retry/withhold.
+      const framesBefore = page.frames();
+      const buf = await page.screenshot({
         fullPage: false,
-        mask: sensitiveMaskLocators(page),
+        mask: sensitiveMaskLocators(framesBefore),
         maskColor: MASK_COLOR,
+        style: REDACTION_STYLE,
         timeout: SCREENSHOT_TIMEOUT_MS,
       });
+      // New-frame guard (TOCTOU): if an iframe attached DURING the capture it
+      // wasn't in the mask set, so we can't prove its credentials were masked.
+      // Discard and retry — the next attempt's snapshot includes it.
+      const before = new Set(framesBefore);
+      if (page.frames().some((f) => !before.has(f))) {
+        log.warn('screenshot-privacy: a frame attached during capture — discarding for retry');
+      } else {
+        return buf;
+      }
     } catch (err) {
       log.warn('screenshot-privacy: masked screenshot failed — will retry/withhold', {
         attempt,
