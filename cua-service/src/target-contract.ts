@@ -184,9 +184,18 @@ export function parserForColumn(table: string, col: { name: string; type: Descri
 // promotion gate + mapAction re-ask are unchanged). This map is purely about
 // VALUE translation: each column's descriptor type, plus `enumValues` for the
 // few enum columns (their canonical allowed_values, used for generic_enum's
-// safe default + the learn step's target set). Mirrors the 0207 + 0276
+// safe default + the learn step's target set). Mirrors the live 0207 + 0276
 // descriptors; the contract drift guard enforces parity. Writer-stamped
 // `captured_at`/`changed_at` (timestamptz) are intentionally excluded.
+//
+// DEFERRED (no contract yet → resolveColumnParser returns undefined → their
+// date/_cents columns stay unparsed, exactly as before this change — NOT a
+// regression): the optional report feeds getRevenueDaily / getRatesAndInventory
+// / getChannelPerformance / getForecastDaily / getGroupsAndBlocks /
+// getLostAndFound / getActivityLog / getGuests / getRoomLayout /
+// getDashboardCounts / getHistoricalOccupancy. They have never run end-to-end;
+// wiring them is a follow-up that must mirror each one's CURRENT live descriptor
+// (several drifted from 0207 — see the room-status / work-order note above).
 
 export interface ValueColumn {
   name: string;
@@ -216,11 +225,15 @@ export const TARGET_VALUE_CONTRACTS: Partial<
   Record<keyof Recipe['actions'], TargetValueContract>
 > = {
   // ── 4 core feeds (mirror CORE_TARGET_CONTRACTS + enum canonical sets) ──
+  // enumValues mirror the LIVE pms_table_schemas descriptor (which validateRows
+  // enforces) — NOT the stale 0207 seed. The room-status + work-order enum sets
+  // were widened by later migrations; learning against the live set means a new
+  // PMS maps to values the DB CHECK actually accepts (Codex review #7).
   getRoomStatus: {
     table: 'pms_room_status_log',
     columns: [
       { name: 'room_number', type: 'text' },
-      { name: 'status', type: 'text', enumValues: ['occupied', 'vacant_clean', 'vacant_dirty', 'inspected', 'out_of_order', 'unknown'] },
+      { name: 'status', type: 'text', enumValues: ['vacant_clean', 'vacant_dirty', 'occupied', 'occupied_clean', 'occupied_dirty', 'out_of_order', 'out_of_inventory', 'inspected', 'unknown'] },
       { name: 'changed_by', type: 'text' },
     ],
   },
@@ -231,10 +244,10 @@ export const TARGET_VALUE_CONTRACTS: Partial<
     columns: [
       { name: 'pms_work_order_id', type: 'text' },
       { name: 'description', type: 'text' },
-      { name: 'status', type: 'text', enumValues: ['open', 'in_progress', 'resolved', 'cancelled'] },
+      { name: 'status', type: 'text', enumValues: ['open', 'in_progress', 'closed', 'deferred', 'resolved'] },
       { name: 'out_of_order', type: 'boolean' },
       { name: 'room_number', type: 'text' },
-      { name: 'priority', type: 'text', enumValues: ['low', 'medium', 'high', 'critical', 'unknown'] },
+      { name: 'priority', type: 'text', enumValues: ['urgent', 'high', 'medium', 'low'] },
       { name: 'assigned_to', type: 'text' },
     ],
   },
@@ -352,8 +365,18 @@ export function resolveColumnParser(
     if (learnedMap && Object.keys(learnedMap).length > 0) {
       return { parser: 'generic_enum', config: { mapping: learnedMap, onUnknown } };
     }
-    const fallback = ENUM_PARSER_OVERRIDES[tableCol];
-    if (fallback) return { parser: fallback }; // ca_* back-compat / safety net
+    // The ca_* parser is a Choice-Advantage-SPECIFIC fallback. Use it ONLY for a
+    // LEGACY recipe — one with no learned-translation capability at all (the
+    // seeded CA knowledge file, whose `valueTranslations` is undefined). A
+    // new-style recipe ALWAYS carries a valueTranslations object (even when
+    // empty), so an enum column it didn't learn safely uses generic_enum
+    // (→ onUnknown + log) — a brand-new PMS NEVER falls back to a CA-specific
+    // parser, which would mis-translate its vocabulary (Codex review #2).
+    const isLegacyRecipe = learned?.valueTranslations === undefined;
+    if (isLegacyRecipe) {
+      const fallback = ENUM_PARSER_OVERRIDES[tableCol];
+      if (fallback) return { parser: fallback };
+    }
     return { parser: 'generic_enum', config: { onUnknown } };
   }
 

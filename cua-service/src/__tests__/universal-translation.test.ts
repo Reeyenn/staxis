@@ -23,16 +23,19 @@ import assert from 'node:assert/strict';
 
 import { inferDateFormat, sanitizeEnumMapping } from '../value-learning.js';
 import { recipeToTableTemplates } from '../recipe-adapter.js';
+import { resolveColumnParser } from '../target-contract.js';
 import { applyTemplateParsers } from '../extractors/template-runner.js';
 import { validateRows, type TableSchemaDescriptor } from '../persistence/generic-table-writer.js';
 import { getParser } from '../parsers/registry.js';
 import '../parsers/generic.js'; // the UNIVERSAL parsers under test
+import '../parsers/ca.js';      // registers ca_* so we can prove PMS X never USES them
 import type { Recipe } from '../types.js';
 
 const PID = '00000000-0000-0000-0000-000000000099';
 
-// Canonical room-status set (our schema's allowed_values; identical for every PMS).
-const ROOM_STATUS_CANON = ['occupied', 'vacant_clean', 'vacant_dirty', 'inspected', 'out_of_order', 'unknown'];
+// Canonical room-status set — pinned to the LIVE descriptor's allowed_values
+// (identical for every PMS; the per-PMS part is the VOCABULARY that maps INTO it).
+const ROOM_STATUS_CANON = ['vacant_clean', 'vacant_dirty', 'occupied', 'occupied_clean', 'occupied_dirty', 'out_of_order', 'out_of_inventory', 'inspected', 'unknown'];
 
 // Descriptors verbatim from migrations 0207 / 0276 (the writer reads these).
 const ROOM_STATUS_DESCRIPTOR: TableSchemaDescriptor = {
@@ -250,5 +253,19 @@ describe('PMS X — full pipeline: recipe → templates → parse → validateRo
     for (const p of allParsers) {
       assert.ok(!String(p).startsWith('ca_'), `PMS X wired a Choice-Advantage parser (${p}) — translation is not universal`);
     }
+  });
+
+  test('an UNLEARNED enum column on a NEW PMS uses generic_enum (safe default), NEVER ca_*', () => {
+    // PMS X is a new-style recipe: it ALWAYS carries a valueTranslations object
+    // (here it happens NOT to contain the status column — learning abstained on
+    // it). The ca_* fallback is gated to LEGACY recipes only, so this resolves to
+    // generic_enum with a safe default — not ca_status (Codex review #2).
+    const newStyle = resolveColumnParser('getRoomStatus', 'status', { valueTranslations: {} });
+    assert.equal(newStyle?.parser, 'generic_enum');
+    assert.equal(newStyle?.config?.onUnknown, 'unknown');
+    // Contrast: a LEGACY recipe (no valueTranslations object at all — the seeded
+    // Choice Advantage file) is the ONLY path on which ca.ts still survives.
+    const legacy = resolveColumnParser('getRoomStatus', 'status');
+    assert.equal(legacy?.parser, 'ca_status');
   });
 });

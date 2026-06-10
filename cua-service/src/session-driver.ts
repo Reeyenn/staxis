@@ -1264,6 +1264,12 @@ export class SessionDriver {
         cost_cap_micros: 2_000_000,
         // The whole point — seed all other actions so mapper skips them.
         seed_actions: seedActions,
+        // Preserve previously-learned value translation across a partial repair
+        // so the re-mapped recipe doesn't drop the OTHER feeds' enum vocabulary /
+        // learned date order (those targets are skipped, so they aren't re-learned)
+        // (Codex review #4).
+        seed_value_translations: this.knowledgeFile.knowledge.valueTranslations,
+        seed_date_format: this.knowledgeFile.knowledge.dateFormat,
         // For audit + Live Mapping UI to render context.
         repair_target_key: actionKey,
         repaired_from_version: this.knowledgeFile.version,

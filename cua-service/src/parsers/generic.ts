@@ -118,7 +118,15 @@ function parseLocaleNumber(raw: unknown): number | null {
 registerParser('generic_currency', (raw: unknown): number | null => {
   const n = parseLocaleNumber(raw);
   if (n == null) return null;
-  return Math.round(n * 100);
+  const cents = Math.round(n * 100);
+  // Guard the bigint target: a value past JS's safe-integer range is also past
+  // reliable precision and risks overflowing Postgres int8 → the whole upsert
+  // throws and the batch is lost. Null it instead (only this field/row drops).
+  if (!Number.isSafeInteger(cents)) {
+    log.warn('generic_currency: value out of safe integer range — nulling', { raw: String(raw).slice(0, 40) });
+    return null;
+  }
+  return cents;
 });
 
 // ─── Integer ─────────────────────────────────────────────────────────────────
@@ -126,7 +134,12 @@ registerParser('generic_currency', (raw: unknown): number | null => {
 registerParser('generic_integer', (raw: unknown): number | null => {
   const n = parseLocaleNumber(raw);
   if (n == null) return null;
-  return Math.round(n);
+  const i = Math.round(n);
+  if (!Number.isSafeInteger(i)) {
+    log.warn('generic_integer: value out of safe integer range — nulling', { raw: String(raw).slice(0, 40) });
+    return null;
+  }
+  return i;
 });
 
 // ─── Number (numeric / decimal columns, e.g. percentages) ───────────────────
@@ -214,9 +227,16 @@ registerParser('generic_date', (raw: unknown, config?: ParserConfig): string | n
   // Disambiguate M/D vs D/M by a token that can't be a month.
   if (parts[0]! > 12 && parts[1]! <= 12) return assembleByOrder(parts, rawParts, 'DMY');
   if (parts[1]! > 12 && parts[0]! <= 12) return assembleByOrder(parts, rawParts, 'MDY');
-  // Both ≤ 12 — genuinely ambiguous. Prefer a learned low-confidence order if
-  // present, else assume MDY (US default; matches legacy ca_date).
-  return assembleByOrder(parts, rawParts, fmt?.order ?? 'MDY');
+  // Both ≤ 12 — genuinely ambiguous and no high-confidence learned order. Log
+  // the guess (a flood signals a non-US PMS whose date order wasn't learned with
+  // confidence) and prefer a learned LOW-confidence order if present, else MDY
+  // (US default; matches legacy ca_date). NOT null: for the live CA hotel many
+  // dates are ambiguous-but-US, so nulling would drop real reservations.
+  const guessOrder = fmt?.order ?? 'MDY';
+  log.warn('generic_date: ambiguous numeric date with no high-confidence learned order — guessing', {
+    raw: s.slice(0, 20), guessOrder, hadLearnedOrder: !!fmt?.order,
+  });
+  return assembleByOrder(parts, rawParts, guessOrder);
 });
 
 // ─── Enum (learned vocabulary) ───────────────────────────────────────────────

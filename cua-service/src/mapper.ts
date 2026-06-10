@@ -44,7 +44,7 @@ import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRec
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS } from './target-contract.js';
 import { inferDateFormat, sanitizeEnumMapping, mergeValueTranslation } from './value-learning.js';
-import type { LearnedValueTranslations } from './types.js';
+import type { LearnedValueTranslations, LearnedDateFormat } from './types.js';
 import {
   createPruneState,
   maybePruneHistory,
@@ -282,6 +282,15 @@ interface MapperOptions {
    * runs ONLY target X, merges with seedActions, saves as new version.
    */
   seedActions?: Recipe['actions'];
+  /**
+   * feat/pms-universal-translate — on a partial self-repair, the SKIPPED targets
+   * (seedActions) aren't re-learned, so their value translation would be lost
+   * from the new recipe. These carry the prior recipe's learned translation
+   * forward: the accumulators start from them and the re-learned target merges
+   * on top. Empty for a fresh full mapping.
+   */
+  seedValueTranslations?: LearnedValueTranslations;
+  seedDateFormat?: LearnedDateFormat;
 }
 
 /**
@@ -583,8 +592,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     // across targets: enum vocabularies keyed by `${table}.${column}`, and a
     // pool of raw date samples (one PMS = one date format, so pooling across
     // every date column maximizes the chance of seeing a disambiguating >12
-    // token and learning the order with high confidence).
-    const learnedValueTranslations: LearnedValueTranslations = {};
+    // token and learning the order with high confidence). On a partial repair,
+    // SEED from the prior recipe so the skipped targets' translation survives.
+    const learnedValueTranslations: LearnedValueTranslations = { ...(opts.seedValueTranslations ?? {}) };
     const learnedDateSamples: string[] = [];
 
     for (const target of TARGETS) {
@@ -678,7 +688,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
 
     // feat/pms-universal-translate — finalize the learned date order from the
     // pooled samples (null/low-confidence when ambiguous → runtime heuristic).
-    const learnedDateFormat = inferDateFormat(learnedDateSamples);
+    // On a partial repair that re-learned no date columns, keep the prior
+    // recipe's learned format rather than dropping to none.
+    const learnedDateFormat = inferDateFormat(learnedDateSamples) ?? opts.seedDateFormat;
     if (learnedDateFormat) {
       log.info('mapper: learned date format', {
         jobId: opts.jobId ?? undefined,
@@ -700,7 +712,11 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       description: `Auto-mapped recipe for ${opts.pmsType} (browser-tool mapper). Actions: ${Object.keys(actions).join(', ')}.`,
       login: loginResult.steps,
       actions,
-      ...(learnedEnumCount > 0 ? { valueTranslations: learnedValueTranslations } : {}),
+      // ALWAYS emit valueTranslations (even {}) so this new-style recipe is
+      // distinguishable at runtime from the legacy CA seed (whose field is
+      // undefined): resolveColumnParser only uses the ca_* enum fallback when
+      // the field is absent, so a brand-new PMS never falls back to CA parsers.
+      valueTranslations: learnedValueTranslations,
       ...(learnedDateFormat ? { dateFormat: learnedDateFormat } : {}),
     };
 

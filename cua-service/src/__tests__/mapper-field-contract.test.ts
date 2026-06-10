@@ -401,14 +401,20 @@ describe('value contract drift guard vs migration 0276', () => {
     }
   });
 
-  test('core enum canonical sets in TARGET_VALUE_CONTRACTS match the 0207 descriptor allowed_values', () => {
-    const enumOf = (desc: TableSchemaDescriptor, col: string) =>
-      desc.columns.find((c) => c.name === col)?.allowed_values;
+  test('core enum canonical sets in TARGET_VALUE_CONTRACTS mirror the LIVE descriptor (post-0207 widening)', () => {
     const vc = (key: keyof Recipe['actions'], col: string) =>
       TARGET_VALUE_CONTRACTS[key]!.columns.find((c) => c.name === col)?.enumValues;
-    assert.deepEqual(vc('getRoomStatus', 'status'), enumOf(ROOM_STATUS_DESCRIPTOR, 'status'));
-    assert.deepEqual(vc('getWorkOrders', 'status'), enumOf(WORK_ORDERS_DESCRIPTOR, 'status'));
-    assert.deepEqual(vc('getWorkOrders', 'priority'), enumOf(WORK_ORDERS_DESCRIPTOR, 'priority'));
+    // Pinned to the LIVE pms_table_schemas descriptor (which validateRows
+    // enforces). Deliberately NOT the local 0207 fixtures: later migrations
+    // widened these sets, and a new PMS must learn to the values the DB CHECK
+    // actually accepts (Codex review #7). If these drift from prod again, the
+    // model would learn invalid values and lose whole batches.
+    assert.deepEqual(vc('getRoomStatus', 'status'),
+      ['vacant_clean', 'vacant_dirty', 'occupied', 'occupied_clean', 'occupied_dirty', 'out_of_order', 'out_of_inventory', 'inspected', 'unknown']);
+    assert.deepEqual(vc('getWorkOrders', 'status'),
+      ['open', 'in_progress', 'closed', 'deferred', 'resolved']);
+    assert.deepEqual(vc('getWorkOrders', 'priority'),
+      ['urgent', 'high', 'medium', 'low']);
   });
 });
 
