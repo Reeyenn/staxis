@@ -27,6 +27,7 @@ import { supabase } from './supabase.js';
 import { env } from './env.js';
 import { ActionLoopDetector, actionFingerprint, pageFingerprint } from './loop-detector.js';
 import { judgeStepOutcome, captureScreenshotForCritic } from './critic.js';
+import { captureHardenedScreenshot } from './screenshot-privacy.js';
 import { clickTrustDeviceIfPresent } from './mfa-handler.js';
 import { fetchLatestAuthCode } from './auth-code-helpers.js';
 import { sendAdminSms } from './admin-sms.js';
@@ -129,14 +130,25 @@ async function maybeAskAdminBeforeUnavailable(args: {
     return { kind: 'abort', reason: 'help_request_flood' };
   }
 
-  // Take a screenshot for the help card. Best-effort — if screenshot or
-  // upload fails, log + fall through to mark_unavailable.
+  // Take a screenshot for the help card. Privacy-hardened (same gate as the
+  // agent's own screenshots): captureHardenedScreenshot masks credential/SSN/CC
+  // fields in every frame and only returns a buffer once that coverage is
+  // verified. A null result means redaction couldn't be guaranteed (e.g. the
+  // page was mid-navigation) — we must NOT upload an unredacted snapshot, so
+  // fall through to mark_unavailable. This is what makes the help-request DB
+  // row + admin UI genuinely free of credential PII.
   let screenshotPath: string;
+  const helpBuf = await captureHardenedScreenshot(args.page);
+  if (!helpBuf) {
+    log.warn('mapper: help-request screenshot withheld (could not guarantee redaction) — falling through', {
+      jobId: args.jobId, targetKey: args.targetKey,
+    });
+    return { kind: 'mark_unavailable', reason: args.agentReason };
+  }
   try {
-    const buf = await args.page.screenshot({ fullPage: false });
-    screenshotPath = await saveScreenshotToStorage(args.jobId, args.targetKey, buf);
+    screenshotPath = await saveScreenshotToStorage(args.jobId, args.targetKey, helpBuf);
   } catch (err) {
-    log.warn('mapper: help-request screenshot/upload failed — falling through', {
+    log.warn('mapper: help-request screenshot upload failed — falling through', {
       err: (err as Error).message, jobId: args.jobId, targetKey: args.targetKey,
     });
     return { kind: 'mark_unavailable', reason: args.agentReason };

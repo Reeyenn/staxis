@@ -33,6 +33,7 @@
 
 import type { Page } from 'playwright';
 import { log } from './log.js';
+import { SENSITIVE_FIELD_SELECTOR } from './screenshot-privacy.js';
 
 /** Per-badge metadata stashed on the page-keyed WeakMap. */
 export interface BadgeInfo {
@@ -71,8 +72,9 @@ const CLICKABLE_SELECTOR = [
 /**
  * Adversarial review P1 — exclude privacy-sensitive inputs from SoM marking.
  *
- * Keep this list in sync with `browser-tool-vision.ts:hardenScreenshotPrivacy`
- * which paints opaque overlays over the same targets at a higher z-index.
+ * Uses the SHARED `SENSITIVE_FIELD_SELECTOR` (./screenshot-privacy.ts) — the
+ * exact list `captureHardenedScreenshot` paints opaque overlays over — so the
+ * marking-exclusion list and the screenshot-redaction list can never drift.
  *
  * Why exclude them at the MARKING layer rather than just the visual layer:
  * even with the privacy overlay on top, the badge entry in BadgeInfo still
@@ -81,8 +83,6 @@ const CLICKABLE_SELECTOR = [
  * focus the password field — at which point a `type` action could write
  * into it. Cleanest fix: never enroll the field in the badge map at all.
  */
-const PRIVACY_EXCLUDE_SELECTOR =
-  'input[type="password"], [data-sensitive], .ssn, .credit-card';
 
 /** Cap on badge count — past this point the screenshot turns into a
  *  numbered confetti pile and the agent struggles to read individual IDs.
@@ -263,7 +263,7 @@ export async function applySetOfMark(page: Page): Promise<Map<number, BadgeInfo>
       },
       {
         selector: CLICKABLE_SELECTOR,
-        excludeSelector: PRIVACY_EXCLUDE_SELECTOR,
+        excludeSelector: SENSITIVE_FIELD_SELECTOR,
         maxBadges: MAX_BADGES,
       },
     );

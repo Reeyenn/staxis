@@ -313,61 +313,75 @@ describe('judgeStepOutcome — cost logging', () => {
 });
 
 // ─── captureScreenshotForCritic — privacy + cleanup invariants ────────────
+//
+// captureScreenshotForCritic now delegates to the shared, frame-aware
+// captureHardenedScreenshot (screenshot-privacy.ts), so the fake Page exposes
+// frames()/mainFrame()/waitForTimeout and dispatches each frame.evaluate by
+// inspecting the function source: 'appendChild' → paint, 'remove(' → cleanup,
+// else → verify (here always reports 0 uncovered = coverage verified). The
+// race / drift / fail-closed / iframe cases live in screenshot-privacy.test.ts;
+// here we pin the critic-facing contract: base64-on-success, null-on-failure,
+// cleanup-always-runs.
 
 interface FakePageState {
-  evalCalls: Array<string>;
+  ops: Array<string>; // 'paint' | 'verify' | 'cleanup'
   screenshotShouldThrow?: boolean;
   screenshotCalled?: boolean;
 }
 
 function fakePage(state: FakePageState): Page {
-  return {
-    evaluate: async (_fn: unknown) => {
-      // We don't run the function — just record that evaluate was called.
-      // The function body itself is too DOM-heavy to execute in a unit
-      // test (would need a real Playwright Page or jsdom). State-tracking
-      // is enough to verify the SEQUENCE: privacy-add → screenshot →
-      // privacy-clear.
-      state.evalCalls.push('evaluate');
-      return undefined;
+  const frame = {
+    evaluate: async (fn: unknown, _arg?: unknown) => {
+      const src = String(fn);
+      if (src.includes('appendChild')) { state.ops.push('paint'); return undefined; }
+      if (src.includes('remove(')) { state.ops.push('cleanup'); return undefined; }
+      state.ops.push('verify');
+      return 0; // 0 uncovered sensitive fields → coverage verified
     },
+  };
+  return {
+    frames: () => [frame],
+    mainFrame: () => frame,
     screenshot: async () => {
       state.screenshotCalled = true;
       if (state.screenshotShouldThrow) throw new Error('screenshot failed');
       // 1×1 transparent PNG bytes.
       return Buffer.from(TINY_PNG_B64, 'base64');
     },
+    waitForTimeout: async () => {},
   } as unknown as Page;
 }
 
 describe('captureScreenshotForCritic — happy path', () => {
   test('returns a base64 PNG string', async () => {
-    const state: FakePageState = { evalCalls: [] };
+    const state: FakePageState = { ops: [] };
     const result = await captureScreenshotForCritic(fakePage(state));
     assert.ok(result, 'returns base64 string on success');
     assert.equal(typeof result, 'string');
     assert.equal(state.screenshotCalled, true);
   });
 
-  test('calls evaluate TWICE — once to add overlays, once to remove them', async () => {
-    const state: FakePageState = { evalCalls: [] };
+  test('paints overlays, verifies coverage, then cleans up (single attempt)', async () => {
+    const state: FakePageState = { ops: [] };
     await captureScreenshotForCritic(fakePage(state));
-    assert.equal(state.evalCalls.length, 2,
-      'add-overlay + cleanup-overlay are the two evaluate calls; missing the second leaves stale overlays');
+    assert.deepEqual(state.ops, ['paint', 'verify', 'cleanup'],
+      'add-overlay → verify-coverage → cleanup; missing the cleanup leaves stale overlays');
   });
 });
 
 describe('captureScreenshotForCritic — failure modes', () => {
   test('returns null when screenshot itself throws', async () => {
-    const state: FakePageState = { evalCalls: [], screenshotShouldThrow: true };
+    const state: FakePageState = { ops: [], screenshotShouldThrow: true };
     const result = await captureScreenshotForCritic(fakePage(state));
     assert.equal(result, null);
   });
 
-  test('still runs cleanup evaluate even if screenshot throws', async () => {
-    const state: FakePageState = { evalCalls: [], screenshotShouldThrow: true };
+  test('still runs cleanup even if screenshot throws', async () => {
+    const state: FakePageState = { ops: [], screenshotShouldThrow: true };
     await captureScreenshotForCritic(fakePage(state));
-    assert.equal(state.evalCalls.length, 2,
+    assert.ok(state.ops.includes('cleanup'),
       'cleanup must run in the finally block — leaking overlays would block future clicks');
+    assert.ok(!state.ops.includes('verify'),
+      'verify is skipped when the capture itself threw (no buffer to verify)');
   });
 });
