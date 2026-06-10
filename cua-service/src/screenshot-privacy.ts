@@ -38,6 +38,16 @@
  * hard wall-clock deadline so a stuck page can't hang the mapper. The exported
  * function never rejects — any unexpected throw resolves to `null` (withhold).
  *
+ * A frame attaching / navigating / detaching DURING a capture is caught via
+ * page events and discards the frame (retry). Accepted residual (non-
+ * adversarial threat model): a sensitive ELEMENT added/moved WITHIN an existing
+ * frame in the sub-millisecond window of Playwright's own capture emits no frame
+ * event and could be unmasked — an irreducible TOCTOU for live-DOM screenshot
+ * redaction. The mapper screenshots settled pages and the PMS is not an active
+ * attacker; `animations: 'disabled'` removes the common (CSS animation /
+ * transition) geometry-churn cause. Closing the rest would need a per-frame
+ * MutationObserver, which over-withholds on actively-updating pages.
+ *
  * INTENTIONAL EXPOSURE (policy boundary — deliberately NOT redacted):
  *   Guest names / emails / phones rendered as ordinary TABLE TEXT remain
  *   visible to Claude. The mapper has to read table headers + sample rows to
@@ -50,6 +60,7 @@
  *   worsened here.
  */
 
+import { performance } from 'node:perf_hooks';
 import type { Page, Locator, Frame } from 'playwright';
 import { log } from './log.js';
 
@@ -109,7 +120,7 @@ async function captureHardenedScreenshotInner(page: Page, deadlineAt: number): P
     // Cooperative deadline: never START a new attempt past the hard cap, so the
     // loop can't keep taking screenshots in the background after withTimeout
     // already returned null to the caller.
-    if (Date.now() >= deadlineAt) break;
+    if (performance.now() >= deadlineAt) break;
 
     // Frame-mutation guard (TOCTOU): watch the whole frame tree for the entire
     // capture. If any frame attaches / navigates / detaches while the screenshot
@@ -133,6 +144,10 @@ async function captureHardenedScreenshotInner(page: Page, deadlineAt: number): P
         mask: sensitiveMaskLocators(page.frames()),
         maskColor: MASK_COLOR,
         style: REDACTION_STYLE,
+        // Freeze CSS animations/transitions to their end state for the capture
+        // so a field can't be MID-MOVE when Playwright computes the mask boxes —
+        // removes the most realistic same-document geometry-churn vector.
+        animations: 'disabled',
         timeout: SCREENSHOT_TIMEOUT_MS,
       });
       if (!frameMutated) return buf;
@@ -147,7 +162,7 @@ async function captureHardenedScreenshotInner(page: Page, deadlineAt: number): P
       page.off('framenavigated', onMutate);
       page.off('framedetached', onMutate);
     }
-    if (attempt < MAX_ATTEMPTS && Date.now() < deadlineAt) {
+    if (attempt < MAX_ATTEMPTS && performance.now() < deadlineAt) {
       // Let an in-flight navigation commit + render before the next attempt.
       await page.waitForTimeout(SETTLE_MS).catch(() => {});
     }
@@ -193,7 +208,7 @@ export async function captureHardenedScreenshot(
     // attempt past it); withTimeout is the hard backstop that guarantees the
     // CALLER gets `null` promptly even if one in-flight screenshot is finishing.
     return await withTimeout(
-      captureHardenedScreenshotInner(page, Date.now() + deadlineMs),
+      captureHardenedScreenshotInner(page, performance.now() + deadlineMs),
       deadlineMs,
       null,
     );
