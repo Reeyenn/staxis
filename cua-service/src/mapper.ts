@@ -2263,13 +2263,14 @@ const ARRIVALS_GOAL =
   `  - arrival_date (required)\n` +
   `  - departure_date (required)\n` +
   `  - room_number (optional — may be blank before assignment)\n` +
-  `  - num_nights (optional — number of nights)\n` +
   `  - status (optional — reservation status if shown)`;
-// num_nights is safe to prompt for now that recipe-adapter attaches the
-// descriptor-driven value parser (integer → ca_integer), so a raw "2" is
-// normalized to a number before validateRows' type check. (rate_per_night_cents
-// also carries a parser in the contract but is left out of the prose — it's
-// rarely on the arrivals/departures list.) See target-contract.ts.
+// num_nights + rate_per_night_cents carry value parsers in the contract (so
+// they're type-safe IF ever learned) but are deliberately left OUT of the prose.
+// validateRows rejects the WHOLE row when an OPTIONAL field's value is out of
+// range / unparseable (a misread "2102" nights exceeds 0207's 0-365 range; a
+// stray char in a cents cell), and the gate doesn't check optionals — so one bad
+// optional value would silently drop a good reservation. num_nights is also
+// derivable from arrival_date/departure_date, so prompting for it gains nothing.
 
 const DEPARTURES_GOAL =
   `Find today's DEPARTURES list — sometimes called "Departures", "Check-Outs", ` +
@@ -2282,9 +2283,8 @@ const DEPARTURES_GOAL =
   `  - guest_name (required)\n` +
   `  - arrival_date (required)\n` +
   `  - departure_date (required)\n` +
-  `  - room_number (optional)\n` +
-  `  - num_nights (optional — number of nights)`;
-// num_nights now carries the ca_integer value parser (see target-contract.ts).
+  `  - room_number (optional)`;
+// num_nights left out of the prose — see the note on ARRIVALS_GOAL.
 
 // STAFF_GOAL removed in v8 Phase D.1 along with the getStaffRoster target.
 

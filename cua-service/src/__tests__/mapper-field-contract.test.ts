@@ -19,6 +19,8 @@ import './ws-polyfill.js';
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
 
 import { validateRows, type TableSchemaDescriptor } from '../persistence/generic-table-writer.js';
 import { recipeToTableTemplates } from '../recipe-adapter.js';
@@ -296,6 +298,52 @@ describe('contract drift guard vs migration 0207', () => {
       assert.deepEqual([...requiredLearnedFor(key)].sort(), expected, `${key} requiredLearned drifted`);
     }
   });
+
+  // Tie the guard to the REAL migration so it can't pass when BOTH the local
+  // fixtures AND the contract drift from 0207 together (Codex review #6).
+  // Located relative to cwd (npm test runs from cua-service/; repo root is the
+  // fallback) — avoids import.meta, which this CommonJS-target package forbids.
+  const MIGRATION_REL = path.join('supabase', 'migrations', '0207_pms_table_schemas_and_shadow.sql');
+  const MIGRATION_PATH = [
+    path.resolve(process.cwd(), '..', MIGRATION_REL),
+    path.resolve(process.cwd(), MIGRATION_REL),
+  ].find((p) => existsSync(p));
+  assert.ok(MIGRATION_PATH, `0207 migration not found relative to ${process.cwd()}`);
+  const MIGRATION_0207 = readFileSync(MIGRATION_PATH, 'utf8');
+  const columnsFromMigration = (table: string): Array<{ name: string; type: string; required: boolean }> => {
+    const start = MIGRATION_0207.indexOf(`('${table}'`);
+    assert.ok(start >= 0, `table ${table} not found in 0207`);
+    const after = MIGRATION_0207.slice(start + 1);
+    const next = after.search(/\('pms_/);            // boundary = next table's literal
+    const block = next >= 0 ? after.slice(0, next) : after;
+    const re = /jsonb_build_object\(\s*'name',\s*'([^']+)',\s*'type',\s*'([^']+)',\s*'required',\s*(true|false)/g;
+    const cols: Array<{ name: string; type: string; required: boolean }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(block)) !== null) cols.push({ name: m[1]!, type: m[2]!, required: m[3] === 'true' });
+    return cols;
+  };
+
+  test('local fixtures AND the contract match the REAL 0207 migration file', () => {
+    const norm = (cols: Array<{ name: string; type: string; required: boolean }>) =>
+      cols.map((c) => `${c.name}:${c.type}:${c.required}`).sort();
+    const TABLE_CASES: Array<[keyof Recipe['actions'], TableSchemaDescriptor]> = [
+      ['getArrivals', RESERVATIONS_DESCRIPTOR],
+      ['getRoomStatus', ROOM_STATUS_DESCRIPTOR],
+      ['getWorkOrders', WORK_ORDERS_DESCRIPTOR],
+    ];
+    for (const [key, desc] of TABLE_CASES) {
+      const mig = columnsFromMigration(desc.table_name);
+      assert.ok(mig.length >= 3, `parsed too few columns for ${desc.table_name} (${mig.length})`);
+      // The local descriptor fixture (used by every validateRows test) must match 0207.
+      assert.deepEqual(norm(desc.columns), norm(mig), `${desc.table_name} fixture drifted from 0207`);
+      // The contract must match 0207's learnable (non-timestamptz) columns.
+      assert.deepEqual(
+        norm(CORE_TARGET_CONTRACTS[key]!.columns),
+        norm(mig.filter((c) => c.type !== 'timestamptz')),
+        `${key} contract drifted from 0207`,
+      );
+    }
+  });
 });
 
 // ─── Test 6 — promotion gate column-completeness ─────────────────────────────
@@ -421,11 +469,13 @@ describe('end-to-end: CA DOM strings → parsers → validateRows PASS', () => {
     assert.equal(v.valid.length, 1);
   });
 
-  test('pms_work_orders_v2: out_of_order "N" normalizes to boolean false and writes', () => {
-    const cols = { pms_work_order_id: 's.id', description: 's.desc', status: 's.status', out_of_order: 's.ooo' };
-    const raw = { 's.id': 'WO-42', 's.desc': 'Leaky faucet', 's.status': 'open', 's.ooo': 'N' };
+  test('pms_work_orders_v2: "In Progress" / "High" / "N" normalize to the enums + boolean and write', () => {
+    const cols = { pms_work_order_id: 's.id', description: 's.desc', status: 's.status', out_of_order: 's.ooo', priority: 's.prio' };
+    const raw = { 's.id': 'WO-42', 's.desc': 'Leaky faucet', 's.status': 'In Progress', 's.ooo': 'N', 's.prio': 'High' };
     const row = pipelineRow('getWorkOrders', 'pms_work_orders_v2', cols, raw);
-    assert.equal(row.out_of_order, false); // ca_boolean_yn
+    assert.equal(row.out_of_order, false);  // ca_boolean_yn
+    assert.equal(row.status, 'in_progress'); // ca_work_order_status (was "In Progress")
+    assert.equal(row.priority, 'high');      // ca_priority (was "High")
     const v = validateRows([{ ...row, property_id: PID }], WORK_ORDERS_DESCRIPTOR);
     assert.equal(v.rejected.length, 0, JSON.stringify(v.rejected));
     assert.equal(v.valid.length, 1);
@@ -439,6 +489,21 @@ describe('end-to-end: CA DOM strings → parsers → validateRows PASS', () => {
       arrival_date: '6/10/2026', departure_date: '6/12/2026',
     }], RESERVATIONS_DESCRIPTOR);
     assert.equal(v.valid.length, 0);
+    assert.match(v.rejected[0]!.reason, /arrival_date/);
+  });
+
+  test('a malformed date rejects only its OWN row — the batch survives (no Postgres throw)', () => {
+    // The BLOCKER: pre-fix, ca_date turned "13/40/2026" into "2026-13-40", which
+    // passed validateRows' shape regex and then threw at the Postgres `date`
+    // column, losing the whole batch. ca_date now calendar-validates → null →
+    // the bad row rejects locally while a good row in the same batch still writes.
+    const cols = { pms_reservation_id: 's.conf', guest_name: 's.name', arrival_date: 's.arr', departure_date: 's.dep' };
+    const goodRow = pipelineRow('getArrivals', 'pms_reservations', cols, { 's.conf': 'OK-1', 's.name': 'A', 's.arr': '6/10/2026', 's.dep': '6/12/2026' });
+    const badRow = pipelineRow('getArrivals', 'pms_reservations', cols, { 's.conf': 'BAD-1', 's.name': 'B', 's.arr': '13/40/2026', 's.dep': '6/12/2026' });
+    assert.equal(badRow.arrival_date, null); // ca_date rejected the fake calendar date
+    const v = validateRows([{ ...goodRow, property_id: PID }, { ...badRow, property_id: PID }], RESERVATIONS_DESCRIPTOR);
+    assert.equal(v.valid.length, 1);         // good row survives
+    assert.equal(v.rejected.length, 1);      // bad row rejected (missing required arrival_date), no DB-bound garbage
     assert.match(v.rejected[0]!.reason, /arrival_date/);
   });
 });
@@ -455,6 +520,9 @@ describe('parser selection', () => {
     assert.equal(parserForColumn('pms_reservations', { name: 'guest_name', type: 'text' }), undefined);
     assert.equal(parserForColumn('pms_room_status_log', { name: 'status', type: 'text' }), 'ca_status'); // enum override
     assert.equal(parserForColumn('pms_reservations', { name: 'status', type: 'text' }), undefined); // no override → text
+    // work-order enum overrides (required status + optional priority)
+    assert.equal(parserForColumn('pms_work_orders_v2', { name: 'status', type: 'text' }), 'ca_work_order_status');
+    assert.equal(parserForColumn('pms_work_orders_v2', { name: 'priority', type: 'text' }), 'ca_priority');
   });
 
   test('parserForLearnedColumn resolves via contract; undefined for non-core / extra fields', () => {
@@ -462,6 +530,8 @@ describe('parser selection', () => {
     assert.equal(parserForLearnedColumn('getArrivals', 'num_nights'), 'ca_integer');
     assert.equal(parserForLearnedColumn('getRoomStatus', 'status'), 'ca_status');
     assert.equal(parserForLearnedColumn('getWorkOrders', 'out_of_order'), 'ca_boolean_yn');
+    assert.equal(parserForLearnedColumn('getWorkOrders', 'status'), 'ca_work_order_status');
+    assert.equal(parserForLearnedColumn('getWorkOrders', 'priority'), 'ca_priority');
     assert.equal(parserForLearnedColumn('getArrivals', 'guest_name'), undefined); // text
     assert.equal(parserForLearnedColumn('getArrivals', 'adults'), undefined);     // extra field not in descriptor
     assert.equal(parserForLearnedColumn('getRevenueDaily', 'date'), undefined);   // non-core target
@@ -504,6 +574,14 @@ describe('ca parsers — robustness fixes', () => {
     assert.equal(date('not a date'), null);
     assert.equal(date(''), null);
     assert.equal(date('Smarch 10 2026'), null); // unknown month name → null
+    assert.equal(date('Junuary 10 2026'), null); // looks month-ish but isn't a real month
+  });
+  test('ca_date: calendar-invalid dates → null (the BLOCKER — never a fake ISO string)', () => {
+    assert.equal(date('13/40/2026'), null);        // month 13, day 40
+    assert.equal(date('0/10/2026'), null);         // month 0
+    assert.equal(date('2/29/2025'), null);         // 2025 is not a leap year
+    assert.equal(date('2/29/2024'), '2024-02-29'); // 2024 IS a leap year → valid
+    assert.equal(date('2026-13-40'), null);        // a fake ISO input must not pass straight through
   });
 
   test('ca_currency: lowercase "n/a" sentinel caught after trim+uppercase', () => {
@@ -523,8 +601,11 @@ describe('ca parsers — robustness fixes', () => {
     assert.equal(status('VAC'), 'vacant_clean');
     assert.equal(status('VC'), 'vacant_clean');
     assert.equal(status('VD'), 'vacant_dirty');
-    assert.equal(status('Vacant Dirty'), 'vacant_dirty'); // not mislabeled vacant_clean
+    assert.equal(status('Vacant Dirty'), 'vacant_dirty');  // not mislabeled vacant_clean
+    assert.equal(status('VACANTDIRTY'), 'vacant_dirty');   // no separator
+    assert.equal(status('VAC/DIRTY'), 'vacant_dirty');     // slash separator
     assert.equal(status('OOO'), 'out_of_order');
+    assert.equal(status('Out of Order'), 'out_of_order');
     assert.equal(status('Inspected'), 'inspected');
     assert.equal(status('ZZZ'), 'unknown'); // unrecognized → 'unknown' (also log.warns)
   });
@@ -535,5 +616,29 @@ describe('ca parsers — robustness fixes', () => {
     assert.equal(bool('yes'), true);
     assert.equal(bool(false), false);
     assert.equal(bool('maybe'), null);
+  });
+
+  const wos = getParser('ca_work_order_status')!;
+  test('ca_work_order_status: normalizes to the enum; unrecognized → open', () => {
+    assert.equal(wos('Open'), 'open');
+    assert.equal(wos('In Progress'), 'in_progress');
+    assert.equal(wos('in_progress'), 'in_progress');
+    assert.equal(wos('Closed'), 'resolved');
+    assert.equal(wos('Completed'), 'resolved');
+    assert.equal(wos('Cancelled'), 'cancelled');
+    assert.equal(wos('Pending'), 'open');
+    assert.equal(wos('Weird State'), 'open'); // unrecognized → 'open' (also log.warns)
+    assert.equal(wos(''), null);
+  });
+
+  const prio = getParser('ca_priority')!;
+  test('ca_priority: normalizes to the enum; blank → null; unrecognized → unknown', () => {
+    assert.equal(prio('Low'), 'low');
+    assert.equal(prio('High'), 'high');
+    assert.equal(prio('Urgent'), 'critical');
+    assert.equal(prio('Critical'), 'critical');
+    assert.equal(prio('Normal'), 'medium');
+    assert.equal(prio(''), null);              // optional → null skips the field, row survives
+    assert.equal(prio('Whatever'), 'unknown'); // unrecognized → 'unknown' (also log.warns)
   });
 });

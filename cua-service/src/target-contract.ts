@@ -128,14 +128,16 @@ export const MAX_COMPLETENESS_REASKS = 2;
 
 /**
  * Enum/text columns that need a PMS-specific code→canonical map the type alone
- * can't express. Keyed `${table}.${column}`. pms_room_status_log.status maps
- * raw CA codes (OCC/VAC/VD/OOO/INSP) → the room-status enum. Deliberately NOT
- * here: pms_reservations.status (free text, no enum constraint) and
- * pms_work_orders_v2.status (different enum, served as canonical JSON, not a
- * DOM scrape) — adding ca_status there would mistranslate their values.
+ * can't express. Keyed `${table}.${column}`. Each maps a column to a parser
+ * that emits ONLY values in that column's 0207 allowed_values (or null) — a raw
+ * "Open"/"High"/"OCC" would otherwise fail the allowed-values check and reject
+ * the whole row. Deliberately NOT here: pms_reservations.status (free text, no
+ * enum constraint) — it needs no normalization.
  */
 const ENUM_PARSER_OVERRIDES: Record<string, string> = {
   'pms_room_status_log.status': 'ca_status',
+  'pms_work_orders_v2.status': 'ca_work_order_status',
+  'pms_work_orders_v2.priority': 'ca_priority',
 };
 
 /**

@@ -24,15 +24,34 @@ import { log } from '../log.js';
 
 // ─── Shared helpers ─────────────────────────────────────────────────────
 
-const MONTHS: Record<string, number> = {
-  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
-  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
-};
+// Full month names + their 3-letter abbreviations (and the common "sept"),
+// matched against the WHOLE token so "Junuary" doesn't silently resolve to June.
+const MONTH_LOOKUP: Record<string, number> = (() => {
+  const full = ['january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december'];
+  const m: Record<string, number> = { sept: 9 };
+  full.forEach((name, i) => { m[name] = i + 1; m[name.slice(0, 3)] = i + 1; });
+  return m;
+})();
 const pad2 = (n: number | string): string => String(n).padStart(2, '0');
 /** 2-digit year → 4-digit, POSIX-style pivot (00-69 → 2000s, 70-99 → 1900s). */
 const pivotYear = (yy: string): number => {
   const n = parseInt(yy, 10);
   return n <= 69 ? 2000 + n : 1900 + n;
+};
+/**
+ * Assemble Y/M/D into an ISO date ONLY if it's a real calendar date — returns
+ * null for Feb 30, month 13, day 0, etc. CRITICAL: validateRows' date check is
+ * only a `/^\d{4}-\d{2}-\d{2}/` SHAPE regex, so a fake "2026-13-40" passes
+ * validation and then THROWS at the Postgres `date` column, losing the ENTIRE
+ * write batch. Returning null here rejects only the one offending row.
+ */
+const toIsoDate = (y: number, mo: number, d: number): string | null => {
+  if (!Number.isInteger(y) || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  // Date.UTC normalizes overflow (Feb 30 → Mar 2); reject if it rolled over.
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return `${String(y).padStart(4, '0')}-${pad2(mo)}-${pad2(d)}`;
 };
 
 // ─── Date ──────────────────────────────────────────────────────────────
@@ -48,33 +67,28 @@ const pivotYear = (yy: string): number => {
 registerParser('ca_date', (raw: unknown): string | null => {
   if (raw == null || raw === '') return null;
   const s = String(raw).trim();
-  // ISO already.
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // ISO already — still calendar-validate (a fake "2026-13-40" must not pass).
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return toIsoDate(+iso[1]!, +iso[2]!, +iso[3]!);
   // M/D/YYYY or MM/DD/YYYY (slash) and MM-DD-YYYY (dash) — 4-digit year.
   const full = s.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{4})$/);
-  if (full) {
-    const [, m, , d, y] = full;
-    return `${y}-${pad2(m!)}-${pad2(d!)}`;
-  }
+  if (full) return toIsoDate(+full[4]!, +full[1]!, +full[3]!);
   // 2-digit year: M/D/YY or M-D-YY (same separator). CA occasionally truncates.
   const short = s.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{2})$/);
-  if (short) {
-    const [, m, , d, y] = short;
-    return `${pivotYear(y!)}-${pad2(m!)}-${pad2(d!)}`;
-  }
+  if (short) return toIsoDate(pivotYear(short[4]!), +short[1]!, +short[3]!);
   // Textual month, month-first: "Jun 10, 2026" / "June 10 2026".
   const mdY = s.match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/);
   if (mdY) {
-    const mo = MONTHS[mdY[1]!.slice(0, 3).toLowerCase()];
-    if (mo) return `${mdY[3]}-${pad2(mo)}-${pad2(mdY[2]!)}`;
+    const mo = MONTH_LOOKUP[mdY[1]!.toLowerCase()];
+    if (mo) return toIsoDate(+mdY[3]!, mo, +mdY[2]!);
   }
   // Textual month, day-first: "10 Jun 2026" / "10 June, 2026".
   const dMY = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/);
   if (dMY) {
-    const mo = MONTHS[dMY[2]!.slice(0, 3).toLowerCase()];
-    if (mo) return `${dMY[3]}-${pad2(mo)}-${pad2(dMY[1]!)}`;
+    const mo = MONTH_LOOKUP[dMY[2]!.toLowerCase()];
+    if (mo) return toIsoDate(+dMY[3]!, mo, +dMY[1]!);
   }
-  // Unrecognized — null (validator will reject if field is required).
+  // Unrecognized — null (validator rejects only this row if the field is required).
   return null;
 });
 
@@ -114,12 +128,13 @@ registerParser('ca_status', (raw: unknown): string | null => {
   if (raw == null || raw === '') return null;
   const s = String(raw).trim().toUpperCase();
   if (s.startsWith('OCC') || s === 'OCCUPIED') return 'occupied';
-  // Explicit vacant-dirty codes MUST be checked before the VAC* catch-all —
-  // "VACANT DIRTY".startsWith('VAC') would otherwise mislabel it vacant_clean.
-  if (s === 'VD' || s === 'VACANT DIRTY' || s === 'VACANT-DIRTY') return 'vacant_dirty';
-  if (s === 'VC' || s === 'VACANT CLEAN' || s === 'VACANT-CLEAN' || s.startsWith('VAC') || s === 'VACANT') return 'vacant_clean';
-  if (s === 'OOO' || s === 'OUT OF ORDER' || s === 'OUT-OF-ORDER') return 'out_of_order';
-  if (s === 'INSP' || s === 'INSPECTED') return 'inspected';
+  if (s === 'OOO' || s.includes('OUT OF ORDER') || s.includes('OUT-OF-ORDER')) return 'out_of_order';
+  if (s === 'INSP' || s.includes('INSPECT')) return 'inspected';
+  // "DIRTY" anywhere wins over the VAC*/clean catch-all, so "VACANT DIRTY",
+  // "VACANTDIRTY", "VAC/DIRTY" and "VACANT\nDIRTY" all map to vacant_dirty
+  // instead of being silently mislabeled vacant_clean (a sellable-looking room).
+  if (s === 'VD' || s.includes('DIRTY')) return 'vacant_dirty';
+  if (s === 'VC' || s.includes('CLEAN') || s.startsWith('VAC') || s === 'VACANT') return 'vacant_clean';
   // Unrecognized — surface as a read-health signal instead of silently
   // emitting 'unknown'. 'unknown' is a valid enum value so the row still
   // writes, but a flood of these means the status column drifted or was
@@ -155,6 +170,48 @@ registerParser('ca_boolean_yn', (raw: unknown): boolean | null => {
   const s = String(raw).trim().toUpperCase();
   if (s === '') return null;
   if (s === 'Y' || s === 'YES' || s === 'TRUE' || s === '✓' || s === '1') return true;
-  if (s === 'N' || s === 'NO' || s === 'FALSE' || s === '' || s === '0') return false;
+  if (s === 'N' || s === 'NO' || s === 'FALSE' || s === '0') return false;
   return null;
+});
+
+// ─── Work-order status enum ────────────────────────────────────────────
+
+/**
+ * Normalize a work-order status to the pms_work_orders_v2.status enum
+ * {open, in_progress, resolved, cancelled} (migration 0207). Without this, a
+ * raw DOM/CSV value like "Open" or "In Progress" fails validateRows' allowed-
+ * values check and rejects the WHOLE work-order row. Unrecognized → 'open'
+ * (active by default — same fallback as the layer-2 validateWorkOrder), with a
+ * warn so genuinely-new states surface instead of silently writing wrong data.
+ */
+registerParser('ca_work_order_status', (raw: unknown): string | null => {
+  if (raw == null || raw === '') return null;
+  const s = String(raw).trim().toUpperCase().replace(/[_-]/g, ' ');
+  if (s === 'OPEN' || s === 'NEW' || s === 'PENDING' || s === 'ACTIVE') return 'open';
+  if (s.includes('PROGRESS') || s === 'WIP' || s === 'STARTED' || s === 'ASSIGNED') return 'in_progress';
+  if (s === 'RESOLVED' || s === 'CLOSED' || s === 'COMPLETE' || s === 'COMPLETED' || s === 'DONE' || s === 'FIXED') return 'resolved';
+  if (s === 'CANCELLED' || s === 'CANCELED' || s === 'VOID' || s === 'VOIDED') return 'cancelled';
+  log.warn('ca_work_order_status: unrecognized status — defaulting to "open"', { raw: s.slice(0, 40) });
+  return 'open';
+});
+
+// ─── Priority enum ─────────────────────────────────────────────────────
+
+/**
+ * Normalize a work-order priority to the pms_work_orders_v2.priority enum
+ * {low, medium, high, critical, unknown} (migration 0207). priority is
+ * OPTIONAL, so a blank → null (field skipped, row survives); an unrecognized
+ * value → 'unknown' rather than rejecting the whole row over a non-required
+ * field. "urgent"/"emergency" collapse to the nearest enum value, 'critical'.
+ */
+registerParser('ca_priority', (raw: unknown): string | null => {
+  if (raw == null) return null;
+  const s = String(raw).trim().toUpperCase();
+  if (s === '') return null;
+  if (s === 'LOW') return 'low';
+  if (s === 'MEDIUM' || s === 'MED' || s === 'NORMAL' || s === 'STANDARD') return 'medium';
+  if (s === 'HIGH') return 'high';
+  if (s === 'CRITICAL' || s === 'URGENT' || s === 'EMERGENCY') return 'critical';
+  log.warn('ca_priority: unrecognized priority — defaulting to "unknown"', { raw: s.slice(0, 40) });
+  return 'unknown';
 });
