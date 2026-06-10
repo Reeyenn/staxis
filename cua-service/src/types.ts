@@ -249,11 +249,25 @@ export interface Recipe {
     getGroupsAndBlocks?:      ActionRecipe;
     getRatesAndInventory?:    ActionRecipe;
     getWorkOrders?:           ActionRecipe;  // currently fetched via fetch_api on CA but the mapper's never been pointed at it; adding so a fresh PMS can have it learned
+    // feat/pms-universal-translate — 4 new universal money/booking feeds.
+    // Money splits into two grains: per-folio balances + a daily collected
+    // roll. All optional (never gate promotion / never regress the core feeds).
+    getGuestBalances?:        ActionRecipe;  // who owes — outstanding folio balances + deposits
+    getPaymentsDaily?:        ActionRecipe;  // collected today (cash + card + deposits)
+    getFutureBookings?:       ActionRecipe;  // on-the-books reservations for UPCOMING dates (pace)
+    getNoShows?:              ActionRecipe;  // last night's no-show reservations
+    getCancellations?:        ActionRecipe;  // cancelled reservations
   };
   hints?: {
     dismissDialogs?: string[];
     scrollBeforeParse?: boolean;
   };
+  /** feat/pms-universal-translate — self-learned VALUE translation, saved in
+   *  the knowledge file alongside the WHERE-data-lives selectors. Optional so
+   *  pre-existing recipes (e.g. the seeded Choice Advantage file) load fine and
+   *  fall back to the ca_* parsers / heuristic date parse. */
+  valueTranslations?: LearnedValueTranslations;
+  dateFormat?: LearnedDateFormat;
 }
 
 // ─── Phase 3: PMS write-back recipe shapes ────────────────────────────────
@@ -350,6 +364,47 @@ export type WriteStrategy = 'upsert' | 'append' | 'reconcile';
 export type SnapshotScope = 'full' | 'delta';
 export type ExtractionMode = 'csv_download' | 'dom_table' | 'fetch_api' | 'dom_inline';
 
+// ─── Universal value translation (feat/pms-universal-translate) ─────────────
+//
+// The mapper LEARNS how a PMS formats its values (date order, status
+// vocabulary) during the first mapping run and SAVES it in the knowledge
+// file. At extraction time the generic parsers (parsers/generic.ts) read
+// this learned config and translate ANY PMS's strings to the canonical types
+// the descriptor expects — no per-PMS hand-written parser required.
+
+export type DateOrder = 'MDY' | 'DMY' | 'YMD';
+
+/** A date format learned during mapping. `order` disambiguates M/D vs D/M so
+ *  runtime never has to guess "6/10" = June 10 or Oct 6. `confidence:'low'`
+ *  means the samples were all ambiguous (every token ≤ 12) → the parser falls
+ *  back to its heuristic rather than trusting a coin-flip order. */
+export interface LearnedDateFormat {
+  order: DateOrder;
+  /** The literal separator observed ('/', '-', '.'). Optional — the parser
+   *  tolerates any separator when absent. */
+  separator?: string;
+  confidence: 'high' | 'low';
+  /** A few raw samples the inference was drawn from (audit / debugging). */
+  samples?: string[];
+}
+
+/** Per-`${table}.${column}` raw→canonical value maps, self-learned by the
+ *  mapper for enum columns whose vocabulary is PMS-specific (e.g. a PMS that
+ *  writes "Belegt" for occupied). Saved in the knowledge file, reused by every
+ *  hotel on that PMS family. */
+export type LearnedValueTranslations = Record<string, Record<string, string>>;
+
+/** Runtime config handed to a parser via TableTemplateField.parserConfig.
+ *  Each generic parser reads only the keys it needs; ca_* parsers ignore it. */
+export interface ParserConfig {
+  /** generic_date — the learned format. Absent → heuristic parse. */
+  dateFormat?: LearnedDateFormat;
+  /** generic_enum — normalized-raw → canonical mapping. */
+  mapping?: Record<string, string>;
+  /** generic_enum — value emitted when raw isn't in `mapping` (default null). */
+  onUnknown?: string | null;
+}
+
 export interface TableTemplateSource {
   /** Stable name within the template (matches keys in `aggregate.rules` if used). */
   name: string;
@@ -400,6 +455,10 @@ export interface TableTemplateField {
   selectorOrColumn: string;
   /** Parser plugin to apply (looked up from parsers/registry.ts). */
   parser?: string;
+  /** Learned config the parser reads at runtime (date format / enum mapping).
+   *  Built by recipe-adapter from the knowledge file's valueTranslations +
+   *  dateFormat. Ephemeral (rebuilt each poll) — never persisted. */
+  parserConfig?: ParserConfig;
 }
 
 export interface TableTemplate {

@@ -787,7 +787,14 @@ export class SessionDriver {
       login: this.knowledgeFile.knowledge.login as Recipe['login'],
       actions,
     };
-    const adaptResult = recipeToTableTemplates(recipe);
+    // feat/pms-universal-translate — hand the adapter the self-learned VALUE
+    // translation saved in this family's knowledge file (date order + enum
+    // vocabulary) so the generic parsers can normalize this PMS's strings.
+    // Absent (e.g. the seeded Choice Advantage file) → ca_* / heuristic fallback.
+    const adaptResult = recipeToTableTemplates(recipe, {
+      valueTranslations: this.knowledgeFile.knowledge.valueTranslations,
+      dateFormat: this.knowledgeFile.knowledge.dateFormat,
+    });
     if (adaptResult.skipped.length > 0) {
       log.warn('session-driver: some actions skipped by adapter', {
         propertyId: this.propertyId,
@@ -1257,6 +1264,12 @@ export class SessionDriver {
         cost_cap_micros: 2_000_000,
         // The whole point — seed all other actions so mapper skips them.
         seed_actions: seedActions,
+        // Preserve previously-learned value translation across a partial repair
+        // so the re-mapped recipe doesn't drop the OTHER feeds' enum vocabulary /
+        // learned date order (those targets are skipped, so they aren't re-learned)
+        // (Codex review #4).
+        seed_value_translations: this.knowledgeFile.knowledge.valueTranslations,
+        seed_date_format: this.knowledgeFile.knowledge.dateFormat,
         // For audit + Live Mapping UI to render context.
         repair_target_key: actionKey,
         repaired_from_version: this.knowledgeFile.version,

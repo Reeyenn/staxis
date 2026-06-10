@@ -34,7 +34,7 @@ import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
 import { verifyRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
-import type { Recipe } from './types.js';
+import type { Recipe, LearnedValueTranslations, LearnedDateFormat } from './types.js';
 
 // ─── Knowledge file schema ────────────────────────────────────────────────
 
@@ -98,6 +98,20 @@ export interface KnowledgeFile {
     /** Anti-bot defense: max requests per minute we'll send. */
     maxRequestsPerMinute?: number;
   };
+  /**
+   * feat/pms-universal-translate — self-learned VALUE translation, saved per
+   * PMS family alongside the WHERE-data-lives selectors and reused by every
+   * hotel on that family:
+   *   - valueTranslations: `${table}.${col}` → { rawValue → canonical } for
+   *     enum columns whose vocabulary is PMS-specific (status/priority words).
+   *   - dateFormat: the learned date ORDER so "6/10" is never guessed.
+   * Both optional — a pre-existing recipe (the seeded Choice Advantage file)
+   * loads fine without them and falls back to the ca_* parsers / heuristic.
+   * Included in the signed `knowledge` envelope (mapping-driver), so signature
+   * verification stays consistent.
+   */
+  valueTranslations?: LearnedValueTranslations;
+  dateFormat?: LearnedDateFormat;
 }
 
 export type KnowledgeFileStatus = 'draft' | 'active' | 'deprecated' | 'quarantined';

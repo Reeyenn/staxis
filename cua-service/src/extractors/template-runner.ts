@@ -18,8 +18,12 @@ import { extractDomInline } from './dom-inline.js';
 import { extractCsvDownload } from './csv-download.js';
 import { extractFetchApi } from './fetch-api.js';
 import { applyParser } from '../parsers/registry.js';
-// Side-effect import — registers all CA parsers (ca_date, ca_currency, etc.)
-// at module load. Add more PMS-family imports here as they're built.
+// Side-effect imports — register the value parsers at module load.
+//   generic.js: the PMS-AGNOSTIC default parsers (generic_date/currency/enum…)
+//   ca.js:      Choice-Advantage parsers, kept ONLY as a back-compat fallback
+//               for the already-seeded CA knowledge file (recipe-adapter wires
+//               them via ENUM_PARSER_OVERRIDES when no learned mapping exists).
+import '../parsers/generic.js';
 import '../parsers/ca.js';
 import type {
   TableTemplate,
@@ -126,7 +130,7 @@ function applyTemplateParsers(
       out[col] = null;
       continue;
     }
-    out[col] = field.parser ? applyParser(field.parser, raw) : raw;
+    out[col] = field.parser ? applyParser(field.parser, raw, field.parserConfig) : raw;
   }
   return out;
 }

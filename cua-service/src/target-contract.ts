@@ -30,7 +30,9 @@
  * __tests__/mapper-field-contract.test.ts fails if these drift from 0207.
  */
 
-import type { Recipe, ActionRecipe } from './types.js';
+import type {
+  Recipe, ActionRecipe, ParserConfig, LearnedValueTranslations, LearnedDateFormat,
+} from './types.js';
 
 /** 0207 descriptor column types (mirrors ColumnDescriptor['type'] in
  *  generic-table-writer.ts; kept local so this module stays a dependency-free
@@ -124,15 +126,24 @@ export const CORE_TARGET_CONTRACTS: Partial<
  */
 export const MAX_COMPLETENESS_REASKS = 2;
 
-// ─── Value parsers ───────────────────────────────────────────────────────────
+// ─── Value parsers (feat/pms-universal-translate) ────────────────────────────
+//
+// Value translation is now UNIVERSAL: a descriptor column's TYPE picks a
+// GENERIC, PMS-agnostic parser (parsers/generic.ts) that works on any PMS with
+// no hand-written code. The two PMS-specific things — the date ORDER and the
+// enum VOCABULARY — are LEARNED during mapping and saved in the knowledge file;
+// resolveColumnParser() folds those learned translations into the parser config
+// at wiring time. The Choice-Advantage parsers (ca.ts) survive ONLY as a
+// back-compat / safety fallback for the already-seeded CA knowledge file, which
+// has no learned vocabulary yet (see ENUM_PARSER_OVERRIDES below).
 
 /**
- * Enum/text columns that need a PMS-specific code→canonical map the type alone
- * can't express. Keyed `${table}.${column}`. Each maps a column to a parser
- * that emits ONLY values in that column's 0207 allowed_values (or null) — a raw
- * "Open"/"High"/"OCC" would otherwise fail the allowed-values check and reject
- * the whole row. Deliberately NOT here: pms_reservations.status (free text, no
- * enum constraint) — it needs no normalization.
+ * Enum columns whose canonical value set can't be expressed by type alone, and
+ * for which we keep a PMS-specific `ca_*` parser as a FALLBACK — used ONLY when
+ * the knowledge file carries no self-learned mapping for that column (i.e. the
+ * legacy seeded Choice Advantage file, or a safety net if learning abstained).
+ * A brand-new PMS never reaches these: its mapper emits a learned mapping and
+ * resolveColumnParser routes to generic_enum instead. Keyed `${table}.${col}`.
  */
 const ENUM_PARSER_OVERRIDES: Record<string, string> = {
   'pms_room_status_log.status': 'ca_status',
@@ -140,42 +151,252 @@ const ENUM_PARSER_OVERRIDES: Record<string, string> = {
   'pms_work_orders_v2.priority': 'ca_priority',
 };
 
-/**
- * Pick the value parser (parsers/registry.ts name) for a descriptor column,
- * driven by its TYPE so new feeds inherit normalization automatically. Returns
- * undefined for plain text/jsonb (the raw string already satisfies the type
- * check). Enum columns are handled by ENUM_PARSER_OVERRIDES first.
- */
-export function parserForColumn(table: string, col: { name: string; type: DescriptorColType }): string | undefined {
-  const override = ENUM_PARSER_OVERRIDES[`${table}.${col.name}`];
-  if (override) return override;
-  switch (col.type) {
-    case 'date':    return 'ca_date';
-    case 'integer': return 'ca_integer';
-    case 'bigint':  return col.name.endsWith('_cents') ? 'ca_currency' : 'ca_integer';
-    case 'boolean': return 'ca_boolean_yn';
-    // text/numeric/jsonb/timestamptz → no parser (raw string passes the type
-    // check, or the column is writer-synthesized and never learned).
+/** Type → generic format parser name (PMS-agnostic). Returns undefined for
+ *  text/jsonb/timestamptz (raw string already satisfies the type check, or the
+ *  column is writer-synthesized). Enum handling lives in resolveColumnParser. */
+function genericParserForType(type: DescriptorColType, name: string): string | undefined {
+  switch (type) {
+    case 'date':    return 'generic_date';
+    case 'integer': return 'generic_integer';
+    case 'bigint':  return name.endsWith('_cents') ? 'generic_currency' : 'generic_integer';
+    case 'numeric': return 'generic_number';
+    case 'boolean': return 'generic_boolean';
     default:        return undefined;
   }
 }
 
 /**
- * The parser name to attach to a LEARNED column of a core target, or undefined.
+ * Pick the value parser NAME for a descriptor column by TYPE. Generic parser
+ * for formattable types; the `ca_*` enum FALLBACK when an override exists (no
+ * learned-mapping context here — resolveColumnParser is the learned-aware
+ * path). Kept for the contract drift guard + back-compat callers.
+ */
+export function parserForColumn(table: string, col: { name: string; type: DescriptorColType }): string | undefined {
+  const override = ENUM_PARSER_OVERRIDES[`${table}.${col.name}`];
+  if (override) return override;
+  return genericParserForType(col.type, col.name);
+}
+
+// ─── Superset VALUE contract — drives parser selection for EVERY mapped ───────
+//     target (the 4 core feeds + the 5 net-new money/booking feeds).
+//
+// Decoupled from CORE_TARGET_CONTRACTS (which gates required-field NAMES so the
+// promotion gate + mapAction re-ask are unchanged). This map is purely about
+// VALUE translation: each column's descriptor type, plus `enumValues` for the
+// few enum columns (their canonical allowed_values, used for generic_enum's
+// safe default + the learn step's target set). Mirrors the live 0207 + 0276
+// descriptors; the contract drift guard enforces parity. Writer-stamped
+// `captured_at`/`changed_at` (timestamptz) are intentionally excluded.
+//
+// DEFERRED (no contract yet → resolveColumnParser returns undefined → their
+// date/_cents columns stay unparsed, exactly as before this change — NOT a
+// regression): the optional report feeds getRevenueDaily / getRatesAndInventory
+// / getChannelPerformance / getForecastDaily / getGroupsAndBlocks /
+// getLostAndFound / getActivityLog / getGuests / getRoomLayout /
+// getDashboardCounts / getHistoricalOccupancy. They have never run end-to-end;
+// wiring them is a follow-up that must mirror each one's CURRENT live descriptor
+// (several drifted from 0207 — see the room-status / work-order note above).
+
+export interface ValueColumn {
+  name: string;
+  type: DescriptorColType;
+  /** Canonical allowed_values — present iff this is an enum column. */
+  enumValues?: string[];
+}
+
+export interface TargetValueContract {
+  table: string;
+  columns: ValueColumn[];
+}
+
+const RESERVATION_VALUE_COLUMNS: ValueColumn[] = [
+  { name: 'pms_reservation_id', type: 'text' },
+  { name: 'guest_name', type: 'text' },
+  { name: 'arrival_date', type: 'date' },
+  { name: 'departure_date', type: 'date' },
+  { name: 'room_number', type: 'text' },
+  { name: 'num_nights', type: 'integer' },
+  { name: 'status', type: 'text' },
+  { name: 'channel_name', type: 'text' },
+  { name: 'rate_per_night_cents', type: 'bigint' },
+];
+
+export const TARGET_VALUE_CONTRACTS: Partial<
+  Record<keyof Recipe['actions'], TargetValueContract>
+> = {
+  // ── 4 core feeds (mirror CORE_TARGET_CONTRACTS + enum canonical sets) ──
+  // enumValues mirror the LIVE pms_table_schemas descriptor (which validateRows
+  // enforces) — NOT the stale 0207 seed. The room-status + work-order enum sets
+  // were widened by later migrations; learning against the live set means a new
+  // PMS maps to values the DB CHECK actually accepts (Codex review #7).
+  getRoomStatus: {
+    table: 'pms_room_status_log',
+    columns: [
+      { name: 'room_number', type: 'text' },
+      { name: 'status', type: 'text', enumValues: ['vacant_clean', 'vacant_dirty', 'occupied', 'occupied_clean', 'occupied_dirty', 'out_of_order', 'out_of_inventory', 'inspected', 'unknown'] },
+      { name: 'changed_by', type: 'text' },
+    ],
+  },
+  getArrivals: { table: 'pms_reservations', columns: RESERVATION_VALUE_COLUMNS },
+  getDepartures: { table: 'pms_reservations', columns: RESERVATION_VALUE_COLUMNS },
+  getWorkOrders: {
+    table: 'pms_work_orders_v2',
+    columns: [
+      { name: 'pms_work_order_id', type: 'text' },
+      { name: 'description', type: 'text' },
+      { name: 'status', type: 'text', enumValues: ['open', 'in_progress', 'closed', 'deferred', 'resolved'] },
+      { name: 'out_of_order', type: 'boolean' },
+      { name: 'room_number', type: 'text' },
+      { name: 'priority', type: 'text', enumValues: ['urgent', 'high', 'medium', 'low'] },
+      { name: 'assigned_to', type: 'text' },
+    ],
+  },
+  // ── 5 net-new feeds (mirror migration 0276; all-text status = free text,
+  //    so they need ONLY generic format parsers — a clean universality proof) ──
+  getGuestBalances: {
+    table: 'pms_guest_balances',
+    columns: [
+      { name: 'pms_folio_id', type: 'text' },
+      { name: 'pms_reservation_id', type: 'text' },
+      { name: 'guest_name', type: 'text' },
+      { name: 'room_number', type: 'text' },
+      { name: 'balance_cents', type: 'bigint' },
+      { name: 'deposit_cents', type: 'bigint' },
+      { name: 'folio_status', type: 'text' },
+      { name: 'last_payment_cents', type: 'bigint' },
+      { name: 'last_payment_method', type: 'text' },
+    ],
+  },
+  getPaymentsDaily: {
+    table: 'pms_payments_daily',
+    columns: [
+      { name: 'business_date', type: 'date' },
+      { name: 'cash_collected_cents', type: 'bigint' },
+      { name: 'card_collected_cents', type: 'bigint' },
+      { name: 'deposits_collected_cents', type: 'bigint' },
+      { name: 'total_collected_cents', type: 'bigint' },
+    ],
+  },
+  getFutureBookings: {
+    table: 'pms_future_bookings',
+    columns: [
+      { name: 'pms_reservation_id', type: 'text' },
+      { name: 'guest_name', type: 'text' },
+      { name: 'room_number', type: 'text' },
+      { name: 'room_type', type: 'text' },
+      { name: 'arrival_date', type: 'date' },
+      { name: 'departure_date', type: 'date' },
+      { name: 'num_nights', type: 'integer' },
+      { name: 'rate_per_night_cents', type: 'bigint' },
+      { name: 'total_amount_cents', type: 'bigint' },
+      { name: 'status', type: 'text' },
+      { name: 'channel_name', type: 'text' },
+    ],
+  },
+  getNoShows: {
+    table: 'pms_no_shows',
+    columns: [
+      { name: 'pms_reservation_id', type: 'text' },
+      { name: 'guest_name', type: 'text' },
+      { name: 'room_number', type: 'text' },
+      { name: 'arrival_date', type: 'date' },
+      { name: 'departure_date', type: 'date' },
+      { name: 'rate_per_night_cents', type: 'bigint' },
+      { name: 'total_amount_cents', type: 'bigint' },
+      { name: 'channel_name', type: 'text' },
+      { name: 'no_show_date', type: 'date' },
+    ],
+  },
+  getCancellations: {
+    table: 'pms_cancellations',
+    columns: [
+      { name: 'pms_reservation_id', type: 'text' },
+      { name: 'guest_name', type: 'text' },
+      { name: 'room_number', type: 'text' },
+      { name: 'arrival_date', type: 'date' },
+      { name: 'departure_date', type: 'date' },
+      { name: 'cancelled_date', type: 'date' },
+      { name: 'cancellation_fee_cents', type: 'bigint' },
+      { name: 'total_amount_cents', type: 'bigint' },
+      { name: 'channel_name', type: 'text' },
+      { name: 'reason', type: 'text' },
+    ],
+  },
+};
+
+/** The learned translations a recipe carries (subset of Recipe / KnowledgeFile). */
+export interface LearnedTranslations {
+  valueTranslations?: LearnedValueTranslations;
+  dateFormat?: LearnedDateFormat;
+}
+
+/**
+ * THE universal resolver. Given a target + learned column, return the parser to
+ * apply AND its runtime config, folding in the knowledge file's self-learned
+ * translations:
+ *   - enum column → learned mapping present → generic_enum + that mapping;
+ *                   else ca_* fallback (seeded CA / safety net); else
+ *                   generic_enum with empty mapping (→ safe default + log).
+ *   - date column → generic_date (+ learned dateFormat config when present).
+ *   - other formattable types → the matching generic_* parser.
+ *   - plain text / unknown column → undefined (no parser; raw string is fine).
  * recipe-adapter calls this per learned column when building TableTemplate
- * fields. Returns undefined for non-core targets and for learned columns not in
- * the descriptor (extra fields pass through unparsed and are dropped by the
- * writer's extra-field check).
+ * fields. Returns undefined for targets/columns not in TARGET_VALUE_CONTRACTS
+ * (extra fields pass through unparsed and are dropped by the writer's
+ * extra-field check).
+ */
+export function resolveColumnParser(
+  actionKey: keyof Recipe['actions'],
+  columnName: string,
+  learned?: LearnedTranslations,
+): { parser: string; config?: ParserConfig } | undefined {
+  const contract = TARGET_VALUE_CONTRACTS[actionKey];
+  if (!contract) return undefined;
+  const col = contract.columns.find((c) => c.name === columnName);
+  if (!col) return undefined;
+  const tableCol = `${contract.table}.${columnName}`;
+
+  if (col.enumValues && col.enumValues.length > 0) {
+    // An unknown value writes as 'unknown' when that's a valid canonical value
+    // (so the row still lands), else null (a required enum then rejects only
+    // its own row). Either way it's logged, never a silent guess.
+    const onUnknown = col.enumValues.includes('unknown') ? 'unknown' : null;
+    const learnedMap = learned?.valueTranslations?.[tableCol];
+    if (learnedMap && Object.keys(learnedMap).length > 0) {
+      return { parser: 'generic_enum', config: { mapping: learnedMap, onUnknown } };
+    }
+    // The ca_* parser is a Choice-Advantage-SPECIFIC fallback. Use it ONLY for a
+    // LEGACY recipe — one with no learned-translation capability at all (the
+    // seeded CA knowledge file, whose `valueTranslations` is undefined). A
+    // new-style recipe ALWAYS carries a valueTranslations object (even when
+    // empty), so an enum column it didn't learn safely uses generic_enum
+    // (→ onUnknown + log) — a brand-new PMS NEVER falls back to a CA-specific
+    // parser, which would mis-translate its vocabulary (Codex review #2).
+    const isLegacyRecipe = learned?.valueTranslations === undefined;
+    if (isLegacyRecipe) {
+      const fallback = ENUM_PARSER_OVERRIDES[tableCol];
+      if (fallback) return { parser: fallback };
+    }
+    return { parser: 'generic_enum', config: { onUnknown } };
+  }
+
+  const p = genericParserForType(col.type, col.name);
+  if (!p) return undefined;
+  if (p === 'generic_date' && learned?.dateFormat) {
+    return { parser: p, config: { dateFormat: learned.dateFormat } };
+  }
+  return { parser: p };
+}
+
+/**
+ * Back-compat NAME-only resolver (no learned context). Used by the contract
+ * drift guard / tests. recipe-adapter uses resolveColumnParser (config-aware).
  */
 export function parserForLearnedColumn(
   actionKey: keyof Recipe['actions'],
   columnName: string,
 ): string | undefined {
-  const contract = CORE_TARGET_CONTRACTS[actionKey];
-  if (!contract) return undefined;
-  const col = contract.columns.find((c) => c.name === columnName);
-  if (!col) return undefined;
-  return parserForColumn(contract.table, col);
+  return resolveColumnParser(actionKey, columnName)?.parser;
 }
 
 // ─── Column-name helpers (names contract) ────────────────────────────────────

@@ -37,7 +37,7 @@ import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
-import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { columnsFromAction, missingRequiredColumns } from './target-contract.js';
 
@@ -61,6 +61,11 @@ export interface MappingJobInput {
    *  repair jobs with this set to currentActiveRecipe.actions minus
    *  the failing target_key. */
   seed_actions?: Recipe['actions'];
+  /** feat/pms-universal-translate — carried alongside seed_actions on a partial
+   *  repair so the re-mapped recipe preserves the value translation already
+   *  learned for the SKIPPED targets (which aren't re-learned). */
+  seed_value_translations?: LearnedValueTranslations;
+  seed_date_format?: LearnedDateFormat;
 }
 
 export interface MappingJobResult {
@@ -302,6 +307,8 @@ export async function runMappingJob(
     // mapper only iterates targets NOT in this set. Empty for full
     // mappings (fresh PMS family); populated for repairs.
     seedActions: input.seed_actions,
+    seedValueTranslations: input.seed_value_translations,
+    seedDateFormat: input.seed_date_format,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
       // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
@@ -641,6 +648,13 @@ async function saveDraftKnowledgeFile(
     login: recipe.login,
     actions: recipe.actions,
     hints: recipe.hints ?? {},
+    // feat/pms-universal-translate — persist self-learned value translation in
+    // the SAME envelope that gets signed (so verifyRecipe at load stays
+    // consistent) and reloaded by the session-driver. Only present when the
+    // mapper actually learned them, so recipes without them keep their exact
+    // prior signed shape.
+    ...(recipe.valueTranslations ? { valueTranslations: recipe.valueTranslations } : {}),
+    ...(recipe.dateFormat ? { dateFormat: recipe.dateFormat } : {}),
   };
 
   // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-

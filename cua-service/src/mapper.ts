@@ -42,7 +42,9 @@ import { sendAdminSms } from './admin-sms.js';
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
-import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS } from './target-contract.js';
+import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS } from './target-contract.js';
+import { inferDateFormat, sanitizeEnumMapping, mergeValueTranslation, pickDateFormat } from './value-learning.js';
+import type { LearnedValueTranslations, LearnedDateFormat } from './types.js';
 import {
   createPruneState,
   maybePruneHistory,
@@ -280,6 +282,15 @@ interface MapperOptions {
    * runs ONLY target X, merges with seedActions, saves as new version.
    */
   seedActions?: Recipe['actions'];
+  /**
+   * feat/pms-universal-translate — on a partial self-repair, the SKIPPED targets
+   * (seedActions) aren't re-learned, so their value translation would be lost
+   * from the new recipe. These carry the prior recipe's learned translation
+   * forward: the accumulators start from them and the re-learned target merges
+   * on top. Empty for a fresh full mapping.
+   */
+  seedValueTranslations?: LearnedValueTranslations;
+  seedDateFormat?: LearnedDateFormat;
 }
 
 /**
@@ -577,6 +588,15 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       });
     }
 
+    // feat/pms-universal-translate — accumulate self-learned VALUE translation
+    // across targets: enum vocabularies keyed by `${table}.${column}`, and a
+    // pool of raw date samples (one PMS = one date format, so pooling across
+    // every date column maximizes the chance of seeing a disambiguating >12
+    // token and learning the order with high confidence). On a partial repair,
+    // SEED from the prior recipe so the skipped targets' translation survives.
+    const learnedValueTranslations: LearnedValueTranslations = { ...(opts.seedValueTranslations ?? {}) };
+    const learnedDateSamples: string[] = [];
+
     for (const target of TARGETS) {
       // Skip targets already mapped in a prior attempt (B6 reclaim path).
       if (actions[target.key]) {
@@ -631,6 +651,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           });
       if (result.ok) {
         actions[target.key] = result.action;
+        // feat/pms-universal-translate — fold this target's observed values
+        // into the running learned-translation accumulators (sanitized against
+        // the descriptor's canonical sets).
+        accumulateLearnedValues(target.key, result, learnedValueTranslations, learnedDateSamples);
         // Plan v8 B6 — persist after each successful target so a crash
         // doesn't lose the work. Best-effort: on persist failure, keep
         // running (the next target will retry the persist with both).
@@ -662,11 +686,39 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       };
     }
 
+    // feat/pms-universal-translate — finalize the learned date order from the
+    // pooled samples (null/low-confidence when ambiguous → runtime heuristic).
+    // Confidence-aware merge with any prior-recipe seed (partial repair): a
+    // low-confidence repair inference must never downgrade a high-confidence
+    // seed (Codex re-review #5).
+    const learnedDateFormat = pickDateFormat(inferDateFormat(learnedDateSamples), opts.seedDateFormat);
+    if (learnedDateFormat) {
+      log.info('mapper: learned date format', {
+        jobId: opts.jobId ?? undefined,
+        order: learnedDateFormat.order,
+        confidence: learnedDateFormat.confidence,
+        sampleCount: learnedDateSamples.length,
+      });
+    }
+    const learnedEnumCount = Object.keys(learnedValueTranslations).length;
+    if (learnedEnumCount > 0) {
+      log.info('mapper: learned enum vocabularies', {
+        jobId: opts.jobId ?? undefined,
+        columns: Object.keys(learnedValueTranslations),
+      });
+    }
+
     const recipe: Recipe = {
       schema: 1,
       description: `Auto-mapped recipe for ${opts.pmsType} (browser-tool mapper). Actions: ${Object.keys(actions).join(', ')}.`,
       login: loginResult.steps,
       actions,
+      // ALWAYS emit valueTranslations (even {}) so this new-style recipe is
+      // distinguishable at runtime from the legacy CA seed (whose field is
+      // undefined): resolveColumnParser only uses the ca_* enum fallback when
+      // the field is absent, so a brand-new PMS never falls back to CA parsers.
+      valueTranslations: learnedValueTranslations,
+      ...(learnedDateFormat ? { dateFormat: learnedDateFormat } : {}),
     };
 
     opts.onProgress?.('Recipe saved — running first extraction…', 65);
@@ -1107,8 +1159,83 @@ async function mapLogin(
 
 // ─── Per-action mapping ───────────────────────────────────────────────────
 
-interface ActionMapSuccess { ok: true;  action: ActionRecipe }
+interface ActionMapSuccess {
+  ok: true;
+  action: ActionRecipe;
+  /** feat/pms-universal-translate — raw value observations the model emitted
+   *  on the same vision turn it found the table, used by mapPMS to learn this
+   *  PMS's date order + enum vocabulary. Optional (drill-down + older callers
+   *  omit them). `valueSamples`: a few distinct raw cell strings per column;
+   *  `enumMappings`: model-proposed raw→canonical for the named enum columns. */
+  valueSamples?: Record<string, string[]>;
+  enumMappings?: Record<string, Record<string, string>>;
+}
 interface ActionMapFailure { ok: false; reason: string; finalUrl: string }
+
+/** Coerce a model-emitted `valueSamples` blob → Record<field, string[]> (or
+ *  undefined). Defensive: the model can return junk shapes / non-arrays. */
+function coerceValueSamples(raw: unknown): Record<string, string[]> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(v)) continue;
+    const vals = v.map((x) => String(x)).filter((s) => s.trim() !== '');
+    if (vals.length > 0) out[k] = vals.slice(0, 8);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Coerce a model-emitted `enumMappings` blob → Record<field, Record<raw,
+ *  canonical>> (or undefined). Non-string targets dropped; sanitized against
+ *  the real canonical set later in mapPMS. */
+function coerceEnumMappings(raw: unknown): Record<string, Record<string, string>> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: Record<string, Record<string, string>> = {};
+  for (const [col, m] of Object.entries(raw as Record<string, unknown>)) {
+    if (!m || typeof m !== 'object') continue;
+    const inner: Record<string, string> = {};
+    for (const [rawVal, canon] of Object.entries(m as Record<string, unknown>)) {
+      if (typeof canon === 'string' && String(rawVal).trim() !== '') inner[rawVal] = canon;
+    }
+    if (Object.keys(inner).length > 0) out[col] = inner;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * feat/pms-universal-translate — fold one successfully-mapped target's observed
+ * values into the run's learned-translation accumulators. Enum mappings are
+ * sanitized against the column's REAL canonical set (drops hallucinations /
+ * abstentions); date samples are pooled across every date column for format
+ * inference. No-op for targets without a value contract.
+ */
+function accumulateLearnedValues(
+  actionKey: keyof Recipe['actions'],
+  result: ActionMapSuccess,
+  valueTranslations: LearnedValueTranslations,
+  dateSamples: string[],
+): void {
+  const contract = TARGET_VALUE_CONTRACTS[actionKey];
+  if (!contract) return;
+
+  if (result.enumMappings) {
+    for (const col of contract.columns) {
+      if (!col.enumValues || col.enumValues.length === 0) continue;
+      const raw = result.enumMappings[col.name];
+      if (!raw) continue;
+      const clean = sanitizeEnumMapping(raw, col.enumValues);
+      mergeValueTranslation(valueTranslations, `${contract.table}.${col.name}`, clean);
+    }
+  }
+
+  if (result.valueSamples) {
+    for (const col of contract.columns) {
+      if (col.type !== 'date') continue;
+      const s = result.valueSamples[col.name];
+      if (Array.isArray(s)) dateSamples.push(...s);
+    }
+  }
+}
 
 async function mapAction(args: {
   page: Page;
@@ -1164,6 +1291,28 @@ async function mapAction(args: {
   const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: args.postLoginUrl }];
   let totalInputTokens = 0;
 
+  // feat/pms-universal-translate — value-learning hints. On the SAME vision
+  // turn it locates the table, ask the model to also report a few raw sample
+  // values per column (to learn THIS PMS's date order) and — for the columns we
+  // know are enums — a raw→canonical mapping against the exact canonical set.
+  // Both are PMS-agnostic: derived from the descriptor contract, no hardcoded
+  // vocabulary or menu paths. This is what lets a brand-new PMS's date format
+  // and status words translate with zero new hand-written code.
+  const valueContract = TARGET_VALUE_CONTRACTS[args.actionName as keyof Recipe['actions']];
+  const enumCols = (valueContract?.columns ?? []).filter((c) => c.enumValues && c.enumValues.length > 0);
+  const enumHint = enumCols.length > 0
+    ? `\n\nVALUE VOCABULARY (critical): for EACH status/category column below, read the ` +
+      `distinct values shown in the table and map EACH one to exactly one canonical value. ` +
+      `OMIT any you are unsure about — do NOT guess. Add to the first-line JSON:\n` +
+      `  "enumMappings":{<field>:{"<raw value EXACTLY as shown>":"<canonical>"}}\n` +
+      enumCols.map((c) => `  - ${c.name}: one of [${c.enumValues!.join(', ')}]`).join('\n')
+    : '';
+  const sampleHint =
+    `\n\nVALUE SAMPLES: also add "valueSamples":{<field>:["<up to 5 distinct raw cell ` +
+    `values copied EXACTLY as shown, with their separators>"]} for the date and amount ` +
+    `columns. This learns how THIS PMS writes dates (is "06/07" June 7 or July 6?) and ` +
+    `money — copy the values verbatim, do NOT reformat them.`;
+
   const fullGoal =
     args.goal +
     `\n\nWORKFLOW (use the computer tool):\n` +
@@ -1198,7 +1347,8 @@ async function mapAction(args: {
     `"columns":{<our field name>:"<selector relative to row>"}}\n\n` +
 
     `Required fields for this page: ${args.requiredFields.join(', ')}\n` +
-    `Use empty string for fields not visible on the page.\n\n` +
+    `Use empty string for fields not visible on the page.` +
+    enumHint + sampleHint + `\n\n` +
 
     `Step budget: you have up to ${MAX_AGENT_STEPS_PER_ACTION} actions. ` +
     `Spend the first ~5 on exploration (read_page + nav clicks); ` +
@@ -1335,7 +1485,7 @@ async function mapAction(args: {
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
       const parsed = tryParseJson(finalText) as
-        | { rowSelector?: unknown; columns?: unknown; url?: unknown; unavailable?: unknown; reason?: unknown; ask_admin?: unknown; question?: unknown }
+        | { rowSelector?: unknown; columns?: unknown; url?: unknown; unavailable?: unknown; reason?: unknown; ask_admin?: unknown; question?: unknown; valueSamples?: unknown; enumMappings?: unknown }
         | null;
 
       // Success path: agent found the page and emitted parse hints.
@@ -1383,6 +1533,12 @@ async function mapAction(args: {
           continue;
         }
 
+        // feat/pms-universal-translate — pass the model's raw value
+        // observations back to mapPMS for date-order + enum-vocabulary
+        // learning. Coerced loosely here; mapPMS validates/sanitizes against
+        // the descriptor's canonical sets.
+        const learnedSamples = coerceValueSamples(parsed.valueSamples);
+        const learnedEnums = coerceEnumMappings(parsed.enumMappings);
         return {
           ok: true,
           action: {
@@ -1395,6 +1551,8 @@ async function mapAction(args: {
               },
             },
           },
+          ...(learnedSamples && { valueSamples: learnedSamples }),
+          ...(learnedEnums && { enumMappings: learnedEnums }),
         };
       }
       // "Unavailable" path: agent explored, found nothing, told us so.
@@ -2451,10 +2609,84 @@ const WORK_ORDERS_GOAL =
   `  - pms_work_order_id (required)\n` +
   `  - room_number (required if room-scoped)\n` +
   `  - description (required)\n` +
-  `  - priority (nice-to-have — "high" / "medium" / "low")\n` +
-  `  - status (required — "open" / "in_progress" / "resolved")\n` +
+  `  - priority (nice-to-have — "urgent" / "high" / "medium" / "low")\n` +
+  `  - status (required — "open" / "in_progress" / "closed" / "deferred" / "resolved")\n` +
   `  - assigned_to (nice-to-have)\n` +
   `  - out_of_order (required — boolean: does this take the room offline?)`;
+
+// ─── feat/pms-universal-translate: 5 net-new money / booking feeds ──────────
+// PMS-AGNOSTIC goals — describe the report by its common names + likely menu
+// areas (hints, not hardcoded paths) and the EXACT snake_case keys to emit.
+// All money fields are optional + carry the generic_currency parser, so a
+// blank / unreadable cell becomes null rather than dropping the row.
+
+const GUEST_BALANCES_GOAL =
+  `Find the GUEST BALANCES / OUTSTANDING FOLIOS / ACCOUNTS-RECEIVABLE list — ` +
+  `sometimes called "Balances", "Folios", "Guest Ledger", "In-House Balances", ` +
+  `"AR", or "Outstanding Accounts". Shows which guests currently OWE money.\n\n` +
+  `Usually under "Front Desk", "Cashier", "Reports", or "Accounting". Each row ` +
+  `is one folio/guest account.\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - pms_folio_id (required — the folio / account / bill unique id; use the ` +
+  `reservation or confirmation # if that's what identifies the bill)\n` +
+  `  - guest_name (optional)\n` +
+  `  - room_number (optional)\n` +
+  `  - balance_cents (optional — the amount owed now; a credit may be negative)\n` +
+  `  - deposit_cents (optional — any deposit on file)\n` +
+  `  - folio_status (optional — e.g. open / settled, copied verbatim)`;
+
+const PAYMENTS_DAILY_GOAL =
+  `Find TODAY'S PAYMENTS / CASHIER / DEPOSIT summary — sometimes called ` +
+  `"Cashier Report", "Payments", "Collections", "Deposits", "Shift Report", or ` +
+  `part of "Night Audit". Shows how much was COLLECTED today, ideally split by ` +
+  `tender (cash vs card).\n\n` +
+  `Usually under "Cashier", "Night Audit", "Reports", or "Front Desk". This is ` +
+  `usually a SUMMARY (one set of totals for the day), not a per-guest list.\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - business_date (required — the date these totals are for)\n` +
+  `  - cash_collected_cents (optional)\n` +
+  `  - card_collected_cents (optional)\n` +
+  `  - deposits_collected_cents (optional)\n` +
+  `  - total_collected_cents (optional — total collected today, all tenders)`;
+
+const FUTURE_BOOKINGS_GOAL =
+  `Find the ON-THE-BOOKS / FUTURE RESERVATIONS list — reservations whose ` +
+  `arrival date is in the FUTURE (not today). Sometimes called "Reservations", ` +
+  `"On the Books", "Booking Pace", or "Arrivals" with a future date range. We ` +
+  `want UPCOMING bookings to see how full future dates are.\n\n` +
+  `If you can pick a date range, choose upcoming dates (the next few weeks). ` +
+  `Usually under "Reservations" or "Front Desk". Each row is one reservation.\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - pms_reservation_id (required — the reservation's unique id / confirmation #)\n` +
+  `  - arrival_date (required)\n` +
+  `  - departure_date (optional)\n` +
+  `  - guest_name (optional)\n` +
+  `  - room_type (optional)\n` +
+  `  - status (optional — copied verbatim)`;
+
+const NO_SHOWS_GOAL =
+  `Find the NO-SHOWS list — reservations that were expected but never checked ` +
+  `in (usually for LAST NIGHT / the most recent business day). Sometimes called ` +
+  `"No Shows", "No-Show Report", or a "No Show" status in a reservations / ` +
+  `night-audit report.\n\n` +
+  `Usually under "Night Audit", "Reports", or "Front Desk".\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - pms_reservation_id (required — the reservation's unique id / confirmation #)\n` +
+  `  - arrival_date (required — the date the guest was due to arrive)\n` +
+  `  - guest_name (optional)\n` +
+  `  - room_number (optional)`;
+
+const CANCELLATIONS_GOAL =
+  `Find the CANCELLATIONS list — reservations that were cancelled. Sometimes ` +
+  `called "Cancellations", "Cancelled Reservations", "Cancel Report", or a ` +
+  `"Cancelled" status in a reservations report.\n\n` +
+  `Usually under "Reports", "Reservations", or "Night Audit".\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - pms_reservation_id (required — the reservation's unique id / confirmation #)\n` +
+  `  - cancelled_date (required — the date the reservation was cancelled)\n` +
+  `  - guest_name (optional)\n` +
+  `  - arrival_date (optional — the date they were due to arrive)\n` +
+  `  - reason (optional — cancellation reason if shown)`;
 
 // ─── TARGETS — the full Plan v7 mapper catalogue ──────────────────────────
 // Ordered by business priority. Top entries run first so that even on a
@@ -2588,5 +2820,55 @@ TARGETS = [
     optional: true,        // admin-only on most PMSes
     progressLabel: 'Looking for the audit / activity log…',
     progressPct: 86,
+  },
+
+  // Tier 5 — feat/pms-universal-translate: money + future-booking feeds. All
+  // optional (never gate promotion / never regress the core feeds). Their
+  // values translate via the UNIVERSAL generic parsers (target-contract
+  // TARGET_VALUE_CONTRACTS routes their date/_cents columns automatically).
+  {
+    key: 'getGuestBalances',
+    goal: GUEST_BALANCES_GOAL,
+    requiredFields: ['pms_folio_id'],
+    classification: 'list_page',
+    optional: true,
+    progressLabel: 'Finding guest balances / who owes…',
+    progressPct: 88,
+  },
+  {
+    key: 'getPaymentsDaily',
+    goal: PAYMENTS_DAILY_GOAL,
+    requiredFields: ['business_date'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: "Finding today's payments / cashier totals…",
+    progressPct: 90,
+  },
+  {
+    key: 'getFutureBookings',
+    goal: FUTURE_BOOKINGS_GOAL,
+    requiredFields: ['pms_reservation_id', 'arrival_date'],
+    classification: 'list_page',
+    optional: true,
+    progressLabel: 'Finding upcoming reservations (booking pace)…',
+    progressPct: 92,
+  },
+  {
+    key: 'getNoShows',
+    goal: NO_SHOWS_GOAL,
+    requiredFields: ['pms_reservation_id', 'arrival_date'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Finding last night’s no-shows…',
+    progressPct: 94,
+  },
+  {
+    key: 'getCancellations',
+    goal: CANCELLATIONS_GOAL,
+    requiredFields: ['pms_reservation_id', 'cancelled_date'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Finding cancelled reservations…',
+    progressPct: 96,
   },
 ];
