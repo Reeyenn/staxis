@@ -1379,7 +1379,7 @@ async function mapAction(args: {
   // legitimate "click 3 rows to select 3 items" patterns don't false-
   // positive. Fresh instance per mapAction call: a loop on `getArrivals`
   // doesn't poison `getDepartures`.
-  const loopDetector = new ActionLoopDetector();
+  let loopDetector = new ActionLoopDetector();
 
   // Completeness re-ask budget (fix/mapper-field-contract). Bounds how many
   // times the success branch re-prompts the model to fill missing REQUIRED
@@ -1390,12 +1390,24 @@ async function mapAction(args: {
   // structurally-incomplete column map on the first emit.
   let completenessReasks = 0;
 
+  // Crash-safety for the re-ask (fix: core feeds were quarantining). Once the
+  // agent has emitted a VALID table parse, remember it. If a later re-ask
+  // churns into a loop / cost-cap / step abort, we MUST NOT throw the feed
+  // away — committing the (possibly incomplete) table we already found lands a
+  // recoverable park_draft, whereas dropping it quarantines the whole PMS
+  // (every required core feed missing → no map for any hotel on that brand).
+  // `bail` is the single exit used by every abort path: it returns the last
+  // good parse if we have one, else the real failure.
+  let lastGoodAction: ActionMapSuccess | null = null;
+  const bail = (reason: string): ActionMapSuccess | ActionMapFailure =>
+    lastGoodAction ?? { ok: false, reason, finalUrl: args.page.url() };
+
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
-      return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
+      return bail('token budget exceeded');
     }
     if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
-      return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
+      return bail('wallclock budget exceeded');
     }
     // Per-turn budget check — global job cap.
     {
@@ -1404,7 +1416,7 @@ async function mapAction(args: {
         log.warn('action mapper aborting — cumulative job cost cap hit', {
           jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
         });
-        return { ok: false, reason: 'cost cap hit', finalUrl: args.page.url() };
+        return bail('cost cap hit');
       }
     }
     // Plan v7 — per-target soft-abort. If the prior round trip pushed us
@@ -1421,11 +1433,7 @@ async function mapAction(args: {
       });
       // Fall through to the end-of-loop "no usable JSON" branch with a
       // clearer reason. mapPMS treats this as a non-fatal partial.
-      return {
-        ok: false,
-        reason: `per-target cost cap exceeded for ${classification} ($${(targetCostCapMicros / 1_000_000).toFixed(2)})`,
-        finalUrl: args.page.url(),
-      };
+      return bail(`per-target cost cap exceeded for ${classification} ($${(targetCostCapMicros / 1_000_000).toFixed(2)})`);
     }
 
     // Beta-API call so we can attach `cache_control` to the system block.
@@ -1491,6 +1499,19 @@ async function mapAction(args: {
       // Success path: agent found the page and emitted parse hints.
       if (parsed && typeof parsed.rowSelector === 'string' && parsed.columns && typeof parsed.columns === 'object') {
         const learnedColumns = parsed.columns as Record<string, string>;
+        // feat/pms-universal-translate — raw value observations the model
+        // emitted on the same turn it found the table (date order + enum vocab).
+        const learnedSamples = coerceValueSamples(parsed.valueSamples);
+        const learnedEnums = coerceEnumMappings(parsed.enumMappings);
+        const success: ActionMapSuccess = {
+          ok: true,
+          action: {
+            steps: recordedSteps,
+            parse: { mode: 'table', hint: { rowSelector: parsed.rowSelector, columns: learnedColumns } },
+          },
+          ...(learnedSamples && { valueSamples: learnedSamples }),
+          ...(learnedEnums && { enumMappings: learnedEnums }),
+        };
 
         // Completeness re-ask (fix/mapper-field-contract): a "successful" feed
         // whose learned column map is missing a REQUIRED descriptor column
@@ -1505,6 +1526,10 @@ async function mapAction(args: {
         // which is also REQUIRED_TARGETS-only.
         const missingRequired = missingRequiredColumns(args.actionName as keyof Recipe['actions'], learnedColumns);
         if (missingRequired.length > 0 && completenessReasks < MAX_COMPLETENESS_REASKS) {
+          // Keep the (incomplete) table we just found as the abort fallback, so
+          // a re-ask that churns into a loop / cost / step abort commits THIS
+          // rather than dropping the feed → quarantine. bail() returns it.
+          lastGoodAction = success;
           completenessReasks++;
           log.warn('mapper: required columns missing/blank — re-asking model', {
             actionName: args.actionName,
@@ -1530,30 +1555,14 @@ async function mapAction(args: {
           });
           readPageCount = 0;
           navigationCount = 0;
+          // The re-ask is a deliberate new instruction — the model re-reading
+          // the same row is NOT a stuck loop, so reset the loop detector so the
+          // re-ask turns can't false-trip it and abort a recoverable feed.
+          loopDetector = new ActionLoopDetector();
           continue;
         }
 
-        // feat/pms-universal-translate — pass the model's raw value
-        // observations back to mapPMS for date-order + enum-vocabulary
-        // learning. Coerced loosely here; mapPMS validates/sanitizes against
-        // the descriptor's canonical sets.
-        const learnedSamples = coerceValueSamples(parsed.valueSamples);
-        const learnedEnums = coerceEnumMappings(parsed.enumMappings);
-        return {
-          ok: true,
-          action: {
-            steps: recordedSteps,
-            parse: {
-              mode: 'table',
-              hint: {
-                rowSelector: parsed.rowSelector,
-                columns: learnedColumns,
-              },
-            },
-          },
-          ...(learnedSamples && { valueSamples: learnedSamples }),
-          ...(learnedEnums && { enumMappings: learnedEnums }),
-        };
+        return success;
       }
       // "Unavailable" path: agent explored, found nothing, told us so.
       // Plan v7 — require evidence of real effort before accepting it.
@@ -1750,7 +1759,7 @@ async function mapAction(args: {
           stepIdx,
           reason: stuck.reason,
         });
-        return { ok: false, reason: 'loop detector tripped', finalUrl: args.page.url() };
+        return bail('loop detector tripped');
       }
     }
 
@@ -1773,7 +1782,7 @@ async function mapAction(args: {
     }
   }
 
-  return { ok: false, reason: 'mapper exhausted step budget', finalUrl: args.page.url() };
+  return bail('mapper exhausted step budget');
 }
 
 // ─── Per-action mapping (DRILL-DOWN variant) ─────────────────────────────
