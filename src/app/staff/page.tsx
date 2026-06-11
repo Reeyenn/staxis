@@ -17,7 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { canManageTeam } from '@/lib/roles';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { SubTabBar, type StaffTab } from './_components/SubTabBar';
-import { ManagerSchedule } from './_components/ManagerSchedule';
+import { UnifiedSchedule } from './_components/schedule';
 import { ManagerDirectory } from './_components/ManagerDirectory';
 import { ManagerRecognition } from './_components/ManagerRecognition';
 import { MyShifts } from './_components/MyShifts';
@@ -58,7 +58,7 @@ function ManagerView() {
   return (
     <div style={{ background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
       <SubTabBar tab={tab} onTab={setTab}/>
-      {tab === 'schedule'    && <ManagerSchedule/>}
+      {tab === 'schedule'    && <UnifiedSchedule onOpenDirectory={() => setTab('directory')}/>}
       {tab === 'directory'   && <ManagerDirectory/>}
       {tab === 'recognition' && <ManagerRecognition/>}
     </div>

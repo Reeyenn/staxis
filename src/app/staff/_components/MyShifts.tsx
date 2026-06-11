@@ -19,7 +19,7 @@ import type { ScheduledShift, TimeOffRequest } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
 import { Avatar } from './_people';
 import { useWeekShifts, mondayOf } from './useWeekShifts';
-import { fmtRange } from './ManagerSchedule';
+import { fmtRange } from '@/lib/schedule-board';
 
 export function MyShifts() {
   const { user } = useAuth();
