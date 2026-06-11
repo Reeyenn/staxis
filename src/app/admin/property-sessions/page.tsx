@@ -3,14 +3,28 @@
 export const dynamic = 'force-dynamic';
 
 /**
- * /admin/property-sessions — per-hotel CUA session health.
+ * /admin/property-sessions — per-hotel CUA session health, in the admin's
+ * Snow design language (re-skinned from generic Tailwind on
+ * feature/cua-assist-board to match the rest of the admin studio).
  *
- * One row per property_sessions row. Shows: status, heartbeat freshness,
+ * One card per property_sessions row. Shows: status, heartbeat freshness,
  * Claude spend today, paused-reason, and admin actions (resume MFA,
  * reset cost cap, stop, restart).
  *
- * Source: /api/admin/cua-sessions (joins property_sessions +
- * pms_knowledge_files + properties).
+ * Learning Board entry point: when a mapper job is queued/running for the
+ * hotel's PMS family, the card grows a "learning its PMS now" banner whose
+ * button opens the live board (/admin/properties/mapper/[jobId]) — the
+ * one-click path Reeyen expects when a hotel is being learned. A hotel
+ * parked on paused_no_knowledge_file with a finished run links to that
+ * run's board instead.
+ *
+ * Heartbeat: pings /api/admin/heartbeat every 30s while the tab is VISIBLE
+ * so the robot knows the founder is watching and waits for his click on a
+ * stuck feed (visibility-gated — a forgotten background tab must not make
+ * the robot wait for an absent founder).
+ *
+ * Source: /api/admin/cua-sessions (property_sessions + pms_knowledge_files
+ * + properties + recent mapper workflow_jobs).
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -18,6 +32,9 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF, Card, Btn, Pill, Caps, type PillTone,
+} from '@/app/admin/_components/_snow';
 import {
   CheckCircle2,
   AlertCircle,
@@ -28,7 +45,17 @@ import {
   StopCircle,
   Play,
   ExternalLink,
+  Loader2,
+  Eye,
 } from 'lucide-react';
+
+interface MapperJobSummary {
+  id: string;
+  status: string;
+  created_at: string;
+  /** Active jobs only — the robot is stuck waiting for the founder's click. */
+  needs_help?: boolean;
+}
 
 interface SessionRow {
   property_id: string;
@@ -47,18 +74,31 @@ interface SessionRow {
   read_failure_streak: number;
   notes: string | null;
   knowledge_file: { active: number | null; latest: number; status: string } | null;
+  active_mapper_job: MapperJobSummary | null;
+  last_mapper_job: MapperJobSummary | null;
 }
 
-const STATUS_STYLE: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
-  starting:                  { color: 'text-blue-700 bg-blue-50',     icon: <Clock className="h-4 w-4" />,        label: 'Starting' },
-  alive:                     { color: 'text-green-700 bg-green-50',   icon: <CheckCircle2 className="h-4 w-4" />, label: 'Alive' },
-  paused_cost_cap:           { color: 'text-amber-700 bg-amber-50',   icon: <AlertCircle className="h-4 w-4" />,  label: 'Cost cap' },
-  paused_mfa:                { color: 'text-amber-700 bg-amber-50',   icon: <ShieldAlert className="h-4 w-4" />,  label: 'MFA needed' },
-  paused_no_knowledge_file:  { color: 'text-amber-700 bg-amber-50',   icon: <AlertCircle className="h-4 w-4" />,  label: 'Needs mapping' },
-  paused_circuit_breaker:    { color: 'text-red-700 bg-red-50',       icon: <AlertCircle className="h-4 w-4" />,  label: 'Circuit broken' },
-  failed_restart:            { color: 'text-red-700 bg-red-50',       icon: <AlertCircle className="h-4 w-4" />,  label: 'Failed' },
-  stopped:                   { color: 'text-gray-700 bg-gray-50',     icon: <StopCircle className="h-4 w-4" />,   label: 'Stopped' },
+const STATUS_STYLE: Record<string, { tone: PillTone; icon: React.ReactNode; label: string }> = {
+  starting:                  { tone: 'neutral', icon: <Clock size={12} />,        label: 'Starting' },
+  alive:                     { tone: 'sage',    icon: <CheckCircle2 size={12} />, label: 'Alive' },
+  paused_cost_cap:           { tone: 'caramel', icon: <AlertCircle size={12} />,  label: 'Cost cap' },
+  paused_mfa:                { tone: 'caramel', icon: <ShieldAlert size={12} />,  label: 'MFA needed' },
+  paused_no_knowledge_file:  { tone: 'caramel', icon: <AlertCircle size={12} />,  label: 'Needs mapping' },
+  paused_circuit_breaker:    { tone: 'red',     icon: <AlertCircle size={12} />,  label: 'Circuit broken' },
+  failed_restart:            { tone: 'red',     icon: <AlertCircle size={12} />,  label: 'Failed' },
+  stopped:                   { tone: 'neutral', icon: <StopCircle size={12} />,   label: 'Stopped' },
 };
+
+function Stat({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <Caps size={9.5}>{label}</Caps>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 12.5, color: T.ink, marginTop: 3 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 export default function PropertySessionsPage() {
   const { user, loading: authLoading } = useAuth();
@@ -93,6 +133,24 @@ export default function PropertySessionsPage() {
     return () => clearInterval(interval);
   }, [user, load]);
 
+  // Learning Board heartbeat — the robot only waits for a human click on a
+  // stuck feed while an admin heartbeated in the last 5 minutes. Watching
+  // THIS fleet page counts as watching; a hidden tab does not.
+  useEffect(() => {
+    if (!user || user.role !== 'admin') return;
+    const ping = () => {
+      if (document.visibilityState !== 'visible') return;
+      void fetchWithAuth('/api/admin/heartbeat', { method: 'POST' });
+    };
+    ping();
+    const t = setInterval(ping, 30_000);
+    document.addEventListener('visibilitychange', ping);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', ping);
+    };
+  }, [user]);
+
   const handleAction = async (propertyId: string, action: string) => {
     if (!confirm(`Run "${action}" on ${propertyId}?`)) return;
     setActionLoading(`${propertyId}:${action}`);
@@ -113,150 +171,210 @@ export default function PropertySessionsPage() {
     }
   };
 
-  if (authLoading) return <AppLayout><div className="p-8">Loading…</div></AppLayout>;
-  if (!user) return <AppLayout><div className="p-8">Not signed in</div></AppLayout>;
+  if (authLoading) return <AppLayout><div style={{ padding: 32, fontFamily: FONT_SANS, color: T.ink2 }}>Loading…</div></AppLayout>;
+  if (!user) return <AppLayout><div style={{ padding: 32, fontFamily: FONT_SANS, color: T.ink2 }}>Not signed in</div></AppLayout>;
 
   return (
     <AppLayout>
-      <div className="px-6 py-8 max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <Link href="/admin?tab=onboarding" className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900 mb-2">
-              <ChevronLeft className="h-4 w-4 mr-1" /> Onboarding
-            </Link>
-            <h1 className="text-2xl font-semibold">CUA Sessions</h1>
-            <p className="text-sm text-gray-600 mt-1">Per-hotel session-driver health, heartbeat, and cost. New hotels are onboarded from the <Link href="/admin?tab=onboarding" className="underline">Onboarding tab</Link>.</p>
-          </div>
-          <button
-            onClick={() => void load()}
-            className="inline-flex items-center px-3 py-1.5 text-sm border border-gray-200 rounded hover:bg-gray-50"
-          >
-            <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> Refresh
-          </button>
+      <div style={{
+        padding: '24px 48px 48px', maxWidth: 1200, margin: '0 auto',
+        background: T.bg, minHeight: 'calc(100vh - 64px)', fontFamily: FONT_SANS,
+      }}>
+        <Link href="/admin/properties#onboarding" style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
+          textDecoration: 'none', letterSpacing: '0.16em',
+          textTransform: 'uppercase', marginBottom: 16,
+        }}>
+          <ChevronLeft size={12} /> Onboarding
+        </Link>
+
+        <div style={{
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+          gap: 16, flexWrap: 'wrap', marginBottom: 6,
+        }}>
+          <h1 style={{
+            fontFamily: FONT_SERIF, fontSize: 32, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: 0,
+          }}>
+            <span style={{ fontStyle: 'italic' }}>CUA</span> Sessions
+          </h1>
+          <Btn variant="ghost" size="sm" onClick={() => void load()}>
+            <RefreshCw size={12} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} /> Refresh
+          </Btn>
         </div>
+        <p style={{ fontSize: 13, color: T.ink2, margin: '0 0 20px' }}>
+          Per-hotel session-driver health, heartbeat, and cost. Hotels being learned for the
+          first time show a live board link. New hotels are onboarded from the{' '}
+          <Link href="/admin/properties#onboarding" style={{ color: T.ink, textDecorationColor: T.rule }}>Onboarding tab</Link>.
+        </p>
 
         {error && (
-          <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-            {error}
-          </div>
+          <Card padding="14px 18px" style={{ marginBottom: 16, borderColor: T.warm }}>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.warm }}>{error}</span>
+          </Card>
         )}
 
-        {loading && !rows && <div>Loading sessions…</div>}
+        {loading && !rows && (
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink3 }}>Loading sessions…</div>
+        )}
 
         {rows && rows.length === 0 && (
-          <div className="px-4 py-8 text-center text-gray-500 border border-dashed border-gray-300 rounded">
-            No CUA sessions yet. They appear here when a hotel enables CUA polling.
-          </div>
+          <Card padding="28px 24px" style={{ textAlign: 'center', borderStyle: 'dashed' }}>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink3 }}>
+              No CUA sessions yet. They appear here when a hotel enables CUA polling.
+            </span>
+          </Card>
         )}
 
         {rows && rows.length > 0 && (
-          <div className="space-y-4">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {rows.map((s) => {
               const style = STATUS_STYLE[s.status] ?? STATUS_STYLE.starting!;
               const heartbeatAge = s.last_alive_at ? Date.now() - new Date(s.last_alive_at).getTime() : null;
+              const heartbeatStale = heartbeatAge !== null && heartbeatAge > 5 * 60_000;
               const dollarsToday = (s.daily_claude_cost_micros / 1_000_000).toFixed(2);
+              const learning = s.active_mapper_job;
               return (
-                <div key={s.property_id} className="border border-gray-200 rounded-lg p-4 bg-white">
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h2 className="font-semibold">{s.display_name}</h2>
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${style.color}`}>
-                          {style.icon} {style.label}
-                        </span>
+                <Card key={s.property_id} padding="18px 22px">
+                  <div style={{
+                    display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+                    gap: 12, flexWrap: 'wrap', marginBottom: 12,
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontFamily: FONT_SERIF, fontSize: 20, color: T.ink }}>{s.display_name}</span>
+                        <Pill tone={style.tone}>{style.icon} {style.label}</Pill>
                       </div>
-                      <div className="text-xs text-gray-500 mt-1">
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, marginTop: 4 }}>
                         {s.pms_family} · {s.property_id}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       {s.status === 'paused_mfa' && (
-                        <Link
-                          href={`/admin/mfa-resume/${s.property_id}`}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
-                        >
-                          <ShieldAlert className="h-3 w-3" /> Resolve MFA
-                        </Link>
+                        <Btn variant="warm" size="sm" href={`/admin/mfa-resume/${s.property_id}`}>
+                          <ShieldAlert size={12} /> Resolve MFA
+                        </Btn>
                       )}
                       {s.status === 'paused_cost_cap' && (
-                        <button
+                        <Btn
+                          variant="sage" size="sm"
                           onClick={() => void handleAction(s.property_id, 'reset_cost_cap')}
                           disabled={actionLoading === `${s.property_id}:reset_cost_cap`}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
                         >
-                          <RefreshCw className="h-3 w-3" /> Reset cap
-                        </button>
+                          <RefreshCw size={12} /> Reset cap
+                        </Btn>
                       )}
                       {s.status !== 'stopped' && (
-                        <button
+                        <Btn
+                          variant="ghost" size="sm"
                           onClick={() => void handleAction(s.property_id, 'stop')}
                           disabled={actionLoading === `${s.property_id}:stop`}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
                         >
-                          <StopCircle className="h-3 w-3" /> Stop
-                        </button>
+                          <StopCircle size={12} /> Stop
+                        </Btn>
                       )}
                       {(s.status === 'stopped' || s.status === 'failed_restart') && (
-                        <button
+                        <Btn
+                          variant="sage" size="sm"
                           onClick={() => void handleAction(s.property_id, 'restart')}
                           disabled={actionLoading === `${s.property_id}:restart`}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-green-100 text-green-800 rounded hover:bg-green-200"
                         >
-                          <Play className="h-3 w-3" /> Restart
-                        </button>
+                          <Play size={12} /> Restart
+                        </Btn>
                       )}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                    <div>
-                      <div className="text-xs text-gray-500">Heartbeat</div>
-                      <div className={heartbeatAge && heartbeatAge > 5 * 60_000 ? 'text-red-700 font-medium' : 'text-gray-700'}>
+                  {/* Learning Board entry — the robot is learning this PMS right
+                      now. RED when it's stuck waiting for the founder's click
+                      (the heartbeat from this very page is what makes it wait,
+                      so the request must be visible HERE, not just on the board). */}
+                  {learning && (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                      padding: '12px 14px', borderRadius: 10, marginBottom: 12,
+                      background: learning.needs_help ? T.redDim : T.caramelDim,
+                      border: `1px solid ${learning.needs_help ? 'rgba(160,74,44,0.35)' : 'rgba(140,106,51,0.25)'}`,
+                    }}>
+                      {learning.needs_help
+                        ? <AlertCircle size={16} color={T.red} />
+                        : <Loader2 size={16} color={T.caramelDeep} style={{ animation: 'spin 1.5s linear infinite' }} />}
+                      <div style={{ flex: 1, minWidth: 220 }}>
+                        <div style={{ fontSize: 13.5, fontWeight: 600, color: learning.needs_help ? T.red : T.caramelDeep }}>
+                          {learning.needs_help
+                            ? 'It’s stuck — it needs you to show it where to click'
+                            : 'Learning its PMS right now'}
+                        </div>
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink2, marginTop: 2 }}>
+                          {learning.needs_help
+                            ? 'open the board and click the right spot on its screen — it’s waiting for you'
+                            : `feed-by-feed progress, captured data, and stuck alerts on the live board${learning.status === 'queued' ? ' · waking up…' : ''}`}
+                        </div>
+                      </div>
+                      <Btn variant="primary" size="sm" href={`/admin/properties/mapper/${learning.id}`}>
+                        <Eye size={12} /> {learning.needs_help ? 'Help it now' : 'Watch it learn — live'}
+                      </Btn>
+                    </div>
+                  )}
+                  {!learning && s.last_mapper_job && (
+                    <div style={{ marginBottom: 12 }}>
+                      <Btn variant="ghost" size="sm" href={`/admin/properties/mapper/${s.last_mapper_job.id}`}>
+                        <Eye size={12} /> See the last learning run ({s.last_mapper_job.status})
+                      </Btn>
+                    </div>
+                  )}
+
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                    gap: 12,
+                  }}>
+                    <Stat label="Heartbeat">
+                      <span style={{ color: heartbeatStale ? T.red : T.ink }}>
                         {s.last_alive_at ? `${Math.floor((heartbeatAge ?? 0) / 1000)}s ago` : 'never'}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500">Spend today</div>
-                      <div className="text-gray-700">
-                        ${dollarsToday} / $5.00
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500">Knowledge file</div>
-                      <div className="text-gray-700">
-                        {s.knowledge_file?.active != null ? `v${s.knowledge_file.active} active` : 'none active'}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500">Restarts / failures</div>
-                      <div className="text-gray-700">
-                        {s.restart_count} restarts · {s.read_failure_streak} fail streak
-                      </div>
-                    </div>
+                      </span>
+                    </Stat>
+                    <Stat label="Spend today">${dollarsToday} / $5.00</Stat>
+                    <Stat label="Knowledge file">
+                      {s.knowledge_file?.active != null ? `v${s.knowledge_file.active} active` : 'none active'}
+                    </Stat>
+                    <Stat label="Restarts / failures">
+                      {s.restart_count} restarts · {s.read_failure_streak} fail streak
+                    </Stat>
                   </div>
 
                   {s.paused_reason && (
-                    <div className="mt-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                    <div style={{
+                      marginTop: 12, padding: '8px 12px', borderRadius: 8,
+                      background: T.caramelDim, border: '1px solid rgba(140,106,51,0.2)',
+                      fontSize: 12, color: T.caramelDeep,
+                    }}>
                       {s.paused_reason}
                     </div>
                   )}
 
                   {s.current_browser_url && (
-                    <div className="mt-2 text-xs text-gray-500 flex items-center gap-1">
-                      <ExternalLink className="h-3 w-3" /> {s.current_browser_url}
+                    <div style={{
+                      marginTop: 10, fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3,
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      <ExternalLink size={11} style={{ flexShrink: 0 }} /> {s.current_browser_url}
                     </div>
                   )}
 
                   {s.notes && (
-                    <div className="mt-2 text-xs text-gray-500">
+                    <div style={{ marginTop: 8, fontSize: 12, color: T.ink3 }}>
                       {s.notes}
                     </div>
                   )}
-                </div>
+                </Card>
               );
             })}
           </div>
         )}
+
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       </div>
     </AppLayout>
   );

@@ -32,7 +32,7 @@ import { log, makeWorkerId } from './log.js';
 import { env } from './env.js';
 import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
-import { runMappingJob, type MappingJobInput } from './mapping-driver.js';
+import { runMappingJob, mappingJobResultToWorkflowResult, type MappingJobInput } from './mapping-driver.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
 import { writeJobHandler } from './write-job-handler.js';
 
@@ -110,19 +110,10 @@ async function main(): Promise<void> {
     if (!result.ok) {
       return { ok: false, error: result.error ?? 'mapping failed' };
     }
-    return {
-      ok: true,
-      result: {
-        knowledge_file_id: result.knowledgeFileId,
-        knowledge_file_version: result.knowledgeFileVersion,
-        targets_found: result.targetsFound,
-        targets_unavailable: result.targetsUnavailable,
-        targets_failed: result.targetsFailed,
-        spent_micros: result.spentMicros,
-        promotion_decision: result.promotionDecision,
-        promotion_reason: result.promotionReason,
-      },
-    };
+    // Shaped by the unit-tested pure adapter — markCompleted REPLACES
+    // workflow_jobs.result, so the Learning Board keys must pass through
+    // (see mappingJobResultToWorkflowResult).
+    return { ok: true, result: mappingJobResultToWorkflowResult(result) };
   });
 
   // Phase 3 — PMS write-back handler. Alive-driver kind: the runtime hands it

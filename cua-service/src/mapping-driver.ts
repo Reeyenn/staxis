@@ -37,7 +37,7 @@ import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
-import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { columnsFromAction, missingRequiredColumns } from './target-contract.js';
 
@@ -86,7 +86,41 @@ export interface MappingJobResult {
    */
   promotionDecision?: 'auto_promote' | 'park_draft' | 'quarantine';
   promotionReason?: string;
+  /** Learning Board — final per-feed state, carried from mapPMS through the
+   *  index.ts handler adapter into workflow_jobs.result. markCompleted
+   *  REPLACES result at completion, so dropping these anywhere along the
+   *  chain blanks the admin board the moment a run succeeds. */
+  targetCatalog?: BoardTargetDescriptor[];
+  boardTargets?: Record<string, BoardTargetState>;
   error?: string;
+}
+
+/**
+ * The mapper.learn_pms_family handler adapter (index.ts) — shapes a
+ * successful MappingJobResult into the object the workflow runtime writes
+ * to workflow_jobs.result at completion. Pulled out as a pure function so
+ * a unit test pins the Learning Board pass-through: markCompleted REPLACES
+ * result, so any key dropped here vanishes from the admin board the moment
+ * a run succeeds (the exact bug class this branch exists to prevent).
+ * Aggregate keys stay snake_case (pre-existing consumers); the board keys
+ * stay camelCase to match the mapper's mid-run merges (actionsSoFar
+ * precedent) so the board reads ONE contract.
+ */
+export function mappingJobResultToWorkflowResult(
+  result: MappingJobResult,
+): Record<string, unknown> {
+  return {
+    knowledge_file_id: result.knowledgeFileId,
+    knowledge_file_version: result.knowledgeFileVersion,
+    targets_found: result.targetsFound,
+    targets_unavailable: result.targetsUnavailable,
+    targets_failed: result.targetsFailed,
+    spent_micros: result.spentMicros,
+    promotion_decision: result.promotionDecision,
+    promotion_reason: result.promotionReason,
+    targetCatalog: result.targetCatalog,
+    boardTargets: result.boardTargets,
+  };
 }
 
 // Plan v7 promotion-gate criteria.
@@ -400,6 +434,9 @@ export async function runMappingJob(
     promotionDecision: gate.decision,
     promotionReason: gate.reason,
     ...stats,
+    // Learning Board — see MappingJobResult doc.
+    targetCatalog: result.targetCatalog,
+    boardTargets: result.boardTargets,
   };
   } finally {
     // Plan v8 hardening — close the per-job channel once, regardless of

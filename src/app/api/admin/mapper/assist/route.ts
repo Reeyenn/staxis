@@ -32,14 +32,89 @@ import { getOrMintRequestId } from '@/lib/log';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Plan v8 hardening (Codex P2 #7) — 'takeover' is dead-pathed for v1:
-// the dedicated /api/admin/mapper/takeover-action endpoint returns 501
-// and mapper.ts silently downgrades action_type='takeover' to
-// mark-unavailable. Removing it from VALID_ACTIONS here prevents an
-// admin (or buggy UI) from accidentally submitting takeover and getting
-// a surprising "marked unavailable" outcome with no warning. Will be
-// re-added when takeover actually lands.
-const VALID_ACTIONS = new Set(['guidance', 'unavailable', 'abort']);
+// feature/cua-assist-board — 'takeover' is live: the admin clicks a spot on
+// the help screenshot, we store responseCoordinate, and the mapper executes
+// that click via executeVisionAction (recorded as a recipe step) before
+// re-entering its loop. Coordinate is validated against the pending row's
+// capture viewport below — keep that rule in sync with the robot-side
+// validateSupervisorCoordinate (cua-service/src/mapper.ts).
+const VALID_ACTIONS = new Set(['guidance', 'unavailable', 'takeover', 'abort'] as const);
+type AssistAction = 'guidance' | 'unavailable' | 'takeover' | 'abort';
+
+/**
+ * Pure validation gate (unit-tested in
+ * src/lib/__tests__/mapper-assist-takeover.test.ts). Everything except the
+ * viewport BOUNDS check, which needs the pending row's stored capture size
+ * — that's validateCoordinateBounds below, applied after the row fetch.
+ */
+export function validateAssistBody(body: unknown):
+  | {
+      ok: true;
+      requestId: string;
+      actionType: AssistAction;
+      responseText: string | null;
+      coordinate: { x: number; y: number } | null;
+      screenshotPath: string | null;
+    }
+  | { ok: false; reason: string } {
+  const b = body as {
+    requestId?: unknown;
+    actionType?: unknown;
+    responseText?: unknown;
+    responseCoordinate?: unknown;
+    screenshotPath?: unknown;
+  } | null;
+  if (!b || typeof b !== 'object') return { ok: false, reason: 'body must be a JSON object' };
+  if (typeof b.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(b.requestId)) {
+    return { ok: false, reason: 'requestId must be a uuid' };
+  }
+  if (typeof b.actionType !== 'string' || !VALID_ACTIONS.has(b.actionType as AssistAction)) {
+    return { ok: false, reason: `actionType must be one of: ${[...VALID_ACTIONS].join(', ')}` };
+  }
+  const actionType = b.actionType as AssistAction;
+  const responseText =
+    typeof b.responseText === 'string' && b.responseText.trim().length > 0
+      ? b.responseText
+      : null;
+  if ((actionType === 'guidance' || actionType === 'unavailable') && responseText === null) {
+    return { ok: false, reason: 'responseText is required for guidance / unavailable' };
+  }
+  let coordinate: { x: number; y: number } | null = null;
+  let screenshotPath: string | null = null;
+  if (actionType === 'takeover') {
+    const c = b.responseCoordinate as { x?: unknown; y?: unknown } | null | undefined;
+    if (!c || typeof c !== 'object' || typeof c.x !== 'number' || typeof c.y !== 'number' ||
+        !Number.isFinite(c.x) || !Number.isFinite(c.y)) {
+      return { ok: false, reason: 'takeover requires responseCoordinate {x, y} (numbers)' };
+    }
+    coordinate = { x: c.x, y: c.y };
+    // Staleness arbiter: the click was chosen against a specific screenshot.
+    // The robot can refresh the row's screenshot in place (worker restart),
+    // so the UPDATE below only commits while the row still points at the
+    // frame the founder actually clicked.
+    if (typeof b.screenshotPath !== 'string' || b.screenshotPath.trim().length === 0) {
+      return { ok: false, reason: 'takeover requires screenshotPath (the screenshot the click was chosen on)' };
+    }
+    screenshotPath = b.screenshotPath;
+  }
+  return { ok: true, requestId: b.requestId, actionType, responseText, coordinate, screenshotPath };
+}
+
+/**
+ * Round and bounds-check a takeover coordinate against the screenshot's
+ * capture viewport. Click coords are viewport CSS pixels (the screenshot
+ * was a viewport-sized, fullPage:false capture). Null = out of bounds.
+ */
+export function validateCoordinateBounds(
+  c: { x: number; y: number },
+  viewportW: number,
+  viewportH: number,
+): { x: number; y: number } | null {
+  const x = Math.round(c.x);
+  const y = Math.round(c.y);
+  if (x < 0 || x >= viewportW || y < 0 || y >= viewportH) return null;
+  return { x, y };
+}
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -54,41 +129,56 @@ export async function POST(req: NextRequest): Promise<Response> {
   } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
   }
-  const b = body as {
-    requestId?: unknown;
-    actionType?: unknown;
-    responseText?: unknown;
-    responseCoordinate?: unknown;
-  };
-  if (typeof b.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(b.requestId)) {
-    return err('requestId must be a uuid', { requestId, status: 400, code: 'bad_request' });
-  }
-  if (typeof b.actionType !== 'string' || !VALID_ACTIONS.has(b.actionType)) {
-    return err(`actionType must be one of: ${[...VALID_ACTIONS].join(', ')}`, {
-      requestId, status: 400, code: 'bad_request',
-    });
-  }
-  if ((b.actionType === 'guidance' || b.actionType === 'unavailable') &&
-      (typeof b.responseText !== 'string' || b.responseText.trim().length === 0)) {
-    return err('responseText is required for guidance / unavailable', {
-      requestId, status: 400, code: 'bad_request',
-    });
+  const v = validateAssistBody(body);
+  if (!v.ok) {
+    return err(v.reason, { requestId, status: 400, code: 'bad_request' });
   }
 
-  const { data, error } = await supabaseAdmin
+  // Takeover: bounds-check against the pending row's stored capture
+  // viewport so the robot never receives an unclickable point.
+  let coordinate: { x: number; y: number } | null = null;
+  if (v.actionType === 'takeover' && v.coordinate) {
+    const { data: rowData, error: rowErr } = await supabaseAdmin
+      .from('mapping_help_requests')
+      .select('viewport_w, viewport_h')
+      .eq('id', v.requestId)
+      .maybeSingle();
+    if (rowErr) {
+      return err(`help-request lookup failed: ${rowErr.message}`, { requestId, status: 500, code: 'db_error' });
+    }
+    if (!rowData) {
+      return ok({ accepted: false, reason: 'request_not_pending' }, { requestId });
+    }
+    const w = typeof rowData.viewport_w === 'number' ? rowData.viewport_w : 1280;
+    const h = typeof rowData.viewport_h === 'number' ? rowData.viewport_h : 800;
+    coordinate = validateCoordinateBounds(v.coordinate, w, h);
+    if (!coordinate) {
+      return err(`coordinate (${Math.round(v.coordinate.x)}, ${Math.round(v.coordinate.y)}) is outside the ${w}×${h} screenshot`, {
+        requestId, status: 400, code: 'bad_request',
+      });
+    }
+  }
+
+  let update = supabaseAdmin
     .from('mapping_help_requests')
     .update({
       status: 'answered',
-      action_type: b.actionType,
-      response_text: typeof b.responseText === 'string' ? b.responseText : null,
-      response_coordinate: b.responseCoordinate ?? null,
+      action_type: v.actionType,
+      response_text: v.responseText ??
+        (v.actionType === 'takeover' ? 'Supervisor clicked on the screen' : null),
+      response_coordinate: coordinate,
       admin_user_id: admin.accountId,
       answered_at: new Date().toISOString(),
     })
-    .eq('id', b.requestId)
-    .eq('status', 'pending')  // idempotent — second click no-ops
-    .select('id')
-    .maybeSingle();
+    .eq('id', v.requestId)
+    .eq('status', 'pending');  // idempotent — second click no-ops
+  if (v.actionType === 'takeover' && v.screenshotPath) {
+    // Commit the click only against the exact frame it was chosen on. If
+    // the robot refreshed the screenshot since (worker restart), this
+    // zero-matches → accepted:false → the UI refreshes to the new frame.
+    update = update.eq('screenshot_storage_path', v.screenshotPath);
+  }
+  const { data, error } = await update.select('id').maybeSingle();
 
   if (error) {
     return err(`UPDATE failed: ${error.message}`, { requestId, status: 500, code: 'db_error' });

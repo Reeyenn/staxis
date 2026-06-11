@@ -49,11 +49,36 @@ interface KnowledgeRow {
   learned_at: string;
 }
 
+interface MapperJobRow {
+  id: string;
+  property_id: string;
+  status: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** Compact mapper-job summary attached to each session row. */
+interface MapperJobSummary {
+  id: string;
+  status: string;
+  created_at: string;
+  /** Active jobs only — true when a pending help request is waiting (the
+   *  robot is stuck and idling for the founder's click). Drives the red
+   *  "it needs you" treatment on the fleet card, so a founder whose
+   *  heartbeat keeps the robot waiting can actually SEE the request. */
+  needs_help?: boolean;
+}
+
 export async function GET(req: NextRequest) {
   const auth = await requireAdminOrCron(req);
   if (!auth.ok) return auth.response;
 
-  const [{ data: sessionRows, error: sessErr }, { data: kfRows, error: kfErr }] = await Promise.all([
+  const [
+    { data: sessionRows, error: sessErr },
+    { data: kfRows, error: kfErr },
+    { data: activeJobRows, error: activeJobErr },
+    { data: termJobRows, error: termJobErr },
+  ] = await Promise.all([
     supabaseAdmin
       .from('property_sessions')
       .select(
@@ -65,10 +90,31 @@ export async function GET(req: NextRequest) {
       .select('pms_family, version, status, learned_at')
       .order('pms_family')
       .order('version', { ascending: false }),
+    // Learning Board — mapper jobs so each session card can link to the
+    // live board. Mapper jobs are enqueued once per PMS FAMILY (with one
+    // representative property_id), so matching below is by family OR
+    // property. Active jobs are fetched UNCAPPED (inherently few — one per
+    // family being learned); terminal jobs capped at the most recent 100,
+    // which only feed the "see the last run" link.
+    supabaseAdmin
+      .from('workflow_jobs')
+      .select('id, property_id, status, payload, created_at')
+      .like('kind', 'mapper.%')
+      .in('status', ['queued', 'running'])
+      .order('created_at', { ascending: false }),
+    supabaseAdmin
+      .from('workflow_jobs')
+      .select('id, property_id, status, payload, created_at')
+      .like('kind', 'mapper.%')
+      .in('status', ['completed', 'failed', 'cancelled'])
+      .order('created_at', { ascending: false })
+      .limit(100),
   ]);
 
   if (sessErr) return NextResponse.json({ ok: false, error: sessErr.message }, { status: 500 });
   if (kfErr) return NextResponse.json({ ok: false, error: kfErr.message }, { status: 500 });
+  if (activeJobErr) return NextResponse.json({ ok: false, error: activeJobErr.message }, { status: 500 });
+  if (termJobErr) return NextResponse.json({ ok: false, error: termJobErr.message }, { status: 500 });
 
   const sessions = (sessionRows ?? []) as PropertySessionRow[];
 
@@ -101,11 +147,51 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const enriched = sessions.map((s) => ({
-    ...s,
-    display_name: displayNames.get(s.property_id) ?? s.property_id,
-    knowledge_file: knowledgeByFamily.get(s.pms_family) ?? null,
-  }));
+  const activeJobs = (activeJobRows ?? []) as MapperJobRow[];
+  const terminalJobs = (termJobRows ?? []) as MapperJobRow[];
+  const jobMatchesSession = (j: MapperJobRow, s: PropertySessionRow): boolean => {
+    if (j.property_id === s.property_id) return true;
+    const family = j.payload && typeof j.payload.pms_family === 'string' ? j.payload.pms_family : null;
+    return family !== null && family === s.pms_family;
+  };
+
+  // Pending help requests on the active jobs — the robot is stuck and
+  // idling for the founder's click; the fleet card must show RED, not a
+  // calm caramel "learning" banner (the heartbeat from that very page is
+  // what makes the robot wait).
+  const needsHelpJobIds = new Set<string>();
+  if (activeJobs.length > 0) {
+    const { data: helpRows } = await supabaseAdmin
+      .from('mapping_help_requests')
+      .select('job_id')
+      .eq('status', 'pending')
+      .in('job_id', activeJobs.map((j) => j.id));
+    for (const r of (helpRows ?? []) as Array<{ job_id: string }>) {
+      needsHelpJobIds.add(r.job_id);
+    }
+  }
+
+  const enriched = sessions.map((s) => {
+    // Rows are newest-first, so find() = most recent.
+    const active = activeJobs.find((j) => jobMatchesSession(j, s));
+    // "Last run" link only matters when the hotel is parked waiting on a
+    // knowledge file and nothing is running — Reeyen can open the finished
+    // board to see what was found / what failed.
+    const last = !active && s.status === 'paused_no_knowledge_file'
+      ? terminalJobs.find((j) => jobMatchesSession(j, s))
+      : undefined;
+    return {
+      ...s,
+      display_name: displayNames.get(s.property_id) ?? s.property_id,
+      knowledge_file: knowledgeByFamily.get(s.pms_family) ?? null,
+      active_mapper_job: active
+        ? ({ id: active.id, status: active.status, created_at: active.created_at, needs_help: needsHelpJobIds.has(active.id) } satisfies MapperJobSummary)
+        : null,
+      last_mapper_job: last
+        ? ({ id: last.id, status: last.status, created_at: last.created_at } satisfies MapperJobSummary)
+        : null,
+    };
+  });
 
   return NextResponse.json({ ok: true, data: { sessions: enriched } });
 }

@@ -110,6 +110,65 @@ async function isAnyAdminOnline(): Promise<boolean> {
 
 interface PendingRequestRow {
   id: string;
+  screenshot_storage_path?: string | null;
+}
+
+/**
+ * feature/cua-assist-board — refresh a REUSED pending row to THIS attempt's
+ * reality: fresh screenshot/scroll/viewport/question, the CURRENT target_key,
+ * and a fresh TTL. Two reasons, both takeover-critical:
+ *  1. The admin CLICKS these screenshots now. The restarted robot's browser
+ *     is on whatever page this attempt reached — serving an older attempt's
+ *     screenshot (or another TARGET's: the one-pending index is per JOB)
+ *     would have the founder click coordinates against a page the robot is
+ *     no longer on, and that click executes physically inside a real PMS.
+ *  2. The row kept its ORIGINAL expires_at (15min from first insert); a
+ *     reuse near the TTL edge could be swept by the expire cron mid-wait.
+ * Guarded by status='pending' (an answer racing in wins; refresh no-ops and
+ * the OLD screenshot is kept — it's the frame the answer was given against).
+ * The replaced screenshot is deleted best-effort only when the refresh
+ * landed (the expire cron deletes only the path stored on the row).
+ */
+async function refreshReusedPendingRow(
+  row: PendingRequestRow,
+  input: HelpRequestInput,
+): Promise<void> {
+  const { data: refreshed, error } = await supabase
+    .from('mapping_help_requests')
+    .update({
+      target_key: input.targetKey,
+      question: input.question,
+      what_ive_tried: input.whatIveTried ?? [],
+      suggested_paths: input.suggestedPaths ?? [],
+      screenshot_storage_path: input.screenshotStoragePath,
+      scroll_x: input.scroll?.x ?? 0,
+      scroll_y: input.scroll?.y ?? 0,
+      viewport_w: input.viewport?.w ?? 1280,
+      viewport_h: input.viewport?.h ?? 800,
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+    })
+    .eq('id', row.id)
+    .eq('status', 'pending')
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    // Degraded, not broken: the robot waits on a row with the older
+    // screenshot/TTL. Worst case the cron sweeps it and the wait times out.
+    log.warn('help-request: reused-row refresh failed (stale screenshot may be shown)', {
+      err: error.message, requestId: row.id, targetKey: input.targetKey,
+    });
+    return;
+  }
+  const oldPath = row.screenshot_storage_path;
+  if (refreshed && oldPath && oldPath !== input.screenshotStoragePath) {
+    try {
+      await supabase.storage.from('mapping-screenshots').remove([oldPath]);
+    } catch (err) {
+      log.warn('help-request: stale screenshot cleanup failed (non-fatal)', {
+        err: (err as Error).message, oldPath,
+      });
+    }
+  }
 }
 
 async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string> {
@@ -118,7 +177,7 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
   // hits the same stuck state. Without reuse, admin sees duplicate cards.
   const { data: existing } = await supabase
     .from('mapping_help_requests')
-    .select('id')
+    .select('id, screenshot_storage_path')
     .eq('job_id', input.jobId)
     .eq('target_key', input.targetKey)
     .eq('status', 'pending')
@@ -128,6 +187,7 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
     log.info('help-request: reusing existing pending row', {
       requestId: existing.id, jobId: input.jobId, targetKey: input.targetKey,
     });
+    await refreshReusedPendingRow(existing, input);
     return existing.id;
   }
 
@@ -158,7 +218,7 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
     if (error?.code === '23505') {
       const { data: raced } = await supabase
         .from('mapping_help_requests')
-        .select('id')
+        .select('id, screenshot_storage_path')
         .eq('job_id', input.jobId)
         .eq('status', 'pending')
         .maybeSingle<PendingRequestRow>();
@@ -166,6 +226,12 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
         log.info('help-request: lost INSERT race; reusing winner row', {
           requestId: raced.id, jobId: input.jobId, targetKey: input.targetKey,
         });
+        // The one-pending unique index is per JOB, not per target — the
+        // winner row can belong to a DIFFERENT target (e.g. a leftover from
+        // a pre-restart attempt whose expire UPDATE failed). Refresh it to
+        // THIS request's target + screenshot before waiting on it, exactly
+        // like the fast-path reuse above.
+        await refreshReusedPendingRow(raced, input);
         return raced.id;
       }
     }
@@ -238,25 +304,73 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
   // Step 3: subscribe + race against timeout + abort.
   return new Promise<HelpResponse>((resolve) => {
     let settled = false;
+    // Declared before settle and assigned at the bottom — the already-
+    // aborted entry path below calls settle() BEFORE the channel exists
+    // (referencing a `const channel` there was a TDZ ReferenceError that
+    // turned a clean abort into a promise rejection).
+    let channel: ReturnType<typeof supabase.channel> | null = null;
     const settle = (resp: HelpResponse) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
-      void channel.unsubscribe();
+      if (channel) void channel.unsubscribe();
       try { input.signal.removeEventListener('abort', abortHandler); } catch { /* noop */ }
       resolve(resp);
     };
 
+    // Settle from a row that reads status='answered' — shared by the
+    // realtime handler, the post-SUBSCRIBED re-read, and the timeout's
+    // lost-race check below, so all three honor the answer identically.
+    const settleFromAnsweredRow = (row: Record<string, unknown>) => {
+      const actionType = row.action_type as HelpActionType | null;
+      if (!actionType) {
+        log.warn('help-request: answered without action_type', { requestId });
+        settle({ actionType: 'unavailable', source: 'admin_answered', requestId });
+        return;
+      }
+      settle({
+        actionType,
+        source: 'admin_answered',
+        responseText: typeof row.response_text === 'string' ? row.response_text : undefined,
+        responseCoordinate: typeof row.response_coordinate === 'object' && row.response_coordinate !== null
+          ? row.response_coordinate as HelpResponse['responseCoordinate']
+          : undefined,
+        adminUserId: typeof row.admin_user_id === 'string' ? row.admin_user_id : undefined,
+        requestId,
+      });
+    };
+
     const timeoutMs = env.HELP_REQUEST_TIMEOUT_MS;
     const timeoutHandle = setTimeout(() => {
-      // Plan v8 P1-6: mark row 'expired' so help-flood (P2-4) counts it.
-      void supabase
-        .from('mapping_help_requests')
-        .update({ status: 'expired', answered_at: new Date().toISOString() })
-        .eq('id', requestId)
-        .eq('status', 'pending');
-      log.info('help-request: timed out — marking expired', { requestId, timeoutMs });
-      settle({ actionType: 'unavailable', source: 'timeout', requestId });
+      void (async () => {
+        // Plan v8 P1-6: mark row 'expired' so help-flood (P2-4) counts it.
+        // feature/cua-assist-board — the expire UPDATE is the race arbiter:
+        // it matches only while the row is still 'pending'. Zero rows
+        // matched means an admin answer COMMITTED before the timeout but
+        // its realtime event hasn't reached us — honor the answer (the
+        // founder's click must not be silently dropped at the buzzer).
+        const { data: expired } = await supabase
+          .from('mapping_help_requests')
+          .update({ status: 'expired', answered_at: new Date().toISOString() })
+          .eq('id', requestId)
+          .eq('status', 'pending')
+          .select('id')
+          .maybeSingle();
+        if (!expired) {
+          const { data: row } = await supabase
+            .from('mapping_help_requests')
+            .select('status, action_type, response_text, response_coordinate, admin_user_id')
+            .eq('id', requestId)
+            .maybeSingle();
+          if (row && (row as { status?: string }).status === 'answered') {
+            log.info('help-request: answer beat the timeout — honoring it', { requestId });
+            settleFromAnsweredRow(row as Record<string, unknown>);
+            return;
+          }
+        }
+        log.info('help-request: timed out — marking expired', { requestId, timeoutMs });
+        settle({ actionType: 'unavailable', source: 'timeout', requestId });
+      })();
     }, timeoutMs);
 
     const abortHandler = () => {
@@ -277,7 +391,7 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
     input.signal.addEventListener('abort', abortHandler, { once: true });
 
     // Supabase realtime postgres_changes on this row.
-    const channel = supabase
+    channel = supabase
       .channel(`help-request:${requestId}`)
       .on(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -291,22 +405,7 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
         (payload: { new: Record<string, unknown> }) => {
           const newRow = payload.new;
           if (newRow.status !== 'answered') return;
-          const actionType = newRow.action_type as HelpActionType | null;
-          if (!actionType) {
-            log.warn('help-request: answered without action_type', { requestId });
-            settle({ actionType: 'unavailable', source: 'admin_answered', requestId });
-            return;
-          }
-          settle({
-            actionType,
-            source: 'admin_answered',
-            responseText: typeof newRow.response_text === 'string' ? newRow.response_text : undefined,
-            responseCoordinate: typeof newRow.response_coordinate === 'object' && newRow.response_coordinate !== null
-              ? newRow.response_coordinate as HelpResponse['responseCoordinate']
-              : undefined,
-            adminUserId: typeof newRow.admin_user_id === 'string' ? newRow.admin_user_id : undefined,
-            requestId,
-          });
+          settleFromAnsweredRow(newRow);
         },
       )
       .subscribe((status) => {
@@ -314,6 +413,24 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
           log.info('help-request: subscribed + waiting for admin', {
             requestId, timeoutMs,
           });
+          // feature/cua-assist-board — one-shot re-read AFTER the channel is
+          // live. Realtime delivers only post-SUBSCRIBED events; a REUSED
+          // row has been on the admin's board for a while (worker restart),
+          // so his answer can land inside the subscribe handshake window
+          // and would otherwise never be delivered — the robot would idle
+          // the full timeout and mark the feed unavailable despite a
+          // committed answer.
+          void supabase
+            .from('mapping_help_requests')
+            .select('status, action_type, response_text, response_coordinate, admin_user_id')
+            .eq('id', requestId)
+            .maybeSingle()
+            .then(({ data: row }) => {
+              if (row && (row as { status?: string }).status === 'answered') {
+                log.info('help-request: row was already answered before subscribe completed', { requestId });
+                settleFromAnsweredRow(row as Record<string, unknown>);
+              }
+            });
         }
       });
   });

@@ -31,6 +31,16 @@ const EXEMPT_FILES = new Set([
   'src/instrumentation.ts',
 ]);
 
+// Per-READ exemptions ('file:VAR') for flags that are intentionally read at
+// CALL time rather than through the boot-frozen env modules: their tests
+// flip process.env at runtime to prove the kill switch works, and ops can
+// flip the Fly secret without a code change. Deliberately narrower than a
+// file exemption — any OTHER process.env read in these files still fails.
+const EXEMPT_READS = new Set([
+  'cua-service/src/mapper.ts:CUA_STRUCTURED_DISCOVERY_ENABLED',
+  'cua-service/src/extractors/date-template.ts:CUA_PMS_TZ',
+]);
+
 const SCAN_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 
 // process.env.X access pattern. \b avoids matching things like
@@ -68,6 +78,8 @@ for (const dir of SCAN_DIRS) {
       const trimmed = lines[i].trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
       for (const m of matches) {
+        const varName = m.replace('process.env.', '');
+        if (EXEMPT_READS.has(`${rel}:${varName}`)) continue;
         violations.push({ file: rel, line: i + 1, snippet: lines[i].trim(), match: m });
       }
     }

@@ -19,6 +19,7 @@ import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, getModeConfig, type MapperModelId } from './anthropic-client.js';
 import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
+import { clearSetOfMark } from './set-of-mark.js';
 import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
@@ -40,7 +41,7 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS } from './target-contract.js';
 import { attachNetworkCapture, type NetworkCaptureHandle, type CapturedCall } from './network-capture.js';
@@ -118,10 +119,19 @@ const THINKING_HEADROOM_TOKENS = 8192;
  * target unavailable for the whole replay future.
  *
  * Returns one of:
- *   - { kind: 'continue', hintText }       → caller rewinds messages, pushes
- *                                            user-turn hint, re-enters loop
- *   - { kind: 'mark_unavailable', reason } → caller returns ActionMapFailure
- *   - { kind: 'takeover' }                 → caller enters takeover (Phase B chunk 2)
+ *   - { kind: 'continue', hintText, supervisorClick?, waitedMs }
+ *       → caller rewinds messages, pushes user-turn hint, re-enters loop.
+ *         When `supervisorClick` is set (admin answered 'takeover' by
+ *         clicking on the help screenshot), the caller FIRST executes that
+ *         click through executeVisionAction so it's recorded as a recipe
+ *         step like any agent click (replay must include the founder's
+ *         hop), then continues. `waitedMs` is the admin-wait time the
+ *         caller credits back to its phase wallclock budget.
+ *   - { kind: 'mark_unavailable', reason, viaAdmin? } → caller returns
+ *         ActionMapFailure. `viaAdmin` distinguishes "an admin explicitly
+ *         said this PMS doesn't have it" from "nobody answered" so the
+ *         Learning Board can show unavailable vs failed without string
+ *         matching.
  *   - { kind: 'abort', reason }            → caller throws to fail the whole job
  *
  * Skips the help request entirely when: jobId is null, the help-flood
@@ -136,9 +146,8 @@ async function maybeAskAdminBeforeUnavailable(args: {
   agentReason: string;
   signal?: AbortSignal;
 }): Promise<
-  | { kind: 'continue'; hintText: string }
-  | { kind: 'mark_unavailable'; reason: string }
-  | { kind: 'takeover' }
+  | { kind: 'continue'; hintText: string; supervisorClick?: { x: number; y: number }; waitedMs: number }
+  | { kind: 'mark_unavailable'; reason: string; viaAdmin?: boolean }
   | { kind: 'abort'; reason: string }
 > {
   if (!args.jobId) {
@@ -160,6 +169,10 @@ async function maybeAskAdminBeforeUnavailable(args: {
   // fall through to mark_unavailable. This is what makes the help-request DB
   // row + admin UI genuinely free of credential PII.
   let screenshotPath: string;
+  // Clear leftover Set-of-Mark badges first — the agent's last screenshot
+  // leaves numbered circles painted on the page, and the founder would see
+  // (and might aim at) them. Best-effort.
+  await clearSetOfMark(args.page).catch(() => {});
   const helpBuf = await captureHardenedScreenshot(args.page);
   if (!helpBuf) {
     log.warn('mapper: help-request screenshot withheld (could not guarantee redaction) — falling through', {
@@ -180,37 +193,141 @@ async function maybeAskAdminBeforeUnavailable(args: {
     .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
     .catch(() => ({ x: 0, y: 0 }));
 
+  const waitStartedAt = Date.now();
   const help = await requestHelp({
     jobId: args.jobId,
     targetKey: args.targetKey,
     question: `Stuck on ${args.targetKey}: ${args.agentReason.slice(0, 200)}`,
     screenshotStoragePath: screenshotPath,
     scroll,
-    viewport: { w: 1280, h: 800 },
+    viewport: { w: VIEWPORT.width, h: VIEWPORT.height },
     signal: args.signal ?? new AbortController().signal,
   });
+  const waitedMs = Date.now() - waitStartedAt;
 
   switch (help.actionType as HelpActionType) {
     case 'guidance':
       return {
         kind: 'continue',
         hintText: help.responseText ?? '(admin provided guidance but no text)',
+        waitedMs,
       };
     case 'unavailable':
       return {
         kind: 'mark_unavailable',
         reason: `unavailable: ${help.responseText ?? 'admin marked'}`,
+        // Only an explicit admin answer means "this PMS really doesn't have
+        // it" — timeout / no-admin / abort resolve as 'unavailable' too but
+        // must not be presented as a verified PMS limitation.
+        viaAdmin: help.source === 'admin_answered',
       };
-    case 'takeover':
-      // Phase B chunk 2 implements the takeover loop. For chunk 1, treat
-      // takeover as "admin will handle it" → mark unavailable so the run
-      // doesn't hang. The takeover handler in chunk 2 replaces this branch.
-      log.warn('mapper: takeover requested — chunk 1 stub, marking unavailable', {
-        jobId: args.jobId, targetKey: args.targetKey,
-      });
-      return { kind: 'mark_unavailable', reason: 'takeover requested (handler not yet implemented)' };
+    case 'takeover': {
+      // Phase B chunk 2 — the admin clicked a spot on the help screenshot.
+      // Validate against the capture viewport; the CALLER executes the
+      // click (it owns recordedSteps) and re-enters the loop.
+      const coord = validateSupervisorCoordinate(help.responseCoordinate);
+      if (!coord) {
+        log.warn('mapper: takeover answer had a missing/out-of-bounds coordinate — marking unavailable', {
+          jobId: args.jobId, targetKey: args.targetKey, coordinate: help.responseCoordinate ?? null,
+        });
+        return { kind: 'mark_unavailable', reason: 'takeover requested with invalid coordinate' };
+      }
+      return {
+        kind: 'continue',
+        hintText: typeof help.responseText === 'string' ? help.responseText : '',
+        supervisorClick: coord,
+        waitedMs,
+      };
+    }
     case 'abort':
       return { kind: 'abort', reason: 'admin_aborted' };
+  }
+}
+
+/**
+ * Validate an admin-supplied takeover coordinate against the mapper's fixed
+ * capture viewport (the screenshot the admin clicked was a viewport-sized,
+ * fullPage:false capture, so click coords are viewport CSS pixels).
+ * Exported for tests. Mirrors the route-side check in
+ * /api/admin/mapper/assist — keep the two in sync.
+ */
+export function validateSupervisorCoordinate(
+  raw: unknown,
+): { x: number; y: number } | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { x, y } = raw as { x?: unknown; y?: unknown };
+  if (typeof x !== 'number' || typeof y !== 'number') return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const xi = Math.round(x);
+  const yi = Math.round(y);
+  if (xi < 0 || xi >= VIEWPORT.width || yi < 0 || yi >= VIEWPORT.height) return null;
+  return { x: xi, y: yi };
+}
+
+/**
+ * Execute the founder's takeover click and compose the hint the agent sees.
+ * The click goes through executeVisionAction — the SAME path as an agent
+ * click — so it gets selector inference and is recorded as a recipe step
+ * (the learned recipe must replay the founder's hop, or replays land on the
+ * wrong page). Returns the recorded step (caller pushes it onto its
+ * recordedSteps) and the supervisor hint text. Never throws: on execution
+ * failure the hint degrades to "click there yourself".
+ */
+async function executeSupervisorClick(args: {
+  page: Page;
+  credentials: PMSCredentials;
+  click: { x: number; y: number };
+  adminNote: string;
+  jobId: string | null;
+  targetKey: string;
+}): Promise<{ recordedStep?: RecipeStep; hintText: string }> {
+  const trimmedNote = args.adminNote.trim();
+  // The assist route writes 'Supervisor clicked on the screen' into
+  // response_text when the founder sent a click with no note — display copy
+  // for the history list, not an instruction; don't echo it to the agent.
+  const note = trimmedNote.length > 0 && trimmedNote !== 'Supervisor clicked on the screen'
+    ? ` They also said: "${trimmedNote}".`
+    : '';
+  const pointingHint =
+    `Click at coordinate (${args.click.x}, ${args.click.y}) — I pointed at that exact spot ` +
+    `on the screen you showed me; my remote click did not execute, so perform it yourself.${note}`;
+  try {
+    const exec = await executeVisionAction(
+      args.page,
+      { action: 'left_click', coordinate: [args.click.x, args.click.y] },
+      args.credentials,
+      'action',
+    );
+    // executeVisionAction never throws — real failures (viewport drift,
+    // element gone, Playwright errors) come back as {isError:true}. Telling
+    // the agent "the click was performed" on that path would be a false
+    // statement against an unchanged page.
+    if (exec.isError) {
+      log.warn('mapper: supervisor takeover click reported an error — degrading to a pointing hint', {
+        jobId: args.jobId ?? undefined, targetKey: args.targetKey,
+        output: exec.output.slice(0, 200),
+      });
+      return { hintText: pointingHint };
+    }
+    // Let any resulting navigation/render settle before the agent re-reads.
+    await args.page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {});
+    await args.page.waitForTimeout(800);
+    log.info('mapper: supervisor takeover click executed', {
+      jobId: args.jobId ?? undefined, targetKey: args.targetKey,
+      x: args.click.x, y: args.click.y, recorded: Boolean(exec.recordedStep),
+    });
+    return {
+      recordedStep: exec.recordedStep,
+      hintText:
+        `I just clicked at (${args.click.x}, ${args.click.y}) on the screen you showed me — ` +
+        `that click has been performed in your browser and the page may have changed.${note} ` +
+        `Read the page you are on NOW and continue from here.`,
+    };
+  } catch (err) {
+    log.warn('mapper: supervisor takeover click failed — degrading to a pointing hint', {
+      err: (err as Error).message, jobId: args.jobId ?? undefined, targetKey: args.targetKey,
+    });
+    return { hintText: pointingHint };
   }
 }
 
@@ -346,20 +463,38 @@ async function loadPriorActions(jobId: string | null | undefined): Promise<Recip
 }
 
 /**
- * Persist the current actions accumulator into workflow_jobs.result so
- * a reclaim after crash can resume from here. Atomic single-row UPDATE.
- * Uses a top-level `actionsSoFar` key so we don't clobber any other
- * result fields a handler might add.
+ * Learning Board sibling of loadPriorActions — reload per-feed board state
+ * persisted by a prior attempt of this job, so a reclaim doesn't wipe found
+ * feeds off the admin board. Same graceful degradation: {} on any failure.
  */
-async function persistTargetProgress(
+async function loadPriorBoardTargets(
   jobId: string | null | undefined,
-  actions: Recipe['actions'],
+): Promise<Record<string, BoardTargetState>> {
+  if (!jobId) return {};
+  const { data, error } = await supabase
+    .from('workflow_jobs')
+    .select('result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (error || !data) return {};
+  const result = data.result as { boardTargets?: Record<string, BoardTargetState> } | null;
+  return result?.boardTargets ?? {};
+}
+
+/**
+ * Merge a patch into workflow_jobs.result via a two-step select-then-merge
+ * (PostgREST jsonb_set RPC isn't worth the indirection for a small object
+ * updated once per target). NOT atomic — safe because the mapper is the
+ * only mid-run result writer (cost-cap updates touch a separate column;
+ * the runtime touches result only at completion). A zombie attempt
+ * surviving past reclaim would be last-write-wins — pre-existing runtime
+ * gap, unchanged here. Best-effort: callers treat failure as non-fatal.
+ */
+async function mergeJobResult(
+  jobId: string | null | undefined,
+  patch: Record<string, unknown>,
 ): Promise<void> {
   if (!jobId) return;
-  // Merge with existing result via the workflow_jobs.result jsonb. We do
-  // an UPDATE with a select-then-merge pattern (PostgREST jsonb_set RPC
-  // isn't worth the indirection for a 13-key object updated 13 times
-  // per job — once per target).
   const { data: row, error: selErr } = await supabase
     .from('workflow_jobs')
     .select('result')
@@ -367,7 +502,7 @@ async function persistTargetProgress(
     .maybeSingle();
   if (selErr || !row) return;
   const existingResult = (row.result as Record<string, unknown>) ?? {};
-  const newResult = { ...existingResult, actionsSoFar: actions };
+  const newResult = { ...existingResult, ...patch };
   await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
 }
 
@@ -376,26 +511,16 @@ async function persistTargetProgress(
  * for a code" on the job row. The admin Launch Bay panel polls
  * /api/admin/onboarding-detail every 5s and renders a code-entry box
  * while this flag is set, so Reeyen can type in a code that the PMS
- * texted to his phone. Same select-then-merge pattern as
- * persistTargetProgress — never clobbers actionsSoFar.
+ * texted to his phone. Goes through mergeJobResult — never clobbers
+ * actionsSoFar / boardTargets / targetCatalog.
  */
 async function setAwaitingMfa(
   jobId: string | null | undefined,
   awaiting: boolean,
 ): Promise<void> {
-  if (!jobId) return;
-  const { data: row, error: selErr } = await supabase
-    .from('workflow_jobs')
-    .select('result')
-    .eq('id', jobId)
-    .maybeSingle();
-  if (selErr || !row) return;
-  const existingResult = (row.result as Record<string, unknown>) ?? {};
-  const newResult = {
-    ...existingResult,
+  await mergeJobResult(jobId, {
     awaiting_2fa: awaiting ? { since: new Date().toISOString() } : null,
-  };
-  await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
+  });
 }
 
 /**
@@ -502,11 +627,37 @@ async function isJobOverBudget(
 }
 
 export type MapperResult =
-  | { ok: true; recipe: Recipe }
+  | {
+      ok: true;
+      recipe: Recipe;
+      /** Learning Board — final per-feed state + catalogue. The workflow
+       *  runtime REPLACES workflow_jobs.result at completion (markCompleted),
+       *  so these must ride the handler result chain (mapping-driver →
+       *  index.ts adapter) or the board blanks the moment a run succeeds. */
+      targetCatalog: BoardTargetDescriptor[];
+      boardTargets: Record<string, BoardTargetState>;
+    }
   | { ok: false; userMessage: string; detail: Record<string, unknown> };
 
 export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
   let browser: Browser | null = null;
+
+  // ── CUA Learning Board — feed catalogue ───────────────────────────────
+  // Written to workflow_jobs.result immediately (before login even starts)
+  // so the admin board can render every feed as "waiting in line" while the
+  // robot logs in. Pure description of the generic TARGETS list — no PMS-
+  // specific content. Best-effort: board writes never fail a mapping run.
+  const targetCatalog: BoardTargetDescriptor[] = TARGETS.map((t) => ({
+    key: t.key,
+    label: t.progressLabel,
+    goal: t.goal,
+    optional: t.optional,
+  }));
+  await mergeJobResult(opts.jobId, { targetCatalog }).catch((err) => {
+    log.warn('mapper: board catalog persist failed (non-fatal)', {
+      jobId: opts.jobId ?? undefined, err: (err as Error).message,
+    });
+  });
 
   try {
     opts.onProgress?.('Opening browser…', 18);
@@ -614,6 +765,29 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       });
     }
 
+    // ── CUA Learning Board — per-feed state ──────────────────────────────
+    // Seeded from any prior attempt (reclaim) so found feeds never vanish
+    // from the board across worker restarts, and from repair seeds (the
+    // skipped targets below would otherwise never appear). A dead attempt's
+    // dangling 'searching' is dropped — this attempt re-runs that target,
+    // and if it budget-breaks first the feed must read "waiting", not stay
+    // an immortal spinner.
+    const boardTargets: Record<string, BoardTargetState> = await loadPriorBoardTargets(opts.jobId);
+    for (const [key, st] of Object.entries(boardTargets)) {
+      if (st.status === 'searching') delete boardTargets[key];
+    }
+    for (const key of Object.keys(actions)) {
+      const existing = boardTargets[key];
+      if (!existing || existing.status !== 'found') {
+        boardTargets[key] = { status: 'found', carried: true, finishedAt: new Date().toISOString() };
+      }
+    }
+    await mergeJobResult(opts.jobId, { boardTargets }).catch((err) => {
+      log.warn('mapper: board seed persist failed (non-fatal)', {
+        jobId: opts.jobId ?? undefined, err: (err as Error).message,
+      });
+    });
+
     // feat/pms-universal-translate — accumulate self-learned VALUE translation
     // across targets: enum vocabularies keyed by `${table}.${column}`, and a
     // pool of raw date samples (one PMS = one date format, so pooling across
@@ -643,6 +817,11 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // it's enough to promote.
         break;
       }
+      // Learning Board — mark searching only AFTER the budget check above:
+      // a budget break must leave unreached feeds as "waiting in line",
+      // never strand a phantom spinner.
+      boardTargets[target.key] = { status: 'searching', startedAt: new Date().toISOString() };
+      await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
       // Plan v7 — dispatch on target classification. Drill-down targets
       // use mapDrillDownAction (different agent loop, different output
       // shape — captures URL templates + per-field coverage). List/report
@@ -682,11 +861,19 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // into the running learned-translation accumulators (sanitized against
         // the descriptor's canonical sets).
         accumulateLearnedValues(target.key, result, learnedValueTranslations, learnedDateSamples);
+        const startedAt = boardTargets[target.key]?.startedAt;
+        boardTargets[target.key] = {
+          status: 'found',
+          ...(startedAt ? { startedAt } : {}),
+          finishedAt: new Date().toISOString(),
+          ...(result.boardPreview ? { preview: result.boardPreview } : {}),
+        };
         // Plan v8 B6 — persist after each successful target so a crash
-        // doesn't lose the work. Best-effort: on persist failure, keep
-        // running (the next target will retry the persist with both).
-        await persistTargetProgress(opts.jobId, actions).catch((err) => {
-          log.warn('mapper: persistTargetProgress failed (non-fatal)', {
+        // doesn't lose the work. Board state rides the same single UPDATE.
+        // Best-effort: on persist failure, keep running (the next target
+        // will retry the persist with both).
+        await mergeJobResult(opts.jobId, { actionsSoFar: actions, boardTargets }).catch((err) => {
+          log.warn('mapper: target progress persist failed (non-fatal)', {
             jobId: opts.jobId ?? undefined, actionName: target.key, err: (err as Error).message,
           });
         });
@@ -700,6 +887,17 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           reason: result.reason,
           finalUrl: result.finalUrl,
         });
+        const startedAt = boardTargets[target.key]?.startedAt;
+        boardTargets[target.key] = {
+          // `unavailable` is the structured agent/admin declaration — the
+          // board renders it "not available in this PMS" vs plain "couldn't
+          // find it". No string matching on reason text.
+          status: result.unavailable ? 'unavailable' : 'failed',
+          ...(startedAt ? { startedAt } : {}),
+          finishedAt: new Date().toISOString(),
+          reason: result.reason.slice(0, 300),
+        };
+        await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
       }
     }
 
@@ -749,7 +947,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     };
 
     opts.onProgress?.('Recipe saved — running first extraction…', 65);
-    return { ok: true, recipe };
+    return { ok: true, recipe, targetCatalog, boardTargets };
   } catch (err) {
     const e = err as Error;
     log.error('mapper crashed', { err: e.message, stack: e.stack });
@@ -1203,8 +1401,21 @@ interface ActionMapSuccess {
    *  scraping a DIFFERENT-but-table-shaped page; structured discovery must
    *  never run on these — it could verify a self-consistent WRONG feed. */
   viaBail?: boolean;
+  /** Learning Board — captured at clean-success time (rowCount + ≤3 real
+   *  rows / drill-down records) so the admin board can show what the robot
+   *  actually found. Display-only; never read by replay. */
+  boardPreview?: BoardPreview;
 }
-interface ActionMapFailure { ok: false; reason: string; finalUrl: string }
+interface ActionMapFailure {
+  ok: false;
+  reason: string;
+  finalUrl: string;
+  /** Learning Board — true when the AGENT declared the feed unavailable
+   *  (floor-met {unavailable:true}) or an admin explicitly marked it so.
+   *  Distinguishes "this PMS doesn't have it" from "couldn't find it"
+   *  without string matching. */
+  unavailable?: boolean;
+}
 
 /** Coerce a model-emitted `valueSamples` blob → Record<field, string[]> (or
  *  undefined). Defensive: the model can return junk shapes / non-arrays. */
@@ -1309,6 +1520,88 @@ interface MapActionArgs {
  *  - ANY throw inside discovery → the DOM success is returned unchanged;
  *  - detach() runs in finally on every path (incl. the admin-abort throws).
  */
+/**
+ * Scrape the CURRENT page with learned table selectors (dom-table
+ * semantics: '.' = the row element itself, textContent.trim(), skip empty
+ * selectors). Shared by structured discovery's oracle scrape and the
+ * Learning Board preview capture.
+ */
+async function extractDomRows(
+  page: Page,
+  rowSelector: string,
+  columns: Record<string, string>,
+  cap: number,
+): Promise<Array<Record<string, string>>> {
+  const rows = await page.$$eval(
+    rowSelector,
+    (els: Element[], columnMap: Record<string, string>) =>
+      els.map((el: Element) => {
+        const out: Record<string, string> = {};
+        for (const [field, sel] of Object.entries(columnMap)) {
+          if (!sel) continue;
+          const target = sel === '.' ? el : el.querySelector(sel);
+          out[field] = target ? (target.textContent ?? '').trim() : '';
+        }
+        return out;
+      }),
+    columns,
+  );
+  return rows.slice(0, cap);
+}
+
+// Learning Board preview caps — keep the persisted result jsonb small.
+const BOARD_PREVIEW_MAX_ROWS = 3;
+const BOARD_PREVIEW_MAX_CELL_CHARS = 80;
+// Previews persist in workflow_jobs.result indefinitely (vs help screenshots,
+// which the expire cron deletes after ~15min). Guest names match what the
+// admin already sees on screenshots, but contact details have no business
+// being retained in a job log — drop them by canonical field name. Generic:
+// contract field names, not PMS vocabulary.
+const BOARD_PREVIEW_DROPPED_FIELDS = /email|phone|mobile/i;
+
+export function truncatePreviewRows(
+  rows: Array<Record<string, string>>,
+): Array<Record<string, string>> {
+  return rows.slice(0, BOARD_PREVIEW_MAX_ROWS).map((row) => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(row)) {
+      if (BOARD_PREVIEW_DROPPED_FIELDS.test(k)) continue;
+      out[k] = v.length > BOARD_PREVIEW_MAX_CELL_CHARS
+        ? `${v.slice(0, BOARD_PREVIEW_MAX_CELL_CHARS - 1)}…`
+        : v;
+    }
+    return out;
+  });
+}
+
+/**
+ * Learning Board — capture a tiny "what the robot actually sees" preview
+ * (live row count + first 3 rows) from the feed page at clean-success time.
+ * MUST run before attemptStructuredDiscovery: discovery can navigate the
+ * page back to postLoginUrl and upgrade parse to mode:'api', after which
+ * the feed rows are no longer on screen. Never throws; undefined on any
+ * failure (the board just shows ✓ without a preview).
+ */
+async function captureBoardPreview(
+  page: Page,
+  action: ActionRecipe,
+): Promise<BoardPreview | undefined> {
+  if (action.parse.mode !== 'table') return undefined;
+  const hint = action.parse.hint;
+  try {
+    const rowCount = await page.$$eval(hint.rowSelector, (els) => els.length);
+    const sample = truncatePreviewRows(
+      await extractDomRows(page, hint.rowSelector, hint.columns, BOARD_PREVIEW_MAX_ROWS),
+    );
+    return { rowCount, sample, sampleKind: 'rows' };
+  } catch (err) {
+    log.info('mapper: board preview capture failed (non-fatal)', {
+      err: (err as Error).message,
+    });
+    return undefined;
+  }
+}
+
 async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | ActionMapFailure> {
   let capture: NetworkCaptureHandle | null = null;
   try {
@@ -1321,6 +1614,13 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
   }
   try {
     const result = await mapActionCore(args);
+    // Learning Board — preview BEFORE discovery (which can navigate away /
+    // swap parse to api-mode). viaBail successes are skipped for the same
+    // reason discovery skips them: the page may have wandered off the feed
+    // and a wrong-page preview would be presented as "what it captured".
+    if (result.ok && !result.viaBail && result.action.parse.mode === 'table') {
+      result.boardPreview = await captureBoardPreview(args.page, result.action);
+    }
     if (!result.ok || result.viaBail || result.action.parse.mode !== 'table' || !capture) {
       return result;
     }
@@ -1476,6 +1776,11 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
+  // Time spent waiting for an admin in maybeAskAdminBeforeUnavailable.
+  // Credited back in the wallclock check below — a founder who takes 4
+  // minutes to answer must not eat the agent's own exploration budget
+  // (otherwise the help is followed by instant "wallclock budget exceeded").
+  let helpWaitMs = 0;
 
   // Per-target cost baseline — snapshot job spend at the START of this
   // target so the per-target soft-abort below measures THIS target's delta
@@ -1520,7 +1825,7 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return bail('token budget exceeded');
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt - helpWaitMs > PHASE_WALLCLOCK_BUDGET_MS) {
       return bail('wallclock budget exceeded');
     }
     // Per-turn budget check — global job cap.
@@ -1716,13 +2021,29 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         if (helpOutcome.kind === 'continue') {
           // Pop the assistant turn that emitted the unavailable JSON, push
           // a user-turn hint, reset floor counters, re-enter the agent loop.
+          // Takeover: execute the founder's click FIRST (recorded as a
+          // recipe step via executeVisionAction — replay must include it).
+          let hintText = helpOutcome.hintText;
+          if (helpOutcome.supervisorClick) {
+            const sup = await executeSupervisorClick({
+              page: args.page,
+              credentials: args.credentials,
+              click: helpOutcome.supervisorClick,
+              adminNote: helpOutcome.hintText,
+              jobId: args.jobId,
+              targetKey: args.actionName,
+            });
+            if (sup.recordedStep) recordedSteps.push(sup.recordedStep);
+            hintText = sup.hintText;
+          }
           messages.pop();
           messages.push({
             role: 'user',
-            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this target.` }],
+            content: [{ type: 'text', text: `Hint from your supervisor: ${hintText}\n\nContinue working on this target.` }],
           });
           readPageCount = 0;
           navigationCount = 0;
+          helpWaitMs += helpOutcome.waitedMs;
           continue;
         }
         if (helpOutcome.kind === 'abort') {
@@ -1730,10 +2051,11 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         }
         return {
           ok: false,
-          reason: helpOutcome.kind === 'takeover'
-            ? 'takeover requested (handler not yet implemented)'
-            : helpOutcome.reason,
+          reason: helpOutcome.reason,
           finalUrl: args.page.url(),
+          // Floor-met branch: the agent itself declared this feed
+          // unavailable after real exploration (admin may have confirmed).
+          unavailable: true,
         };
       }
       // "Ask admin" escape hatch: the agent emitted the help-request JSON
@@ -1752,13 +2074,27 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           signal: args.signal,
         });
         if (helpOutcome.kind === 'continue') {
+          let hintText = helpOutcome.hintText;
+          if (helpOutcome.supervisorClick) {
+            const sup = await executeSupervisorClick({
+              page: args.page,
+              credentials: args.credentials,
+              click: helpOutcome.supervisorClick,
+              adminNote: helpOutcome.hintText,
+              jobId: args.jobId,
+              targetKey: args.actionName,
+            });
+            if (sup.recordedStep) recordedSteps.push(sup.recordedStep);
+            hintText = sup.hintText;
+          }
           messages.pop();
           messages.push({
             role: 'user',
-            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this target.` }],
+            content: [{ type: 'text', text: `Hint from your supervisor: ${hintText}\n\nContinue working on this target.` }],
           });
           readPageCount = 0;
           navigationCount = 0;
+          helpWaitMs += helpOutcome.waitedMs;
           continue;
         }
         if (helpOutcome.kind === 'abort') {
@@ -1766,10 +2102,11 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         }
         return {
           ok: false,
-          reason: helpOutcome.kind === 'takeover'
-            ? 'takeover requested (handler not yet implemented)'
-            : helpOutcome.reason,
+          reason: helpOutcome.reason,
           finalUrl: args.page.url(),
+          // ask_admin branch: the agent only asked a question — "unavailable"
+          // is true only when an admin explicitly said the PMS lacks it.
+          ...(helpOutcome.viaAdmin ? { unavailable: true } : {}),
         };
       }
       return {
@@ -1975,23 +2312,8 @@ export interface DiscoveryDeps {
 
 function makeDefaultDiscoveryDeps(args: MapActionArgs): DiscoveryDeps {
   return {
-    extractOracleRows: async (rowSelector, columns, cap) => {
-      const rows = await args.page.$$eval(
-        rowSelector,
-        (els: Element[], columnMap: Record<string, string>) =>
-          els.map((el: Element) => {
-            const out: Record<string, string> = {};
-            for (const [field, sel] of Object.entries(columnMap)) {
-              if (!sel) continue;
-              const target = sel === '.' ? el : el.querySelector(sel);
-              out[field] = target ? (target.textContent ?? '').trim() : '';
-            }
-            return out;
-          }),
-        columns,
-      );
-      return rows.slice(0, cap);
-    },
+    extractOracleRows: (rowSelector, columns, cap) =>
+      extractDomRows(args.page, rowSelector, columns, cap),
 
     identify: async (prompt) => {
       const idempotencyKey = args.jobId
@@ -2606,6 +2928,8 @@ async function mapDrillDownAction(args: {
   const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
+  // Admin-wait credit — see the matching note in mapActionCore.
+  let helpWaitMs = 0;
   // Same unavailable-floor tracking as mapAction.
   const UNAVAILABLE_FLOOR = { readPages: 1, navigations: 3 };
   let readPageCount = 0;
@@ -2631,7 +2955,7 @@ async function mapDrillDownAction(args: {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return { ok: false, reason: 'token budget exceeded', finalUrl: args.page.url() };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt - helpWaitMs > PHASE_WALLCLOCK_BUDGET_MS) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
     const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
@@ -2716,13 +3040,27 @@ async function mapDrillDownAction(args: {
           signal: args.signal,
         });
         if (helpOutcome.kind === 'continue') {
+          let hintText = helpOutcome.hintText;
+          if (helpOutcome.supervisorClick) {
+            const sup = await executeSupervisorClick({
+              page: args.page,
+              credentials: args.credentials,
+              click: helpOutcome.supervisorClick,
+              adminNote: helpOutcome.hintText,
+              jobId: args.jobId,
+              targetKey: args.actionName,
+            });
+            if (sup.recordedStep) recordedSteps.push(sup.recordedStep);
+            hintText = sup.hintText;
+          }
           messages.pop();
           messages.push({
             role: 'user',
-            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this drill-down target.` }],
+            content: [{ type: 'text', text: `Hint from your supervisor: ${hintText}\n\nContinue working on this drill-down target.` }],
           });
           readPageCount = 0;
           navigationCount = 0;
+          helpWaitMs += helpOutcome.waitedMs;
           continue;
         }
         if (helpOutcome.kind === 'abort') {
@@ -2730,10 +3068,10 @@ async function mapDrillDownAction(args: {
         }
         return {
           ok: false,
-          reason: helpOutcome.kind === 'takeover'
-            ? 'takeover requested (handler not yet implemented)'
-            : helpOutcome.reason,
+          reason: helpOutcome.reason,
           finalUrl: args.page.url(),
+          // Floor-met branch — agent declared unavailable (see mapActionCore).
+          unavailable: true,
         };
       }
 
@@ -2772,6 +3110,8 @@ async function mapDrillDownAction(args: {
                 },
               },
             },
+            // Learning Board — legitimately empty list today.
+            boardPreview: { rowCount: 0, sampleKind: 'rows' },
           };
         }
         // Accept whatever the agent drilled (>=1); URL-template inference
@@ -2859,6 +3199,13 @@ async function mapDrillDownAction(args: {
               templateVerified: inference.ok,
             },
           },
+          // Learning Board — the drilled sample records ARE real captured
+          // data; reuse them instead of re-scraping (the page is sitting on
+          // a detail record, not the list, at this point).
+          boardPreview: {
+            sample: truncatePreviewRows(sampleRowData),
+            sampleKind: 'records',
+          },
         };
       }
 
@@ -2876,13 +3223,27 @@ async function mapDrillDownAction(args: {
           signal: args.signal,
         });
         if (helpOutcome.kind === 'continue') {
+          let hintText = helpOutcome.hintText;
+          if (helpOutcome.supervisorClick) {
+            const sup = await executeSupervisorClick({
+              page: args.page,
+              credentials: args.credentials,
+              click: helpOutcome.supervisorClick,
+              adminNote: helpOutcome.hintText,
+              jobId: args.jobId,
+              targetKey: args.actionName,
+            });
+            if (sup.recordedStep) recordedSteps.push(sup.recordedStep);
+            hintText = sup.hintText;
+          }
           messages.pop();
           messages.push({
             role: 'user',
-            content: [{ type: 'text', text: `Hint from your supervisor: ${helpOutcome.hintText}\n\nContinue working on this drill-down target.` }],
+            content: [{ type: 'text', text: `Hint from your supervisor: ${hintText}\n\nContinue working on this drill-down target.` }],
           });
           readPageCount = 0;
           navigationCount = 0;
+          helpWaitMs += helpOutcome.waitedMs;
           continue;
         }
         if (helpOutcome.kind === 'abort') {
@@ -2890,10 +3251,10 @@ async function mapDrillDownAction(args: {
         }
         return {
           ok: false,
-          reason: helpOutcome.kind === 'takeover'
-            ? 'takeover requested (handler not yet implemented)'
-            : helpOutcome.reason,
+          reason: helpOutcome.reason,
           finalUrl: args.page.url(),
+          // ask_admin branch — unavailable only on an explicit admin answer.
+          ...(helpOutcome.viaAdmin ? { unavailable: true } : {}),
         };
       }
 

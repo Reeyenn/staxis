@@ -99,11 +99,20 @@ const Schema = z.object({
 
   // Help-request timeout — how long the mapper waits for admin to answer
   // a help-request before falling back to "mark target unavailable".
-  // P1-2 (Codex hard pass): default 90s, not 5min, because Reeyen is one
-  // admin and 5min × 13 targets = 65 minutes of pure idle waiting. With
-  // 90s + admin-online check (skip help-request when no admin heartbeat
-  // in last 5min), the cost stays bounded.
-  HELP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+  //
+  // feature/cua-assist-board: raised 90s → 5min. This wait only ever runs
+  // when an admin heartbeated in the last 5 minutes (requestHelp early-
+  // exits otherwise), so it IS the human's point-and-click window on the
+  // Learning Board — 90s was too short to notice the red flag, look at the
+  // screenshot, and click. Idle stays bounded: the wait is admin-online-
+  // gated, the help-flood breaker caps it at 3 stuck targets per job, and
+  // the wait is credited back to the per-target wallclock budget (it never
+  // eats per-target exploration time; the 90-min whole-job timeout is NOT
+  // credited — 3 maxed waits ≈ 15 min of it, ample slack). Capped at 10min:
+  // the help-request row's DB TTL is 15min with a 5-min sweep cron — the
+  // wait must stay under TTL−sweep or the row can be swept mid-wait. Tune
+  // via Fly secrets.
+  HELP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(300_000),
 
   // Plan v8 final review B1 + S1 — org-wide daily mapping spend cap.
   // Sum of cost_micros for source='mapping' rows over the last 24h.

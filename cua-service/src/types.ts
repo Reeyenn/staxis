@@ -543,3 +543,49 @@ export interface ScraperCredentialsRow {
   ca_password: string;
   is_active: boolean;
 }
+
+// ─── CUA Learning Board (feature/cua-assist-board) ────────────────────────
+// Per-feed learning state the mapper persists into workflow_jobs.result
+// (keys `targetCatalog` + `boardTargets`, alongside the existing
+// `actionsSoFar`) so the admin Learning Board can show, per feed: what was
+// found (with a small captured-row preview), what's being searched, and
+// what failed/was unavailable. "Stuck" is intentionally NOT a persisted
+// status — the board derives it live from the pending mapping_help_requests
+// row, so a found feed can never be flagged.
+//
+// ⚠ Hand-synced duplicate reader lives in src/lib/pms/learning-board.ts
+// (Next.js app). Display-only contract: every field optional on the reader
+// side; additive changes only.
+
+/** One catalogue entry per mapper target, written once at run start. */
+export interface BoardTargetDescriptor {
+  key: string;
+  /** Human label shown on the board (the target's progressLabel). */
+  label: string;
+  /** Business-domain goal text (what the robot is looking for). */
+  goal: string;
+  optional: boolean;
+}
+
+/** Small captured-data preview attached when a feed is found. */
+export interface BoardPreview {
+  /** Rows matched on the feed page at success time (table-mode targets). */
+  rowCount?: number;
+  /** Up to 3 real captured rows/records, cells truncated. */
+  sample?: Array<Record<string, string>>;
+  /** 'rows' = feed table rows; 'records' = drill-down sample records. */
+  sampleKind?: 'rows' | 'records';
+}
+
+export type BoardTargetStatus = 'searching' | 'found' | 'unavailable' | 'failed';
+
+export interface BoardTargetState {
+  status: BoardTargetStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  /** True when carried from a prior attempt (reclaim) or repair seed. */
+  carried?: boolean;
+  /** Failure/unavailable explanation (truncated). */
+  reason?: string;
+  preview?: BoardPreview;
+}

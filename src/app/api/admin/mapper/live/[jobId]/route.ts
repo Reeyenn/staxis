@@ -11,7 +11,10 @@
  *   {
  *     job: { id, kind, status, attempts, max_attempts, payload, created_at,
  *            started_at, completed_at, error, result, claude_cost_micros },
- *     pendingHelpRequest: <mapping_help_requests row | null>,
+ *     property: { display_name, pms_family } | null,
+ *     pendingHelpRequest: <mapping_help_requests row | null, plus
+ *       screenshotUrl: a 1h signed URL for the privacy-redacted screenshot
+ *       (the bucket is private; the browser can't read it directly)>,
  *     recentHelpRequests: <last 5 mapping_help_requests rows>,
  *   }
  *
@@ -70,9 +73,44 @@ export async function GET(
     return err('job not found', { requestId, status: 404, code: 'not_found' });
   }
 
+  // Hotel name for the board header ("Learning {Hotel}'s PMS"). pms_family
+  // comes from the job payload (the job is per-family; property_id is the
+  // representative hotel). Best-effort — a lookup failure must not break
+  // the board.
+  const payload = (jobRes.data.payload ?? {}) as Record<string, unknown>;
+  let property: { display_name: string; pms_family: string | null } | null = null;
+  if (jobRes.data.property_id) {
+    const { data: prop } = await supabaseAdmin
+      .from('properties')
+      .select('display_name')
+      .eq('id', jobRes.data.property_id)
+      .maybeSingle();
+    property = {
+      display_name: (prop?.display_name as string | undefined) ?? jobRes.data.property_id,
+      pms_family: typeof payload.pms_family === 'string' ? payload.pms_family : null,
+    };
+  }
+
+  // Signed URL for the pending help screenshot (1h ≫ the row's 15-min TTL).
+  // The mapping-screenshots bucket is private with admin-only RLS — the
+  // browser cannot fetch the object key directly.
+  let pendingHelpRequest: Record<string, unknown> | null = pendingRes.data ?? null;
+  if (pendingHelpRequest && typeof pendingHelpRequest.screenshot_storage_path === 'string') {
+    const { data: signed, error: signErr } = await supabaseAdmin.storage
+      .from('mapping-screenshots')
+      .createSignedUrl(pendingHelpRequest.screenshot_storage_path, 3600);
+    if (signErr) {
+      // Non-fatal: the panel degrades to text-only guidance.
+      pendingHelpRequest = { ...pendingHelpRequest, screenshotUrl: null };
+    } else {
+      pendingHelpRequest = { ...pendingHelpRequest, screenshotUrl: signed?.signedUrl ?? null };
+    }
+  }
+
   return ok({
     job: jobRes.data,
-    pendingHelpRequest: pendingRes.data ?? null,
+    property,
+    pendingHelpRequest,
     recentHelpRequests: recentRes.data ?? [],
   }, { requestId });
 }
