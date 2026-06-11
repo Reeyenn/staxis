@@ -2056,6 +2056,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   { name: 'webhook-dedup-purge',           cadenceHours: 24,    description: 'daily 4:15am purge of expired webhook-dedup keys (auth-storage-cookies-and-middleware)' },
   { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
+  { name: 'pms-backfill-missing-feeds',    cadenceHours: 24,    description: 'daily 10:00 UTC retry of feeds the mapper has not learned yet — enqueues one seeded mapper job per PMS family whose active knowledge file has feedGaps (feat/cua-partial-promotion)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },

@@ -39,7 +39,11 @@ export const dynamic = 'force-dynamic';
 interface KnowledgeRow {
   id: string;
   version: number;
-  knowledge: { actions?: Record<string, unknown> };
+  knowledge: {
+    actions?: Record<string, unknown>;
+    valueTranslations?: unknown;
+    dateFormat?: unknown;
+  };
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -83,15 +87,16 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const allActions = (activeRow.knowledge?.actions ?? {}) as Record<string, unknown>;
-  if (!(body.targetKey in allActions)) {
-    return err(
-      `targetKey ${body.targetKey} not present in active recipe — nothing to repair`,
-      { requestId, status: 400, code: 'bad_request' },
-    );
-  }
+  // feat/cua-partial-promotion — a target ABSENT from the recipe is now a
+  // legal repair: it's the manual re-arm for a partial promotion's missing
+  // feed (and resets the backfill cron's no-progress breaker if it works).
+  // Previously this 400'd ("nothing to repair"), leaving a $25-40 full
+  // regenerate as the only path to chase one missing feed.
+  const isAbsentTarget = !(body.targetKey in allActions);
 
   // Build seed_actions = all actions EXCEPT the failing one. The mapper
-  // will skip the 12 we've seeded and re-learn only the dropped one.
+  // skips every seeded key, so for a present-but-broken target we drop it;
+  // for an absent target the seed is simply the full current action set.
   const seedActions: Record<string, unknown> = { ...allActions };
   delete seedActions[body.targetKey];
 
@@ -113,10 +118,19 @@ export async function POST(req: NextRequest): Promise<Response> {
       payload: {
         pms_family: body.pmsFamily,
         property_id: body.propertyId,
-        // Tight cap — one target, ~$1-2 in vision.
-        cost_cap_micros: 2_000_000,
+        // Present target: tight cap (~$1-2, one re-learn). Absent target:
+        // higher cap — the mapper has no per-target allowlist, so it hunts
+        // EVERY unlearned catalogue target and cheaper-tier ones may consume
+        // budget before reaching the requested feed.
+        cost_cap_micros: isAbsentTarget ? 6_000_000 : 2_000_000,
         // The whole point — seed all-other-actions so mapper skips them.
         seed_actions: seedActions,
+        // Preserve the family's learned value translation across the repair
+        // (skipped targets aren't re-learned, so without these the new
+        // version would drop the other feeds' enum vocabulary + date order —
+        // same rule session-driver's auto-repair already follows).
+        seed_value_translations: activeRow.knowledge?.valueTranslations,
+        seed_date_format: activeRow.knowledge?.dateFormat,
         // For audit + the admin UI to render "Repairing X"
         repair_target_key: body.targetKey,
         repaired_from_version: activeRow.version,
@@ -142,7 +156,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     jobId: inserted.id,
     droppedTarget: body.targetKey,
     fromVersion: activeRow.version,
-    estimatedCostDollars: 1.5,
-    note: 'Watch live at /admin/properties/mapper/' + inserted.id,
+    estimatedCostDollars: isAbsentTarget ? 4 : 1.5,
+    note: isAbsentTarget
+      ? `Learning a feed this recipe never had — other unlearned targets may consume budget first, so it can take a couple of runs. Watch live at /admin/properties/mapper/${inserted.id}`
+      : 'Watch live at /admin/properties/mapper/' + inserted.id,
   }, { requestId });
 }
