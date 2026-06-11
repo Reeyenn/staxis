@@ -137,9 +137,11 @@ const DENY_HOST_SUFFIXES = [
  * analytics|track|collect|log|metrics — a PMS's own "analytics" or
  * "housekeeping tracking" endpoint is a real feed; wrongly dropping a real
  * feed (mapper degrades to DOM scraping) costs more than keeping redacted
- * noise in a capped buffer.
+ * noise in a capped buffer. 'beacon' is deliberately absent too: it's a
+ * real hospitality property name (/hotels/beacon-hill/rooms) and sendBeacon
+ * traffic arrives as resourceType 'ping', which is already dropped.
  */
-const NOISE_PATH_RE = /(heartbeat|keep-?alive|web-?vitals|telemetry|beacon|sockjs|hot-update|__webpack)/i;
+const NOISE_PATH_RE = /(heartbeat|keep-?alive|web-?vitals|telemetry|sockjs|hot-update|__webpack)/i;
 const NOISE_PATH_EXACT = new Set(['/ping', '/health', '/healthz', '/favicon.ico']);
 
 /** Query params (and top-level POST-body keys) ignored for endpoint
@@ -247,6 +249,9 @@ function decideKind(ct: string, contentDisposition: string | undefined, sameSite
   }
   if (ct.includes('json')) return 'json';
   if (ct.includes('csv')) return 'csv';
+  // Deliberately not same-site-gated: an explicit attachment filename is a
+  // strong data-export signal, and report servers often live on a second
+  // apex. The body still passes through redactCsvText like everything else.
   if (contentDisposition && /filename[^;]*\.csv/i.test(contentDisposition)) return 'csv';
   // XML data feeds (JSF partial-response, SOAP) — keep the endpoint as a
   // signal with a null body; the contract pins responseBody to JSON/CSV.
@@ -323,19 +328,47 @@ export function attachNetworkCapture(page: Page): NetworkCaptureHandle {
   }
 
   const BODY_TIMEOUT = Symbol('timeout');
+  /** A never-settling transfer (comet/long-poll) may hold its read slot
+   *  this long before the backstop frees it — bounds capture starvation
+   *  while still bounding real concurrent transfers. */
+  const SLOT_BACKSTOP_MS = 60_000;
 
-  async function readBody(r: Response): Promise<string | null | typeof BODY_TIMEOUT> {
-    let timer: NodeJS.Timeout | undefined;
+  /**
+   * Read the body while holding the read slot for the TRANSFER's lifetime,
+   * not just the 10s race: on timeout the driver keeps streaming the body
+   * in the background, so releasing at the race would let actual concurrent
+   * transfers exceed MAX_CONCURRENT_READS and spike RSS.
+   */
+  async function readBodyHoldingSlot(r: Response): Promise<string | null | typeof BODY_TIMEOUT> {
+    let released = false;
+    const releaseOnce = (): void => {
+      if (released) return;
+      released = true;
+      releaseRead();
+    };
+    const backstop = setTimeout(releaseOnce, SLOT_BACKSTOP_MS);
+    backstop.unref?.();
+    let raceTimer: NodeJS.Timeout | undefined;
     try {
-      const timeout = new Promise<typeof BODY_TIMEOUT>((resolve) => {
-        timer = setTimeout(() => resolve(BODY_TIMEOUT), BODY_READ_TIMEOUT_MS);
-        timer.unref?.();
+      // Rejections mapped at creation — a late rejection after losing the
+      // race can never become an unhandledRejection.
+      const body = r.text().then((t) => t as string | null, () => null);
+      void body.finally(() => {
+        clearTimeout(backstop);
+        releaseOnce();
       });
-      // .catch attached at creation — a late rejection after losing the race
-      // can never become an unhandledRejection.
-      return await Promise.race([r.text().catch(() => null), timeout]);
+      const timeout = new Promise<typeof BODY_TIMEOUT>((resolve) => {
+        raceTimer = setTimeout(() => resolve(BODY_TIMEOUT), BODY_READ_TIMEOUT_MS);
+        raceTimer.unref?.();
+      });
+      return await Promise.race([body, timeout]);
+    } catch {
+      // r.text() threw synchronously — free the slot now, not at backstop.
+      clearTimeout(backstop);
+      releaseOnce();
+      return null;
     } finally {
-      if (timer) clearTimeout(timer);
+      if (raceTimer) clearTimeout(raceTimer);
     }
   }
 
@@ -500,12 +533,7 @@ export function attachNetworkCapture(page: Page): NetworkCaptureHandle {
         buildAndBuffer(r, rawUrl, method, status, contentType, null, NULL_BODY_COST);
         return;
       }
-      let text: string | null | typeof BODY_TIMEOUT;
-      try {
-        text = await readBody(r);
-      } finally {
-        releaseRead();
-      }
+      const text = await readBodyHoldingSlot(r);
       if (detached) return;
       if (text === BODY_TIMEOUT) return bump('body_timeout');
       if (text === null) return bump('body_unavailable');

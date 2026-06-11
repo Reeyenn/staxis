@@ -230,6 +230,23 @@ describe('redactResponseBody — shape preservation', () => {
     assert.equal(out.zip, '<redacted:field>');
     assert.equal(out.loyaltyNumber, '<redacted:field>');
   });
+
+  test('bare first/last/given keys mask strings while last* timestamps survive', () => {
+    const out = redactResponseBody({
+      first: 'John',
+      last: 'Smith',
+      given: 'Jane',
+      lastUpdated: '2026-06-10T12:00:00Z',
+      lastCleaned: '2026-06-09',
+      firstFloor: true,
+    }) as Record<string, unknown>;
+    assert.equal(out.first, '<redacted:field>');
+    assert.equal(out.last, '<redacted:field>');
+    assert.equal(out.given, '<redacted:field>');
+    assert.equal(out.lastUpdated, '2026-06-10T12:00:00Z');
+    assert.equal(out.lastCleaned, '2026-06-09');
+    assert.equal(out.firstFloor, true);
+  });
 });
 
 describe('redactResponseBody — robustness', () => {
@@ -318,6 +335,19 @@ describe('redactUrl', () => {
     assert.ok(out.includes('folio'));
   });
 
+  test('name segments after person-entity route tokens are masked; ids/dates survive', () => {
+    const named = redactUrl('https://pms.example.com/guests/John%20Smith/folio');
+    assert.ok(!named.includes('John'));
+    assert.ok(named.includes('folio'));
+    const byId = redactUrl('https://pms.example.com/guests/12345/folio');
+    assert.ok(byId.includes('12345'));
+    const byUuid = redactUrl('https://pms.example.com/customers/0f8fad5b-d9cb-469f-a165-70867728950e/notes');
+    assert.ok(byUuid.includes('0f8fad5b-d9cb-469f-a165-70867728950e'));
+    // Whitespace segments are data values anywhere in the path.
+    const loose = redactUrl('https://pms.example.com/report/Jane%20Doe/details');
+    assert.ok(!loose.includes('Jane'));
+  });
+
   test('unparseable input becomes a marker, never raw', () => {
     assert.equal(redactUrl('::::not a url with jane@x.com::::'), '<redacted:unparseable_url>');
   });
@@ -350,6 +380,20 @@ describe('redactHeaders', () => {
     assert.equal(out.referer, 'https://pms.example.com/search');
     assert.equal(out.accept, 'application/json');
     assert.equal(out['content-type'], 'application/json');
+  });
+
+  test('PII-bearing custom header names are masked; referer paths are name-scrubbed', () => {
+    const out = redactHeaders({
+      'x-guest-name': 'John Smith',
+      'x-user-email': 'j@x.com',
+      referer: 'https://pms.example.com/guests/John%20Smith/folio?tab=1',
+      'user-agent': 'Mozilla/5.0',
+    });
+    assert.equal(out['x-guest-name'], '<redacted:header>');
+    assert.equal(out['x-user-email'], '<redacted:header>');
+    assert.ok(!String(out.referer).includes('John'));
+    assert.ok(!String(out.referer).includes('tab=1'));
+    assert.equal(out['user-agent'], 'Mozilla/5.0');
   });
 });
 
@@ -436,6 +480,24 @@ describe('redactCsvText', () => {
     assert.ok(out.includes('2026-06-10'));
     assert.ok(!out.includes('8325551234')); // 10-digit numeric: could be a phone
     assert.ok(!out.includes('John'));
+  });
+
+  test('an all-text first row that shape-matches its data is NOT mistaken for a header', () => {
+    // "John Smith,DUE_IN" would survive as a fake header otherwise.
+    const out = redactCsvText('John Smith,DUE_IN\nJane Doe,DUE_OUT\n');
+    assert.ok(!out.includes('John'));
+    assert.ok(!out.includes('Jane'));
+    assert.ok(out.includes('DUE_IN')); // enum-shaped cells survive headerless mode
+    assert.ok(out.includes('DUE_OUT'));
+    assert.equal(out.trim().split('\n').length, 2); // row count intact
+  });
+
+  test('headerless mode keeps UUIDs and room codes, masks bare all-caps surnames', () => {
+    const out = redactCsvText('0f8fad5b-d9cb-469f-a165-70867728950e,101A,SMITH\n5c8fad5b-d9cb-469f-a165-708677289511,202B,DOE\n');
+    assert.ok(out.includes('0f8fad5b-d9cb-469f-a165-70867728950e'));
+    assert.ok(out.includes('101A'));
+    assert.ok(!out.includes('SMITH'));
+    assert.ok(!out.includes('DOE'));
   });
 
   test('emails hiding in unmasked columns are still pattern-scrubbed', () => {

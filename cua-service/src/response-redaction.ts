@@ -100,7 +100,11 @@ const MASK_SUBSTRINGS = [
 /** Person-label fields: only STRING values are masked — a number under
  *  these keys is a count/occupancy figure the mapper needs (`guests: 2`,
  *  `adults` under a guest object), never a name. */
-const MASK_STRING_EXACT = new Set(['title']);
+const MASK_STRING_EXACT = new Set([
+  // `first`/`last` etc. must be exact: as substrings they'd mask
+  // lastUpdated/lastCleaned dates the mapper needs.
+  'title', 'first', 'last', 'middle', 'given', 'family',
+]);
 const MASK_STRING_SUBSTRINGS = [
   'name', 'guest', 'customer', 'holder', 'traveler', 'traveller',
   'occupant', 'company', 'organization', 'organisation', 'nationality',
@@ -313,6 +317,22 @@ export function redactResponseBody(body: unknown): unknown {
  *  search box (very often a guest name), so mask regardless of patterns. */
 const FREE_TEXT_PARAMS = new Set(['q', 'query', 'search', 'term', 'keyword', 'lookup', 'find']);
 
+/** Path segments that name a person entity — the NEXT segment is a person
+ *  identifier (`/guests/John%20Smith/folio`) unless it's clearly a
+ *  record id / date / code. */
+const PERSON_PATH_TOKENS = new Set([
+  'guest', 'guests', 'customer', 'customers', 'contact', 'contacts',
+  'profile', 'profiles', 'user', 'users',
+]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SEGMENT_DATE_RE = /^\d{4}-\d{1,2}-\d{1,2}$|^\d{1,2}-\d{1,2}-\d{2,4}$/;
+
+/** True when a path segment is safe to keep after a person-entity token:
+ *  numeric ids, UUIDs, dates, ALL-CAPS codes — never free-text names. */
+function isSafePathIdentifier(seg: string): boolean {
+  return /^\d+$/.test(seg) || UUID_RE.test(seg) || SEGMENT_DATE_RE.test(seg) || /^[A-Z0-9_-]+$/.test(seg);
+}
+
 /** Query-param names whose values are masked outright. The mapper keeps the
  *  param NAME (it learns URL templates) and date-ish values survive. */
 function isSensitiveParamName(name: string): boolean {
@@ -334,14 +354,25 @@ export function redactUrl(raw: string): string {
     // Fragments never reach the server and can carry OAuth tokens
     // (#access_token=…) — drop them entirely.
     u.hash = '';
-    const segs = u.pathname.split('/').map((seg) => {
-      if (seg === '') return seg;
-      let dec = seg;
+    const rawSegs = u.pathname.split('/');
+    const decoded = rawSegs.map((seg) => {
+      if (seg === '') return '';
       try {
-        dec = decodeURIComponent(seg);
+        return decodeURIComponent(seg);
       } catch {
-        // undecodable — scrub the raw segment as-is
+        return seg; // undecodable — scrub the raw segment as-is
       }
+    });
+    const segs = rawSegs.map((seg, i) => {
+      if (seg === '') return seg;
+      const dec = decoded[i];
+      // REST routes put person identifiers right after the entity token:
+      // /guests/John%20Smith/folio. Keep ids/dates/codes, mask free text.
+      const prev = i > 0 ? decoded[i - 1].toLowerCase() : '';
+      if (PERSON_PATH_TOKENS.has(prev) && !isSafePathIdentifier(dec)) return marker('path');
+      // Whitespace never appears in route tokens — a segment with spaces is
+      // a data value (very often a name).
+      if (/\s/.test(dec) && !DATE_LIKE_RE.test(dec.trim())) return marker('path');
       const scrubbed = scrubStringValue(dec);
       return scrubbed === dec ? seg : encodeURIComponent(scrubbed);
     });
@@ -367,8 +398,10 @@ const SENSITIVE_HEADER_SUBSTRINGS = [
   'api-key', 'signature', 'credential',
 ];
 
-/** Redact request headers: credential-bearing names masked, referer reduced
- *  to origin+path (its query can carry guest search terms), every other
+/** Redact request headers: credential-bearing names masked, custom
+ *  PII-bearing names (x-guest-name) classified like JSON keys, referer
+ *  reduced to origin+path and run through the URL path scrubber (its query
+ *  can carry guest search terms, its path can carry names), every other
  *  value pattern-scrubbed. Returns a new object. */
 export function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -382,10 +415,15 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
     if (name === 'referer' || name === 'referrer') {
       try {
         const u = new URL(value);
-        setOwn(out as unknown as Record<string, unknown>, rawName, `${u.origin}${u.pathname}`);
+        setOwn(out as unknown as Record<string, unknown>, rawName, redactUrl(`${u.origin}${u.pathname}`));
       } catch {
         setOwn(out as unknown as Record<string, unknown>, rawName, marker('header'));
       }
+      continue;
+    }
+    const cls = classifyKey(name);
+    if (cls === 'nuke' || cls === 'mask' || cls === 'maskstring') {
+      setOwn(out as unknown as Record<string, unknown>, rawName, marker('header'));
       continue;
     }
     setOwn(out as unknown as Record<string, unknown>, rawName, scrubStringValue(value));
@@ -563,22 +601,47 @@ function serializeCell(cell: string, delimiter: string): string {
   return cell;
 }
 
-function looksLikeHeaderRow(cells: string[]): boolean {
+function cellShape(c: string): 'empty' | 'num' | 'date' | 'text' {
+  const t = c.trim();
+  if (t === '') return 'empty';
+  if (DATE_LIKE_RE.test(t)) return 'date';
+  if (NUMERIC_CELL_RE.test(t)) return 'num';
+  return 'text';
+}
+
+function looksLikeHeaderRow(rows: string[][]): boolean {
+  const cells = rows[0];
   if (cells.every((c) => c.trim() === '')) return false;
   // A header row has no date/numeric cells — those are data values.
   for (const c of cells) {
-    const t = c.trim();
-    if (t === '') continue;
-    if (DATE_LIKE_RE.test(t)) return false;
-    if (NUMERIC_CELL_RE.test(t)) return false;
+    const s = cellShape(c);
+    if (s === 'date' || s === 'num') return false;
   }
-  return true;
+  // All-text first row: a real header differs in shape from its data in at
+  // least one column (Room vs 204). Identical shapes in every column means
+  // the first row is itself data ("John Smith,DUE_IN" / "Jane Doe,DUE_OUT")
+  // — treating it as a header would leave its name cells unmasked.
+  const dataRow = rows.slice(1).find((r) => r.some((c) => c.trim() !== ''));
+  if (!dataRow) return true; // header-only export
+  const n = Math.min(cells.length, dataRow.length);
+  for (let i = 0; i < n; i++) {
+    if (cellShape(cells[i]) !== cellShape(dataRow[i])) return true;
+  }
+  return false;
 }
 
 function redactHeaderlessCell(raw: string): string {
   const t = raw.trim();
   if (t === '') return raw;
   if (DATE_LIKE_RE.test(t)) return raw;
+  if (UUID_RE.test(t)) return raw; // record ids are never names
+  // Status enums / room codes: ALL-CAPS with a digit or underscore
+  // (DUE_IN, VACANT_CLEAN, 101A). A bare all-caps surname (SMITH) has
+  // neither and stays masked.
+  if (/^[A-Z0-9_-]+$/.test(t) && /[\d_]/.test(t)) {
+    const digits = t.replace(/[^0-9]/g, '');
+    if (digits.length < 10) return raw;
+  }
   if (NUMERIC_CELL_RE.test(t)) {
     // No header to disambiguate: a 10+-digit numeric cell could be a phone.
     const digits = t.replace(/[^0-9]/g, '');
@@ -602,7 +665,7 @@ export function redactCsvText(csv: string): string {
     const { rows, delimiter, lineEnding, trailingNewline } = parseCsvPreserving(text);
     if (rows.length === 0) return '';
 
-    const hasHeader = looksLikeHeaderRow(rows[0]);
+    const hasHeader = looksLikeHeaderRow(rows);
     const maskedColumns = new Set<number>();
     if (hasHeader) {
       rows[0].forEach((h, idx) => {

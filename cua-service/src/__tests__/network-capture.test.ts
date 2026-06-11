@@ -293,6 +293,15 @@ describe('network-capture — keeps real data calls', () => {
     handle.detach();
   });
 
+  test('a property named "Beacon" is not mistaken for beacon noise', async () => {
+    const h = createHarness();
+    const handle = attach(h);
+    h.emit(makeResponse({ url: 'https://pms.example.com/hotels/beacon-hill/rooms', page: h.page, body: DATA_BODY }));
+    await settle();
+    assert.equal(handle.recent().length, 1);
+    handle.detach();
+  });
+
   test('service-worker responses (frame() throws) are still classified and captured', async () => {
     const h = createHarness();
     const handle = attach(h);
