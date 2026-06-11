@@ -409,16 +409,22 @@ export function parserForLearnedColumn(
 // ─── Column-name helpers (names contract) ────────────────────────────────────
 
 /**
- * Pull the learned column map out of any ActionRecipe shape. table/csv parse
+ * Pull the learned column map out of any ActionRecipe shape. table/csv/api parse
  * hints carry `.columns`; inline_text carries `.fields`; a drill-down recipe's
  * list page carries `.drillDown.listColumns` (recipe-adapter collapses the
  * recipe to the list page, so that's the map the runtime actually uses).
+ *
+ * `api` (structured discovery) MUST be here: the promotion gate's
+ * missingRequiredColumns() reads this map to decide if a feed has its required
+ * columns. Without the `api` case a verified mode:'api' recipe returns {} →
+ * every required column reads "missing" → the gate quarantines/parks every
+ * structured discovery. (Cross-chat gap closed at integration.)
  */
 export function columnsFromAction(action: ActionRecipe): Record<string, string> {
   if (action.drillDown?.listColumns) return action.drillDown.listColumns;
   const parse = action.parse;
   if (!parse) return {};
-  if (parse.mode === 'table' || parse.mode === 'csv') return parse.hint?.columns ?? {};
+  if (parse.mode === 'table' || parse.mode === 'csv' || parse.mode === 'api') return parse.hint?.columns ?? {};
   if (parse.mode === 'inline_text') return parse.fields ?? {};
   return {};
 }
