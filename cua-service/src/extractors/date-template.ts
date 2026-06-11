@@ -47,6 +47,14 @@ export interface RenderDateOptions {
 }
 
 const PLACEHOLDER_RE = /\{(today|date)(?::([^}]+))?\}/g;
+/** Percent-encoded spelling of the bare placeholder. Network capture stores
+ *  ENCODED request URLs — an emitter that splices the placeholder into an
+ *  already-encoded URL (or encodes after splicing) produces `%7Btoday%7D`,
+ *  which the literal matcher above can't see; the braces would ship to the
+ *  server and the endpoint would return 200-with-zero-rows forever.
+ *  DOUBLE-encoded spellings (`%257Btoday%257D`) are deliberately out of
+ *  scope — they'd mean the emitter encoded twice, which is its bug to fix. */
+const ENCODED_PLACEHOLDER_RE = /%7B(today|date)%7D/gi;
 
 const DEFAULT_TZ = 'America/Chicago';
 
@@ -118,17 +126,22 @@ function resolveDateValue(
  * untouched (cheap + idempotent — safe to call at multiple layers).
  */
 export function renderDatePlaceholders(input: string, opts: RenderDateOptions): string {
-  if (!input || !input.includes('{')) return input;
-  return input.replace(PLACEHOLDER_RE, (_m, _name: string, fmt: string | undefined) => {
+  if (!input || (!input.includes('{') && !/%7b/i.test(input))) return input;
+  const rendered = input.replace(PLACEHOLDER_RE, (_m, _name: string, fmt: string | undefined) => {
     const value = resolveDateValue(fmt, opts);
     return opts.context === 'json' ? value : encodeURIComponent(value);
   });
+  // Encoded spelling always lives inside an encoded URL/body, so the
+  // substituted value is always percent-encoded regardless of context.
+  return rendered.replace(ENCODED_PLACEHOLDER_RE, () =>
+    encodeURIComponent(resolveDateValue(undefined, opts)));
 }
 
 /** True when a string still carries an unrendered date placeholder. */
 export function hasDatePlaceholder(input: string): boolean {
   PLACEHOLDER_RE.lastIndex = 0;
-  return PLACEHOLDER_RE.test(input);
+  ENCODED_PLACEHOLDER_RE.lastIndex = 0;
+  return PLACEHOLDER_RE.test(input) || ENCODED_PLACEHOLDER_RE.test(input);
 }
 
 /**

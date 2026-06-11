@@ -20,6 +20,7 @@ import { extractFetchApi, resolveJsonPath } from './fetch-api.js';
 import { renderDatePlaceholders } from './date-template.js';
 import type { LearnedDateFormat } from '../types.js';
 import { applyParser } from '../parsers/registry.js';
+import { requiredLearnedFor } from '../target-contract.js';
 // Side-effect imports — register the value parsers at module load.
 //   generic.js: the PMS-AGNOSTIC default parsers (generic_date/currency/enum…)
 //   ca.js:      Choice-Advantage parsers, kept ONLY as a back-compat fallback
@@ -166,6 +167,35 @@ function applyTemplateParsers(
 }
 
 /**
+ * Contract-level feed-integrity guard. The writer has a descriptor-keyed
+ * twin (findAllBlankRequiredColumns in generic-table-writer.ts) that
+ * protects the DATA; this one keyed off target-contract's required-learned
+ * columns protects the SIGNAL. session-driver counts EXTRACTION rows for
+ * read-health + the zero-row self-repair streak BEFORE the write
+ * (session-driver.ts runAllFeeds: `runResult.rows.length`), so a feed whose
+ * rows exist but whose required columns are uniformly blank must fail HERE
+ * — at the runner — or every such poll would stamp last_successful_read_at
+ * green and RESET the drift streak, and single-target self-repair could
+ * never fire for exactly the drift class this guard exists to catch.
+ *
+ * Cannot fire on legitimate feeds: zero rows → [] (an empty cancellations
+ * list is a healthy no-op); non-core actions have no contract-required
+ * columns → []; one good value in any row clears the column (per-row
+ * validation in the writer handles partial blanks).
+ */
+export function findBlankContractColumns(
+  template: TableTemplate,
+  rows: Array<Record<string, unknown>>,
+): string[] {
+  if (rows.length === 0 || !template.sourceActionKey) return [];
+  const required = requiredLearnedFor(template.sourceActionKey);
+  if (required.length === 0) return [];
+  const isBlank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  return required.filter((col) => rows.every((r) => isBlank(r[col])));
+}
+
+/**
  * Run a single-source template. Returns rows ready for the generic
  * writer (with parsers applied + only list_row fields populated).
  *
@@ -199,6 +229,25 @@ export async function runSingleSourceTemplate(args: {
   }
 
   const parsedRows = sourceResult.rows.map((r) => applyTemplateParsers(r, template, 'list_row'));
+
+  const blankCols = findBlankContractColumns(template, parsedRows);
+  if (blankCols.length > 0) {
+    const reason =
+      `blank_required_columns: [${blankCols.join(', ')}] — ${parsedRows.length} row(s) extracted ` +
+      'but the column(s) are blank in every row (selector/jsonPath drift?)';
+    log.warn('template-runner: feed failed contract integrity guard', {
+      tableName: template.tableName,
+      sourceActionKey: template.sourceActionKey,
+      blankCols,
+      rowCount: parsedRows.length,
+    });
+    return {
+      ok: false,
+      rows: [],
+      sourceResults: [{ name: source.name, ok: false, rowCount: parsedRows.length, reason }],
+      reason,
+    };
+  }
 
   log.info('template-runner: single-source run complete', {
     tableName: template.tableName,

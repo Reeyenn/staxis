@@ -36,6 +36,7 @@ import type { Page, Download } from 'playwright';
 import { log } from '../log.js';
 import { safeGoto } from '../browser-utils/navigate.js';
 import type { FeedSpec } from '../knowledge-file.js';
+import type { LearnedDateFormat } from '../types.js';
 import { parsePreSteps, replayPreSteps } from './pre-steps.js';
 
 export interface CsvDownloadOptions {
@@ -80,7 +81,13 @@ export async function extractCsvDownload(opts: CsvDownloadOptions): Promise<CsvD
     return { ok: false, header: [], rows: [], reason: `invalid preSteps: ${parsedPre.reason}` };
   }
   if (parsedPre.steps.length > 0) {
-    const replay = await replayPreSteps(page, parsedPre.steps, signal);
+    const replay = await replayPreSteps(page, parsedPre.steps, {
+      signal,
+      // Same stale-date guard as fetch-api: a {today} the mapper left in a
+      // report filter's fill/select value re-renders on every poll.
+      learnedFormat: feedSpec.extra?.dateRender as LearnedDateFormat | undefined,
+      timezone: feedSpec.extra?.timezone as string | undefined,
+    });
     if (!replay.ok) {
       return { ok: false, header: [], rows: [], reason: replay.reason };
     }

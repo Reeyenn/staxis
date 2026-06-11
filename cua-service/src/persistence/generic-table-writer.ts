@@ -240,6 +240,41 @@ export function findAllBlankRequiredColumns(
     .map((c) => c.name);
 }
 
+/**
+ * Descriptor-aware native-type coercion (exported for offline tests).
+ * fetch_api rows carry JSON-native values — a numeric reservation id
+ * arrives as `42`, not `"42"`. Parserless text columns would then fail
+ * typeMatches ('text' requires typeof string) and EVERY row of an
+ * otherwise-healthy structured feed would reject. Coerce number/boolean →
+ * String for text-typed descriptor columns only; numeric/boolean/jsonb
+ * columns keep native values (typeMatches wants them native there).
+ */
+export function normalizeNativeValuesForText(
+  rows: Array<Record<string, unknown>>,
+  descriptor: TableSchemaDescriptor,
+): Array<Record<string, unknown>> {
+  const textCols = descriptor.columns.filter((c) => c.type === 'text').map((c) => c.name);
+  if (textCols.length === 0) return rows;
+  // Coerce only values whose string form is FAITHFUL. An integer above
+  // Number.MAX_SAFE_INTEGER was already precision-corrupted by JSON.parse —
+  // coercing it would turn a loud type reject into a plausible-but-WRONG id
+  // (Codex P1). NaN/Infinity likewise stay native. Un-coerced values fail
+  // the text type check per row, with the real reason in error_logs.
+  const faithful = (v: number) =>
+    Number.isFinite(v) && (!Number.isInteger(v) || Number.isSafeInteger(v));
+  return rows.map((r) => {
+    let out: Record<string, unknown> | null = null;
+    for (const col of textCols) {
+      const v = r[col];
+      if (typeof v === 'boolean' || (typeof v === 'number' && faithful(v))) {
+        if (!out) out = { ...r };
+        out[col] = String(v);
+      }
+    }
+    return out ?? r;
+  });
+}
+
 // ─── Save ──────────────────────────────────────────────────────────────
 
 export interface SaveGenericTableOptions {
@@ -318,13 +353,16 @@ export async function saveGenericTable(
   const syntheticTsCols = descriptor.columns.filter(
     (c) => c.required && c.type === 'timestamptz',
   );
-  const stamped = effectiveRows.map((r) => {
-    const row: Record<string, unknown> = { ...r, property_id: propertyId };
-    for (const col of syntheticTsCols) {
-      if (row[col.name] === undefined) row[col.name] = nowIso;
-    }
-    return row;
-  });
+  const stamped = normalizeNativeValuesForText(
+    effectiveRows.map((r) => {
+      const row: Record<string, unknown> = { ...r, property_id: propertyId };
+      for (const col of syntheticTsCols) {
+        if (row[col.name] === undefined) row[col.name] = nowIso;
+      }
+      return row;
+    }),
+    descriptor,
+  );
 
   // Feed-integrity guard: rows arrived but a required column is null/blank
   // across ALL of them — extraction is structurally broken. Fail the whole

@@ -455,6 +455,11 @@ export function actionRecipeToTableTemplate(
     sources[0]!.url = action.drillDown.listUrl;
     sources[0]!.selectors = { rowSelector: action.drillDown.listRowSelector };
     sources[0]!.columns = action.drillDown.listColumns;
+    // The drill-down list page is always DOM (listRowSelector + CSS column
+    // map). Without this, a csv/api parse hint above would leave mode =
+    // csv_download / fetch_api pointing at an HTML list URL — fetch_api
+    // would then demand JSON from a webpage and the feed would perma-fail.
+    sources[0]!.mode = 'dom_table';
     // Single-source template: keep ONLY the list-row fields. Reset the
     // field map so any columns inferred from the non-drill-down parse hint
     // above don't linger as orphans pointing at a discarded source.

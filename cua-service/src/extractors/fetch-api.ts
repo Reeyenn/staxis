@@ -27,7 +27,10 @@ import { log } from '../log.js';
 import { hostsAreSameSite } from '../browser-utils/navigate.js';
 import type { FeedSpec } from '../knowledge-file.js';
 import type { LearnedDateFormat } from '../types.js';
-import { renderDatePlaceholders, renderBodyDatePlaceholders } from './date-template.js';
+import { renderDatePlaceholders, renderBodyDatePlaceholders, looksLikeLiteralDateValue } from './date-template.js';
+
+/** URLs already warned about a surviving literal date (once per process). */
+const warnedFrozenDate = new Set<string>();
 
 export interface FetchApiOptions {
   page: Page;
@@ -77,7 +80,13 @@ export function resolveJsonPath(
   root: unknown,
   path: string,
 ): { found: true; value: unknown } | { found: false; stoppedAt: string } {
-  const segments = path.split('.').map((s) => s.trim()).filter((s) => s !== '');
+  // Accept bracket spellings ('data.rows[0]', 'data[0].rows') by normalizing
+  // to dot segments — the capture side may emit either form.
+  const segments = path
+    .replace(/\[(\d+)\]/g, '.$1')
+    .split('.')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
   let current: unknown = root;
   const walked: string[] = [];
   for (const seg of segments) {
@@ -88,7 +97,8 @@ export function resolveJsonPath(
     // OWN properties only: a malicious/odd response must not let a path like
     // '__proto__' or 'constructor' resolve through the prototype chain to a
     // non-data object and masquerade as a row. (JSON.parse'd "__proto__"
-    // keys are own properties and still resolve — that's real data.)
+    // keys are own properties and still resolve — that's real data. Arrays
+    // pass this check for index keys — arr['0'] is an own property.)
     if (!Object.prototype.hasOwnProperty.call(current, seg)) {
       return { found: false, stoppedAt: walked.join('.') };
     }
@@ -141,7 +151,9 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
   const rawBody = feedSpec.extra?.body as string | Record<string, unknown> | undefined;
   const headers = (feedSpec.extra?.headers as Record<string, string> | undefined) ?? {};
   const expectJson = (feedSpec.extra?.expectJson as boolean | undefined) ?? true;
-  const jsonPath = feedSpec.extra?.jsonPath as string | undefined;
+  // Whitespace-only jsonPath is "absent", not "resolve the root" — a truthy
+  // ' ' would otherwise wrap the whole response envelope as one garbage row.
+  const jsonPath = ((feedSpec.extra?.jsonPath as string | undefined) ?? '').trim() || undefined;
   const dateRender = feedSpec.extra?.dateRender as LearnedDateFormat | undefined;
   const timezone = feedSpec.extra?.timezone as string | undefined;
 
@@ -155,11 +167,31 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
     timezone,
     now,
   });
-  const body = renderBodyDatePlaceholders(rawBody, {
+  let body = renderBodyDatePlaceholders(rawBody, {
     learnedFormat: dateRender,
     timezone,
     now,
   });
+  // fetch() throws a TypeError on GET/HEAD with a body — that would surface
+  // as a cryptic "evaluate failed" every poll. A captured GET never had a
+  // real body; drop it and say so.
+  if (body !== undefined && /^(GET|HEAD)$/i.test(method)) {
+    log.warn('extractor:fetch_api: dropping body on GET/HEAD request', { url, method });
+    body = undefined;
+  }
+  // Frozen-date tripwire: a concrete calendar date SURVIVING the render means
+  // the mapper failed to turn the mapping-day date into a {today} placeholder
+  // — this feed will silently re-fetch mapping day forever. Warn once per
+  // URL per process (every-poll spam would drown the signal).
+  if (!warnedFrozenDate.has(rawUrl)) {
+    const bodyStr = typeof body === 'string' ? body : body ? JSON.stringify(body) : '';
+    if (looksLikeLiteralDateValue(url) || looksLikeLiteralDateValue(bodyStr)) {
+      warnedFrozenDate.add(rawUrl);
+      log.warn('extractor:fetch_api: request still carries a LITERAL calendar date after placeholder rendering — mapper may have left a frozen mapping-day date (stale-date risk)', {
+        url,
+      });
+    }
+  }
 
   if (signal?.aborted) return { ok: false, data: null, reason: 'aborted' };
 
@@ -197,6 +229,10 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
           const resp = await fetch(args.url, {
             method: args.method,
             credentials: 'include',
+            // The browser HTTP/ServiceWorker cache can serve a same-URL GET
+            // stale across 30s polls — the one staleness path a freshly
+            // re-templated date can't fix. Always hit the network.
+            cache: 'no-store',
             headers: {
               ...(contentType ? { 'content-type': contentType } : {}),
               ...args.headers,
@@ -231,7 +267,10 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
   if (data && typeof data === 'object' && '__fetchError' in (data as Record<string, unknown>)) {
     const err = (data as { __fetchError: string }).__fetchError;
     log.warn('extractor:fetch_api: HTTP error', { url, err });
-    return { ok: false, data: null, reason: err };
+    // 401/403 is a SESSION problem (expired / logged out), not endpoint
+    // drift — flag it so ops + self-repair triage don't chase a re-map.
+    const authHint = /^HTTP (401|403)$/.test(err) ? ' (auth — session may have expired)' : '';
+    return { ok: false, data: null, reason: `${err}${authHint}` };
   }
 
   // Learned dot-path to the row array. A path that no longer resolves means
@@ -249,10 +288,34 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
     }
     const value = resolved.value;
     if (Array.isArray(value)) {
+      // Rows must be objects. An array of scalars (ids, labels) means the
+      // learned path points at the wrong node — every column would parse to
+      // null and the feed would "succeed" with garbage rows. Fail loudly.
+      const badIdx = value.findIndex((el) => el === null || typeof el !== 'object' || Array.isArray(el));
+      if (badIdx !== -1) {
+        const bad = value[badIdx];
+        const kind = bad === null ? 'null' : Array.isArray(bad) ? 'an array' : typeof bad;
+        return {
+          ok: false,
+          data: null,
+          reason: `jsonPath "${jsonPath}" resolved to an array but element ${badIdx} is ${kind} — expected row objects`,
+        };
+      }
       return { ok: true, data: value };
     }
     if (value !== null && typeof value === 'object') {
       // Single-object feeds (e.g. a counts blob) are legitimate one-row data.
+      // But if the object itself holds a row array under a conventional key,
+      // the learned path is probably HALF-specified — wrapping it as one row
+      // would "succeed" with garbage. Say what the fuller path likely is.
+      for (const k of ['rows', 'results', 'data']) {
+        if (Array.isArray((value as Record<string, unknown>)[k])) {
+          log.warn('extractor:fetch_api: jsonPath resolved to an object that contains a row array — path may be half-specified', {
+            url, jsonPath, suspectedFullerPath: `${jsonPath}.${k}`,
+          });
+          break;
+        }
+      }
       return { ok: true, data: [value] };
     }
     return {

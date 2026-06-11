@@ -21,6 +21,8 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
+import type { LearnedDateFormat } from '../types.js';
+import { renderDatePlaceholders } from './date-template.js';
 
 export type PreStep =
   | { kind: 'click'; selector: string; timeoutMs?: number }
@@ -116,12 +118,36 @@ export function parsePreSteps(raw: unknown): { ok: true; steps: PreStep[] } | { 
   return { ok: true, steps };
 }
 
+export interface ReplayOptions {
+  signal?: AbortSignal;
+  /** Learned PMS date format + hotel TZ — lets fill/select/type_text values
+   *  carry {today}/{date} placeholders (a report date-range filter recorded
+   *  on mapping day must re-render each poll, same stale-date guard as
+   *  fetch-api). Raw substitution, no percent-encoding: the value is typed
+   *  into a form field, not spliced into a URL. */
+  learnedFormat?: LearnedDateFormat;
+  timezone?: string;
+  /** Injectable clock (tests). Defaults to the real current time. */
+  now?: Date;
+}
+
 /** Replay validated pre-steps in order on the current page. */
 export async function replayPreSteps(
   page: Page,
   steps: PreStep[],
-  signal?: AbortSignal,
+  opts: ReplayOptions = {},
 ): Promise<ReplayResult> {
+  const { signal } = opts;
+  // ONE clock for the whole sequence — a replay straddling local midnight
+  // must not type yesterday's date in one field and today's in the next.
+  const now = opts.now ?? new Date();
+  const renderValue = (raw: string): string =>
+    renderDatePlaceholders(raw, {
+      context: 'json',
+      learnedFormat: opts.learnedFormat,
+      timezone: opts.timezone,
+      now,
+    });
   for (let i = 0; i < steps.length; i++) {
     if (signal?.aborted) {
       return { ok: false, failedStepIndex: i, failedStepKind: steps[i]!.kind, reason: 'aborted' };
@@ -136,7 +162,9 @@ export async function replayPreSteps(
           await page.mouse.click(step.x, step.y);
           break;
         case 'select':
-          await page.selectOption(step.selector, step.value, { timeout: step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS });
+          // Credential check on the RAW value first, render after — a
+          // placeholder must never mask a recorded secret.
+          await page.selectOption(step.selector, renderValue(step.value), { timeout: step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS });
           break;
         case 'fill':
           if (isCredentialValue(step.value)) {
@@ -147,14 +175,14 @@ export async function replayPreSteps(
             log.warn('pre-steps: skipping fill into a credential-looking field', { stepIndex: i, selector: step.selector });
             break;
           }
-          await page.fill(step.selector, step.value, { timeout: step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS });
+          await page.fill(step.selector, renderValue(step.value), { timeout: step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS });
           break;
         case 'type_text':
           if (isCredentialValue(step.value)) {
             log.warn('pre-steps: skipping type_text that references credentials (never replayed in extraction)', { stepIndex: i });
             break;
           }
-          await page.keyboard.type(step.value);
+          await page.keyboard.type(renderValue(step.value));
           break;
         case 'press_key':
           await page.keyboard.press(step.key);
