@@ -130,13 +130,18 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
         return;
       }
       // Top-level sibling (absent on older servers → render as today).
+      // 'pending' = never synced (counts are fake); 'paused' = stale-but-
+      // real data, no pill. Else-clear so the pill doesn't latch if the
+      // property's state changes (review pass, senior #10).
       const fs = json.feedStatus;
-      if (fs && fs.mode === 'live' && fs.feeds) {
+      if (fs && fs.feeds) {
         setPmsLearning(
-          fs.connection !== 'healthy' ||
-          fs.feeds.arrivals === 'learning' ||
-          fs.feeds.departures === 'learning' ||
-          fs.feeds.roomStatus === 'learning',
+          fs.mode === 'live' && (
+            fs.connection === 'pending' ||
+            fs.feeds.arrivals === 'learning' ||
+            fs.feeds.departures === 'learning' ||
+            fs.feeds.roomStatus === 'learning'
+          ),
         );
       }
       setPublicAreas(json.data.publicAreas || []);
@@ -409,7 +414,11 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           </div>
         )}
 
-        {allDone ? (
+        {/* Review pass (Codex #7): while PMS feeds are learning, the load
+            list may be missing entire categories — a celebratory "All
+            done!" or "No tasks today" off that data is a confident wrong
+            claim. The pill above stays; the celebration waits. */}
+        {allDone && !pmsLearning ? (
           <div style={{
             textAlign: 'center', padding: '64px 24px', background: 'white',
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
@@ -427,6 +436,16 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             <p style={{ fontSize: '16px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
               {`${t('cxGreatWorkToday', lang)}, ${firstName}! 🎉`}
             </p>
+          </div>
+        ) : totalTasks === 0 && pmsLearning ? (
+          <div style={{
+            textAlign: 'center', padding: '48px 24px', background: 'white',
+            borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+            color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.5,
+          }}>
+            {lang === 'es'
+              ? 'Las cargas de hoy aparecerán cuando el sistema del hotel termine de sincronizar.'
+              : "Today's loads will appear once the hotel system finishes syncing."}
           </div>
         ) : totalTasks === 0 ? (
           <div style={{

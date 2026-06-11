@@ -40,6 +40,7 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -327,36 +328,37 @@ async function sealOne(
   );
   const avgTurnaround = roomsCompleted > 0 ? Math.round(totalMinutes / roomsCompleted) : null;
 
-  // feat/cua-partial-promotion — daily_logs is HISTORY; a zero sealed from
-  // a feed that simply wasn't learned yet poisons every later trend/report
-  // and no banner can retro-fix it. Null the count fields whose source
-  // feeds are still learning. Fail-safe: lookup error → no flags → exact
-  // pre-existing behavior.
-  let reservationsLearning = false;
-  let roomStatusLearningSeal = false;
-  let countsLearning = false;
+  // feat/cua-partial-promotion — daily_logs is HISTORY; a value sealed from
+  // a feed with no source poisons every later trend/report and no banner
+  // can retro-fix it. Review-pass hardening (fake-empty hunter #1 + Codex
+  // P0): ALL of in_house / vacant_clean / vacant_dirty / ooo come
+  // exclusively from pms_in_house_snapshot (today_property_counts_v1
+  // COALESCEs them to 0) — so when the counts feed is anything but live
+  // ('learning', OR the permanent 'unavailable' on every newly-learned PMS
+  // family), the fallback math total−0−0−0 would seal FAKE-FULL occupancy
+  // every night. Same for a 'pending' connection (never synced — every
+  // table empty). Gate on trusted-ness, not just 'learning'.
+  // Fail-safe: lookup error → flags default to trusted → exact pre-existing
+  // behavior (incl. for manual no-PMS hotels, whose mode is no_pms).
+  let reservationsUntrusted = false;
+  let sealCountsTrusted = true;
   try {
     const fs = await getPropertyFeedStatus(p.id);
     if (fs.mode === 'live') {
-      reservationsLearning = fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning';
-      roomStatusLearningSeal = fs.feeds.roomStatus === 'learning';
-      countsLearning = fs.feeds.dashboardCounts === 'learning';
+      const pending = isDataPending(fs);
+      reservationsUntrusted = pending ||
+        fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning';
+      sealCountsTrusted = countsTrusted(fs);
     }
   } catch { /* non-fatal */ }
 
   // Prefer the CUA's actual in_house count over the derived total_rooms
-  // minus vacancies. Falls back to the derived formula when the in_house
-  // snapshot is missing (CUA hasn't reached this property yet).
-  // Partial-promotion guard: the fallback math runs off room-status-derived
-  // vacancy counts — disabled while that feed is learning (it would seal
-  // "all rooms occupied" out of thin air); the in_house path is disabled
-  // while the counts feed is learning.
-  const occupied = planRow
-    ? planRow.in_house > 0 && !countsLearning
+  // minus vacancies. Both paths read snapshot-sourced columns, so both are
+  // gated on the counts feed being trusted.
+  const occupied = planRow && sealCountsTrusted
+    ? planRow.in_house > 0
       ? planRow.in_house
-      : roomStatusLearningSeal
-        ? null
-        : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
+      : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
     : null;
 
   // Cleaning minutes per category: read from properties.config.cleaningMinutes
@@ -385,15 +387,15 @@ async function sealOne(
     date: targetDate,
     occupied: occupied !== null ? Math.round(occupied) : null,
     // checkouts/stayovers derive from pms_reservations — NULL (not 0) while
-    // the reservation feeds are still being learned.
-    checkouts: planRow && !reservationsLearning ? Math.round(planRow.checkouts) : null,
-    stayovers: planRow && !reservationsLearning ? Math.round(planRow.stayovers) : null,
+    // the reservation feeds are learning or the first sync hasn't landed.
+    checkouts: planRow && !reservationsUntrusted ? Math.round(planRow.checkouts) : null,
+    stayovers: planRow && !reservationsUntrusted ? Math.round(planRow.stayovers) : null,
     rooms_completed: Math.round(roomsCompleted),
     avg_turnaround_minutes: avgTurnaround,
     total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
-    // Derived from checkout/stayover/vacant-dirty counts — meaningless when
-    // any of those sources is still learning.
-    recommended_staff: planRow && !reservationsLearning && !roomStatusLearningSeal ? recommendedHKs : null,
+    // Derived from checkouts/stayovers (reservations) + vacant_dirty
+    // (snapshot) — meaningless unless BOTH sources are trusted.
+    recommended_staff: planRow && !reservationsUntrusted && sealCountsTrusted ? recommendedHKs : null,
   };
 
   const { error: upErr } = await supabaseAdmin

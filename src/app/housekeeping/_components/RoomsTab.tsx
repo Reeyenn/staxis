@@ -174,16 +174,27 @@ export function RoomsTab() {
 
   // feat/cua-partial-promotion — honesty derivations. All false until feed
   // status arrives (or for manual hotels) → board renders exactly as today.
+  // Review pass: banner PRECEDENCE picks one message, but data
+  // NEUTRALIZATION is a union — a pending first sync makes every no-signal
+  // status fake even when no feed is formally 'learning' (Codex #3).
+  // 'pending' = never synced (mask data); 'paused' = real-but-stale data
+  // (banner only — staleness is the doctor/freshness domain).
   const fsLive = feedStatus?.mode === 'live';
-  const connectionIssue = fsLive && feedStatus.connection !== 'healthy';
-  const roomStatusLearning = fsLive && !connectionIssue && feedStatus.feeds.roomStatus === 'learning';
-  const workOrdersLearning = fsLive && !connectionIssue && feedStatus.feeds.workOrders === 'learning';
+  const connPending = fsLive && feedStatus.connection === 'pending';
+  const connPaused = fsLive && feedStatus.connection === 'paused';
+  const roomStatusLearning = fsLive && feedStatus.feeds.roomStatus === 'learning';
+  const workOrdersLearning = fsLive && feedStatus.feeds.workOrders === 'learning';
   // PMS-connected but the canonical room list hasn't synced yet → every card
   // is a phantom; without this the board reads "all clean" on day one.
-  const roomListSyncing = fsLive && !connectionIssue && rooms.length === 0;
-  const isNeutralRoom = (r: Room): boolean =>
-    (roomStatusLearning && r.statusSource === 'default') ||
-    ((roomStatusLearning || roomListSyncing) && r.id.startsWith('phantom-'));
+  const roomListSyncing = fsLive && !connPaused && rooms.length === 0;
+  const isNeutralRoom = (r: Room): boolean => {
+    // An optimistic tap stamps statusSource:'assignment' — app truth, never
+    // neutral (senior #6a: without this a tapped phantom stayed "No data"
+    // for a full poll cycle and invited double-taps).
+    if (r.statusSource === 'assignment') return false;
+    return ((roomStatusLearning || connPending) && r.statusSource === 'default') ||
+      ((roomStatusLearning || roomListSyncing || connPending) && r.id.startsWith('phantom-'));
+  };
 
   // Reconcile the optimistic overlay on each fresh poll.
   useEffect(() => {
@@ -226,7 +237,7 @@ export function RoomsTab() {
     }
     return c;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayRooms, roomStatusLearning, roomListSyncing]);
+  }, [displayRooms, roomStatusLearning, roomListSyncing, connPending]);
   const knownTotal = counts.total - counts.unknown;
   const donePct = knownTotal > 0 ? Math.round((counts.clean / knownTotal) * 100) : 0;
 
@@ -301,9 +312,9 @@ export function RoomsTab() {
       `}</style>
 
       <div className="lgr-wrap">
-        {/* feat/cua-partial-promotion — honesty strips. Connection issues
-            subsume feed-level banners (no stacking). */}
-        {connectionIssue && (
+        {/* feat/cua-partial-promotion — honesty strips. One banner at a
+            time: pending > paused > feed-level. */}
+        {connPending && (
           <div style={{ marginBottom: 18 }}>
             <FeedLearningBanner
               variant="strip"
@@ -314,7 +325,18 @@ export function RoomsTab() {
             />
           </div>
         )}
-        {!connectionIssue && (roomStatusLearning || roomListSyncing || workOrdersLearning) && (
+        {!connPending && connPaused && (
+          <div style={{ marginBottom: 18 }}>
+            <FeedLearningBanner
+              variant="strip"
+              title={lang === 'es' ? 'Conexión con el PMS en pausa.' : 'PMS connection paused.'}
+              text={lang === 'es'
+                ? 'Los datos pueden estar desactualizados hasta que se reanude.'
+                : 'Data may be out of date until it resumes.'}
+            />
+          </div>
+        )}
+        {!connPending && !connPaused && (roomStatusLearning || roomListSyncing || workOrdersLearning) && (
           <div style={{ marginBottom: 18 }}>
             <FeedLearningBanner
               variant="strip"

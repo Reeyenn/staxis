@@ -118,11 +118,15 @@ export function ScheduleTab() {
   // stayover) from PMS reservations; while arrivals/departures are still
   // being learned that classification is incomplete, and the In House /
   // Arrivals / Departures strip numbers may have no source. Say so.
+  // Review pass: 'pending' (never synced) masks data; 'paused' is
+  // banner-only (real-but-stale).
   const feedStatus = useFeedStatus(activePropertyId);
   const fsLive = feedStatus?.mode === 'live';
-  const fsConnecting = fsLive && feedStatus.connection !== 'healthy';
-  const reservationsLearning = fsLive && !fsConnecting &&
-    (feedStatus.feeds.arrivals === 'learning' || feedStatus.feeds.departures === 'learning');
+  const connPending = fsLive && feedStatus.connection === 'pending';
+  const connPaused = fsLive && feedStatus.connection === 'paused';
+  const reservationsLearning = fsLive &&
+    (connPending || feedStatus.feeds.arrivals === 'learning' || feedStatus.feeds.departures === 'learning');
+  const stripCountsLive = fsLive && !connPending && feedStatus.feeds.dashboardCounts === 'live';
 
   const flashToast = useCallback((msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -372,9 +376,9 @@ export function ScheduleTab() {
     }}>
       <CalloutBanner shiftDate={shiftDate} />
 
-      {/* feat/cua-partial-promotion — honesty strips (connection subsumes
-          feed-level banners). */}
-      {fsConnecting && (
+      {/* feat/cua-partial-promotion — honesty strips. One banner at a
+          time: pending > paused > feed-level. */}
+      {connPending && (
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
@@ -385,7 +389,18 @@ export function ScheduleTab() {
           />
         </div>
       )}
-      {reservationsLearning && (
+      {!connPending && connPaused && (
+        <div style={{ marginBottom: 16 }}>
+          <FeedLearningBanner
+            variant="strip"
+            title={lang === 'es' ? 'Conexión con el PMS en pausa.' : 'PMS connection paused.'}
+            text={lang === 'es'
+              ? 'Los datos pueden estar desactualizados hasta que se reanude.'
+              : 'Data may be out of date until it resumes.'}
+          />
+        </div>
+      )}
+      {!connPending && !connPaused && reservationsLearning && (
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
@@ -464,13 +479,19 @@ export function ScheduleTab() {
         <span style={{ width: 1, height: 40, background: T.rule }} />
         <div style={{ display: 'flex', gap: 26, flex: 1, flexWrap: 'wrap' }}>
           {([
-            { l: lang === 'es' ? 'En Casa'      : 'In House',    v: dashboardNums?.inHouse    ?? null, loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: dashboardNums?.arrivals   ?? null, loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salen'        : 'Departures',  v: dashboardNums?.departures ?? null, loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts,                loaded: boardLoaded },
-            { l: lang === 'es' ? 'Continúan'    : 'Stayovers',   v: stayovers,                loaded: boardLoaded },
-            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtMinutes(totalMinutes), loaded: boardLoaded },
-            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HK`,   loaded: boardLoaded, tone: T.sageDeep },
+            // Review pass: the legacy anon snapshot read is RLS-dead (these
+            // were always null → '—'); when the counts feed is live the
+            // server-derived values give real numbers, otherwise an honest
+            // '—'. Checkout/stayover/recommended cells null out while the
+            // reservation feeds are untrusted — a confident 0 there reads
+            // as "nobody checks out today".
+            { l: lang === 'es' ? 'En Casa'      : 'In House',    v: stripCountsLive ? (feedStatus.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: stripCountsLive ? (feedStatus.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Salen'        : 'Departures',  v: stripCountsLive ? (feedStatus.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: boardLoaded },
+            { l: lang === 'es' ? 'Continúan'    : 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: boardLoaded },
+            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: boardLoaded },
+            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: reservationsLearning ? null : `${recommendedHKs} HK`,   loaded: boardLoaded, tone: T.sageDeep },
           ] as Array<{ l: string; v: React.ReactNode; loaded: boolean; tone?: string }>).map(n => (
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 58 }}>
               <Caps size={9}>{n.l}</Caps>

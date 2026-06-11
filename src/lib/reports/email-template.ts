@@ -197,7 +197,9 @@ export function renderDailyReport(args: {
       ${sectionHeader(dictionary.operations)}
       ${metricRow(dictionary.roomsCleanedToday, `${op.roomsCleanedToday} / ${op.totalRoomsOnBoard}`)}
       ${metricRow(dictionary.outOfOrderOOS, `${op.roomsOOO} OOO · ${op.roomsOOS} OOS`)}
-      ${metricRow(dictionary.occupancy, fmtPct(op.occupancyPct))}
+      ${metricRow(dictionary.occupancy, op.occupancyUnavailable
+        ? (lang === 'es' ? 'sincronizando desde el PMS…' : 'still syncing from your PMS…')
+        : fmtPct(op.occupancyPct))}
       ${metricRow(dictionary.avgPerDeparture, fmtMinutes(op.avgMinutesPerDeparture))}
       ${metricRow(dictionary.avgPerStayover, fmtMinutes(op.avgMinutesPerStayover))}
       ${metricRow(dictionary.avgPerDeep, fmtMinutes(op.avgMinutesPerDeepClean))}
@@ -383,7 +385,9 @@ function renderDailyText(p: DailyReportPayload, lang: Lang): string {
     `${d.operations}:`,
     `  ${d.roomsCleanedToday}: ${p.operations.roomsCleanedToday} / ${p.operations.totalRoomsOnBoard}`,
     `  ${d.outOfOrderOOS}: ${p.operations.roomsOOO} OOO · ${p.operations.roomsOOS} OOS`,
-    `  ${d.occupancy}: ${fmtPct(p.operations.occupancyPct)}`,
+    `  ${d.occupancy}: ${p.operations.occupancyUnavailable
+      ? (lang === 'es' ? 'sincronizando desde el PMS…' : 'still syncing from your PMS…')
+      : fmtPct(p.operations.occupancyPct)}`,
     `  ${d.avgPerDeparture}: ${fmtMinutes(p.operations.avgMinutesPerDeparture)}`,
     `  ${d.avgPerStayover}: ${fmtMinutes(p.operations.avgMinutesPerStayover)}`,
     `  ${d.avgPerDeep}: ${fmtMinutes(p.operations.avgMinutesPerDeepClean)}`,

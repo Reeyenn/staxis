@@ -279,12 +279,17 @@ export default function HousekeeperRoomPage({
   useEffect(() => {
     if (!housekeeperId || !pid || !authReady) return;
     const unsub = subscribeToRoomsForStaff(pid, housekeeperId, (all, fs) => {
-      if (fs && fs.mode === 'live') {
+      // 'pending' = never synced (badges genuinely absent); 'paused' =
+      // stale-but-real data, no pill. Else-clear so the pill doesn't latch
+      // if the property's state changes (review pass, senior #10).
+      if (fs) {
         setPmsLearning(
-          fs.connection !== 'healthy' ||
-          fs.feeds.arrivals === 'learning' ||
-          fs.feeds.departures === 'learning' ||
-          fs.feeds.roomStatus === 'learning',
+          fs.mode === 'live' && (
+            fs.connection === 'pending' ||
+            fs.feeds.arrivals === 'learning' ||
+            fs.feeds.departures === 'learning' ||
+            fs.feeds.roomStatus === 'learning'
+          ),
         );
       }
       if (Date.now() - lastRefetchAtRef.current < 1500) return;

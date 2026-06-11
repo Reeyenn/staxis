@@ -374,12 +374,20 @@ export default function DashboardPage() {
   // keeps its exact pre-existing behavior.
   const feedStatus = useFeedStatus(activePropertyId);
   const fsLive = feedStatus?.mode === 'live';
-  const roomStatusLearning = fsLive && feedStatus.feeds.roomStatus === 'learning';
+  // Review pass (Codex #2 / senior #9): a 'pending' connection means this
+  // property has NEVER successfully read — every pms_* table is empty, so
+  // every PMS-derived number below is a fake zero regardless of per-feed
+  // states. ('paused' is deliberately not masked: real-but-stale data;
+  // staleness is the doctor/freshness domain.)
+  const connPending = fsLive && feedStatus.connection === 'pending';
+  const roomStatusLearning = fsLive && (feedStatus.feeds.roomStatus === 'learning' || connPending);
   // 'ok' = at least one source feed is live → render the number (genuine
   // zeros included). 'learning' = being auto-retried. 'unavailable' = this
   // PMS connection doesn't provide it (never claim "retrying").
-  const tileState = (keys: FeedKey[]): 'ok' | 'learning' | 'unavailable' => {
+  // 'connecting' = first sync hasn't landed yet.
+  const tileState = (keys: FeedKey[]): 'ok' | 'learning' | 'unavailable' | 'connecting' => {
     if (!fsLive) return 'ok';
+    if (connPending) return 'connecting';
     if (keys.some(k => feedStatus.feeds[k] === 'live')) return 'ok';
     if (keys.some(k => feedStatus.feeds[k] === 'learning')) return 'learning';
     return 'unavailable';
@@ -738,19 +746,23 @@ export default function DashboardPage() {
                   // feed" = the connection doesn't provide it). A live feed
                   // renders exactly as before, genuine zeros included.
                   [ES ? 'Huéspedes' : 'Guests', inHouse,
-                    inHouseState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                    inHouseState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : inHouseState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : inHouseState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
                       : (ES ? 'en casa' : 'in-house'), C.green],
                   [ES ? 'Llegadas' : 'Arrivals', arrivals,
-                    arrivalsState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                    arrivalsState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : arrivalsState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : arrivalsState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
                       : (ES ? 'esperadas' : 'expected'), C.greenL],
                   [ES ? 'Salidas' : 'Departures', departures,
-                    departuresState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                    departuresState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : departuresState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : departuresState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
                       : (ES ? 'saliendo' : 'checking out'), C.gold],
                   [ES ? 'Limpieza' : 'Housekeeping', roomStatusLearning ? '—' : dirtyRooms,
-                    roomStatusLearning ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                    connPending ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : roomStatusLearning ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : (ES ? 'por limpiar' : 'rooms to clean'), C.rust],
                   [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink],
                 ] as [string, React.ReactNode, string, string][]).map((o, i) => (

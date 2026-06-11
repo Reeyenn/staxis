@@ -14,6 +14,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOverview } from '@/lib/compliance/store';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { countsTrusted } from '@/lib/pms/feed-status';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface NudgeRunResult {
@@ -424,8 +426,16 @@ async function buildDailySummary(propertyId: string): Promise<Record<string, unk
   //   clean  ← vacant_clean   (rooms clean and ready, from the in-house snapshot)
   //   dirty  ← vacant_dirty   (rooms still needing a turn)
   const counts = await fetchTodayPropertyCounts(propertyId, today);
-  const clean = counts.vacant_clean;
-  const dirty = counts.vacant_dirty;
+  // Review pass (fake-empty hunter #6) — vacant_clean/vacant_dirty are
+  // snapshot-COALESCE-0s when the counts feed has no source; a daily
+  // "0 rooms cleaned, 0 dirty remaining" summary would be a confident wrong
+  // claim written every day. Null + note instead. Fail-safe: error → as-is.
+  let countsOk = true;
+  try {
+    countsOk = countsTrusted(await getPropertyFeedStatus(propertyId));
+  } catch { /* non-fatal */ }
+  const clean = countsOk ? counts.vacant_clean : null;
+  const dirty = countsOk ? counts.vacant_dirty : null;
 
   // TODO(overlay): in-progress, DND, and flagged-issue counts have no pms_*
   // home. The legacy `rooms` table carried per-room `status='in_progress'`,
@@ -455,11 +465,14 @@ async function buildDailySummary(propertyId: string): Promise<Record<string, unk
     type: 'daily_summary',
     date: today,
     roomsCleaned: clean,
-    roomsRemaining: dirty + inProgress,
+    roomsRemaining: dirty !== null ? dirty + inProgress : null,
     dnd,
     issues,
     laborMinutes: Math.round(totalLabor),
     uniqueStaff,
+    ...(clean === null
+      ? { pmsDataNote: 'room counts unavailable — PMS occupancy feed not provided/synced for this hotel; null is not zero' }
+      : {}),
   };
 }
 

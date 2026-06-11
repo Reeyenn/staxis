@@ -30,6 +30,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useTodayStr } from '@/lib/use-today-str';
+import { useFeedStatus } from '@/lib/use-feed-status';
+import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { format, subDays } from 'date-fns';
 import {
@@ -158,6 +160,11 @@ function categoryLabel(cat: string, lang: 'en' | 'es'): string {
 export function QualityTab() {
   const { user } = useAuth();
   const { activePropertyId, staff, staffLoaded } = useProperty();
+  // feat/cua-partial-promotion (review pass) — PMS-cleaned rooms feed the
+  // inspection queue; flag when that signal is still learning or pending.
+  const feedStatusQt = useFeedStatus(activePropertyId);
+  const roomStatusLearningQt = feedStatusQt?.mode === 'live' &&
+    (feedStatusQt.feeds.roomStatus === 'learning' || feedStatusQt.connection === 'pending');
   const { lang } = useLang();
   const today = useTodayStr();
 
@@ -636,6 +643,21 @@ export function QualityTab() {
                 {queue.length} {tr(lang, 'waiting', 'en espera')}
               </Pill>
             </div>
+
+            {/* feat/cua-partial-promotion (review pass) — the queue derives
+                from PMS-cleaned rooms; while room statuses are learning,
+                "0 waiting" must not read as "nothing to inspect". */}
+            {roomStatusLearningQt && (
+              <div style={{ marginBottom: 12 }}>
+                <FeedLearningBanner
+                  variant="strip"
+                  title={tr(lang, 'Still learning your PMS.', 'Aún aprendiendo tu PMS.')}
+                  text={tr(lang,
+                    'Rooms cleaned in the PMS may not appear here yet — the queue reflects in-app activity only.',
+                    'Las habitaciones limpiadas en el PMS pueden no aparecer aquí todavía — la cola refleja solo actividad en la app.')}
+                />
+              </div>
+            )}
 
             {/* Filters */}
             <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>

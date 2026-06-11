@@ -33,7 +33,8 @@ import {
 const CACHE_TTL_MS = 30_000;
 const cache = new Map<string, { at: number; value: PropertyFeedStatus }>();
 
-/** Test hook + admin actions that need an immediate re-read. */
+/** Test hook (no production callers yet — wire into admin actions that
+ *  change feed state if the 30s TTL ever feels slow there). */
 export function invalidateFeedStatusCache(propertyId?: string): void {
   if (propertyId) cache.delete(propertyId);
   else cache.clear();
@@ -48,12 +49,16 @@ export async function getPropertyFeedStatus(propertyId: string): Promise<Propert
     cache.set(propertyId, { at: Date.now(), value });
     return value;
   } catch (err) {
-    console.warn('[pms-feed-status-server] derivation failed — failing safe to no_pms', {
+    console.warn('[pms-feed-status-server] derivation failed — serving stale/fail-safe', {
       propertyId,
       msg: err instanceof Error ? err.message : String(err),
     });
-    // Deliberately NOT cached: a transient error shouldn't pin the fail-safe
-    // value for 30s on a genuinely-partial hotel.
+    // Review-pass fix (fake-empty hunter #9): a transient error must not be
+    // indistinguishable from a real manual hotel — the containment value
+    // would briefly flip neutral "No data" boards back to confident Dirty
+    // for one poll cycle. Serve the last-known-good value (even past TTL)
+    // when we have one; NO_PMS only when this property has never resolved.
+    if (hit) return hit.value;
     return NO_PMS_FEED_STATUS;
   }
 }

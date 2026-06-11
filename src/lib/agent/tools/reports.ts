@@ -7,6 +7,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { computeRoomTotal } from './_helpers';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { countsTrusted } from '@/lib/pms/feed-status';
 
 // ─── get_occupancy ────────────────────────────────────────────────────────
 
@@ -80,6 +82,28 @@ registerTool<Record<string, never>>({
     const occupancyPercent = total > 0
       ? Math.round((occupied / total) * 1000) / 10
       : 0;
+
+    // Review pass (fake-empty hunter #5) — in_house is a snapshot
+    // COALESCE-0 when the counts feed has no source; "0 occupied / 0%"
+    // would be a confident wrong claim. Null + explain instead.
+    let countsOk = true;
+    try {
+      countsOk = countsTrusted(await getPropertyFeedStatus(ctx.propertyId));
+    } catch { /* non-fatal */ }
+    if (!countsOk) {
+      return {
+        ok: true,
+        data: {
+          total,
+          occupied: null,
+          vacant: null,
+          occupancyPercent: null,
+          asOfDate,
+          pmsDataNote:
+            'occupancy counts are not available from this hotel\'s PMS connection yet — say "still syncing / not available", never zero.',
+        },
+      };
+    }
 
     return {
       ok: true,

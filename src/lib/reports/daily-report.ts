@@ -40,6 +40,7 @@ import {
 } from './aggregate';
 import { detectAnomalies, type DailyBaselineSlice } from './anomaly-detector';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
 import type { DailyReportPayload, TomorrowOutlookBlock } from './types';
 
 const DEFAULT_DASHBOARD_BASE = 'https://getstaxis.com';
@@ -119,8 +120,10 @@ async function buildTomorrowOutlook(args: {
   let reservationFeedsLearning = false;
   try {
     const fs = await getPropertyFeedStatus(property.id);
+    // Review pass (Codex #9): a pending first sync means the reservations
+    // table is empty too — same treatment as a learning feed.
     reservationFeedsLearning = fs.mode === 'live' &&
-      (fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning');
+      (isDataPending(fs) || fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning');
   } catch { /* non-fatal */ }
   // Projected rooms to clean tomorrow ≈ tomorrow's departures + some
   // share of stayovers (we don't have a clean stayover-vs-arrivals split
@@ -319,6 +322,15 @@ export async function buildDailyReport(args: {
     workOrders,
     totalRoomsOnProperty: property.totalRooms,
   });
+  // Review pass (fake-empty hunter #2) — occupancy comes exclusively from
+  // pms_in_house_snapshot; with the counts feed learning/unavailable (the
+  // permanent state for newly-learned PMS families) or first sync pending,
+  // occupancyPct is a fake 0% — flag it so the email says "still syncing".
+  // Fail-safe: error → no flag → pre-existing rendering.
+  try {
+    const fs = await getPropertyFeedStatus(property.id);
+    if (!countsTrusted(fs)) operations.occupancyUnavailable = true;
+  } catch { /* non-fatal */ }
   const quality = buildQualityBlock(inspections);
   const labor = buildLaborBlock({
     tasks,

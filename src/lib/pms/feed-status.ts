@@ -214,3 +214,51 @@ export function learningFeeds(status: PropertyFeedStatus): FeedKey[] {
   if (status.mode !== 'live') return [];
   return (Object.keys(status.feeds) as FeedKey[]).filter((k) => status.feeds[k] === 'learning');
 }
+
+/**
+ * Review-pass helpers (fake-empty hunter + Codex findings): the two
+ * conditions every machine consumer of snapshot-derived numbers must test.
+ *
+ * `connection === 'pending'` means this property has NEVER successfully
+ * read — every pms_* table is empty, so any zero derived from them is fake.
+ * ('paused' is deliberately NOT included: a paused session has real-but-
+ * stale data; staleness is the doctor/freshness domain, and masking
+ * everything on every overnight MFA pause would train users to ignore the
+ * honest states.)
+ */
+export function isDataPending(status: PropertyFeedStatus): boolean {
+  return status.mode === 'live' && status.connection === 'pending';
+}
+
+/**
+ * True when the in-house snapshot numbers (occupancy / vacant_clean /
+ * vacant_dirty / ooo / in_house — ALL sourced exclusively from
+ * pms_in_house_snapshot by today_property_counts_v1 with COALESCE→0) have a
+ * real source. `'unavailable'` matters as much as `'learning'` here: the
+ * counts feed is outside the mapper's learnable catalogue, so for every
+ * newly-learned PMS family those columns are confident zeros FOREVER unless
+ * consumers check this.
+ */
+export function countsTrusted(status: PropertyFeedStatus): boolean {
+  if (status.mode !== 'live') return true; // manual/onboarding: render as today
+  return status.feeds.dashboardCounts === 'live' && status.connection !== 'pending';
+}
+
+/**
+ * Presence-only gap derivation for ACTIVE knowledge files that pre-date
+ * feedGaps (legacy envelopes / manually-promoted old drafts). Used by the
+ * backfill cron so a legacy partial recipe still gets its daily retry.
+ * Returns null when no required target is missing (clean legacy file).
+ */
+export function presenceFeedGaps(
+  actions: Record<string, unknown> | null | undefined,
+): FeedGaps | null {
+  const have = new Set(Object.keys(actions ?? {}));
+  const missing = REQUIRED_TARGETS.filter((t) => !have.has(t));
+  if (missing.length === 0) return null;
+  return {
+    computedAt: new Date(0).toISOString(), // sentinel — derived, not gate-computed
+    missingRequired: missing.map((t) => ({ target: t, reason: 'not_found' as const })),
+    missingBusinessCritical: [],
+  };
+}

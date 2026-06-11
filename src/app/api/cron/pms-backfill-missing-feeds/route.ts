@@ -35,7 +35,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
-import type { FeedGaps } from '@/lib/pms/feed-status';
+import { presenceFeedGaps, type FeedGaps } from '@/lib/pms/feed-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,6 +49,7 @@ interface ActiveKfRow {
   id: string;
   pms_family: string;
   version: number;
+  promoted_to_active_at: string | null;
   knowledge: {
     actions?: Record<string, unknown>;
     feedGaps?: FeedGaps;
@@ -89,13 +90,17 @@ async function run(req: NextRequest) {
   try {
     const { data: actives, error: kfErr } = await supabaseAdmin
       .from('pms_knowledge_files')
-      .select('id, pms_family, version, knowledge')
+      .select('id, pms_family, version, promoted_to_active_at, knowledge')
       .eq('status', 'active');
     if (kfErr) throw kfErr;
 
     for (const kf of (actives ?? []) as ActiveKfRow[]) {
       const family = kf.pms_family;
-      const gaps = kf.knowledge?.feedGaps;
+      // Review pass (Codex #10 / senior #7): a legacy partial active (no
+      // envelope feedGaps — e.g. a manually-promoted pre-feature draft)
+      // still classifies its missing required feeds 'learning' app-side,
+      // so it must get the same daily retry. Presence-only fallback.
+      const gaps = kf.knowledge?.feedGaps ?? presenceFeedGaps(kf.knowledge?.actions);
       if (!hasGaps(gaps)) continue; // clean family — nothing to backfill
 
       try {
@@ -159,8 +164,17 @@ async function backfillFamily(
     return { action: 'skipped', detail: 'mapper job in-flight or ran within the dedup window' };
   }
 
-  // 3. Circuit breaker — last N backfills all made no progress → paused.
-  const { data: lastJobs, error: lastErr } = await supabaseAdmin
+  // 3. Circuit breaker — N consecutive no-progress backfills SINCE THE
+  //    CURRENT ACTIVE WAS PROMOTED → paused. Bounding the lookback to the
+  //    active's promotion timestamp is the re-arm mechanism (senior review
+  //    P1: an unbounded last-5 query latched forever — no repair, regenerate,
+  //    or manual promote could ever reset it, because none of those carry
+  //    the backfill flag). Now ANY promotion (admin repair-feed success,
+  //    regenerate, manual promote, a backfill that found something) starts
+  //    a fresh 5-attempt budget; a family that stays latched is one where
+  //    nothing has improved despite 5 paid hunts — exactly when to stop
+  //    spending until a human acts.
+  let breakerQuery = supabaseAdmin
     .from('workflow_jobs')
     .select('status, result')
     .eq('kind', 'mapper.learn_pms_family')
@@ -168,12 +182,16 @@ async function backfillFamily(
     .filter('payload->>backfill_missing_feeds', 'eq', 'true')
     .order('created_at', { ascending: false })
     .limit(BREAKER_LOOKBACK);
+  if (kf.promoted_to_active_at) {
+    breakerQuery = breakerQuery.gt('created_at', kf.promoted_to_active_at);
+  }
+  const { data: lastJobs, error: lastErr } = await breakerQuery;
   if (lastErr) throw lastErr;
   const jobs = (lastJobs ?? []) as JobRow[];
   if (jobs.length >= BREAKER_LOOKBACK && jobs.every((j) => !madeProgress(j))) {
     return {
       action: 'breaker_paused',
-      detail: `last ${BREAKER_LOOKBACK} backfills made no progress — re-arm via admin regenerate or repair-feed`,
+      detail: `last ${BREAKER_LOOKBACK} backfills since active v${kf.version} made no progress — any promotion (repair-feed, regenerate, manual) re-arms`,
     };
   }
 

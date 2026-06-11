@@ -173,7 +173,8 @@ export async function GET(req: NextRequest) {
   // (same convention as the rooms routes): the laundry page derives
   // checkout/stayover load counts from `rooms`, and a missing departures/
   // arrivals feed must show "still learning", not a confident zero.
-  const feedStatus = await getPropertyFeedStatus(pid);
+  // `derived` stripped — public page, doesn't use it (senior review #5).
+  const { derived: _derived, ...feedStatus } = await getPropertyFeedStatus(pid);
   return ok(
     { publicAreas, laundryConfig, rooms, date: targetDate, completedAreaIds, completedLoadCategories },
     { requestId, extra: { feedStatus } },

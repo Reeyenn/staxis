@@ -100,10 +100,15 @@ export async function POST(req: NextRequest): Promise<Response> {
   const seedActions: Record<string, unknown> = { ...allActions };
   delete seedActions[body.targetKey];
 
-  // Idempotency key — one repair job in-flight per (family, target).
-  // If admin clicks "Repair" twice in a row before the first finishes,
-  // the second INSERT returns 23505 + we report "already running."
-  const idempotencyKey = `mapper.repair:${body.pmsFamily}:${body.targetKey}`;
+  // Idempotency key — one ADMIN repair per (family, target) PER DAY.
+  // Review pass (senior #3): the undated key + the permanent
+  // (property_id, idempotency_key) unique meant a failed chase could never
+  // be retried on the same property — and this route is now the manual
+  // re-arm path for partial promotions. Date-stamping allows a daily retry
+  // while still absorbing double-clicks; the session-driver's AUTO-repair
+  // key stays undated on purpose (its no-silent-retry semantics).
+  const day = new Date().toISOString().slice(0, 10);
+  const idempotencyKey = `mapper.repair:${body.pmsFamily}:${body.targetKey}:${day}`;
 
   const { data: inserted, error: insErr } = await supabaseAdmin
     .from('workflow_jobs')

@@ -1253,7 +1253,14 @@ export async function getRoomStatus(pid: string, roomNumber: string): Promise<st
     const rooms = await mergePmsRoomsForDate(pid, todayStr());
     const room = rooms.find((r) => r.number === roomNumber);
     if (!room) return null;
-    const parts = [`Room ${room.number}: status ${room.status ?? 'unknown'}`];
+    // Review pass (fake-empty hunter #7) — the merge's catch-all default is
+    // 'dirty' for rooms with NO status signal; stating it as fact in chat
+    // would be a confident wrong claim. statusSource carries provenance.
+    const parts = [
+      room.statusSource === 'default'
+        ? `Room ${room.number}: no recent status signal from the PMS yet`
+        : `Room ${room.number}: status ${room.status ?? 'unknown'}`,
+    ];
     if (room.type) parts.push(`type ${room.type}`);
     if (room.assignedName) parts.push(`assigned to ${room.assignedName}`);
     return parts.join(', ');

@@ -95,7 +95,9 @@ export async function GET(req: NextRequest) {
     // feat/cua-partial-promotion — sibling key so `data` stays a bare
     // Room[] for stale mobile bundles (this is a PUBLIC SMS-linked page;
     // phones poll old JS for a while after a deploy). Fails safe.
-    const feedStatus = await getPropertyFeedStatus(pid);
+    // `derived` (occupancy aggregates) is stripped: the page doesn't use
+    // it and a leaked SMS link shouldn't expose tonight's in-house count.
+    const { derived: _derived, ...feedStatus } = await getPropertyFeedStatus(pid);
     return ok(rooms, { requestId, extra: { feedStatus } });
   } catch (e: unknown) {
     log.error('[housekeeper/rooms] merge failed', {
