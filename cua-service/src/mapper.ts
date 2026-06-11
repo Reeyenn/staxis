@@ -234,13 +234,13 @@ const TARGET_STEP_CAPS: Record<string, number> = {
   report_menu:      100,
   drilldown_sample: 60,         // per-record; multiply by sample count
 };
-// Plan v9 (departures-nav fix): the REQUIRED feeds (optional:false — the 4 that
-// gate promotion) get a materially larger per-target budget than optional
-// extras. The first live run lost getDepartures while bouncing between the Home
-// dashboard and the arrivals list, then soft-aborted at the $0.50 list_page cap.
-// Required feeds need room to recover from a wrong turn; optional extras keep
-// the tight base budget so one missing nice-to-have can't blow the global cap.
-const REQUIRED_TARGET_BUDGET_MULTIPLIER = 3;
+// (Plan v9 trialed a REQUIRED_TARGET_BUDGET_MULTIPLIER here — a bigger per-target
+// budget for the 4 required feeds. Reverted 2026-06-11: the two live runs proved
+// departures is a FINDABILITY problem, not a budget one — the multiplier never
+// cracked it and only inflated the cost of a feed that was already lost (~$14 /
+// 82 min). The real levers are the navigation-guidance prompt below + the
+// human-assist takeover. `MapActionArgs.required` is KEPT — the prompt still uses
+// it to tell the model a feed is essential, just without inflating its budget.)
 
 /**
  * The full target catalogue for Plan v7's mapper. Ordered by priority —
@@ -1284,9 +1284,9 @@ interface MapActionArgs {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
-  /** Plan v9 — true for the promotion-gating feeds (optional:false). Required
-   *  feeds get REQUIRED_TARGET_BUDGET_MULTIPLIER× the per-target budget + step
-   *  cap so they don't soft-abort on tricky navigation. Defaults to false. */
+  /** Plan v9 — true for the promotion-gating feeds (optional:false). Used by the
+   *  agent prompt to tell the model this feed is ESSENTIAL (so it persists +
+   *  backtracks instead of giving up early). Does NOT change the budget. */
   required?: boolean;
   model?: MapperModelId;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
@@ -1356,14 +1356,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // steps PER record but execute against multiple samples; report-menu
   // targets get more steps to drill through reports submenus.
   const classification = args.classification ?? 'list_page';
-  // Plan v9: required feeds get a larger budget so tricky navigation (e.g. a
-  // feed that keeps bouncing back to the dashboard) has room to recover before
-  // soft-aborting. Optional extras keep the tight base budget.
-  const budgetMult = args.required ? REQUIRED_TARGET_BUDGET_MULTIPLIER : 1;
-  const baseStepCap = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
-  const baseCostCap = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
-  const targetStepCap = Math.round(baseStepCap * budgetMult);
-  const targetCostCapMicros = Number.isFinite(baseCostCap) ? baseCostCap * budgetMult : baseCostCap;
+  const targetStepCap = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
+  const targetCostCapMicros = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
 
   // Plan v7 — `unavailable: true` floor. Agent can short-circuit a target
   // with {unavailable: true}, but only AFTER demonstrating real effort:

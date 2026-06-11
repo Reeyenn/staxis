@@ -37,6 +37,7 @@ import type { Page } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { recordSpend } from './cost-cap.js';
+import { getJobCostMicros } from './usage-log.js';
 import { env } from './env.js';
 import type { SessionSupervisor } from './session-supervisor.js';
 
@@ -373,12 +374,27 @@ export class WorkflowRuntime {
     job: WorkflowJobRow,
     result: Record<string, unknown>,
   ): Promise<void> {
+    // Roll up the job's real Claude spend (summed in claude_usage_log by job_id)
+    // into the job row so the admin UIs show the true cost instead of $0. This is
+    // DISPLAY-only — the $5/day session cost cap reads a different column
+    // (property_sessions.daily_claude_cost_micros) and is unaffected. Best-effort:
+    // a cost read/write failure must never fail an otherwise-successful job.
+    let claudeCostMicros = 0;
+    try {
+      claudeCostMicros = await getJobCostMicros(job.id);
+    } catch (err) {
+      log.warn('workflow-runtime: cost rollup read failed (non-fatal)', {
+        jobId: job.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
     const { error } = await supabase
       .from('workflow_jobs')
       .update({
         status: 'completed',
         result,
         completed_at: new Date().toISOString(),
+        claude_cost_micros: claudeCostMicros,
       })
       .eq('id', job.id);
     if (error) {
