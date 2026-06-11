@@ -248,6 +248,18 @@ export default function PropertySessionsPage() {
                     </div>
                   )}
 
+                  {/* feat/cua-partial-promotion (founder-gated) — a draft
+                      newer than the active is PARKED awaiting the Promote
+                      click; surface it so partial maps don't sit invisible.
+                      NOT live — copy must never imply otherwise. */}
+                  {s.knowledge_file && s.knowledge_file.latest > (s.knowledge_file.active ?? 0) &&
+                    s.knowledge_file.status === 'draft' && (
+                    <div className="mt-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
+                      <span className="font-semibold">Draft v{s.knowledge_file.latest} awaiting review</span>
+                      {' — not live. Review what the robot learned and promote it in Manage maps; daily auto-retries are paused until then.'}
+                    </div>
+                  )}
+
                   {/* feat/cua-partial-promotion — partial active recipe:
                       amber for missing REQUIRED feeds (auto-retried daily by
                       the backfill cron), quiet gray for BC-only gaps. */}

@@ -2,9 +2,10 @@
  * GET /api/pms/feed-status?pid=<uuid> (feat/cua-partial-promotion)
  *
  * Per-property, per-feed PMS trust for SESSION surfaces (dashboard tiles,
- * housekeeping Schedule tab) via the useFeedStatus hook. The robot may have
- * gone live with only some feeds learned (promote_partial); consumers use
- * this to render "still learning" instead of confident zeros.
+ * housekeeping Schedule tab) via the useFeedStatus hook. A partial recipe
+ * (park_partial) goes live once the admin promotes it — with feed gaps
+ * still annotated in the envelope; consumers use this to render "still
+ * learning" instead of confident zeros.
  *
  * PUBLIC pages (housekeeper / laundry SMS links) deliberately do NOT call
  * this route — they have no Staxis session. Their feed status rides their

@@ -1,25 +1,32 @@
 /**
  * POST/GET /api/cron/pms-backfill-missing-feeds (feat/cua-partial-promotion)
  *
- * Daily retry of feeds the robot has NOT learned yet. The promotion gate can
- * now go live with gaps (promote_partial → `feedGaps` in the active knowledge
- * envelope); the CUA's zero-row self-repair never fires for those gaps (a
- * never-learned feed produces no zero-row streak, and an incomplete_columns
- * feed extracts rows that only die later in validateRows). This cron is the
- * missing-feed retry path: for each PMS family whose ACTIVE knowledge file
- * has gaps, enqueue ONE seeded mapper job. The mapper re-hunts everything not
- * in the seed; the gate auto-promotes on full success or replaces the partial
- * with a strictly-better partial (promote-time superset + gap-shrink guards
- * in cua-service/src/mapping-driver.ts prevent regression and churn).
+ * Daily retry of feeds the robot has NOT learned yet. An admin-promoted
+ * partial recipe goes live with `feedGaps` in the active knowledge envelope;
+ * the CUA's zero-row self-repair never fires for those gaps (a never-learned
+ * feed produces no zero-row streak, and an incomplete_columns feed extracts
+ * rows that only die later in validateRows). This cron is the missing-feed
+ * retry path: for each PMS family whose ACTIVE knowledge file has gaps,
+ * enqueue ONE seeded mapper job. The mapper re-hunts everything not in the
+ * seed. Outcomes (founder-gated, 2026-06-11): a COMPLETE result (all
+ * required + ≥3 BC) auto-promotes; an improved-but-still-partial result
+ * PARKS as a gap-annotated draft (park_partial) for the admin's Promote
+ * click — nothing incomplete ever activates itself. The promote-time
+ * superset + gap-shrink guards in cua-service/src/mapping-driver.ts keep
+ * stale-seeded or no-progress results out of the admin's queue.
  *
  * Spend bounds (defense in depth):
  *  - flat per-job cost cap ($12 — the mapper hunts ALL unlearned catalogue
  *    targets, not just the gap set; there is no per-target allowlist input)
  *  - org-wide daily mapping cap re-checked at job RUN time (mapping-driver)
  *  - 20h family-level dedup vs ANY in-flight/recent mapper job
- *  - circuit breaker: 5 consecutive no-progress backfills → stop until an
- *    admin re-arms (regenerate map, or the repair-feed route's absent-target
- *    mode) or any gap actually shrinks
+ *  - DRAFT-AWAITING-REVIEW gate: if a draft newer than the active exists,
+ *    the family is skipped entirely — without this, park-not-promote would
+ *    re-find the same feeds and stack a new $12 parked draft every day
+ *    until the admin acts. Promoting (or discarding) the draft resumes
+ *    the daily retries.
+ *  - circuit breaker: 5 consecutive no-progress backfills since the active
+ *    was promoted → stop until any promotion re-arms it
  *  - max_attempts: 1, date-stamped idempotency key
  *
  * Family-level dedup is an explicit query (workflow_jobs uniqueness is
@@ -67,13 +74,16 @@ function hasGaps(gaps: FeedGaps | undefined | null): gaps is FeedGaps {
   return !!gaps && (gaps.missingRequired.length > 0 || gaps.missingBusinessCritical.length > 0);
 }
 
-/** A backfill job "made progress" only if it completed AND promoted. Any
- *  failure status, park, or quarantine counts toward the breaker — a job
- *  that keeps dying (picked property paused, login broken) must not retry
- *  daily forever any more than one that keeps finding nothing. */
+/** A backfill job "made progress" if it completed the recipe (auto_promote)
+ *  OR parked an improved partial draft for the admin (park_partial — the
+ *  gap-shrink guard guarantees park_partial backfills genuinely found
+ *  something new). Failure statuses, plain park_draft (no progress /
+ *  stale seed), and quarantine count toward the breaker — a job that keeps
+ *  dying must not retry daily forever any more than one that keeps finding
+ *  nothing. */
 function madeProgress(job: JobRow): boolean {
   const decision = job.result?.promotion_decision;
-  return decision === 'auto_promote' || decision === 'promote_partial';
+  return decision === 'auto_promote' || decision === 'park_partial';
 }
 
 export async function GET(req: NextRequest) { return run(req); }
@@ -148,6 +158,30 @@ async function backfillFamily(
   const pick = (sessions ?? []).find((s) => s.status === 'alive') ?? (sessions ?? [])[0];
   if (!pick) return { action: 'skipped', detail: 'no non-stopped property on this family' };
 
+  // 1.5. Draft-awaiting-review gate (founder-gated park_partial): if a draft
+  //      NEWER than the active is already parked, the admin has something to
+  //      review — spending $12/day re-finding the same feeds and stacking
+  //      parked drafts on top of it would be pure waste. Promote (or
+  //      discard) the draft to resume daily retries. Any newer draft blocks
+  //      (incl. self-repair regression parks): under manual-approval-first,
+  //      pausing auto-spend while a human review is pending is the point.
+  const { data: pendingDraft, error: draftErr } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('version')
+    .eq('pms_family', family)
+    .eq('status', 'draft')
+    .gt('version', kf.version)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (draftErr) throw draftErr;
+  if (pendingDraft) {
+    return {
+      action: 'skipped',
+      detail: `draft v${pendingDraft.version} is awaiting admin review (active is v${kf.version}) — promote or discard it in Manage maps to resume auto-retries`,
+    };
+  }
+
   // 2. Family-level dedup: any mapper job (backfill, self-repair, admin
   //    regenerate, fresh learn) queued/running or created in the window →
   //    stand down today.
@@ -198,7 +232,10 @@ async function backfillFamily(
   // 4. Seed = active actions MINUS incomplete_columns-gapped targets. The
   //    mapper SKIPS every seeded key, so a present-but-dead feed must be
   //    dropped from the seed or it can never be re-learned (mirrors
-  //    session-driver's `delete seedActions[key]`).
+  //    session-driver's `delete seedActions[key]`). Result handling lives
+  //    in the gate: complete → auto_promote (live), improved-partial →
+  //    park_partial (draft for the admin — step 1.5 above then pauses
+  //    further spend), nothing new → park_draft (counts toward breaker).
   const seedActions: Record<string, unknown> = { ...(kf.knowledge.actions ?? {}) };
   for (const gap of gaps.missingRequired) {
     if (gap.reason === 'incomplete_columns') delete seedActions[gap.target];

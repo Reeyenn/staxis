@@ -1,10 +1,11 @@
 /**
  * feat/cua-partial-promotion — per-property, per-feed trust derivation.
  *
- * THE app-side honesty layer. The CUA's promotion gate can now promote a
- * recipe that is missing some feeds (`promote_partial`), recording the gaps
- * in the knowledge envelope's `feedGaps` (cua-service/src/knowledge-file.ts —
- * keep `FeedGaps`/`FeedGapEntry` in sync with that file, per the CLAUDE.md
+ * THE app-side honesty layer. The CUA's promotion gate parks a recipe that
+ * is missing some feeds as a gap-annotated draft (`park_partial`); when the
+ * admin promotes it, it goes live with the gaps recorded in the knowledge
+ * envelope's `feedGaps` (cua-service/src/knowledge-file.ts — keep
+ * `FeedGaps`/`FeedGapEntry` in sync with that file, per the CLAUDE.md
  * type-sync pitfall). Every surface that renders feed data asks this module
  * "is this feed trustworthy for this property?" and shows a "still learning"
  * state instead of a confident zero / empty list / all-clean / all-dirty

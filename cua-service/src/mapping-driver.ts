@@ -87,15 +87,19 @@ export interface MappingJobResult {
    *  - 'auto_promote': draft passed gates AND was promoted to active in
    *    the same transaction. Live drivers will hot-reload to it within
    *    ~60s (session-driver knowledge polling).
-   *  - 'promote_partial' (feat/cua-partial-promotion): promoted to active
-   *    like auto_promote, but with feed gaps recorded in the envelope's
-   *    `feedGaps` — the app shows "still learning" for those feeds and the
-   *    daily backfill cron keeps retrying them.
-   *  - 'park_draft': draft saved, NOT promoted. Admin sees CTA to review.
+   *  - 'park_partial' (feat/cua-partial-promotion, founder-gated): the
+   *    recipe met the partial bar but is INCOMPLETE — saved as a draft
+   *    with feed gaps recorded in the envelope's `feedGaps`, NOT
+   *    activated. The admin reviews what it learned and clicks Promote
+   *    (Manage maps → /api/admin/live-mapper/promote); only then does it
+   *    go live — with the "still learning" annotations intact, the app's
+   *    honesty UI active, and the daily backfill retrying the gaps.
+   *  - 'park_draft': draft saved, NOT promoted. Admin sees CTA to review
+   *    (self-repair regression / promote-failure / no-progress backfill).
    *  - 'quarantine': draft saved with status='quarantined'. Below the
    *    partial-promotion bar (near-empty recipe); admin must investigate.
    */
-  promotionDecision?: 'auto_promote' | 'promote_partial' | 'park_draft' | 'quarantine';
+  promotionDecision?: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   promotionReason?: string;
   error?: string;
 }
@@ -423,12 +427,14 @@ export async function runMappingJob(
   //      may have promoted a better active while this job sat queued (the
   //      no-driver lane runs mapper jobs serially). The gate's seed guard
   //      only compares against THIS job's seed, so without re-checking the
-  //      CURRENT active a stale-seeded result could promote and silently
-  //      drop a feed the family just gained. Backfills additionally must
-  //      make actual gap progress — a backfill that re-found the same dead
-  //      feed would otherwise churn versions daily with zero improvement
-  //      (and defeat the cron's parked-jobs circuit breaker).
-  if ((gate.decision === 'auto_promote' || gate.decision === 'promote_partial') && input.seed_actions) {
+  //      CURRENT active a stale-seeded result could go live (auto_promote)
+  //      or be offered to the admin (park_partial) while silently lacking
+  //      a feed the family just gained. Backfills additionally must make
+  //      actual gap progress — a backfill that re-found the same dead feed
+  //      would otherwise park an equal-quality draft daily (noise for the
+  //      admin, and it would defeat the cron's no-progress breaker, which
+  //      counts park_partial as progress).
+  if ((gate.decision === 'auto_promote' || gate.decision === 'park_partial') && input.seed_actions) {
     const guard = await checkSeededPromotionGuards(
       input.pms_family,
       result.recipe,
@@ -445,7 +451,10 @@ export async function runMappingJob(
   }
 
   // 4. Save the draft knowledge file with the right status.
-  //    auto_promote / promote_partial → save as draft, then promote in step 5
+  //    auto_promote → save as draft, then promote in step 5
+  //    park_partial → save as draft with feedGaps; NOT activated — the
+  //      admin clicks Promote (founder-gated; the honesty UI + daily
+  //      backfill take over once it's live)
   //    park_draft → save as draft, admin reviews
   //    quarantine → save with status='quarantined', admin investigates
   //    feedGaps are embedded whenever non-empty REGARDLESS of decision, so a
@@ -456,12 +465,14 @@ export async function runMappingJob(
     return { ok: false, error: `recipe mapped successfully but draft save failed: ${draft.error}` };
   }
 
-  // 5. If the gate says promote (fully or partially), atomically demote
-  //    prior active + promote this draft. The partial unique index
+  // 5. ONLY a complete recipe auto-activates (founder decision 2026-06-11:
+  //    every INCOMPLETE recipe waits for his Promote click — park_partial
+  //    stays a draft here). Atomically demote prior active + promote this
+  //    draft. The partial unique index
   //    pms_knowledge_files_one_active_per_family (migration 0201) means
   //    we MUST demote before promote or the second update fails. Doing
   //    both serially is fine — the index enforces post-condition.
-  if (gate.decision === 'auto_promote' || gate.decision === 'promote_partial') {
+  if (gate.decision === 'auto_promote') {
     const promoted = await promoteDraft(input.pms_family, draft.id);
     if (!promoted.ok) {
       log.warn('mapping-driver: promotion failed, leaving as draft', {
@@ -520,7 +531,7 @@ export function evaluatePromotionGate(
   recipe: Recipe,
   seedActions?: Recipe['actions'],
 ): {
-  decision: 'auto_promote' | 'promote_partial' | 'park_draft' | 'quarantine';
+  decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   reason: string;
   feedGaps: FeedGaps;
 } {
@@ -569,23 +580,24 @@ export function evaluatePromotionGate(
         feedGaps,
       };
     }
-    // POLICY CHANGE (feat/cua-partial-promotion, flagged in the rollout
-    // summary): this case used to park for human review ("admin promotes if
-    // this is the best the PMS exposes"). It now ships as a partial: a
-    // 4/4-required recipe must never deliver LESS than a 3/4 one that meets
-    // the bar below (monotonicity). The BC gaps are recorded in feedGaps,
-    // auto-retried by the daily backfill, and surfaced on the admin
-    // property-sessions page + doctor detail.
+    // Founder decision 2026-06-11: INCOMPLETE recipes never auto-activate —
+    // they park as a gap-annotated draft for his Promote click (Manage
+    // maps). Monotonicity still holds: a 4/4-required recipe parks exactly
+    // like a 3/4 one that meets the bar below; neither ships without him.
+    // The BC gaps are recorded in feedGaps so the promoted file goes live
+    // with the honesty annotations + daily backfill retries intact.
     return {
-      decision: 'promote_partial',
-      reason: `all required found but only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion) — promoting partial; missing business-critical recorded + retried: ${feedGaps.missingBusinessCritical.join(', ')}`,
+      decision: 'park_partial',
+      reason: `all required found but only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion) — parked for admin review; missing business-critical recorded for retry: ${feedGaps.missingBusinessCritical.join(', ')}`,
       feedGaps,
     };
   }
 
-  // Some required feeds are missing/dead. Promote the trustworthy ones IF at
-  // least one complete core operational loop survives; otherwise the recipe
-  // is near-empty and quarantines exactly as before this feature.
+  // Some required feeds are missing/dead. If at least one complete core
+  // operational loop survives, the recipe is WORTH the admin's review —
+  // park it as a gap-annotated draft for the Promote click (founder-gated;
+  // never auto-activated). Otherwise it's near-empty and quarantines
+  // exactly as before this feature.
   if (meetsPartialPromotionBar(trustworthyRequired)) {
     const gapSummary = feedGaps.missingRequired
       .map((g) => g.reason === 'incomplete_columns'
@@ -593,8 +605,8 @@ export function evaluatePromotionGate(
         : g.target)
       .join('; ');
     return {
-      decision: 'promote_partial',
-      reason: `partial promotion — trustworthy: ${[...trustworthyRequired].join(', ')}; still learning required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}`,
+      decision: 'park_partial',
+      reason: `partial recipe parked for admin review — trustworthy: ${[...trustworthyRequired].join(', ')}; still missing required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}`,
       feedGaps,
     };
   }

@@ -22,7 +22,9 @@
  *   4. cua-service's workflow-runtime picks it up, runs mapping-driver
  *      which calls mapPMS with seedActions populated, so only the
  *      target needing repair gets re-learned
- *   5. New knowledge file version is saved + auto-promoted
+ *   5. New knowledge file version is saved; a COMPLETE result
+ *      auto-promotes, an incomplete one parks as a draft for the admin's
+ *      Promote click (founder-gated, feat/cua-partial-promotion)
  *
  * Auth: requireAdmin.
  */

@@ -2899,10 +2899,30 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
     const haveActive = new Set(kfRows.map((r) => r.pms_family));
     const missing = families.filter((f) => !haveActive.has(f));
     if (missing.length > 0) {
+      // feat/cua-partial-promotion (founder-gated): a family whose first
+      // learn PARKED as a partial draft has no active yet — that's a
+      // pending human review (promote in Manage maps), not an outage.
+      // Warn for those; fail only when there's nothing to promote at all.
+      const { data: draftRows } = await supabaseAdmin
+        .from('pms_knowledge_files')
+        .select('pms_family')
+        .eq('status', 'draft')
+        .in('pms_family', missing);
+      const haveDraft = new Set(((draftRows as Array<{ pms_family: string }> | null) ?? []).map((r) => r.pms_family));
+      const awaitingReview = missing.filter((f) => haveDraft.has(f));
+      const trulyMissing = missing.filter((f) => !haveDraft.has(f));
+      if (trulyMissing.length > 0) {
+        return {
+          status: 'fail',
+          detail: `${trulyMissing.length}/${families.length} PMS families lack an active knowledge file (no draft to promote either): ${trulyMissing.join(', ')}` +
+            (awaitingReview.length > 0 ? `; ${awaitingReview.length} more have a parked draft awaiting promotion: ${awaitingReview.join(', ')}` : ''),
+          fix: 'Run the mapper or apply a seed migration for the affected pms_family. Families with a parked draft: review + promote in Manage maps.',
+        };
+      }
       return {
-        status: 'fail',
-        detail: `${missing.length}/${families.length} PMS families lack an active knowledge file: ${missing.join(', ')}`,
-        fix: 'Run the mapper or apply a seed migration for the affected pms_family.',
+        status: 'warn',
+        detail: `${awaitingReview.length}/${families.length} PMS families have NO active map but a parked draft awaiting promotion: ${awaitingReview.join(', ')} — nothing is live for them until it's promoted`,
+        fix: 'Review what the robot learned and promote it: /admin → Manage maps (live-mapper). Daily auto-retries stay paused while a draft awaits review.',
       };
     }
     // feat/cua-partial-promotion — partial actives are a SANCTIONED state

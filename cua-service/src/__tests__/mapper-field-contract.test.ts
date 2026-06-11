@@ -467,39 +467,39 @@ describe('evaluatePromotionGate — full path (unchanged behavior)', () => {
 });
 
 describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotion)', () => {
-  test('missing getDepartures → promote_partial with an exact not_found gap', () => {
+  test('missing getDepartures → park_partial with an exact not_found gap', () => {
     const r = fullRecipe();
     delete r.actions.getDepartures;
     const g = evaluatePromotionGate(r);
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
     assert.deepEqual(g.feedGaps.missingRequired, [{ target: 'getDepartures', reason: 'not_found' }]);
     assert.match(g.reason, /getDepartures/);
   });
 
-  test('missing getWorkOrders only → promote_partial (was quarantine — intended change)', () => {
+  test('missing getWorkOrders only → park_partial (was quarantine — intended change)', () => {
     const r = fullRecipe();
     delete r.actions.getWorkOrders;
     const g = evaluatePromotionGate(r);
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
     assert.match(g.reason, /getWorkOrders/);
   });
 
-  test('housekeeping loop alone (roomStatus only, all other required missing) → promote_partial', () => {
+  test('housekeeping loop alone (roomStatus only, all other required missing) → park_partial', () => {
     const r = fullRecipe();
     delete r.actions.getArrivals;
     delete r.actions.getDepartures;
     delete r.actions.getWorkOrders;
     const g = evaluatePromotionGate(r);
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
     assert.equal(g.feedGaps.missingRequired.length, 3);
   });
 
-  test('front-desk loop alone (arrivals + departures, no roomStatus/workOrders) → promote_partial', () => {
+  test('front-desk loop alone (arrivals + departures, no roomStatus/workOrders) → park_partial', () => {
     const r = fullRecipe();
     delete r.actions.getRoomStatus;
     delete r.actions.getWorkOrders;
     const g = evaluatePromotionGate(r);
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
   });
 
   test('below the bar (departures + workOrders only) → quarantine (floor unchanged)', () => {
@@ -520,12 +520,12 @@ describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotio
     assert.equal(g.decision, 'quarantine');
   });
 
-  test('required feed missing a required COLUMN → promote_partial with incomplete_columns gap (was park_draft — intended change)', () => {
+  test('required feed missing a required COLUMN → park_partial with incomplete_columns gap (was park_draft — intended change)', () => {
     const g = evaluatePromotionGate(fullRecipe({
       getArrivals: tableAction({ guest_name: 'b', arrival_date: 'c', departure_date: 'd' }), // no pms_reservation_id
     }));
     // roomStatus loop is intact → bar met; the dead arrivals feed is a gap.
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
     const gap = g.feedGaps.missingRequired.find((x) => x.target === 'getArrivals');
     assert.equal(gap?.reason, 'incomplete_columns');
     assert.deepEqual(gap?.missingColumns, ['pms_reservation_id']);
@@ -533,7 +533,7 @@ describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotio
 
   test('BLANK column selector on roomStatus counts as a gap; front-desk loop carries the bar', () => {
     const g = evaluatePromotionGate(fullRecipe({ getRoomStatus: tableAction({ room_number: 'a', status: '' }) }));
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
     assert.equal(g.feedGaps.missingRequired[0]?.target, 'getRoomStatus');
     assert.equal(g.feedGaps.missingRequired[0]?.reason, 'incomplete_columns');
   });
@@ -547,11 +547,11 @@ describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotio
     assert.equal(g.decision, 'quarantine');
   });
 
-  test('all required + <3 business-critical → promote_partial with BC gaps (was park_draft — POLICY CHANGE)', () => {
+  test('all required + <3 business-critical → park_partial with BC gaps (was park_draft — POLICY CHANGE)', () => {
     const r = fullRecipe();
     delete r.actions.getGuests;       // leaves 2 BC (revenue, rates)
     const g = evaluatePromotionGate(r);
-    assert.equal(g.decision, 'promote_partial');
+    assert.equal(g.decision, 'park_partial');
     assert.equal(g.feedGaps.missingRequired.length, 0);
     assert.ok(g.feedGaps.missingBusinessCritical.includes('getGuests'));
     assert.match(g.reason, /business-critical/);
@@ -580,7 +580,7 @@ describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT acti
     assert.match((v as { reason: string }).reason, /getLostAndFound/);
   });
 
-  test('backfill with strictly fewer gaps → promotes', () => {
+  test('backfill with strictly fewer gaps → passes the guard (parks as a reviewable park_partial)', () => {
     const active = fullRecipe();
     delete active.actions.getDepartures;
     delete active.actions.getWorkOrders;

@@ -49,11 +49,12 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
 type Phase = 'preparing' | 'learning' | 'mfa' | 'done' | 'failed';
-// feat/cua-partial-promotion — promote_partial: live with some feeds still
-// being learned (auto-retried daily). Must be in this union or the wizard
-// falls into the unknown-decision park_draft default and tells the owner
-// "saved for review" while partial data is actually live.
-type Outcome = 'auto_promote' | 'promote_partial' | 'park_draft' | 'quarantine';
+// feat/cua-partial-promotion — park_partial: the robot learned SOME feeds;
+// the recipe is parked as a draft for the admin's Promote click (founder-
+// gated), NOT live. Must be in this union so the wizard shows the honest
+// "learned X of Y — being reviewed before it goes live" copy instead of
+// the generic park_draft default.
+type Outcome = 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
 type FailReason = 'login' | 'login_url' | 'stopped' | 'generic';
 
 interface Metric {
@@ -355,7 +356,7 @@ export async function GET(req: NextRequest) {
       // so accept either rather than silently miss the outcome.
       const decision = (result?.promotionDecision ?? result?.promotion_decision) as string | undefined;
       outcome =
-        decision === 'auto_promote' || decision === 'promote_partial' ||
+        decision === 'auto_promote' || decision === 'park_partial' ||
         decision === 'park_draft' || decision === 'quarantine'
           ? decision
           : 'park_draft'; // friendliest "learned, finalizing" default if the field is missing
