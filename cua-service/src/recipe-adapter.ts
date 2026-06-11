@@ -244,8 +244,10 @@ interface DerivedCsvFlow {
 /** Fields whose NAME smells like a credential. A learned report flow has no
  *  business filling one; if the mapper recorded it (e.g. a literal secret
  *  typed mid-flow), it must not be replayed every poll. Conservative on
- *  purpose — report filters are dates/rooms/formats, never "password". */
-const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|token|apikey|api[-_]key/i;
+ *  purpose — report filters are dates/rooms/formats, never "password".
+ *  `token(?![a-z0-9])` matches '#csrf-token'/'#csrf_token'/'#token' but NOT
+ *  benign compounds like '#tokenizedSearch' (Codex P2 false-positive). */
+const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|api[-_]?key|token(?![a-z0-9])/i;
 
 export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
   const lastGotoIdx = steps.reduce((acc, s, i) => (s.kind === 'goto' ? i : acc), -1);

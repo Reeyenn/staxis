@@ -317,6 +317,29 @@ describe('extractFetchApi', () => {
     assert.equal(ok.result.ok, true, ok.result.reason);
   });
 
+  test('host pin: IP literals require EXACT match — no octet-suffix bypass', async () => {
+    const cross = await withFetchStub(
+      () => ({ json: [] }),
+      () => extractFetchApi({
+        page: fakePage(),
+        feedSpec: feedSpec({ url: 'https://5.6.3.4/api' }),
+        allowedHost: '1.2.3.4',
+      }),
+    );
+    assert.equal(cross.result.ok, false);
+    assert.match(cross.result.reason!, /cross-site fetch/);
+
+    const exact = await withFetchStub(
+      () => ({ json: [] }),
+      () => extractFetchApi({
+        page: fakePage(),
+        feedSpec: feedSpec({ url: 'https://1.2.3.4/api' }),
+        allowedHost: '1.2.3.4:8443',
+      }),
+    );
+    assert.equal(exact.result.ok, true, exact.result.reason);
+  });
+
   test('host pin: non-http(s) schemes are refused outright', async () => {
     const result = await extractFetchApi({
       page: fakePage(),

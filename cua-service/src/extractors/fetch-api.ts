@@ -48,6 +48,25 @@ export interface FetchApiResult {
 
 const FETCH_TIMEOUT_MS = 20_000;
 
+/** IPv4 literal (optionally with port). hostsAreSameSite compares the last
+ *  two DOT-LABELS, which is right for hostnames but wrong for IPs — it would
+ *  call 5.6.3.4 "same site" as 1.2.3.4. IP-pinned PMSes get exact equality. */
+const IPV4_HOST_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+function stripPort(host: string): string {
+  return host.replace(/:\d+$/, '');
+}
+
+/** Same-site check that treats IP literals as exact-match-only. */
+function fetchHostAllowed(host: string, allowedHost: string): boolean {
+  const a = stripPort(host).toLowerCase();
+  const b = stripPort(allowedHost).toLowerCase();
+  if (IPV4_HOST_RE.test(a) || IPV4_HOST_RE.test(b)) {
+    return a === b;
+  }
+  return hostsAreSameSite(a, b);
+}
+
 /**
  * Resolve a dot-path ('data.reservations', 'result.0.rows') against a parsed
  * JSON value. Numeric segments index arrays. Returns a discriminated result
@@ -108,7 +127,7 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
     } catch {
       return { ok: false, data: null, reason: 'unparseable absolute url' };
     }
-    if (!hostsAreSameSite(host, allowedHost)) {
+    if (!fetchHostAllowed(host, allowedHost)) {
       log.warn('extractor:fetch_api: refused cross-site fetch', { host, allowedHost });
       return {
         ok: false,

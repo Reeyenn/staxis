@@ -50,8 +50,10 @@ function isCredentialValue(value: string): boolean {
 }
 
 /** Mirror of recipe-adapter's CREDENTIAL_SELECTOR_RE — defense-in-depth for
- *  hand-written knowledge files that bypass the adapter's derivation. */
-const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|token|apikey|api[-_]key/i;
+ *  hand-written knowledge files that bypass the adapter's derivation.
+ *  `token(?![a-z0-9])` avoids false-positives on benign compounds like
+ *  '#tokenizedSearch' while still catching '#csrf-token'/'#csrf_token'. */
+const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|api[-_]?key|token(?![a-z0-9])/i;
 
 /**
  * Parse an untyped `extra.preSteps` payload (jsonb from the knowledge file)

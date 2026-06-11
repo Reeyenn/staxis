@@ -181,10 +181,33 @@ describe('adapter csv wiring', () => {
     const flow = deriveCsvFlowFromSteps([
       { kind: 'goto', url: 'https://pms.example/r' },
       { kind: 'fill', selector: '#report-password', value: 'literal-secret' },
+      { kind: 'fill', selector: '#csrf-token', value: 'abc123' },
       { kind: 'fill', selector: '#room-range', value: '100-200' },
+      // Benign compound containing "token" must NOT be dropped (false-positive fence).
+      { kind: 'fill', selector: '#tokenizedSearch', value: 'suite' },
       { kind: 'click', selector: '#dl' },
     ]);
-    assert.deepEqual(flow.preSteps, [{ kind: 'fill', selector: '#room-range', value: '100-200' }]);
+    assert.deepEqual(flow.preSteps, [
+      { kind: 'fill', selector: '#room-range', value: '100-200' },
+      { kind: 'fill', selector: '#tokenizedSearch', value: 'suite' },
+    ]);
+  });
+
+  test('learned dateRender rides dom_table sources too; no learned format → no stray extra', () => {
+    const withLearned = actionRecipeToTableTemplate('getArrivals', {
+      steps: [{ kind: 'goto', url: 'https://pms.example/arrivals?d={today}' }],
+      parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: { guest_name: 'td.name' } } },
+    }, { dateFormat: { order: 'MDY', separator: '/', confidence: 'high' } });
+    assert.deepEqual(
+      withLearned!.sources[0]!.extra?.dateRender,
+      { order: 'MDY', separator: '/', confidence: 'high' },
+    );
+
+    const withoutLearned = actionRecipeToTableTemplate('getArrivals', {
+      steps: [{ kind: 'goto', url: 'https://pms.example/arrivals' }],
+      parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: { guest_name: 'td.name' } } },
+    });
+    assert.equal(withoutLearned!.sources[0]!.extra, undefined);
   });
 
   test('REGRESSION: dom_table with interaction steps still flags incomplete', () => {
