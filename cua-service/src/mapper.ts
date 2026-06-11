@@ -2079,13 +2079,14 @@ export async function attemptStructuredDiscovery(
     return null;
   };
 
+  // Static/expected short-circuits return silently — 14 of the 18 targets are
+  // non-core and would otherwise emit a pointless log line every run.
   const envFlag = (process.env.CUA_STRUCTURED_DISCOVERY_ENABLED ?? 'true').toLowerCase();
-  if (envFlag === '0' || envFlag === 'false') return abstain('disabled_by_env');
-  if (input.signal?.aborted) return abstain('aborted');
-
+  if (envFlag === '0' || envFlag === 'false') return null;
   const contract = CORE_TARGET_CONTRACTS[input.actionName];
   const keyCol = DISCOVERY_KEY_COLUMNS[input.actionName];
-  if (!contract || !keyCol) return abstain('not_core_target');
+  if (!contract || !keyCol) return null;
+  if (input.signal?.aborted) return abstain('aborted');
   if (input.success.viaBail) return abstain('via_bail');
   if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
   if (input.capturedCalls.length === 0) return abstain('no_captured_calls');
@@ -2304,7 +2305,14 @@ export async function attemptStructuredDiscovery(
       if (!probe.ok) continue; // a wrong-order render may 400 — try the alternate
       const probeRows = extractRowsAtPath(probe.data, jsonPath);
       if (!probeRows.ok) {
-        if (probeRows.reason === 'jsonpath_empty_array') { chosen = variant; break; } // empty yesterday = weak pass
+        // Empty yesterday is a WEAK pass — acceptable only when the format
+        // order was unambiguous on the learn day (a single variant). With two
+        // candidate orders, an empty set proves neither, and locking in the
+        // wrong order could make a lenient server serve wrong-day rows later.
+        if (probeRows.reason === 'jsonpath_empty_array' && variants.length === 1) {
+          chosen = variant;
+          break;
+        }
         continue;
       }
       const projected = projectRows(probeRows.rows, columns).slice(0, 50);

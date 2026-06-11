@@ -1143,11 +1143,6 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
   };
 }
 
-function singleInterpretationOrNull(s: string): string | null {
-  const interps = numericDateInterpretations(s);
-  return interps.length === 1 ? interps[0]! : null;
-}
-
 /** Rownum smell: a key column of 0/1-based consecutive integers is almost
  *  certainly a display row number, not an identifier. Real-world sequential
  *  ids that START HIGHER (room numbers 101..106) are legitimate keys. */

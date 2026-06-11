@@ -178,6 +178,50 @@ describe('attemptStructuredDiscovery — verified upgrade', () => {
     assert.deepEqual(result.valueSamples, tableSuccess().valueSamples);
   });
 
+  test('AMBIGUOUS M/D order (06/06) is settled by the probe — a DMY server gets the DD/MM template', async () => {
+    // Learn day 2026-06-06: "06/06/2026" matches the anchor as BOTH MM/DD and
+    // DD/MM. The probe renders yesterday in each order; the (DMY) server
+    // returns wrong-day rows for the MM/DD render and yesterday rows for the
+    // DD/MM render — so DD/MM wins. Without this, ~40% of calendar days could
+    // lock in a coin-flip order that silently flips month/day later.
+    const nowMs = new Date(2026, 5, 6, 15, 0, 0).getTime();
+    const dom = [1, 2, 3, 4, 5, 6].map((i) => ({
+      pms_reservation_id: `R10${i}7`,
+      guest_name: `Guest${i}, Test`,
+      arrival_date: '06/06/2026',
+      departure_date: '07/06/2026', // DD/MM: July 6th? No — 7 June (DMY PMS)
+      room_number: `${100 + i}`,
+    }));
+    const apiAt = (iso: string): Array<Record<string, unknown>> =>
+      [1, 2, 3, 4, 5, 6].map((i) => ({
+        resvId: `R10${i}7`,
+        guest: { name: `Guest${i}, Test` },
+        arrivalDate: iso,
+        departureDate: '2026-06-07',
+        room: `${100 + i}`,
+      }));
+    const success = tableSuccess();
+    success.valueSamples = { arrival_date: ['06/06/2026'] };
+    const { deps } = makeDeps({
+      now: () => nowMs,
+      extractOracleRows: async () => dom,
+      replayFetch: async (req) => {
+        if (req.url.includes('06/06/2026')) return { ok: true, data: { data: { arrivals: apiAt('2026-06-06') } } };
+        if (req.url.includes('06/05/2026')) return { ok: true, data: { data: { arrivals: apiAt('2026-05-06') } } }; // DMY server read "6 May"
+        if (req.url.includes('05/06/2026')) return { ok: true, data: { data: { arrivals: apiAt('2026-06-05') } } }; // 5 June — correct yesterday
+        return { ok: false, reason: 'HTTP 400' };
+      },
+    });
+    const call = mkCall({
+      url: 'https://pms.example.com/api/arrivals?date=06/06/2026',
+      responseBody: { data: { arrivals: apiAt('2026-06-06') } },
+    });
+    const result = await attemptStructuredDiscovery(mkInput({ success, capturedCalls: [call] }), deps);
+    assert.ok(result, 'expected the alternate order to win');
+    const hint = result.action.parse.mode === 'api' ? result.action.parse.hint : null;
+    assert.equal(hint?.url, 'https://pms.example.com/api/arrivals?date={today:DD/MM/YYYY}');
+  });
+
   test('no-date-param endpoint skips the probe (server-side business date class)', async () => {
     const call = mkCall({ url: 'https://pms.example.com/api/arrivals/today' });
     const fetched: string[] = [];
@@ -369,5 +413,76 @@ describe('attemptStructuredDiscovery — abstains to DOM', () => {
   test('navigation to the replay context fails → null', async () => {
     const { deps } = makeDeps({ gotoPostLogin: async () => { throw new Error('nav blocked'); } });
     assert.equal(await attemptStructuredDiscovery(mkInput(), deps), null);
+  });
+
+  test('AMBIGUOUS order + EMPTY probe responses → null (an empty set proves neither order)', async () => {
+    const nowMs = new Date(2026, 5, 6, 15, 0, 0).getTime();
+    const dom = [1, 2, 3, 4, 5, 6].map((i) => ({
+      pms_reservation_id: `R10${i}7`,
+      guest_name: `Guest${i}, Test`,
+      arrival_date: '06/06/2026',
+      departure_date: '07/06/2026',
+      room_number: `${100 + i}`,
+    }));
+    const apiToday = [1, 2, 3, 4, 5, 6].map((i) => ({
+      resvId: `R10${i}7`,
+      guest: { name: `Guest${i}, Test` },
+      arrivalDate: '2026-06-06',
+      departureDate: '2026-06-07',
+      room: `${100 + i}`,
+    }));
+    const success = tableSuccess();
+    success.valueSamples = { arrival_date: ['06/06/2026'] };
+    const { deps } = makeDeps({
+      now: () => nowMs,
+      extractOracleRows: async () => dom,
+      replayFetch: async (req) => {
+        if (req.url.includes('06/06/2026')) return { ok: true, data: { data: { arrivals: apiToday } } };
+        return { ok: true, data: { data: { arrivals: [] } } }; // empty for BOTH yesterday renders
+      },
+    });
+    const call = mkCall({
+      url: 'https://pms.example.com/api/arrivals?date=06/06/2026',
+      responseBody: { data: { arrivals: apiToday } },
+    });
+    assert.equal(await attemptStructuredDiscovery(mkInput({ success, capturedCalls: [call] }), deps), null);
+  });
+
+  test('date param on a target with NO semantic date column (room status) → null (untestable)', async () => {
+    // The probe can't prove which day a room-status response describes, so a
+    // templated date param is unverifiable → abstain. Only no-date-param
+    // endpoints qualify for these targets.
+    const rsDom = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({
+      room_number: `${100 + i}`,
+      status: i <= 4 ? 'OCC' : 'VAC',
+    }));
+    const rsRaw = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({
+      roomNo: `${100 + i}`,
+      st: i <= 4 ? 'OCC' : 'VAC',
+    }));
+    const success = tableSuccess();
+    success.action.parse = {
+      mode: 'table',
+      hint: { rowSelector: 'tr.room', columns: { room_number: 'td.no', status: 'td.st' } },
+    };
+    delete success.valueSamples;
+    success.enumMappings = { status: { OCC: 'occupied', VAC: 'vacant' } };
+    const call = mkCall({
+      url: 'https://pms.example.com/api/rooms?date=06/10/2026',
+      responseBody: { rooms: rsRaw },
+    });
+    const { deps } = makeDeps({
+      extractOracleRows: async () => rsDom,
+      identify: async () => JSON.stringify({
+        candidateIndex: 0,
+        jsonPath: 'rooms',
+        columns: { room_number: 'roomNo', status: 'st' },
+      }),
+    });
+    const result = await attemptStructuredDiscovery(
+      mkInput({ actionName: 'getRoomStatus', success, capturedCalls: [call] }),
+      deps,
+    );
+    assert.equal(result, null);
   });
 });
