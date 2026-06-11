@@ -49,18 +49,21 @@ describe('classifyKey — token precision (false-nuke pins)', () => {
     assert.equal(classifyKey('pinCode'), 'nuke');
   });
 
-  test('person/PII keys mask', () => {
-    assert.equal(classifyKey('guestName'), 'mask');
-    assert.equal(classifyKey('fname'), 'mask');
-    assert.equal(classifyKey('surname'), 'mask');
+  test('person/PII keys mask (string-only tier for person labels)', () => {
+    assert.equal(classifyKey('guestName'), 'maskstring');
+    assert.equal(classifyKey('fname'), 'maskstring');
+    assert.equal(classifyKey('surname'), 'maskstring');
+    assert.equal(classifyKey('guest'), 'maskstring'); // bare guest holds "Smith, John" in arrivals feeds
+    assert.equal(classifyKey('housekeeperName'), 'maskstring');
     assert.equal(classifyKey('email'), 'mask');
     assert.equal(classifyKey('Phone Number'), 'mask');
+    assert.equal(classifyKey('guestPhone'), 'mask'); // number-bearing wins over the string-only tier
     assert.equal(classifyKey('date_of_birth'), 'mask');
     assert.equal(classifyKey('loyaltyNumber'), 'mask');
     assert.equal(classifyKey('specialRequests'), 'mask');
-    assert.equal(classifyKey('housekeeperName'), 'mask');
     assert.equal(classifyKey('licensePlate'), 'mask');
     assert.equal(classifyKey('emergencyContact'), 'mask');
+    assert.equal(classifyKey('ssnLast4'), 'nuke');
   });
 
   test('record IDs survive; value-bearing id-suffixed keys do not', () => {
@@ -78,8 +81,8 @@ describe('classifyKey — token precision (false-nuke pins)', () => {
     assert.equal(classifyKey('room_name'), 'allow');
     assert.equal(classifyKey('rateName'), 'allow');
     assert.equal(classifyKey('statusName'), 'allow');
-    assert.equal(classifyKey('name'), 'mask');
-    assert.equal(classifyKey('displayName'), 'mask');
+    assert.equal(classifyKey('name'), 'maskstring');
+    assert.equal(classifyKey('displayName'), 'maskstring');
   });
 });
 
@@ -205,6 +208,28 @@ describe('redactResponseBody — shape preservation', () => {
     assert.equal(out.phone, null);
     assert.equal(out.hasEmail, false);
   });
+
+  test('person-label keys mask strings but keep counts', () => {
+    const out = redactResponseBody({
+      guest: 'Smith, John',
+      guests: 2,
+      adults: 2,
+      guestCount: 4,
+      customer: 'Jane Doe',
+    }) as Record<string, unknown>;
+    assert.equal(out.guest, '<redacted:field>');
+    assert.equal(out.guests, 2);
+    assert.equal(out.adults, 2);
+    assert.equal(out.guestCount, 4);
+    assert.equal(out.customer, '<redacted:field>');
+  });
+
+  test('number-bearing PII keys mask numbers too', () => {
+    const out = redactResponseBody({ phone: 8325551234, zip: 77001, loyaltyNumber: 12345678 }) as Record<string, unknown>;
+    assert.equal(out.phone, '<redacted:field>');
+    assert.equal(out.zip, '<redacted:field>');
+    assert.equal(out.loyaltyNumber, '<redacted:field>');
+  });
 });
 
 describe('redactResponseBody — robustness', () => {
@@ -295,6 +320,15 @@ describe('redactUrl', () => {
 
   test('unparseable input becomes a marker, never raw', () => {
     assert.equal(redactUrl('::::not a url with jane@x.com::::'), '<redacted:unparseable_url>');
+  });
+
+  test('fragments are dropped (OAuth #access_token) and free-text search params masked', () => {
+    const out = redactUrl('https://pms.example.com/callback?search=John+Smith&page=2#access_token=SECRETFRAG123');
+    assert.ok(!out.includes('SECRETFRAG123'));
+    assert.ok(!out.includes('access_token'));
+    assert.ok(!out.includes('John'));
+    assert.ok(out.includes('search=<redacted:param>'));
+    assert.ok(out.includes('page=2'));
   });
 });
 

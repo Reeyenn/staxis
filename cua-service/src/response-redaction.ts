@@ -77,28 +77,36 @@ const NUKE_SUBSTRINGS = [
   'secret', 'token', 'auth', 'credential', 'cookie', 'session', 'routing',
   'sortcode', 'track1', 'track2', 'trackdata', 'magstripe', 'privatekey',
   'apikey', 'csrf', 'xsrf', 'bearer', 'ccnum', 'ccexp', 'pincode',
-  'nextofkin', 'socialsecurity', 'bankaccount',
+  'nextofkin', 'socialsecurity', 'bankaccount', 'ssn',
 ];
 
-/** Person/PII leaf fields: a string/number directly under the key is masked;
- *  a container under the key recurses NORMALLY so e.g.
+/** PII leaf fields whose values can be strings OR numbers (phones, zips,
+ *  DOBs, loyalty numbers…): any scalar directly under the key is masked; a
+ *  container under the key recurses NORMALLY so e.g.
  *  guest: { roomNumber, arrivalDate, name } keeps room + date while the
  *  inner `name` is still caught on its own. */
 const MASK_EXACT = new Set([
-  'title', 'ein', 'tin', 'curp', 'rfc', 'dni', 'cpf', 'aadhaar', 'nric',
+  'ein', 'tin', 'curp', 'rfc', 'dni', 'cpf', 'aadhaar', 'nric',
   'social', 'mail', 'addr', 'nok',
 ]);
 const MASK_SUBSTRINGS = [
-  'name', 'email', 'phone', 'mobile', 'cell', 'fax', 'msisdn', 'address',
+  'email', 'phone', 'mobile', 'cell', 'fax', 'msisdn', 'address',
   'street', 'zip', 'postal', 'pobox', 'birth', 'dob', 'passport', 'license',
   'licence', 'plate', 'note', 'comment', 'remark', 'special', 'message',
   'loyalty', 'membership', 'rewards', 'emergency', 'photo', 'avatar',
   'signature', 'allerg', 'dietary', 'medical', 'disab', 'login', 'contact',
-  'customer', 'holder', 'traveler', 'traveller', 'occupant', 'company',
-  'organization', 'organisation', 'nationality',
 ];
 
-type KeyClass = 'allow' | 'nuke' | 'mask' | 'plain';
+/** Person-label fields: only STRING values are masked — a number under
+ *  these keys is a count/occupancy figure the mapper needs (`guests: 2`,
+ *  `adults` under a guest object), never a name. */
+const MASK_STRING_EXACT = new Set(['title']);
+const MASK_STRING_SUBSTRINGS = [
+  'name', 'guest', 'customer', 'holder', 'traveler', 'traveller',
+  'occupant', 'company', 'organization', 'organisation', 'nationality',
+];
+
+type KeyClass = 'allow' | 'nuke' | 'mask' | 'maskstring' | 'plain';
 
 function classifyKey(rawKey: string): KeyClass {
   const k = normalizeKey(rawKey);
@@ -118,8 +126,12 @@ function classifyKey(rawKey: string): KeyClass {
       'passport', 'license', 'licence', 'dob', 'birth', 'address'];
     return valueBearing.some((s) => stem.includes(s)) ? 'mask' : 'plain';
   }
+  // Both-scalar tier first: `guestPhone` must full-mask via `phone` before
+  // the string-only `guest` tier can claim it.
   if (MASK_EXACT.has(k)) return 'mask';
   for (const s of MASK_SUBSTRINGS) if (k.includes(s)) return 'mask';
+  if (MASK_STRING_EXACT.has(k)) return 'maskstring';
+  for (const s of MASK_STRING_SUBSTRINGS) if (k.includes(s)) return 'maskstring';
   return 'plain';
 }
 
@@ -261,6 +273,14 @@ function walk(value: unknown, depth: number, seen: WeakSet<object>, mode: WalkMo
         } else {
           setOwn(out, key, walk(v, depth + 1, seen, 'normal'));
         }
+      } else if (cls === 'maskstring') {
+        // Person-label keys: strings are names → masked; numbers are
+        // counts (`guests: 2`) → kept.
+        if (typeof v === 'string' || typeof v === 'bigint') {
+          setOwn(out, key, marker('field'));
+        } else {
+          setOwn(out, key, walk(v, depth + 1, seen, 'normal'));
+        }
       } else {
         setOwn(out, key, walk(v, depth + 1, seen, 'normal'));
       }
@@ -289,11 +309,16 @@ export function redactResponseBody(body: unknown): unknown {
 
 // ─── URL redaction ───────────────────────────────────────────────────────
 
+/** Free-text search params — their values are whatever a user typed into a
+ *  search box (very often a guest name), so mask regardless of patterns. */
+const FREE_TEXT_PARAMS = new Set(['q', 'query', 'search', 'term', 'keyword', 'lookup', 'find']);
+
 /** Query-param names whose values are masked outright. The mapper keeps the
  *  param NAME (it learns URL templates) and date-ish values survive. */
 function isSensitiveParamName(name: string): boolean {
+  if (FREE_TEXT_PARAMS.has(normalizeKey(name))) return true;
   const cls = classifyKey(name);
-  return cls === 'nuke' || cls === 'mask';
+  return cls === 'nuke' || cls === 'mask' || cls === 'maskstring';
 }
 
 /**
@@ -306,6 +331,9 @@ export function redactUrl(raw: string): string {
     const u = new URL(raw);
     u.username = '';
     u.password = '';
+    // Fragments never reach the server and can carry OAuth tokens
+    // (#access_token=…) — drop them entirely.
+    u.hash = '';
     const segs = u.pathname.split('/').map((seg) => {
       if (seg === '') return seg;
       let dec = seg;
@@ -579,7 +607,8 @@ export function redactCsvText(csv: string): string {
     if (hasHeader) {
       rows[0].forEach((h, idx) => {
         const cls = classifyKey(h);
-        if (cls === 'nuke' || cls === 'mask') maskedColumns.add(idx);
+        // CSV cells are always strings, so the string-only tier masks too.
+        if (cls === 'nuke' || cls === 'mask' || cls === 'maskstring') maskedColumns.add(idx);
       });
     }
 

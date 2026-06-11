@@ -305,16 +305,21 @@ export function attachNetworkCapture(page: Page): NetworkCaptureHandle {
     }
     if (pendingReads >= MAX_PENDING_READS) return false;
     pendingReads++;
+    // The releasing read hands its permit straight to us (inFlightReads is
+    // NOT decremented in that case), so a concurrent fast-path acquire can
+    // never steal it and push concurrency past the cap.
     await new Promise<void>((resolve) => readWaiters.push(resolve));
     pendingReads--;
-    inFlightReads++;
     return true;
   }
 
   function releaseRead(): void {
-    inFlightReads--;
     const next = readWaiters.shift();
-    if (next) next();
+    if (next) {
+      next(); // permit transferred to the waiter
+      return;
+    }
+    inFlightReads--;
   }
 
   const BODY_TIMEOUT = Symbol('timeout');
