@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room, StaffMember } from '@/types';
+import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import { supabase, logErr, subscribeTable, asRecordRow } from './_common';
 import { fromRoomRow, fromStaffRow } from '../db-mappers';
 import { STAFF_COLS } from './staff';
@@ -17,11 +18,18 @@ import { STAFF_COLS } from './staff';
  * Subscribe to every room (across all dates) assigned to a given staff
  * member at a given property. Callback is invoked with the initial
  * snapshot and again on every INSERT/UPDATE/DELETE to `rooms`.
+ *
+ * feat/cua-partial-promotion — the optional second callback arg carries the
+ * property's per-feed PMS trust (riding /api/housekeeper/rooms as a sibling
+ * key; `data` stays a bare Room[] for stale mobile bundles). Absent =
+ * render as today. The realtime-event refetch path doesn't surface it
+ * (subscribeTable's loader returns rows only); the 4s poll — the path that
+ * actually serves unauthenticated housekeepers — does.
  */
 export function subscribeToRoomsForStaff(
   pid: string,
   staffId: string,
-  callback: (rooms: Room[]) => void,
+  callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
 ): () => void {
   // Initial fetch + refetch-on-change goes through /api/housekeeper/rooms
   // (server-side, service-role) instead of the browser rooms-table client.
@@ -42,7 +50,7 @@ export function subscribeToRoomsForStaff(
   // their own Start/Done tap reflect on the page. Without the poll the UI
   // appeared to revert ("Saving…" → back to "Start") because the state
   // change was happening server-side but no event reached the client.
-  const fetchRooms = async (): Promise<Room[]> => {
+  const fetchRoomsAndStatus = async (): Promise<{ rooms: Room[]; feedStatus?: PropertyFeedStatus }> => {
     const res = await fetch(
       `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`,
       { method: 'GET', headers: { 'Content-Type': 'application/json' } },
@@ -52,14 +60,20 @@ export function subscribeToRoomsForStaff(
       throw new Error(`/api/housekeeper/rooms ${res.status}: ${body.slice(0, 200)}`);
     }
     const json = (await res.json().catch(() => null)) as
-      | { ok?: boolean; data?: unknown; error?: string }
+      | { ok?: boolean; data?: unknown; feedStatus?: unknown; error?: string }
       | null;
     if (!json?.ok || !Array.isArray(json.data)) {
       throw new Error(`/api/housekeeper/rooms unexpected body: ${json?.error ?? 'no data'}`);
     }
+    const fs = json.feedStatus as PropertyFeedStatus | undefined;
+    const feedStatus =
+      fs && typeof fs === 'object' && (fs.mode === 'no_pms' || fs.mode === 'onboarding' || fs.mode === 'live')
+        ? fs
+        : undefined;
     // Server already returned camel-cased Room shape via fromRoomRow().
-    return json.data as Room[];
+    return { rooms: json.data as Room[], feedStatus };
   };
+  const fetchRooms = async (): Promise<Room[]> => (await fetchRoomsAndStatus()).rooms;
 
   const unsub = subscribeTable<Room>(
     `rooms-hk:${pid}:${staffId}`,
@@ -79,8 +93,8 @@ export function subscribeToRoomsForStaff(
   const pollInterval = setInterval(() => {
     if (cancelled) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    fetchRooms()
-      .then(rows => { if (!cancelled) callback(rows); })
+    fetchRoomsAndStatus()
+      .then(({ rooms, feedStatus }) => { if (!cancelled) callback(rooms, feedStatus); })
       .catch(err => logErr(`poll rooms-hk:${pid}:${staffId}`, err));
   }, 4000);
 

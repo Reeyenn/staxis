@@ -32,6 +32,7 @@ import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { mergePmsRoomsForStaff } from '@/lib/pms-rooms-server';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -91,7 +92,11 @@ export async function GET(req: NextRequest) {
 
   try {
     const rooms = await mergePmsRoomsForStaff(pid, staffId);
-    return ok(rooms, { requestId });
+    // feat/cua-partial-promotion — sibling key so `data` stays a bare
+    // Room[] for stale mobile bundles (this is a PUBLIC SMS-linked page;
+    // phones poll old JS for a while after a deploy). Fails safe.
+    const feedStatus = await getPropertyFeedStatus(pid);
+    return ok(rooms, { requestId, extra: { feedStatus } });
   } catch (e: unknown) {
     log.error('[housekeeper/rooms] merge failed', {
       requestId, pid, staffId, msg: errToString(e),

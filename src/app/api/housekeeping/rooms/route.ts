@@ -38,6 +38,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -112,7 +113,12 @@ export async function GET(req: NextRequest) {
 
   try {
     const rooms = await mergePmsRoomsForDate(pid, date);
-    return ok(rooms, { requestId });
+    // feat/cua-partial-promotion — per-feed trust rides as a TOP-LEVEL
+    // sibling so `data` stays a bare Room[] (deployed clients hard-require
+    // Array.isArray(data); stale bundles keep working, new clients read the
+    // sibling). getPropertyFeedStatus fails safe to "render as today".
+    const feedStatus = await getPropertyFeedStatus(pid);
+    return ok(rooms, { requestId, extra: { feedStatus } });
   } catch (e: unknown) {
     log.error('[housekeeping/rooms] merge failed', {
       requestId, pid, date, msg: errToString(e),
