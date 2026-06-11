@@ -47,6 +47,11 @@ interface KnowledgeRow {
   version: number;
   status: string;
   learned_at: string;
+  /** feat/cua-partial-promotion — knowledge->feedGaps (JSON path select). */
+  feed_gaps: {
+    missingRequired?: Array<{ target: string; reason: string; missingColumns?: string[] }>;
+    missingBusinessCritical?: string[];
+  } | null;
 }
 
 export async function GET(req: NextRequest) {
@@ -62,7 +67,7 @@ export async function GET(req: NextRequest) {
       .order('updated_at', { ascending: false }),
     supabaseAdmin
       .from('pms_knowledge_files')
-      .select('pms_family, version, status, learned_at')
+      .select('pms_family, version, status, learned_at, feed_gaps:knowledge->feedGaps')
       .order('pms_family')
       .order('version', { ascending: false }),
   ]);
@@ -85,26 +90,69 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Group knowledge files by pms_family; keep active version + most recent draft.
-  const knowledgeByFamily = new Map<string, { active: number | null; latest: number; status: string }>();
+  // Group knowledge files by pms_family; keep active version + most recent
+  // draft + (feat/cua-partial-promotion) the ACTIVE version's feed gaps so
+  // the admin page can show "Partial — missing: …" without another query.
+  interface FamilyKnowledge {
+    active: number | null;
+    latest: number;
+    status: string;
+    missing_required: string[];
+    missing_business_critical: string[];
+  }
+  const knowledgeByFamily = new Map<string, FamilyKnowledge>();
   for (const k of (kfRows ?? []) as KnowledgeRow[]) {
     const existing = knowledgeByFamily.get(k.pms_family);
+    const gapsOf = (row: KnowledgeRow) => ({
+      missing_required: (row.feed_gaps?.missingRequired ?? []).map((g) => g.target),
+      missing_business_critical: row.feed_gaps?.missingBusinessCritical ?? [],
+    });
     if (!existing) {
       knowledgeByFamily.set(k.pms_family, {
         active: k.status === 'active' ? k.version : null,
         latest: k.version,
         status: k.status,
+        ...(k.status === 'active' ? gapsOf(k) : { missing_required: [], missing_business_critical: [] }),
       });
     } else {
-      if (k.status === 'active') existing.active = k.version;
+      if (k.status === 'active') {
+        existing.active = k.version;
+        const g = gapsOf(k);
+        existing.missing_required = g.missing_required;
+        existing.missing_business_critical = g.missing_business_critical;
+      }
       // versions are sorted desc so first is latest
     }
   }
+
+  // feat/cua-partial-promotion — best-effort retry context per family: the
+  // latest backfill job's age + outcome, so the chip can say "auto-retrying
+  // daily" vs "auto-retry paused" truthfully. Failure here only loses the
+  // retry line, never the session list.
+  const backfillByFamily = new Map<string, { last_at: string; last_outcome: string }>();
+  try {
+    const { data: backfillJobs } = await supabaseAdmin
+      .from('workflow_jobs')
+      .select('created_at, status, result, payload')
+      .eq('kind', 'mapper.learn_pms_family')
+      .filter('payload->>backfill_missing_feeds', 'eq', 'true')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    for (const j of (backfillJobs ?? []) as Array<{ created_at: string; status: string; result: { promotion_decision?: string } | null; payload: { pms_family?: string } | null }>) {
+      const fam = j.payload?.pms_family;
+      if (!fam || backfillByFamily.has(fam)) continue;
+      backfillByFamily.set(fam, {
+        last_at: j.created_at,
+        last_outcome: j.result?.promotion_decision ?? j.status,
+      });
+    }
+  } catch { /* best-effort */ }
 
   const enriched = sessions.map((s) => ({
     ...s,
     display_name: displayNames.get(s.property_id) ?? s.property_id,
     knowledge_file: knowledgeByFamily.get(s.pms_family) ?? null,
+    backfill: backfillByFamily.get(s.pms_family) ?? null,
   }));
 
   return NextResponse.json({ ok: true, data: { sessions: enriched } });

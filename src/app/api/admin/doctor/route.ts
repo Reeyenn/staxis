@@ -2885,13 +2885,18 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
     const families = Array.from(new Set((sessions as Sess[]).map((s) => s.pms_family)));
     const { data: kfs, error: kfErr } = await supabaseAdmin
       .from('pms_knowledge_files')
-      .select('pms_family, version')
+      .select('pms_family, version, feed_gaps:knowledge->feedGaps')
       .eq('status', 'active')
       .in('pms_family', families);
     if (kfErr) {
       return { status: 'warn', detail: `pms_knowledge_files read failed: ${errToString(kfErr)}` };
     }
-    const haveActive = new Set((kfs as Array<{ pms_family: string }> | null ?? []).map((r) => r.pms_family));
+    type KfRow = {
+      pms_family: string;
+      feed_gaps: { missingRequired?: Array<{ target: string }>; missingBusinessCritical?: string[] } | null;
+    };
+    const kfRows = (kfs as KfRow[] | null) ?? [];
+    const haveActive = new Set(kfRows.map((r) => r.pms_family));
     const missing = families.filter((f) => !haveActive.has(f));
     if (missing.length > 0) {
       return {
@@ -2900,9 +2905,27 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
         fix: 'Run the mapper or apply a seed migration for the affected pms_family.',
       };
     }
+    // feat/cua-partial-promotion — partial actives are a SANCTIONED state
+    // (the feeds we have are live; gaps auto-retry daily), but ops should
+    // see them: warn only when REQUIRED feeds are gapped. BC-only gaps ride
+    // in the ok detail.
+    const partials = kfRows.filter((r) => (r.feed_gaps?.missingRequired?.length ?? 0) > 0);
+    if (partials.length > 0) {
+      const detailParts = partials.map((r) =>
+        `${r.pms_family} (missing: ${(r.feed_gaps?.missingRequired ?? []).map((g) => g.target).join(', ')})`);
+      return {
+        status: 'warn',
+        detail: `${partials.length}/${families.length} families run a PARTIAL active recipe — ${detailParts.join('; ')}`,
+        fix: 'Expected while the daily pms-backfill-missing-feeds cron retries. To chase a feed now: /admin/property-sessions → repair the feed, or regenerate the map.',
+      };
+    }
+    const bcOnly = kfRows.filter((r) => (r.feed_gaps?.missingBusinessCritical?.length ?? 0) > 0);
     return {
       status: 'ok',
-      detail: `every active session has an active knowledge file (${families.length} families)`,
+      detail: `every active session has an active knowledge file (${families.length} families)` +
+        (bcOnly.length > 0
+          ? `; ${bcOnly.length} with optional business-critical feeds still unlearned (auto-retried)`
+          : ''),
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

@@ -30,9 +30,14 @@ const STRINGS = {
       'Your PMS asked us to confirm a security step. This can take a few minutes — nothing needed from you.',
     // done (outcome-specific)
     doneTitleAuto: 'Your PMS is connected and live.',
+    // feat/cua-partial-promotion — live with SOME feeds, still learning the
+    // rest. Honest: never imply everything is flowing, never imply nothing is.
+    doneTitlePartial: 'Your PMS is connected — most data is already live.',
     doneTitlePark: "We've learned your PMS — putting on the finishing touches.",
     doneTitleQuarantine: "We've learned your PMS.",
     doneBodyAuto: "Everything's set — your live data is already flowing.",
+    doneBodyPartial:
+      "The feeds we learned are live now. A few are still being learned — we'll keep trying automatically every day and they'll switch on by themselves. Anything still learning shows a clear “still learning” note in the app instead of an empty list.",
     doneBodyPark:
       "You're all set to keep going. We'll finish wiring up the last details in the background.",
     doneBodyQuarantine:
@@ -75,9 +80,12 @@ const STRINGS = {
     mfaBody:
       'Tu sistema pidió confirmar un paso de seguridad. Puede tomar unos minutos — no necesitas hacer nada.',
     doneTitleAuto: 'Tu sistema está conectado y activo.',
+    doneTitlePartial: 'Tu sistema está conectado — la mayoría de los datos ya están en vivo.',
     doneTitlePark: 'Aprendimos tu sistema — dando los toques finales.',
     doneTitleQuarantine: 'Aprendimos tu sistema.',
     doneBodyAuto: 'Todo listo — tus datos en vivo ya están fluyendo.',
+    doneBodyPartial:
+      'Las fuentes que aprendimos ya están en vivo. Algunas siguen aprendiéndose — lo intentaremos automáticamente cada día y se activarán solas. Lo que siga aprendiéndose mostrará una nota clara de “aún aprendiendo” en la app en lugar de una lista vacía.',
     doneBodyPark:
       'Puedes continuar. Terminaremos de conectar los últimos detalles en segundo plano.',
     doneBodyQuarantine:
