@@ -16,8 +16,11 @@ import { log } from '../log.js';
 import { extractDomTable } from './dom-table.js';
 import { extractDomInline } from './dom-inline.js';
 import { extractCsvDownload } from './csv-download.js';
-import { extractFetchApi } from './fetch-api.js';
+import { extractFetchApi, resolveJsonPath } from './fetch-api.js';
+import { renderDatePlaceholders } from './date-template.js';
+import type { LearnedDateFormat } from '../types.js';
 import { applyParser } from '../parsers/registry.js';
+import { requiredLearnedFor } from '../target-contract.js';
 // Side-effect imports — register the value parsers at module load.
 //   generic.js: the PMS-AGNOSTIC default parsers (generic_date/currency/enum…)
 //   ca.js:      Choice-Advantage parsers, kept ONLY as a back-compat fallback
@@ -53,9 +56,20 @@ function sourceToFeedSpec(source: TableTemplateSource): {
   columns?: Record<string, string>;
   extra?: Record<string, unknown>;
 } {
+  // Stale-date guard: render {today}/{date} placeholders in the source URL
+  // at RUN time (runSource is called per poll). fetch_api is EXEMPT here —
+  // its extractor renders url + body together with a single clock, so a
+  // poll straddling local midnight can't split dates between the two.
+  const url = source.mode === 'fetch_api'
+    ? source.url
+    : renderDatePlaceholders(source.url, {
+        context: 'url',
+        learnedFormat: source.extra?.dateRender as LearnedDateFormat | undefined,
+        timezone: source.extra?.timezone as string | undefined,
+      });
   return {
     mode: source.mode,
-    url: source.url,
+    url,
     selectors: source.selectors,
     columns: source.columns,
     extra: source.extra,
@@ -92,7 +106,7 @@ async function runSource(
       return { ok: true, rows: r.rows as Array<Record<string, unknown>> };
     }
     case 'fetch_api': {
-      const r = await extractFetchApi({ page, feedSpec, signal });
+      const r = await extractFetchApi({ page, feedSpec, allowedHost, signal });
       if (!r.ok) return { ok: false, rows: [], reason: r.reason };
       // fetch_api returns opaque JSON; if it's an array, treat as rows;
       // if it's a single object with .rows or .results, unwrap; else
@@ -125,7 +139,24 @@ function applyTemplateParsers(
   const out: Record<string, unknown> = {};
   for (const [col, field] of Object.entries(template.fields)) {
     if (field.origin !== origin) continue;
-    const raw = row[field.selectorOrColumn];
+    // Lookup chain — extractors key their output rows differently:
+    //   1. row[selectorOrColumn]  — csv header, fetch_api JSON key, legacy
+    //      multi-source field key ('roomCount').
+    //   2. dot-path               — fetch_api rows often NEST the value
+    //      (column key 'guest.name'); a literal flat key always wins first.
+    //   3. row[col]               — dom_table/dom_inline emit rows keyed by
+    //      the CANONICAL field name (out[field] in their $$eval), while the
+    //      template's selectorOrColumn holds the CSS selector. Without this
+    //      fallback every adapter-built dom template parsed to all-null rows
+    //      at runtime (latent split-brain the simulated-row tests masked).
+    let raw = row[field.selectorOrColumn];
+    if (raw === undefined && field.selectorOrColumn.includes('.')) {
+      const resolved = resolveJsonPath(row, field.selectorOrColumn);
+      if (resolved.found) raw = resolved.value;
+    }
+    if (raw === undefined) {
+      raw = row[col];
+    }
     if (raw === undefined) {
       out[col] = null;
       continue;
@@ -133,6 +164,35 @@ function applyTemplateParsers(
     out[col] = field.parser ? applyParser(field.parser, raw, field.parserConfig) : raw;
   }
   return out;
+}
+
+/**
+ * Contract-level feed-integrity guard. The writer has a descriptor-keyed
+ * twin (findAllBlankRequiredColumns in generic-table-writer.ts) that
+ * protects the DATA; this one keyed off target-contract's required-learned
+ * columns protects the SIGNAL. session-driver counts EXTRACTION rows for
+ * read-health + the zero-row self-repair streak BEFORE the write
+ * (session-driver.ts runAllFeeds: `runResult.rows.length`), so a feed whose
+ * rows exist but whose required columns are uniformly blank must fail HERE
+ * — at the runner — or every such poll would stamp last_successful_read_at
+ * green and RESET the drift streak, and single-target self-repair could
+ * never fire for exactly the drift class this guard exists to catch.
+ *
+ * Cannot fire on legitimate feeds: zero rows → [] (an empty cancellations
+ * list is a healthy no-op); non-core actions have no contract-required
+ * columns → []; one good value in any row clears the column (per-row
+ * validation in the writer handles partial blanks).
+ */
+export function findBlankContractColumns(
+  template: TableTemplate,
+  rows: Array<Record<string, unknown>>,
+): string[] {
+  if (rows.length === 0 || !template.sourceActionKey) return [];
+  const required = requiredLearnedFor(template.sourceActionKey);
+  if (required.length === 0) return [];
+  const isBlank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  return required.filter((col) => rows.every((r) => isBlank(r[col])));
 }
 
 /**
@@ -169,6 +229,25 @@ export async function runSingleSourceTemplate(args: {
   }
 
   const parsedRows = sourceResult.rows.map((r) => applyTemplateParsers(r, template, 'list_row'));
+
+  const blankCols = findBlankContractColumns(template, parsedRows);
+  if (blankCols.length > 0) {
+    const reason =
+      `blank_required_columns: [${blankCols.join(', ')}] — ${parsedRows.length} row(s) extracted ` +
+      'but the column(s) are blank in every row (selector/jsonPath drift?)';
+    log.warn('template-runner: feed failed contract integrity guard', {
+      tableName: template.tableName,
+      sourceActionKey: template.sourceActionKey,
+      blankCols,
+      rowCount: parsedRows.length,
+    });
+    return {
+      ok: false,
+      rows: [],
+      sourceResults: [{ name: source.name, ok: false, rowCount: parsedRows.length, reason }],
+      reason,
+    };
+  }
 
   log.info('template-runner: single-source run complete', {
     tableName: template.tableName,

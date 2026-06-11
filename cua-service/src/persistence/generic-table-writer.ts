@@ -120,10 +120,20 @@ export function validateRows(
     for (const col of descriptor.columns) {
       const value = row[col.name];
       const present = value !== undefined && value !== null;
+      // An empty/whitespace-only string is missing data wearing a string
+      // costume: "" satisfies typeof === 'string', so before this check a
+      // feed whose required text column extracted blank on every row would
+      // "successfully" upsert garbage keys. Required columns reject it.
+      const blank = typeof value === 'string' && value.trim() === '';
 
       // Required-field check.
-      if (col.required && !present) {
-        rejected.push({ rowIndex, row, reason: `required field "${col.name}" missing` });
+      if (col.required && (!present || blank)) {
+        rejected.push({
+          rowIndex, row,
+          reason: present
+            ? `required field "${col.name}" blank`
+            : `required field "${col.name}" missing`,
+        });
         return;
       }
       if (!present) continue;  // optional + missing = fine
@@ -204,6 +214,67 @@ function typeMatches(value: unknown, type: ColumnDescriptor['type']): boolean {
   }
 }
 
+/**
+ * Feed-integrity guard (exported for offline tests): required descriptor
+ * columns that are null/undefined/blank on EVERY incoming row. Rows exist
+ * but a required column is uniformly empty → the extraction is structurally
+ * broken (wrong column mapping, drifted selector, bad jsonPath) and the
+ * batch must FAIL the feed loudly rather than "succeed" with no data.
+ *
+ * Deliberately conservative — cannot fire on legitimately-empty feeds:
+ *   - zero rows → [] (an empty cancellations list is a healthy no-op);
+ *   - only REQUIRED columns are considered (optional columns may be blank);
+ *   - one good value in the batch clears the column (per-row validation
+ *     handles partial blanks at row granularity).
+ */
+export function findAllBlankRequiredColumns(
+  rows: Array<Record<string, unknown>>,
+  descriptor: TableSchemaDescriptor,
+): string[] {
+  if (rows.length === 0) return [];
+  const isBlank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  return descriptor.columns
+    .filter((c) => c.required)
+    .filter((c) => rows.every((r) => isBlank(r[c.name])))
+    .map((c) => c.name);
+}
+
+/**
+ * Descriptor-aware native-type coercion (exported for offline tests).
+ * fetch_api rows carry JSON-native values — a numeric reservation id
+ * arrives as `42`, not `"42"`. Parserless text columns would then fail
+ * typeMatches ('text' requires typeof string) and EVERY row of an
+ * otherwise-healthy structured feed would reject. Coerce number/boolean →
+ * String for text-typed descriptor columns only; numeric/boolean/jsonb
+ * columns keep native values (typeMatches wants them native there).
+ */
+export function normalizeNativeValuesForText(
+  rows: Array<Record<string, unknown>>,
+  descriptor: TableSchemaDescriptor,
+): Array<Record<string, unknown>> {
+  const textCols = descriptor.columns.filter((c) => c.type === 'text').map((c) => c.name);
+  if (textCols.length === 0) return rows;
+  // Coerce only values whose string form is FAITHFUL. An integer above
+  // Number.MAX_SAFE_INTEGER was already precision-corrupted by JSON.parse —
+  // coercing it would turn a loud type reject into a plausible-but-WRONG id
+  // (Codex P1). NaN/Infinity likewise stay native. Un-coerced values fail
+  // the text type check per row, with the real reason in error_logs.
+  const faithful = (v: number) =>
+    Number.isFinite(v) && (!Number.isInteger(v) || Number.isSafeInteger(v));
+  return rows.map((r) => {
+    let out: Record<string, unknown> | null = null;
+    for (const col of textCols) {
+      const v = r[col];
+      if (typeof v === 'boolean' || (typeof v === 'number' && faithful(v))) {
+        if (!out) out = { ...r };
+        out[col] = String(v);
+      }
+    }
+    return out ?? r;
+  });
+}
+
 // ─── Save ──────────────────────────────────────────────────────────────
 
 export interface SaveGenericTableOptions {
@@ -230,6 +301,15 @@ export async function saveGenericTable(
   rows: Array<Record<string, unknown>>,
   options: SaveGenericTableOptions = {},
 ): Promise<SaveGenericTableResult> {
+  // A zero-row batch is a HEALTHY no-op (no cancellations today, empty
+  // lost-and-found…), not a write failure. Returning ok:false here made
+  // every poll of a legitimately-empty feed look broken in the results log
+  // (Codex P1). The all-blank feed-integrity guard below deliberately only
+  // fires when rows EXIST.
+  if (rows.length === 0) {
+    return { ok: true, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: 0, errors: [] };
+  }
+
   const descriptor = await loadDescriptor(tableName);
   if (!descriptor) {
     return {
@@ -273,13 +353,47 @@ export async function saveGenericTable(
   const syntheticTsCols = descriptor.columns.filter(
     (c) => c.required && c.type === 'timestamptz',
   );
-  const stamped = effectiveRows.map((r) => {
-    const row: Record<string, unknown> = { ...r, property_id: propertyId };
-    for (const col of syntheticTsCols) {
-      if (row[col.name] === undefined) row[col.name] = nowIso;
-    }
-    return row;
-  });
+  const stamped = normalizeNativeValuesForText(
+    effectiveRows.map((r) => {
+      const row: Record<string, unknown> = { ...r, property_id: propertyId };
+      for (const col of syntheticTsCols) {
+        if (row[col.name] === undefined) row[col.name] = nowIso;
+      }
+      return row;
+    }),
+    descriptor,
+  );
+
+  // Feed-integrity guard: rows arrived but a required column is null/blank
+  // across ALL of them — extraction is structurally broken. Fail the whole
+  // feed EARLY with a distinct error (admin error_logs + caller's results),
+  // before any write path runs. This also keeps a garbage batch from ever
+  // reaching reconcile, whose auto-resolve would treat the unmatched keys
+  // as "disappeared rows" and dispose real data. Runs AFTER stamping so
+  // property_id / synthetic timestamps can't false-positive. Zero-row
+  // batches skip the guard — an empty feed is a legitimate no-op.
+  const allBlankRequired = findAllBlankRequiredColumns(stamped, descriptor);
+  if (allBlankRequired.length > 0) {
+    const msg = `required column(s) [${allBlankRequired.join(', ')}] blank across all ${stamped.length} rows — failing feed (extraction likely broken)`;
+    log.error('generic-table-writer: feed integrity failure', {
+      tableName,
+      propertyId,
+      blankColumns: allBlankRequired,
+      rowCount: stamped.length,
+    });
+    void supabase.from('error_logs').insert({
+      source: 'generic-table-writer',
+      message: `${tableName}: ${msg}`,
+      property_id: propertyId,
+      stack: null,
+    });
+    return {
+      ok: false, tableName, inserted: 0, updated: 0, autoResolved: 0,
+      rejected: stamped.length,
+      errors: [msg],
+    };
+  }
+
   const validation = validateRows(stamped, descriptor);
 
   if (validation.rejected.length > 0) {

@@ -30,6 +30,7 @@
 import type {
   Recipe,
   ActionRecipe,
+  RecipeStep,
   TableTemplate,
   TableTemplateSource,
   TableTemplateField,
@@ -39,6 +40,7 @@ import type {
 } from './types.js';
 import { log } from './log.js';
 import { resolveColumnParser, type LearnedTranslations } from './target-contract.js';
+import type { PreStep } from './extractors/pre-steps.js';
 
 // ─── Per-action → table mapping ───────────────────────────────────────────
 //
@@ -213,6 +215,119 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
   },
 };
 
+// ─── csv flow derivation ──────────────────────────────────────────────────
+//
+// A learned csv recipe's "where the export lives" knowledge is its recorded
+// STEP SEQUENCE: navigate to the report page, click/select options, then the
+// final click that fires the download. CsvHint itself only carries the column
+// map. The adapter used to DROP all of that — a learned csv feed hard-failed
+// at runtime with "feedSpec missing selectors.downloadButton". This derives
+// the runtime wiring the extractor actually needs, 100% structurally (no
+// PMS-specific strings):
+//
+//   - steps AFTER the last `goto` are the in-page flow (the goto itself is
+//     replayed as source.url);
+//   - the LAST click/click_at is the download trigger → selectors.downloadButton
+//     (or extra.downloadClickAt for a coordinate-recorded click);
+//   - every interaction step BEFORE the trigger → extra.preSteps, in order;
+//   - steps after the trigger are dropped (mapping-time waiting for the file —
+//     the extractor's waitForEvent('download') replaces them);
+//   - fill/type_text referencing $username/$password are dropped + warned:
+//     extraction must never replay credentials (recipe-runner stance).
+
+interface DerivedCsvFlow {
+  preSteps: PreStep[];
+  downloadButton?: string;
+  downloadClickAt?: { x: number; y: number };
+}
+
+/** Fields whose NAME smells like a credential. A learned report flow has no
+ *  business filling one; if the mapper recorded it (e.g. a literal secret
+ *  typed mid-flow), it must not be replayed every poll. Conservative on
+ *  purpose — report filters are dates/rooms/formats, never "password".
+ *  `token(?![a-z0-9])` matches '#csrf-token'/'#csrf_token'/'#token' but NOT
+ *  benign compounds like '#tokenizedSearch' (Codex P2 false-positive). */
+const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|api[-_]?key|token(?![a-z0-9])/i;
+
+export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
+  const lastGotoIdx = steps.reduce((acc, s, i) => (s.kind === 'goto' ? i : acc), -1);
+  const inPage = steps.slice(lastGotoIdx + 1);
+
+  // Translate the in-page recipe steps to replayable PreSteps, keeping order.
+  const mapped: PreStep[] = [];
+  for (const s of inPage) {
+    switch (s.kind) {
+      case 'click':
+        mapped.push({ kind: 'click', selector: s.selector });
+        break;
+      case 'click_at':
+        mapped.push({ kind: 'click_at', x: s.x, y: s.y });
+        break;
+      case 'fill':
+        if (s.value === '$username' || s.value === '$password') {
+          log.warn('recipe-adapter: dropping csv pre-step fill that references credentials', {});
+          break;
+        }
+        if (CREDENTIAL_SELECTOR_RE.test(s.selector)) {
+          // A literal value into a credential-looking field — the value may
+          // BE a recorded secret (Codex P1). Never carry it into the runtime
+          // source (and never log the value).
+          log.warn('recipe-adapter: dropping csv pre-step fill into a credential-looking field', {
+            selector: s.selector,
+          });
+          break;
+        }
+        mapped.push({ kind: 'fill', selector: s.selector, value: s.value });
+        break;
+      case 'type_text':
+        if (s.value === '$username' || s.value === '$password') {
+          log.warn('recipe-adapter: dropping csv pre-step type_text that references credentials', {});
+          break;
+        }
+        mapped.push({ kind: 'type_text', value: s.value });
+        break;
+      case 'select':
+        mapped.push({ kind: 'select', selector: s.selector, value: s.value });
+        break;
+      case 'press_key':
+        mapped.push({ kind: 'press_key', key: s.key });
+        break;
+      case 'wait_for':
+        mapped.push({ kind: 'wait_for', selector: s.selector, ...(s.timeoutMs ? { timeoutMs: s.timeoutMs } : {}) });
+        break;
+      case 'wait_ms':
+        mapped.push({ kind: 'wait_ms', ms: s.ms });
+        break;
+      // goto handled via source.url; screenshot/eval_text are non-interactive.
+      case 'goto':
+      case 'screenshot':
+      case 'eval_text':
+        break;
+    }
+  }
+
+  // The download trigger is the LAST click-like step.
+  let triggerIdx = -1;
+  for (let i = mapped.length - 1; i >= 0; i--) {
+    if (mapped[i]!.kind === 'click' || mapped[i]!.kind === 'click_at') {
+      triggerIdx = i;
+      break;
+    }
+  }
+  if (triggerIdx === -1) {
+    // No click at all — leave the flow trigger-less; the extractor fails
+    // loudly ("missing selectors.downloadButton"), which is correct: a csv
+    // feed with no recorded trigger click can't download anything.
+    return { preSteps: mapped };
+  }
+
+  const trigger = mapped[triggerIdx]!;
+  const preSteps = mapped.slice(0, triggerIdx);
+  return trigger.kind === 'click'
+    ? { preSteps, downloadButton: trigger.selector }
+    : { preSteps, downloadClickAt: { x: (trigger as { x: number; y: number }).x, y: (trigger as { x: number; y: number }).y } };
+}
+
 // ─── Translate a single ActionRecipe → TableTemplate ─────────────────────
 
 export function actionRecipeToTableTemplate(
@@ -222,6 +337,9 @@ export function actionRecipeToTableTemplate(
 ): TableTemplate | null {
   const route = ACTION_ROUTES[actionKey];
   if (!route) return null;
+
+  // Set in the csv branch below; drives the incomplete-flag logic at the end.
+  let csvTriggerless = false;
 
   // Build a TableTemplate field, attaching the UNIVERSAL value parser + its
   // learned config (date order / enum mapping from the knowledge file). The
@@ -256,6 +374,25 @@ export function actionRecipeToTableTemplate(
     if (action.parse.hint.requiredColumn) {
       selectors.requiredColumn = action.parse.hint.requiredColumn;
     }
+    // Carry the learned click-flow into the runtime source — the wiring
+    // extractors/csv-download.ts hard-requires. Previously dropped: a learned
+    // csv feed always died with "feedSpec missing selectors.downloadButton".
+    const flow = deriveCsvFlowFromSteps(action.steps);
+    csvTriggerless = !flow.downloadButton && !flow.downloadClickAt;
+    if (flow.downloadButton) {
+      selectors.downloadButton = flow.downloadButton;
+    }
+    // The learned column map's VALUES are the CSV header names we depend on —
+    // hand them to the extractor's schema-drift check (case-insensitive) so a
+    // renamed PMS column fails the feed with a precise reason at download
+    // time instead of surfacing as all-blank columns downstream.
+    const expectedHeaderColumns = Object.values(action.parse.hint.columns);
+    const csvExtra: Record<string, unknown> = {
+      ...(flow.preSteps.length > 0 ? { preSteps: flow.preSteps } : {}),
+      ...(flow.downloadClickAt ? { downloadClickAt: flow.downloadClickAt } : {}),
+      ...(expectedHeaderColumns.length > 0 ? { expectedHeaderColumns } : {}),
+    };
+    if (Object.keys(csvExtra).length > 0) extra = csvExtra;
   } else if (action.parse.mode === 'table') {
     selectors = { rowSelector: action.parse.hint.rowSelector };
     columns = action.parse.hint.columns;
@@ -265,9 +402,12 @@ export function actionRecipeToTableTemplate(
   } else if (action.parse.mode === 'inline_text') {
     columns = action.parse.fields;
   } else if (action.parse.mode === 'api') {
-    // Structured endpoint (mode:'api') → runtime fetch_api source. FOUNDATION
-    // SKELETON — Chat 1 (Plumbing) hardens: jsonPath wiring into the extractor,
-    // per-poll date/param re-templating, header/CSRF freshness, and tests.
+    // Structured endpoint (mode:'api') → runtime fetch_api source. The url +
+    // bodyTemplate keep their {today}/{date} placeholders UNSUBSTITUTED here:
+    // extractors/fetch-api.ts renders them at fetch time, every poll, so a
+    // frozen date can never ship (the stale-date guard). `dateRender` hands
+    // the extractor the PMS's learned date format so the rendered date looks
+    // like what the endpoint was captured with (ISO fallback otherwise).
     const h = action.parse.hint;
     apiUrl = h.url;
     columns = h.columns;
@@ -276,18 +416,26 @@ export function actionRecipeToTableTemplate(
       ...(h.bodyTemplate ? { body: h.bodyTemplate } : {}),
       ...(h.headers ? { headers: h.headers } : {}),
       ...(h.jsonPath ? { jsonPath: h.jsonPath } : {}),
+      ...(learned?.dateFormat ? { dateRender: learned.dateFormat } : {}),
       expectJson: true,
     };
   }
 
-  // Single source for non-drill-down targets.
+  // Single source for non-drill-down targets. The learned PMS date format
+  // rides EVERY mode's extra (Codex P1): a csv/dom report URL can carry a
+  // {today} placeholder too, and rendering it in ISO when the PMS expects
+  // MDY would silently pull wrong-date (or empty) reports each poll.
+  const mergedExtra: Record<string, unknown> = {
+    ...(learned?.dateFormat ? { dateRender: learned.dateFormat } : {}),
+    ...(extra ?? {}),
+  };
   const sources: TableTemplateSource[] = [{
     name: 'primary',
     url: apiUrl ?? sourceUrl,
     mode,
     selectors,
     columns,
-    ...(extra ? { extra } : {}),
+    ...(Object.keys(mergedExtra).length > 0 ? { extra: mergedExtra } : {}),
   }];
   const fields: Record<string, TableTemplateField> = {};
   for (const [col, selectorOrColumn] of Object.entries(columns)) {
@@ -307,6 +455,11 @@ export function actionRecipeToTableTemplate(
     sources[0]!.url = action.drillDown.listUrl;
     sources[0]!.selectors = { rowSelector: action.drillDown.listRowSelector };
     sources[0]!.columns = action.drillDown.listColumns;
+    // The drill-down list page is always DOM (listRowSelector + CSS column
+    // map). Without this, a csv/api parse hint above would leave mode =
+    // csv_download / fetch_api pointing at an HTML list URL — fetch_api
+    // would then demand JSON from a webpage and the feed would perma-fail.
+    sources[0]!.mode = 'dom_table';
     // Single-source template: keep ONLY the list-row fields. Reset the
     // field map so any columns inferred from the non-drill-down parse hint
     // above don't linger as orphans pointing at a discarded source.
@@ -329,32 +482,53 @@ export function actionRecipeToTableTemplate(
     sourceActionKey: actionKey,
   };
 
-  // The adapter only replays the LAST `goto` as the source URL — every
-  // click / select / type_text / wait_for / press_key the mapper recorded
-  // to reach the table is DISCARDED. For feeds that need interaction
+  // For DOM modes the adapter only replays the LAST `goto` as the source
+  // URL — every click / select / type_text / wait_for / press_key the mapper
+  // recorded to reach the table is DISCARDED. For feeds that need interaction
   // before the table renders, the extractor would then time out and churn
-  // paid re-mapping every 30s. Full pre-step replay is deferred; for now,
+  // paid re-mapping every 30s. Full DOM pre-step replay is deferred; for now,
   // flag the template `incomplete` (surfaces in admin review) and warn,
   // rather than silently timing out. Allowed no-interaction kinds: goto,
   // screenshot, wait_ms.
-  const NON_INTERACTION_KINDS = new Set(['goto', 'screenshot', 'wait_ms']);
-  const interactionKinds = [
-    ...new Set(
-      action.steps
-        .map((s) => s.kind)
-        .filter((k) => !NON_INTERACTION_KINDS.has(k)),
-    ),
-  ];
-  if (interactionKinds.length > 0) {
+  //
+  // Two modes are EXEMPT — their recorded interaction is not discarded:
+  //   - 'csv': the click-flow is carried on the source (preSteps +
+  //     downloadButton, derived above) and replayed by the extractor;
+  //   - 'api': runtime calls the learned endpoint directly with the page's
+  //     cookies — the recorded steps were only the mapping-time trigger that
+  //     made the page fire the request we captured.
+  //
+  // EXCEPTION (Codex P1): a csv flow with NO recorded trigger click can never
+  // download anything — the extractor would fail "missing downloadButton"
+  // every poll. Flag it incomplete so it surfaces in admin review instead of
+  // silently churning.
+  if (action.parse.mode === 'csv' && csvTriggerless) {
     template.incomplete = true;
     log.warn(
-      'recipe-adapter: action requires pre-table interaction the adapter does not replay — flagged incomplete for operator review',
-      {
-        actionKey,
-        tableName: route.tableName,
-        interactionKinds,
-      },
+      'recipe-adapter: csv flow has no download trigger click — flagged incomplete for operator review',
+      { actionKey, tableName: route.tableName },
     );
+  }
+  if (action.parse.mode !== 'api' && action.parse.mode !== 'csv') {
+    const NON_INTERACTION_KINDS = new Set(['goto', 'screenshot', 'wait_ms']);
+    const interactionKinds = [
+      ...new Set(
+        action.steps
+          .map((s) => s.kind)
+          .filter((k) => !NON_INTERACTION_KINDS.has(k)),
+      ),
+    ];
+    if (interactionKinds.length > 0) {
+      template.incomplete = true;
+      log.warn(
+        'recipe-adapter: action requires pre-table interaction the adapter does not replay — flagged incomplete for operator review',
+        {
+          actionKey,
+          tableName: route.tableName,
+          interactionKinds,
+        },
+      );
+    }
   }
 
   return template;

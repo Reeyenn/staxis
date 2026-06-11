@@ -23,7 +23,7 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
-import { runSource, applyTemplateParsers } from './template-runner.js';
+import { runSource, applyTemplateParsers, findBlankContractColumns } from './template-runner.js';
 import type { TableTemplate } from '../types.js';
 import type { TemplateRunResult } from './template-runner.js';
 
@@ -133,6 +133,24 @@ export async function runMultiSourceTemplate(args: {
       sourceResults,
       reason: `unknown aggregate strategy: ${strategy}`,
     };
+  }
+
+  // Same contract-integrity guard as the single-source path (see
+  // findBlankContractColumns) — applied AFTER aggregation so merge/concat
+  // output is what's judged. No-op for dashboard_counts (non-core action),
+  // future-proofs concat_rows feeds built from core actions.
+  const blankCols = findBlankContractColumns(template, rows);
+  if (blankCols.length > 0) {
+    const reason =
+      `blank_required_columns: [${blankCols.join(', ')}] — ${rows.length} aggregated row(s) ` +
+      'but the column(s) are blank in every row (selector/jsonPath drift?)';
+    log.warn('multi-source-runner: feed failed contract integrity guard', {
+      tableName: template.tableName,
+      sourceActionKey: template.sourceActionKey,
+      blankCols,
+      rowCount: rows.length,
+    });
+    return { ok: false, rows: [], sourceResults, reason };
   }
 
   log.info('multi-source-runner: aggregation complete', {
