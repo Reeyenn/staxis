@@ -39,6 +39,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -326,13 +327,36 @@ async function sealOne(
   );
   const avgTurnaround = roomsCompleted > 0 ? Math.round(totalMinutes / roomsCompleted) : null;
 
+  // feat/cua-partial-promotion — daily_logs is HISTORY; a zero sealed from
+  // a feed that simply wasn't learned yet poisons every later trend/report
+  // and no banner can retro-fix it. Null the count fields whose source
+  // feeds are still learning. Fail-safe: lookup error → no flags → exact
+  // pre-existing behavior.
+  let reservationsLearning = false;
+  let roomStatusLearningSeal = false;
+  let countsLearning = false;
+  try {
+    const fs = await getPropertyFeedStatus(p.id);
+    if (fs.mode === 'live') {
+      reservationsLearning = fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning';
+      roomStatusLearningSeal = fs.feeds.roomStatus === 'learning';
+      countsLearning = fs.feeds.dashboardCounts === 'learning';
+    }
+  } catch { /* non-fatal */ }
+
   // Prefer the CUA's actual in_house count over the derived total_rooms
   // minus vacancies. Falls back to the derived formula when the in_house
   // snapshot is missing (CUA hasn't reached this property yet).
+  // Partial-promotion guard: the fallback math runs off room-status-derived
+  // vacancy counts — disabled while that feed is learning (it would seal
+  // "all rooms occupied" out of thin air); the in_house path is disabled
+  // while the counts feed is learning.
   const occupied = planRow
-    ? planRow.in_house > 0
+    ? planRow.in_house > 0 && !countsLearning
       ? planRow.in_house
-      : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
+      : roomStatusLearningSeal
+        ? null
+        : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
     : null;
 
   // Cleaning minutes per category: read from properties.config.cleaningMinutes
@@ -360,12 +384,16 @@ async function sealOne(
     property_id: p.id,
     date: targetDate,
     occupied: occupied !== null ? Math.round(occupied) : null,
-    checkouts: planRow ? Math.round(planRow.checkouts) : null,
-    stayovers: planRow ? Math.round(planRow.stayovers) : null,
+    // checkouts/stayovers derive from pms_reservations — NULL (not 0) while
+    // the reservation feeds are still being learned.
+    checkouts: planRow && !reservationsLearning ? Math.round(planRow.checkouts) : null,
+    stayovers: planRow && !reservationsLearning ? Math.round(planRow.stayovers) : null,
     rooms_completed: Math.round(roomsCompleted),
     avg_turnaround_minutes: avgTurnaround,
     total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
-    recommended_staff: planRow ? recommendedHKs : null,
+    // Derived from checkout/stayover/vacant-dirty counts — meaningless when
+    // any of those sources is still learning.
+    recommended_staff: planRow && !reservationsLearning && !roomStatusLearningSeal ? recommendedHKs : null,
   };
 
   const { error: upErr } = await supabaseAdmin

@@ -59,6 +59,12 @@ export interface TomorrowOutlookBlock {
   recommendedLaborCostCents: number | null;
   roomsPendingOOO: number;
   roomsPendingInspection: number;
+  /** feat/cua-partial-promotion — true when the arrivals/departures feeds
+   *  are still being learned for this property: the counts above may be 0
+   *  because the SOURCE is missing. The email renders "still syncing"
+   *  instead of confident numbers. Optional for back-compat with stored
+   *  payloads. */
+  reservationFeedsLearning?: boolean;
 }
 
 export interface Anomaly {

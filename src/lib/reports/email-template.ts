@@ -226,9 +226,14 @@ export function renderDailyReport(args: {
       ${metricRow(dictionary.urgentPending, String(is.urgentItemsStillPending), { tone: is.urgentItemsStillPending > 0 ? 'warn' : 'good' })}
 
       ${sectionHeader(dictionary.tomorrow)}
-      ${metricRow(dictionary.arrivals, String(tm.arrivals))}
-      ${metricRow(dictionary.departures, String(tm.departures))}
-      ${metricRow(dictionary.projectedToClean, String(tm.projectedRoomsToClean))}
+      ${tm.reservationFeedsLearning
+        // feat/cua-partial-promotion — never mail a confident "0 arrivals"
+        // while the reservation feeds are still being learned.
+        ? metricRow(dictionary.arrivals, lang === 'es' ? 'sincronizando desde el PMS…' : 'still syncing from your PMS…') + '\n' +
+          metricRow(dictionary.departures, lang === 'es' ? 'sincronizando desde el PMS…' : 'still syncing from your PMS…')
+        : metricRow(dictionary.arrivals, String(tm.arrivals)) + '\n' +
+          metricRow(dictionary.departures, String(tm.departures)) + '\n' +
+          metricRow(dictionary.projectedToClean, String(tm.projectedRoomsToClean))}
       ${metricRow(dictionary.recommendedHeadcount, fmtMaybe(tm.recommendedHeadcount, (n) => String(n)))}
       ${metricRow(dictionary.recommendedCost, fmtMaybe(tm.recommendedLaborCostCents, fmtMoney))}
       ${metricRow(dictionary.roomsPendingOoo, String(tm.roomsPendingOOO))}
@@ -400,9 +405,19 @@ function renderDailyText(p: DailyReportPayload, lang: Lang): string {
     `  ${d.urgentPending}: ${p.issues.urgentItemsStillPending}`,
     '',
     `${d.tomorrow}:`,
-    `  ${d.arrivals}: ${p.tomorrow.arrivals}`,
-    `  ${d.departures}: ${p.tomorrow.departures}`,
-    `  ${d.projectedToClean}: ${p.tomorrow.projectedRoomsToClean}`,
+    // feat/cua-partial-promotion — while the reservation feeds are still
+    // being learned, a "0 arrivals tomorrow" line would be a confident
+    // wrong claim mailed out daily. Say "still syncing" instead.
+    ...(p.tomorrow.reservationFeedsLearning
+      ? [
+          `  ${d.arrivals}: ${lang === 'es' ? 'sincronizando desde el PMS…' : 'still syncing from your PMS…'}`,
+          `  ${d.departures}: ${lang === 'es' ? 'sincronizando desde el PMS…' : 'still syncing from your PMS…'}`,
+        ]
+      : [
+          `  ${d.arrivals}: ${p.tomorrow.arrivals}`,
+          `  ${d.departures}: ${p.tomorrow.departures}`,
+          `  ${d.projectedToClean}: ${p.tomorrow.projectedRoomsToClean}`,
+        ]),
     `  ${d.recommendedHeadcount}: ${p.tomorrow.recommendedHeadcount ?? '—'}`,
   ];
   if (p.anomalies.length > 0) {

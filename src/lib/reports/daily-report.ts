@@ -39,6 +39,7 @@ import {
   type WorkOrderRow,
 } from './aggregate';
 import { detectAnomalies, type DailyBaselineSlice } from './anomaly-detector';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import type { DailyReportPayload, TomorrowOutlookBlock } from './types';
 
 const DEFAULT_DASHBOARD_BASE = 'https://getstaxis.com';
@@ -110,6 +111,17 @@ async function buildTomorrowOutlook(args: {
 
   const arrivals = (arrivalsRows ?? []).filter(r => r.status !== 'cancelled' && r.status !== 'no_show').length;
   const departures = (departuresRows ?? []).filter(r => r.status !== 'cancelled' && r.status !== 'no_show').length;
+
+  // feat/cua-partial-promotion — a 0 here while the reservation feeds are
+  // still being learned is missing data, not an empty hotel. Flag it so the
+  // email says "still syncing" instead of mailing a confident wrong zero
+  // every day. Fail-safe: errors → false → today's behavior.
+  let reservationFeedsLearning = false;
+  try {
+    const fs = await getPropertyFeedStatus(property.id);
+    reservationFeedsLearning = fs.mode === 'live' &&
+      (fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning');
+  } catch { /* non-fatal */ }
   // Projected rooms to clean tomorrow ≈ tomorrow's departures + some
   // share of stayovers (we don't have a clean stayover-vs-arrivals split
   // until the engine runs tomorrow morning; the simple proxy is good
@@ -171,6 +183,7 @@ async function buildTomorrowOutlook(args: {
     recommendedLaborCostCents,
     roomsPendingOOO: ooCount,
     roomsPendingInspection: inspCount,
+    ...(reservationFeedsLearning ? { reservationFeedsLearning } : {}),
   };
 }
 

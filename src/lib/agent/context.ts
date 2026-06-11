@@ -11,6 +11,8 @@ import type { AppRole } from '@/lib/roles';
 import { computeRoomTotal } from './tools/_helpers';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { learningFeeds } from '@/lib/pms/feed-status';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface HotelSnapshot {
@@ -54,6 +56,14 @@ export interface HotelSnapshot {
     activeToday: number;
     assignedHousekeepers: number;
   };
+  /**
+   * feat/cua-partial-promotion — PMS feeds that are still being learned for
+   * this property (partial promotion). When non-empty, the room/reservation
+   * counts above may be zero because the SOURCE is missing, not because the
+   * hotel is empty — formatSnapshotForPrompt emits an explicit caveat so
+   * the agent says "still syncing" instead of confidently stating zeros.
+   */
+  pmsLearningFeeds?: string[];
   // Only populated for housekeeping role — their own assigned rooms.
   myRooms?: Array<{
     id: string;
@@ -278,12 +288,27 @@ async function buildHotelSnapshotUncached(
     }
   }
 
+  // feat/cua-partial-promotion — which PMS feeds are still being learned.
+  // Cheap (its own 30s cache) and fail-safe: errors yield "no caveat",
+  // which is exactly today's behavior.
+  let pmsLearningFeeds: string[] | undefined;
+  try {
+    const fs = await getPropertyFeedStatus(propertyId);
+    if (fs.mode === 'live') {
+      const learning = learningFeeds(fs);
+      if (learning.length > 0) pmsLearningFeeds = learning;
+    }
+  } catch {
+    // non-fatal
+  }
+
   const snapshot: HotelSnapshot = {
     today,
     property: { id: propertyId, name: propertyName, timezone },
     rooms,
     staff: { activeToday, assignedHousekeepers },
     ...(myRooms ? { myRooms } : {}),
+    ...(pmsLearningFeeds ? { pmsLearningFeeds } : {}),
   };
 
   cache.set(key, { snapshot, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -448,6 +473,24 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
     (snap.rooms.issuesFlagged ? `, ${snap.rooms.issuesFlagged} with issue notes` : '') +
     (snap.rooms.helpRequested ? `, ${snap.rooms.helpRequested} requesting help` : ''),
   );
+  if (snap.pmsLearningFeeds?.length) {
+    // feat/cua-partial-promotion — the single most important honesty rule
+    // for the voice/chat copilot: a zero that comes from a missing feed is
+    // not a fact about the hotel. Name the feeds and forbid zero-claims.
+    const names: Record<string, string> = {
+      roomStatus: 'room statuses',
+      arrivals: 'arrivals',
+      departures: 'departures',
+      workOrders: 'PMS work orders',
+      dashboardCounts: 'occupancy counts',
+    };
+    const list = snap.pmsLearningFeeds.map((f) => names[f] ?? f).join(', ');
+    lines.push(
+      `CAUTION: this hotel's PMS connection is still learning these feeds: ${list}. ` +
+      `Counts derived from them above may read 0 because the data is missing, not because nothing is happening. ` +
+      `Do NOT state zero ${list} as fact — say that data is still syncing from the hotel's PMS instead.`,
+    );
+  }
   if (snap.rooms.seedingGap > 0) {
     // The agent needs to know it's looking at a partial picture so it
     // doesn't claim "100% occupancy" or "all rooms occupied" when the live
