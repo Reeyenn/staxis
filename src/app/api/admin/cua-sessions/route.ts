@@ -99,6 +99,12 @@ export async function GET(req: NextRequest) {
     status: string;
     missing_required: string[];
     missing_business_critical: string[];
+    /** Newest row with status='draft' — the founder's review queue. Keyed
+     *  explicitly (hunter re-review P2-3): keying "awaiting review" off the
+     *  LATEST row's status hid the parked draft whenever a newer
+     *  quarantined/deprecated row existed, while the backfill cron's
+     *  draft-awaiting gate stayed latched on it with no visible explanation. */
+    newest_draft: number | null;
   }
   const knowledgeByFamily = new Map<string, FamilyKnowledge>();
   for (const k of (kfRows ?? []) as KnowledgeRow[]) {
@@ -112,6 +118,7 @@ export async function GET(req: NextRequest) {
         active: k.status === 'active' ? k.version : null,
         latest: k.version,
         status: k.status,
+        newest_draft: k.status === 'draft' ? k.version : null,
         ...(k.status === 'active' ? gapsOf(k) : { missing_required: [], missing_business_critical: [] }),
       });
     } else {
@@ -120,6 +127,9 @@ export async function GET(req: NextRequest) {
         const g = gapsOf(k);
         existing.missing_required = g.missing_required;
         existing.missing_business_critical = g.missing_business_critical;
+      }
+      if (k.status === 'draft' && existing.newest_draft === null) {
+        existing.newest_draft = k.version; // versions sorted desc → first draft = newest
       }
       // versions are sorted desc so first is latest
     }

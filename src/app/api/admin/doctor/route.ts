@@ -2893,6 +2893,7 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
     }
     type KfRow = {
       pms_family: string;
+      version: number;
       feed_gaps: { missingRequired?: Array<{ target: string }>; missingBusinessCritical?: string[] } | null;
     };
     const kfRows = (kfs as KfRow[] | null) ?? [];
@@ -2928,15 +2929,29 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
     // feat/cua-partial-promotion — partial actives are a SANCTIONED state
     // (the feeds we have are live; gaps auto-retry daily), but ops should
     // see them: warn only when REQUIRED feeds are gapped. BC-only gaps ride
-    // in the ok detail.
+    // in the ok detail. Retry claims must be truthful: a draft newer than
+    // the active PAUSES the cron's retries until it's reviewed.
     const partials = kfRows.filter((r) => (r.feed_gaps?.missingRequired?.length ?? 0) > 0);
     if (partials.length > 0) {
+      const partialFamilies = partials.map((r) => r.pms_family);
+      const activeVersionByFamily = new Map(kfRows.map((r) => [r.pms_family, r.version]));
+      const pausedFamilies = new Set<string>();
+      try {
+        const { data: draftRows2 } = await supabaseAdmin
+          .from('pms_knowledge_files')
+          .select('pms_family, version')
+          .eq('status', 'draft')
+          .in('pms_family', partialFamilies);
+        for (const d of (draftRows2 as Array<{ pms_family: string; version: number }> | null) ?? []) {
+          if (d.version > (activeVersionByFamily.get(d.pms_family) ?? 0)) pausedFamilies.add(d.pms_family);
+        }
+      } catch { /* best-effort — falls back to the generic retry copy */ }
       const detailParts = partials.map((r) =>
-        `${r.pms_family} (missing: ${(r.feed_gaps?.missingRequired ?? []).map((g) => g.target).join(', ')})`);
+        `${r.pms_family} (missing: ${(r.feed_gaps?.missingRequired ?? []).map((g) => g.target).join(', ')}${pausedFamilies.has(r.pms_family) ? '; retries PAUSED — draft awaiting review' : ''})`);
       return {
         status: 'warn',
         detail: `${partials.length}/${families.length} families run a PARTIAL active recipe — ${detailParts.join('; ')}`,
-        fix: 'Expected while the daily pms-backfill-missing-feeds cron retries. To chase a feed now: /admin/property-sessions → repair the feed, or regenerate the map.',
+        fix: 'Gapped feeds auto-retry daily via pms-backfill-missing-feeds, EXCEPT while a newer draft awaits review (promote or delete it in Manage maps to resume). To chase a feed now: /admin/property-sessions → repair the feed, or regenerate the map.',
       };
     }
     const bcOnly = kfRows.filter((r) => (r.feed_gaps?.missingBusinessCritical?.length ?? 0) > 0);

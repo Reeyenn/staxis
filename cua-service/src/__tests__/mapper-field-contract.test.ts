@@ -39,6 +39,7 @@ import {
 } from '../target-contract.js';
 import {
   evaluatePromotionGate, evaluateSeededPromotionGuard, computeFeedGaps, feedGapEntryKeys,
+  shouldActivateImmediately,
 } from '../mapping-driver.js';
 import { getParser } from '../parsers/registry.js';
 import '../parsers/generic.js'; // side-effect: registers generic_date/currency/integer/number/boolean/enum (the universal default)
@@ -593,7 +594,7 @@ describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT acti
     assert.equal(v.ok, true);
   });
 
-  test('backfill with EQUAL gaps parks (no churn) — but a self-repair with equal gaps promotes', () => {
+  test('backfill with EQUAL gaps parks WITHOUT saving a draft (no churn, no latched review gate) — but a self-repair with equal gaps passes', () => {
     const active = fullRecipe();
     delete active.actions.getDepartures;
     const newR = fullRecipe();
@@ -602,8 +603,22 @@ describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT acti
     const asBackfill = evaluateSeededPromotionGuard(base, newR.actions, gapsOf(newR), true);
     assert.equal(asBackfill.ok, false);
     assert.match((asBackfill as { reason: string }).reason, /no gap progress/);
+    // skipSave: a coverage-identical draft must not be persisted — it would
+    // latch the cron's draft-awaiting-review gate forever (hunter P1-2).
+    assert.equal((asBackfill as { skipSave?: boolean }).skipSave, true);
     const asRepair = evaluateSeededPromotionGuard(base, newR.actions, gapsOf(newR), false);
     assert.equal(asRepair.ok, true);
+  });
+
+  test('stale-seed superset failure SAVES the draft (skipSave not set) — genuinely reviewable', () => {
+    const newR = fullRecipe();
+    const active = fullRecipe({ getLostAndFound: tableAction({ pms_item_id: 'a' }) });
+    const v = evaluateSeededPromotionGuard(
+      { version: 7, knowledge: { actions: active.actions } },
+      newR.actions, gapsOf(newR), true,
+    );
+    assert.equal(v.ok, false);
+    assert.equal((v as { skipSave?: boolean }).skipSave, undefined);
   });
 
   test('legacy active without stored feedGaps falls back to computing them from its actions', () => {
@@ -615,6 +630,19 @@ describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT acti
       newR.actions, gapsOf(newR), true,
     );
     assert.equal(v.ok, true);
+  });
+});
+
+describe('shouldActivateImmediately — THE founder gate (park-not-promote)', () => {
+  test('only a COMPLETE recipe activates itself; every other outcome waits for a human', () => {
+    // Founder decision 2026-06-11: incomplete recipes NEVER self-activate.
+    // This pins the runMappingJob seam — re-adding park_partial here would
+    // silently restore auto-activation of partials without any other test
+    // going red.
+    assert.equal(shouldActivateImmediately('auto_promote'), true);
+    assert.equal(shouldActivateImmediately('park_partial'), false);
+    assert.equal(shouldActivateImmediately('park_draft'), false);
+    assert.equal(shouldActivateImmediately('quarantine'), false);
   });
 });
 

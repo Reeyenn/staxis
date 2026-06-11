@@ -442,6 +442,32 @@ export async function runMappingJob(
       input.backfill_missing_feeds === true,
     );
     if (!guard.ok) {
+      // Hunter re-review P1-2: a BACKFILL that made no gap progress must not
+      // persist a draft at all — its content is identical-in-coverage to the
+      // active, the admin has nothing to review, and (founder-gated flow)
+      // the cron's draft-awaiting-review gate would latch on it FOREVER,
+      // silently killing the promised daily retries after attempt #1. The
+      // job result still records the park_draft outcome (breaker counts it);
+      // stale-seed parks DO save — those are genuinely reviewable.
+      if (guard.skipSave) {
+        log.warn('mapping-driver: backfill made no gap progress — not persisting a draft', {
+          jobId, reason: guard.reason,
+        });
+        await broadcastMappingEvent(channel, {
+          type: 'mapping_completed',
+          jobId,
+          label: 'Done — park_draft (no progress, draft not saved)',
+          pct: 100,
+          detail: { promotionDecision: 'park_draft', promotionReason: guard.reason },
+          at: new Date().toISOString(),
+        });
+        return {
+          ok: true,
+          promotionDecision: 'park_draft',
+          promotionReason: guard.reason,
+          ...computeStats(result),
+        };
+      }
       log.warn('mapping-driver: seeded promotion guard parked the draft', {
         jobId, reason: guard.reason,
       });
@@ -460,19 +486,25 @@ export async function runMappingJob(
   //    feedGaps are embedded whenever non-empty REGARDLESS of decision, so a
   //    parked draft an admin later promotes manually still carries them.
   const initialStatus = gate.decision === 'quarantine' ? 'quarantined' : 'draft';
-  const draft = await saveDraftKnowledgeFile(input.pms_family, result.recipe, initialStatus, gate.feedGaps);
+  const draft = await saveDraftKnowledgeFile(
+    input.pms_family, result.recipe, initialStatus, gate.feedGaps,
+    // Hunter re-review P2-5 — the admin reviewing Manage maps needs to see
+    // WHY a draft parked, not just which targets it has.
+    `${gate.decision}: ${gate.reason}`,
+  );
   if (!draft.ok) {
     return { ok: false, error: `recipe mapped successfully but draft save failed: ${draft.error}` };
   }
 
   // 5. ONLY a complete recipe auto-activates (founder decision 2026-06-11:
   //    every INCOMPLETE recipe waits for his Promote click — park_partial
-  //    stays a draft here). Atomically demote prior active + promote this
-  //    draft. The partial unique index
-  //    pms_knowledge_files_one_active_per_family (migration 0201) means
-  //    we MUST demote before promote or the second update fails. Doing
-  //    both serially is fine — the index enforces post-condition.
-  if (gate.decision === 'auto_promote') {
+  //    stays a draft here; shouldActivateImmediately is the pinned seam).
+  //    Atomically demote prior active + promote this draft. The partial
+  //    unique index pms_knowledge_files_one_active_per_family (migration
+  //    0201) means we MUST demote before promote or the second update
+  //    fails. Doing both serially is fine — the index enforces
+  //    post-condition.
+  if (shouldActivateImmediately(gate.decision)) {
     const promoted = await promoteDraft(input.pms_family, draft.id);
     if (!promoted.ok) {
       log.warn('mapping-driver: promotion failed, leaving as draft', {
@@ -482,6 +514,13 @@ export async function runMappingJob(
       // manually. Decision is downgraded to park_draft for clarity.
       gate.decision = 'park_draft';
       gate.reason = `promotion failed: ${promoted.error}`;
+    } else {
+      // Hunter re-review P1-1 — a family whose first learn just completed
+      // has its session(s) parked at paused_no_knowledge_file, and the
+      // supervisor only respawns starting/alive/paused_cost_cap. Without
+      // this nudge the recipe is active but no robot ever polls it. Same
+      // revive the admin promote route performs.
+      await reviveNoKnowledgeSessions(input.pms_family);
     }
   }
 
@@ -648,7 +687,7 @@ async function checkSeededPromotionGuards(
   newRecipe: Recipe,
   newGaps: FeedGaps,
   isBackfill: boolean,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true } | { ok: false; reason: string; skipSave?: boolean }> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
     .select('version, knowledge')
@@ -673,13 +712,16 @@ async function checkSeededPromotionGuards(
   );
 }
 
-/** Pure decision core of checkSeededPromotionGuards — exported for tests. */
+/** Pure decision core of checkSeededPromotionGuards — exported for tests.
+ *  `skipSave: true` on the no-gap-progress backfill failure means "do not
+ *  even persist this draft" (coverage-identical to the active; saving it
+ *  would latch the cron's draft-awaiting-review gate forever). */
 export function evaluateSeededPromotionGuard(
   active: { version: number; knowledge: { actions?: Record<string, unknown>; feedGaps?: FeedGaps } },
   newActions: Recipe['actions'],
   newGaps: FeedGaps,
   isBackfill: boolean,
-): { ok: true } | { ok: false; reason: string } {
+): { ok: true } | { ok: false; reason: string; skipSave?: boolean } {
   const activeActions = Object.keys(active.knowledge.actions ?? {});
   const newActionKeys = new Set(Object.keys(newActions));
   const dropped = activeActions.filter((k) => !newActionKeys.has(k));
@@ -699,11 +741,42 @@ export function evaluateSeededPromotionGuard(
     if (!isSubset || newKeys.length >= activeKeys.size) {
       return {
         ok: false,
-        reason: `backfill made no gap progress vs active v${active.version} (active gaps: ${activeKeys.size}, new gaps: ${newKeys.length}) — parking instead of churning versions`,
+        reason: `backfill made no gap progress vs active v${active.version} (active gaps: ${activeKeys.size}, new gaps: ${newKeys.length}) — outcome recorded, draft not saved`,
+        skipSave: true,
       };
     }
   }
   return { ok: true };
+}
+
+/**
+ * THE founder gate, as a pure seam (hunter re-review P2-6): only a COMPLETE
+ * recipe activates itself; every other outcome waits for a human. Pinned by
+ * the contract tests so a future `|| 'park_partial'` can't sneak activation
+ * back in without a red test.
+ */
+export function shouldActivateImmediately(
+  decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine',
+): boolean {
+  return decision === 'auto_promote';
+}
+
+/**
+ * Flip sessions parked at paused_no_knowledge_file back to 'starting' so the
+ * supervisor respawns them (≤30s) now that an active recipe exists. Best-
+ * effort: a failure only delays polling until the next nightly restart.
+ */
+async function reviveNoKnowledgeSessions(pmsFamily: string): Promise<void> {
+  const { error } = await supabase
+    .from('property_sessions')
+    .update({ status: 'starting', paused_reason: null, paused_until: null })
+    .eq('pms_family', pmsFamily)
+    .eq('status', 'paused_no_knowledge_file');
+  if (error) {
+    log.warn('mapping-driver: could not revive paused_no_knowledge_file sessions', {
+      pmsFamily, err: error.message,
+    });
+  }
 }
 
 async function promoteDraft(
@@ -847,6 +920,7 @@ async function saveDraftKnowledgeFile(
   recipe: Recipe,
   status: 'draft' | 'quarantined' = 'draft',
   feedGaps?: FeedGaps,
+  gateNote?: string,
 ): Promise<{ ok: true; id: string; version: number } | { ok: false; error: string }> {
   // Find the highest existing version for this family; new version = max+1.
   const { data: existing, error: selErr } = await supabase
@@ -942,7 +1016,8 @@ async function saveDraftKnowledgeFile(
       status,                   // 'draft' (gate may promote) or 'quarantined'
       knowledge,
       created_by: 'mapper:mapping-driver',
-      notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.`,
+      notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
+        (gateNote ? ` Gate: ${gateNote}` : ''),
       signature: signatureBytes,
       signed_with_key_id: signedWithKeyId,
       signed_at: signedAt,

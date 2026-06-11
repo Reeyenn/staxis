@@ -19,7 +19,8 @@
  *                    is present AND dead — classifying it 'live' would
  *                    resurrect the exact fake-empty/all-dirty bug this
  *                    feature exists to prevent. Learning feeds are being
- *                    auto-retried daily (backfill cron).
+ *                    auto-retried daily (backfill cron; paused while a
+ *                    newer draft awaits the admin's review).
  *  - 'live'        — the target is in `actions` and not gap-listed.
  *  - 'unavailable' — absent and not gap-listed: outside the mapper's
  *                    learnable catalogue (e.g. getDashboardCounts on every

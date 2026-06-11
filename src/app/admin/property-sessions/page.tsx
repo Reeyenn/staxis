@@ -51,6 +51,8 @@ interface SessionRow {
     // feat/cua-partial-promotion — gaps on the ACTIVE version.
     missing_required?: string[];
     missing_business_critical?: string[];
+    /** Newest status='draft' row (the founder's review queue). */
+    newest_draft?: number | null;
   } | null;
   /** Latest missing-feed backfill attempt for this family (best-effort). */
   backfill: { last_at: string; last_outcome: string } | null;
@@ -251,26 +253,31 @@ export default function PropertySessionsPage() {
                   {/* feat/cua-partial-promotion (founder-gated) — a draft
                       newer than the active is PARKED awaiting the Promote
                       click; surface it so partial maps don't sit invisible.
-                      NOT live — copy must never imply otherwise. */}
-                  {s.knowledge_file && s.knowledge_file.latest > (s.knowledge_file.active ?? 0) &&
-                    s.knowledge_file.status === 'draft' && (
+                      NOT live — copy must never imply otherwise. Keyed on
+                      newest_draft explicitly (a newer quarantined row must
+                      not hide it). */}
+                  {s.knowledge_file && (s.knowledge_file.newest_draft ?? 0) > (s.knowledge_file.active ?? 0) && (
                     <div className="mt-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
-                      <span className="font-semibold">Draft v{s.knowledge_file.latest} awaiting review</span>
+                      <span className="font-semibold">Draft v{s.knowledge_file.newest_draft} awaiting review</span>
                       {' — not live. Review what the robot learned and promote it in Manage maps; daily auto-retries are paused until then.'}
                     </div>
                   )}
 
                   {/* feat/cua-partial-promotion — partial active recipe:
-                      amber for missing REQUIRED feeds (auto-retried daily by
-                      the backfill cron), quiet gray for BC-only gaps. */}
+                      amber for missing REQUIRED feeds, quiet gray for
+                      BC-only gaps. The retry line must not contradict the
+                      blue chip: while a newer draft awaits review, retries
+                      are PAUSED (the cron's draft-awaiting gate). */}
                   {(s.knowledge_file?.missing_required?.length ?? 0) > 0 && (
                     <div className="mt-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
-                      <span className="font-semibold">Partial recipe</span>
+                      <span className="font-semibold">Partial live recipe</span>
                       {' — still learning: '}
                       {s.knowledge_file!.missing_required!.join(', ')}
-                      {s.backfill
-                        ? ` · last auto-retry ${new Date(s.backfill.last_at).toLocaleDateString()} (${s.backfill.last_outcome})`
-                        : ' · auto-retrying daily'}
+                      {(s.knowledge_file!.newest_draft ?? 0) > (s.knowledge_file!.active ?? 0)
+                        ? ' · auto-retries paused while the draft above awaits review'
+                        : s.backfill
+                          ? ` · last auto-retry ${new Date(s.backfill.last_at).toLocaleDateString()} (${s.backfill.last_outcome})`
+                          : ' · auto-retrying daily'}
                     </div>
                   )}
                   {(s.knowledge_file?.missing_required?.length ?? 0) === 0 &&

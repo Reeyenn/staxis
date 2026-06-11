@@ -188,5 +188,29 @@ export async function POST(req: NextRequest) {
     demoted: previousActive?.id ?? null, promotedBy: auth.email ?? auth.userId,
   });
 
-  return ok({ map: promoted }, { requestId });
+  // feat/cua-partial-promotion (hunter re-review P1-1) — the promote click
+  // must also REVIVE the robot. A family whose first learn parked (the
+  // founder-gated default for partial recipes) has its sessions sitting at
+  // paused_no_knowledge_file, and the supervisor only respawns
+  // starting/alive/paused_cost_cap — without this flip the recipe is active
+  // but no robot ever polls it, and the owner stares at "Connecting to your
+  // PMS…" forever. Same revive mapping-driver performs on auto_promote.
+  // Best-effort: a failure only delays polling until a manual restart.
+  const { data: revived, error: reviveErr } = await supabaseAdmin
+    .from('property_sessions')
+    .update({ status: 'starting', paused_reason: null, paused_until: null })
+    .eq('pms_family', family)
+    .eq('status', 'paused_no_knowledge_file')
+    .select('property_id');
+  if (reviveErr) {
+    log.warn('live-mapper: promoted OK but could not revive paused sessions', {
+      requestId, family, err: reviveErr.message,
+    });
+  } else if ((revived ?? []).length > 0) {
+    log.info('live-mapper: revived paused_no_knowledge_file sessions', {
+      requestId, family, count: (revived ?? []).length,
+    });
+  }
+
+  return ok({ map: promoted, revivedSessions: (revived ?? []).length }, { requestId });
 }

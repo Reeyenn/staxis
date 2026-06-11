@@ -33,7 +33,7 @@ const STRINGS = {
     // feat/cua-partial-promotion (founder-gated) — the robot learned SOME
     // feeds; the map is PARKED for a human Promote click, NOT live yet.
     // Honest: never imply data is flowing, never hide what it got.
-    doneTitlePartial: "We've learned most of your PMS — a quick review before it goes live.",
+    doneTitlePartial: "The robot's first map of your PMS is ready — a quick review before it goes live.",
     doneTitlePark: "We've learned your PMS — putting on the finishing touches.",
     doneTitleQuarantine: "We've learned your PMS.",
     doneBodyAuto: "Everything's set — your live data is already flowing.",
@@ -81,7 +81,7 @@ const STRINGS = {
     mfaBody:
       'Tu sistema pidió confirmar un paso de seguridad. Puede tomar unos minutos — no necesitas hacer nada.',
     doneTitleAuto: 'Tu sistema está conectado y activo.',
-    doneTitlePartial: 'Aprendimos la mayor parte de tu sistema — una revisión rápida antes de activarlo.',
+    doneTitlePartial: 'El primer mapa de tu sistema está listo — una revisión rápida antes de activarlo.',
     doneTitlePark: 'Aprendimos tu sistema — dando los toques finales.',
     doneTitleQuarantine: 'Aprendimos tu sistema.',
     doneBodyAuto: 'Todo listo — tus datos en vivo ya están fluyendo.',

@@ -94,6 +94,12 @@ interface MapView {
   status: string;
   feedsCovered: TargetFeed[];
   feedsTotal: number;
+  /** feat/cua-partial-promotion — targets the gate flagged missing/dead
+   *  (from the envelope's feedGaps). Lets the admin tell an improved
+   *  partial from a stale one at the Promote decision point; presence-only
+   *  feedsCovered counts a structurally-dead (incomplete_columns) feed as
+   *  covered, so this is the honest counterweight. */
+  gapTargets: string[];
   learnedAt: string;
   promotedToActiveAt: string | null;
   deprecatedAt: string | null;
@@ -142,6 +148,11 @@ export async function GET(req: NextRequest) {
   for (const r of rows) {
     const keys = knowledgeKeys(r.knowledge);
     const feedsCovered = TARGET_FEEDS.filter((f) => FEED_SOURCE_KEYS[f].some((a) => keys.has(a)));
+    const kGaps = (r.knowledge as { feedGaps?: { missingRequired?: Array<{ target: string }>; missingBusinessCritical?: string[] } } | null)?.feedGaps;
+    const gapTargets = [
+      ...((kGaps?.missingRequired ?? []).map((g) => g.target)),
+      ...(kGaps?.missingBusinessCritical ?? []),
+    ];
     const view: MapView = {
       id: r.id,
       pmsFamily: r.pms_family,
@@ -149,6 +160,7 @@ export async function GET(req: NextRequest) {
       status: r.status,
       feedsCovered,
       feedsTotal: TARGET_FEEDS.length,
+      gapTargets,
       learnedAt: r.learned_at,
       promotedToActiveAt: r.promoted_to_active_at,
       deprecatedAt: r.deprecated_at,
