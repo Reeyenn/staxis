@@ -188,7 +188,7 @@ export function FillModal({
                         key={t.id}
                         tag={es ? 'PLANTILLA' : 'TEMPLATE'}
                         title={t.name}
-                        sub={`${n} ${es ? 'turnos' : 'shifts'}`}
+                        sub={`${n} ${n === 1 ? (es ? 'turno' : 'shift') : (es ? 'turnos' : 'shifts')}`}
                         cta={es ? 'Usar' : 'Use'}
                         onUse={() => onApplyTemplate(t)}
                         onDelete={() => onDeleteTemplate(t)}
@@ -468,7 +468,7 @@ function SaveBar({
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontFamily: fonts.mono, fontSize: 10.5, color: T.ink3, flexShrink: 0 }}>
-          {total} {es ? 'turnos' : 'shifts'}
+          {total} {total === 1 ? (es ? 'turno' : 'shift') : (es ? 'turnos' : 'shifts')}
         </span>
         <span style={{ flex: 1 }}/>
         {total > 0 && <Btn variant="ghost" size="md" onClick={() => setOpen(o => !o)}>{es ? 'Guardar como plantilla' : 'Save as template'}</Btn>}

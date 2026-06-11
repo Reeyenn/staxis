@@ -382,7 +382,8 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => vo
         }}>
           {done
             ? (es ? '✓ LISTA' : '✓ DONE')
-            : planned === 0 ? (es ? 'SIN PLANEAR' : 'NOT PLANNED') : `${planned} ${es ? 'TURNOS' : 'SHIFTS'}`}
+            : planned === 0 ? (es ? 'SIN PLANEAR' : 'NOT PLANNED')
+            : `${planned} ${planned === 1 ? (es ? 'TURNO' : 'SHIFT') : (es ? 'TURNOS' : 'SHIFTS')}`}
         </div>
       </button>
     );

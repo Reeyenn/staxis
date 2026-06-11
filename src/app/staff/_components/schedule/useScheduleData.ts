@@ -128,9 +128,15 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   }, [serverShifts, nameOf]);
 
   // ── Optimistic per-day overrides ──────────────────────────────────────
+  // liveOv is the SYNCHRONOUS source of truth for local edits — saves fired
+  // in the same tick as a mutation must see it immediately (React state
+  // flushes too late; reading state here once shipped an empty day to the
+  // server right after "Add staff"). `overrides` is its render mirror.
+  const liveOv = useRef<Record<string, BoardShift[]>>({});
   const [overrides, setOverrides] = useState<Record<string, BoardShift[]>>({});
-  const overridesRef = useRef(overrides);
-  overridesRef.current = overrides;
+  const syncOv = useCallback(() => setOverrides({ ...liveOv.current }), []);
+  const serverDayMapRef = useRef(serverDayMap);
+  serverDayMapRef.current = serverDayMap;
   const pendingSaves = useRef(new Map<string, number>());
   const gestureActive = useRef(false);
   const undoStack = useRef<DayEntry[][]>([]);
@@ -138,6 +144,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
 
   // Property switch → drop another hotel's local edits and undo history.
   useEffect(() => {
+    liveOv.current = {};
     setOverrides({});
     pendingSaves.current.clear();
     gestureActive.current = false;
@@ -145,46 +152,42 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
     setUndoCount(0);
   }, [propertyId]);
 
+  /** Current truth for a day: local overlay if present, else server. */
   const getDay = useCallback((date: string): BoardShift[] => {
     return overrides[date] ?? serverDayMap[date] ?? [];
   }, [overrides, serverDayMap]);
-  const getDayRef = useRef(getDay);
-  getDayRef.current = getDay;
+  /** Same, but reading the synchronous overlay (for saves/snapshots). */
+  const getDayLive = useCallback((date: string): BoardShift[] => {
+    return liveOv.current[date] ?? serverDayMapRef.current[date] ?? [];
+  }, []);
 
   // Reconcile: once the refetch catches up to an override, drop it.
   useEffect(() => {
-    const dates = Object.keys(overridesRef.current);
+    const dates = Object.keys(liveOv.current);
     if (dates.length === 0) return;
-    const drop: string[] = [];
+    let dropped = false;
     for (const date of dates) {
       if (gestureActive.current) continue;
       if ((pendingSaves.current.get(date) ?? 0) > 0) continue;
       const server = serverDayMap[date] ?? [];
-      if (sameShiftSet(overridesRef.current[date], server)) drop.push(date);
+      if (sameShiftSet(liveOv.current[date], server)) {
+        delete liveOv.current[date];
+        dropped = true;
+      }
     }
-    if (drop.length) {
-      setOverrides(prev => {
-        const next = { ...prev };
-        for (const d of drop) delete next[d];
-        return next;
-      });
-    }
-  }, [serverDayMap]);
+    if (dropped) syncOv();
+  }, [serverDayMap, syncOv]);
 
   const clearOverrides = useCallback((dates: string[]) => {
-    setOverrides(prev => {
-      const next = { ...prev };
-      for (const d of dates) delete next[d];
-      return next;
-    });
-  }, []);
+    for (const d of dates) delete liveOv.current[d];
+    syncOv();
+  }, [syncOv]);
 
   const setDayLocal = useCallback((date: string, next: BoardShift[] | ((cur: BoardShift[]) => BoardShift[])) => {
-    setOverrides(prev => {
-      const cur = prev[date] ?? serverDayMap[date] ?? [];
-      return { ...prev, [date]: typeof next === 'function' ? next(cur) : next };
-    });
-  }, [serverDayMap]);
+    const cur = liveOv.current[date] ?? serverDayMapRef.current[date] ?? [];
+    liveOv.current[date] = typeof next === 'function' ? next(cur) : next;
+    syncOv();
+  }, [syncOv]);
 
   const beginGesture = useCallback(() => { gestureActive.current = true; }, []);
   const endGesture = useCallback(() => { gestureActive.current = false; }, []);
@@ -243,34 +246,31 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
 
   /** Persist the current local state of a single day (gesture end). */
   const commitDay = useCallback((date: string) => {
-    return saveDays([{ date, shifts: getDayRef.current(date) }]);
-  }, [saveDays]);
+    return saveDays([{ date, shifts: getDayLive(date) }]);
+  }, [saveDays, getDayLive]);
 
   /** Optimistically replace whole days (Fill / template / undo) and save. */
   const applyDays = useCallback((entries: DayEntry[], animate: boolean) => {
     const nonce = freshNonce();
-    setOverrides(prev => {
-      const next = { ...prev };
-      for (const e of entries) {
-        next[e.date] = e.shifts.map((s, i) => ({
-          ...s,
-          ...(animate ? { anim: true, nonce: nonce + i } : {}),
-        }));
-      }
-      return next;
-    });
+    for (const e of entries) {
+      liveOv.current[e.date] = e.shifts.map((s, i) => ({
+        ...s,
+        ...(animate ? { anim: true, nonce: nonce + i } : {}),
+      }));
+    }
+    syncOv();
     return saveDays(entries);
-  }, [saveDays]);
+  }, [saveDays, syncOv]);
 
   // ── Undo (client-side snapshots, replayed through saveDays) ───────────
   const pushUndo = useCallback((dates: string[]) => {
     undoStack.current.push(dates.map(date => ({
       date,
-      shifts: getDayRef.current(date).map(s => ({ ...s, anim: undefined, nonce: undefined })),
+      shifts: getDayLive(date).map(s => ({ ...s, anim: undefined, nonce: undefined })),
     })));
     if (undoStack.current.length > UNDO_MAX) undoStack.current.shift();
     setUndoCount(undoStack.current.length);
-  }, []);
+  }, [getDayLive]);
 
   const undo = useCallback((): Promise<FillResult> | null => {
     const snap = undoStack.current.pop();
