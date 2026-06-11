@@ -22,6 +22,7 @@ import {
   looksLikeMutation,
   sameRegistrableDomain,
   findRowArrays,
+  findEnvelopeDecoy,
   getByPath,
   projectRows,
   extractRowsAtPath,
@@ -423,6 +424,23 @@ describe('reconcileRows — enum derivation', () => {
     assert.match(r.reason, /enum_derivation_low_diversity:status/);
   });
 
+  test('UNIFORM-ONLY corroboration (all rooms one status at snapshot time) → abstain', () => {
+    // Key + a single corroborating column whose value is identical on every
+    // row proves nothing — any same-keyed endpoint with a constant column
+    // would pass. Requires a second column or actual value variety.
+    const dom = roomStatusDomRows().map((r) => ({ ...r, status: 'OCC' }));
+    const r = reconcileRows({
+      actionKey: 'getRoomStatus',
+      domRows: dom,
+      apiRows: roomStatusApiRows(() => 'OCC'),
+      mappedColumns: ['room_number', 'status'],
+      enumValueSets: RS_ENUMS,
+      domEnumMappings: RS_DOM_MAP,
+    });
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'corroboration_uniform_only');
+  });
+
   test('byte-matching vocabulary needs no derivation', () => {
     const r = reconcileRows({
       actionKey: 'getRoomStatus',
@@ -524,18 +542,34 @@ describe('checkDateParams — anchor dates template, everything else abstains', 
     assert.match(r.reason!, /date_like_value_in_id_param/);
   });
 
-  test('cache-buster epoch near now is STRIPPED (replay must prove it optional)', () => {
-    const r = checkDateParams({
+  test('CACHE-BUSTER params → abstain (runtime fetch lacks no-store; a frozen buster is a stable cache key)', () => {
+    const epoch = checkDateParams({
       url: `https://pms.example.com/api/list?date=06/10/2026&_=${NOW_MS - 60_000}`,
       anchorIso: ANCHOR,
       nowMs: NOW_MS,
     });
-    assert.equal(r.ok, true, r.reason);
-    assert.deepEqual(r.strippedParams, ['_']);
-    assert.ok(!r.url!.includes('_='));
+    assert.equal(epoch.ok, false);
+    assert.match(epoch.reason!, /cache_buster_param:_/);
+
+    const float = checkDateParams({
+      url: 'https://pms.example.com/api/list?rnd=0.8231447',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(float.ok, false);
+    assert.match(float.reason!, /cache_buster_param:rnd/);
+
+    // Weak buster names (t/ts/r) only count when the value is actually
+    // buster-shaped — a plain enum value must NOT trip it.
+    const benign = checkDateParams({
+      url: 'https://pms.example.com/api/list?t=arrivals',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(benign.ok, true, benign.reason);
   });
 
-  test('MIDNIGHT-ALIGNED epoch in a cache-buster name is a date filter → abstain', () => {
+  test('MIDNIGHT-ALIGNED epoch in a weak cache-buster name still abstains', () => {
     const midnight = Date.UTC(2026, 5, 10, 0, 0, 0) / 1000; // seconds, 00:00 today
     const r = checkDateParams({
       url: `https://pms.example.com/api/list?ts=${midnight}`,
@@ -543,7 +577,7 @@ describe('checkDateParams — anchor dates template, everything else abstains', 
       nowMs: NOW_MS,
     });
     assert.equal(r.ok, false);
-    assert.match(r.reason!, /untemplateable_epoch/);
+    assert.match(r.reason!, /cache_buster_param|untemplateable_epoch/);
   });
 
   test('epoch in a non-buster param (start=) → abstain', () => {
@@ -605,6 +639,42 @@ describe('checkDateParams — anchor dates template, everything else abstains', 
     });
     assert.equal(inBody.ok, false);
     assert.match(inBody.reason!, /textual_date_in_body/);
+  });
+
+  test('HYPHENATED/compact Oracle-style textual dates (10-Jun-2026, 01-JAN-26, 10JUN26) → abstain', () => {
+    for (const v of ['10-Jun-2026', '01-JAN-26', '10JUN26', 'Jun-10-2026', '10.Jun.2026']) {
+      const r = checkDateParams({
+        url: `https://pms.example.com/api/arrivals?businessDate=${v}`,
+        anchorIso: ANCHOR,
+        nowMs: NOW_MS,
+      });
+      assert.equal(r.ok, false, `expected abstain for ${v}`);
+      assert.match(r.reason!, /textual_date_in_url/, v);
+    }
+    const body = checkDateParams({
+      url: 'https://pms.example.com/api/arrivals',
+      body: 'businessDate=10-JUN-26&view=all',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(body.ok, false);
+    assert.match(body.reason!, /textual_date_in_body/);
+  });
+
+  test('6-digit compact date in a date-NAMED param (fromDate=250101) → abstain; id params untouched', () => {
+    const r = checkDateParams({
+      url: 'https://pms.example.com/api/list?fromDate=250101',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason!, /six_digit_date_param:fromDate/);
+    const id = checkDateParams({
+      url: 'https://pms.example.com/api/list?folio=250101',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(id.ok, true, id.reason);
   });
 
   test('FROZEN far-window epoch in a date-NAMED param (since=Jan 1) → abstain', () => {
@@ -796,6 +866,17 @@ describe('findRowArrays / getByPath / projectRows / extractRowsAtPath', () => {
     const rows = projectRows(arrivalsApiRowsRaw(), { pms_reservation_id: 'resvId', guest_name: 'guest.name' });
     assert.equal(rows[0]!.pms_reservation_id, 'R1017');
     assert.equal(rows[0]!.guest_name, 'Guest1, Test');
+  });
+
+  test('findEnvelopeDecoy flags bodies the skeleton runtime would mis-unwrap', () => {
+    const target = [{ a: 1 }, { a: 2 }];
+    const decoyBody = { data: { arrivals: target }, rows: [{ junk: true }] };
+    assert.equal(findEnvelopeDecoy(decoyBody, 'data.arrivals'), 'rows');
+    assert.equal(findEnvelopeDecoy({ data: { arrivals: target } }, 'data.arrivals'), null);
+    // jsonPath pointing AT the envelope key itself is not a decoy.
+    assert.equal(findEnvelopeDecoy({ rows: target }, 'rows'), null);
+    // Empty path = envelope semantics ARE the target.
+    assert.equal(findEnvelopeDecoy(decoyBody, ''), null);
   });
 
   test('extractRowsAtPath mirrors the runtime contract (explicit path, envelope, single object)', () => {

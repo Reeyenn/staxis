@@ -307,6 +307,24 @@ export function extractRowsAtPath(body: unknown, jsonPath: string | undefined):
   return { ok: true, rows: val as Array<Record<string, unknown>> };
 }
 
+/**
+ * Envelope-decoy guard. Today's runtime unwrap tries top-level rows|results|
+ * data BEFORE any jsonPath support lands (template-runner skeleton): a body
+ * holding BOTH our verified array at a nested jsonPath AND an unrelated array
+ * under one of those envelope keys would have the runtime ingest the WRONG —
+ * never-verified — array. If such a decoy exists, abstain.
+ */
+export function findEnvelopeDecoy(body: unknown, jsonPath: string | undefined): string | null {
+  if (!jsonPath || jsonPath === '') return null; // empty path = envelope semantics ARE the target
+  if (!isPlainObject(body)) return null;
+  const target = getByPath(body, jsonPath);
+  for (const k of ['rows', 'results', 'data'] as const) {
+    const v = body[k];
+    if (Array.isArray(v) && v !== target) return k;
+  }
+  return null;
+}
+
 /** Apply a snake_case→dot-path columns mapping to raw rows. */
 export function projectRows(
   rows: Array<Record<string, unknown>>,
@@ -463,7 +481,36 @@ export function sanitizeHeaders(
 
 // ─── Date-param templating ───────────────────────────────────────────────────
 
-const CACHE_BUSTER_NAMES = new Set(['_', '_t', 'cb', 'ts', 't', 'nocache', 'cachebuster', 'rnd', 'rand', 'r']);
+// Cache-buster params (jQuery `_=`, `nocache=`…). The page adds these BECAUSE
+// the endpoint is cache-prone — and the runtime fetch (extractors/fetch-api.ts)
+// currently has no cache:'no-store', so a frozen buster value is a STABLE
+// cache key: an HTTP cache could re-serve one captured rowset on every poll,
+// silently and indefinitely. Until the runtime adds no-store (plumbing-chat
+// one-liner, relayed), the only safe move for these endpoints is to ABSTAIN.
+// Strong names abstain on any value; weak names (ts/t/r are too generic) only
+// when the value is numeric (epoch/float — i.e. actually a buster).
+const CACHE_BUSTER_STRONG = new Set(['_', '_t', 'cb', 'nocache', 'cachebuster', 'rnd', 'rand']);
+const CACHE_BUSTER_WEAK = new Set(['ts', 't', 'r']);
+
+function isCacheBusterParam(name: string, value: string): boolean {
+  const lower = name.toLowerCase();
+  if (CACHE_BUSTER_STRONG.has(lower)) return true;
+  return CACHE_BUSTER_WEAK.has(lower) && /^\d{6,}$|^\d+\.\d+$/.test(value);
+}
+
+/** 6-digit compact date (YYMMDD / MMDDYY / DDMMYY) with a 2015–2035 pivot
+ *  year — only consulted for DATE-NAMED params, where a 6-digit number is far
+ *  more likely a date than an id. */
+function sixDigitPlausibleDate(raw: string): boolean {
+  if (!/^\d{6}$/.test(raw)) return false;
+  const a = +raw.slice(0, 2);
+  const b = +raw.slice(2, 4);
+  const c = +raw.slice(4, 6);
+  const inRange = (y: number): boolean => y >= 2015 && y <= 2035;
+  return (inRange(pivotYear(raw.slice(0, 2))) && toIsoDate(pivotYear(raw.slice(0, 2)), b, c) !== null)
+    || (inRange(pivotYear(raw.slice(4, 6))) && toIsoDate(pivotYear(raw.slice(4, 6)), a, b) !== null)
+    || (inRange(pivotYear(raw.slice(4, 6))) && toIsoDate(pivotYear(raw.slice(4, 6)), b, a) !== null);
+}
 
 const ID_NAME_RE = /(^|[._-])(id|ids|key|code|num|no)$|(id|key|code)s?$/i;
 
@@ -610,15 +657,38 @@ function findDateTokens(s: string): string[] {
   return [...s.matchAll(new RegExp(DATE_TOKEN_SRC, 'g'))].map((m) => m[0]!);
 }
 
-// Textual-month dates ("Jun 10, 2026" / "10 Jun 2026"). The {today:FORMAT}
-// grammar is numeric-only, so these can NEVER be templated — any real one in a
-// request is a frozen query date → abstain (whether or not it's the anchor).
+// Textual-month dates. The {today:FORMAT} grammar is numeric-only, so these
+// can NEVER be templated — any real one in a request is a frozen query date →
+// abstain (whether or not it's the anchor). Detection is deliberately WIDER
+// than parseTextualDate: Oracle-stack PMSes render DD-MON-RR / DD-MON-YYYY
+// ("10-JUN-26"), and a hyphenated form the scanner missed would replay frozen
+// forever. parseTextualDate itself stays strict (whitespace forms only) —
+// it must remain congruent with what the runtime's generic_date can parse.
 const TEXTUAL_DATE_SRC =
-  '[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{2,4}|\\d{1,2}\\s+[A-Za-z]{3,9}\\.?,?\\s+\\d{2,4}';
+  '[A-Za-z]{3,9}\\.?[\\s\\-./]*\\d{1,2}[,\\s\\-./]*\\d{2,4}' +
+  '|\\d{1,2}[\\s\\-./]*[A-Za-z]{3,9}\\.?[,\\s\\-./]*\\d{2,4}';
+
+/** Wide textual parse for SCANNING only (any of space - . / as separators,
+ *  or none). Never used for value comparison — only to confirm a regex hit is
+ *  a real calendar date before abstaining on it. */
+function parseTextualDateWide(s: string): string | null {
+  const t = s.trim();
+  const mdY = t.match(/^([A-Za-z]{3,9})\.?[\s\-./]*(\d{1,2})[,\s\-./]*(\d{2,4})$/);
+  if (mdY) {
+    const mo = MONTHS[mdY[1]!.toLowerCase()];
+    if (mo) return toIsoDate(mdY[3]!.length <= 2 ? pivotYear(mdY[3]!) : +mdY[3]!, mo, +mdY[2]!);
+  }
+  const dMY = t.match(/^(\d{1,2})[\s\-./]*([A-Za-z]{3,9})\.?[,\s\-./]*(\d{2,4})$/);
+  if (dMY) {
+    const mo = MONTHS[dMY[2]!.toLowerCase()];
+    if (mo) return toIsoDate(dMY[3]!.length <= 2 ? pivotYear(dMY[3]!) : +dMY[3]!, mo, +dMY[1]!);
+  }
+  return null;
+}
 
 function findTextualDate(s: string): string | null {
   for (const m of s.matchAll(new RegExp(TEXTUAL_DATE_SRC, 'g'))) {
-    const iso = parseTextualDate(m[0]!);
+    const iso = parseTextualDateWide(m[0]!);
     if (iso) {
       const y = +iso.slice(0, 4);
       if (y >= 2015 && y <= 2035) return m[0]!;
@@ -646,10 +716,6 @@ function isEpochNearNow(ms: number, nowMs: number, windowMs: number): boolean {
   return Math.abs(ms - nowMs) <= windowMs;
 }
 
-function isMidnightAligned(ms: number): boolean {
-  return ms % 86_400_000 === 0 || (ms / 1000) % 86_400 === 0;
-}
-
 export interface DateTemplatingResult {
   ok: boolean;
   reason?: string;
@@ -660,7 +726,6 @@ export interface DateTemplatingResult {
   altUrl?: string;
   altBodyTemplate?: string;
   templatedCount?: number;
-  strippedParams?: string[];
 }
 
 /**
@@ -669,10 +734,9 @@ export interface DateTemplatingResult {
  * The invariant this enforces: an emitted request must contain ZERO concrete
  * dates. Any real-looking date ≠ anchor (a range end, a week start, a fixed
  * report date) cannot be re-templated and would silently serve a wrong window
- * forever → abstain. Epoch timestamps can't be expressed in the {today}
- * grammar at all → abstain, except well-known cache-buster params near "now",
- * which are STRIPPED (the replay-confirm then proves the endpoint works
- * without them).
+ * forever → abstain. Epoch timestamps and textual-month dates can't be
+ * expressed in the numeric {today} grammar at all → abstain; cache-buster
+ * params → abstain until the runtime fetch gains cache:'no-store'.
  */
 export function checkDateParams(input: {
   url: string;
@@ -682,7 +746,6 @@ export function checkDateParams(input: {
 }): DateTemplatingResult {
   const { anchorIso, nowMs } = input;
   let templated = 0;
-  const stripped: string[] = [];
 
   /** Replace anchor-date tokens with placeholders. Counts only on the primary
    *  pass so the alt render doesn't double-count. */
@@ -739,17 +802,16 @@ export function checkDateParams(input: {
       }
     }
 
+    // Cache-buster param → abstain (see CACHE_BUSTER_STRONG note: the runtime
+    // fetch has no cache:'no-store' yet, so neither freezing NOR stripping a
+    // buster is provably safe against HTTP-cache replay of one stale rowset).
+    if (isCacheBusterParam(key, rawVal)) {
+      return { ok: false, reason: `cache_buster_param:${key}` };
+    }
+
     // Epoch-valued param.
     if (/^\d{10}$|^\d{13}$/.test(rawVal)) {
       const ms = epochToMs(rawVal);
-      if (CACHE_BUSTER_NAMES.has(key.toLowerCase()) && isEpochNearNow(ms, nowMs, 2 * 3_600_000) && !isMidnightAligned(ms)) {
-        // A genuine Date.now() cache-buster — STRIP it (frozen busters can
-        // pin caches / look like date filters; the replay-confirm proves the
-        // endpoint works without it). A midnight-aligned or far-off "buster"
-        // is treated as a date filter below.
-        stripped.push(key);
-        continue;
-      }
       if (isEpochNearNow(ms, nowMs, 48 * 3_600_000)) {
         // A date/time filter in epoch form — the {today} grammar can't
         // express epochs, so this would replay frozen → stale. Abstain.
@@ -781,6 +843,12 @@ export function checkDateParams(input: {
         ...(hit.formats.length > 1 ? { alt: `{today:${hit.formats[1]}}` } : {}),
       });
       continue;
+    }
+    // 6-digit compact date in a date-NAMED param ("fromDate=250101") that is
+    // NOT the anchor: a frozen window boundary → abstain. (Anchor-equal
+    // 6-digit values were templated by the branch above.)
+    if (isDateishName(key) && sixDigitPlausibleDate(rawVal)) {
+      return { ok: false, reason: `six_digit_date_param:${key}` };
     }
     outPairs.push({ raw: pair });
   }
@@ -855,13 +923,17 @@ export function checkDateParams(input: {
       if (hit && hit.text === v && hit.formats.length > 0 && isIdishName(k)) {
         return { ok: false, reason: `date_like_value_in_id_body_param:${k}` };
       }
+      if (isCacheBusterParam(k, v)) {
+        return { ok: false, reason: `cache_buster_body_param:${k}` };
+      }
       if (/^\d{10}$|^\d{13}$/.test(v) && isEpochNearNow(epochToMs(v), nowMs, 48 * 3_600_000)) {
-        // Unlike the URL, body cache-busters are NOT strippable here (we'd
-        // have to rewrite the body text reliably) — abstain either way.
         return { ok: false, reason: `untemplateable_epoch_body_param:${k}` };
       }
       if (isDateishName(k) && isPlausibleEpochDate(v)) {
         return { ok: false, reason: `frozen_epoch_date_body_param:${k}` };
+      }
+      if (isDateishName(k) && (!hit || hit.formats.length === 0) && sixDigitPlausibleDate(v)) {
+        return { ok: false, reason: `six_digit_date_body_param:${k}` };
       }
     }
 
@@ -882,7 +954,6 @@ export function checkDateParams(input: {
     ...(outAltUrl !== outUrl ? { altUrl: outAltUrl } : {}),
     ...(outAltBody !== undefined && outAltBody !== outBody ? { altBodyTemplate: outAltBody } : {}),
     templatedCount: templated,
-    strippedParams: stripped,
   };
 }
 
@@ -1136,6 +1207,7 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
   const maskAccepted: string[] = [];
   const derivedEnums: Record<string, Record<string, string>> = {};
   let verifiedNonKeyCols = 0;
+  let verifiedNonUniformCols = 0;
 
   for (const col of input.mappedColumns) {
     if (col === keyCol) continue;
@@ -1155,18 +1227,25 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
         continue;
       }
       if (Object.keys(verdict.derived).length > 0) derivedEnums[col] = verdict.derived;
-      if (verdict.corroborated) verifiedNonKeyCols++;
+      if (verdict.corroborated) {
+        verifiedNonKeyCols++;
+        if (verdict.nonUniform) verifiedNonUniformCols++;
+      }
       continue;
     }
 
     const verdict = corroborateColumn({ col, type: spec.type, matchedPairs, domRows, apiRows });
-    if (verdict === 'verified') { verifiedNonKeyCols++; continue; }
-    if (verdict === 'mask_skipped') {
+    if (verdict.kind === 'verified') {
+      verifiedNonKeyCols++;
+      if (verdict.nonUniform) verifiedNonUniformCols++;
+      continue;
+    }
+    if (verdict.kind === 'mask_skipped') {
       if (spec.required) maskAccepted.push(col);
       else dropped.push(col);
       continue;
     }
-    if (verdict === 'unverifiable') {
+    if (verdict.kind === 'unverifiable') {
       if (spec.required) return fail(`required_column_unverifiable:${col}`);
       dropped.push(col);
       continue;
@@ -1180,6 +1259,13 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
   // corroborate the rows are the SAME records, not just records that share
   // identifiers (e.g. a rooms-list endpoint vs the room-status feed).
   if (verifiedNonKeyCols < 1) return fail('no_corroborating_columns');
+  // …and a SINGLE corroborating column whose value was identical on every row
+  // (all rooms "Clean" at 3pm) is a coincidence-at-snapshot, not proof — a
+  // perfectly-correlated wrong column passes it. Require either a second
+  // verified column or at least one column whose values actually varied.
+  if (verifiedNonKeyCols === 1 && verifiedNonUniformCols === 0) {
+    return fail('corroboration_uniform_only');
+  }
 
   // Every required contract column must be in the mapping at all (a feed
   // missing a required column writes 0 rows at runtime — keep the DOM recipe
@@ -1225,11 +1311,14 @@ function corroborateColumn(args: {
   matchedPairs: Array<[number, number]>;
   domRows: Array<Record<string, string>>;
   apiRows: Array<Record<string, unknown>>;
-}): ColumnVerdict {
+}): { kind: ColumnVerdict; nonUniform: boolean } {
   const { col, type } = args;
   let passes = 0;
   let fails = 0;
   let masked = 0;
+  // Distinct DOM values among PASSING pairs — a column that corroborated with
+  // the same value on every row is weak evidence (snapshot coincidence).
+  const passedDomValues = new Set<string>();
 
   const parserName =
     type === 'integer' ? 'generic_integer'
@@ -1238,14 +1327,17 @@ function corroborateColumn(args: {
     : type === 'boolean' ? 'generic_boolean'
     : null;
 
+  const verdictOf = (kind: ColumnVerdict): { kind: ColumnVerdict; nonUniform: boolean } =>
+    ({ kind, nonUniform: passedDomValues.size >= 2 });
+
   for (const [domIdx, apiIdx] of args.matchedPairs) {
     const domRaw = args.domRows[domIdx]![col] ?? '';
     const apiRaw = args.apiRows[apiIdx]![col];
 
     if (type === 'date') {
       const r = compareDates(domRaw, apiRaw);
-      if (r === 'unsafe') return 'failed'; // runtime would misparse → never emit
-      if (r === 'pass') passes++;
+      if (r === 'unsafe') return verdictOf('failed'); // runtime would misparse → never emit
+      if (r === 'pass') { passes++; passedDomValues.add(domRaw.trim()); }
       else if (r === 'fail') fails++;
       continue;
     }
@@ -1257,7 +1349,7 @@ function corroborateColumn(args: {
       const a = applyParser(parserName, domRaw);
       const b = applyParser(parserName, apiRaw);
       if (a == null && b == null) continue;
-      if (a != null && b != null && a === b) passes++;
+      if (a != null && b != null && a === b) { passes++; passedDomValues.add(String(a)); }
       else fails++;
       continue;
     }
@@ -1272,14 +1364,14 @@ function corroborateColumn(args: {
     if (looksMasked(apiRaw)) { masked++; continue; }
     const a = normTextLoose(domRaw);
     const b = normTextLoose(apiRaw);
-    if (a === b || sortedTokens(domRaw) === sortedTokens(apiRaw)) passes++;
+    if (a === b || sortedTokens(domRaw) === sortedTokens(apiRaw)) { passes++; passedDomValues.add(a); }
     else fails++;
   }
 
-  if (fails > 0) return 'failed';
-  if (passes > 0) return 'verified';
-  if (masked > 0) return 'mask_skipped';
-  return 'unverifiable';
+  if (fails > 0) return verdictOf('failed');
+  if (passes > 0) return verdictOf('verified');
+  if (masked > 0) return verdictOf('mask_skipped');
+  return verdictOf('unverifiable');
 }
 
 function corroborateEnumColumn(args: {
@@ -1290,7 +1382,7 @@ function corroborateEnumColumn(args: {
   domMapping: Record<string, string> | undefined;
   canonical: string[];
 }):
-  | { ok: true; derived: Record<string, string>; corroborated: boolean }
+  | { ok: true; derived: Record<string, string>; corroborated: boolean; nonUniform: boolean }
   | { ok: false; reason: string } {
   const { col } = args;
   const domMapNorm = new Map<string, string>();
@@ -1302,6 +1394,7 @@ function corroborateEnumColumn(args: {
   const derived = new Map<string, string>(); // apiRawNorm → canonical
   const derivedOriginal = new Map<string, string>(); // apiRawNorm → original api raw
   const derivedCanonCounts = new Map<string, number>();
+  const comparedDomNorms = new Set<string>();
   let byteMatches = 0;
   let comparable = 0;
 
@@ -1317,6 +1410,7 @@ function corroborateEnumColumn(args: {
     comparable++;
 
     const domNorm = normEnumKey(domRaw);
+    comparedDomNorms.add(domNorm);
     const apiNorm = normEnumKey(apiRaw);
     if (domNorm === apiNorm) { byteMatches++; continue; }
 
@@ -1375,5 +1469,10 @@ function corroborateEnumColumn(args: {
 
   const out: Record<string, string> = {};
   for (const [apiNorm, canon] of derived) out[derivedOriginal.get(apiNorm)!] = canon;
-  return { ok: true, derived: out, corroborated: byteMatches + derived.size > 0 };
+  return {
+    ok: true,
+    derived: out,
+    corroborated: byteMatches + derived.size > 0,
+    nonUniform: comparedDomNorms.size >= 2,
+  };
 }

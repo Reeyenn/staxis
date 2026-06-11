@@ -51,6 +51,7 @@ import {
   MAX_ORACLE_ROWS,
   prefilterCandidates,
   extractRowsAtPath,
+  findEnvelopeDecoy,
   projectRows,
   reconcileRows,
   sanitizeHeaders,
@@ -1898,7 +1899,7 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 //      encoded dates, dates in id-named params) → abstain;
 //   6. live replay-confirm from the post-login page with sanitized headers +
 //      rendered template (proves the request still works WITHOUT the stripped
-//      cookies/CSRF/cache-busters, in the same context the runtime will use);
+//      cookies/CSRF headers, in the same context the runtime will use);
 //   7. date-shift probe: render yesterday, require uniformly-yesterday rows —
 //      proves the templated param is load-bearing and its M/D order is right.
 
@@ -2189,6 +2190,13 @@ export async function attemptStructuredDiscovery(
   const cand = pre.candidates[idx]!;
   const extracted = extractRowsAtPath(cand.call.responseBody, jsonPath);
   if (!extracted.ok) return abstain(`extract_failed:${extracted.reason}`);
+  // Envelope-decoy guard: until the runtime resolves jsonPath exclusively, a
+  // body carrying BOTH our verified nested array AND an unrelated top-level
+  // rows|results|data array would have the runtime ingest the wrong one.
+  {
+    const decoy = findEnvelopeDecoy(cand.call.responseBody, jsonPath);
+    if (decoy) return abstain(`envelope_decoy:${decoy}`);
+  }
   const enumValueSets: Record<string, string[]> = {};
   for (const c of valueContract?.columns ?? []) {
     if (c.enumValues && c.enumValues.length > 0) enumValueSets[c.name] = c.enumValues;
@@ -2272,6 +2280,10 @@ export async function attemptStructuredDiscovery(
   // discarded: never logged, never persisted, never sent to the LLM.
   const replayRows = extractRowsAtPath(replay.data, jsonPath);
   if (!replayRows.ok) return abstain(`replay_extract_failed:${replayRows.reason}`);
+  {
+    const decoy = findEnvelopeDecoy(replay.data, jsonPath);
+    if (decoy) return abstain(`replay_envelope_decoy:${decoy}`);
+  }
   const replayVerdict = reconcileRows({
     actionKey: input.actionName,
     domRows,
@@ -2357,7 +2369,6 @@ export async function attemptStructuredDiscovery(
     surplus: verdict.surplus,
     paginationException: verdict.usedPaginationException ?? false,
     templatedDates: templatedCount,
-    strippedParams: templ.strippedParams ?? [],
     droppedColumns: verdict.droppedOptionalColumns ?? [],
     maskAcceptedColumns: verdict.maskAcceptedColumns ?? [],
   });

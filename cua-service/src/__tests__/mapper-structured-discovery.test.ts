@@ -398,6 +398,16 @@ describe('attemptStructuredDiscovery — abstains to DOM', () => {
     assert.equal(await attemptStructuredDiscovery(mkInput({ capturedCalls: [call] }), deps), null);
   });
 
+  test('ENVELOPE DECOY: body holds both the verified array and a top-level rows[] → null', async () => {
+    // Until the runtime resolves jsonPath exclusively, it would ingest the
+    // never-verified top-level array — refuse to emit.
+    const call = mkCall({
+      responseBody: { data: { arrivals: apiRowsRaw() }, rows: [{ unrelated: true }] },
+    });
+    const { deps } = makeDeps();
+    assert.equal(await attemptStructuredDiscovery(mkInput({ capturedCalls: [call] }), deps), null);
+  });
+
   test('request carries a NON-today date → null (stale-date guard)', async () => {
     const call = mkCall({ url: 'https://pms.example.com/api/arrivals?start=06/10/2026&end=06/17/2026' });
     const { deps } = makeDeps();
