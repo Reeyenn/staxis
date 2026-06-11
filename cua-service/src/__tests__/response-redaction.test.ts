@@ -343,6 +343,9 @@ describe('redactUrl', () => {
     assert.ok(byId.includes('12345'));
     const byUuid = redactUrl('https://pms.example.com/customers/0f8fad5b-d9cb-469f-a165-70867728950e/notes');
     assert.ok(byUuid.includes('0f8fad5b-d9cb-469f-a165-70867728950e'));
+    // Generic REST route words after a person token are not identifiers.
+    assert.ok(redactUrl('https://pms.example.com/guests/search?from=2026-06-01').includes('/guests/search'));
+    assert.ok(redactUrl('https://pms.example.com/users/list').includes('/users/list'));
     // Whitespace segments are data values anywhere in the path.
     const loose = redactUrl('https://pms.example.com/report/Jane%20Doe/details');
     assert.ok(!loose.includes('Jane'));
@@ -487,17 +490,19 @@ describe('redactCsvText', () => {
     const out = redactCsvText('John Smith,DUE_IN\nJane Doe,DUE_OUT\n');
     assert.ok(!out.includes('John'));
     assert.ok(!out.includes('Jane'));
-    assert.ok(out.includes('DUE_IN')); // enum-shaped cells survive headerless mode
-    assert.ok(out.includes('DUE_OUT'));
+    // DUE_IN is shape-identical to JOHN_SMITH (all-caps + underscore, no
+    // digit) — with no header to disambiguate, both must mask.
+    assert.ok(!out.includes('DUE_IN'));
+    assert.ok(!out.includes('JOHN_SMITH'));
     assert.equal(out.trim().split('\n').length, 2); // row count intact
   });
 
-  test('headerless mode keeps UUIDs and room codes, masks bare all-caps surnames', () => {
-    const out = redactCsvText('0f8fad5b-d9cb-469f-a165-70867728950e,101A,SMITH\n5c8fad5b-d9cb-469f-a165-708677289511,202B,DOE\n');
+  test('headerless mode keeps UUIDs and digit-bearing room codes, masks all-caps names', () => {
+    const out = redactCsvText('0f8fad5b-d9cb-469f-a165-70867728950e,101A,SMITH\n5c8fad5b-d9cb-469f-a165-708677289511,202B,JOHN_SMITH\n');
     assert.ok(out.includes('0f8fad5b-d9cb-469f-a165-70867728950e'));
     assert.ok(out.includes('101A'));
-    assert.ok(!out.includes('SMITH'));
-    assert.ok(!out.includes('DOE'));
+    assert.ok(out.includes('202B'));
+    assert.ok(!out.includes('SMITH')); // also asserts JOHN_SMITH is gone
   });
 
   test('emails hiding in unmasked columns are still pattern-scrubbed', () => {

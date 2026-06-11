@@ -327,6 +327,15 @@ const PERSON_PATH_TOKENS = new Set([
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SEGMENT_DATE_RE = /^\d{4}-\d{1,2}-\d{1,2}$|^\d{1,2}-\d{1,2}-\d{2,4}$/;
 
+/** Generic REST route words that legitimately follow a person-entity token
+ *  (/guests/search, /users/list) — never person identifiers. */
+const COMMON_ROUTE_WORDS = new Set([
+  'list', 'search', 'filter', 'status', 'all', 'new', 'create', 'update',
+  'delete', 'edit', 'view', 'count', 'summary', 'export', 'active',
+  'inactive', 'current', 'history', 'detail', 'details', 'lookup', 'index',
+  'find', 'me', 'self', 'page',
+]);
+
 /** True when a path segment is safe to keep after a person-entity token:
  *  numeric ids, UUIDs, dates, ALL-CAPS codes — never free-text names. */
 function isSafePathIdentifier(seg: string): boolean {
@@ -367,9 +376,16 @@ export function redactUrl(raw: string): string {
       if (seg === '') return seg;
       const dec = decoded[i];
       // REST routes put person identifiers right after the entity token:
-      // /guests/John%20Smith/folio. Keep ids/dates/codes, mask free text.
+      // /guests/John%20Smith/folio. Keep ids/dates/codes/route words, mask
+      // free text.
       const prev = i > 0 ? decoded[i - 1].toLowerCase() : '';
-      if (PERSON_PATH_TOKENS.has(prev) && !isSafePathIdentifier(dec)) return marker('path');
+      if (
+        PERSON_PATH_TOKENS.has(prev) &&
+        !isSafePathIdentifier(dec) &&
+        !COMMON_ROUTE_WORDS.has(dec.toLowerCase())
+      ) {
+        return marker('path');
+      }
       // Whitespace never appears in route tokens — a segment with spaces is
       // a data value (very often a name).
       if (/\s/.test(dec) && !DATE_LIKE_RE.test(dec.trim())) return marker('path');
@@ -635,10 +651,12 @@ function redactHeaderlessCell(raw: string): string {
   if (t === '') return raw;
   if (DATE_LIKE_RE.test(t)) return raw;
   if (UUID_RE.test(t)) return raw; // record ids are never names
-  // Status enums / room codes: ALL-CAPS with a digit or underscore
-  // (DUE_IN, VACANT_CLEAN, 101A). A bare all-caps surname (SMITH) has
-  // neither and stays masked.
-  if (/^[A-Z0-9_-]+$/.test(t) && /[\d_]/.test(t)) {
+  // Room/record codes: ALL-CAPS WITH A DIGIT (101A, RM-204). A digit is
+  // required — JOHN_SMITH and DUE_IN are shape-identical (all-caps +
+  // underscore, no digits), and with no header to disambiguate the name
+  // must not survive, so the status enum is sacrificed too (headered CSVs,
+  // the normal case, keep statuses via the column rules).
+  if (/^[A-Z0-9_-]+$/.test(t) && /\d/.test(t)) {
     const digits = t.replace(/[^0-9]/g, '');
     if (digits.length < 10) return raw;
   }
