@@ -112,6 +112,37 @@ export interface KnowledgeFile {
    */
   valueTranslations?: LearnedValueTranslations;
   dateFormat?: LearnedDateFormat;
+  /**
+   * feat/cua-partial-promotion — which feeds this recipe is MISSING or has
+   * structurally dead (required columns blank → writes 0 rows). Written by
+   * mapping-driver's saveDraftKnowledgeFile on every draft whose gap set is
+   * non-empty, regardless of gate decision — so an admin manually promoting a
+   * parked draft still yields a gap-annotated active row. Absent = no gaps
+   * (clean recipe) or a legacy file from before this feature.
+   *
+   * THE app-side honesty layer reads this verbatim (src/lib/pms/feed-status.ts
+   * in the Next app — keep the shape in sync, per the CLAUDE.md type-sync
+   * pitfall). A gap-listed target must classify as 'learning' even when its
+   * key is present in `actions` (incomplete_columns feeds are present AND
+   * dead). Lives inside the signed envelope; the app NEVER writes it.
+   */
+  feedGaps?: FeedGaps;
+}
+
+/** One untrustworthy required feed. `not_found` = key absent from actions;
+ *  `incomplete_columns` = key present but required descriptor columns are
+ *  blank/missing, so the writer rejects every row (operationally dead). */
+export interface FeedGapEntry {
+  target: string;
+  reason: 'not_found' | 'incomplete_columns';
+  missingColumns?: string[];
+}
+
+export interface FeedGaps {
+  /** ISO timestamp of gate evaluation. Excluded from progress comparisons. */
+  computedAt: string;
+  missingRequired: FeedGapEntry[];
+  missingBusinessCritical: string[];
 }
 
 export type KnowledgeFileStatus = 'draft' | 'active' | 'deprecated' | 'quarantined';
