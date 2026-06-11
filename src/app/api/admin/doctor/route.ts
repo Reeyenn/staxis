@@ -2056,6 +2056,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   { name: 'webhook-dedup-purge',           cadenceHours: 24,    description: 'daily 4:15am purge of expired webhook-dedup keys (auth-storage-cookies-and-middleware)' },
   { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
+  { name: 'pms-backfill-missing-feeds',    cadenceHours: 24,    description: 'daily 10:00 UTC retry of feeds the mapper has not learned yet — enqueues one seeded mapper job per PMS family whose active knowledge file has feedGaps (feat/cua-partial-promotion)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
@@ -2884,24 +2885,82 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
     const families = Array.from(new Set((sessions as Sess[]).map((s) => s.pms_family)));
     const { data: kfs, error: kfErr } = await supabaseAdmin
       .from('pms_knowledge_files')
-      .select('pms_family, version')
+      .select('pms_family, version, feed_gaps:knowledge->feedGaps')
       .eq('status', 'active')
       .in('pms_family', families);
     if (kfErr) {
       return { status: 'warn', detail: `pms_knowledge_files read failed: ${errToString(kfErr)}` };
     }
-    const haveActive = new Set((kfs as Array<{ pms_family: string }> | null ?? []).map((r) => r.pms_family));
+    type KfRow = {
+      pms_family: string;
+      version: number;
+      feed_gaps: { missingRequired?: Array<{ target: string }>; missingBusinessCritical?: string[] } | null;
+    };
+    const kfRows = (kfs as KfRow[] | null) ?? [];
+    const haveActive = new Set(kfRows.map((r) => r.pms_family));
     const missing = families.filter((f) => !haveActive.has(f));
     if (missing.length > 0) {
+      // feat/cua-partial-promotion (founder-gated): a family whose first
+      // learn PARKED as a partial draft has no active yet — that's a
+      // pending human review (promote in Manage maps), not an outage.
+      // Warn for those; fail only when there's nothing to promote at all.
+      const { data: draftRows } = await supabaseAdmin
+        .from('pms_knowledge_files')
+        .select('pms_family')
+        .eq('status', 'draft')
+        .in('pms_family', missing);
+      const haveDraft = new Set(((draftRows as Array<{ pms_family: string }> | null) ?? []).map((r) => r.pms_family));
+      const awaitingReview = missing.filter((f) => haveDraft.has(f));
+      const trulyMissing = missing.filter((f) => !haveDraft.has(f));
+      if (trulyMissing.length > 0) {
+        return {
+          status: 'fail',
+          detail: `${trulyMissing.length}/${families.length} PMS families lack an active knowledge file (no draft to promote either): ${trulyMissing.join(', ')}` +
+            (awaitingReview.length > 0 ? `; ${awaitingReview.length} more have a parked draft awaiting promotion: ${awaitingReview.join(', ')}` : ''),
+          fix: 'Run the mapper or apply a seed migration for the affected pms_family. Families with a parked draft: review + promote in Manage maps.',
+        };
+      }
       return {
-        status: 'fail',
-        detail: `${missing.length}/${families.length} PMS families lack an active knowledge file: ${missing.join(', ')}`,
-        fix: 'Run the mapper or apply a seed migration for the affected pms_family.',
+        status: 'warn',
+        detail: `${awaitingReview.length}/${families.length} PMS families have NO active map but a parked draft awaiting promotion: ${awaitingReview.join(', ')} — nothing is live for them until it's promoted`,
+        fix: 'Review what the robot learned and promote it: /admin → Manage maps (live-mapper). Daily auto-retries stay paused while a draft awaits review.',
       };
     }
+    // feat/cua-partial-promotion — partial actives are a SANCTIONED state
+    // (the feeds we have are live; gaps auto-retry daily), but ops should
+    // see them: warn only when REQUIRED feeds are gapped. BC-only gaps ride
+    // in the ok detail. Retry claims must be truthful: a draft newer than
+    // the active PAUSES the cron's retries until it's reviewed.
+    const partials = kfRows.filter((r) => (r.feed_gaps?.missingRequired?.length ?? 0) > 0);
+    if (partials.length > 0) {
+      const partialFamilies = partials.map((r) => r.pms_family);
+      const activeVersionByFamily = new Map(kfRows.map((r) => [r.pms_family, r.version]));
+      const pausedFamilies = new Set<string>();
+      try {
+        const { data: draftRows2 } = await supabaseAdmin
+          .from('pms_knowledge_files')
+          .select('pms_family, version')
+          .eq('status', 'draft')
+          .in('pms_family', partialFamilies);
+        for (const d of (draftRows2 as Array<{ pms_family: string; version: number }> | null) ?? []) {
+          if (d.version > (activeVersionByFamily.get(d.pms_family) ?? 0)) pausedFamilies.add(d.pms_family);
+        }
+      } catch { /* best-effort — falls back to the generic retry copy */ }
+      const detailParts = partials.map((r) =>
+        `${r.pms_family} (missing: ${(r.feed_gaps?.missingRequired ?? []).map((g) => g.target).join(', ')}${pausedFamilies.has(r.pms_family) ? '; retries PAUSED — draft awaiting review' : ''})`);
+      return {
+        status: 'warn',
+        detail: `${partials.length}/${families.length} families run a PARTIAL active recipe — ${detailParts.join('; ')}`,
+        fix: 'Gapped feeds auto-retry daily via pms-backfill-missing-feeds, EXCEPT while a newer draft awaits review (promote or delete it in Manage maps to resume). To chase a feed now: /admin/property-sessions → repair the feed, or regenerate the map.',
+      };
+    }
+    const bcOnly = kfRows.filter((r) => (r.feed_gaps?.missingBusinessCritical?.length ?? 0) > 0);
     return {
       status: 'ok',
-      detail: `every active session has an active knowledge file (${families.length} families)`,
+      detail: `every active session has an active knowledge file (${families.length} families)` +
+        (bcOnly.length > 0
+          ? `; ${bcOnly.length} with optional business-critical feeds still unlearned (auto-retried)`
+          : ''),
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

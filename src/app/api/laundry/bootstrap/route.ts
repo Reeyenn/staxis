@@ -29,6 +29,7 @@ import {
   fromLaundryRow,
 } from '@/lib/db-mappers';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -168,8 +169,14 @@ export async function GET(req: NextRequest) {
     ? (completion.completed_load_categories as string[])
     : [];
 
+  // feat/cua-partial-promotion — per-feed trust as a top-level sibling
+  // (same convention as the rooms routes): the laundry page derives
+  // checkout/stayover load counts from `rooms`, and a missing departures/
+  // arrivals feed must show "still learning", not a confident zero.
+  // `derived` stripped — public page, doesn't use it (senior review #5).
+  const { derived: _derived, ...feedStatus } = await getPropertyFeedStatus(pid);
   return ok(
     { publicAreas, laundryConfig, rooms, date: targetDate, completedAreaIds, completedLoadCategories },
-    { requestId },
+    { requestId, extra: { feedStatus } },
   );
 }

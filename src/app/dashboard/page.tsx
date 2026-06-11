@@ -43,6 +43,8 @@ import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/co
 import type { ComplianceSummary } from '@/lib/compliance/types';
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
+import { useFeedStatus } from '@/lib/use-feed-status';
+import type { FeedKey } from '@/lib/pms/feed-status';
 import type { Room, WorkOrder } from '@/types';
 import {
   RANGES, METRIC_DEFS, buildHistory, seriesFor,
@@ -364,10 +366,69 @@ export default function DashboardPage() {
   // ── derived live values ──────────────────────────────────────────────
   const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
   const urgentOrders = useMemo(() => openOrders.filter(o => o.priority === 'urgent'), [openOrders]);
-  const dirtyRooms = useMemo(() => rooms.filter(r => r.status === 'dirty').length, [rooms]);
-  const inHouse = counts?.in_house ?? dashboardNums?.inHouse ?? 0;
-  const arrivals = dashboardNums?.arrivals ?? 0;
-  const departures = counts?.checkouts ?? dashboardNums?.departures ?? 0;
+
+  // feat/cua-partial-promotion — per-feed PMS trust. The robot may be live
+  // with only SOME feeds learned; a tile whose source feed is missing must
+  // say "still learning", never a confident 0. When feed status is unknown
+  // (manual hotel / onboarding / hook not yet loaded) every value below
+  // keeps its exact pre-existing behavior.
+  const feedStatus = useFeedStatus(activePropertyId);
+  const fsLive = feedStatus?.mode === 'live';
+  // Review pass (Codex #2 / senior #9): a 'pending' connection means this
+  // property has NEVER successfully read — every pms_* table is empty, so
+  // every PMS-derived number below is a fake zero regardless of per-feed
+  // states. ('paused' is deliberately not masked: real-but-stale data;
+  // staleness is the doctor/freshness domain.)
+  const connPending = fsLive && feedStatus.connection === 'pending';
+  const roomStatusLearning = fsLive && (feedStatus.feeds.roomStatus === 'learning' || connPending);
+  // 'ok' = at least one source feed is live → render the number (genuine
+  // zeros included). 'learning' = being auto-retried. 'unavailable' = this
+  // PMS connection doesn't provide it (never claim "retrying").
+  // 'connecting' = first sync hasn't landed yet.
+  const tileState = (keys: FeedKey[]): 'ok' | 'learning' | 'unavailable' | 'connecting' => {
+    if (!fsLive) return 'ok';
+    if (connPending) return 'connecting';
+    if (keys.some(k => feedStatus.feeds[k] === 'live')) return 'ok';
+    if (keys.some(k => feedStatus.feeds[k] === 'learning')) return 'learning';
+    return 'unavailable';
+  };
+  const inHouseState = tileState(['dashboardCounts']);
+  const arrivalsState = tileState(['dashboardCounts', 'arrivals']);
+  const departuresState = tileState(['departures', 'dashboardCounts']);
+
+  // A room whose status came from the catch-all default is NOT a real dirty
+  // while the room-status feed is still learning — counting it would turn a
+  // missing feed into a fake "84 rooms to clean". App-originated statuses
+  // (assignments, tap-set) always count.
+  const dirtyRooms = useMemo(
+    () => rooms.filter(r =>
+      r.status === 'dirty' && !(roomStatusLearning && r.statusSource === 'default'),
+    ).length,
+    [rooms, roomStatusLearning],
+  );
+
+  // Tile values. The legacy anon snapshot read (dashboardNums) is kept as
+  // the no-feed-status fallback only; with live feed status the numbers
+  // come from the server-derived block (pms_* is deny-all-browser).
+  const inHouse: React.ReactNode = !fsLive
+    ? (counts?.in_house ?? dashboardNums?.inHouse ?? 0)
+    : inHouseState === 'ok'
+      ? (feedStatus.derived?.snapshotInHouse ?? counts?.in_house ?? 0)
+      : '—';
+  const arrivals: React.ReactNode = !fsLive
+    ? (dashboardNums?.arrivals ?? 0)
+    : arrivalsState !== 'ok'
+      ? '—'
+      : feedStatus.feeds.dashboardCounts === 'live'
+        ? (feedStatus.derived?.snapshotArrivalsRemaining ?? '—')
+        : (feedStatus.derived?.arrivalsToday ?? '—');
+  const departures: React.ReactNode = !fsLive
+    ? (counts?.checkouts ?? dashboardNums?.departures ?? 0)
+    : departuresState !== 'ok'
+      ? '—'
+      : feedStatus.feeds.departures === 'live'
+        ? (counts?.checkouts ?? 0)
+        : (feedStatus.derived?.snapshotDeparturesRemaining ?? '—');
 
   // Real occupancy signal (occupied rooms / inventory). Null when the PMS
   // snapshot carries no occupancy yet — the chart + ring then fall back to
@@ -396,6 +457,19 @@ export default function DashboardPage() {
   // per-room as CUA coverage fills in.
   const ringRooms = useMemo<RingTick[]>(() => {
     const total = Math.max(1, Math.min(totalRooms, 400));
+    // feat/cua-partial-promotion — while the room-status feed is still being
+    // learned, NEVER synthesize a plausible-looking board (the mock fill
+    // below would paint clean/occupied rooms out of thin air). Every tick
+    // renders the neutral 'none' ("no data") state instead.
+    if (roomStatusLearning) {
+      const floorsL = Math.max(1, Math.ceil(total / 20));
+      const perFloorL = Math.ceil(total / floorsL);
+      return Array.from({ length: total }, (_, i) => ({
+        idx: i,
+        num: String((Math.floor(i / perFloorL) + 1) * 100 + (i % perFloorL) + 1),
+        status: 'none' as RingKey,
+      }));
+    }
     const c = counts;
     const feedDirty = rooms.filter(r => r.status === 'dirty').length;
     const feedClean = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
@@ -424,7 +498,7 @@ export default function DashboardPage() {
       num: String((Math.floor(i / perFloor) + 1) * 100 + (i % perFloor) + 1),
       status,
     }));
-  }, [counts, rooms, totalRooms, displayOcc]);
+  }, [counts, rooms, totalRooms, displayOcc, roomStatusLearning]);
 
   // ring distribution for the legend
   const ringCounts = useMemo(() => {
@@ -666,10 +740,30 @@ export default function DashboardPage() {
               <div style={{ ...LABEL, marginBottom: 18 }}>{ES ? 'Ahora mismo' : 'Right now'}</div>
               <div className="stx-ops">
                 {([
-                  [ES ? 'Huéspedes' : 'Guests', inHouse, ES ? 'en casa' : 'in-house', C.green],
-                  [ES ? 'Llegadas' : 'Arrivals', arrivals, ES ? 'esperadas' : 'expected', C.greenL],
-                  [ES ? 'Salidas' : 'Departures', departures, ES ? 'saliendo' : 'checking out', C.gold],
-                  [ES ? 'Limpieza' : 'Housekeeping', dirtyRooms, ES ? 'por limpiar' : 'rooms to clean', C.rust],
+                  // feat/cua-partial-promotion — when a tile's source feed
+                  // isn't trustworthy the value is '—' and the sub says WHY
+                  // ("learning" = auto-retrying daily; "not in this PMS
+                  // feed" = the connection doesn't provide it). A live feed
+                  // renders exactly as before, genuine zeros included.
+                  [ES ? 'Huéspedes' : 'Guests', inHouse,
+                    inHouseState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : inHouseState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                      : inHouseState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
+                      : (ES ? 'en casa' : 'in-house'), C.green],
+                  [ES ? 'Llegadas' : 'Arrivals', arrivals,
+                    arrivalsState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : arrivalsState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                      : arrivalsState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
+                      : (ES ? 'esperadas' : 'expected'), C.greenL],
+                  [ES ? 'Salidas' : 'Departures', departures,
+                    departuresState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : departuresState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                      : departuresState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
+                      : (ES ? 'saliendo' : 'checking out'), C.gold],
+                  [ES ? 'Limpieza' : 'Housekeeping', roomStatusLearning ? '—' : dirtyRooms,
+                    connPending ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+                      : roomStatusLearning ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+                      : (ES ? 'por limpiar' : 'rooms to clean'), C.rust],
                   [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink],
                 ] as [string, React.ReactNode, string, string][]).map((o, i) => (
                   <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>

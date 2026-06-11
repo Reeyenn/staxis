@@ -40,6 +40,7 @@ import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { columnsFromAction, missingRequiredColumns } from './target-contract.js';
+import type { FeedGaps, FeedGapEntry } from './knowledge-file.js';
 
 export interface MappingJobInput {
   pms_family: string;
@@ -66,6 +67,12 @@ export interface MappingJobInput {
    *  learned for the SKIPPED targets (which aren't re-learned). */
   seed_value_translations?: LearnedValueTranslations;
   seed_date_format?: LearnedDateFormat;
+  /** feat/cua-partial-promotion — set by the daily backfill cron
+   *  (/api/cron/pms-backfill-missing-feeds in the Next app). Seeded like a
+   *  self-repair, but the promote-time guard additionally requires the gap
+   *  set to SHRINK vs the current active before promoting (a self-repair's
+   *  point is same-shape-better-selectors, so it must NOT get that check). */
+  backfill_missing_feeds?: boolean;
 }
 
 export interface MappingJobResult {
@@ -80,11 +87,19 @@ export interface MappingJobResult {
    *  - 'auto_promote': draft passed gates AND was promoted to active in
    *    the same transaction. Live drivers will hot-reload to it within
    *    ~60s (session-driver knowledge polling).
-   *  - 'park_draft': draft saved, NOT promoted. Admin sees CTA to review.
-   *  - 'quarantine': draft saved with status='quarantined'. Required
-   *    targets missing; admin must investigate.
+   *  - 'park_partial' (feat/cua-partial-promotion, founder-gated): the
+   *    recipe met the partial bar but is INCOMPLETE — saved as a draft
+   *    with feed gaps recorded in the envelope's `feedGaps`, NOT
+   *    activated. The admin reviews what it learned and clicks Promote
+   *    (Manage maps → /api/admin/live-mapper/promote); only then does it
+   *    go live — with the "still learning" annotations intact, the app's
+   *    honesty UI active, and the daily backfill retrying the gaps.
+   *  - 'park_draft': draft saved, NOT promoted. Admin sees CTA to review
+   *    (self-repair regression / promote-failure / no-progress backfill).
+   *  - 'quarantine': draft saved with status='quarantined'. Below the
+   *    partial-promotion bar (near-empty recipe); admin must investigate.
    */
-  promotionDecision?: 'auto_promote' | 'park_draft' | 'quarantine';
+  promotionDecision?: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   promotionReason?: string;
   /** Learning Board — final per-feed state, carried from mapPMS through the
    *  index.ts handler adapter into workflow_jobs.result. markCompleted
@@ -134,6 +149,70 @@ const BUSINESS_CRITICAL_TARGETS: Array<keyof Recipe['actions']> = [
   'getForecastDaily', 'getGroupsAndBlocks',
 ];
 const MIN_BUSINESS_CRITICAL_FOR_AUTO = 3;
+
+/**
+ * feat/cua-partial-promotion — the minimum bar for promoting a recipe with
+ * required-feed gaps. A partial recipe ships only if at least ONE complete
+ * core operational loop is trustworthy:
+ *   - housekeeping loop: getRoomStatus (rooms boards, housekeeper mobile,
+ *     dashboard ring — honest under gaps via the app's statusSource
+ *     neutralization), OR
+ *   - front-desk loop: getArrivals AND getDepartures (BOTH — either alone
+ *     implies confidently-wrong checkout/arrival lists).
+ * Below the bar (e.g. only getWorkOrders, or only getDepartures) the recipe
+ * is near-empty → quarantine, exactly as before this feature. Expressed
+ * purely in catalogue target names — zero PMS-specific logic.
+ */
+function meetsPartialPromotionBar(trustworthy: ReadonlySet<string>): boolean {
+  return trustworthy.has('getRoomStatus') ||
+    (trustworthy.has('getArrivals') && trustworthy.has('getDepartures'));
+}
+
+/**
+ * Per-target gap audit for a mapped recipe: required targets that are absent
+ * ('not_found') or present-but-dead ('incomplete_columns' — required
+ * descriptor columns blank, every row rejected at write time), plus absent
+ * business-critical targets. Computed on EVERY gate evaluation and persisted
+ * in the signed envelope whenever non-empty (see saveDraftKnowledgeFile), so
+ * any promotion path — auto, partial, or manual admin promote of a parked
+ * draft — yields a gap-annotated active row for the app's honesty layer.
+ */
+export function computeFeedGaps(actions: Recipe['actions']): FeedGaps {
+  const missingRequired: FeedGapEntry[] = [];
+  for (const t of REQUIRED_TARGETS) {
+    const action = actions[t];
+    if (!action) {
+      missingRequired.push({ target: t, reason: 'not_found' });
+      continue;
+    }
+    const missingCols = missingRequiredColumns(t, columnsFromAction(action));
+    if (missingCols.length > 0) {
+      missingRequired.push({ target: t, reason: 'incomplete_columns', missingColumns: missingCols });
+    }
+  }
+  const found = new Set(Object.keys(actions));
+  const missingBusinessCritical = BUSINESS_CRITICAL_TARGETS
+    .filter((t) => !found.has(t))
+    .map((t) => String(t));
+  return {
+    computedAt: new Date().toISOString(),
+    missingRequired,
+    missingBusinessCritical,
+  };
+}
+
+/**
+ * Canonical, order-stable keys for a gap set, used for progress comparison
+ * (the backfill promote-guard + its tests). Deliberately EXCLUDES
+ * `computedAt` (always differs) and `missingColumns` (a different set of
+ * blank columns on the same dead feed is not progress).
+ */
+export function feedGapEntryKeys(gaps: FeedGaps): string[] {
+  return [
+    ...gaps.missingRequired.map((g) => `required:${g.target}:${g.reason}`),
+    ...gaps.missingBusinessCritical.map((t) => `bc:${t}`),
+  ].sort();
+}
 
 // ─── Live event broadcast (Plan v8 Phase B chunk 2) ─────────────────────
 //
@@ -373,33 +452,109 @@ export async function runMappingJob(
   // 3. Evaluate the auto-promotion gate (Plan v7 — replaces the "≥60%
   //    of targets" magic number with required-target-class checks).
   const gate = evaluatePromotionGate(result.recipe, input.seed_actions);
-  log.info('mapping-driver: promotion gate evaluated', { jobId, ...gate });
+  log.info('mapping-driver: promotion gate evaluated', {
+    jobId, decision: gate.decision, reason: gate.reason,
+  });
+
+  // 3.5. feat/cua-partial-promotion — promote-time guards for SEEDED jobs.
+  //      A seeded job's seed snapshot can go stale: another repair/backfill
+  //      may have promoted a better active while this job sat queued (the
+  //      no-driver lane runs mapper jobs serially). The gate's seed guard
+  //      only compares against THIS job's seed, so without re-checking the
+  //      CURRENT active a stale-seeded result could go live (auto_promote)
+  //      or be offered to the admin (park_partial) while silently lacking
+  //      a feed the family just gained. Backfills additionally must make
+  //      actual gap progress — a backfill that re-found the same dead feed
+  //      would otherwise park an equal-quality draft daily (noise for the
+  //      admin, and it would defeat the cron's no-progress breaker, which
+  //      counts park_partial as progress).
+  if ((gate.decision === 'auto_promote' || gate.decision === 'park_partial') && input.seed_actions) {
+    const guard = await checkSeededPromotionGuards(
+      input.pms_family,
+      result.recipe,
+      gate.feedGaps,
+      input.backfill_missing_feeds === true,
+    );
+    if (!guard.ok) {
+      // Hunter re-review P1-2: a BACKFILL that made no gap progress must not
+      // persist a draft at all — its content is identical-in-coverage to the
+      // active, the admin has nothing to review, and (founder-gated flow)
+      // the cron's draft-awaiting-review gate would latch on it FOREVER,
+      // silently killing the promised daily retries after attempt #1. The
+      // job result still records the park_draft outcome (breaker counts it);
+      // stale-seed parks DO save — those are genuinely reviewable.
+      if (guard.skipSave) {
+        log.warn('mapping-driver: backfill made no gap progress — not persisting a draft', {
+          jobId, reason: guard.reason,
+        });
+        await broadcastMappingEvent(channel, {
+          type: 'mapping_completed',
+          jobId,
+          label: 'Done — park_draft (no progress, draft not saved)',
+          pct: 100,
+          detail: { promotionDecision: 'park_draft', promotionReason: guard.reason },
+          at: new Date().toISOString(),
+        });
+        return {
+          ok: true,
+          promotionDecision: 'park_draft',
+          promotionReason: guard.reason,
+          ...computeStats(result),
+        };
+      }
+      log.warn('mapping-driver: seeded promotion guard parked the draft', {
+        jobId, reason: guard.reason,
+      });
+      gate.decision = 'park_draft';
+      gate.reason = guard.reason;
+    }
+  }
 
   // 4. Save the draft knowledge file with the right status.
   //    auto_promote → save as draft, then promote in step 5
+  //    park_partial → save as draft with feedGaps; NOT activated — the
+  //      admin clicks Promote (founder-gated; the honesty UI + daily
+  //      backfill take over once it's live)
   //    park_draft → save as draft, admin reviews
   //    quarantine → save with status='quarantined', admin investigates
+  //    feedGaps are embedded whenever non-empty REGARDLESS of decision, so a
+  //    parked draft an admin later promotes manually still carries them.
   const initialStatus = gate.decision === 'quarantine' ? 'quarantined' : 'draft';
-  const draft = await saveDraftKnowledgeFile(input.pms_family, result.recipe, initialStatus);
+  const draft = await saveDraftKnowledgeFile(
+    input.pms_family, result.recipe, initialStatus, gate.feedGaps,
+    // Hunter re-review P2-5 — the admin reviewing Manage maps needs to see
+    // WHY a draft parked, not just which targets it has.
+    `${gate.decision}: ${gate.reason}`,
+  );
   if (!draft.ok) {
     return { ok: false, error: `recipe mapped successfully but draft save failed: ${draft.error}` };
   }
 
-  // 5. If gate says auto_promote, atomically demote prior active +
-  //    promote this draft. The partial unique index
-  //    pms_knowledge_files_one_active_per_family (migration 0201) means
-  //    we MUST demote before promote or the second update fails. Doing
-  //    both serially is fine — the index enforces post-condition.
-  if (gate.decision === 'auto_promote') {
+  // 5. ONLY a complete recipe auto-activates (founder decision 2026-06-11:
+  //    every INCOMPLETE recipe waits for his Promote click — park_partial
+  //    stays a draft here; shouldActivateImmediately is the pinned seam).
+  //    Atomically demote prior active + promote this draft. The partial
+  //    unique index pms_knowledge_files_one_active_per_family (migration
+  //    0201) means we MUST demote before promote or the second update
+  //    fails. Doing both serially is fine — the index enforces
+  //    post-condition.
+  if (shouldActivateImmediately(gate.decision)) {
     const promoted = await promoteDraft(input.pms_family, draft.id);
     if (!promoted.ok) {
-      log.warn('mapping-driver: auto-promotion failed, leaving as draft', {
+      log.warn('mapping-driver: promotion failed, leaving as draft', {
         jobId, knowledgeFileId: draft.id, reason: promoted.error,
       });
       // Still return ok — the draft is saved; admin can promote
       // manually. Decision is downgraded to park_draft for clarity.
       gate.decision = 'park_draft';
-      gate.reason = `auto-promotion failed: ${promoted.error}`;
+      gate.reason = `promotion failed: ${promoted.error}`;
+    } else {
+      // Hunter re-review P1-1 — a family whose first learn just completed
+      // has its session(s) parked at paused_no_knowledge_file, and the
+      // supervisor only respawns starting/alive/paused_cost_cap. Without
+      // this nudge the recipe is active but no robot ever polls it. Same
+      // revive the admin promote route performs.
+      await reviveNoKnowledgeSessions(input.pms_family);
     }
   }
 
@@ -452,75 +607,213 @@ export function evaluatePromotionGate(
   recipe: Recipe,
   seedActions?: Recipe['actions'],
 ): {
-  decision: 'auto_promote' | 'park_draft' | 'quarantine';
+  decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   reason: string;
+  feedGaps: FeedGaps;
 } {
   const found = new Set(Object.keys(recipe.actions));
+  const feedGaps = computeFeedGaps(recipe.actions);
 
   // Plan v8 self-repair guard — a repair job seeds the existing recipe's
   // actions (minus the one failing target) and re-learns just that one,
   // so a successful repair yields seed-count + 1 actions. If the re-learn
   // FAILS the mapper hands back a recipe with FEWER actions than the seed,
-  // yet the required-key checks below would still auto-promote it —
-  // silently dropping the feed forever. Park it as a draft for review
-  // instead of letting a partial repair regress live coverage.
+  // yet the checks below could still promote it — silently dropping the
+  // feed forever. Park it as a draft for review instead of letting a
+  // partial repair (or a missing-feed backfill that found nothing) regress
+  // live coverage.
   if (seedActions && Object.keys(recipe.actions).length < Object.keys(seedActions).length + 1) {
     return {
       decision: 'park_draft',
       reason: `self-repair failed to re-learn the target — mapped recipe has ${Object.keys(recipe.actions).length} actions vs seed's ${Object.keys(seedActions).length} (expected ≥ ${Object.keys(seedActions).length + 1}); parking as draft so a repair never drops a working feed`,
+      feedGaps,
     };
   }
 
-  const missingRequired = REQUIRED_TARGETS.filter((t) => !found.has(t));
-  if (missingRequired.length > 0) {
-    return {
-      decision: 'quarantine',
-      reason: `missing required targets: ${missingRequired.join(', ')}`,
-    };
-  }
-
-  // Column-completeness gate (fix/mapper-field-contract). A required feed whose
-  // KEY exists but whose learned column map is missing a required descriptor
-  // column writes ZERO rows at runtime — validateRows rejects every row for the
-  // absent column. Such a feed is structurally "found" but operationally dead,
-  // so don't auto-promote it: park as a draft for admin review. (quarantine
-  // stays reserved for a missing required KEY above; this is a quality miss, on
-  // par with the too-few-business-critical park_draft below.)
+  // feat/cua-partial-promotion — a required target counts as TRUSTWORTHY only
+  // when its key exists AND its learned column map has every required
+  // descriptor column non-blank. A present-but-incomplete feed writes ZERO
+  // rows at runtime (validateRows rejects every row), so for promotion
+  // purposes it is exactly as dead as a missing one; it lands in
+  // feedGaps.missingRequired with reason 'incomplete_columns'.
   //
-  // INTENTIONAL on the self-repair path: this scans ALL required targets,
-  // including seeded ones, not just the freshly-relearned target. A repair must
-  // not auto-promote a recipe that still has a dead required feed — if a
-  // pre-existing seeded feed has an incomplete column map (e.g. a recipe
-  // promoted before this fix, with camelCase keys), the repair parks for a full
-  // re-map rather than rubber-stamping a 3/4-dead recipe. Do not narrow this to
-  // the relearned target only.
-  const incompleteRequired = REQUIRED_TARGETS
-    .map((t) => {
-      const action = recipe.actions[t];
-      if (!action) return null; // already handled by the missing-key check above
-      const missingCols = missingRequiredColumns(t, columnsFromAction(action));
-      return missingCols.length > 0 ? `${t} (missing: ${missingCols.join(', ')})` : null;
-    })
-    .filter((x): x is string => x !== null);
-  if (incompleteRequired.length > 0) {
+  // INTENTIONAL on seeded paths: gaps scan ALL required targets, including
+  // seeded ones — a repair/backfill must not promote a recipe whose
+  // pre-existing seeded feed is dead without recording that gap. (Carried
+  // over from fix/mapper-field-contract; do not narrow to relearned targets.)
+  const gappedRequired = new Set(feedGaps.missingRequired.map((g) => g.target));
+  const trustworthyRequired = new Set<string>(
+    REQUIRED_TARGETS.map((t) => String(t)).filter((t) => !gappedRequired.has(t)),
+  );
+  const businessCriticalFound = BUSINESS_CRITICAL_TARGETS.filter((t) => found.has(t));
+
+  // All 4 required trustworthy → the pre-existing full path.
+  if (feedGaps.missingRequired.length === 0) {
+    if (businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
+      return {
+        decision: 'auto_promote',
+        reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})`,
+        feedGaps,
+      };
+    }
+    // Founder decision 2026-06-11: INCOMPLETE recipes never auto-activate —
+    // they park as a gap-annotated draft for his Promote click (Manage
+    // maps). Monotonicity still holds: a 4/4-required recipe parks exactly
+    // like a 3/4 one that meets the bar below; neither ships without him.
+    // The BC gaps are recorded in feedGaps so the promoted file goes live
+    // with the honesty annotations + daily backfill retries intact.
     return {
-      decision: 'park_draft',
-      reason: `required feed(s) have empty/missing required columns — would write 0 rows: ${incompleteRequired.join('; ')}`,
+      decision: 'park_partial',
+      reason: `all required found but only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion) — parked for admin review; missing business-critical recorded for retry: ${feedGaps.missingBusinessCritical.join(', ')}`,
+      feedGaps,
     };
   }
 
-  const businessCriticalFound = BUSINESS_CRITICAL_TARGETS.filter((t) => found.has(t));
-  if (businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
+  // Some required feeds are missing/dead. If at least one complete core
+  // operational loop survives, the recipe is WORTH the admin's review —
+  // park it as a gap-annotated draft for the Promote click (founder-gated;
+  // never auto-activated). Otherwise it's near-empty and quarantines
+  // exactly as before this feature.
+  if (meetsPartialPromotionBar(trustworthyRequired)) {
+    const gapSummary = feedGaps.missingRequired
+      .map((g) => g.reason === 'incomplete_columns'
+        ? `${g.target} (dead — missing columns: ${(g.missingColumns ?? []).join(', ')})`
+        : g.target)
+      .join('; ');
     return {
-      decision: 'auto_promote',
-      reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})`,
+      decision: 'park_partial',
+      reason: `partial recipe parked for admin review — trustworthy: ${[...trustworthyRequired].join(', ')}; still missing required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}`,
+      feedGaps,
     };
   }
 
   return {
-    decision: 'park_draft',
-    reason: `all required found but only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO}) — admin promotes if this is the best the PMS exposes`,
+    decision: 'quarantine',
+    reason: `below the partial-promotion bar (need getRoomStatus, or getArrivals + getDepartures, learned and complete) — missing/dead required targets: ${feedGaps.missingRequired.map((g) => `${g.target} (${g.reason})`).join(', ')}`,
+    feedGaps,
   };
+}
+
+/**
+ * feat/cua-partial-promotion — promote-time re-check of a SEEDED job's result
+ * against the CURRENT active knowledge file (the gate's seed guard only sees
+ * the job's own — possibly stale — seed snapshot).
+ *
+ *  1. Superset guard (self-repair AND backfill): every action key on the
+ *     current active must exist in the new recipe. If the active advanced
+ *     while this job was queued/running, promoting the stale-seeded result
+ *     would silently drop the newly-gained feed.
+ *  2. Gap-shrink guard (backfill ONLY): the new gap set must be a strict
+ *     subset of the active's. A backfill that found nothing new (e.g.
+ *     re-learned the same incomplete feed) parks instead of churning a new
+ *     active version daily — which also makes "no progress" reliably visible
+ *     to the cron's circuit breaker as promotion_decision='park_draft'.
+ *     NOT applied to self-repair: its entire point is same-shape recipes
+ *     with better selectors. NOT applied to unseeded full learns: an admin
+ *     regenerate may legitimately drop a feed the PMS no longer exposes.
+ *
+ * Fail-safe shape: no current active (deleted/quarantined since enqueue) →
+ * proceed (anything is better than nothing); query error → park (admin can
+ * promote the draft manually). Read-only — never writes the envelope.
+ * Atomicity note: check-then-promote keeps promoteDraft's existing
+ * non-transactional semantics; mapper jobs run serially in one lane, so the
+ * residual race is admin-manual-promote-vs-job, same as before this feature.
+ */
+async function checkSeededPromotionGuards(
+  pmsFamily: string,
+  newRecipe: Recipe,
+  newGaps: FeedGaps,
+  isBackfill: boolean,
+): Promise<{ ok: true } | { ok: false; reason: string; skipSave?: boolean }> {
+  const { data, error } = await supabase
+    .from('pms_knowledge_files')
+    .select('version, knowledge')
+    .eq('pms_family', pmsFamily)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (error) {
+    return {
+      ok: false,
+      reason: `could not verify the current active recipe before promoting a seeded result (${error.message}) — parking for admin review`,
+    };
+  }
+  if (!data) return { ok: true };
+  return evaluateSeededPromotionGuard(
+    {
+      version: data.version as number,
+      knowledge: (data.knowledge ?? {}) as { actions?: Record<string, unknown>; feedGaps?: FeedGaps },
+    },
+    newRecipe.actions,
+    newGaps,
+    isBackfill,
+  );
+}
+
+/** Pure decision core of checkSeededPromotionGuards — exported for tests.
+ *  `skipSave: true` on the no-gap-progress backfill failure means "do not
+ *  even persist this draft" (coverage-identical to the active; saving it
+ *  would latch the cron's draft-awaiting-review gate forever). */
+export function evaluateSeededPromotionGuard(
+  active: { version: number; knowledge: { actions?: Record<string, unknown>; feedGaps?: FeedGaps } },
+  newActions: Recipe['actions'],
+  newGaps: FeedGaps,
+  isBackfill: boolean,
+): { ok: true } | { ok: false; reason: string; skipSave?: boolean } {
+  const activeActions = Object.keys(active.knowledge.actions ?? {});
+  const newActionKeys = new Set(Object.keys(newActions));
+  const dropped = activeActions.filter((k) => !newActionKeys.has(k));
+  if (dropped.length > 0) {
+    return {
+      ok: false,
+      reason: `active recipe advanced during this job — promoting would drop now-live feed(s): ${dropped.join(', ')} (active v${active.version}); parking for admin review`,
+    };
+  }
+
+  if (isBackfill) {
+    const activeGaps = active.knowledge.feedGaps
+      ?? computeFeedGaps((active.knowledge.actions ?? {}) as Recipe['actions']);
+    const activeKeys = new Set(feedGapEntryKeys(activeGaps));
+    const newKeys = feedGapEntryKeys(newGaps);
+    const isSubset = newKeys.every((k) => activeKeys.has(k));
+    if (!isSubset || newKeys.length >= activeKeys.size) {
+      return {
+        ok: false,
+        reason: `backfill made no gap progress vs active v${active.version} (active gaps: ${activeKeys.size}, new gaps: ${newKeys.length}) — outcome recorded, draft not saved`,
+        skipSave: true,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * THE founder gate, as a pure seam (hunter re-review P2-6): only a COMPLETE
+ * recipe activates itself; every other outcome waits for a human. Pinned by
+ * the contract tests so a future `|| 'park_partial'` can't sneak activation
+ * back in without a red test.
+ */
+export function shouldActivateImmediately(
+  decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine',
+): boolean {
+  return decision === 'auto_promote';
+}
+
+/**
+ * Flip sessions parked at paused_no_knowledge_file back to 'starting' so the
+ * supervisor respawns them (≤30s) now that an active recipe exists. Best-
+ * effort: a failure only delays polling until the next nightly restart.
+ */
+async function reviveNoKnowledgeSessions(pmsFamily: string): Promise<void> {
+  const { error } = await supabase
+    .from('property_sessions')
+    .update({ status: 'starting', paused_reason: null, paused_until: null })
+    .eq('pms_family', pmsFamily)
+    .eq('status', 'paused_no_knowledge_file');
+  if (error) {
+    log.warn('mapping-driver: could not revive paused_no_knowledge_file sessions', {
+      pmsFamily, err: error.message,
+    });
+  }
 }
 
 async function promoteDraft(
@@ -663,6 +956,8 @@ async function saveDraftKnowledgeFile(
   pmsFamily: string,
   recipe: Recipe,
   status: 'draft' | 'quarantined' = 'draft',
+  feedGaps?: FeedGaps,
+  gateNote?: string,
 ): Promise<{ ok: true; id: string; version: number } | { ok: false; error: string }> {
   // Find the highest existing version for this family; new version = max+1.
   const { data: existing, error: selErr } = await supabase
@@ -692,6 +987,14 @@ async function saveDraftKnowledgeFile(
     // prior signed shape.
     ...(recipe.valueTranslations ? { valueTranslations: recipe.valueTranslations } : {}),
     ...(recipe.dateFormat ? { dateFormat: recipe.dateFormat } : {}),
+    // feat/cua-partial-promotion — persist which feeds are missing/dead so
+    // the app's honesty layer (src/lib/pms/feed-status.ts) can mark them
+    // "still learning" instead of rendering fake-empty data. Embedded only
+    // when non-empty, so clean recipes keep their exact prior signed shape.
+    // Inside the signed envelope on purpose: the app reads it, never writes.
+    ...(feedGaps && (feedGaps.missingRequired.length > 0 || feedGaps.missingBusinessCritical.length > 0)
+      ? { feedGaps }
+      : {}),
   };
 
   // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-
@@ -750,7 +1053,8 @@ async function saveDraftKnowledgeFile(
       status,                   // 'draft' (gate may promote) or 'quarantined'
       knowledge,
       created_by: 'mapper:mapping-driver',
-      notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.`,
+      notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
+        (gateNote ? ` Gate: ${gateNote}` : ''),
       signature: signatureBytes,
       signed_with_key_id: signedWithKeyId,
       signed_at: signedAt,

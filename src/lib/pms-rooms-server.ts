@@ -133,6 +133,22 @@ function deriveStatus(
   return 'dirty';
 }
 
+// feat/cua-partial-promotion — provenance for Room.status. The UI needs to
+// tell a REAL dirty (assignment says not_started; PMS says vacant_dirty)
+// from the catch-all default that fires when there is NO signal at all —
+// because when the roomStatus feed is still learning, the default branch is
+// exactly the fake-"all rooms dirty" shape that must render neutral instead.
+// 'unknown' counts as no-signal: it's the enum's "PMS said something
+// unmappable" bucket, not a trustworthy state.
+function deriveStatusSource(
+  assignment: AssignmentRow | undefined,
+  rawStatus: string | null,
+): NonNullable<Room['statusSource']> {
+  if (assignment) return 'assignment';
+  if (rawStatus && rawStatus !== 'unknown') return 'pms';
+  return 'default';
+}
+
 // PMS status_log values that mean the room is blocked / out of service —
 // not a housekeeping turn. A guest can't be placed in it and HK won't
 // clean it, so it must NOT land in the 'dirty' ("needs turning") bucket
@@ -534,6 +550,7 @@ export async function mergePmsRoomsForDate(
       type,
       priority: 'standard',
       status,
+      statusSource: deriveStatusSource(assignment, rawStatus),
       date,
       propertyId: pid,
       ...(assignedTo ? { assignedTo } : {}),
@@ -777,6 +794,9 @@ export async function mergePmsRoomsForStaff(
       type,
       priority: 'standard',
       status,
+      // Always 'assignment' here — this merge composes one Room per
+      // assignment row — but derive it anyway so the two merges can't drift.
+      statusSource: deriveStatusSource(assignment, rawStatus),
       date: a.date,
       propertyId: pid,
       ...(assignedTo ? { assignedTo } : {}),

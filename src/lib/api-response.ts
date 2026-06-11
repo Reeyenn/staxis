@@ -45,6 +45,16 @@ export interface OkOptions {
   status?: number;
   /** Extra response headers (e.g. Idempotency-Key echo). */
   headers?: HeadersInit;
+  /**
+   * Extra TOP-LEVEL sibling keys merged next to { ok, requestId, data }.
+   * Use when `data`'s shape is load-bearing for already-deployed clients
+   * (the public housekeeper/laundry pages hard-require Array.isArray(data),
+   * and stale mobile bundles keep polling old shapes after a deploy) but the
+   * route needs to carry an additional payload — new clients read the
+   * sibling key, old clients ignore it. Envelope keys always win on
+   * collision (spread order below).
+   */
+  extra?: Record<string, unknown>;
 }
 
 export interface ErrOptions {
@@ -66,7 +76,10 @@ export interface ErrOptions {
  *   return ok({ rooms, total }, { requestId });
  */
 export function ok<T>(data: T, opts: OkOptions): NextResponse {
-  return NextResponse.json(buildOkBody(data, opts.requestId), {
+  const body = opts.extra
+    ? { ...opts.extra, ...buildOkBody(data, opts.requestId) }
+    : buildOkBody(data, opts.requestId);
+  return NextResponse.json(body, {
     status: opts.status ?? 200,
     headers: opts.headers,
   });

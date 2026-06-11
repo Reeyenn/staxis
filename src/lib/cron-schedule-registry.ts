@@ -79,6 +79,10 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'agent-heal-counters',               source: { kind: 'vercel', cronPath: '/api/cron/agent-heal-counters' },              cronExpr: '0 4 * * *' },
   { heartbeatName: 'webhook-dedup-purge',               source: { kind: 'vercel', cronPath: '/api/cron/webhook-dedup-purge' },              cronExpr: '15 4 * * *' },
   { heartbeatName: 'pms-auth-codes-purge',              source: { kind: 'vercel', cronPath: '/api/cron/pms-auth-codes-purge' },             cronExpr: '45 4 * * *' },
+  // feat/cua-partial-promotion: daily retry of feeds the robot hasn't
+  // learned (active knowledge files with feedGaps). 10:00 UTC — after the
+  // 3am-local nightly CUA restarts have settled across US timezones.
+  { heartbeatName: 'pms-backfill-missing-feeds',        source: { kind: 'vercel', cronPath: '/api/cron/pms-backfill-missing-feeds' },       cronExpr: '0 10 * * *' },
   { heartbeatName: 'agent-weekly-digest',               source: { kind: 'vercel', cronPath: '/api/cron/agent-weekly-digest' },              cronExpr: '0 9 * * 0' },
   // Weekly
   { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },

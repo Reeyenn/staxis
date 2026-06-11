@@ -746,7 +746,7 @@ interface MappingNumbers {
 interface FeedStatus { key: string; label: string; captured: boolean; count: number | null }
 interface MappingStatus {
   phase: 'preparing' | 'learning' | 'mfa' | 'done' | 'failed';
-  outcome: 'auto_promote' | 'park_draft' | 'quarantine' | null;
+  outcome: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine' | null;
   workflowJobId: string | null;
   channel: string | null;
   pmsLabel: string;
@@ -945,11 +945,13 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
   const outcome = resp.outcome ?? 'park_draft';
   const pms = resp.pmsLabel || 'PMS';
   const title = outcome === 'auto_promote' ? t.doneTitleAuto
-    : outcome === 'quarantine' ? t.doneTitleQuarantine
-      : t.doneTitlePark;
+    : outcome === 'park_partial' ? t.doneTitlePartial
+      : outcome === 'quarantine' ? t.doneTitleQuarantine
+        : t.doneTitlePark;
   const body = outcome === 'auto_promote' ? t.doneBodyAuto
-    : outcome === 'quarantine' ? t.doneBodyQuarantine
-      : t.doneBodyPark;
+    : outcome === 'park_partial' ? t.doneBodyPartial
+      : outcome === 'quarantine' ? t.doneBodyQuarantine
+        : t.doneBodyPark;
 
   // Honest per-feed breakdown — exactly which feeds the learned map captured
   // (✓ + live row count) vs didn't (✗), so the operator can judge whether the

@@ -22,6 +22,11 @@ export interface OperationsBlock {
   roomsOOO: number;                // out-of-order — work_orders.out_of_order=true
   roomsOOS: number;                // out-of-service — pms vacant_dirty held aside
   occupancyPct: number;            // 0-100
+  /** feat/cua-partial-promotion (review pass) — true when the in-house
+   *  snapshot has no source (counts feed learning/unavailable, or first
+   *  sync pending): occupancyPct above is a fake 0%. Renderers show
+   *  "still syncing" instead; the weekly average skips flagged days. */
+  occupancyUnavailable?: boolean;
   avgMinutesPerDeparture: number | null;
   avgMinutesPerStayover: number | null;
   avgMinutesPerDeepClean: number | null;
@@ -59,6 +64,12 @@ export interface TomorrowOutlookBlock {
   recommendedLaborCostCents: number | null;
   roomsPendingOOO: number;
   roomsPendingInspection: number;
+  /** feat/cua-partial-promotion — true when the arrivals/departures feeds
+   *  are still being learned for this property: the counts above may be 0
+   *  because the SOURCE is missing. The email renders "still syncing"
+   *  instead of confident numbers. Optional for back-compat with stored
+   *  payloads. */
+  reservationFeedsLearning?: boolean;
 }
 
 export interface Anomaly {

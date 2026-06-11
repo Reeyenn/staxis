@@ -47,6 +47,11 @@ interface KnowledgeRow {
   version: number;
   status: string;
   learned_at: string;
+  /** feat/cua-partial-promotion — knowledge->feedGaps (JSON path select). */
+  feed_gaps: {
+    missingRequired?: Array<{ target: string; reason: string; missingColumns?: string[] }>;
+    missingBusinessCritical?: string[];
+  } | null;
 }
 
 interface MapperJobRow {
@@ -87,7 +92,7 @@ export async function GET(req: NextRequest) {
       .order('updated_at', { ascending: false }),
     supabaseAdmin
       .from('pms_knowledge_files')
-      .select('pms_family, version, status, learned_at')
+      .select('pms_family, version, status, learned_at, feed_gaps:knowledge->feedGaps')
       .order('pms_family')
       .order('version', { ascending: false }),
     // Learning Board — mapper jobs so each session card can link to the
@@ -131,18 +136,47 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Group knowledge files by pms_family; keep active version + most recent draft.
-  const knowledgeByFamily = new Map<string, { active: number | null; latest: number; status: string }>();
+  // Group knowledge files by pms_family; keep active version + most recent
+  // draft + (feat/cua-partial-promotion) the ACTIVE version's feed gaps so
+  // the admin page can show "Partial — missing: …" without another query.
+  interface FamilyKnowledge {
+    active: number | null;
+    latest: number;
+    status: string;
+    missing_required: string[];
+    missing_business_critical: string[];
+    /** Newest row with status='draft' — the founder's review queue. Keyed
+     *  explicitly (hunter re-review P2-3): keying "awaiting review" off the
+     *  LATEST row's status hid the parked draft whenever a newer
+     *  quarantined/deprecated row existed, while the backfill cron's
+     *  draft-awaiting gate stayed latched on it with no visible explanation. */
+    newest_draft: number | null;
+  }
+  const knowledgeByFamily = new Map<string, FamilyKnowledge>();
   for (const k of (kfRows ?? []) as KnowledgeRow[]) {
     const existing = knowledgeByFamily.get(k.pms_family);
+    const gapsOf = (row: KnowledgeRow) => ({
+      missing_required: (row.feed_gaps?.missingRequired ?? []).map((g) => g.target),
+      missing_business_critical: row.feed_gaps?.missingBusinessCritical ?? [],
+    });
     if (!existing) {
       knowledgeByFamily.set(k.pms_family, {
         active: k.status === 'active' ? k.version : null,
         latest: k.version,
         status: k.status,
+        newest_draft: k.status === 'draft' ? k.version : null,
+        ...(k.status === 'active' ? gapsOf(k) : { missing_required: [], missing_business_critical: [] }),
       });
     } else {
-      if (k.status === 'active') existing.active = k.version;
+      if (k.status === 'active') {
+        existing.active = k.version;
+        const g = gapsOf(k);
+        existing.missing_required = g.missing_required;
+        existing.missing_business_critical = g.missing_business_critical;
+      }
+      if (k.status === 'draft' && existing.newest_draft === null) {
+        existing.newest_draft = k.version; // versions sorted desc → first draft = newest
+      }
       // versions are sorted desc so first is latest
     }
   }
@@ -171,6 +205,29 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // feat/cua-partial-promotion — best-effort retry context per family: the
+  // latest backfill job's age + outcome, so the chip can say "auto-retrying
+  // daily" vs "auto-retry paused" truthfully. Failure here only loses the
+  // retry line, never the session list.
+  const backfillByFamily = new Map<string, { last_at: string; last_outcome: string }>();
+  try {
+    const { data: backfillJobs } = await supabaseAdmin
+      .from('workflow_jobs')
+      .select('created_at, status, result, payload')
+      .eq('kind', 'mapper.learn_pms_family')
+      .filter('payload->>backfill_missing_feeds', 'eq', 'true')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    for (const j of (backfillJobs ?? []) as Array<{ created_at: string; status: string; result: { promotion_decision?: string } | null; payload: { pms_family?: string } | null }>) {
+      const fam = j.payload?.pms_family;
+      if (!fam || backfillByFamily.has(fam)) continue;
+      backfillByFamily.set(fam, {
+        last_at: j.created_at,
+        last_outcome: j.result?.promotion_decision ?? j.status,
+      });
+    }
+  } catch { /* best-effort */ }
+
   const enriched = sessions.map((s) => {
     // Rows are newest-first, so find() = most recent.
     const active = activeJobs.find((j) => jobMatchesSession(j, s));
@@ -190,6 +247,7 @@ export async function GET(req: NextRequest) {
       last_mapper_job: last
         ? ({ id: last.id, status: last.status, created_at: last.created_at } satisfies MapperJobSummary)
         : null,
+      backfill: backfillByFamily.get(s.pms_family) ?? null,
     };
   });
 

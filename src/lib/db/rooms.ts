@@ -40,6 +40,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room } from '@/types';
+import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import { logErr } from './_common';
 import { fetchWithAuth } from '../api-fetch';
 import { toDate } from '../db-mappers';
@@ -82,7 +83,26 @@ function reviveRoomDates(r: Room): Room {
   };
 }
 
-async function fetchRoomsForDate(pid: string, date: string): Promise<Room[]> {
+interface RoomsFetchResult {
+  rooms: Room[];
+  /** feat/cua-partial-promotion — per-feed trust, riding the response as a
+   *  top-level sibling of `data` (data itself stays a bare Room[] for stale
+   *  bundles). Absent on old server versions or if the lookup failed —
+   *  consumers treat absent as "render as today". */
+  feedStatus?: PropertyFeedStatus;
+}
+
+function parseFeedStatus(raw: unknown): PropertyFeedStatus | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const candidate = raw as PropertyFeedStatus;
+  if (candidate.mode !== 'no_pms' && candidate.mode !== 'onboarding' && candidate.mode !== 'live') {
+    return undefined;
+  }
+  if (!candidate.feeds || typeof candidate.feeds !== 'object') return undefined;
+  return candidate;
+}
+
+async function fetchRoomsForDate(pid: string, date: string): Promise<RoomsFetchResult> {
   const res = await fetchWithAuth(
     `/api/housekeeping/rooms?pid=${encodeURIComponent(pid)}&date=${encodeURIComponent(date)}`,
     { method: 'GET', headers: { 'Content-Type': 'application/json' } },
@@ -98,12 +118,15 @@ async function fetchRoomsForDate(pid: string, date: string): Promise<Room[]> {
     throw new Error(`/api/housekeeping/rooms ${res.status}: ${body.slice(0, 200)}`);
   }
   const json = (await res.json().catch(() => null)) as
-    | { ok?: boolean; data?: unknown; error?: string }
+    | { ok?: boolean; data?: unknown; feedStatus?: unknown; error?: string }
     | null;
   if (!json?.ok || !Array.isArray(json.data)) {
     throw new Error(`/api/housekeeping/rooms unexpected body: ${json?.error ?? 'no data'}`);
   }
-  return (json.data as Room[]).map(reviveRoomDates);
+  return {
+    rooms: (json.data as Room[]).map(reviveRoomDates),
+    feedStatus: parseFeedStatus(json.feedStatus),
+  };
 }
 
 /**
@@ -124,8 +147,8 @@ async function fetchRoomsForDate(pid: string, date: string): Promise<Room[]> {
  */
 function subscribeViaPolling(
   channelKey: string,
-  doFetch: () => Promise<Room[]>,
-  callback: (rooms: Room[]) => void,
+  doFetch: () => Promise<RoomsFetchResult>,
+  callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
 ): () => void {
   let cancelled = false;
 
@@ -155,11 +178,11 @@ function subscribeViaPolling(
     if (cancelled) return;
     const myReq = ++requestSeq;
     doFetch()
-      .then(rows => {
+      .then(result => {
         if (cancelled) return;
         if (myReq <= lastPublishedSeq) return;
         lastPublishedSeq = myReq;
-        callback(rows);
+        callback(result.rooms, result.feedStatus);
       })
       .catch(err => {
         // M6 — 403/404 means this session can't read this anymore.
@@ -214,7 +237,7 @@ function subscribeViaPolling(
 
 export function subscribeToRooms(
   _uid: string, pid: string, date: string,
-  callback: (rooms: Room[]) => void,
+  callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
 ): () => void {
   return subscribeViaPolling(
     `rooms:${pid}:${date}`,
@@ -225,7 +248,7 @@ export function subscribeToRooms(
 
 export function subscribeToAllRooms(
   _uid: string, pid: string,
-  callback: (rooms: Room[]) => void,
+  callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
 ): () => void {
   // Compute today INSIDE the doFetch closure so a long-running page that
   // crosses midnight starts asking the API for the new day automatically.
@@ -241,7 +264,7 @@ export function subscribeToAllRooms(
 
 export async function getRoomsForDate(_uid: string, pid: string, date: string): Promise<Room[]> {
   try {
-    return await fetchRoomsForDate(pid, date);
+    return (await fetchRoomsForDate(pid, date)).rooms;
   } catch (err) {
     logErr('getRoomsForDate', err);
     throw err;

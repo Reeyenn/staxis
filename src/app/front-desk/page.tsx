@@ -17,6 +17,8 @@ import { ComplaintsTab } from './_components/ComplaintsTab';
 import { PackagesTab } from './_components/PackagesTab';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
+import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
+import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 
 const FD_TAB_KEY = 'fd-tab';
 // Roles that may use the Lost & Found surface (management home).
@@ -161,23 +163,47 @@ export default function FrontDeskPage() {
     localStorage.setItem(FD_TAB_KEY, t);
   };
 
+  // feat/cua-partial-promotion — per-feed PMS trust, riding the rooms poll.
+  const [feedStatus, setFeedStatus] = useState<PropertyFeedStatus | null>(null);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
+    return subscribeToRooms(user.uid, activePropertyId, today, (rs, fs) => {
+      setRooms(rs); if (fs) setFeedStatus(fs);
+    });
   }, [user, activePropertyId, today]);
+
+  // Honesty derivations — all false until feed status arrives (manual
+  // hotels / older servers) so the page renders exactly as today.
+  // Review pass: banners pick ONE message, but neutralization is a union —
+  // 'pending' (never synced) makes default statuses fake even with no feed
+  // formally learning; 'paused' is banner-only (real-but-stale data).
+  const fsLive = feedStatus?.mode === 'live';
+  const connPending = fsLive && feedStatus.connection === 'pending';
+  const connPaused = fsLive && feedStatus.connection === 'paused';
+  const roomStatusLearning = fsLive && feedStatus.feeds.roomStatus === 'learning';
+  const reservationsLearning = fsLive &&
+    (connPending || feedStatus.feeds.arrivals === 'learning' || feedStatus.feeds.departures === 'learning');
+  // A room whose status is the catch-all default has NO real signal while
+  // the room-status feed is learning or the first sync is pending.
+  const isNeutralRoom = (r: Room): boolean =>
+    (roomStatusLearning || connPending) && r.statusSource === 'default';
 
   /* ── Derived stats ── */
   const stats = useMemo(() => {
     const total = rooms.length;
-    const clean = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-    const dirty = rooms.filter(r => r.status === 'dirty').length;
-    const inProgress = rooms.filter(r => r.status === 'in_progress').length;
+    const known = rooms.filter(r => !isNeutralRoom(r));
+    const unknown = total - known.length;
+    const clean = known.filter(r => r.status === 'clean' || r.status === 'inspected').length;
+    const dirty = known.filter(r => r.status === 'dirty').length;
+    const inProgress = known.filter(r => r.status === 'in_progress').length;
     const checkouts = rooms.filter(r => r.type === 'checkout').length;
     const stayovers = rooms.filter(r => r.type === 'stayover').length;
     const dndCount = rooms.filter(r => r.isDnd).length;
-    const cleanPct = total > 0 ? Math.round((clean / total) * 100) : 0;
-    return { total, clean, dirty, inProgress, checkouts, stayovers, dndCount, cleanPct };
-  }, [rooms]);
+    const cleanPct = known.length > 0 ? Math.round((clean / known.length) * 100) : 0;
+    return { total, clean, dirty, inProgress, checkouts, stayovers, dndCount, cleanPct, unknown };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms, roomStatusLearning]);
 
   /* ── Filtered rooms ── */
   const filteredRooms = useMemo(() => {
@@ -185,14 +211,30 @@ export default function FrontDeskPage() {
     if (statusFilter === 'checkout' || statusFilter === 'stayover' || statusFilter === 'vacant') {
       return rooms.filter(r => r.type === statusFilter);
     }
-    return rooms.filter(r => r.status === statusFilter);
-  }, [rooms, statusFilter]);
+    // Neutral (no-signal) rooms are excluded from the status counts, so
+    // exclude them from status filters too — otherwise "Dirty (2)" opens a
+    // grid of 80 "No data" cards (review pass, senior #4).
+    return rooms.filter(r => r.status === statusFilter && !isNeutralRoom(r));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms, statusFilter, roomStatusLearning, connPending]);
 
   const roomsByFloor = useMemo(() => groupRoomsByFloor(filteredRooms), [filteredRooms]);
 
   /* ── AI insight line ── */
   const aiInsight = useMemo(() => {
     if (rooms.length === 0) return lang === 'es' ? 'Cargando datos de habitaciones...' : 'Loading room data...';
+    // Never declare "all clean" / "N need attention" off statuses that are
+    // still being learned from the PMS — say so instead.
+    if (connPending) {
+      return lang === 'es'
+        ? 'Conectando con tu PMS — los datos en vivo aparecerán cuando termine la primera sincronización.'
+        : 'Connecting to your PMS — live data will appear once the first sync lands.';
+    }
+    if (roomStatusLearning) {
+      return lang === 'es'
+        ? 'Aún aprendiendo los estados de habitaciones de tu PMS — los conteos reflejan solo cambios hechos en la app.'
+        : 'Still learning room statuses from your PMS — counts reflect in-app updates only.';
+    }
     if (stats.dirty === 0 && stats.inProgress === 0) {
       return lang === 'es'
         ? `Todas las ${stats.total} habitaciones están listas. Jornada tranquila.`
@@ -206,7 +248,7 @@ export default function FrontDeskPage() {
     return lang === 'es'
       ? `${stats.clean} listas, ${stats.dirty} pendientes, ${stats.inProgress} en proceso. ${stats.cleanPct}% completo.`
       : `${stats.clean} ready, ${stats.dirty} pending, ${stats.inProgress} in progress. ${stats.cleanPct}% complete.`;
-  }, [rooms, stats, lang]);
+  }, [rooms, stats, lang, roomStatusLearning, connPending]);
 
   /* ── Handlers ── */
   const handleEarlyCheckout = async () => {
@@ -321,6 +363,51 @@ export default function FrontDeskPage() {
             </p>
           </div>
 
+          {/* feat/cua-partial-promotion — honesty strips. One banner at a
+              time: pending > paused > feed-level. */}
+          {connPending && (
+            <div style={{ margin: '20px 0 0' }}>
+              <FeedLearningBanner
+                variant="strip"
+                title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
+                text={lang === 'es'
+                  ? 'Los datos en vivo aparecerán cuando termine la primera sincronización.'
+                  : 'Live data will appear once the first sync lands.'}
+              />
+            </div>
+          )}
+          {!connPending && connPaused && (
+            <div style={{ margin: '20px 0 0' }}>
+              <FeedLearningBanner
+                variant="strip"
+                title={lang === 'es' ? 'Conexión con el PMS en pausa.' : 'PMS connection paused.'}
+                text={lang === 'es'
+                  ? 'Los datos pueden estar desactualizados hasta que se reanude.'
+                  : 'Data may be out of date until it resumes.'}
+              />
+            </div>
+          )}
+          {!connPending && !connPaused && (roomStatusLearning || reservationsLearning) && (
+            <div style={{ margin: '20px 0 0' }}>
+              <FeedLearningBanner
+                variant="strip"
+                title={lang === 'es' ? 'Aún aprendiendo tu PMS.' : 'Still learning your PMS.'}
+                text={[
+                  roomStatusLearning
+                    ? (lang === 'es'
+                      ? 'Los estados de habitaciones del PMS todavía no llegan — las habitaciones “Sin datos” no tienen información todavía.'
+                      : 'Room statuses from the PMS aren’t flowing yet — “No data” rooms have no information yet.')
+                    : '',
+                  reservationsLearning
+                    ? (lang === 'es'
+                      ? 'Las llegadas/salidas del PMS aún se están aprendiendo — los conteos de salidas y estancias pueden estar incompletos.'
+                      : 'PMS arrivals/departures are still being learned — checkout and stayover counts may be incomplete.')
+                    : '',
+                ].filter(Boolean).join(' ')}
+              />
+            </div>
+          )}
+
           {/* ── AI Insight Card ── */}
           <div style={{
             margin: '20px 0 24px',
@@ -343,11 +430,14 @@ export default function FrontDeskPage() {
           </div>
 
           {/* ── Key Stats Bar ── */}
+          {/* Review pass: '—' for stats whose source feed is untrusted —
+              "Ready 0%" with every room unknown, or "Checkouts 0" while the
+              reservation feeds are learning, are confident wrong claims. */}
           <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
             {[
-              { label: lang === 'es' ? 'Total' : 'Rooms', value: stats.total, icon: 'meeting_room', color: '#364262' },
-              { label: lang === 'es' ? 'Listas' : 'Ready', value: `${stats.cleanPct}%`, icon: 'check_circle', color: '#006565' },
-              { label: lang === 'es' ? 'Salidas' : 'Checkouts', value: stats.checkouts, icon: 'logout', color: '#454652' },
+              { label: lang === 'es' ? 'Total' : 'Rooms', value: stats.total as React.ReactNode, icon: 'meeting_room', color: '#364262' },
+              { label: lang === 'es' ? 'Listas' : 'Ready', value: (stats.total - stats.unknown) > 0 ? `${stats.cleanPct}%` : '—', icon: 'check_circle', color: '#006565' },
+              { label: lang === 'es' ? 'Salidas' : 'Checkouts', value: reservationsLearning ? '—' : stats.checkouts, icon: 'logout', color: '#454652' },
               { label: lang === 'es' ? 'No Molestar' : 'DND', value: stats.dndCount, icon: 'do_not_disturb_on', color: stats.dndCount > 0 ? '#ba1a1a' : '#757684' },
             ].map(({ label, value, icon, color }) => (
               <div key={label} style={{
@@ -447,7 +537,8 @@ export default function FrontDeskPage() {
                   gap: '12px',
                 }}>
                   {floorRooms.map(room => {
-                    const statusCol = getStatusColor(room.status);
+                    const neutral = isNeutralRoom(room);
+                    const statusCol = neutral ? '#757684' : getStatusColor(room.status);
                     return (
                       <div
                         key={room.id}
@@ -504,21 +595,22 @@ export default function FrontDeskPage() {
                           {room.number}
                         </div>
 
-                        {/* Status pill */}
+                        {/* Status pill — neutral gray "No data" while the
+                            room-status feed is still being learned */}
                         <div style={{
                           display: 'flex', alignItems: 'center', gap: '4px',
                           padding: '4px 10px', borderRadius: '9999px',
-                          background: getStatusBg(room.status),
+                          background: neutral ? 'rgba(117,118,132,0.10)' : getStatusBg(room.status),
                         }}>
                           <span className="material-symbols-outlined" style={{ fontSize: '13px', color: statusCol }}>
-                            {getStatusIcon(room.status)}
+                            {neutral ? 'hourglass_empty' : getStatusIcon(room.status)}
                           </span>
                           <span style={{
                             fontSize: '11px', fontWeight: 600, color: statusCol,
                             fontFamily: 'Inter, sans-serif', textTransform: 'uppercase',
                             letterSpacing: '0.03em',
                           }}>
-                            {getStatusLabel(room.status, lang)}
+                            {neutral ? (lang === 'es' ? 'Sin datos' : 'No data') : getStatusLabel(room.status, lang)}
                           </span>
                         </div>
 

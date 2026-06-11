@@ -37,7 +37,10 @@ import {
   resolveColumnParser,
   MAX_COMPLETENESS_REASKS,
 } from '../target-contract.js';
-import { evaluatePromotionGate } from '../mapping-driver.js';
+import {
+  evaluatePromotionGate, evaluateSeededPromotionGuard, computeFeedGaps, feedGapEntryKeys,
+  shouldActivateImmediately,
+} from '../mapping-driver.js';
 import { getParser } from '../parsers/registry.js';
 import '../parsers/generic.js'; // side-effect: registers generic_date/currency/integer/number/boolean/enum (the universal default)
 import '../parsers/ca.js'; // side-effect: registers ca_* (now ONLY the enum fallback for the seeded CA file)
@@ -442,38 +445,226 @@ function fullRecipe(overrides: Partial<Recipe['actions']> = {}): Recipe {
   };
 }
 
-describe('evaluatePromotionGate column-completeness', () => {
+describe('evaluatePromotionGate — full path (unchanged behavior)', () => {
   test('complete required + 3 business-critical → auto_promote', () => {
-    assert.equal(evaluatePromotionGate(fullRecipe()).decision, 'auto_promote');
-  });
-
-  test('required feed missing a required COLUMN → park_draft (the key fix)', () => {
-    const g = evaluatePromotionGate(fullRecipe({
-      getArrivals: tableAction({ guest_name: 'b', arrival_date: 'c', departure_date: 'd' }), // no pms_reservation_id
-    }));
-    assert.equal(g.decision, 'park_draft');
-    assert.match(g.reason, /getArrivals/);
-    assert.match(g.reason, /pms_reservation_id/);
-  });
-
-  test('required feed with a BLANK column selector → park_draft', () => {
-    const g = evaluatePromotionGate(fullRecipe({ getRoomStatus: tableAction({ room_number: 'a', status: '' }) }));
-    assert.equal(g.decision, 'park_draft');
-    assert.match(g.reason, /getRoomStatus/);
-  });
-
-  test('missing required KEY still → quarantine (unchanged behavior)', () => {
-    const r = fullRecipe();
-    delete r.actions.getWorkOrders;
-    const g = evaluatePromotionGate(r);
-    assert.equal(g.decision, 'quarantine');
-    assert.match(g.reason, /getWorkOrders/);
+    const g = evaluatePromotionGate(fullRecipe());
+    assert.equal(g.decision, 'auto_promote');
+    assert.equal(g.feedGaps.missingRequired.length, 0);
   });
 
   test('OPTIONAL/business-critical feed with blank columns does NOT block promotion', () => {
     // getRevenueDaily is not a REQUIRED_TARGET → never column-gated.
     const g = evaluatePromotionGate(fullRecipe({ getRevenueDaily: tableAction({ date: '' }) }));
     assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('seed-regression guard still parks (backfill/repair that LOST a feed)', () => {
+    const r = fullRecipe();
+    // Seed has every action the recipe has → recipe is NOT seed+1 → park.
+    const g = evaluatePromotionGate(r, r.actions);
+    assert.equal(g.decision, 'park_draft');
+    assert.match(g.reason, /self-repair failed/);
+  });
+});
+
+describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotion)', () => {
+  test('missing getDepartures → park_partial with an exact not_found gap', () => {
+    const r = fullRecipe();
+    delete r.actions.getDepartures;
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'park_partial');
+    assert.deepEqual(g.feedGaps.missingRequired, [{ target: 'getDepartures', reason: 'not_found' }]);
+    assert.match(g.reason, /getDepartures/);
+  });
+
+  test('missing getWorkOrders only → park_partial (was quarantine — intended change)', () => {
+    const r = fullRecipe();
+    delete r.actions.getWorkOrders;
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'park_partial');
+    assert.match(g.reason, /getWorkOrders/);
+  });
+
+  test('housekeeping loop alone (roomStatus only, all other required missing) → park_partial', () => {
+    const r = fullRecipe();
+    delete r.actions.getArrivals;
+    delete r.actions.getDepartures;
+    delete r.actions.getWorkOrders;
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'park_partial');
+    assert.equal(g.feedGaps.missingRequired.length, 3);
+  });
+
+  test('front-desk loop alone (arrivals + departures, no roomStatus/workOrders) → park_partial', () => {
+    const r = fullRecipe();
+    delete r.actions.getRoomStatus;
+    delete r.actions.getWorkOrders;
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'park_partial');
+  });
+
+  test('below the bar (departures + workOrders only) → quarantine (floor unchanged)', () => {
+    const r = fullRecipe();
+    delete r.actions.getRoomStatus;
+    delete r.actions.getArrivals;
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'quarantine');
+    assert.match(g.reason, /partial-promotion bar/);
+  });
+
+  test('arrivals WITHOUT departures does not satisfy the front-desk loop → quarantine', () => {
+    const r = fullRecipe();
+    delete r.actions.getRoomStatus;
+    delete r.actions.getDepartures;
+    delete r.actions.getWorkOrders;
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'quarantine');
+  });
+
+  test('required feed missing a required COLUMN → park_partial with incomplete_columns gap (was park_draft — intended change)', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: tableAction({ guest_name: 'b', arrival_date: 'c', departure_date: 'd' }), // no pms_reservation_id
+    }));
+    // roomStatus loop is intact → bar met; the dead arrivals feed is a gap.
+    assert.equal(g.decision, 'park_partial');
+    const gap = g.feedGaps.missingRequired.find((x) => x.target === 'getArrivals');
+    assert.equal(gap?.reason, 'incomplete_columns');
+    assert.deepEqual(gap?.missingColumns, ['pms_reservation_id']);
+  });
+
+  test('BLANK column selector on roomStatus counts as a gap; front-desk loop carries the bar', () => {
+    const g = evaluatePromotionGate(fullRecipe({ getRoomStatus: tableAction({ room_number: 'a', status: '' }) }));
+    assert.equal(g.decision, 'park_partial');
+    assert.equal(g.feedGaps.missingRequired[0]?.target, 'getRoomStatus');
+    assert.equal(g.feedGaps.missingRequired[0]?.reason, 'incomplete_columns');
+  });
+
+  test('ALL required present but every loop dead (incomplete columns) → quarantine', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getRoomStatus: tableAction({ room_number: 'a', status: '' }),
+      getArrivals: tableAction({ guest_name: 'b', arrival_date: 'c', departure_date: 'd' }),
+    }));
+    // Trustworthy = departures + workOrders → no loop → near-empty.
+    assert.equal(g.decision, 'quarantine');
+  });
+
+  test('all required + <3 business-critical → park_partial with BC gaps (was park_draft — POLICY CHANGE)', () => {
+    const r = fullRecipe();
+    delete r.actions.getGuests;       // leaves 2 BC (revenue, rates)
+    const g = evaluatePromotionGate(r);
+    assert.equal(g.decision, 'park_partial');
+    assert.equal(g.feedGaps.missingRequired.length, 0);
+    assert.ok(g.feedGaps.missingBusinessCritical.includes('getGuests'));
+    assert.match(g.reason, /business-critical/);
+  });
+
+  test('feedGaps lists every absent business-critical target even on auto_promote-shaped recipes with required gaps', () => {
+    const r = fullRecipe();
+    delete r.actions.getDepartures;
+    const g = evaluatePromotionGate(r);
+    assert.ok(g.feedGaps.missingBusinessCritical.includes('getChannelPerformance'));
+    assert.ok(g.feedGaps.missingBusinessCritical.includes('getForecastDaily'));
+  });
+});
+
+describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT active', () => {
+  const gapsOf = (r: Recipe) => computeFeedGaps(r.actions);
+
+  test('superset guard parks when the result lacks a key the active gained meanwhile', () => {
+    const newR = fullRecipe();                       // has no getLostAndFound
+    const active = fullRecipe({ getLostAndFound: tableAction({ pms_item_id: 'a' }) });
+    const v = evaluateSeededPromotionGuard(
+      { version: 7, knowledge: { actions: active.actions } },
+      newR.actions, gapsOf(newR), false,
+    );
+    assert.equal(v.ok, false);
+    assert.match((v as { reason: string }).reason, /getLostAndFound/);
+  });
+
+  test('backfill with strictly fewer gaps → passes the guard (parks as a reviewable park_partial)', () => {
+    const active = fullRecipe();
+    delete active.actions.getDepartures;
+    delete active.actions.getWorkOrders;
+    const newR = fullRecipe();
+    delete newR.actions.getWorkOrders;               // found departures, still missing WOs
+    const v = evaluateSeededPromotionGuard(
+      { version: 3, knowledge: { actions: active.actions, feedGaps: gapsOf(active) } },
+      newR.actions, gapsOf(newR), true,
+    );
+    assert.equal(v.ok, true);
+  });
+
+  test('backfill with EQUAL gaps parks WITHOUT saving a draft (no churn, no latched review gate) — but a self-repair with equal gaps passes', () => {
+    const active = fullRecipe();
+    delete active.actions.getDepartures;
+    const newR = fullRecipe();
+    delete newR.actions.getDepartures;               // same shape, e.g. re-learned selectors
+    const base = { version: 4, knowledge: { actions: active.actions, feedGaps: gapsOf(active) } };
+    const asBackfill = evaluateSeededPromotionGuard(base, newR.actions, gapsOf(newR), true);
+    assert.equal(asBackfill.ok, false);
+    assert.match((asBackfill as { reason: string }).reason, /no gap progress/);
+    // skipSave: a coverage-identical draft must not be persisted — it would
+    // latch the cron's draft-awaiting-review gate forever (hunter P1-2).
+    assert.equal((asBackfill as { skipSave?: boolean }).skipSave, true);
+    const asRepair = evaluateSeededPromotionGuard(base, newR.actions, gapsOf(newR), false);
+    assert.equal(asRepair.ok, true);
+  });
+
+  test('stale-seed superset failure SAVES the draft (skipSave not set) — genuinely reviewable', () => {
+    const newR = fullRecipe();
+    const active = fullRecipe({ getLostAndFound: tableAction({ pms_item_id: 'a' }) });
+    const v = evaluateSeededPromotionGuard(
+      { version: 7, knowledge: { actions: active.actions } },
+      newR.actions, gapsOf(newR), true,
+    );
+    assert.equal(v.ok, false);
+    assert.equal((v as { skipSave?: boolean }).skipSave, undefined);
+  });
+
+  test('legacy active without stored feedGaps falls back to computing them from its actions', () => {
+    const active = fullRecipe();
+    delete active.actions.getDepartures;
+    const newR = fullRecipe();                       // found departures → gaps shrink
+    const v = evaluateSeededPromotionGuard(
+      { version: 2, knowledge: { actions: active.actions } },  // no feedGaps stored
+      newR.actions, gapsOf(newR), true,
+    );
+    assert.equal(v.ok, true);
+  });
+});
+
+describe('shouldActivateImmediately — THE founder gate (park-not-promote)', () => {
+  test('only a COMPLETE recipe activates itself; every other outcome waits for a human', () => {
+    // Founder decision 2026-06-11: incomplete recipes NEVER self-activate.
+    // This pins the runMappingJob seam — re-adding park_partial here would
+    // silently restore auto-activation of partials without any other test
+    // going red.
+    assert.equal(shouldActivateImmediately('auto_promote'), true);
+    assert.equal(shouldActivateImmediately('park_partial'), false);
+    assert.equal(shouldActivateImmediately('park_draft'), false);
+    assert.equal(shouldActivateImmediately('quarantine'), false);
+  });
+});
+
+describe('feedGapEntryKeys — canonical progress signature', () => {
+  test('stable across ordering and computedAt; excludes missingColumns detail', () => {
+    const a = {
+      computedAt: '2026-01-01T00:00:00Z',
+      missingRequired: [
+        { target: 'getDepartures', reason: 'not_found' as const },
+        { target: 'getRoomStatus', reason: 'incomplete_columns' as const, missingColumns: ['status'] },
+      ],
+      missingBusinessCritical: ['getGuests', 'getForecastDaily'],
+    };
+    const b = {
+      computedAt: '2026-06-11T12:34:56Z',
+      missingRequired: [
+        { target: 'getRoomStatus', reason: 'incomplete_columns' as const, missingColumns: ['room_number'] },
+        { target: 'getDepartures', reason: 'not_found' as const },
+      ],
+      missingBusinessCritical: ['getForecastDaily', 'getGuests'],
+    };
+    assert.deepEqual(feedGapEntryKeys(a), feedGapEntryKeys(b));
   });
 });
 

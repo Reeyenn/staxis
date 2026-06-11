@@ -174,6 +174,14 @@ export interface Room {
   isRush?: boolean;
   rushDueBy?: Date | null;
   markedForInspectionAt?: Date | null;
+  // feat/cua-partial-promotion — which signal produced `status`:
+  //   'assignment' — today's HK plan row (app/CUA workflow state)
+  //   'pms'        — a real pms_room_status_log value
+  //   'default'    — NO signal at all; the merge's conservative 'dirty'.
+  // When the property's roomStatus feed is still learning, UI surfaces
+  // render 'default' rooms as a neutral "—" instead of dirty — otherwise a
+  // missing feed reads as a confident "84 rooms to clean" board.
+  statusSource?: 'assignment' | 'pms' | 'default';
 }
 
 // ─── Housekeeper job-card context (joined from pms_reservations) ───────────

@@ -34,6 +34,8 @@ import { registerTool, type ToolResult } from '../tools';
 import { buildHotelSnapshot } from '../context';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
 import type { Room } from '@/types';
 
 // ─── getPropertyToday ───────────────────────────────────────────────────────
@@ -300,6 +302,20 @@ registerTool<Record<string, never>>({
       ? Math.round((counts.in_house / counts.total_rooms) * 1000) / 10
       : 0;
 
+    // Review pass (fake-empty hunter #5) — the vacancy/in-house numbers are
+    // snapshot-COALESCE-0s when the counts feed has no source, and
+    // checkout/stayover counts undercount while the reservation feeds are
+    // learning. Null them (with an explicit reason) instead of letting the
+    // model relay confident zeros. Fail-safe: lookup error → no nulling.
+    let countsOk = true;
+    let reservationsOk = true;
+    try {
+      const fs = await getPropertyFeedStatus(ctx.propertyId);
+      countsOk = countsTrusted(fs);
+      reservationsOk = !(fs.mode === 'live' && (isDataPending(fs) ||
+        fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning'));
+    } catch { /* non-fatal */ }
+
     const eventCount = events?.length ?? 0;
     const totalDuration = (events ?? []).reduce(
       (acc, e) => acc + Number(e.duration_minutes ?? 0),
@@ -313,19 +329,25 @@ registerTool<Record<string, never>>({
       data: {
         today,
         rooms: {
-          dirty: counts.vacant_dirty,
+          dirty: countsOk ? counts.vacant_dirty : null,
           inProgress: 0, // TODO(overlay)
-          clean: counts.vacant_clean,
+          clean: countsOk ? counts.vacant_clean : null,
           dnd: 0,        // TODO(overlay)
           total: counts.total_rooms,
         },
         occupancy: {
-          checkouts: counts.checkouts,
-          stayovers: counts.stayovers,
-          inHouse: counts.in_house,
-          outOfOrder: counts.ooo,
-          occupancyPercent,
+          checkouts: reservationsOk ? counts.checkouts : null,
+          stayovers: reservationsOk ? counts.stayovers : null,
+          inHouse: countsOk ? counts.in_house : null,
+          outOfOrder: countsOk ? counts.ooo : null,
+          occupancyPercent: countsOk ? occupancyPercent : null,
         },
+        ...(!countsOk || !reservationsOk
+          ? {
+              pmsDataNote:
+                'null fields are NOT zeros — their PMS source feed is still syncing/unavailable for this hotel; say "still syncing" instead of a number.',
+            }
+          : {}),
         issues: 0,       // TODO(overlay)
         helpRequests: 0, // TODO(overlay)
         cleaningEvents: {

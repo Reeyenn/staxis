@@ -225,6 +225,8 @@ type TranslationKey =
   | 'hkSummaryStillToGo' | 'hkSummaryShowDailySummary'
   | 'hkErrCouldntStart' | 'hkErrCouldntPause' | 'hkErrCouldntResume'
   | 'hkErrCouldntComplete' | 'hkErrCouldntSaveException'
+  // feat/cua-partial-promotion — PMS feeds still being learned (partial promotion)
+  | 'hkPmsLearningBanner'
   | 'hkCriticalItem' | 'hkChecklistOptional'
   // Housekeeper mobile rebuild pieces B + C (2026-05-25)
   // Notice board (manager → housekeeper announcement banner)
@@ -778,6 +780,7 @@ const translations: TranslationMaps = {
     hkErrCouldntResume: "Couldn't resume.",
     hkErrCouldntComplete: "Couldn't mark Done.",
     hkErrCouldntSaveException: "Couldn't save exception.",
+    hkPmsLearningBanner: 'Some hotel-system data is still syncing — checkout and arrival info may be incomplete.',
     // Piece B/C — added 2026-05-25 by feature/housekeeper-mobile-rebuild-BC
     hkNotice: 'Notice',
     hkNoticePinned: 'Pinned',
@@ -1598,6 +1601,7 @@ const translations: TranslationMaps = {
     hkErrCouldntResume: 'No se pudo reanudar.',
     hkErrCouldntComplete: 'No se pudo marcar como Lista.',
     hkErrCouldntSaveException: 'No se pudo guardar la excepción.',
+    hkPmsLearningBanner: 'Algunos datos del sistema del hotel aún se están sincronizando — la información de salidas y llegadas puede estar incompleta.',
     // Piece B/C — added 2026-05-25
     hkNotice: 'Aviso',
     hkNoticePinned: 'Fijado',
@@ -2173,6 +2177,7 @@ const translations: TranslationMaps = {
     hkErrCouldntResume: 'Pa kapab kontinye.',
     hkErrCouldntComplete: 'Pa kapab make Fini.',
     hkErrCouldntSaveException: 'Pa kapab sove eksepsyon.',
+    hkPmsLearningBanner: 'Kèk done sistèm otèl la ap senkronize toujou — enfòmasyon sou depa ak arive yo ka pa konplè.',
     hkErrMarkInspection: 'Pa kapab make pou enspeksyon.',
     hkErrPhotoTooBig: 'Foto a twò gwo — eseye yon pi piti.',
     hkErrPhotoUpload: 'Pa kapab voye foto a. Eseye ankò.',
@@ -2363,6 +2368,7 @@ const translations: TranslationMaps = {
     hkErrCouldntResume: 'Hindi naituloy.',
     hkErrCouldntComplete: 'Hindi nai-mark na Tapos.',
     hkErrCouldntSaveException: 'Hindi na-save ang eksepsiyon.',
+    hkPmsLearningBanner: 'Ang ilang data ng sistema ng hotel ay nagsi-sync pa — maaaring kulang ang impormasyon ng check-out at pagdating.',
     hkErrMarkInspection: 'Hindi nai-mark para sa inspeksyon.',
     hkErrPhotoTooBig: 'Masyadong malaki ang larawan — subukan ang mas maliit.',
     hkErrPhotoUpload: 'Hindi nai-upload ang larawan. Subukan ulit.',
@@ -2546,6 +2552,7 @@ const translations: TranslationMaps = {
     hkErrCouldntResume: 'Không thể tiếp tục.',
     hkErrCouldntComplete: 'Không thể đánh dấu Xong.',
     hkErrCouldntSaveException: 'Không thể lưu ngoại lệ.',
+    hkPmsLearningBanner: 'Một số dữ liệu hệ thống khách sạn vẫn đang đồng bộ — thông tin trả phòng và khách đến có thể chưa đầy đủ.',
     hkErrMarkInspection: 'Không thể đánh dấu để kiểm tra.',
     hkErrPhotoTooBig: 'Ảnh quá lớn — thử ảnh nhỏ hơn.',
     hkErrPhotoUpload: 'Không thể tải ảnh lên. Thử lại.',

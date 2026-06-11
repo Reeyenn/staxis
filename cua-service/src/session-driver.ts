@@ -1162,9 +1162,11 @@ export class SessionDriver {
    * mapper.learn_pms_family workflow kind, with payload.seed_actions
    * pre-populated with every action EXCEPT the failing one — so the
    * mapper skips the 12 known-good targets and only re-learns the
-   * broken one. New recipe version auto-promotes via the existing
-   * promotion-gate logic. Live polling picks up the new selectors on
-   * the next hot-reload tick (~60s).
+   * broken one. A complete result auto-promotes via the existing
+   * promotion-gate logic (an INCOMPLETE one parks as a draft for the
+   * admin's Promote click — founder-gated, feat/cua-partial-promotion).
+   * Live polling picks up new selectors on the next hot-reload tick
+   * (~60s) after a promotion.
    *
    * Idempotency key = `mapper.repair:{family}:{actionKey}` prevents
    * double-enqueue while a repair is in-flight OR after a failed

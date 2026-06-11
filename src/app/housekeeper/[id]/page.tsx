@@ -97,6 +97,11 @@ export default function HousekeeperRoomPage({
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
   const [reservationsByRoom, setReservationsByRoom] = useState<Record<string, RoomReservationContext>>({});
+  // feat/cua-partial-promotion — true when the hotel's PMS connection is
+  // live but the arrivals/departures/room-status feeds are still being
+  // learned: checkout/arrival badges may be missing, so show one honest
+  // pill instead of letting "no badge" read as "no checkout today".
+  const [pmsLearning, setPmsLearning] = useState(false);
   // Always sort by room number (the floor/number toggle was removed per design).
   const [groupBy] = useState<GroupBy>('number');
 
@@ -273,7 +278,20 @@ export default function HousekeeperRoomPage({
   // Rooms subscription.
   useEffect(() => {
     if (!housekeeperId || !pid || !authReady) return;
-    const unsub = subscribeToRoomsForStaff(pid, housekeeperId, (all) => {
+    const unsub = subscribeToRoomsForStaff(pid, housekeeperId, (all, fs) => {
+      // 'pending' = never synced (badges genuinely absent); 'paused' =
+      // stale-but-real data, no pill. Else-clear so the pill doesn't latch
+      // if the property's state changes (review pass, senior #10).
+      if (fs) {
+        setPmsLearning(
+          fs.mode === 'live' && (
+            fs.connection === 'pending' ||
+            fs.feeds.arrivals === 'learning' ||
+            fs.feeds.departures === 'learning' ||
+            fs.feeds.roomStatus === 'learning'
+          ),
+        );
+      }
       if (Date.now() - lastRefetchAtRef.current < 1500) return;
       const byDate = new Map<string, RoomRow[]>();
       for (const r of all) {
@@ -978,6 +996,26 @@ export default function HousekeeperRoomPage({
           {/* Notice board banner — manager broadcasts. Renders nothing
               when there are no active or undismissed notices. */}
           <NoticeBoardBanner pid={pid} staffId={housekeeperId} lang={lang} />
+
+          {/* feat/cua-partial-promotion — honest "still syncing" pill while
+              the PMS feeds behind checkout/arrival badges are learning.
+              Translated via the page's own 5-locale mechanism. */}
+          {pmsLearning && (
+            <div
+              role="status"
+              style={{
+                padding: '10px 14px',
+                background: 'rgba(201, 150, 68, 0.12)',
+                border: '1px solid rgba(201, 150, 68, 0.30)',
+                color: '#8C6A33',
+                borderRadius: 10,
+                fontSize: 13,
+                lineHeight: 1.45,
+              }}
+            >
+              {t('hkPmsLearningBanner', lang)}
+            </div>
+          )}
 
           {/* Offline state surface — banner shows queued count when
               navigator.onLine is false, last drain summary when online. */}

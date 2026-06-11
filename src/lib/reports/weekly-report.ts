@@ -168,9 +168,18 @@ function sumDailies(dailies: DailyReportPayload[]) {
     accum.sickCallouts += day.labor.sickCalloutsToday;
     accum.workOrdersCreated += day.issues.workOrdersCreatedToday;
     accum.urgentItemsPending = Math.max(accum.urgentItemsPending, day.issues.urgentItemsStillPending);
-    accum.arrivalsProjected += day.tomorrow.arrivals;
-    accum.departuresProjected += day.tomorrow.departures;
-    accum.projectedRoomsToClean += day.tomorrow.projectedRoomsToClean;
+    // feat/cua-partial-promotion (review pass) — days whose reservation
+    // feeds were still being learned stored numeric 0s plus a flag; only
+    // the daily RENDERER substitutes "still syncing". Summing them mails
+    // confident under-counted weekly totals — skip flagged days, same
+    // pattern as the recommendedHeadcount null-skip just below. (The
+    // occupancy average above already skips its fake-0 days via the >0
+    // guard.)
+    if (!day.tomorrow.reservationFeedsLearning) {
+      accum.arrivalsProjected += day.tomorrow.arrivals;
+      accum.departuresProjected += day.tomorrow.departures;
+      accum.projectedRoomsToClean += day.tomorrow.projectedRoomsToClean;
+    }
     if (day.tomorrow.recommendedHeadcount !== null) {
       accum.recommendedHeadcountSum += day.tomorrow.recommendedHeadcount;
       accum.recommendedHeadcountDays += 1;
