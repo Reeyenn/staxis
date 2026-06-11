@@ -588,6 +588,43 @@ describe('checkDateParams — anchor dates template, everything else abstains', 
     assert.equal(r.altUrl, 'https://pms.example.com/api/list?date={today:DD/MM/YYYY}');
   });
 
+  test('TEXTUAL-month date (untemplateable grammar) anywhere → abstain, even when it IS today', () => {
+    const inUrl = checkDateParams({
+      url: 'https://pms.example.com/api/list?label=Jun%2010,%202026',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(inUrl.ok, false);
+    assert.match(inUrl.reason!, /textual_date_in_url/);
+
+    const inBody = checkDateParams({
+      url: 'https://pms.example.com/api/list',
+      body: '{"reportDate":"10 Jun 2026"}',
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(inBody.ok, false);
+    assert.match(inBody.reason!, /textual_date_in_body/);
+  });
+
+  test('FROZEN far-window epoch in a date-NAMED param (since=Jan 1) → abstain', () => {
+    const jan1 = Math.floor(Date.UTC(2026, 0, 1, 0, 0, 1) / 1000);
+    const r = checkDateParams({
+      url: `https://pms.example.com/api/list?since=${jan1}`,
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.reason!, /frozen_epoch_date_param:since/);
+    // …while an opaque big number in a non-date param is left alone.
+    const id = checkDateParams({
+      url: `https://pms.example.com/api/list?accountRef=${jan1}`,
+      anchorIso: ANCHOR,
+      nowMs: NOW_MS,
+    });
+    assert.equal(id.ok, true, id.reason);
+  });
+
   test('no dates at all → ok with zero templates (the immune class)', () => {
     const r = checkDateParams({
       url: 'https://pms.example.com/api/arrivals?view=today',

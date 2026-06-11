@@ -2283,6 +2283,13 @@ export async function attemptStructuredDiscovery(
     mode: 'replay',
   });
   if (!replayVerdict.reconciles) return abstain(`replay_reconcile_failed:${replayVerdict.reason}`);
+  // A column can pass on the captured body yet fail on the LIVE replay (the
+  // server varies a field by context) — emitting it would write wrong-but-
+  // well-formed optional values forever. Drop replay-stage casualties too.
+  for (const col of replayVerdict.droppedOptionalColumns ?? []) {
+    delete columns[col];
+    if (verdict.derivedEnumMappings) delete verdict.derivedEnumMappings[col];
+  }
 
   // ── 9. Date-shift probe ──
   // Render YESTERDAY once and require uniformly-yesterday rows (or an empty

@@ -222,6 +222,27 @@ describe('attemptStructuredDiscovery — verified upgrade', () => {
     assert.equal(hint?.url, 'https://pms.example.com/api/arrivals?date={today:DD/MM/YYYY}');
   });
 
+  test('a column that passes on the captured body but FAILS on live replay is dropped from the hint', async () => {
+    const { deps } = makeDeps({
+      replayFetch: async (req) => {
+        if (req.url.includes('06/10/2026')) {
+          // Live replay: rooms differ from what the captured body showed.
+          return { ok: true, data: { data: { arrivals: apiRowsRaw().map((r) => ({ ...r, room: '999' })) } } };
+        }
+        if (req.url.includes('06/09/2026')) {
+          return { ok: true, data: { data: { arrivals: apiRowsRaw('2026-06-09').slice(0, 4).map((r) => ({ ...r, room: '999' })) } } };
+        }
+        return { ok: false, reason: 'HTTP 400' };
+      },
+    });
+    const result = await attemptStructuredDiscovery(mkInput(), deps);
+    assert.ok(result, 'optional replay casualty must not kill the upgrade');
+    const hint = result.action.parse.mode === 'api' ? result.action.parse.hint : null;
+    assert.ok(hint);
+    assert.equal(hint.columns.room_number, undefined, 'replay-failed optional column must be dropped');
+    assert.ok(hint.columns.pms_reservation_id, 'verified columns stay');
+  });
+
   test('no-date-param endpoint skips the probe (server-side business date class)', async () => {
     const call = mkCall({ url: 'https://pms.example.com/api/arrivals/today' });
     const fetched: string[] = [];

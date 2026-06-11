@@ -456,12 +456,24 @@ const CACHE_BUSTER_NAMES = new Set(['_', '_t', 'cb', 'ts', 't', 'nocache', 'cach
 
 const ID_NAME_RE = /(^|[._-])(id|ids|key|code|num|no)$|(id|key|code)s?$/i;
 
+const DATEISH_SEGMENTS = ['date', 'day', 'from', 'to', 'start', 'end', 'begin', 'until', 'since', 'on', 'for', 'time'];
+
 function isIdishName(name: string): boolean {
   const segs = identSegments(name);
-  if (segs.some((s) => ['date', 'day', 'from', 'to', 'start', 'end', 'begin', 'until', 'on', 'for'].includes(s))) {
-    return false;
-  }
+  if (segs.some((s) => DATEISH_SEGMENTS.includes(s))) return false;
   return ID_NAME_RE.test(name) || segs.some((s) => ['id', 'ids', 'key', 'code', 'num', 'no'].includes(s));
+}
+
+function isDateishName(name: string): boolean {
+  return identSegments(name).some((s) => DATEISH_SEGMENTS.includes(s));
+}
+
+/** Epoch seconds/ms that decodes to a calendar date in 2015–2035 — the range
+ *  where a big number plausibly IS a date rather than an opaque id. */
+function isPlausibleEpochDate(raw: string): boolean {
+  if (!/^\d{10}$|^\d{13}$/.test(raw)) return false;
+  const ms = epochToMs(raw);
+  return ms >= Date.UTC(2015, 0, 1) && ms <= Date.UTC(2035, 11, 31);
 }
 
 interface DateHit {
@@ -587,6 +599,23 @@ function findDateTokens(s: string): string[] {
   return [...s.matchAll(new RegExp(DATE_TOKEN_SRC, 'g'))].map((m) => m[0]!);
 }
 
+// Textual-month dates ("Jun 10, 2026" / "10 Jun 2026"). The {today:FORMAT}
+// grammar is numeric-only, so these can NEVER be templated — any real one in a
+// request is a frozen query date → abstain (whether or not it's the anchor).
+const TEXTUAL_DATE_SRC =
+  '[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{2,4}|\\d{1,2}\\s+[A-Za-z]{3,9}\\.?,?\\s+\\d{2,4}';
+
+function findTextualDate(s: string): string | null {
+  for (const m of s.matchAll(new RegExp(TEXTUAL_DATE_SRC, 'g'))) {
+    const iso = parseTextualDate(m[0]!);
+    if (iso) {
+      const y = +iso.slice(0, 4);
+      if (y >= 2015 && y <= 2035) return m[0]!;
+    }
+  }
+  return null;
+}
+
 function findEpochTokens(s: string): string[] {
   return [...s.matchAll(new RegExp(EPOCH_SRC, 'g'))].map((m) => m[1]!);
 }
@@ -672,6 +701,14 @@ export function checkDateParams(input: {
   const rawQuery = parsedUrl.search.startsWith('?') ? parsedUrl.search.slice(1) : parsedUrl.search;
   const rawPairs = rawQuery === '' ? [] : rawQuery.split('&');
 
+  // Textual-month dates ("Jun 10, 2026") are untemplateable by the numeric
+  // {today:FORMAT} grammar — a frozen one is guaranteed-stale → abstain. They
+  // arrive percent/plus-encoded in URLs, so scan the DECODED views.
+  {
+    const textual = findTextualDate(decodeSafe(parsedUrl.pathname)) ?? findTextualDate(decodeSafe(rawQuery));
+    if (textual) return { ok: false, reason: `textual_date_in_url:${textual.slice(0, 24)}` };
+  }
+
   const outPairs: Array<{ raw: string } | { key: string; primary: string; alt?: string }> = [];
   for (const pair of rawPairs) {
     const eq = pair.indexOf('=');
@@ -706,6 +743,12 @@ export function checkDateParams(input: {
         // A date/time filter in epoch form — the {today} grammar can't
         // express epochs, so this would replay frozen → stale. Abstain.
         return { ok: false, reason: `untemplateable_epoch_param:${key}` };
+      }
+      if (isDateishName(key) && isPlausibleEpochDate(rawVal)) {
+        // A date-NAMED param holding a calendar-plausible epoch outside the
+        // ±48h window (e.g. since=<Jan 1>): the page recomputes it fresh each
+        // visit, a frozen replay drifts further from it every day. Abstain.
+        return { ok: false, reason: `frozen_epoch_date_param:${key}` };
       }
       outPairs.push({ raw: pair });
       continue;
@@ -782,6 +825,9 @@ export function checkDateParams(input: {
     const foreign = scanForForeignDates(body);
     if (foreign) return { ok: false, reason: `non_anchor_date_in_body:${foreign}` };
 
+    const textual = findTextualDate(body) ?? findTextualDate(decodedBody);
+    if (textual) return { ok: false, reason: `textual_date_in_body:${textual.slice(0, 24)}` };
+
     // Named-param checks (urlencoded or JSON): id-named anchor dates + epochs.
     const t = body.trim();
     const pairs: Array<[string, string]> = [];
@@ -802,6 +848,9 @@ export function checkDateParams(input: {
         // Unlike the URL, body cache-busters are NOT strippable here (we'd
         // have to rewrite the body text reliably) — abstain either way.
         return { ok: false, reason: `untemplateable_epoch_body_param:${k}` };
+      }
+      if (isDateishName(k) && isPlausibleEpochDate(v)) {
+        return { ok: false, reason: `frozen_epoch_date_body_param:${k}` };
       }
     }
 
