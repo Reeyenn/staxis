@@ -40,9 +40,27 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns } from './url-template.js';
-import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS } from './target-contract.js';
+import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS } from './target-contract.js';
+import { attachNetworkCapture, type NetworkCaptureHandle, type CapturedCall } from './network-capture.js';
+import {
+  DISCOVERY_KEY_COLUMNS,
+  DISCOVERY_SEMANTIC_DATE_COLUMNS,
+  MIN_ORACLE_ROWS,
+  MAX_ORACLE_ROWS,
+  prefilterCandidates,
+  extractRowsAtPath,
+  projectRows,
+  reconcileRows,
+  sanitizeHeaders,
+  checkDateParams,
+  renderTemplateAtDate,
+  isoAddDays,
+  parseIsoDate,
+  parseTextualDate,
+  numericDateInterpretations,
+} from './oracle-verify.js';
 import { inferDateFormat, sanitizeEnumMapping, mergeValueTranslation, pickDateFormat } from './value-learning.js';
 import type { LearnedValueTranslations, LearnedDateFormat } from './types.js';
 import {
@@ -1169,6 +1187,13 @@ interface ActionMapSuccess {
    *  `enumMappings`: model-proposed raw→canonical for the named enum columns. */
   valueSamples?: Record<string, string[]>;
   enumMappings?: Record<string, Record<string, string>>;
+  /** feat/cua-mapper-discovery — true when this success was committed by
+   *  bail() (lastGoodAction after a loop/cost/step abort) rather than the
+   *  clean success return. On a bail the page may have wandered off the feed
+   *  (e.g. loop detector tripped mid-exploration), so the DOM oracle could be
+   *  scraping a DIFFERENT-but-table-shaped page; structured discovery must
+   *  never run on these — it could verify a self-consistent WRONG feed. */
+  viaBail?: boolean;
 }
 interface ActionMapFailure { ok: false; reason: string; finalUrl: string }
 
@@ -1237,7 +1262,7 @@ function accumulateLearnedValues(
   }
 }
 
-async function mapAction(args: {
+interface MapActionArgs {
   page: Page;
   actionName: string;
   goal: string;
@@ -1253,7 +1278,66 @@ async function mapAction(args: {
   model?: MapperModelId;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
-}): Promise<ActionMapSuccess | ActionMapFailure> {
+}
+
+/**
+ * Per-target learn loop, wrapped with STRUCTURED DISCOVERY
+ * (feat/cua-mapper-discovery). Passive network capture is attached for the
+ * duration of the target so the feed page's own data calls are observable;
+ * when the agent lands a clean DOM table on a CORE feed, discovery tries to
+ * find + VERIFY the JSON endpoint behind it (oracle-verify.ts) and upgrade
+ * the recipe to `parse:{mode:'api'}`.
+ *
+ * Fail-safe by construction:
+ *  - capture attach failure → discovery disabled, DOM path untouched;
+ *  - bail()-committed successes (viaBail) never run discovery — the page may
+ *    have wandered, and a wandered page can self-consistently verify a WRONG
+ *    feed (oracle and capture would both describe the wrong page);
+ *  - ANY throw inside discovery → the DOM success is returned unchanged;
+ *  - detach() runs in finally on every path (incl. the admin-abort throws).
+ */
+async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | ActionMapFailure> {
+  let capture: NetworkCaptureHandle | null = null;
+  try {
+    capture = attachNetworkCapture(args.page);
+  } catch (err) {
+    log.warn('mapper: network capture attach failed — structured discovery off for this target', {
+      actionName: args.actionName,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  try {
+    const result = await mapActionCore(args);
+    if (!result.ok || result.viaBail || result.action.parse.mode !== 'table' || !capture) {
+      return result;
+    }
+    try {
+      const upgraded = await attemptStructuredDiscovery(
+        {
+          actionName: args.actionName as keyof Recipe['actions'],
+          success: result,
+          capturedCalls: capture.recent(),
+          loginUrl: args.credentials.loginUrl,
+          feedPageUrl: args.page.url(),
+          jobId: args.jobId,
+          signal: args.signal,
+        },
+        makeDefaultDiscoveryDeps(args),
+      );
+      return upgraded ?? result;
+    } catch (err) {
+      log.warn('mapper: structured discovery threw — keeping DOM recipe', {
+        actionName: args.actionName,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return result;
+    }
+  } finally {
+    try { capture?.detach(); } catch { /* idempotent per contract */ }
+  }
+}
+
+async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | ActionMapFailure> {
   const cfg = getModeConfig(args.model);
   // Plan v7: per-target step + cost caps. Drill-down targets get fewer
   // steps PER record but execute against multiple samples; report-menu
@@ -1400,7 +1484,9 @@ async function mapAction(args: {
   // good parse if we have one, else the real failure.
   let lastGoodAction: ActionMapSuccess | null = null;
   const bail = (reason: string): ActionMapSuccess | ActionMapFailure =>
-    lastGoodAction ?? { ok: false, reason, finalUrl: args.page.url() };
+    lastGoodAction
+      ? { ...lastGoodAction, viaBail: true }
+      : { ok: false, reason, finalUrl: args.page.url() };
 
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
@@ -1783,6 +1869,572 @@ async function mapAction(args: {
   }
 
   return bail('mapper exhausted step budget');
+}
+
+// ─── Structured discovery (feat/cua-mapper-discovery) ────────────────────
+//
+// "Read the clean data behind the page": when the agent lands a DOM table on
+// a CORE feed, look through the network calls the page itself made
+// (network-capture.ts, passive + PII-redacted) for the JSON endpoint serving
+// the same rows, VERIFY it against the DOM-scraped oracle (oracle-verify.ts),
+// and only then emit `parse:{mode:'api'}`. Every uncertain path abstains and
+// keeps today's DOM recipe — a wrong endpoint or a stale date param would
+// produce a full well-formed-but-WRONG rowset that silently corrupts the DB.
+//
+// Verification ladder (ALL must pass):
+//   1. fresh oracle scrape of the live page with the agent's own selectors
+//      (≥5 rows, untruncated, anchored to the agent's same-turn valueSamples);
+//   2. pure prefilter of captured calls (same-site, no session tokens, no
+//      mutation verbs, ≥90% key-value overlap) — zero LLM cost when nothing
+//      plausible was captured;
+//   3. ONE bounded LLM call proposing {candidate, jsonPath, columns} — a
+//      HYPOTHESIS only, never trusted;
+//   4. mechanical reconcile: 100% DOM⊆API key coverage, bijective count (or
+//      the date-bound pagination exception), parser-exact corroboration of
+//      every mapped column, enum vocabulary derivation with contradiction +
+//      diversity gates;
+//   5. date templating: every date-like token must equal the feed's business
+//      date and become {today:FORMAT}; anything else (other dates, epochs,
+//      encoded dates, dates in id-named params) → abstain;
+//   6. live replay-confirm from the post-login page with sanitized headers +
+//      rendered template (proves the request still works WITHOUT the stripped
+//      cookies/CSRF/cache-busters, in the same context the runtime will use);
+//   7. date-shift probe: render yesterday, require uniformly-yesterday rows —
+//      proves the templated param is load-bearing and its M/D order is right.
+
+const DISCOVERY_IDENTIFY_SYSTEM =
+  'You are matching a hotel-PMS web page\'s own JSON network call to the table displayed on that page. ' +
+  'You will see the table rows we scraped from the DOM (ground truth; some values may be shape-masked for privacy) ' +
+  'and up to 3 captured JSON calls with sample rows (values may be privacy-masked). ' +
+  'Pick the ONE candidate whose array holds the SAME records as the DOM rows, and map our snake_case column names ' +
+  'to the JSON field names on each row (use dot-paths like "guest.name" for nested fields). ' +
+  'Reply with ONLY a JSON object on the first line — no preamble, no markdown. ' +
+  'Either {"none":true} when no candidate clearly matches, or ' +
+  '{"candidateIndex":<n>,"jsonPath":"<dot-path to the row array, empty string if the response is the array>",' +
+  '"columns":{"<our_column>":"<json field dot-path>"}}. ' +
+  'Map ONLY fields you can actually see on the sample row. NEVER guess — omit anything uncertain. ' +
+  'The mapping is mechanically verified afterwards; a wrong guess is worse than {"none":true}.';
+
+/** Injectable side-effect seams so the discovery pipeline is unit-testable
+ *  without Playwright or the Anthropic API. Defaults (makeDefaultDiscoveryDeps)
+ *  are the real implementations. */
+export interface DiscoveryDeps {
+  /** Scrape the CURRENT page with the agent's learned selectors (dom-table
+   *  semantics: '.'=row element, textContent.trim(), skip empty selectors). */
+  extractOracleRows: (
+    rowSelector: string,
+    columns: Record<string, string>,
+    cap: number,
+  ) => Promise<Array<Record<string, string>>>;
+  /** ONE bounded identify call; returns the model's raw text. */
+  identify: (prompt: string) => Promise<string>;
+  /** In-page fetch with the page's cookies (mirrors extractors/fetch-api.ts,
+   *  plus cache:'no-store' so a cached response can't fake a pass). */
+  replayFetch: (req: {
+    url: string;
+    method: string;
+    body?: string;
+    headers?: Record<string, string>;
+  }) => Promise<{ ok: boolean; data?: unknown; reason?: string }>;
+  /** Navigate to the post-login page so replay-confirm runs in the same
+   *  context the runtime poll loop will use (Referer / server-session page
+   *  scoping differences become a learn-time abstain, not a silent runtime
+   *  wrong-context rowset). */
+  gotoPostLogin: () => Promise<void>;
+  isOverBudget: () => Promise<boolean>;
+  now: () => number;
+}
+
+function makeDefaultDiscoveryDeps(args: MapActionArgs): DiscoveryDeps {
+  return {
+    extractOracleRows: async (rowSelector, columns, cap) => {
+      const rows = await args.page.$$eval(
+        rowSelector,
+        (els: Element[], columnMap: Record<string, string>) =>
+          els.map((el: Element) => {
+            const out: Record<string, string> = {};
+            for (const [field, sel] of Object.entries(columnMap)) {
+              if (!sel) continue;
+              const target = sel === '.' ? el : el.querySelector(sel);
+              out[field] = target ? (target.textContent ?? '').trim() : '';
+            }
+            return out;
+          }),
+        columns,
+      );
+      return rows.slice(0, cap);
+    },
+
+    identify: async (prompt) => {
+      const idempotencyKey = args.jobId
+        ? `${args.jobId}:${args.actionName}:discovery`
+        : `anon:${args.actionName}:discovery:${Date.now()}`;
+      const cfg = getModeConfig(args.model);
+      const response = await anthropic.messages.create({
+        model: cfg.model,
+        max_tokens: 1500,
+        system: DISCOVERY_IDENTIFY_SYSTEM,
+        messages: [{ role: 'user', content: prompt }],
+      }, {
+        ...(args.signal ? { signal: args.signal } : {}),
+        headers: { 'idempotency-key': idempotencyKey },
+      });
+      void logClaudeUsage(response.usage ?? {}, {
+        workload: 'cua_mapping_action',
+        model: cfg.model,
+        propertyId: args.propertyId,
+        jobId: args.jobId,
+        metadata: { actionName: args.actionName, phase: 'structured_discovery' },
+      });
+      return response.content
+        .filter((c): c is Anthropic.Messages.TextBlock => c.type === 'text')
+        .map((c) => c.text)
+        .join('\n');
+    },
+
+    replayFetch: async (req) => {
+      if (args.signal?.aborted) return { ok: false, reason: 'aborted' };
+      try {
+        const data = await args.page.evaluate(
+          async (a: { url: string; method: string; body?: string; headers?: Record<string, string>; timeoutMs: number }) => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), a.timeoutMs);
+            try {
+              const resp = await fetch(a.url, {
+                method: a.method,
+                credentials: 'include',
+                cache: 'no-store',
+                headers: a.headers ?? {},
+                ...(a.body !== undefined ? { body: a.body } : {}),
+                signal: ctrl.signal,
+              });
+              if (!resp.ok) return { __fetchError: `HTTP ${resp.status}` };
+              return await resp.json();
+            } catch (e) {
+              return { __fetchError: e instanceof Error ? e.message : String(e) };
+            } finally {
+              clearTimeout(timer);
+            }
+          },
+          { ...req, timeoutMs: 20_000 },
+        );
+        if (data && typeof data === 'object' && '__fetchError' in (data as Record<string, unknown>)) {
+          return { ok: false, reason: (data as { __fetchError: string }).__fetchError };
+        }
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, reason: `evaluate failed: ${(err as Error).message}` };
+      }
+    },
+
+    gotoPostLogin: async () => {
+      const allowedHost = new URL(args.credentials.loginUrl).host;
+      await safeGoto(args.page, args.postLoginUrl, {
+        allowedHost,
+        context: 'mapper:discovery:replay-context',
+      });
+      await args.page.waitForTimeout(800);
+    },
+
+    isOverBudget: async () => {
+      const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
+      return budget.over;
+    },
+
+    now: () => Date.now(),
+  };
+}
+
+export interface StructuredDiscoveryInput {
+  actionName: keyof Recipe['actions'];
+  /** The clean DOM-table success from mapActionCore (never a viaBail one). */
+  success: ActionMapSuccess;
+  capturedCalls: CapturedCall[];
+  loginUrl: string;
+  /** page.url() at success time — the feed page the oracle is scraped from. */
+  feedPageUrl: string;
+  jobId: string | null;
+  signal?: AbortSignal;
+}
+
+const NAME_MASK_COLS = /name|changed_by|assigned_to/i;
+
+/**
+ * The full discovery pipeline. Returns the UPGRADED success (parse swapped to
+ * mode:'api', enum vocabulary extended with verified API-side raws) or null —
+ * in which case the caller keeps the DOM success unchanged. Never throws for
+ * expected failures; the wrapper catches anything unexpected.
+ */
+export async function attemptStructuredDiscovery(
+  input: StructuredDiscoveryInput,
+  deps: DiscoveryDeps,
+): Promise<ActionMapSuccess | null> {
+  const abstain = (reason: string, extra?: Record<string, unknown>): null => {
+    log.info('mapper: structured discovery abstained — keeping DOM recipe', {
+      actionName: input.actionName,
+      jobId: input.jobId ?? undefined,
+      reason,
+      ...extra,
+    });
+    return null;
+  };
+
+  const envFlag = (process.env.CUA_STRUCTURED_DISCOVERY_ENABLED ?? 'true').toLowerCase();
+  if (envFlag === '0' || envFlag === 'false') return abstain('disabled_by_env');
+  if (input.signal?.aborted) return abstain('aborted');
+
+  const contract = CORE_TARGET_CONTRACTS[input.actionName];
+  const keyCol = DISCOVERY_KEY_COLUMNS[input.actionName];
+  if (!contract || !keyCol) return abstain('not_core_target');
+  if (input.success.viaBail) return abstain('via_bail');
+  if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
+  if (input.capturedCalls.length === 0) return abstain('no_captured_calls');
+  if (await deps.isOverBudget()) return abstain('job_over_budget');
+
+  const tableHint = input.success.action.parse.hint;
+
+  // ── 1. Fresh oracle scrape ──
+  let domRows: Array<Record<string, string>>;
+  try {
+    domRows = await deps.extractOracleRows(tableHint.rowSelector, tableHint.columns, MAX_ORACLE_ROWS + 1);
+  } catch (err) {
+    return abstain('oracle_extract_failed', { err: err instanceof Error ? err.message : String(err) });
+  }
+  if (domRows.length === 0) return abstain('oracle_empty');
+  if (domRows.length > MAX_ORACLE_ROWS) return abstain('oracle_truncated');
+  if (domRows.length < MIN_ORACLE_ROWS) return abstain('oracle_too_small', { rows: domRows.length });
+
+  // Anchor the scrape to the table the MODEL identified: its same-turn
+  // valueSamples must largely appear among the scraped cells. Guards against
+  // a too-generic rowSelector matching a different table on the page.
+  const samples = Object.values(input.success.valueSamples ?? {}).flat().slice(0, 20);
+  if (samples.length > 0) {
+    const cellVals = new Set<string>();
+    for (const r of domRows) for (const v of Object.values(r)) cellVals.add(v.trim());
+    const hits = samples.filter((s) => cellVals.has(s.trim())).length;
+    if (hits / samples.length < 0.5) {
+      return abstain('oracle_sample_anchor_failed', { hits, samples: samples.length });
+    }
+  }
+
+  // ── 2. Business-date anchor (date-keyed targets) ──
+  // The page DISPLAYS the hotel's business date — that is the ground truth a
+  // captured date param is compared against (no runner-vs-hotel clock games).
+  // Sanity window: it must be runner-local or UTC "today", else the agent left
+  // a non-today filter applied and nothing about this page is "today's feed".
+  const semanticDateCol = DISCOVERY_SEMANTIC_DATE_COLUMNS[input.actionName];
+  const localToday = isoFromLocalClock(deps.now());
+  const utcToday = new Date(deps.now()).toISOString().slice(0, 10);
+  let anchorIso: string | null = null;
+  if (semanticDateCol) {
+    const sel = tableHint.columns[semanticDateCol];
+    if (!sel || sel.trim() === '') return abstain('semantic_date_col_unlearned');
+    const raws = new Set(domRows.map((r) => (r[semanticDateCol] ?? '').trim()));
+    if (raws.size !== 1 || [...raws][0] === '') return abstain('oracle_date_not_uniform');
+    const raw = [...raws][0]!;
+    const interps = interpretDomDate(raw);
+    anchorIso = interps.find((i) => i === localToday || i === utcToday) ?? null;
+    if (!anchorIso) return abstain('oracle_date_not_today', { raw: raw.slice(0, 20) });
+  }
+
+  // ── 3. Pure prefilter ──
+  const pre = prefilterCandidates({
+    calls: input.capturedCalls,
+    domRows,
+    keyColumn: keyCol,
+    loginUrl: input.loginUrl,
+    feedPageUrl: input.feedPageUrl,
+  });
+  if (pre.candidates.length === 0) {
+    return abstain('no_plausible_candidates', {
+      captured: input.capturedCalls.length,
+      skipped: pre.skipped,
+    });
+  }
+
+  // ── 4. ONE LLM identify call (hypothesis only) ──
+  const valueContract = TARGET_VALUE_CONTRACTS[input.actionName];
+  const prompt = buildIdentifyPrompt({
+    actionName: input.actionName,
+    contract,
+    domRows,
+    candidates: pre.candidates,
+  });
+  let rawText: string;
+  try {
+    rawText = await deps.identify(prompt);
+  } catch (err) {
+    return abstain('identify_call_failed', { err: err instanceof Error ? err.message : String(err) });
+  }
+  const proposal = tryParseJson(rawText) as
+    | { none?: unknown; candidateIndex?: unknown; jsonPath?: unknown; columns?: unknown }
+    | null;
+  if (!proposal || proposal.none === true) return abstain('identify_none');
+  const idx = typeof proposal.candidateIndex === 'number' ? proposal.candidateIndex : -1;
+  if (idx < 0 || idx >= pre.candidates.length) return abstain('identify_bad_index');
+  const jsonPath = typeof proposal.jsonPath === 'string' ? proposal.jsonPath.trim() : '';
+  if (!proposal.columns || typeof proposal.columns !== 'object') return abstain('identify_bad_columns');
+
+  const contractCols = new Set(contract.columns.map((c) => c.name));
+  const columns: Record<string, string> = {};
+  for (const [col, path] of Object.entries(proposal.columns as Record<string, unknown>)) {
+    if (typeof path !== 'string' || path.trim() === '') continue;
+    if (!contractCols.has(col)) continue; // extra fields would be dropped by the writer anyway
+    columns[col] = path.trim();
+  }
+  if (!columns[keyCol]) return abstain('identify_missing_key_column');
+
+  // ── 5. Mechanical reconcile against the captured body ──
+  const cand = pre.candidates[idx]!;
+  const extracted = extractRowsAtPath(cand.call.responseBody, jsonPath);
+  if (!extracted.ok) return abstain(`extract_failed:${extracted.reason}`);
+  const enumValueSets: Record<string, string[]> = {};
+  for (const c of valueContract?.columns ?? []) {
+    if (c.enumValues && c.enumValues.length > 0) enumValueSets[c.name] = c.enumValues;
+  }
+  const verdict = reconcileRows({
+    actionKey: input.actionName,
+    domRows,
+    apiRows: projectRows(extracted.rows, columns),
+    mappedColumns: Object.keys(columns),
+    domEnumMappings: input.success.enumMappings,
+    enumValueSets,
+    anchorIso,
+    mode: 'learn',
+  });
+  if (!verdict.reconciles) return abstain(`reconcile_failed:${verdict.reason}`);
+  for (const col of verdict.droppedOptionalColumns ?? []) delete columns[col];
+
+  // ── 6. Header sanitization ──
+  const sanitized = sanitizeHeaders(cand.call.requestHeaders, {
+    method: cand.call.method,
+    body: cand.call.requestBody,
+  });
+  if (!sanitized.ok) return abstain(`headers_rejected:${sanitized.reason}`);
+
+  // ── 7. Date templating ──
+  let effectiveAnchor = anchorIso ?? localToday;
+  let templ = checkDateParams({
+    url: cand.call.url,
+    body: cand.call.requestBody,
+    anchorIso: effectiveAnchor,
+    nowMs: deps.now(),
+  });
+  if (!templ.ok && !anchorIso && utcToday !== localToday) {
+    // Non-date-keyed target near midnight: the request may carry UTC's today.
+    effectiveAnchor = utcToday;
+    templ = checkDateParams({
+      url: cand.call.url,
+      body: cand.call.requestBody,
+      anchorIso: effectiveAnchor,
+      nowMs: deps.now(),
+    });
+  }
+  if (!templ.ok) return abstain(`date_templating_failed:${templ.reason}`);
+  const templatedCount = templ.templatedCount ?? 0;
+  // A templated date on a target with no semantic date column cannot be
+  // probe-verified (nothing in the response proves which day it served).
+  if (templatedCount > 0 && !semanticDateCol) return abstain('untestable_date_param');
+
+  // ── 8. Replay-confirm from the runtime's context ──
+  if (input.signal?.aborted) return abstain('aborted');
+  try {
+    await deps.gotoPostLogin();
+  } catch (err) {
+    return abstain('replay_context_nav_failed', { err: err instanceof Error ? err.message : String(err) });
+  }
+
+  const variants: Array<{ url: string; body?: string }> = [
+    { url: templ.url!, ...(templ.bodyTemplate !== undefined ? { body: templ.bodyTemplate } : {}) },
+  ];
+  if (templ.altUrl !== undefined || templ.altBodyTemplate !== undefined) {
+    variants.push({
+      url: templ.altUrl ?? templ.url!,
+      ...((templ.altBodyTemplate ?? templ.bodyTemplate) !== undefined
+        ? { body: templ.altBodyTemplate ?? templ.bodyTemplate }
+        : {}),
+    });
+  }
+
+  // On the anchor day every variant renders identically, so confirm once.
+  const replay = await deps.replayFetch({
+    url: renderTemplateAtDate(variants[0]!.url, effectiveAnchor),
+    method: cand.call.method,
+    ...(variants[0]!.body !== undefined
+      ? { body: renderTemplateAtDate(variants[0]!.body, effectiveAnchor) }
+      : {}),
+    ...(sanitized.headers ? { headers: sanitized.headers } : {}),
+  });
+  if (!replay.ok) return abstain(`replay_failed:${replay.reason ?? 'unknown'}`);
+  // NOTE: replay.data is the live response — RAW guest PII (the redaction
+  // pipeline only covers network-capture). It is reconciled in memory and
+  // discarded: never logged, never persisted, never sent to the LLM.
+  const replayRows = extractRowsAtPath(replay.data, jsonPath);
+  if (!replayRows.ok) return abstain(`replay_extract_failed:${replayRows.reason}`);
+  const replayVerdict = reconcileRows({
+    actionKey: input.actionName,
+    domRows,
+    apiRows: projectRows(replayRows.rows, columns),
+    mappedColumns: Object.keys(columns),
+    domEnumMappings: input.success.enumMappings,
+    enumValueSets,
+    anchorIso,
+    mode: 'replay',
+  });
+  if (!replayVerdict.reconciles) return abstain(`replay_reconcile_failed:${replayVerdict.reason}`);
+
+  // ── 9. Date-shift probe ──
+  // Render YESTERDAY once and require uniformly-yesterday rows (or an empty
+  // set). Proves (a) the templated param is load-bearing — a server that
+  // ignores it returns today's rows and we abstain — and (b) the chosen M/D
+  // order is right (the wrong order renders a different/invalid date and
+  // fails). Without this, an ignored or mis-ordered date param would surface
+  // only as silently wrong rows weeks later.
+  let chosen = templatedCount === 0 ? variants[0]! : null;
+  if (!chosen) {
+    const probeIso = isoAddDays(effectiveAnchor, -1);
+    for (const variant of variants) {
+      if (input.signal?.aborted) return abstain('aborted');
+      const probe = await deps.replayFetch({
+        url: renderTemplateAtDate(variant.url, probeIso),
+        method: cand.call.method,
+        ...(variant.body !== undefined ? { body: renderTemplateAtDate(variant.body, probeIso) } : {}),
+        ...(sanitized.headers ? { headers: sanitized.headers } : {}),
+      });
+      if (!probe.ok) continue; // a wrong-order render may 400 — try the alternate
+      const probeRows = extractRowsAtPath(probe.data, jsonPath);
+      if (!probeRows.ok) {
+        if (probeRows.reason === 'jsonpath_empty_array') { chosen = variant; break; } // empty yesterday = weak pass
+        continue;
+      }
+      const projected = projectRows(probeRows.rows, columns).slice(0, 50);
+      let allYesterday = projected.length > 0;
+      let anyAnchorDay = false;
+      for (const r of projected) {
+        const iso = isoOfApiDateValue(r[semanticDateCol!]);
+        if (iso === effectiveAnchor) anyAnchorDay = true;
+        if (iso !== probeIso) allYesterday = false;
+      }
+      if (anyAnchorDay) return abstain('probe_param_ignored');
+      if (allYesterday) { chosen = variant; break; }
+    }
+    if (!chosen) return abstain('probe_inconclusive');
+  }
+
+  // ── 10. Emit ──
+  const hint: ApiHint = {
+    url: chosen.url,
+    method: cand.call.method.toUpperCase() === 'POST' ? 'POST' : 'GET',
+    ...(chosen.body !== undefined ? { bodyTemplate: chosen.body } : {}),
+    ...(sanitized.headers ? { headers: sanitized.headers } : {}),
+    ...(jsonPath !== '' ? { jsonPath } : {}),
+    columns,
+  };
+  const mergedEnums = mergeDerivedEnumMappings(input.success.enumMappings, verdict.derivedEnumMappings);
+  log.info('mapper: structured discovery VERIFIED — emitting api recipe', {
+    actionName: input.actionName,
+    jobId: input.jobId ?? undefined,
+    url: hint.url.slice(0, 160),
+    method: hint.method,
+    jsonPath: jsonPath === '' ? '(root)' : jsonPath,
+    columnCount: Object.keys(columns).length,
+    matched: verdict.matchedCount,
+    surplus: verdict.surplus,
+    paginationException: verdict.usedPaginationException ?? false,
+    templatedDates: templatedCount,
+    strippedParams: templ.strippedParams ?? [],
+    droppedColumns: verdict.droppedOptionalColumns ?? [],
+    maskAcceptedColumns: verdict.maskAcceptedColumns ?? [],
+  });
+  return {
+    ...input.success,
+    action: { ...input.success.action, parse: { mode: 'api', hint } },
+    ...(mergedEnums ? { enumMappings: mergedEnums } : {}),
+  };
+}
+
+/** Runner-local calendar date (the Date getters apply the process TZ). */
+function isoFromLocalClock(nowMs: number): string {
+  const d = new Date(nowMs);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Every calendar-valid ISO reading of a DOM date cell. */
+function interpretDomDate(raw: string): string[] {
+  const direct = parseIsoDate(raw) ?? parseTextualDate(raw);
+  if (direct) return [direct];
+  return numericDateInterpretations(raw);
+}
+
+/** ISO of an API-side date value when unambiguous; null otherwise. */
+function isoOfApiDateValue(v: unknown): string | null {
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  const direct = parseIsoDate(v) ?? parseTextualDate(v);
+  if (direct) return direct;
+  const interps = numericDateInterpretations(v);
+  return interps.length === 1 ? interps[0]! : null;
+}
+
+/** Union the agent's DOM enum vocabulary with the verified API-side raws.
+ *  Collisions were already rejected as contradictions during reconcile. */
+function mergeDerivedEnumMappings(
+  dom: Record<string, Record<string, string>> | undefined,
+  derived: Record<string, Record<string, string>> | undefined,
+): Record<string, Record<string, string>> | undefined {
+  if (!derived || Object.keys(derived).length === 0) return dom;
+  const out: Record<string, Record<string, string>> = {};
+  for (const [col, m] of Object.entries(dom ?? {})) out[col] = { ...m };
+  for (const [col, m] of Object.entries(derived)) out[col] = { ...(out[col] ?? {}), ...m };
+  return out;
+}
+
+/** Truncate + privacy-shape a value for the identify prompt. DOM cells in
+ *  name-ish columns are masked (letters→x, digits→#) — the LLM maps columns
+ *  by key names and value SHAPES, it never needs real guest names. Captured
+ *  API sample rows are already redacted upstream (response-redaction.ts). */
+function promptValue(col: string, value: unknown): string {
+  let s = String(value ?? '');
+  if (NAME_MASK_COLS.test(col)) s = s.replace(/[A-Za-z]/g, 'x').replace(/\d/g, '#');
+  return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+}
+
+function buildIdentifyPrompt(args: {
+  actionName: keyof Recipe['actions'];
+  contract: NonNullable<(typeof CORE_TARGET_CONTRACTS)[keyof Recipe['actions']]>;
+  domRows: Array<Record<string, string>>;
+  candidates: Array<{ call: CapturedCall; arrays: Array<{ jsonPath: string; rows: Array<Record<string, unknown>> }> }>;
+}): string {
+  const lines: string[] = [];
+  lines.push(`TARGET FEED: ${args.actionName}`);
+  lines.push('OUR COLUMNS (snake_case, * = required):');
+  for (const c of args.contract.columns) {
+    lines.push(`  ${c.name}${c.required ? '*' : ''} (${c.type})`);
+  }
+  lines.push('');
+  lines.push(`DOM TABLE ROWS (ground truth, ${args.domRows.length} total; first 3 shown, name values shape-masked):`);
+  for (const row of args.domRows.slice(0, 3)) {
+    const cells = Object.entries(row).map(([k, v]) => `${k}=${JSON.stringify(promptValue(k, v))}`);
+    lines.push(`  { ${cells.join(', ')} }`);
+  }
+  lines.push('');
+  lines.push('CAPTURED JSON CALLS:');
+  args.candidates.forEach((cand, i) => {
+    const bodyNote = cand.call.requestBody
+      ? ` body=${JSON.stringify(cand.call.requestBody.slice(0, 300))}`
+      : '';
+    lines.push(`#${i} ${cand.call.method.toUpperCase()} ${cand.call.url.slice(0, 300)}${bodyNote}`);
+    for (const arr of cand.arrays.slice(0, 2)) {
+      const sample = arr.rows[0]!;
+      const cells = Object.entries(sample)
+        .slice(0, 25)
+        .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(promptValue(k, typeof v === 'object' && v !== null ? JSON.stringify(v).slice(0, 60) : v))}`);
+      lines.push(`   rows at ${JSON.stringify(arr.jsonPath)} (${arr.rows.length} rows), sample row: { ${cells.join(', ')} }`);
+    }
+  });
+  lines.push('');
+  lines.push('Which candidate (if any) holds the SAME records as the DOM rows? Output the JSON object only.');
+  return lines.join('\n');
 }
 
 // ─── Per-action mapping (DRILL-DOWN variant) ─────────────────────────────
