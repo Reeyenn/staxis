@@ -234,6 +234,13 @@ const TARGET_STEP_CAPS: Record<string, number> = {
   report_menu:      100,
   drilldown_sample: 60,         // per-record; multiply by sample count
 };
+// Plan v9 (departures-nav fix): the REQUIRED feeds (optional:false — the 4 that
+// gate promotion) get a materially larger per-target budget than optional
+// extras. The first live run lost getDepartures while bouncing between the Home
+// dashboard and the arrivals list, then soft-aborted at the $0.50 list_page cap.
+// Required feeds need room to recover from a wrong turn; optional extras keep
+// the tight base budget so one missing nice-to-have can't blow the global cap.
+const REQUIRED_TARGET_BUDGET_MULTIPLIER = 3;
 
 /**
  * The full target catalogue for Plan v7's mapper. Ordered by priority —
@@ -660,6 +667,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             goal: target.goal,
             requiredFields: target.requiredFields,
             classification: target.classification,
+            required: !target.optional,
             postLoginUrl,
             credentials: opts.credentials,
             propertyId: opts.propertyId ?? null,
@@ -1276,6 +1284,10 @@ interface MapActionArgs {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
+  /** Plan v9 — true for the promotion-gating feeds (optional:false). Required
+   *  feeds get REQUIRED_TARGET_BUDGET_MULTIPLIER× the per-target budget + step
+   *  cap so they don't soft-abort on tricky navigation. Defaults to false. */
+  required?: boolean;
   model?: MapperModelId;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
@@ -1344,8 +1356,14 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // steps PER record but execute against multiple samples; report-menu
   // targets get more steps to drill through reports submenus.
   const classification = args.classification ?? 'list_page';
-  const targetStepCap = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
-  const targetCostCapMicros = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
+  // Plan v9: required feeds get a larger budget so tricky navigation (e.g. a
+  // feed that keeps bouncing back to the dashboard) has room to recover before
+  // soft-aborting. Optional extras keep the tight base budget.
+  const budgetMult = args.required ? REQUIRED_TARGET_BUDGET_MULTIPLIER : 1;
+  const baseStepCap = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
+  const baseCostCap = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
+  const targetStepCap = Math.round(baseStepCap * budgetMult);
+  const targetCostCapMicros = Number.isFinite(baseCostCap) ? baseCostCap * budgetMult : baseCostCap;
 
   // Plan v7 — `unavailable: true` floor. Agent can short-circuit a target
   // with {unavailable: true}, but only AFTER demonstrating real effort:
@@ -1411,6 +1429,14 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     `4. Take another screenshot to see the new page.\n` +
     `5. If you're not on the target page yet, repeat: scan, click, screenshot. ` +
     `Most data lives 1-3 levels under Reports / Front Desk / Setup menus.\n` +
+    `5b. IF A CLICK LANDS YOU ON THE WRONG PAGE — back on the home/dashboard, or ` +
+    `on a DIFFERENT feed than your target (e.g. you wanted DEPARTURES but you're ` +
+    `looking at ARRIVALS) — do NOT keep clicking forward from that wrong page. ` +
+    `First go BACK to the dashboard (click the Home link or the hotel logo, ` +
+    `usually top-left), then pick a DIFFERENT link. Sibling pages like ` +
+    `Arrivals/Departures and Check-In/Check-Out usually sit right next to each ` +
+    `other — if you already found one, its sibling is normally the adjacent menu ` +
+    `item, so look there.\n` +
     `6. Once on the target page (you see a table with one row per record), ` +
     `take a final screenshot and identify the table visually. Make your best ` +
     `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
@@ -1435,11 +1461,18 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     `Use empty string for fields not visible on the page.` +
     enumHint + sampleHint + `\n\n` +
 
-    `Step budget: you have up to ${MAX_AGENT_STEPS_PER_ACTION} actions. ` +
-    `Spend the first ~5 on exploration (read_page + nav clicks); ` +
-    `if you've used 50+ without finding the page, emit ` +
-    `{"unavailable":true,"reason":"<what you tried>"} on the first line ` +
-    `and stop. Skipping an action is better than burning the whole budget.`;
+    (args.required
+      ? `Step budget: up to ${targetStepCap} actions for this ESSENTIAL feed. ` +
+        `The sync is BLOCKED without it, so do NOT give up easily: if a link takes ` +
+        `you to the wrong page, return to the dashboard (Home link / hotel logo) and ` +
+        `try a different one. Only emit {"unavailable":true,"reason":"<what you tried>"} ` +
+        `if you have genuinely exhausted every plausible menu AFTER returning to the ` +
+        `dashboard at least twice.`
+      : `Step budget: you have up to ${targetStepCap} actions. ` +
+        `Spend the first ~5 on exploration (read_page + nav clicks); ` +
+        `if you've used ${Math.round(targetStepCap * 0.6)}+ without finding the page, emit ` +
+        `{"unavailable":true,"reason":"<what you tried>"} on the first line ` +
+        `and stop. Skipping an optional extra is better than burning the whole budget.`);
 
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: fullGoal }] },
