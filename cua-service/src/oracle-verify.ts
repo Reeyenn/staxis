@@ -78,8 +78,13 @@ const normTextLoose = (v: unknown): string =>
 const sortedTokens = (s: string): string =>
   normTextLoose(s).split(' ').filter(Boolean).sort().join(' ');
 
-/** Mask-looking value from the redaction layer ("***", "█████", "[REDACTED]",
- *  "xxx"...). We don't know Chat 2's exact mask glyphs, so match the family. */
+/** Mask-looking value from the redaction layer. The capture chat's masks are
+ *  SHAPE-PRESERVING for names ("JOHN_SMITH" → same shape), so beyond literal
+ *  glyph runs we treat as masked: (a) strings whose alphabetic chars are ALL
+ *  'x'/'X' ("Xxxxx, Xxxx"), and (b) strings that are mostly mask glyphs
+ *  ("J*** S****"). Detection errs slightly toward "masked" — a masked cell is
+ *  SKIPPED (counts neither for nor against); row identity stays anchored on
+ *  keys/dates, which redaction preserves. */
 export function looksMasked(v: unknown): boolean {
   if (typeof v !== 'string') return false;
   const s = v.trim();
@@ -87,7 +92,13 @@ export function looksMasked(v: unknown): boolean {
   if (/\[?redacted\]?|<redacted/i.test(s)) return true;
   // Entirely mask-ish glyphs (and at least one actual mask glyph, so a real
   // value like "-" or "x-ray" doesn't trip it).
-  return /^[\s*•·█▪◼◻#x×_–—-]+$/i.test(s) && /[*•█▪◼#]|^x+$/i.test(s);
+  if (/^[\s*•·█▪◼◻#x×_–—-]+$/i.test(s) && /[*•█▪◼#]|^x+$/i.test(s)) return true;
+  // Shape-preserving letter mask: ≥2 alphabetic chars, every one of them x/X.
+  const alpha = s.replace(/[^a-z]/gi, '');
+  if (alpha.length >= 2 && /^x+$/i.test(alpha)) return true;
+  // Partial mask ("J*** S****"): mostly glyphs with ≥3 of them.
+  const glyphs = (s.match(/[*•█▪◼#]/g) ?? []).length;
+  return glyphs >= 3 && glyphs / s.length >= 0.6;
 }
 
 // ─── Date machinery ──────────────────────────────────────────────────────────

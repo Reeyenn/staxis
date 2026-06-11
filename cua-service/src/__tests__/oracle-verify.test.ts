@@ -850,7 +850,14 @@ describe('date format derivation + rendering', () => {
     assert.equal(looksMasked('***'), true);
     assert.equal(looksMasked('[REDACTED]'), true);
     assert.equal(looksMasked('xxx'), true);
+    // Shape-preserving masks (capture chat masks names shape-identically).
+    assert.equal(looksMasked('Xxxxx, Xxxx'), true);
+    assert.equal(looksMasked('XXXX_XXXXX'), true);
+    assert.equal(looksMasked('J*** S****'), true);
+    // Real values must NOT be treated as masked.
     assert.equal(looksMasked('Smith, John'), false);
+    assert.equal(looksMasked('DUE_IN'), false);
+    assert.equal(looksMasked('x-ray suite'), false);
     assert.equal(looksMasked('101'), false);
     assert.equal(looksMasked(''), false);
   });
