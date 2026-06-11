@@ -39,6 +39,10 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [completedAreas, setCompletedAreas] = useState<Set<string>>(new Set());
+  // feat/cua-partial-promotion — checkout/stayover load counts derive from
+  // PMS reservations + room statuses; while those feeds are still being
+  // learned a zero count is NOT "no laundry today". One honest pill.
+  const [pmsLearning, setPmsLearning] = useState(false);
   // Completed laundry-load CATEGORY names (not card index) — matches the
   // persistence keying so a checkmark survives the displayed load count
   // shifting through the day as the CUA updates checkout/stayover rooms.
@@ -117,13 +121,23 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
         return;
       }
       const json = (await res.json().catch(() => null)) as
-        | { ok?: boolean; data?: { publicAreas?: PublicArea[]; laundryConfig?: LaundryCategory[]; rooms?: Room[]; completedAreaIds?: string[]; completedLoadCategories?: string[] }; error?: string }
+        | { ok?: boolean; data?: { publicAreas?: PublicArea[]; laundryConfig?: LaundryCategory[]; rooms?: Room[]; completedAreaIds?: string[]; completedLoadCategories?: string[] }; feedStatus?: { mode?: string; connection?: string; feeds?: Record<string, string> }; error?: string }
         | null;
       if (!json?.ok || !json.data) {
         console.error('[laundry] bootstrap unexpected body', json?.error || 'no data');
         setError(true);
         setLoading(false);
         return;
+      }
+      // Top-level sibling (absent on older servers → render as today).
+      const fs = json.feedStatus;
+      if (fs && fs.mode === 'live' && fs.feeds) {
+        setPmsLearning(
+          fs.connection !== 'healthy' ||
+          fs.feeds.arrivals === 'learning' ||
+          fs.feeds.departures === 'learning' ||
+          fs.feeds.roomStatus === 'learning',
+        );
       }
       setPublicAreas(json.data.publicAreas || []);
       setLaundryConfig(json.data.laundryConfig || []);
@@ -373,6 +387,27 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 
       {/* ── Task list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+        {/* feat/cua-partial-promotion — load counts below may be incomplete
+            while the PMS feeds are learning; never let 0 read as "done". */}
+        {pmsLearning && (
+          <div
+            role="status"
+            style={{
+              padding: '10px 14px',
+              background: 'rgba(201, 150, 68, 0.12)',
+              border: '1px solid rgba(201, 150, 68, 0.30)',
+              color: '#8C6A33',
+              borderRadius: 10,
+              fontSize: 13,
+              lineHeight: 1.45,
+            }}
+          >
+            {lang === 'es'
+              ? 'Algunos datos del sistema del hotel aún se están sincronizando — los conteos de cargas pueden estar incompletos.'
+              : 'Some hotel-system data is still syncing — load counts may be incomplete.'}
+          </div>
+        )}
 
         {allDone ? (
           <div style={{

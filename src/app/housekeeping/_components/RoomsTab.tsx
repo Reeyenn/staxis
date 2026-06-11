@@ -23,6 +23,8 @@ import {
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, WorkOrder } from '@/types';
+import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
+import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 import { FONT_SANS, FONT_MONO, FONT_SERIF } from './_snow';
 
 // Exact Ledger design tokens from the handoff.
@@ -51,19 +53,27 @@ function todayMDYStr(): string {
 }
 
 // ─── Ledger room card — owns its WAAPI flip ──────────────────────────
-function LedgerCard({ room, hasWO, lang, onFlip }: {
+function LedgerCard({ room, hasWO, lang, onFlip, neutral = false }: {
   room: Room; hasWO: boolean; lang: string; onFlip: () => void;
+  /** feat/cua-partial-promotion — true when this room's status has NO real
+   *  signal yet (room-status feed still learning + catch-all default, or a
+   *  phantom row while the PMS list syncs). Renders a gray "no data" face
+   *  instead of a confident Dirty/Clean. Tap still works — an in-app status
+   *  set by staff is trustworthy and the card flips to a real face. */
+  neutral?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const board = boardStatus(room.status);
-  const { sc, fill } = SC[board];
+  const { sc, fill } = neutral ? { sc: LED.dim, fill: LED.dim } : SC[board];
   const locked = room.status === 'inspected';
 
-  const word = board === 'dirty'
-    ? (lang === 'es' ? 'Sucia' : 'Dirty')
-    : board === 'cleaning'
-      ? (lang === 'es' ? 'Limpiando' : 'Cleaning')
-      : (lang === 'es' ? 'Limpia' : 'Clean');
+  const word = neutral
+    ? (lang === 'es' ? 'Sin datos' : 'No data')
+    : board === 'dirty'
+      ? (lang === 'es' ? 'Sucia' : 'Dirty')
+      : board === 'cleaning'
+        ? (lang === 'es' ? 'Limpiando' : 'Cleaning')
+        : (lang === 'es' ? 'Limpia' : 'Clean');
   const glyph = room.type === 'checkout' ? '↗'
     : room.type === 'stayover' ? '◐'
     : (room.arrival && room.arrival === todayMDYStr()) ? '★' : '·';
@@ -113,6 +123,10 @@ export function RoomsTab() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [loading, setLoading] = useState(true);
+  // feat/cua-partial-promotion — per-feed PMS trust, riding the rooms poll.
+  // null until the first response (or for older server versions) = render
+  // exactly as today.
+  const [feedStatus, setFeedStatus] = useState<PropertyFeedStatus | null>(null);
   // Optimistic status overlay keyed by room NUMBER (survives the phantom→real
   // id swap). The board polls every 6s, so we flip instantly here, fire the
   // write in the background, and clear once a poll confirms (or after 15s).
@@ -122,8 +136,8 @@ export function RoomsTab() {
   useEffect(() => {
     if (!user || !activePropertyId) return;
     setLoading(true);
-    const unsub = subscribeToRooms(user.uid, activePropertyId, today, (todayRooms) => {
-      setRooms(todayRooms); setLoading(false);
+    const unsub = subscribeToRooms(user.uid, activePropertyId, today, (todayRooms, fs) => {
+      setRooms(todayRooms); if (fs) setFeedStatus(fs); setLoading(false);
     });
     return unsub;
   }, [user, activePropertyId, today]);
@@ -153,8 +167,23 @@ export function RoomsTab() {
       base = out;
     }
     if (pending.size === 0) return base;
-    return base.map(r => { const p = pending.get(r.number); return p ? { ...r, status: p.status } : r; });
+    // An optimistic tap is APP-originated truth — also stamp statusSource so
+    // the neutral "no data" face flips to a real one immediately.
+    return base.map(r => { const p = pending.get(r.number); return p ? { ...r, status: p.status, statusSource: 'assignment' as const } : r; });
   }, [rooms, activeProperty?.roomInventory, activePropertyId, today, pending]);
+
+  // feat/cua-partial-promotion — honesty derivations. All false until feed
+  // status arrives (or for manual hotels) → board renders exactly as today.
+  const fsLive = feedStatus?.mode === 'live';
+  const connectionIssue = fsLive && feedStatus.connection !== 'healthy';
+  const roomStatusLearning = fsLive && !connectionIssue && feedStatus.feeds.roomStatus === 'learning';
+  const workOrdersLearning = fsLive && !connectionIssue && feedStatus.feeds.workOrders === 'learning';
+  // PMS-connected but the canonical room list hasn't synced yet → every card
+  // is a phantom; without this the board reads "all clean" on day one.
+  const roomListSyncing = fsLive && !connectionIssue && rooms.length === 0;
+  const isNeutralRoom = (r: Room): boolean =>
+    (roomStatusLearning && r.statusSource === 'default') ||
+    ((roomStatusLearning || roomListSyncing) && r.id.startsWith('phantom-'));
 
   // Reconcile the optimistic overlay on each fresh poll.
   useEffect(() => {
@@ -183,17 +212,23 @@ export function RoomsTab() {
   }, [workOrders]);
 
   const counts = useMemo(() => {
-    const c = { total: 0, clean: 0, cleaning: 0, dirty: 0 };
+    const c = { total: 0, clean: 0, cleaning: 0, dirty: 0, unknown: 0 };
     for (const r of displayRooms) {
       c.total++;
+      // Neutral rooms (no real status signal while the PMS feed is still
+      // learning) must not count as clean OR dirty — either way would be a
+      // confident claim with no data behind it.
+      if (isNeutralRoom(r)) { c.unknown++; continue; }
       const b = boardStatus(r.status);
       if (b === 'clean') c.clean++;
       else if (b === 'cleaning') c.cleaning++;
       else c.dirty++;
     }
     return c;
-  }, [displayRooms]);
-  const donePct = counts.total > 0 ? Math.round((counts.clean / counts.total) * 100) : 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayRooms, roomStatusLearning, roomListSyncing]);
+  const knownTotal = counts.total - counts.unknown;
+  const donePct = knownTotal > 0 ? Math.round((counts.clean / knownTotal) * 100) : 0;
 
   // Tap a room → flip clean → dirty, anything else → clean. Inspected rooms are
   // locked (the card bounces instead). Phantom rooms materialize into a real
@@ -266,6 +301,43 @@ export function RoomsTab() {
       `}</style>
 
       <div className="lgr-wrap">
+        {/* feat/cua-partial-promotion — honesty strips. Connection issues
+            subsume feed-level banners (no stacking). */}
+        {connectionIssue && (
+          <div style={{ marginBottom: 18 }}>
+            <FeedLearningBanner
+              variant="strip"
+              title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
+              text={lang === 'es'
+                ? 'Los datos de habitaciones en vivo aparecerán cuando termine la primera sincronización.'
+                : 'Live room data will appear once the first sync lands.'}
+            />
+          </div>
+        )}
+        {!connectionIssue && (roomStatusLearning || roomListSyncing || workOrdersLearning) && (
+          <div style={{ marginBottom: 18 }}>
+            <FeedLearningBanner
+              variant="strip"
+              title={lang === 'es' ? 'Aún aprendiendo tu PMS.' : 'Still learning your PMS.'}
+              text={[
+                roomStatusLearning
+                  ? (lang === 'es'
+                    ? 'Los estados de habitaciones del PMS todavía no llegan — lo mostrado refleja solo cambios hechos en la app, y las habitaciones “Sin datos” no tienen información todavía.'
+                    : 'Room statuses from the PMS aren’t flowing yet — what you see reflects in-app updates only, and “No data” rooms have no information yet.')
+                  : roomListSyncing
+                    ? (lang === 'es'
+                      ? 'La lista de habitaciones aún se está sincronizando desde tu PMS.'
+                      : 'The room list is still syncing from your PMS.')
+                    : '',
+                workOrdersLearning
+                  ? (lang === 'es'
+                    ? 'Las órdenes de mantenimiento del PMS también se están aprendiendo — las marcas de fuera de servicio pueden faltar.'
+                    : 'PMS maintenance flags are still being learned too — out-of-order badges may be missing.')
+                  : '',
+              ].filter(Boolean).join(' ')}
+            />
+          </div>
+        )}
         {/* header: title (left) + summary counts (centered) */}
         <div className="lgr-head">
           <div>
@@ -310,7 +382,7 @@ export function RoomsTab() {
             </div>
             <div className="lgr-grid">
               {fr.map(r => (
-                <LedgerCard key={r.id} room={r} hasWO={openWoRooms.has(r.number)} lang={lang} onFlip={() => { void handleToggle(r); }} />
+                <LedgerCard key={r.id} room={r} hasWO={openWoRooms.has(r.number)} lang={lang} neutral={isNeutralRoom(r)} onFlip={() => { void handleToggle(r); }} />
               ))}
             </div>
           </div>

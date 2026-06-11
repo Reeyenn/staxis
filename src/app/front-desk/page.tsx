@@ -17,6 +17,8 @@ import { ComplaintsTab } from './_components/ComplaintsTab';
 import { PackagesTab } from './_components/PackagesTab';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
+import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
+import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 
 const FD_TAB_KEY = 'fd-tab';
 // Roles that may use the Lost & Found surface (management home).
@@ -161,23 +163,42 @@ export default function FrontDeskPage() {
     localStorage.setItem(FD_TAB_KEY, t);
   };
 
+  // feat/cua-partial-promotion — per-feed PMS trust, riding the rooms poll.
+  const [feedStatus, setFeedStatus] = useState<PropertyFeedStatus | null>(null);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
+    return subscribeToRooms(user.uid, activePropertyId, today, (rs, fs) => {
+      setRooms(rs); if (fs) setFeedStatus(fs);
+    });
   }, [user, activePropertyId, today]);
+
+  // Honesty derivations — all false until feed status arrives (manual
+  // hotels / older servers) so the page renders exactly as today.
+  const fsLive = feedStatus?.mode === 'live';
+  const connectionIssue = fsLive && feedStatus.connection !== 'healthy';
+  const roomStatusLearning = fsLive && !connectionIssue && feedStatus.feeds.roomStatus === 'learning';
+  const reservationsLearning = fsLive && !connectionIssue &&
+    (feedStatus.feeds.arrivals === 'learning' || feedStatus.feeds.departures === 'learning');
+  // A room whose status is the catch-all default has NO real signal while
+  // the room-status feed is still learning — it must not read Dirty/Clean.
+  const isNeutralRoom = (r: Room): boolean => roomStatusLearning && r.statusSource === 'default';
 
   /* ── Derived stats ── */
   const stats = useMemo(() => {
     const total = rooms.length;
-    const clean = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-    const dirty = rooms.filter(r => r.status === 'dirty').length;
-    const inProgress = rooms.filter(r => r.status === 'in_progress').length;
+    const known = rooms.filter(r => !isNeutralRoom(r));
+    const unknown = total - known.length;
+    const clean = known.filter(r => r.status === 'clean' || r.status === 'inspected').length;
+    const dirty = known.filter(r => r.status === 'dirty').length;
+    const inProgress = known.filter(r => r.status === 'in_progress').length;
     const checkouts = rooms.filter(r => r.type === 'checkout').length;
     const stayovers = rooms.filter(r => r.type === 'stayover').length;
     const dndCount = rooms.filter(r => r.isDnd).length;
-    const cleanPct = total > 0 ? Math.round((clean / total) * 100) : 0;
-    return { total, clean, dirty, inProgress, checkouts, stayovers, dndCount, cleanPct };
-  }, [rooms]);
+    const cleanPct = known.length > 0 ? Math.round((clean / known.length) * 100) : 0;
+    return { total, clean, dirty, inProgress, checkouts, stayovers, dndCount, cleanPct, unknown };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms, roomStatusLearning]);
 
   /* ── Filtered rooms ── */
   const filteredRooms = useMemo(() => {
@@ -193,6 +214,13 @@ export default function FrontDeskPage() {
   /* ── AI insight line ── */
   const aiInsight = useMemo(() => {
     if (rooms.length === 0) return lang === 'es' ? 'Cargando datos de habitaciones...' : 'Loading room data...';
+    // Never declare "all clean" / "N need attention" off statuses that are
+    // still being learned from the PMS — say so instead.
+    if (roomStatusLearning) {
+      return lang === 'es'
+        ? 'Aún aprendiendo los estados de habitaciones de tu PMS — los conteos reflejan solo cambios hechos en la app.'
+        : 'Still learning room statuses from your PMS — counts reflect in-app updates only.';
+    }
     if (stats.dirty === 0 && stats.inProgress === 0) {
       return lang === 'es'
         ? `Todas las ${stats.total} habitaciones están listas. Jornada tranquila.`
@@ -206,7 +234,7 @@ export default function FrontDeskPage() {
     return lang === 'es'
       ? `${stats.clean} listas, ${stats.dirty} pendientes, ${stats.inProgress} en proceso. ${stats.cleanPct}% completo.`
       : `${stats.clean} ready, ${stats.dirty} pending, ${stats.inProgress} in progress. ${stats.cleanPct}% complete.`;
-  }, [rooms, stats, lang]);
+  }, [rooms, stats, lang, roomStatusLearning]);
 
   /* ── Handlers ── */
   const handleEarlyCheckout = async () => {
@@ -320,6 +348,40 @@ export default function FrontDeskPage() {
               {activeProperty?.name ?? ''} · {new Date().toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
             </p>
           </div>
+
+          {/* feat/cua-partial-promotion — honesty strips (connection issues
+              subsume feed-level banners). */}
+          {connectionIssue && (
+            <div style={{ margin: '20px 0 0' }}>
+              <FeedLearningBanner
+                variant="strip"
+                title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
+                text={lang === 'es'
+                  ? 'Los datos en vivo aparecerán cuando termine la primera sincronización.'
+                  : 'Live data will appear once the first sync lands.'}
+              />
+            </div>
+          )}
+          {!connectionIssue && (roomStatusLearning || reservationsLearning) && (
+            <div style={{ margin: '20px 0 0' }}>
+              <FeedLearningBanner
+                variant="strip"
+                title={lang === 'es' ? 'Aún aprendiendo tu PMS.' : 'Still learning your PMS.'}
+                text={[
+                  roomStatusLearning
+                    ? (lang === 'es'
+                      ? 'Los estados de habitaciones del PMS todavía no llegan — las habitaciones “Sin datos” no tienen información todavía.'
+                      : 'Room statuses from the PMS aren’t flowing yet — “No data” rooms have no information yet.')
+                    : '',
+                  reservationsLearning
+                    ? (lang === 'es'
+                      ? 'Las llegadas/salidas del PMS aún se están aprendiendo — los conteos de salidas y estancias pueden estar incompletos.'
+                      : 'PMS arrivals/departures are still being learned — checkout and stayover counts may be incomplete.')
+                    : '',
+                ].filter(Boolean).join(' ')}
+              />
+            </div>
+          )}
 
           {/* ── AI Insight Card ── */}
           <div style={{
@@ -447,7 +509,8 @@ export default function FrontDeskPage() {
                   gap: '12px',
                 }}>
                   {floorRooms.map(room => {
-                    const statusCol = getStatusColor(room.status);
+                    const neutral = isNeutralRoom(room);
+                    const statusCol = neutral ? '#757684' : getStatusColor(room.status);
                     return (
                       <div
                         key={room.id}
@@ -504,21 +567,22 @@ export default function FrontDeskPage() {
                           {room.number}
                         </div>
 
-                        {/* Status pill */}
+                        {/* Status pill — neutral gray "No data" while the
+                            room-status feed is still being learned */}
                         <div style={{
                           display: 'flex', alignItems: 'center', gap: '4px',
                           padding: '4px 10px', borderRadius: '9999px',
-                          background: getStatusBg(room.status),
+                          background: neutral ? 'rgba(117,118,132,0.10)' : getStatusBg(room.status),
                         }}>
                           <span className="material-symbols-outlined" style={{ fontSize: '13px', color: statusCol }}>
-                            {getStatusIcon(room.status)}
+                            {neutral ? 'hourglass_empty' : getStatusIcon(room.status)}
                           </span>
                           <span style={{
                             fontSize: '11px', fontWeight: 600, color: statusCol,
                             fontFamily: 'Inter, sans-serif', textTransform: 'uppercase',
                             letterSpacing: '0.03em',
                           }}>
-                            {getStatusLabel(room.status, lang)}
+                            {neutral ? (lang === 'es' ? 'Sin datos' : 'No data') : getStatusLabel(room.status, lang)}
                           </span>
                         </div>
 

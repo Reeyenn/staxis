@@ -31,6 +31,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useFeedStatus } from '@/lib/use-feed-status';
+import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 import {
   subscribeToPlanSnapshot,
   subscribeToDashboardByDate,
@@ -111,6 +113,16 @@ export function ScheduleTab() {
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
+
+  // feat/cua-partial-promotion — the board classifies rooms (checkout vs
+  // stayover) from PMS reservations; while arrivals/departures are still
+  // being learned that classification is incomplete, and the In House /
+  // Arrivals / Departures strip numbers may have no source. Say so.
+  const feedStatus = useFeedStatus(activePropertyId);
+  const fsLive = feedStatus?.mode === 'live';
+  const fsConnecting = fsLive && feedStatus.connection !== 'healthy';
+  const reservationsLearning = fsLive && !fsConnecting &&
+    (feedStatus.feeds.arrivals === 'learning' || feedStatus.feeds.departures === 'learning');
 
   const flashToast = useCallback((msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -359,6 +371,31 @@ export function ScheduleTab() {
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       <CalloutBanner shiftDate={shiftDate} />
+
+      {/* feat/cua-partial-promotion — honesty strips (connection subsumes
+          feed-level banners). */}
+      {fsConnecting && (
+        <div style={{ marginBottom: 16 }}>
+          <FeedLearningBanner
+            variant="strip"
+            title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
+            text={lang === 'es'
+              ? 'Los datos del horario aparecerán cuando termine la primera sincronización.'
+              : 'Schedule data will appear once the first sync lands.'}
+          />
+        </div>
+      )}
+      {reservationsLearning && (
+        <div style={{ marginBottom: 16 }}>
+          <FeedLearningBanner
+            variant="strip"
+            title={lang === 'es' ? 'Aún aprendiendo tu PMS.' : 'Still learning your PMS.'}
+            text={lang === 'es'
+              ? 'Las llegadas/salidas del PMS todavía se están aprendiendo — la clasificación de salidas y estancias puede estar incompleta, y un conteo vacío no significa que no haya salidas hoy.'
+              : 'PMS arrivals/departures are still being learned — checkout vs. stayover labels may be incomplete, and an empty count does not mean nobody checks out today.'}
+          />
+        </div>
+      )}
 
       {/* DATE HEADER + STEPPER */}
       <div style={{
