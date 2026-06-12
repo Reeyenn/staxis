@@ -50,6 +50,13 @@ export interface FillResult {
   skippedUnknown: number;
 }
 
+/**
+ * Everything the schedule surface needs from its data source. The real tab
+ * implements it with Supabase + /api/staff-schedule; the public demo page
+ * implements the same shape entirely in memory.
+ */
+export type ScheduleData = ReturnType<typeof useScheduleData>;
+
 interface DayEntry { date: string; shifts: BoardShift[] }
 
 function freshNonce(): number {

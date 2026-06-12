@@ -20,7 +20,10 @@ import {
   type BoardShift, type DayInfo, type WeekInfo,
 } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, Card, type DeptKey } from '../_tokens';
-import { useScheduleData, type ScheduleTemplate, type TemplateShift, type FillResult } from './useScheduleData';
+import {
+  useScheduleData,
+  type ScheduleData, type ScheduleTemplate, type TemplateShift, type FillResult,
+} from './useScheduleData';
 import { DayBoard, useReducedMotion } from './DayBoard';
 import { WeekRoster } from './WeekRoster';
 import { FillModal } from './FillModal';
@@ -32,8 +35,30 @@ const HL_SHADOW = `inset 0 0 0 1px ${T.ink}`;
 export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => void }) {
   const { activePropertyId, staff } = useProperty();
   const { lang } = useLang();
-  const es = lang === 'es';
   const data = useScheduleData(activePropertyId, staff);
+  // Key by property so a hotel switch remounts the view — selection, undo
+  // visibility, and open modals all reset instead of leaking across hotels.
+  return (
+    <ScheduleView
+      key={activePropertyId ?? 'none'}
+      staff={staff}
+      lang={lang}
+      data={data}
+      onOpenDirectory={onOpenDirectory}
+    />
+  );
+}
+
+// ScheduleView — the full schedule surface, decoupled from where its data
+// comes from: the real tab feeds it useScheduleData (Supabase-backed), the
+// public /demo/schedule page feeds it useDemoScheduleData (in-memory).
+export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
+  staff: StaffMember[];
+  lang: 'en' | 'es';
+  data: ScheduleData;
+  onOpenDirectory: () => void;
+}) {
+  const es = lang === 'es';
   const reducedMotion = useReducedMotion();
 
   const [view, setView] = useState<'day' | 'week'>('day');
@@ -44,16 +69,6 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => vo
   const [pickerOpen, setPickerOpen] = useState(false);
   const [torOpen, setTorOpen] = useState(false);
   const [weekAnim, setWeekAnim] = useState(0);
-
-  // Property switch → don't carry another hotel's selection state around.
-  useEffect(() => {
-    setView('day');
-    setSelDate(data.today);
-    setSelWeekStart(sundayOf(data.today));
-    setExpandedWeekStart(sundayOf(data.today));
-    setFillOpen(false); setPickerOpen(false); setTorOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePropertyId]);
 
   // ── toast ──────────────────────────────────────────────────────────────
   const [toast, setToast] = useState<string | null>(null);
