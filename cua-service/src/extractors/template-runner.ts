@@ -18,9 +18,13 @@ import { extractDomInline } from './dom-inline.js';
 import { extractCsvDownload } from './csv-download.js';
 import { extractFetchApi, resolveJsonPath } from './fetch-api.js';
 import { renderDatePlaceholders } from './date-template.js';
+import { extractDetailFields } from './dom-rows.js';
+import { safeGoto } from '../browser-utils/navigate.js';
+import { substituteTemplate, templatePlaceholders } from '../url-template.js';
 import type { LearnedDateFormat } from '../types.js';
 import { applyParser } from '../parsers/registry.js';
 import { requiredLearnedFor } from '../target-contract.js';
+import { DETAIL_PER_POLL_MAX } from '../column-recovery.js';
 // Side-effect imports — register the value parsers at module load.
 //   generic.js: the PMS-AGNOSTIC default parsers (generic_date/currency/enum…)
 //   ca.js:      Choice-Advantage parsers, kept ONLY as a back-compat fallback
@@ -195,6 +199,159 @@ export function findBlankContractColumns(
   return required.filter((col) => rows.every((r) => isBlank(r[col])));
 }
 
+// ─── Per-row detail enrichment (feature/cua-column-recovery) ─────────────────
+//
+// Recovered REQUIRED columns live on each record's detail page (see
+// TableTemplate.rowDetail). After the list rows are extracted, the runner
+// builds each row's detail URL from the verified key-anchored template,
+// navigates (host-pinned, Playwright only — no Claude at poll time), reads the
+// detail selectors with the SAME shared dom-rows reader the mapper verified
+// with, and merges the raw values into the row before parsing.
+//
+// Bounds (plan ADDENDUM #6-#8): the whole sweep shares a 120s single-flight
+// window across ALL feeds, so one feed's enrichment gets a 20s slice with 5s
+// per-navigation timeouts and AbortSignal checks between rows. A TTL cache
+// keyed by (cacheScope | template fingerprint | URL) makes the steady state
+// ~free; cacheScope comes from the session-driver (propertyId + knowledge-file
+// version) and MUST scope the cache — hotels on the same PMS family share URL
+// shapes, and an unscoped cache would serve hotel A's values to hotel B. No
+// cacheScope (tests, ad-hoc callers) → caching disabled, the safe default.
+
+const DETAIL_FEED_BUDGET_MS = 20_000;
+const DETAIL_NAV_TIMEOUT_MS = 5_000;
+const DETAIL_CACHE_TTL_MS = 300_000; // 5 min — recovered detail fields lag the 30s list cadence by ≤5 min
+const DETAIL_CACHE_MAX = 500;
+
+const detailCache = new Map<string, { values: Record<string, string>; at: number }>();
+
+/** Test hook — the cache is module state. */
+export function __clearDetailCacheForTests(): void {
+  detailCache.clear();
+}
+
+export type DetailFetcher = (
+  url: string,
+  columns: Record<string, string>,
+) => Promise<Record<string, string>>;
+
+export interface EnrichResult {
+  ok: boolean;
+  enrichedCount: number;
+  failedCount: number;
+  reason?: string;
+}
+
+/**
+ * Enrich rows in place. "Failed" counts SYSTEMATIC misses only — blank URL
+ * param, substitution/navigation/extraction failure, row cap, time budget,
+ * abort. A successfully-fetched detail page whose cell is blank is data, not
+ * failure (the writer's per-row validation owns that, as it does for list
+ * cells). Dependency-injected fetcher so the decision logic is unit-testable
+ * without Playwright.
+ */
+export async function enrichRowsWithDetail(args: {
+  rows: Array<Record<string, unknown>>;
+  rowDetail: NonNullable<TableTemplate['rowDetail']>;
+  fetcher: DetailFetcher;
+  cacheScope?: string;
+  signal?: AbortSignal;
+  now?: () => number;
+}): Promise<EnrichResult> {
+  const { rows, rowDetail, fetcher, cacheScope, signal } = args;
+  const now = args.now ?? Date.now;
+  const placeholders = templatePlaceholders(rowDetail.urlTemplate);
+  if (rows.length > DETAIL_PER_POLL_MAX) {
+    return {
+      ok: false,
+      enrichedCount: 0,
+      failedCount: rows.length,
+      reason: `too_many_rows_for_detail: ${rows.length} > ${DETAIL_PER_POLL_MAX}`,
+    };
+  }
+  const fingerprint = JSON.stringify({ t: rowDetail.urlTemplate, c: rowDetail.columns });
+  const startedAt = now();
+  let enrichedCount = 0;
+  let failedCount = 0;
+  let failReason: string | undefined;
+
+  for (const row of rows) {
+    if (signal?.aborted) {
+      failedCount++;
+      failReason ??= 'aborted mid-enrichment';
+      continue;
+    }
+    if (now() - startedAt > DETAIL_FEED_BUDGET_MS) {
+      failedCount++;
+      failReason ??= `detail budget exhausted (${DETAIL_FEED_BUDGET_MS}ms)`;
+      continue;
+    }
+    const values: Record<string, string> = {};
+    let blankParam: string | null = null;
+    for (const p of placeholders) {
+      const v = typeof row[p] === 'string' ? (row[p] as string).trim() : String(row[p] ?? '').trim();
+      if (v === '') {
+        blankParam = p;
+        break;
+      }
+      values[p] = v;
+    }
+    if (blankParam) {
+      failedCount++;
+      failReason ??= `row has blank URL param "${blankParam}"`;
+      continue;
+    }
+    let url: string;
+    try {
+      url = substituteTemplate(rowDetail.urlTemplate, values);
+    } catch (err) {
+      failedCount++;
+      failReason ??= `substitution failed: ${(err as Error).message}`;
+      continue;
+    }
+    const cacheKey = cacheScope ? `${cacheScope}|${fingerprint}|${url}` : null;
+    if (cacheKey) {
+      const hit = detailCache.get(cacheKey);
+      if (hit && now() - hit.at <= DETAIL_CACHE_TTL_MS) {
+        for (const [col, v] of Object.entries(hit.values)) row[col] = v;
+        enrichedCount++;
+        continue;
+      }
+    }
+    try {
+      const fetched = await fetcher(url, rowDetail.columns);
+      for (const [col, v] of Object.entries(fetched)) row[col] = v;
+      enrichedCount++;
+      if (cacheKey) {
+        if (detailCache.size >= DETAIL_CACHE_MAX) {
+          // Insertion-order eviction — good enough for a safety cache.
+          const oldest = detailCache.keys().next().value;
+          if (oldest !== undefined) detailCache.delete(oldest);
+        }
+        detailCache.set(cacheKey, { values: fetched, at: now() });
+      }
+    } catch (err) {
+      failedCount++;
+      failReason ??= `detail fetch failed: ${(err as Error).message}`;
+    }
+  }
+
+  return failedCount === 0
+    ? { ok: true, enrichedCount, failedCount }
+    : { ok: false, enrichedCount, failedCount, reason: failReason ?? 'detail enrichment failed' };
+}
+
+function makePageDetailFetcher(page: Page, allowedHost: string): DetailFetcher {
+  return async (url, columns) => {
+    await safeGoto(page, url, {
+      allowedHost,
+      context: 'extractor:row_detail:goto',
+      waitUntil: 'domcontentloaded',
+      timeoutMs: DETAIL_NAV_TIMEOUT_MS,
+    });
+    return extractDetailFields(page, columns);
+  };
+}
+
 /**
  * Run a single-source template. Returns rows ready for the generic
  * writer (with parsers applied + only list_row fields populated).
@@ -207,6 +364,11 @@ export async function runSingleSourceTemplate(args: {
   template: TableTemplate;
   allowedHost: string;
   signal: AbortSignal;
+  /** Scopes the per-row detail cache (feature/cua-column-recovery). The
+   *  session-driver passes `${propertyId}:v${knowledgeFileVersion}` — tenant
+   *  isolation + selector-change invalidation in one key. Absent → caching
+   *  disabled. */
+  detailCacheScope?: string;
 }): Promise<TemplateRunResult> {
   const { template, page, allowedHost, signal } = args;
   if (template.sources.length !== 1) {
@@ -228,7 +390,47 @@ export async function runSingleSourceTemplate(args: {
     };
   }
 
-  const parsedRows = sourceResult.rows.map((r) => applyTemplateParsers(r, template, 'list_row'));
+  // feature/cua-column-recovery — per-row detail enrichment for recovered
+  // REQUIRED columns. Strictness is write-strategy-aware: on a `reconcile`
+  // feed a partially-enriched batch is DANGEROUS (rows whose required detail
+  // value is missing get rejected per-row by the writer, and reconcile then
+  // auto-resolves them as "disappeared" — closing live work orders), so any
+  // systematic enrichment failure fails the whole run. On upsert feeds a
+  // partial batch is safe (an un-enriched row rejects alone and fills on the
+  // next poll via the cache) — enrich best-effort and log.
+  if (template.rowDetail && sourceResult.rows.length > 0) {
+    const enrich = await enrichRowsWithDetail({
+      rows: sourceResult.rows,
+      rowDetail: template.rowDetail,
+      fetcher: makePageDetailFetcher(page, allowedHost),
+      cacheScope: args.detailCacheScope,
+      signal,
+    });
+    if (!enrich.ok) {
+      log.warn('template-runner: row-detail enrichment incomplete', {
+        tableName: template.tableName,
+        sourceActionKey: template.sourceActionKey,
+        writeStrategy: template.writeStrategy,
+        enriched: enrich.enrichedCount,
+        failed: enrich.failedCount,
+        reason: enrich.reason,
+      });
+      if (template.writeStrategy === 'reconcile') {
+        const reason = `detail_enrichment_failed: ${enrich.reason ?? 'unknown'} (${enrich.enrichedCount} ok, ${enrich.failedCount} failed) — refusing partial batch on a reconcile feed`;
+        return {
+          ok: false,
+          rows: [],
+          sourceResults: [{ name: source.name, ok: false, rowCount: sourceResult.rows.length, reason }],
+          reason,
+        };
+      }
+    }
+  }
+
+  const parsedRows = sourceResult.rows.map((r) => ({
+    ...applyTemplateParsers(r, template, 'list_row'),
+    ...applyTemplateParsers(r, template, 'detail_page'),
+  }));
 
   const blankCols = findBlankContractColumns(template, parsedRows);
   if (blankCols.length > 0) {

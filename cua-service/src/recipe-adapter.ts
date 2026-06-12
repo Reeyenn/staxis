@@ -39,7 +39,7 @@ import type {
   ExtractionMode,
 } from './types.js';
 import { log } from './log.js';
-import { resolveColumnParser, type LearnedTranslations } from './target-contract.js';
+import { resolveColumnParser, recoveredDetailColumns, type LearnedTranslations } from './target-contract.js';
 import type { PreStep } from './extractors/pre-steps.js';
 
 // ─── Per-action → table mapping ───────────────────────────────────────────
@@ -450,7 +450,10 @@ export function actionRecipeToTableTemplate(
   // template missing aggregate spec") so guests / lost-and-found /
   // activity-log extract NOTHING. The list-row data is correct and
   // sufficient for the first run, so we use ONLY the list page here and
-  // DISCARD the detail_page source. Per-row detail enrichment is deferred.
+  // DISCARD the detail_page source — EXCEPT contract-REQUIRED columns the
+  // column-recovery mapper verified onto the detail page (rowDetail below);
+  // generic nice-to-have detail enrichment remains deferred.
+  let rowDetail: TableTemplate['rowDetail'];
   if (action.drillDown) {
     sources[0]!.url = action.drillDown.listUrl;
     sources[0]!.selectors = { rowSelector: action.drillDown.listRowSelector };
@@ -467,6 +470,24 @@ export function actionRecipeToTableTemplate(
     for (const [col, selectorOrColumn] of Object.entries(action.drillDown.listColumns)) {
       fields[col] = buildField(col, selectorOrColumn);
     }
+    // feature/cua-column-recovery — wire REQUIRED detail columns for per-row
+    // enrichment. recoveredDetailColumns applies the SAME eligibility
+    // predicate the promotion gate counts columns with (verified template,
+    // every placeholder resolvable from a non-blank list column, required-
+    // contract columns only) — so the gate can never pass a column this
+    // adapter won't wire. Assigned AFTER the listColumns loop above so a
+    // blank-selector list field can never shadow the recovered detail field.
+    const detailCols = recoveredDetailColumns(actionKey, action);
+    if (Object.keys(detailCols).length > 0) {
+      rowDetail = {
+        urlTemplate: action.drillDown.detailUrlTemplate,
+        urlParams: action.drillDown.detailUrlParams,
+        columns: detailCols,
+      };
+      for (const [col, selectorOrColumn] of Object.entries(detailCols)) {
+        fields[col] = { ...buildField(col, selectorOrColumn), origin: 'detail_page' };
+      }
+    }
   }
 
   const template: TableTemplate = {
@@ -476,6 +497,7 @@ export function actionRecipeToTableTemplate(
     snapshotScope: route.snapshotScope,
     sources,
     fields,
+    ...(rowDetail ? { rowDetail } : {}),
     // Plan v8 self-repair — bridge template → recipe action_key so
     // session-driver's zero-row failure detector can enqueue a
     // single-target re-learn instead of the full 13-target re-mapping.

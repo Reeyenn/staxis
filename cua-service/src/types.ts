@@ -502,6 +502,26 @@ export interface TableTemplate {
   /** Set by the mapper when budget tripped mid-target — runtime uses partial
    *  data but flags in admin UI as "needs operator review." */
   incomplete?: boolean;
+  /** feature/cua-column-recovery — per-row detail enrichment for REQUIRED
+   *  columns recovered onto a record's detail page (ActionRecipe.drillDown
+   *  with a verified, key-anchored URL template). After the list rows are
+   *  extracted, the runner substitutes each row's values into `urlTemplate`,
+   *  navigates (host-pinned), reads `columns` with the shared dom-rows reader
+   *  and merges the values into the row before parsing. Set ONLY by
+   *  recipe-adapter when target-contract's drillDownDetailEligible passes —
+   *  the same predicate the promotion gate counts columns with. This
+   *  supersedes the never-wired TableTemplateSource.urlTemplate/urlParams
+   *  fields from the original drill-down design. Runtime-only (rebuilt each
+   *  poll), never persisted. */
+  rowDetail?: {
+    /** Absolute templated URL, e.g. 'https://pms/Res/view?id={pms_reservation_id}'. */
+    urlTemplate: string;
+    /** Template placeholder → list column whose row value substitutes in
+     *  (identity-named by the mapper today). */
+    urlParams: Record<string, string>;
+    /** field → detail-page selector ('@attr' convention supported). */
+    columns: Record<string, string>;
+  };
   /** Plan v8 self-repair — the Recipe.actions key this template was built
    *  from. Lets session-driver's zero-row-failure detection map a broken
    *  TEMPLATE back to the RECIPE TARGET KEY for a single-target re-learn

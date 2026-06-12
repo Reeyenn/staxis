@@ -25,6 +25,10 @@ interface LogContext {
     | 'cua_mapping_login'
     | 'cua_mapping_action'
     | 'cua_mapping_drilldown'
+    // feature/cua-column-recovery — the stage-2 detail drill. Keeps the
+    // 'cua_mapping_' prefix so migration 0208 tags it source='mapping'
+    // (excluded from the per-hotel daily polling cap, counted in mapping spend).
+    | 'cua_mapping_colrecovery'
     | 'cua_critic'
     | 'cua_extraction'
     | 'other';

@@ -828,6 +828,10 @@ export class SessionDriver {
               template,
               allowedHost: this.allowedHost,
               signal,
+              // feature/cua-column-recovery — scope the per-row detail cache
+              // by tenant AND knowledge-file version (a promoted repair's new
+              // selectors must not consume extractions cached under the old).
+              detailCacheScope: `${this.propertyId}:v${this.knowledgeFile?.version ?? 0}`,
             });
 
         if (!runResult.ok) {
@@ -837,7 +841,10 @@ export class SessionDriver {
           // 0-row extraction. Both mean "selector probably drifted."
           // Suppress when this poll was logged-out (fix 2): a failure on a
           // logged-out page is a session artifact, not selector drift.
-          this.maybeFireSelfRepair(template, 0, loggedOutThisPoll);
+          // runFailed=true: the legitimately-empty-feed suppression must NOT
+          // swallow real failures (a permanently failing work-order feed was
+          // a silent black hole — column-recovery plan review P0).
+          this.maybeFireSelfRepair(template, 0, loggedOutThisPoll, true);
           continue;
         }
 
@@ -1173,7 +1180,7 @@ export class SessionDriver {
    * repair (failed = constraint persists = no silent re-trigger; admin
    * must manually retry from the UI).
    */
-  private maybeFireSelfRepair(template: TableTemplate, rowCount: number, suppress = false): void {
+  private maybeFireSelfRepair(template: TableTemplate, rowCount: number, suppress = false, runFailed = false): void {
     const actionKey = template.sourceActionKey;
     if (!actionKey) return;  // template can't be repaired (no source tag)
 
@@ -1183,10 +1190,16 @@ export class SessionDriver {
     // one that's legitimately empty at small hotels (no work orders /
     // lost-and-found / group blocks today). Either case would otherwise
     // fire a paid mapper repair (~$2) for healthy, expected zeros.
-    if (suppress || isLegitimatelyEmptyFeed(actionKey)) {
+    //
+    // feature/cua-column-recovery — the legitimately-empty suppression applies
+    // ONLY to "ran ok with zero rows". A run FAILURE (extractor error, dead
+    // selector, detail-enrichment failure) on getWorkOrders et al. is drift
+    // like anywhere else; swallowing it made a permanently-failing work-order
+    // feed invisible forever (plan review P0).
+    if (suppress || (!runFailed && isLegitimatelyEmptyFeed(actionKey))) {
       // Don't advance the streak; also don't reset a real drift streak on
       // the suppress case — just skip this poll's contribution.
-      if (isLegitimatelyEmptyFeed(actionKey)) this.consecutiveZeroRowsByAction.set(actionKey, 0);
+      if (!runFailed && isLegitimatelyEmptyFeed(actionKey)) this.consecutiveZeroRowsByAction.set(actionKey, 0);
       return;
     }
 
@@ -1262,8 +1275,10 @@ export class SessionDriver {
       payload: {
         pms_family: this.pmsFamily,
         property_id: this.propertyId,
-        // Tight cap — single target.
-        cost_cap_micros: 2_000_000,
+        // Tight cap — single target. $2 → $3 for feature/cua-column-recovery:
+        // a repair re-learn may now legitimately spend focused re-asks plus a
+        // $0.60-capped detail drill recovering blank required columns.
+        cost_cap_micros: 3_000_000,
         // The whole point — seed all other actions so mapper skips them.
         seed_actions: seedActions,
         // Preserve previously-learned value translation across a partial repair
