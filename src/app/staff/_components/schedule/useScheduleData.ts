@@ -126,6 +126,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
         dept: asDeptKey(s.department),
         startMin,
         endMin,
+        note: s.note ?? null,
       });
     }
     for (const date of Object.keys(map)) {
@@ -200,31 +201,44 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   const endGesture = useCallback(() => { gestureActive.current = false; }, []);
 
   // ── Persistence: bulk replace-days ────────────────────────────────────
+  // The fill endpoint takes ≤7 days per call; bigger writes (auto-repeat
+  // across upcoming weeks, undo of one) go out as sequential week chunks.
   const saveDays = useCallback(async (entries: DayEntry[]): Promise<FillResult> => {
     if (!propertyId) throw new Error('No property selected');
     for (const e of entries) {
       pendingSaves.current.set(e.date, (pendingSaves.current.get(e.date) ?? 0) + 1);
     }
     try {
-      const res = await fetchWithAuth('/api/staff-schedule/fill', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hotelId: propertyId,
-          days: entries.map(e => ({
-            date: e.date,
-            shifts: e.shifts.map(s => ({
-              staffId: s.staffId,
-              department: s.dept,
-              startTime: toHHMM(s.startMin),
-              endTime: toHHMM(Math.min(s.endMin, 24 * 60 - 1)),
+      const data: FillResult = { inserted: 0, updated: 0, deleted: 0, skippedTimeOff: 0, skippedUnknown: 0 };
+      for (let i = 0; i < entries.length; i += 7) {
+        const chunk = entries.slice(i, i + 7);
+        const res = await fetchWithAuth('/api/staff-schedule/fill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hotelId: propertyId,
+            days: chunk.map(e => ({
+              date: e.date,
+              shifts: e.shifts.map(s => ({
+                staffId: s.staffId,
+                department: s.dept,
+                startTime: toHHMM(s.startMin),
+                endTime: toHHMM(Math.min(s.endMin, 24 * 60 - 1)),
+                note: s.note ?? null,
+                ...(s.overrideTimeOff ? { overrideTimeOff: true } : {}),
+              })),
             })),
-          })),
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || 'Save failed');
-      const data = (body?.data ?? {}) as FillResult;
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body?.error || 'Save failed');
+        const part = (body?.data ?? {}) as Partial<FillResult>;
+        data.inserted += part.inserted ?? 0;
+        data.updated += part.updated ?? 0;
+        data.deleted += part.deleted ?? 0;
+        data.skippedTimeOff += part.skippedTimeOff ?? 0;
+        data.skippedUnknown += part.skippedUnknown ?? 0;
+      }
       // Server intentionally diverged (time-off / departed staff): show its
       // truth as soon as the refetch lands instead of pinning our version.
       if ((data.skippedTimeOff ?? 0) > 0 || (data.skippedUnknown ?? 0) > 0) {
@@ -371,7 +385,12 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   const decidedTor = useMemo(
     () => tor.filter(r => r.status === 'approved' || r.status === 'denied')
       .sort((a, b) => (b.decidedAt?.getTime() ?? 0) - (a.decidedAt?.getTime() ?? 0))
-      .slice(0, 6),
+      .slice(0, 30),
+    [tor],
+  );
+  /** Approved future-facing requests — the board warns before scheduling over one. */
+  const approvedTor = useMemo(
+    () => tor.filter(r => r.status === 'approved'),
     [tor],
   );
 
@@ -404,6 +423,6 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
     pushUndo, undo, undoCount,
     templates, saveTemplate, deleteTemplate,
     doneWeeks, setWeekDone,
-    pendingTor, decidedTor, decideTor,
+    pendingTor, decidedTor, approvedTor, decideTor,
   };
 }

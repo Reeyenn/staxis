@@ -8,25 +8,37 @@
 
 'use client';
 
-import React, { useEffect } from 'react';
-import type { ShiftPreset, StaffMember } from '@/types';
-import { deptDefaultTimes, fmtMinRange } from '@/lib/schedule-board';
-import { T, fonts, deptMeta, asDeptKey, Caps, type DeptKey } from '../_tokens';
+import React, { useEffect, useState } from 'react';
+import type { ShiftPreset, StaffMember, TimeOffRequest } from '@/types';
+import { deptDefaultTimes, fmtHours, fmtMinRange } from '@/lib/schedule-board';
+import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
 
+const DEFAULT_WEEKLY_CAP = 40;
+
 export function AddStaffModal({
-  staff, takenIds, presets, dayTitle, lang, onPick, onOpenDirectory, onClose,
+  staff, takenIds, presets, dayTitle, dayPhrase, lang,
+  weekMinutes, approvedTorByStaff,
+  onPick, onOpenDirectory, onClose,
 }: {
   staff: StaffMember[];
   takenIds: Set<string>;
   presets: ShiftPreset[];
   /** 'Add someone to today' / a specific day phrase for other dates. */
   dayTitle: string;
+  /** 'Friday, Jun 12' — used in the time-off warning. */
+  dayPhrase: string;
   lang: 'en' | 'es';
-  onPick: (s: StaffMember) => void;
+  /** Projected minutes already scheduled this week, per staff. */
+  weekMinutes: Map<string, number>;
+  /** Approved time-off requests landing on this exact day, per staff. */
+  approvedTorByStaff: Map<string, TimeOffRequest>;
+  onPick: (s: StaffMember, opts?: { overrideTimeOff?: boolean }) => void;
   onOpenDirectory: () => void;
   onClose: () => void;
 }) {
+  // Picking someone with approved time off that day asks first.
+  const [confirmFor, setConfirmFor] = useState<StaffMember | null>(null);
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', k);
@@ -101,15 +113,21 @@ export function AddStaffModal({
                 </div>
                 {g.list.map(s => {
                   const def = deptDefaultTimes(asDeptKey(s.department), presets);
+                  const tor = approvedTorByStaff.get(s.id);
+                  const curMin = weekMinutes.get(s.id) ?? 0;
+                  const projMin = curMin + (def.e - def.s);
+                  const capMin = (s.maxWeeklyHours || DEFAULT_WEEKLY_CAP) * 60;
+                  const wouldOT = projMin > capMin;
                   return (
                     <button
                       key={s.id}
-                      onClick={() => onPick(s)}
+                      onClick={() => (tor ? setConfirmFor(s) : onPick(s))}
                       style={{
                         width: '100%', display: 'flex', alignItems: 'center', gap: 11,
                         padding: '9px 10px', borderRadius: 12,
                         border: '1px solid transparent', background: 'transparent',
                         cursor: 'pointer', textAlign: 'left',
+                        opacity: tor ? 0.75 : 1,
                       }}
                       onMouseEnter={e => {
                         e.currentTarget.style.background = '#FBFAF6';
@@ -123,11 +141,28 @@ export function AddStaffModal({
                       <Avatar staffId={s.id} name={s.name} size={30}/>
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{
-                          display: 'block', fontSize: 13.5, fontWeight: 600, color: T.ink,
-                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                        }}>{s.name}</span>
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          fontSize: 13.5, fontWeight: 600, color: T.ink,
+                          whiteSpace: 'nowrap', overflow: 'hidden',
+                        }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+                          {tor && (
+                            <span style={{
+                              fontFamily: fonts.mono, fontSize: 8, fontWeight: 700, letterSpacing: '0.06em',
+                              color: T.caramelDeep, background: 'rgba(201,150,68,0.16)',
+                              border: '1px solid rgba(140,106,51,0.32)',
+                              padding: '1px 5px', borderRadius: 999, flexShrink: 0,
+                            }}>{es ? 'LIBRE APROBADO' : 'TIME OFF'}</span>
+                          )}
+                        </span>
                         <span style={{ display: 'block', fontFamily: fonts.mono, fontSize: 10, color: T.ink3 }}>
                           {fmtMinRange(def.s, def.e)} · {es ? 'por defecto' : 'default'}
+                          {curMin > 0 && <> · {fmtHours(curMin)} {es ? 'esta sem.' : 'this wk'}</>}
+                          {wouldOT && (
+                            <span style={{ color: T.red, fontWeight: 700 }}>
+                              {' '}→ {fmtHours(projMin)} OT
+                            </span>
+                          )}
                         </span>
                       </span>
                       <span style={{
@@ -141,6 +176,26 @@ export function AddStaffModal({
             );
           })}
         </div>
+
+        {confirmFor && (
+          <div style={{
+            borderTop: '1px solid rgba(140,106,51,0.32)', padding: '12px 16px',
+            background: 'rgba(201,150,68,0.10)',
+            display: 'flex', flexDirection: 'column', gap: 9,
+          }}>
+            <span style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.5 }}>
+              {es
+                ? <>Aprobaste tiempo libre para <strong>{confirmFor.name}</strong> el <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <> — “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. ¿Agendarle de todos modos?</>
+                : <>You approved time off for <strong>{confirmFor.name}</strong> on <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <> — “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. Schedule them anyway?</>}
+            </span>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Btn variant="ghost" size="sm" onClick={() => setConfirmFor(null)}>{es ? 'Cancelar' : 'Cancel'}</Btn>
+              <Btn variant="primary" size="sm" onClick={() => { onPick(confirmFor, { overrideTimeOff: true }); setConfirmFor(null); }}>
+                {es ? 'Agendar igual' : 'Schedule anyway'}
+              </Btn>
+            </div>
+          </div>
+        )}
 
         <div style={{
           borderTop: `1px solid ${T.rule}`, padding: '12px 16px',

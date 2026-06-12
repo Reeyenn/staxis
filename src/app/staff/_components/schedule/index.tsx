@@ -17,6 +17,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import type { StaffMember } from '@/types';
 import {
   addDaysYmd, sundayOf, dayInfo, buildWeeks, deptDefaultTimes,
+  weekMinutesByStaff, fmtHours, fmtMinRange,
   type BoardShift, type DayInfo, type WeekInfo,
 } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, Card, type DeptKey } from '../_tokens';
@@ -28,12 +29,15 @@ import { DayBoard, useReducedMotion } from './DayBoard';
 import { WeekRoster } from './WeekRoster';
 import { FillModal } from './FillModal';
 import { AddStaffModal } from './AddStaffModal';
-import { TimeOffModal } from './TimeOffModal';
+import { TimeOffSection, TimeOffHistoryModal } from './TimeOffModal';
+import { ShiftEditorModal } from './ShiftEditorModal';
+
+const DEFAULT_WEEKLY_CAP = 40;
 
 const HL_SHADOW = `inset 0 0 0 1px ${T.ink}`;
 
 export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => void }) {
-  const { activePropertyId, staff } = useProperty();
+  const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
   const data = useScheduleData(activePropertyId, staff);
   // Key by property so a hotel switch remounts the view — selection, undo
@@ -44,6 +48,7 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => vo
       staff={staff}
       lang={lang}
       data={data}
+      propertyName={activeProperty?.name}
       onOpenDirectory={onOpenDirectory}
     />
   );
@@ -52,10 +57,11 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => vo
 // ScheduleView — the full schedule surface, decoupled from where its data
 // comes from: the real tab feeds it useScheduleData (Supabase-backed), the
 // public /demo/schedule page feeds it useDemoScheduleData (in-memory).
-export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
+export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory }: {
   staff: StaffMember[];
   lang: 'en' | 'es';
   data: ScheduleData;
+  propertyName?: string;
   onOpenDirectory: () => void;
 }) {
   const es = lang === 'es';
@@ -67,7 +73,8 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
   const [expandedWeekStart, setExpandedWeekStart] = useState<string>(() => sundayOf(data.today));
   const [fillOpen, setFillOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [torOpen, setTorOpen] = useState(false);
+  const [torHistoryOpen, setTorHistoryOpen] = useState(false);
+  const [editorId, setEditorId] = useState<string | null>(null);
   const [weekAnim, setWeekAnim] = useState(0);
 
   // ── toast ──────────────────────────────────────────────────────────────
@@ -95,6 +102,41 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
   // Active staff + name lookup shared with children.
   const activeStaff = useMemo(() => staff.filter(s => s.isActive !== false), [staff]);
   const activeIds = useMemo(() => new Set(activeStaff.map(s => s.id)), [activeStaff]);
+  const capMinById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of staff) m.set(s.id, (s.maxWeeklyHours || DEFAULT_WEEKLY_CAP) * 60);
+    return m;
+  }, [staff]);
+
+  // Projected hours across the week containing the selected day — feeds the
+  // board's OT badges and the Add-staff picker's "32h this wk" lines.
+  const selDayWeek: WeekInfo = weekByStart.get(sundayOf(selDate)) ?? selWeek;
+  const dayWeekMinutes = useMemo(
+    () => weekMinutesByStaff(selDayWeek.days.map(d => data.getDay(d.date))),
+    [selDayWeek, data],
+  );
+  const otTitles = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [staffId, min] of dayWeekMinutes) {
+      const cap = capMinById.get(staffId) ?? DEFAULT_WEEKLY_CAP * 60;
+      if (min > cap) {
+        m.set(staffId, es
+          ? `${fmtHours(min)} esta semana — supera el límite de ${fmtHours(cap)}`
+          : `${fmtHours(min)} this week — over the ${fmtHours(cap)} cap`);
+      }
+    }
+    return m;
+  }, [dayWeekMinutes, capMinById, es]);
+
+  // Approved time off landing on the selected day (per staff).
+  const approvedList = data.approvedTor;
+  const approvedTorByStaff = useMemo(() => {
+    const m = new Map<string, (typeof approvedList)[number]>();
+    for (const r of approvedList) {
+      if (r.requestDate === selDate) m.set(r.staffId, r);
+    }
+    return m;
+  }, [approvedList, selDate]);
 
   // ── shared fill plumbing ───────────────────────────────────────────────
   const tmpId = () => `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -151,16 +193,37 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
     reportSave(data.commitDay(selDate));
   };
 
-  const onPickStaff = (s: StaffMember) => {
+  const onPickStaff = (s: StaffMember, opts?: { overrideTimeOff?: boolean }) => {
     const dept = asDeptKey(s.department);
     const def = deptDefaultTimes(dept, data.presets);
     data.pushUndo([selDate]);
     data.setDayLocal(selDate, list => [
       ...list,
-      { id: tmpId(), staffId: s.id, dept, startMin: def.s, endMin: def.e, anim: true, nonce: Date.now() },
+      {
+        id: tmpId(), staffId: s.id, dept, startMin: def.s, endMin: def.e,
+        ...(opts?.overrideTimeOff ? { overrideTimeOff: true } : {}),
+        anim: true, nonce: Date.now(),
+      },
     ]);
     reportSave(data.commitDay(selDate));
     setPickerOpen(false);
+  };
+
+  // ── tap-to-edit (exact times + note) ───────────────────────────────────
+  const editorShift = editorId ? dayShifts.find(s => s.id === editorId) ?? null : null;
+  const onEditorSave = (patch: { startMin: number; endMin: number; note: string | null }) => {
+    if (!editorShift) return;
+    data.pushUndo([selDate]);
+    data.setDayLocal(selDate, list => list.map(x => (x.id === editorShift.id ? { ...x, ...patch } : x)));
+    reportSave(data.commitDay(selDate));
+    setEditorId(null);
+  };
+  const onEditorRemove = () => {
+    if (!editorShift) return;
+    data.pushUndo([selDate]);
+    data.setDayLocal(selDate, list => list.filter(x => x.id !== editorShift.id));
+    reportSave(data.commitDay(selDate));
+    setEditorId(null);
   };
 
   // ── undo ───────────────────────────────────────────────────────────────
@@ -175,7 +238,11 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
   // ── fill applies ───────────────────────────────────────────────────────
   const dayPhrase = (d: DayInfo) => es ? `${d.dowFull} ${d.dayNum} ${d.mon}` : `${d.dowFull}, ${d.mon} ${d.dayNum}`;
 
-  const applyTemplate = (t: ScheduleTemplate) => {
+  /** Selected week, or — auto-repeat — the selected week plus every later one. */
+  const targetWeeksFor = (repeatAll: boolean): WeekInfo[] =>
+    repeatAll ? weeks.filter(w => w.start >= selWeekStart) : [selWeek];
+
+  const applyTemplate = (t: ScheduleTemplate, repeatAll: boolean) => {
     if (t.scope === 'day') {
       const shifts = payloadToBoard(t.payload as TemplateShift[]);
       data.pushUndo([selDate]);
@@ -183,11 +250,17 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
       flash(es ? `Se aplicó “${t.name}” a ${day.dowFull}` : `Applied “${t.name}” to ${day.dowFull}`);
     } else {
       const daysPayload = t.payload as TemplateShift[][];
-      const entries = selWeek.days.map((d, k) => ({ date: d.date, shifts: payloadToBoard(daysPayload[k] ?? []) }));
+      const targets = targetWeeksFor(repeatAll);
+      const entries = targets.flatMap(w =>
+        w.days.map((d, k) => ({ date: d.date, shifts: payloadToBoard(daysPayload[k] ?? []) })));
       data.pushUndo(entries.map(e => e.date));
       reportSave(data.applyDays(entries, !reducedMotion));
       setWeekAnim(Date.now());
-      flash(es ? `Se aplicó “${t.name}” a ${selWeek.label}` : `Applied “${t.name}” to ${selWeek.label}`);
+      flash(targets.length > 1
+        ? (es
+          ? `Se aplicó “${t.name}” a ${targets.length} semanas (hasta ${targets[targets.length - 1].label})`
+          : `Applied “${t.name}” to ${targets.length} weeks (through ${targets[targets.length - 1].label})`)
+        : (es ? `Se aplicó “${t.name}” a ${selWeek.label}` : `Applied “${t.name}” to ${selWeek.label}`));
     }
     setFillOpen(false);
   };
@@ -208,22 +281,46 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
     setFillOpen(false);
   };
 
-  const applyHistoryWeek = (srcWeekStart: string) => {
+  const applyHistoryWeek = (srcWeekStart: string, repeatAll: boolean) => {
     const srcWeek = weekByStart.get(srcWeekStart);
     if (!srcWeek) return;
+    const srcDays = srcWeek.days.map(d => data.getDay(d.date));
+    const targets = targetWeeksFor(repeatAll);
     let total = 0;
-    const entries = selWeek.days.map((d, k) => {
-      const shifts = cloneShifts(data.getDay(srcWeek.days[k].date));
-      total += shifts.length;
-      return { date: d.date, shifts };
-    });
+    const entries = targets.flatMap(w =>
+      w.days.map((d, k) => {
+        const shifts = cloneShifts(srcDays[k]);
+        total += shifts.length;
+        return { date: d.date, shifts };
+      }));
     data.pushUndo(entries.map(e => e.date));
     reportSave(data.applyDays(entries, !reducedMotion));
     setWeekAnim(Date.now());
-    flash(es
-      ? `Se llenó ${selWeek.label} desde ${srcWeek.label} — ${total} turnos`
-      : `Filled ${selWeek.label} from ${srcWeek.label} — ${total} ${total === 1 ? 'shift' : 'shifts'}`);
+    flash(targets.length > 1
+      ? (es
+        ? `Se llenaron ${targets.length} semanas desde ${srcWeek.label} — ${total} turnos`
+        : `Filled ${targets.length} weeks from ${srcWeek.label} — ${total} ${total === 1 ? 'shift' : 'shifts'}`)
+      : (es
+        ? `Se llenó ${selWeek.label} desde ${srcWeek.label} — ${total} turnos`
+        : `Filled ${selWeek.label} from ${srcWeek.label} — ${total} ${total === 1 ? 'shift' : 'shifts'}`));
     setFillOpen(false);
+  };
+
+  // ── print / PDF the week ───────────────────────────────────────────────
+  const printWeek = () => {
+    const week = view === 'day' ? selDayWeek : selWeek;
+    const w = window.open('', '_blank', 'width=920,height=720');
+    if (!w) {
+      flash(es ? 'Permite ventanas emergentes para imprimir' : 'Allow pop-ups to print');
+      return;
+    }
+    w.document.write(printableWeekHtml({
+      week, staff: activeStaff, getDay: data.getDay, nameOf: data.nameOf,
+      capMinById, propertyName, lang,
+    }));
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch { /* user closed it */ } }, 300);
   };
 
   // ── templates ──────────────────────────────────────────────────────────
@@ -452,6 +549,10 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
               <Btn variant="ghost" size="md" onClick={toggleWeekDone}>{es ? 'Terminar semana' : 'Finish week'}</Btn>
             )
           )}
+          <Btn variant="ghost" size="md" onClick={printWeek}
+            title={es ? 'Imprimir o guardar la semana como PDF' : 'Print or save the week as a PDF'}>
+            ⎙ {es ? 'Imprimir' : 'Print'}
+          </Btn>
           <Btn variant="ghost" size="md" onClick={onUndo} disabled={!data.undoCount}
             title={es ? 'Deshacer tu último cambio' : 'Undo your last change'}>↩ {es ? 'Deshacer' : 'Undo'}</Btn>
           <Btn variant="ghost" size="md" onClick={() => setFillOpen(true)}>{es ? 'Llenar' : 'Fill'}</Btn>
@@ -518,10 +619,12 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
               isToday={day.today}
               lang={lang}
               nameOf={data.nameOf}
+              otTitles={otTitles}
               onUpdate={onBoardUpdate}
               onGestureStart={onGestureStart}
               onGestureEnd={onGestureEnd}
               onRemove={onRemoveShift}
+              onTapShift={setEditorId}
             />
           </Card>
 
@@ -534,20 +637,15 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
               <Caps>{expandedWeek.current ? (es ? 'Esta semana' : 'This week') : (es ? 'Semana del' : 'Week of')}</Caps>
               <Caps c={T.caramelDeep}>{expandedWeek.label}</Caps>
             </div>
-            <button
-              onClick={() => setTorOpen(true)}
-              style={{
-                background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
-                fontFamily: fonts.mono, fontSize: 10.5, letterSpacing: '0.06em',
-                color: data.pendingTor.length > 0 ? T.caramelDeep : T.ink3,
-                fontWeight: data.pendingTor.length > 0 ? 700 : 500,
-                textDecoration: 'underline', textUnderlineOffset: 3, textTransform: 'uppercase',
-              }}
-            >
+            <span style={{
+              fontFamily: fonts.mono, fontSize: 10.5, letterSpacing: '0.06em',
+              color: data.pendingTor.length > 0 ? T.caramelDeep : T.ink3,
+              fontWeight: data.pendingTor.length > 0 ? 700 : 500, textTransform: 'uppercase',
+            }}>
               {data.pendingTor.length} {es
                 ? `solicitud${data.pendingTor.length === 1 ? '' : 'es'} de tiempo libre`
                 : `time-off request${data.pendingTor.length === 1 ? '' : 's'} pending`}
-            </button>
+            </span>
           </div>
           <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
             {expandedWeek.days.map(dayCard)}
@@ -560,6 +658,17 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
           <div ref={dayRailRef} style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
             {weeks.map(w => weekBoxCard(w, expandedWeekStart === w.start, () => setExpandedWeekStart(w.start)))}
           </div>
+
+          {/* TIME OFF — pending requests, bottom-left */}
+          <TimeOffSection
+            pending={data.pendingTor}
+            decidedCount={data.decidedTor.length}
+            staff={staff}
+            today={data.today}
+            lang={lang}
+            onDecide={data.decideTor}
+            onOpenHistory={() => setTorHistoryOpen(true)}
+          />
         </>
       )}
 
@@ -639,23 +748,115 @@ export function ScheduleView({ staff, lang, data, onOpenDirectory }: {
           dayTitle={day.today
             ? (es ? 'Agregar a alguien hoy' : 'Add someone to today')
             : (es ? `Agregar a alguien el ${day.dowFull} ${day.dayNum}` : `Add someone to ${day.dowFull} ${day.dayNum}`)}
+          dayPhrase={dayPhrase(day)}
           lang={lang}
+          weekMinutes={dayWeekMinutes}
+          approvedTorByStaff={approvedTorByStaff}
           onPick={onPickStaff}
           onOpenDirectory={() => { setPickerOpen(false); onOpenDirectory(); }}
           onClose={() => setPickerOpen(false)}
         />
       )}
-      {torOpen && (
-        <TimeOffModal
-          pending={data.pendingTor}
+      {torHistoryOpen && (
+        <TimeOffHistoryModal
           decided={data.decidedTor}
           staff={staff}
           today={data.today}
           lang={lang}
-          onDecide={data.decideTor}
-          onClose={() => setTorOpen(false)}
+          onClose={() => setTorHistoryOpen(false)}
+        />
+      )}
+      {editorShift && (
+        <ShiftEditorModal
+          shift={editorShift}
+          staffName={data.nameOf(editorShift.staffId)}
+          dayLabel={dayPhrase(day)}
+          lang={lang}
+          onSave={onEditorSave}
+          onRemove={onEditorRemove}
+          onClose={() => setEditorId(null)}
         />
       )}
     </div>
   );
+}
+
+// ── printable week (one button → browser print dialog → paper or PDF) ──────
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function printableWeekHtml({
+  week, staff, getDay, nameOf, capMinById, propertyName, lang,
+}: {
+  week: WeekInfo;
+  staff: StaffMember[];
+  getDay: (date: string) => BoardShift[];
+  nameOf: (staffId: string) => string;
+  capMinById: Map<string, number>;
+  propertyName?: string;
+  lang: 'en' | 'es';
+}) {
+  const es = lang === 'es';
+  const dayLists = week.days.map(d => getDay(d.date));
+  const weekMin = weekMinutesByStaff(dayLists);
+  const shiftFor = new Map<string, BoardShift>();
+  week.days.forEach((d, i) => {
+    for (const s of dayLists[i]) shiftFor.set(`${s.staffId}:${d.date}`, s);
+  });
+
+  const lanes: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
+  const active = staff.filter(s => s.isActive !== false);
+  const rows: string[] = [];
+  for (const dep of lanes) {
+    const list = active
+      .filter(s => asDeptKey(s.department) === dep)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (list.length === 0) continue;
+    rows.push(`<tr class="dept"><td colspan="9">${esc(deptMeta[dep].label)}</td></tr>`);
+    for (const s of list) {
+      const min = weekMin.get(s.id) ?? 0;
+      const over = min > (capMinById.get(s.id) ?? DEFAULT_WEEKLY_CAP * 60);
+      const cells = week.days.map(d => {
+        const sh = shiftFor.get(`${s.id}:${d.date}`);
+        if (!sh) return '<td></td>';
+        const note = sh.note ? `<div class="note">${esc(sh.note)}</div>` : '';
+        return `<td><div class="chip">${fmtMinRange(sh.startMin, sh.endMin)}</div>${note}</td>`;
+      }).join('');
+      rows.push(`<tr><td class="name">${esc(nameOf(s.id))}</td>${cells}<td class="hours${over ? ' ot' : ''}">${min > 0 ? fmtHours(min) + (over ? ' OT' : '') : ''}</td></tr>`);
+    }
+  }
+  const counts = week.days.map((d, i) => `<td>${dayLists[i].length}</td>`).join('');
+
+  const title = `${propertyName ? esc(propertyName) + ' — ' : ''}${es ? 'Semana' : 'Week'} ${esc(week.label)}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>
+  body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; color: #1F231C; margin: 28px; }
+  h1 { font-size: 19px; margin: 0; font-weight: 600; }
+  .sub { font-size: 11px; color: #5C625C; margin: 3px 0 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #C9CCC9; padding: 5px 6px; font-size: 10.5px; text-align: center; vertical-align: top; }
+  th { background: #F2F1EC; font-weight: 700; }
+  th .num { font-size: 13px; font-weight: 400; display: block; }
+  td.name, th.name { text-align: left; white-space: nowrap; font-weight: 600; }
+  tr.dept td { background: #F7F6F2; text-align: left; font-weight: 700; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .chip { font-weight: 600; white-space: nowrap; }
+  .note { font-size: 8.5px; color: #5C625C; margin-top: 2px; }
+  td.hours { font-weight: 700; white-space: nowrap; }
+  td.hours.ot { color: #A04A2C; }
+  tr.count td { background: #F7F6F2; font-weight: 700; }
+  @media print { body { margin: 10mm; } }
+</style></head><body>
+<h1>${title}</h1>
+<div class="sub">${es ? 'Impreso desde Staxis' : 'Printed from Staxis'} · ${esc(new Date().toLocaleDateString())}</div>
+<table>
+  <tr>
+    <th class="name">${es ? 'PERSONAL' : 'STAFF'}</th>
+    ${week.days.map(d => `<th>${esc(d.dow.toUpperCase())}<span class="num">${d.mon} ${d.dayNum}</span></th>`).join('')}
+    <th>${es ? 'HORAS' : 'HOURS'}</th>
+  </tr>
+  ${rows.join('\n')}
+  <tr class="count"><td class="name">${es ? 'EN TURNO' : 'ON SHIFT'}</td>${counts}<td></td></tr>
+</table>
+</body></html>`;
 }
