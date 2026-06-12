@@ -453,6 +453,14 @@ interface MapperOptions {
   pmsType: PMSType;
   credentials: PMSCredentials;
   onProgress?: (step: string, pct: number) => void;
+  /**
+   * feature/cua-live-view — continuous Learning Board live view. Called
+   * with each vision screenshot the agent takes (`exec.screenshotB64` —
+   * ALREADY privacy-hardened by captureHardenedScreenshot; see
+   * live-frame.ts PRIVACY CONTRACT). Implementations must be synchronous
+   * fire-and-forget and never throw; the mapper does not await them.
+   */
+  onLiveFrame?: (pngBase64: string) => void;
   // For Claude API spend attribution. Both nullable so dev/test runs work.
   propertyId?: string | null;
   jobId?: string | null;
@@ -741,6 +749,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       signal: opts.signal,
       model,
       jobCostCapMicros: opts.jobCostCapMicros,
+      onLiveFrame: opts.onLiveFrame,
     });
     if (!loginResult.ok) {
       return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
@@ -906,6 +915,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             signal: opts.signal,
             model,
             jobCostCapMicros: opts.jobCostCapMicros,
+            onLiveFrame: opts.onLiveFrame,
           })
         : await mapAction({
             page,
@@ -926,6 +936,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             // recovery value-gate parses candidate dates exactly like the
             // runtime eventually will.
             provisionalDateFormat: pickDateFormat(inferDateFormat(learnedDateSamples), opts.seedDateFormat),
+            onLiveFrame: opts.onLiveFrame,
           });
       if (result.ok) {
         actions[target.key] = result.action;
@@ -1055,6 +1066,8 @@ async function mapLogin(
     model?: MapperModelId;
     /** Plan v8 review P0-A — per-job cap override. */
     jobCostCapMicros?: number;
+    /** feature/cua-live-view — see MapperOptions.onLiveFrame. */
+    onLiveFrame?: (pngBase64: string) => void;
   },
 ): Promise<LoginMapResult | LoginMapFailure> {
   // Resolve tool + system prompt + beta header + model (vision-only now).
@@ -1424,6 +1437,9 @@ async function mapLogin(
         authCode: pendingAuthCode,
       });
       if (exec.recordedStep && !suppressRecording) recordedSteps.push(exec.recordedStep);
+      // feature/cua-live-view — tee the (already privacy-hardened)
+      // screenshot to the Learning Board's live view. Fire-and-forget.
+      if (exec.screenshotB64) ctx.onLiveFrame?.(exec.screenshotB64);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
 
@@ -1582,6 +1598,8 @@ interface MapActionArgs {
    *  the runtime will eventually get; without it an ambiguous-order PMS could
    *  gate differently at mapping time than it parses at poll time. */
   provisionalDateFormat?: LearnedDateFormat;
+  /** feature/cua-live-view — see MapperOptions.onLiveFrame. */
+  onLiveFrame?: (pngBase64: string) => void;
 }
 
 /**
@@ -2458,6 +2476,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 
       const exec = await executeVisionAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      // feature/cua-live-view — tee the (already privacy-hardened)
+      // screenshot to the Learning Board's live view. Fire-and-forget.
+      if (exec.screenshotB64) args.onLiveFrame?.(exec.screenshotB64);
 
       // Critic — judge the click outcome and optionally prepend a
       // "Critic note: …" line to the tool_result text so the agent can
@@ -3747,6 +3768,8 @@ async function mapDrillDownAction(args: {
   required?: boolean;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
+  /** feature/cua-live-view — see MapperOptions.onLiveFrame. */
+  onLiveFrame?: (pngBase64: string) => void;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   const cfg = getModeConfig(args.model);
 
@@ -4197,6 +4220,9 @@ async function mapDrillDownAction(args: {
       const action = toolUse.input as VisionAction;
       const exec = await executeVisionAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      // feature/cua-live-view — tee the (already privacy-hardened)
+      // screenshot to the Learning Board's live view. Fire-and-forget.
+      if (exec.screenshotB64) args.onLiveFrame?.(exec.screenshotB64);
       toolResults.push(makeToolResult(toolUse.id, exec));
 
       const actionType = (action as { action?: string }).action ?? '';

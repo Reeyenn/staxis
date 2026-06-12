@@ -37,6 +37,7 @@ import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
+import { createLiveFramePublisher } from './live-frame.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { effectiveColumnsFromAction, missingRequiredColumns } from './target-contract.js';
@@ -239,6 +240,10 @@ type MappingEventType =
   | 'preflight_passed'
   | 'preflight_failed'
   | 'mapping_in_progress'   // generic progress tick from mapPMS onProgress
+  | 'live_frame'            // feature/cua-live-view — a fresh frame landed at
+                            // `${jobId}/live.png`; METADATA ONLY (the image
+                            // stays in the private bucket — this channel is
+                            // anon-subscribable). Board re-fetches a signed URL.
   | 'mapping_completed'
   | 'mapping_failed';
 
@@ -351,6 +356,19 @@ export async function runMappingJob(
   // lifecycle events. Closed in the finally block at the bottom.
   const channel: MappingBroadcastChannel = await openBroadcastChannel(jobId);
 
+  // feature/cua-live-view — continuous "robot's screen" for the Learning
+  // Board. The mapper tees every (already privacy-hardened) vision
+  // screenshot into publish(); the publisher heartbeat-gates, overwrites
+  // the single per-job frame object, then this notify broadcasts a
+  // metadata-only nudge. close() in the finally removes the frame object.
+  const liveFrames = createLiveFramePublisher(jobId, {
+    notify: () => void broadcastMappingEvent(channel, {
+      type: 'live_frame',
+      jobId,
+      at: new Date().toISOString(),
+    }),
+  });
+
   try {
   // Plan v8 Phase B chunk 2 — Live Mapping admin UI watches for these.
   await broadcastMappingEvent(channel, {
@@ -426,6 +444,9 @@ export async function runMappingJob(
     seedActions: input.seed_actions,
     seedValueTranslations: input.seed_value_translations,
     seedDateFormat: input.seed_date_format,
+    // feature/cua-live-view — tee each vision screenshot to the Learning
+    // Board's live view. publish() is fire-and-forget and never throws.
+    onLiveFrame: (pngBase64) => liveFrames.publish(pngBase64),
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
       // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
@@ -598,6 +619,11 @@ export async function runMappingJob(
     boardTargets: result.boardTargets,
   };
   } finally {
+    // feature/cua-live-view — stop accepting frames, await any in-flight
+    // upload, delete the per-job live frame object. Before the channel
+    // close so the (best-effort) teardown ordering can't drop a final
+    // notify on a closed channel. Runs on success/failure/throw/abort.
+    await liveFrames.close();
     // Plan v8 hardening — close the per-job channel once, regardless of
     // success/failure/exception. Without this finally a thrown exception
     // would leak the WebSocket channel handle.
