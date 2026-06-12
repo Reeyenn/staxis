@@ -74,6 +74,19 @@ const MAX_AGENT_STEPS_LOGIN = 60;
 // Higher cap for per-action mapping — action 4 (staff) is buried in
 // admin menus on most PMSes and needs more exploration than login.
 const MAX_AGENT_STEPS_PER_ACTION = 80;
+// Plan v10 (FIX 1) — deliberate-backtrack budget for the per-target agent loops.
+// The navigation prompt tells the agent, when a click lands on the wrong page, to
+// return to the dashboard and try a DIFFERENT (sibling) link — the guidance that
+// first located the departures feed, so it must stay. But each return re-runs the
+// "screenshot the dashboard" step, re-accumulating identical (screenshot,
+// dashboard) tuples until the action-loop detector trips and a healthy retry
+// becomes a hard "loop detector tripped" feed failure (room status today). We
+// reset the loop detector on each DELIBERATE return so a fresh exploration leg
+// starts clean, and cap the number of returns so the bounce can't run forever.
+// 5 sits comfortably above the prompt's "return at least twice" floor, preserving
+// the departures win; the per-target step/cost/wallclock caps remain the hard
+// backstops, so a generous return budget is effectively free.
+const MAX_DASHBOARD_RETURNS = 5;
 const VIEWPORT = { width: 1280, height: 800 };
 
 // Token + wallclock guards. Vision agent ships a 1280×800 screenshot
@@ -351,6 +364,44 @@ const TARGET_STEP_CAPS: Record<string, number> = {
   report_menu:      100,
   drilldown_sample: 60,         // per-record; multiply by sample count
 };
+
+// Plan v10 (FIX 2) — optional feeds get a TIGHTER cost + step budget than the
+// required (promotion-gating) feeds. A nice-to-have (cancellations, no-shows,
+// lost & found, …) must not out-spend the core feeds grinding report / drill-down
+// menus for data the hotel may not even use — in the last live run the optional
+// report-menu feeds together cost more than all four core feeds combined. We
+// scale the by-classification budget down by a flat fraction for OPTIONAL targets
+// only; required feeds (and any legacy caller that can't prove optionality) keep
+// the full budget, so this can NEVER starve a promotion-gating feed. Keyed purely
+// off the optional flag — zero PMS-specific logic.
+const OPTIONAL_BUDGET_FRACTION = 0.5;
+const MIN_OPTIONAL_STEP_CAP = 12; // floor so the fraction can't make a feed un-mappable
+
+type TargetClassification = 'list_page' | 'report_menu' | 'drilldown_sample';
+
+/**
+ * Per-target step + cost caps, tightened for OPTIONAL feeds (FIX 2). `optional`
+ * MUST be a definite boolean derived from MapperTarget.optional: only an explicit
+ * `true` tightens, so a required feed — or any legacy caller that passes `false`
+ * via `required === false` being unproven — keeps the full by-classification
+ * budget. Unknown classifications fall back to the same defaults the call sites
+ * used before (full step cap, infinite cost cap), and an infinite cost cap is
+ * never scaled (no NaN). Exported for unit tests.
+ */
+export function targetBudget(
+  classification: TargetClassification,
+  optional: boolean,
+): { stepCap: number; costCapMicros: number } {
+  const baseStep = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
+  const baseCost = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
+  if (!optional) return { stepCap: baseStep, costCapMicros: baseCost };
+  return {
+    stepCap: Math.max(MIN_OPTIONAL_STEP_CAP, Math.floor(baseStep * OPTIONAL_BUDGET_FRACTION)),
+    costCapMicros: Number.isFinite(baseCost)
+      ? Math.floor(baseCost * OPTIONAL_BUDGET_FRACTION)
+      : baseCost,
+  };
+}
 // (Plan v9 trialed a REQUIRED_TARGET_BUDGET_MULTIPLIER here — a bigger per-target
 // budget for the 4 required feeds. Reverted 2026-06-11: the two live runs proved
 // departures is a FINDABILITY problem, not a budget one — the multiplier never
@@ -832,6 +883,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             actionName: target.key,
             goal: target.goal,
             requiredFields: target.requiredFields,
+            required: !target.optional,
             postLoginUrl,
             credentials: opts.credentials,
             propertyId: opts.propertyId ?? null,
@@ -1497,11 +1549,89 @@ interface MapActionArgs {
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
   /** Plan v9 — true for the promotion-gating feeds (optional:false). Used by the
    *  agent prompt to tell the model this feed is ESSENTIAL (so it persists +
-   *  backtracks instead of giving up early). Does NOT change the budget. */
+   *  backtracks instead of giving up early). Plan v10 (FIX 2): `required === false`
+   *  also tightens the per-target budget (see targetBudget). Required + any caller
+   *  that omits this flag keep the full budget. */
   required?: boolean;
   model?: MapperModelId;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
+}
+
+/**
+ * Plan v10 (FIX 1) — read page.url() without throwing. Playwright's url() can
+ * throw on a closing/closed context; the per-step backtrack check sits on the
+ * hottest path, so a throw there must degrade to "" (→ not the dashboard →
+ * backtrack logic simply doesn't fire) rather than crash the target. Mirrors the
+ * guard pageFingerprint already applies in loop-detector.ts.
+ */
+function safeUrl(page: Page): string {
+  try {
+    return page.url();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Plan v10 (FIX 1) — is the page currently back on the post-login dashboard?
+ * Compares origin + pathname only (ignoring query / hash / trailing slash) so a
+ * Home/logo click that re-lands on the dashboard — possibly with a cache-buster
+ * query — still counts as a return. PMS-agnostic: the dashboard is, by
+ * definition, postLoginUrl. Malformed/empty URLs → false (the safe default that
+ * simply doesn't fire the backtrack logic). Exported for unit tests.
+ */
+export function isDashboardUrl(currentUrl: string, postLoginUrl: string): boolean {
+  try {
+    const cur = new URL(currentUrl);
+    const dash = new URL(postLoginUrl);
+    if (cur.origin !== dash.origin) return false;
+    const norm = (p: string) => (p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p);
+    return norm(cur.pathname) === norm(dash.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Plan v10 (FIX 1) — tracks DELIBERATE returns to the dashboard during a
+ * per-target agent loop, shared by mapAction and mapDrillDownAction (both land on
+ * postLoginUrl before their loop, so `wasOnDashboard` starts true). Call
+ * `onTurn(url)` at the TOP of each step. It returns:
+ *   - 'reset' the first MAX_DASHBOARD_RETURNS times the agent transitions back
+ *     ONTO the dashboard → caller should new-up its loop detector so the fresh
+ *     exploration leg doesn't inherit the prior leg's (screenshot, dashboard)
+ *     tuples (the false positive that loop-fails required feeds);
+ *   - 'cap' once that budget is spent → caller should stop bouncing and commit
+ *     its best attempt / declare unavailable instead of looping forever;
+ *   - 'none' otherwise.
+ * A transition is "was NOT on the dashboard last turn, IS now" — so sitting on
+ * the dashboard re-screenshotting in place is NOT a return (and still trips the
+ * loop detector, correctly), and a stuck loop on a wrong page (no dashboard
+ * transition) still trips too.
+ */
+export class DashboardReturnTracker {
+  private returns = 0;
+  private wasOnDashboard = true;
+  constructor(
+    private readonly postLoginUrl: string,
+    private readonly maxReturns: number = MAX_DASHBOARD_RETURNS,
+  ) {}
+
+  onTurn(currentUrl: string): 'none' | 'reset' | 'cap' {
+    const onDashboardNow = isDashboardUrl(currentUrl, this.postLoginUrl);
+    let verdict: 'none' | 'reset' | 'cap' = 'none';
+    if (onDashboardNow && !this.wasOnDashboard) {
+      this.returns += 1;
+      verdict = this.returns > this.maxReturns ? 'cap' : 'reset';
+    }
+    this.wasOnDashboard = onDashboardNow;
+    return verdict;
+  }
+
+  get count(): number {
+    return this.returns;
+  }
 }
 
 /**
@@ -1656,8 +1786,12 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // steps PER record but execute against multiple samples; report-menu
   // targets get more steps to drill through reports submenus.
   const classification = args.classification ?? 'list_page';
-  const targetStepCap = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
-  const targetCostCapMicros = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
+  // Plan v10 (FIX 2) — optional feeds get a tighter cost + step budget; required
+  // feeds (and any caller that omits `required`) keep the full one. Only an
+  // explicit `required === false` tightens, so this can never starve a required
+  // feed.
+  const { stepCap: targetStepCap, costCapMicros: targetCostCapMicros } =
+    targetBudget(classification, args.required === false);
 
   // Plan v7 — `unavailable: true` floor. Agent can short-circuit a target
   // with {unavailable: true}, but only AFTER demonstrating real effort:
@@ -1797,6 +1931,11 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // positive. Fresh instance per mapAction call: a loop on `getArrivals`
   // doesn't poison `getDepartures`.
   let loopDetector = new ActionLoopDetector();
+  // Plan v10 (FIX 1) — deliberate-backtrack tracker. Resets the loop detector on
+  // each return to the dashboard (so a healthy "try a sibling link" leg starts
+  // clean) and caps the returns so the bounce terminates gracefully. See
+  // MAX_DASHBOARD_RETURNS.
+  const dashboardTracker = new DashboardReturnTracker(args.postLoginUrl);
 
   // Completeness re-ask budget (fix/mapper-field-contract). Bounds how many
   // times the success branch re-prompts the model to fill missing REQUIRED
@@ -1876,6 +2015,32 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     // to act on. Best-effort: errors fall back to a URL-only fingerprint
     // inside the helper.
     const turnPageFingerprint = await pageFingerprint(args.page);
+
+    // Plan v10 (FIX 1) — deliberate-backtrack accounting. Runs at the TOP of the
+    // step (before this step's actions are recorded into the loop detector at the
+    // bottom) so a reset clears the prior leg's tuples before the new leg's first
+    // dashboard screenshot lands. A 'reset' clears the false-positive screenshot
+    // accumulation that loop-fails required feeds; 'cap' stops an endless bounce
+    // and commits the best attempt instead of letting the detector hard-fail.
+    const backtrack = dashboardTracker.onTurn(safeUrl(args.page));
+    if (backtrack === 'cap') {
+      log.warn('mapper: dashboard-return cap reached — committing best attempt instead of bouncing', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        dashboardReturns: dashboardTracker.count,
+        maxReturns: MAX_DASHBOARD_RETURNS,
+      });
+      return bail(`exhausted ${MAX_DASHBOARD_RETURNS} dashboard returns without locating ${args.actionName}`);
+    }
+    if (backtrack === 'reset') {
+      loopDetector = new ActionLoopDetector();
+      log.info('mapper: deliberate dashboard return — loop detector reset for a fresh leg', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        dashboardReturns: dashboardTracker.count,
+        maxReturns: MAX_DASHBOARD_RETURNS,
+      });
+    }
 
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
@@ -2856,6 +3021,10 @@ async function mapDrillDownAction(args: {
   jobId: string | null;
   signal?: AbortSignal;
   model?: MapperModelId;
+  /** Plan v10 (FIX 2) — `required === false` tightens this drill-down's budget
+   *  (optional getLostAndFound / getActivityLog). Required getGuests (and any
+   *  caller that omits this) keeps the full budget. */
+  required?: boolean;
   /** Plan v8 review P0-A — per-job cap override (vision uses higher cap). */
   jobCostCapMicros?: number;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
@@ -2875,8 +3044,12 @@ async function mapDrillDownAction(args: {
   let totalInputTokens = 0;
 
   const classification = 'drilldown_sample';
-  const targetStepCap = TARGET_STEP_CAPS[classification]!;
-  const targetCostCapMicros = TARGET_BUDGET_MICROS[classification]!;
+  // Plan v10 (FIX 2) — optional drill-downs (lost & found, activity log) get a
+  // tighter budget; the required getGuests drill-down keeps the full one. Step
+  // cap is PER record; effectiveStepCap below multiplies by SAMPLE_COUNT
+  // (optional: 30/sample → 90 total; required: 60/sample → 180 total).
+  const { stepCap: targetStepCap, costCapMicros: targetCostCapMicros } =
+    targetBudget(classification, args.required === false);
   // Drill-down samples = 3; cost scales roughly with sample count.
   const SAMPLE_COUNT = 3;
 
@@ -2949,7 +3122,12 @@ async function mapDrillDownAction(args: {
   // Action-loop detector — same guard mapAction uses. A drill-down that
   // keeps re-clicking the same row on the same list state burns the (large)
   // drill-down step budget; trip on the 4th identical (action, page) tuple.
-  const loopDetector = new ActionLoopDetector();
+  let loopDetector = new ActionLoopDetector();
+  // Plan v10 (FIX 1) — same deliberate-backtrack tracker mapAction uses. The
+  // drill-down's required getGuests feed backtracks to find its list page; reset
+  // the detector on each return so re-screenshotting the dashboard can't
+  // loop-fail it, and cap the returns.
+  const dashboardTracker = new DashboardReturnTracker(args.postLoginUrl);
 
   for (let stepIdx = 0; stepIdx < effectiveStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
@@ -2984,6 +3162,32 @@ async function mapDrillDownAction(args: {
     // reason on (same pattern as mapAction). Computed BEFORE messages.create
     // so it matches the screenshot the model acts on.
     const turnPageFingerprint = await pageFingerprint(args.page);
+
+    // Plan v10 (FIX 1) — deliberate-backtrack accounting (mirrors mapAction). Top
+    // of the step, before this step's actions are recorded into the loop detector.
+    const backtrack = dashboardTracker.onTurn(safeUrl(args.page));
+    if (backtrack === 'cap') {
+      log.warn('drilldown mapper: dashboard-return cap reached — giving up instead of bouncing', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        dashboardReturns: dashboardTracker.count,
+        maxReturns: MAX_DASHBOARD_RETURNS,
+      });
+      return {
+        ok: false,
+        reason: `exhausted ${MAX_DASHBOARD_RETURNS} dashboard returns without locating ${args.actionName}`,
+        finalUrl: safeUrl(args.page),
+      };
+    }
+    if (backtrack === 'reset') {
+      loopDetector = new ActionLoopDetector();
+      log.info('drilldown mapper: deliberate dashboard return — loop detector reset for a fresh leg', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        dashboardReturns: dashboardTracker.count,
+        maxReturns: MAX_DASHBOARD_RETURNS,
+      });
+    }
 
     // Adaptive thinking — see THINKING_HEADROOM_TOKENS. The headroom keeps
     // the VISIBLE-output cap at MAX_OUTPUT_TOKENS_PER_TURN (4096).
