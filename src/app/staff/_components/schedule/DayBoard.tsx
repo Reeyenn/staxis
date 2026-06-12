@@ -45,21 +45,25 @@ function nowMinutes(): number {
 }
 
 export function DayBoard({
-  shifts, presets, isToday, lang, nameOf,
-  onUpdate, onGestureStart, onGestureEnd, onRemove,
+  shifts, presets, isToday, lang, nameOf, otTitles,
+  onUpdate, onGestureStart, onGestureEnd, onRemove, onTapShift,
 }: {
   shifts: BoardShift[];
   presets: ShiftPreset[];
   isToday: boolean;
   lang: 'en' | 'es';
   nameOf: (staffId: string) => string;
+  /** staffId → tooltip for staff projected over their weekly-hours cap. */
+  otTitles: Map<string, string>;
   /** Local-only patch during a drag (no save). */
   onUpdate: (id: string, patch: Partial<BoardShift>) => void;
-  /** Called once at pointer-down: push an undo snapshot + mark gesture. */
+  /** Called once at first real movement: push an undo snapshot + mark gesture. */
   onGestureStart: () => void;
-  /** Called at pointer-up: persist the day. */
+  /** Called at pointer-up after a real drag: persist the day. */
   onGestureEnd: () => void;
   onRemove: (id: string) => void;
+  /** Tap (pointer down+up without movement) → open the exact-times editor. */
+  onTapShift: (id: string) => void;
 }) {
   const [hoverLane, setHoverLane] = useState<DeptKey | null>(null);
   const reducedMotion = useReducedMotion();
@@ -124,11 +128,13 @@ export function DayBoard({
                 ticks={ticks} nowMin={isToday ? nowMin : null}
                 presets={presets} nameOf={nameOf}
                 reducedMotion={reducedMotion}
+                otTitle={otTitles.get(sh.staffId)}
                 onUpdate={onUpdate}
                 onGestureStart={onGestureStart}
                 onGestureEnd={onGestureEnd}
                 onHoverLane={setHoverLane}
                 onRemove={onRemove}
+                onTapShift={onTapShift}
               />
             ))}
 
@@ -152,8 +158,8 @@ export function DayBoard({
 // ── One staff row with a draggable / resizable shift block ────────────────
 function ShiftRow({
   sh, tone, dim, rangeStart, rangeEnd, span, ticks, nowMin,
-  presets, nameOf, reducedMotion,
-  onUpdate, onGestureStart, onGestureEnd, onHoverLane, onRemove,
+  presets, nameOf, reducedMotion, otTitle,
+  onUpdate, onGestureStart, onGestureEnd, onHoverLane, onRemove, onTapShift,
 }: {
   sh: BoardShift;
   tone: string;
@@ -166,11 +172,13 @@ function ShiftRow({
   presets: ShiftPreset[];
   nameOf: (staffId: string) => string;
   reducedMotion: boolean;
+  otTitle?: string;
   onUpdate: (id: string, patch: Partial<BoardShift>) => void;
   onGestureStart: () => void;
   onGestureEnd: () => void;
   onHoverLane: (lane: DeptKey | null) => void;
   onRemove: (id: string) => void;
+  onTapShift: (id: string) => void;
 }) {
   const [hover, setHover] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -226,15 +234,22 @@ function ShiftRow({
   const startDrag = (e: React.PointerEvent, mode: 'move' | 'resize') => {
     e.preventDefault();
     e.stopPropagation();
-    onGestureStart();
     const track = (e.currentTarget as HTMLElement).closest('[data-track]');
     if (!track) return;
     const w = (track as HTMLElement).getBoundingClientRect().width;
     const perMin = w / span;
-    const x0 = e.clientX;
+    const x0 = e.clientX, y0 = e.clientY;
     const s0 = shRef.current.startMin, e0 = shRef.current.endMin, dur = e0 - s0;
+    // Tap vs drag: the gesture (undo snapshot + save-on-release) only starts
+    // once the pointer actually travels; a clean tap opens the time editor.
+    let started = false;
 
     const move = (ev: PointerEvent) => {
+      if (!started) {
+        if (Math.abs(ev.clientX - x0) < 4 && Math.abs(ev.clientY - y0) < 4) return;
+        started = true;
+        onGestureStart();
+      }
       const dMin = (ev.clientX - x0) / perMin;
       if (mode === 'move') {
         let tgt: DeptKey = shRef.current.dept as DeptKey;
@@ -258,7 +273,8 @@ function ShiftRow({
       onHoverLane(null);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      onGestureEnd();
+      if (started) onGestureEnd();
+      else if (mode === 'move') onTapShift(sh.id);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -273,13 +289,21 @@ function ShiftRow({
     >
       {/* gutter */}
       <div ref={gutterRef} style={{
-        width: GUT, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, paddingRight: 10,
+        width: GUT, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, paddingRight: 10,
       }}>
         <Avatar staffId={sh.staffId} name={nameOf(sh.staffId)} size={20}/>
         <span style={{
-          fontSize: 12, fontWeight: 600, color: T.ink,
+          fontSize: 12, fontWeight: 600, color: T.ink, minWidth: 0,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>{name}</span>
+        {otTitle && (
+          <span title={otTitle} style={{
+            fontFamily: fonts.mono, fontSize: 8, fontWeight: 700, letterSpacing: '0.04em',
+            color: T.red, background: 'rgba(160,74,44,0.12)',
+            border: '1px solid rgba(160,74,44,0.35)',
+            padding: '0px 4px', borderRadius: 999, flexShrink: 0,
+          }}>OT</span>
+        )}
       </div>
       {/* track */}
       <div data-track style={{ position: 'relative', flex: 1, height: '100%' }}>
@@ -297,7 +321,7 @@ function ShiftRow({
         <div
           ref={blockRef}
           onPointerDown={e => startDrag(e, 'move')}
-          title={nameOf(sh.staffId)}
+          title={`${nameOf(sh.staffId)}${sh.note ? ` — ${sh.note}` : ''}`}
           style={{
             position: 'absolute', top: 4, height: 26, left: `${left}%`, width: `${width}%`,
             borderRadius: 8, background: dim, border: `1px solid ${tone}66`, cursor: 'grab',
@@ -309,6 +333,11 @@ function ShiftRow({
             fontSize: 11.5, fontWeight: 600, color: T.ink,
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>{name.split(' ')[0]}</span>
+          {sh.note && (
+            <span style={{
+              width: 5, height: 5, borderRadius: '50%', background: T.caramel, flexShrink: 0,
+            }}/>
+          )}
           <span style={{
             marginLeft: 'auto', fontFamily: fonts.mono, fontSize: 9.5,
             color: tone, whiteSpace: 'nowrap',

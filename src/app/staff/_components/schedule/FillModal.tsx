@@ -39,12 +39,12 @@ export function FillModal({
   staff: StaffMember[];
   lang: 'en' | 'es';
   nameOf: (staffId: string) => string;
-  onApplyTemplate: (t: ScheduleTemplate) => void;
+  onApplyTemplate: (t: ScheduleTemplate, repeatAll: boolean) => void;
   onSaveCurrent: (name: string) => void;
   onSaveAt: (name: string, target: { date: string } | { weekStart: string }) => void;
   onDeleteTemplate: (t: ScheduleTemplate) => void;
   onHistoryDay: (date: string) => void;
-  onHistoryWeek: (weekStart: string) => void;
+  onHistoryWeek: (weekStart: string, repeatAll: boolean) => void;
   onClose: () => void;
   reducedMotion: boolean;
 }) {
@@ -53,6 +53,8 @@ export function FillModal({
   const [more, setMore] = useState(false);
   const [preview, setPreview] = useState<DayInfo | null>(null);
   const [wPreview, setWPreview] = useState<WeekInfo | null>(null);
+  // Week scope: apply the pick to every upcoming week, not just this one.
+  const [repeatAll, setRepeatAll] = useState(false);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -152,11 +154,38 @@ export function FillModal({
               staff={staff}
               lang={lang}
               reducedMotion={reducedMotion}
-              onUse={() => onHistoryWeek(wPreview.start)}
+              onUse={() => onHistoryWeek(wPreview.start, repeatAll)}
               onSave={nm => { onSaveAt(nm, { weekStart: wPreview.start }); setWPreview(null); setMore(false); }}
             />
           ) : (
             <>
+              {/* auto-repeat — week scope only */}
+              {scope === 'week' && weeks.some(w => w.start > selWeekStart) && (
+                <label style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer',
+                  border: `1px solid ${repeatAll ? 'rgba(140,106,51,0.32)' : T.rule}`,
+                  background: repeatAll ? 'rgba(201,150,68,0.10)' : 'transparent',
+                  borderRadius: 12, padding: '10px 13px', marginBottom: 10,
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={repeatAll}
+                    onChange={e => setRepeatAll(e.target.checked)}
+                    style={{ marginTop: 2, accentColor: T.ink, cursor: 'pointer' }}
+                  />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: T.ink }}>
+                      {es ? 'Repetir automáticamente' : 'Auto-repeat'}
+                    </span>
+                    <span style={{ display: 'block', fontSize: 11.5, color: T.ink2, marginTop: 1, lineHeight: 1.45 }}>
+                      {es
+                        ? `Lo que elijas aquí se aplica a esta semana y a todas las que siguen (hasta ${weeks[weeks.length - 1].label}).`
+                        : `Whatever you pick fills this week and every upcoming week (through ${weeks[weeks.length - 1].label}).`}
+                    </span>
+                  </span>
+                </label>
+              )}
+
               {/* templates */}
               {templates.length === 0 ? (
                 <div style={{
@@ -190,7 +219,7 @@ export function FillModal({
                         title={t.name}
                         sub={`${n} ${n === 1 ? (es ? 'turno' : 'shift') : (es ? 'turnos' : 'shifts')}`}
                         cta={es ? 'Usar' : 'Use'}
-                        onUse={() => onApplyTemplate(t)}
+                        onUse={() => onApplyTemplate(t, repeatAll)}
                         onDelete={() => onDeleteTemplate(t)}
                         deleteTitle={es ? 'Eliminar plantilla' : 'Delete template'}
                       />

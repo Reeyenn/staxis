@@ -46,6 +46,17 @@ interface FillShift {
   department: StaffDepartment;
   startTime: string; // HH:MM
   endTime: string;   // HH:MM
+  note?: string | null;
+  /** Manager explicitly confirmed scheduling over approved time off. */
+  overrideTimeOff?: boolean;
+}
+
+const MAX_NOTE_LEN = 300;
+
+function cleanNote(n: unknown): string | null {
+  if (typeof n !== 'string') return null;
+  const t = n.trim();
+  return t ? t.slice(0, MAX_NOTE_LEN) : null;
 }
 interface FillDay {
   date: string;      // YYYY-MM-DD
@@ -130,26 +141,34 @@ export async function POST(req: NextRequest) {
   let inserted = 0, updated = 0, deleted = 0, skippedTimeOff = 0, skippedUnknown = 0;
 
   for (const day of days) {
-    // Desired end-state, one shift per staff member (board invariant; the DB
-    // exclusion constraint enforces the same thing).
-    const desired = new Map<string, FillShift>();
-    for (const s of day.shifts) {
-      if (desired.has(s.staffId)) continue;
-      if (!activeStaff.has(s.staffId)) { skippedUnknown++; continue; }
-      if (torKeys.has(`${s.staffId}:${day.date}`)) { skippedTimeOff++; continue; }
-      desired.set(s.staffId, s);
-    }
-
     const { data: existing, error: exErr } = await supabaseAdmin
       .from('scheduled_shifts')
-      .select('id, staff_id, department, start_time, end_time, status')
+      .select('id, staff_id, department, start_time, end_time, status, note')
       .eq('property_id', hotelId).eq('shift_date', day.date).eq('kind', 'shift');
     if (exErr) {
       log.error('[fill:POST] existing query failed', { requestId, msg: errToString(exErr) });
       return err('Failed to read existing shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
+    const existingStaff = new Set((existing ?? []).map(r => String(r.staff_id)));
 
-    const keepRowByStaff = new Map<string, { id: string; department: string; start: string; end: string; status: string }>();
+    // Desired end-state, one shift per staff member (board invariant; the DB
+    // exclusion constraint enforces the same thing). Approved time off only
+    // blocks NET-NEW placements without an explicit manager override — a
+    // shift that already exists on the day is the manager's call and must
+    // never be silently dropped by an unrelated re-save of the day.
+    const desired = new Map<string, FillShift>();
+    for (const s of day.shifts) {
+      if (desired.has(s.staffId)) continue;
+      if (!activeStaff.has(s.staffId)) { skippedUnknown++; continue; }
+      if (
+        torKeys.has(`${s.staffId}:${day.date}`)
+        && !existingStaff.has(s.staffId)
+        && !s.overrideTimeOff
+      ) { skippedTimeOff++; continue; }
+      desired.set(s.staffId, s);
+    }
+
+    const keepRowByStaff = new Map<string, { id: string; department: string; start: string; end: string; status: string; note: string | null }>();
     const toDelete: string[] = [];
     for (const row of existing ?? []) {
       const sid = row.staff_id ? String(row.staff_id) : null;
@@ -163,6 +182,7 @@ export async function POST(req: NextRequest) {
         start: String(row.start_time).slice(0, 5),
         end: String(row.end_time).slice(0, 5),
         status: String(row.status),
+        note: row.note == null ? null : String(row.note),
       });
     }
 
@@ -180,6 +200,7 @@ export async function POST(req: NextRequest) {
     const toInsert: Record<string, unknown>[] = [];
     for (const [staffId, want] of desired) {
       const cur = keepRowByStaff.get(staffId);
+      const wantNote = cleanNote(want.note);
       if (!cur) {
         toInsert.push({
           property_id: hotelId,
@@ -190,11 +211,13 @@ export async function POST(req: NextRequest) {
           end_time: want.endTime,
           kind: 'shift',
           status: 'published',
+          note: wantNote,
         });
         continue;
       }
       const changed = cur.department !== want.department
-        || cur.start !== want.startTime || cur.end !== want.endTime;
+        || cur.start !== want.startTime || cur.end !== want.endTime
+        || (cur.note ?? null) !== wantNote;
       // 'sent'/'confirmed' are mid-SMS-cycle (housekeeping flow) — keep them
       // unless the shift itself changed; everything else lands at published.
       const nextStatus = !changed && (cur.status === 'sent' || cur.status === 'confirmed')
@@ -207,6 +230,7 @@ export async function POST(req: NextRequest) {
           start_time: want.startTime,
           end_time: want.endTime,
           status: nextStatus,
+          note: wantNote,
         })
         .eq('id', cur.id).eq('property_id', hotelId);
       if (upErr) {

@@ -202,6 +202,7 @@ export function useDemoScheduleData(): ScheduleData {
       .sort((a, b) => (b.decidedAt?.getTime() ?? 0) - (a.decidedAt?.getTime() ?? 0)),
     [tor],
   );
+  const approvedTor = useMemo(() => tor.filter(r => r.status === 'approved'), [tor]);
   const decideTor = useCallback(async (id: string, decision: 'approve' | 'deny', denyReason?: string) => {
     const req = tor.find(r => r.id === id);
     setTor(prev => prev.map(r => r.id === id
@@ -234,6 +235,6 @@ export function useDemoScheduleData(): ScheduleData {
     pushUndo, undo, undoCount,
     templates, saveTemplate, deleteTemplate,
     doneWeeks, setWeekDone,
-    pendingTor, decidedTor, decideTor,
+    pendingTor, decidedTor, approvedTor, decideTor,
   };
 }

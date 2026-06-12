@@ -12,7 +12,7 @@ import {
   toMin, toHHMM, fmtMin, fmtMinRange, fmtTime, fmtRange,
   addDaysYmd, sundayOf, daysBetween, dayInfo, weekLabel, buildWeeks,
   deptDefaultTimes, presetBoundaries, snapMin, boardRange, boardTicks,
-  sameShiftSet, shortName,
+  sameShiftSet, shortName, weekMinutesByStaff, fmtHours,
   BOARD_START_MIN, BOARD_END_MIN,
   type BoardShift,
 } from '../schedule-board';
@@ -132,9 +132,36 @@ describe('shift-set equality + names', () => {
     assert.ok(!sameShiftSet(a, [{ ...b[0] }, { ...b[1], endMin: 990 }]));
   });
 
+  test('sameShiftSet is note-sensitive (note edits must reconcile)', () => {
+    const withNote = a.map(s => ({ ...s, note: s.staffId === 's1' ? 'deep clean floor 3' : null }));
+    assert.ok(!sameShiftSet(a, withNote));
+    assert.ok(sameShiftSet(withNote, withNote.map(s => ({ ...s, id: 'zz' }))));
+  });
+
   test('shortName', () => {
     assert.equal(shortName('Brenda Marquez'), 'Brenda M.');
     assert.equal(shortName('Cher'), 'Cher');
     assert.equal(shortName('Ana María López'), 'Ana L.');
+  });
+});
+
+describe('weekly hours', () => {
+  test('weekMinutesByStaff sums each person across the week', () => {
+    const days: BoardShift[][] = [
+      [{ id: '1', staffId: 's1', dept: 'housekeeping', startMin: 480, endMin: 960 }],   // 8h
+      [{ id: '2', staffId: 's1', dept: 'housekeeping', startMin: 480, endMin: 990 },    // 8.5h
+       { id: '3', staffId: 's2', dept: 'front_desk', startMin: 420, endMin: 900 }],     // 8h
+      [],
+    ];
+    const m = weekMinutesByStaff(days);
+    assert.equal(m.get('s1'), 480 + 510);
+    assert.equal(m.get('s2'), 480);
+    assert.equal(m.get('s3'), undefined);
+  });
+
+  test('fmtHours', () => {
+    assert.equal(fmtHours(2280), '38h');
+    assert.equal(fmtHours(2310), '38.5h');
+    assert.equal(fmtHours(0), '0h');
   });
 });

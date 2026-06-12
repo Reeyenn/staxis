@@ -233,6 +233,10 @@ export interface BoardShift {
   dept: StaffDepartment;
   startMin: number;
   endMin: number;
+  /** Free-form manager note ("deep clean floor 3"). */
+  note?: string | null;
+  /** Save despite an approved time-off request on this date. */
+  overrideTimeOff?: boolean;
   /** Entrance-animation flags (client-only). */
   anim?: boolean;
   nonce?: number;
@@ -241,9 +245,26 @@ export interface BoardShift {
 /** Equality on what the server persists — id/anim flags ignored. */
 export function sameShiftSet(a: BoardShift[], b: BoardShift[]): boolean {
   if (a.length !== b.length) return false;
-  const key = (s: BoardShift) => `${s.staffId}:${s.dept}:${s.startMin}:${s.endMin}`;
+  const key = (s: BoardShift) => `${s.staffId}:${s.dept}:${s.startMin}:${s.endMin}:${s.note ?? ''}`;
   const as = a.map(key).sort(), bs = b.map(key).sort();
   return as.every((k, i) => k === bs[i]);
+}
+
+/** Total scheduled minutes per staff across a set of days' shifts. */
+export function weekMinutesByStaff(days: BoardShift[][]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const day of days) {
+    for (const s of day) {
+      m.set(s.staffId, (m.get(s.staffId) ?? 0) + Math.max(0, s.endMin - s.startMin));
+    }
+  }
+  return m;
+}
+
+/** 2280 → '38h' · 2310 → '38.5h' (quarter-hours rounded to one decimal). */
+export function fmtHours(min: number): string {
+  const h = Math.round((min / 60) * 10) / 10;
+  return `${h % 1 === 0 ? h.toFixed(0) : h.toFixed(1)}h`;
 }
 
 /** 'Brenda Marquez' → 'Brenda M.' */
