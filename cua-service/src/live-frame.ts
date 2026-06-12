@@ -39,6 +39,13 @@
  * human-assist.ts isAnyAdminOnline(), narrower window (that one gates
  * help-requests at 5 min and is deliberately untouched).
  *
+ * Known v1 looseness (reviewed, accepted): the gate is GLOBAL admin
+ * presence, not per-job viewership — an admin parked on any heartbeat-
+ * pinging admin page keeps every concurrently-running job uploading.
+ * Pennies at today's handful-of-jobs scale; before a concurrent fleet
+ * onboarding wave, sharpen to per-job watching (e.g. realtime presence
+ * on `mapping:{jobId}`).
+ *
  * STORAGE HYGIENE
  * ───────────────
  * One object per job, overwritten in place (`upsert: true`); `close()` —
@@ -67,6 +74,25 @@ const WATCH_CACHE_MS = 15_000;
 const MIN_PUBLISH_INTERVAL_MS = 1_200;
 /** Quiet period after a storage failure before trying again. */
 const FAILURE_BACKOFF_MS = 15_000;
+/** close(): max wait for the in-flight pipeline before moving on. */
+const CLOSE_WAIT_MS = 10_000;
+/** close(): max wait for the object delete before leaving it to the cron. */
+const REMOVE_WAIT_MS = 5_000;
+
+/** Race a promise against a wall-clock deadline (loser is NOT cancelled —
+ *  an abandoned upload merely re-creates an object the cron sweeps). */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+    // Don't hold the process open for a deadline nobody needs anymore.
+    timer.unref?.();
+  });
+  return Promise.race([
+    p.finally(() => { if (timer) clearTimeout(timer); }),
+    deadline,
+  ]);
+}
 
 /**
  * Test injection points (matches the critic.ts optional-deps convention —
@@ -201,10 +227,22 @@ export function createLiveFramePublisher(
       const t = now();
       if (t - lastAcceptedAt < MIN_PUBLISH_INTERVAL_MS) return;
       lastAcceptedAt = t;
+      // Ordering guard (senior review F1): a frame can get PARKED in the
+      // pending slot during the dead microtask window between the previous
+      // chain's last upload and its `.finally` clearing `busy` — with no
+      // drain loop left alive to consume it. Any such parked frame is by
+      // definition OLDER than the one being accepted right now; if we let
+      // the new chain's drain loop pick it up it would upload after (and
+      // overwrite) this newer frame. Drop it.
+      pendingB64 = null;
       busy = (async () => {
         // Drain loop: the pending slot is flushed after the current frame
-        // settles. The flush deliberately bypasses the min-interval (it IS
-        // the newest frame) but re-runs the gate + backoff checks.
+        // settles. The flush deliberately bypasses the min-interval — it is
+        // the newest frame, and the loop's cadence is already bounded by
+        // the upload round-trip itself (in practice frames arrive at
+        // agent-turn cadence, 3-30s+, so the 1200ms floor only ever binds
+        // on publish() acceptance, not here). Gate + backoff checks still
+        // apply to every flush.
         let current: string | null = pngBase64;
         while (current !== null) {
           await runPipeline(current);
@@ -237,13 +275,19 @@ export function createLiveFramePublisher(
   async function close(): Promise<void> {
     closed = true;
     pendingB64 = null;
+    // Bounded waits (senior review F2): close() runs inside runMappingJob's
+    // finally — an unbounded await on a hung storage/gate fetch would wedge
+    // the job lane's teardown until the nightly restart. If the in-flight
+    // pipeline doesn't settle in time we move on (it can only re-create the
+    // object; the cron sweep deletes crash/timeout leftovers), and a hung
+    // remove is likewise abandoned to the sweep.
     try {
-      await (busy ?? Promise.resolve());
+      await withDeadline(busy ?? Promise.resolve(), CLOSE_WAIT_MS);
     } catch {
       // busy never rejects by construction; defensive only.
     }
     try {
-      await remove(objectKey);
+      await withDeadline(remove(objectKey), REMOVE_WAIT_MS);
     } catch (err) {
       // Best-effort: a leaked object is one ~200KB redacted frame; the
       // expire-help-requests cron sweeps live.png for terminal jobs.

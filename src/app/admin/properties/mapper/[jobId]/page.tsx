@@ -28,6 +28,12 @@ export const dynamic = 'force-dynamic';
  *   - Heartbeat: pings /api/admin/heartbeat every 30s while the tab is
  *     VISIBLE (visibility-gated — a forgotten background tab must not make
  *     the robot wait for an absent founder).
+ *   - Live view (feature/cua-live-view): "Robot's screen" card shows the
+ *     latest privacy-hardened frame the robot tee'd to storage — refreshed
+ *     per live_frame broadcast via /api/admin/mapper/live/[jobId]/frame
+ *     (short-lived signed URL). The robot only uploads while the admin
+ *     heartbeat above is fresh, so watching the page is what turns the
+ *     stream on. Frames pause while the robot waits on a help request.
  *
  * Realtime: postgres_changes on mapping_help_requests (job-filtered) +
  * broadcast channel `mapping:{jobId}`; every broadcast event also schedules
@@ -185,6 +191,14 @@ export default function LiveMappingPage() {
   const activityRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameFetchBusyRef = useRef(false);
+  // A live_frame event landing while a fetch is in flight must not be
+  // dropped (it may be the LAST frame before a long pause) — coalesce it
+  // into one follow-up fetch.
+  const frameFetchQueuedRef = useRef(false);
+  // Generation token: bumped when the job changes (or the page unmounts)
+  // so a slow in-flight frame fetch can never commit another job's screen
+  // — or set state after unmount.
+  const frameGenRef = useRef(0);
 
   // Initial fetch of state.
   const load = async () => {
@@ -228,18 +242,25 @@ export default function LiveMappingPage() {
   };
 
   // feature/cua-live-view — refresh the robot's live screen. Cheap route
-  // (no DB queries) so it's safe to call once per live_frame broadcast.
-  // Single-flight: frames land every few seconds; overlapping fetches
-  // would just race each other for no benefit. Preload-then-commit keeps
-  // the previous frame on screen while the next downloads (no flash).
+  // (no DB work beyond the admin gate) so it's safe to call once per
+  // live_frame broadcast. Single-flight with a 1-deep coalesced re-run:
+  // frames land every few seconds; overlapping fetches would just race
+  // each other, but a refresh requested mid-fetch must still happen (it
+  // may announce the final frame before a pause). Preload-then-commit
+  // keeps the previous frame on screen while the next downloads.
   const fetchFrame = async () => {
-    if (frameFetchBusyRef.current) return;
+    if (frameFetchBusyRef.current) {
+      frameFetchQueuedRef.current = true;
+      return;
+    }
     frameFetchBusyRef.current = true;
+    const gen = frameGenRef.current;
     try {
       const res = await fetchWithAuth(`/api/admin/mapper/live/${jobId}/frame`);
       const json = await res.json();
       if (!json.ok) return;
       const frame = (json.data?.frame ?? null) as LiveFrameState | null;
+      if (gen !== frameGenRef.current) return; // job changed / unmounted
       if (!frame) {
         // Normal idle state: nothing uploaded yet, or the job ended and
         // cleanup removed the object.
@@ -248,7 +269,10 @@ export default function LiveMappingPage() {
       }
       await new Promise<void>((resolve) => {
         const img = new window.Image();
-        img.onload = () => { setLiveFrame(frame); resolve(); };
+        img.onload = () => {
+          if (gen === frameGenRef.current) setLiveFrame(frame);
+          resolve();
+        };
         // Signed-URL hiccup / object swapped mid-download: keep the old
         // frame, the next broadcast or poll retries.
         img.onerror = () => resolve();
@@ -258,6 +282,10 @@ export default function LiveMappingPage() {
       // Network hiccup — next event/poll retries.
     } finally {
       frameFetchBusyRef.current = false;
+      if (frameFetchQueuedRef.current) {
+        frameFetchQueuedRef.current = false;
+        void fetchFrame();
+      }
     }
   };
 
@@ -268,10 +296,14 @@ export default function LiveMappingPage() {
   // 10s poll was 1000+ DB reads per minute on top of realtime.
   useEffect(() => {
     if (!jobId) return;
+    setLiveFrame(null); // never show a previous job's screen on this one
     void load();
     void fetchFrame();
     return () => {
       if (loadDebounceRef.current) clearTimeout(loadDebounceRef.current);
+      // Invalidate in-flight frame fetches (job switch or unmount).
+      frameGenRef.current += 1;
+      frameFetchQueuedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
@@ -381,13 +413,14 @@ export default function LiveMappingPage() {
   }, [jobId, job?.status]);
 
   // feature/cua-live-view — keep the "Xs ago" freshness label honest while
-  // a frame is showing. Re-render only; no fetching.
+  // a frame is showing. Re-render only; no fetching. Deps deliberately use
+  // job?.status (not the job object, whose identity changes every load()).
   useEffect(() => {
     if (!liveFrame) return;
-    if (job && isTerminalJobStatus(job.status)) return;
+    if (isTerminalJobStatus(job?.status)) return;
     const t = setInterval(() => setFrameTick((n) => n + 1), 10_000);
     return () => clearInterval(t);
-  }, [liveFrame, job, job?.status]);
+  }, [liveFrame, job?.status]);
 
   // Auto-scroll activity to bottom on new event.
   useEffect(() => {
@@ -753,7 +786,7 @@ export default function LiveMappingPage() {
                         This is the robot&rsquo;s screen. Click exactly where it should click
                       </span>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
-                        (guest data is blacked out automatically)
+                        (passwords and payment details are blacked out automatically)
                       </span>
                     </div>
                     <div style={{
@@ -889,8 +922,8 @@ export default function LiveMappingPage() {
                     </div>
                     <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), marginTop: 8 }}>
                       {frameIsFresh
-                        ? 'This is what the robot sees right now — it updates with every step. (Guest data is blacked out automatically.)'
-                        : 'Paused — the robot is thinking. The picture updates with its next step. (Guest data is blacked out automatically.)'}
+                        ? 'This is what the robot sees right now — it updates with every step. (Passwords and payment details are blacked out automatically.)'
+                        : 'Paused — the robot is thinking. The picture updates with its next step. (Passwords and payment details are blacked out automatically.)'}
                     </div>
                   </>
                 ) : (

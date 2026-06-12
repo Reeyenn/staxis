@@ -85,10 +85,15 @@ export async function GET(req: NextRequest): Promise<Response> {
   // Step 3 (feature/cua-live-view): sweep live-frame objects left behind
   // by hard-crashed mapper runs. Normal exits delete `${jobId}/live.png`
   // via the publisher's close() in runMappingJob's finally — this catches
-  // the crash leftovers by blind-removing the path for every job that
-  // reached a terminal status recently. Trailing 48h window keeps the
-  // query + remove batch small and bounded; anything older was already
-  // swept by a previous tick.
+  // the crash leftovers by blind-removing the path for every MAPPER job
+  // that reached a terminal status recently (a job mid-retry is 'queued'/
+  // 'running', so a live run's frame can never match). Trailing 48h
+  // window + newest-first ordering keeps the batch bounded AND coverage
+  // eventual: a job enters the window at the top of the order the tick
+  // after it finishes, so even if the window ever held >500 terminal
+  // jobs, every fresh crash still gets swept; older entries were already
+  // handled by earlier ticks. Removes of already-deleted paths are cheap
+  // no-ops, so re-sweeping is idempotent.
   let liveFramesSwept = 0;
   let liveFrameSweepFailed = false;
   {
@@ -96,20 +101,25 @@ export async function GET(req: NextRequest): Promise<Response> {
     const { data: doneJobs, error: jobsErr } = await supabaseAdmin
       .from('workflow_jobs')
       .select('id')
+      .eq('kind', 'mapper.learn_pms_family')
       .in('status', ['completed', 'failed', 'cancelled'])
       .gte('completed_at', sinceIso)
+      .order('completed_at', { ascending: false })
       .limit(500);
     if (jobsErr) {
       liveFrameSweepFailed = true;
     } else if ((doneJobs ?? []).length > 0) {
       const livePaths = (doneJobs ?? []).map((j) => `${j.id}/live.png`);
-      const { error: sweepErr } = await supabaseAdmin.storage
+      const { data: removed, error: sweepErr } = await supabaseAdmin.storage
         .from('mapping-screenshots')
         .remove(livePaths);
       if (sweepErr) {
         liveFrameSweepFailed = true;
       } else {
-        liveFramesSwept = livePaths.length;
+        // remove() returns the objects that actually existed and were
+        // deleted — report that, not the attempted-path count, so the
+        // heartbeat note means what it says.
+        liveFramesSwept = (removed ?? []).length;
       }
     }
   }

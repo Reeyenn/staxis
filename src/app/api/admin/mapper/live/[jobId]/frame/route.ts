@@ -12,8 +12,8 @@
  * safety poll.
  *
  * Deliberately separate from the sibling `../route.ts` (4 DB queries) so
- * the per-frame refresh stays cheap: zero DB queries, two storage REST
- * calls (exact-path info() + signed URL).
+ * the per-frame refresh stays cheap: no DB work beyond the requireAdmin
+ * gate itself, two storage REST calls (exact-path info() + signed URL).
  *
  * Response: { frame: null } when no live frame exists (job not running,
  * robot not uploading, or already cleaned up), else
@@ -58,18 +58,36 @@ export async function GET(
   const { data: meta, error: infoErr } = await supabaseAdmin.storage
     .from('mapping-screenshots')
     .info(objectKey);
-  if (infoErr || !meta) {
-    // Not-found is the NORMAL idle state (no frame uploaded yet, or the
-    // job ended and cleanup removed it) — not an error for the board.
+  if (infoErr) {
+    // Only NOT-FOUND is the normal idle state (no frame uploaded yet, or
+    // the job ended and cleanup removed it). Any other storage failure
+    // must NOT masquerade as "no frame" — the board clears its current
+    // frame on { frame: null }, but keeps it on a non-ok envelope, which
+    // is the right behavior for a transient 5xx.
+    const status = (infoErr as { status?: number }).status;
+    const statusCode = (infoErr as { statusCode?: string }).statusCode;
+    const isNotFound =
+      status === 404 || statusCode === '404' || /not.?found/i.test(infoErr.message ?? '');
+    if (isNotFound) {
+      return ok({ frame: null }, { requestId });
+    }
+    return err(`live frame lookup failed: ${infoErr.message}`, {
+      requestId, status: 500, code: 'storage_error',
+    });
+  }
+  if (!meta) {
     return ok({ frame: null }, { requestId });
   }
 
   // `lastModified` replaces the deprecated `updatedAt` in FileObjectV2;
   // keep the fallback chain for older storage backends.
   const updatedAt = meta.lastModified ?? meta.updatedAt ?? meta.createdAt ?? null;
-  // The object version changes on every overwrite — the SDK appends it as
-  // a cache-busting query param INSIDE the signed payload, so each new
-  // frame gets a distinct CDN cache key even within the same second.
+  // The object version changes on every overwrite. The SDK appends it as
+  // a `cacheNonce` query param AFTER signing (the token covers the path,
+  // not the nonce) — that's fine: the FULL URL is the CDN cache key, so
+  // each new frame version gets a distinct cache entry even within the
+  // same second, which is all the staleness protection we need on top of
+  // the upload's cacheControl '0'.
   const cacheNonce = meta.version ?? updatedAt ?? undefined;
 
   const { data: signed, error: signErr } = await supabaseAdmin.storage
