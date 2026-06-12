@@ -114,6 +114,16 @@ interface ClickMarker {
   topPct: number;
 }
 
+/** feature/cua-live-view — latest live frame, served by
+ *  /api/admin/mapper/live/[jobId]/frame (short-lived signed URL into the
+ *  private bucket; the robot only uploads while an admin heartbeat is
+ *  fresh, so this exists only while someone is watching). */
+interface LiveFrameState {
+  url: string;
+  /** Storage object timestamp — drives the "Xs ago" label. */
+  updatedAt: string | null;
+}
+
 const GLYPH_META: Record<FeedRow['glyph'], { tone: PillTone; label: string }> = {
   found:        { tone: 'forest',     label: 'Found' },
   searching:    { tone: 'gold',       label: 'Searching…' },
@@ -167,9 +177,14 @@ export default function LiveMappingPage() {
   const [guidanceText, setGuidanceText] = useState('');
   const [marker, setMarker] = useState<ClickMarker | null>(null);
   const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
+  // feature/cua-live-view — the robot's latest screen (continuous live view).
+  const [liveFrame, setLiveFrame] = useState<LiveFrameState | null>(null);
+  // Re-render tick so the "Xs ago" freshness label stays honest.
+  const [frameTick, setFrameTick] = useState(0);
 
   const activityRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const frameFetchBusyRef = useRef(false);
 
   // Initial fetch of state.
   const load = async () => {
@@ -212,6 +227,40 @@ export default function LiveMappingPage() {
     loadDebounceRef.current = setTimeout(() => { void load(); }, 1_000);
   };
 
+  // feature/cua-live-view — refresh the robot's live screen. Cheap route
+  // (no DB queries) so it's safe to call once per live_frame broadcast.
+  // Single-flight: frames land every few seconds; overlapping fetches
+  // would just race each other for no benefit. Preload-then-commit keeps
+  // the previous frame on screen while the next downloads (no flash).
+  const fetchFrame = async () => {
+    if (frameFetchBusyRef.current) return;
+    frameFetchBusyRef.current = true;
+    try {
+      const res = await fetchWithAuth(`/api/admin/mapper/live/${jobId}/frame`);
+      const json = await res.json();
+      if (!json.ok) return;
+      const frame = (json.data?.frame ?? null) as LiveFrameState | null;
+      if (!frame) {
+        // Normal idle state: nothing uploaded yet, or the job ended and
+        // cleanup removed the object.
+        setLiveFrame(null);
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const img = new window.Image();
+        img.onload = () => { setLiveFrame(frame); resolve(); };
+        // Signed-URL hiccup / object swapped mid-download: keep the old
+        // frame, the next broadcast or poll retries.
+        img.onerror = () => resolve();
+        img.src = frame.url;
+      });
+    } catch {
+      // Network hiccup — next event/poll retries.
+    } finally {
+      frameFetchBusyRef.current = false;
+    }
+  };
+
   // Plan v8 hardening (Codex P1 #3) — one initial GET for hydration,
   // then rely on realtime for updates. Polling only re-enables when the
   // realtime subscription enters CHANNEL_ERROR / CLOSED state. At 300
@@ -220,6 +269,7 @@ export default function LiveMappingPage() {
   useEffect(() => {
     if (!jobId) return;
     void load();
+    void fetchFrame();
     return () => {
       if (loadDebounceRef.current) clearTimeout(loadDebounceRef.current);
     };
@@ -289,6 +339,14 @@ export default function LiveMappingPage() {
     const ch = supabase
       .channel(`mapping:${jobId}`)
       .on('broadcast' as any, { event: '*' }, (msg: { event: string; payload: MappingEvent }) => {
+        // feature/cua-live-view — live_frame is a metadata-only nudge that
+        // fires every few seconds while the robot works. It must NOT enter
+        // the activity feed and must NOT trigger the full-state refetch
+        // (that's 4 DB queries per event) — it only refreshes the frame.
+        if (msg.event === 'live_frame' || msg.payload?.type === 'live_frame') {
+          void fetchFrame();
+          return;
+        }
         setActivity((prev) => [...prev, msg.payload].slice(-50));
         scheduleLoad();
         // Terminal broadcasts race the runtime's markCompleted UPDATE (the
@@ -317,10 +375,19 @@ export default function LiveMappingPage() {
   useEffect(() => {
     if (!jobId) return;
     if (job && isTerminalJobStatus(job.status)) return;
-    const t = setInterval(() => { void load(); }, 30_000);
+    const t = setInterval(() => { void load(); void fetchFrame(); }, 30_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, job?.status]);
+
+  // feature/cua-live-view — keep the "Xs ago" freshness label honest while
+  // a frame is showing. Re-render only; no fetching.
+  useEffect(() => {
+    if (!liveFrame) return;
+    if (job && isTerminalJobStatus(job.status)) return;
+    const t = setInterval(() => setFrameTick((n) => n + 1), 10_000);
+    return () => clearInterval(t);
+  }, [liveFrame, job, job?.status]);
 
   // Auto-scroll activity to bottom on new event.
   useEffect(() => {
@@ -422,6 +489,25 @@ export default function LiveMappingPage() {
     pendingHelp && feedRows.some((r) => r.key === pendingHelp.target_key && r.glyph === 'found'),
   );
   const jobTerminal = isTerminalJobStatus(job?.status);
+
+  // feature/cua-live-view — frame age in seconds (clamped at 0 to absorb
+  // small client/storage clock skew); null when unknown. frameTick keeps
+  // it honest between frames.
+  const frameAgeSec = useMemo(() => {
+    if (!liveFrame?.updatedAt) return null;
+    const ts = Date.parse(liveFrame.updatedAt);
+    if (Number.isNaN(ts)) return null;
+    return Math.max(0, Math.round((Date.now() - ts) / 1000));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveFrame, frameTick]);
+  const frameIsFresh = frameAgeSec !== null && frameAgeSec <= 45;
+  const frameAgeLabel = frameAgeSec === null
+    ? ''
+    : frameAgeSec < 8
+      ? 'just now'
+      : frameAgeSec < 60
+        ? `${frameAgeSec}s ago`
+        : `${Math.floor(frameAgeSec / 60)}m ago`;
 
   if (authLoading || !user) {
     return (
@@ -763,9 +849,57 @@ export default function LiveMappingPage() {
               </DarkCard>
             )}
 
-            {!pendingHelp && job?.status === 'running' && (
+            {/* feature/cua-live-view — the robot's screen, continuously.
+                Subsumes the old "working on its own" placeholder card.
+                Hidden while an ACTIONABLE help request is open: the help
+                panel above already shows the robot's (frozen) screen, and
+                stacking two near-identical screenshots would be confusing.
+                NOT clickable — click-to-teach stays on the help panel. */}
+            {(!pendingHelp || pendingIsStale) && job?.status === 'running' && (
               <DarkCard style={{ padding: '16px 20px', marginBottom: 16 }}>
-                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5) }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <Caps c={dimWhite(.5)}>Robot&rsquo;s screen</Caps>
+                  {liveFrame && (
+                    frameIsFresh
+                      ? <Pill tone="forest"><span style={{
+                          display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                          background: 'currentColor', marginRight: 2,
+                        }} /> LIVE</Pill>
+                      : <Pill tone="neutral">{frameAgeLabel ? `as of ${frameAgeLabel}` : 'paused'}</Pill>
+                  )}
+                  {liveFrame && frameIsFresh && frameAgeLabel && (
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>
+                      updated {frameAgeLabel}
+                    </span>
+                  )}
+                </div>
+                {liveFrame ? (
+                  <>
+                    <div style={{
+                      marginTop: 10, width: '100%', maxWidth: 980,
+                      border: `1px solid ${dimWhite(.14)}`, borderRadius: 8,
+                      overflow: 'hidden', lineHeight: 0,
+                    }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={liveFrame.url}
+                        alt="The robot's current screen, updating live (sensitive fields redacted)"
+                        style={{ width: '100%', height: 'auto', display: 'block' }}
+                      />
+                    </div>
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), marginTop: 8 }}>
+                      {frameIsFresh
+                        ? 'This is what the robot sees right now — it updates with every step. (Guest data is blacked out automatically.)'
+                        : 'Paused — the robot is thinking. The picture updates with its next step. (Guest data is blacked out automatically.)'}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5), marginTop: 8 }}>
+                    The robot&rsquo;s screen appears here as it works — the first picture can take a
+                    minute while it thinks.
+                  </div>
+                )}
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5), marginTop: 10 }}>
                   <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--forest)' }} />
                   The robot is working on its own. If it gets stuck, the feed turns red here and it waits for your click.
                 </div>

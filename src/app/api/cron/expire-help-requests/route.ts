@@ -7,6 +7,12 @@
  *      function (migration 0217, formerly 0214 pre-renumber).
  *   2. Delete the corresponding screenshot objects from Supabase Storage
  *      so the mapping-screenshots bucket doesn't grow unbounded.
+ *   3. feature/cua-live-view — sweep crash-orphaned live frames
+ *      ({jobId}/live.png). The mapper deletes its job's frame in a
+ *      finally on every normal exit; only a hard crash (OOM/SIGKILL)
+ *      skips it. One bounded query for recently-finished mapper jobs +
+ *      one batched remove — removes of already-deleted paths are cheap
+ *      no-ops, so this is idempotent.
  *
  * At 300 hotels onboarding over months, unbounded growth of either the
  * help-request rows or the storage objects is a real cost + ops burden.
@@ -76,19 +82,53 @@ export async function GET(req: NextRequest): Promise<Response> {
     }
   }
 
+  // Step 3 (feature/cua-live-view): sweep live-frame objects left behind
+  // by hard-crashed mapper runs. Normal exits delete `${jobId}/live.png`
+  // via the publisher's close() in runMappingJob's finally — this catches
+  // the crash leftovers by blind-removing the path for every job that
+  // reached a terminal status recently. Trailing 48h window keeps the
+  // query + remove batch small and bounded; anything older was already
+  // swept by a previous tick.
+  let liveFramesSwept = 0;
+  let liveFrameSweepFailed = false;
+  {
+    const sinceIso = new Date(Date.now() - 48 * 3600_000).toISOString();
+    const { data: doneJobs, error: jobsErr } = await supabaseAdmin
+      .from('workflow_jobs')
+      .select('id')
+      .in('status', ['completed', 'failed', 'cancelled'])
+      .gte('completed_at', sinceIso)
+      .limit(500);
+    if (jobsErr) {
+      liveFrameSweepFailed = true;
+    } else if ((doneJobs ?? []).length > 0) {
+      const livePaths = (doneJobs ?? []).map((j) => `${j.id}/live.png`);
+      const { error: sweepErr } = await supabaseAdmin.storage
+        .from('mapping-screenshots')
+        .remove(livePaths);
+      if (sweepErr) {
+        liveFrameSweepFailed = true;
+      } else {
+        liveFramesSwept = livePaths.length;
+      }
+    }
+  }
+
   // Heartbeat AS THE LAST THING so the doctor can distinguish "function
   // shell ran" (Vercel 200) from "function actually finished its work."
   // Marked 'degraded' when any storage deletion failed — doctor surfaces
   // a yellow banner after 24h of degraded; pages only on missing heartbeats.
   await writeCronHeartbeat('expire-help-requests', {
     requestId,
-    notes: { expired: rows.length, storageDeleted, storageFailed },
-    status: storageFailed > 0 ? 'degraded' : 'ok',
+    notes: { expired: rows.length, storageDeleted, storageFailed, liveFramesSwept, liveFrameSweepFailed },
+    status: storageFailed > 0 || liveFrameSweepFailed ? 'degraded' : 'ok',
   });
 
   return ok({
     expired: rows.length,
     storageDeleted,
     storageFailed,
+    liveFramesSwept,
+    liveFrameSweepFailed,
   }, { requestId });
 }
