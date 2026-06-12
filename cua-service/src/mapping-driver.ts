@@ -39,7 +39,7 @@ import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
-import { columnsFromAction, missingRequiredColumns } from './target-contract.js';
+import { effectiveColumnsFromAction, missingRequiredColumns } from './target-contract.js';
 import type { FeedGaps, FeedGapEntry } from './knowledge-file.js';
 
 export interface MappingJobInput {
@@ -185,7 +185,11 @@ export function computeFeedGaps(actions: Recipe['actions']): FeedGaps {
       missingRequired.push({ target: t, reason: 'not_found' });
       continue;
     }
-    const missingCols = missingRequiredColumns(t, columnsFromAction(action));
+    // feature/cua-column-recovery — judge the EFFECTIVE column map: list
+    // columns plus any recovered detail columns the runtime is guaranteed to
+    // extract (shared eligibility predicate with recipe-adapter). The
+    // completeness check itself is unchanged.
+    const missingCols = missingRequiredColumns(t, effectiveColumnsFromAction(t, action));
     if (missingCols.length > 0) {
       missingRequired.push({ target: t, reason: 'incomplete_columns', missingColumns: missingCols });
     }

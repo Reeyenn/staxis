@@ -123,8 +123,11 @@ export const CORE_TARGET_CONTRACTS: Partial<
  * accepting blanks (the promotion gate then parks the draft rather than
  * auto-promoting a zero-row feed). Bounds re-ask cost; the per-target step /
  * cost / wallclock / token caps already in mapAction are the outer backstops.
+ * Raised 2 → 3 for feature/cua-column-recovery: each re-ask is now FOCUSED
+ * (live-DOM verification names exactly which columns are dead and where to
+ * look), so the attempts buy real recovery instead of the same blank re-read.
  */
-export const MAX_COMPLETENESS_REASKS = 2;
+export const MAX_COMPLETENESS_REASKS = 3;
 
 // ─── Value parsers (feat/pms-universal-translate) ────────────────────────────
 //
@@ -467,4 +470,73 @@ export function missingRequiredColumns(
 ): string[] {
   if (!CORE_TARGET_CONTRACTS[actionKey]) return [];
   return missingFromList(requiredLearnedFor(actionKey), columns);
+}
+
+// ─── Recovered detail columns (feature/cua-column-recovery) ──────────────────
+//
+// Stage-2 recovery maps required columns that aren't in the list view onto a
+// single record's DETAIL page (ActionRecipe.drillDown.detailColumns) with a
+// verified, key-anchored URL template. These helpers are THE shared predicate
+// between the promotion gate and the runtime adapter: the gate may only count
+// a detail column as "present" when the runtime will actually extract it, and
+// the adapter wires exactly the columns the gate counted. One predicate, two
+// callers — by construction no gate-passes-but-runtime-blank split-brain.
+
+/**
+ * True iff a drillDown's detail mapping is replayable at poll time: the
+ * template was mechanically verified during mapping AND every {placeholder}
+ * resolves from a non-blank list column (otherwise the runtime cannot build
+ * per-row URLs).
+ */
+export function drillDownDetailEligible(action: ActionRecipe): boolean {
+  const dd = action.drillDown;
+  if (!dd || dd.templateVerified !== true) return false;
+  // Defensive typing: dd comes from DB jsonb (hand edits / corruption) —
+  // a non-string template must fail closed, never throw on session start.
+  if (typeof dd.detailUrlTemplate !== 'string' || dd.detailUrlTemplate === '') return false;
+  if (!dd.listColumns || typeof dd.listColumns !== 'object') return false;
+  const placeholders = [...new Set([...dd.detailUrlTemplate.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]!))];
+  if (placeholders.length === 0) return false;
+  return placeholders.every((p) => {
+    const sel = dd.listColumns[p];
+    return typeof sel === 'string' && sel.trim() !== '';
+  });
+}
+
+/**
+ * The CONTRACT-REQUIRED detail columns the runtime will actually enrich for a
+ * core target: blank-filtered, required-only, and only when the drillDown is
+ * runtime-eligible. Non-core targets (guests / lost-and-found / activity-log
+ * style drilldowns) have no required contract → always {} → their adapter
+ * behavior is byte-identical to before this feature.
+ */
+export function recoveredDetailColumns(
+  actionKey: keyof Recipe['actions'],
+  action: ActionRecipe,
+): Record<string, string> {
+  if (!CORE_TARGET_CONTRACTS[actionKey]) return {};
+  const dd = action.drillDown;
+  if (!dd?.detailColumns || !drillDownDetailEligible(action)) return {};
+  const required = new Set(requiredLearnedFor(actionKey));
+  const out: Record<string, string> = {};
+  for (const [col, sel] of Object.entries(dd.detailColumns)) {
+    if (!required.has(col)) continue;
+    if (typeof sel !== 'string' || sel.trim() === '') continue;
+    out[col] = sel;
+  }
+  return out;
+}
+
+/**
+ * The column map the promotion gate should judge: the list-view columns plus
+ * any RECOVERED detail columns the runtime is guaranteed to extract. This does
+ * NOT loosen the gate — the completeness definition is unchanged ("will this
+ * feed extract its required columns at poll time"); it widens the evidence to
+ * include the verified per-record detail path the recovery built.
+ */
+export function effectiveColumnsFromAction(
+  actionKey: keyof Recipe['actions'],
+  action: ActionRecipe,
+): Record<string, string> {
+  return { ...columnsFromAction(action), ...recoveredDetailColumns(actionKey, action) };
 }

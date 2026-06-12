@@ -225,3 +225,169 @@ export function substituteTemplate(
     return encodeURIComponent(values[name]!);
   });
 }
+
+/** Placeholder names appearing in a template (deduped, in order). */
+export function templatePlaceholders(template: string): string[] {
+  return [...new Set([...template.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]!))];
+}
+
+// ─── Single-sample templating (feature/cua-column-recovery) ─────────────────
+//
+// inferUrlTemplate needs ≥3 samples; column recovery drills exactly ONE record
+// (cost cap). With one URL nothing "varies", so instead we ANCHOR: find URL
+// components that exactly equal the clicked row's KEY value and replace them
+// with a {keyColumn} placeholder. Conservative by construction:
+//   - ONLY the key column anchors (code review P1: anchoring optional columns
+//     like room_number makes them URL params, and one row with a blank value
+//     then perma-fails a reconcile feed at poll time). Non-key components
+//     stay frozen literals — the second-record verification mechanically
+//     proves a frozen param is inert, or rejects the template;
+//   - only WHOLE path segments / WHOLE query-param values match (a room "101"
+//     inside a session token can never anchor);
+//   - any UNMATCHED component that looks like a date fails the whole template:
+//     a frozen day-scoped param verifies today and silently serves wrong/empty
+//     detail pages from tomorrow;
+//   - any UNMATCHED component that looks like a session/auth token fails too:
+//     it verifies during mapping (same live session) and dies on the next
+//     session rotation — a time-bomb template that would churn paid repairs.
+// The caller then mechanically verifies the template against a SECOND row
+// before accepting (substitute → navigate → extract → value-gate).
+
+export const MIN_ANCHOR_VALUE_LEN = 3;
+
+const DATE_TOKEN_RES = [
+  /^\d{4}-\d{1,2}-\d{1,2}$/,         // 2026-06-12
+  /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/, // 06/12/2026, 12-06-26, 6.12.26
+  /^\d{1,2}[\/-]\d{1,2}$/,           // 06/12, 6-12 (year-less; '.' excluded —
+                                     // "1.2"-style version segments are not dates)
+];
+
+export function looksLikeDateToken(value: string): boolean {
+  const v = value.trim();
+  if (v === '') return false;
+  if (DATE_TOKEN_RES.some((re) => re.test(v))) return true;
+  // 8-digit compact dates: YYYYMMDD, MMDDYYYY, DDMMYYYY — require a plausible
+  // century so order numbers like "12345678" don't false-positive.
+  if (/^\d{8}$/.test(v)) {
+    if (/^(19|20)\d{6}$/.test(v)) return true;                 // YYYYMMDD
+    if (/^\d{4}(19|20)\d{2}$/.test(v)) {                       // ____YYYY
+      const a = parseInt(v.slice(0, 2), 10);
+      const b = parseInt(v.slice(2, 4), 10);
+      if (a >= 1 && a <= 31 && b >= 1 && b <= 31 && (a <= 12 || b <= 12)) return true;
+    }
+  }
+  return false;
+}
+
+/** Session/auth-shaped URL components — frozen copies rot when the PMS
+ *  rotates the session, so a template containing one must fail closed. */
+const SESSION_PARAM_KEY_RE = /sess|token|csrf|auth|sid$|^sid|ticket/i;
+const SESSION_VALUE_RE = /^[A-Fa-f0-9]{16,}$|^[A-Za-z0-9+/_=-]{24,}$/;
+
+export function looksLikeSessionToken(key: string | null, value: string): boolean {
+  const v = value.trim();
+  if (v === '') return false;
+  if (key && SESSION_PARAM_KEY_RE.test(key)) return true;
+  // Path segments / unnamed values: only the long-opaque-blob shape counts
+  // (jsessionid-style); short ids and words must not false-positive.
+  return SESSION_VALUE_RE.test(v) && !/^\d+$/.test(v);
+}
+
+export interface SingleSampleTemplateResult {
+  ok: boolean;
+  /** Absolute templated URL (placeholders named after list columns). */
+  template?: string;
+  placeholders?: string[];
+  reason?: string;
+}
+
+const safeDecode = (s: string): string => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
+/**
+ * Build a detail-URL template from ONE sample URL + the clicked row's column
+ * values. ONLY `keyColumn` (the target's record-identity column,
+ * DISCOVERY_KEY_COLUMNS) is anchored; it must appear as a whole component.
+ */
+export function templateFromSample(
+  sampleUrl: string,
+  rowValues: Record<string, string>,
+  keyColumn: string,
+): SingleSampleTemplateResult {
+  let url: URL;
+  try {
+    url = new URL(sampleUrl);
+  } catch {
+    return { ok: false, reason: `sample URL is not absolute/parseable: ${sampleUrl.slice(0, 120)}` };
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { ok: false, reason: `unsupported scheme: ${url.protocol}` };
+  }
+
+  const keyValue = (rowValues[keyColumn] ?? '').trim();
+  if (keyValue === '') {
+    return { ok: false, reason: `key column ${keyColumn} has a blank value on the sample row` };
+  }
+  if (keyValue.length < MIN_ANCHOR_VALUE_LEN) {
+    return {
+      ok: false,
+      reason: `key value "${keyValue}" is shorter than ${MIN_ANCHOR_VALUE_LEN} chars — too collision-prone to anchor a URL`,
+    };
+  }
+
+  let anchored = false;
+
+  const templatePathParts: string[] = [];
+  for (const segment of url.pathname.split('/')) {
+    if (segment === '') {
+      templatePathParts.push(segment);
+      continue;
+    }
+    const decoded = safeDecode(segment).trim();
+    if (decoded === keyValue) {
+      templatePathParts.push(`{${keyColumn}}`);
+      anchored = true;
+      continue;
+    }
+    if (looksLikeDateToken(decoded)) {
+      return { ok: false, reason: `unanchored date-like path segment "${decoded}" — a frozen date would go stale` };
+    }
+    if (looksLikeSessionToken(null, decoded)) {
+      return { ok: false, reason: `session-token-like path segment — a frozen session would rot on rotation` };
+    }
+    templatePathParts.push(segment);
+  }
+
+  const templateQueryEntries: string[] = [];
+  for (const [key, value] of url.searchParams.entries()) {
+    if (value.trim() === keyValue) {
+      templateQueryEntries.push(`${key}={${keyColumn}}`);
+      anchored = true;
+      continue;
+    }
+    if (looksLikeDateToken(value)) {
+      return { ok: false, reason: `unanchored date-like query param "${key}=${value.slice(0, 20)}" — a frozen date would go stale` };
+    }
+    if (looksLikeSessionToken(key, value)) {
+      return { ok: false, reason: `session-token-like query param "${key}" — a frozen session would rot on rotation` };
+    }
+    templateQueryEntries.push(`${key}=${encodeURIComponent(value)}`);
+  }
+
+  if (!anchored) {
+    return {
+      ok: false,
+      reason: `key column ${keyColumn} ("${keyValue.slice(0, 24)}") does not appear as a whole URL component — cannot build per-row detail URLs`,
+    };
+  }
+
+  const template =
+    `${url.protocol}//${url.host}${templatePathParts.join('/')}` +
+    (templateQueryEntries.length > 0 ? `?${templateQueryEntries.join('&')}` : '');
+  return { ok: true, template, placeholders: [keyColumn] };
+}

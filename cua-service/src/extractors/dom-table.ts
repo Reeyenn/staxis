@@ -14,6 +14,7 @@
 import type { Page } from 'playwright';
 import { log } from '../log.js';
 import { safeGoto } from '../browser-utils/navigate.js';
+import { extractDomRows } from './dom-rows.js';
 import type { FeedSpec } from '../knowledge-file.js';
 
 export interface DomTableExtractOptions {
@@ -72,32 +73,21 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
   if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
 
   try {
-    const rows = await page.$$eval(
-      rowSelector,
-      (els: Element[], columnMap: Record<string, string>) => {
-        return els.map((el: Element) => {
-          const out: Record<string, string> = {};
-          for (const [field, sel] of Object.entries(columnMap)) {
-            if (!sel) continue;
-            const target = sel === '.' ? el : el.querySelector(sel);
-            out[field] = target ? (target.textContent ?? '').trim() : '';
-          }
-          return out;
-        });
-      },
-      columns,
-    );
+    // Shared reader (extractors/dom-rows.ts) — the SAME implementation the
+    // mapper verifies selectors with, including the '@attr' convention. Any
+    // fork here re-opens the "verified at mapping, blank at poll" bug class.
+    const { rows, totalMatched } = await extractDomRows(page, rowSelector, columns, { cap: maxRows });
 
-    if (rows.length > maxRows) {
+    if (totalMatched > maxRows) {
       log.warn('extractor:dom_table: row count over cap, truncating', {
         rowSelector,
-        rowCount: rows.length,
+        rowCount: totalMatched,
         cap: maxRows,
       });
       return {
         ok: false,
-        rows: rows.slice(0, maxRows),
-        reason: `too_many_rows: ${rows.length} > ${maxRows} — refine rowSelector`,
+        rows,
+        reason: `too_many_rows: ${totalMatched} > ${maxRows} — refine rowSelector`,
       };
     }
 
