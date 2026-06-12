@@ -75,7 +75,14 @@ function contractColumn(actionKey: ActionKey, column: string): CoreColumn | unde
 /** Resolve + apply the SAME parser chain the runtime will use for this column.
  *  Returns `assessable:false` when no parser applies (plain text) or the parser
  *  isn't registered (applyParser would pass raw through — that must never count
- *  as "parses fine" for gating). */
+ *  as "parses fine" for gating).
+ *
+ *  Enum exception (review: wrong-value P1): generic_enum's `onUnknown` fallback
+ *  ('unknown' for room status) makes EVERY string "parse" at runtime, which
+ *  would let a wrong cell self-grade as a status column. For ASSESSMENT we
+ *  force onUnknown to null — a value only counts when the learned vocabulary
+ *  (or a ca_* fallback) actually translates it. Stricter than the runtime by
+ *  design: worse-than-blank applies to verification, not to extraction. */
 function parseLikeRuntime(
   actionKey: ActionKey,
   column: string,
@@ -86,8 +93,11 @@ function parseLikeRuntime(
   if (!resolved) return { assessable: false };
   const fn = getParser(resolved.parser);
   if (!fn) return { assessable: false };
+  const config = resolved.parser === 'generic_enum'
+    ? { ...(resolved.config ?? {}), onUnknown: null }
+    : resolved.config;
   try {
-    return { assessable: true, parsed: fn(value, resolved.config) };
+    return { assessable: true, parsed: fn(value, config) };
   } catch {
     return { assessable: true, parsed: null };
   }
@@ -308,10 +318,14 @@ export function gateRecoveredColumn(ctx: GateContext): GateVerdict {
     if (nonBlank.length >= 3 && distinct.size < 2) {
       return { ok: false, reason: 'constant_key' };
     }
-    if (nonBlank.length >= 3 && nonBlank.every((v) => /^\d+$/.test(v))) {
+    // Row-number trap: a 0/1-based consecutive integer run is almost
+    // certainly a list INDEX, not a record id. Applied only to *_id key
+    // columns — getRoomStatus's key is room_number, and a small motel's
+    // rooms legitimately ARE 1..N (review: false-reject risk).
+    if (column.endsWith('_id') && nonBlank.length >= 3 && nonBlank.every((v) => /^\d+$/.test(v))) {
       const nums = [...new Set(nonBlank.map((v) => parseInt(v, 10)))].sort((a, b) => a - b);
       const consecutive = nums.every((n, i) => i === 0 || n === nums[i - 1]! + 1);
-      if (consecutive && nums[0] === 1) {
+      if (consecutive && (nums[0] === 0 || nums[0] === 1)) {
         return { ok: false, reason: 'sequential_key' };
       }
     }
@@ -374,6 +388,30 @@ export function learnedForGate(
     valueTranslations,
     ...(provisionalDateFormat ? { dateFormat: provisionalDateFormat } : {}),
   };
+}
+
+// ─── Candidate selection ────────────────────────────────────────────────────
+
+export interface CandidateRank {
+  /** Did value-level verification actually run for this emission? */
+  verified: boolean;
+  /** Outstanding (unrecovered/rejected) required columns. */
+  outstandingCount: number;
+}
+
+/**
+ * Whether a new emission should REPLACE the current best candidate.
+ * Verified beats unverified at ANY size: a structural-only audit (wandered
+ * page / failed probe) proves nothing about values, so an unverified
+ * "0 outstanding" must never displace a verified candidate whose dead columns
+ * we actually measured (plan review P1 — the gate-passes-but-runtime-lies
+ * regression). Among equals, fewer outstanding wins; ties go to the NEWER
+ * emission (it carries the model's latest selector refinements).
+ */
+export function isBetterCandidate(next: CandidateRank, best: CandidateRank | null): boolean {
+  if (best === null) return true;
+  if (next.verified !== best.verified) return next.verified;
+  return next.outstandingCount <= best.outstandingCount;
 }
 
 // ─── Focused re-ask hint ────────────────────────────────────────────────────

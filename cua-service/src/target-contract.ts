@@ -491,11 +491,14 @@ export function missingRequiredColumns(
 export function drillDownDetailEligible(action: ActionRecipe): boolean {
   const dd = action.drillDown;
   if (!dd || dd.templateVerified !== true) return false;
-  if (!dd.detailUrlTemplate) return false;
+  // Defensive typing: dd comes from DB jsonb (hand edits / corruption) —
+  // a non-string template must fail closed, never throw on session start.
+  if (typeof dd.detailUrlTemplate !== 'string' || dd.detailUrlTemplate === '') return false;
+  if (!dd.listColumns || typeof dd.listColumns !== 'object') return false;
   const placeholders = [...new Set([...dd.detailUrlTemplate.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]!))];
   if (placeholders.length === 0) return false;
   return placeholders.every((p) => {
-    const sel = dd.listColumns?.[p];
+    const sel = dd.listColumns[p];
     return typeof sel === 'string' && sel.trim() !== '';
   });
 }

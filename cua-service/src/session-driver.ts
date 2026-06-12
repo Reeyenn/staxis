@@ -843,8 +843,11 @@ export class SessionDriver {
           // logged-out page is a session artifact, not selector drift.
           // runFailed=true: the legitimately-empty-feed suppression must NOT
           // swallow real failures (a permanently failing work-order feed was
-          // a silent black hole — column-recovery plan review P0).
-          this.maybeFireSelfRepair(template, 0, loggedOutThisPoll, true);
+          // a silent black hole — column-recovery plan review P0). A sweep
+          // ABORT is a scheduler artifact like a logged-out poll, not drift —
+          // suppress it, or a mutex-overrun sweep would advance the streak and
+          // fire paid repairs at healthy feeds (code review P2).
+          this.maybeFireSelfRepair(template, 0, loggedOutThisPoll || signal.aborted, true);
           continue;
         }
 

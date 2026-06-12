@@ -37,6 +37,7 @@ import {
   learnedForGate,
   buildRecoveryHint,
   expectedShapeFor,
+  isBetterCandidate,
   MIN_UNPARSEABLE_SAMPLES,
   DETAIL_PER_POLL_MAX,
 } from '../column-recovery.js';
@@ -50,7 +51,11 @@ import {
 } from '../target-contract.js';
 import { computeFeedGaps } from '../mapping-driver.js';
 import { recipeToTableTemplates } from '../recipe-adapter.js';
-import { enrichRowsWithDetail, __clearDetailCacheForTests } from '../extractors/template-runner.js';
+import {
+  enrichRowsWithDetail,
+  findRowsWithAllBlankDetail,
+  __clearDetailCacheForTests,
+} from '../extractors/template-runner.js';
 import { finalizeRecoveredSuccess, drillPreconditions, type PageAudit } from '../mapper.js';
 import type { ActionRecipe, Recipe } from '../types.js';
 
@@ -277,6 +282,27 @@ describe('gateRecoveredColumn (worse-than-blank protections)', () => {
     assert.equal(rowNumbers.ok, false);
     assert.match((rowNumbers as { reason: string }).reason, /sequential_key/);
 
+    // 0-based row indexes (data-row-index) are row numbers too.
+    const zeroBased = gateRecoveredColumn({
+      ...baseWO, learned: learnedForGate('getWorkOrders', undefined),
+      column: 'pms_work_order_id', values: ['0', '1', '2', '3'],
+      allValues: { pms_work_order_id: ['0', '1', '2', '3'] }, selector: '.@data-row-index', allSelectors,
+    });
+    assert.equal(zeroBased.ok, false);
+    assert.match((zeroBased as { reason: string }).reason, /sequential_key/);
+
+    // room_number keys are EXEMPT from the sequential check — a small motel's
+    // rooms legitimately are 1..N (getRoomStatus's key column).
+    const sequentialRooms = gateRecoveredColumn({
+      actionKey: 'getRoomStatus', todayIso: TODAY,
+      learned: learnedForGate('getRoomStatus', { status: { Occupied: 'occupied', Vacant: 'vacant_clean' } }),
+      column: 'room_number', values: ['1', '2', '3', '4'],
+      allValues: { room_number: ['1', '2', '3', '4'], status: ['Occupied', 'Vacant', 'Occupied', 'Vacant'] },
+      selector: 'td:nth-child(1)',
+      allSelectors: { room_number: 'td:nth-child(1)', status: 'td:nth-child(2)' },
+    });
+    assert.equal(sequentialRooms.ok, true);
+
     const mirrored = gateRecoveredColumn({
       ...baseWO, learned: learnedForGate('getWorkOrders', undefined),
       column: 'pms_work_order_id', values: ['101', '102', '110'],
@@ -314,6 +340,20 @@ describe('gateRecoveredColumn (worse-than-blank protections)', () => {
       selector: 'td:nth-child(2)', allSelectors: { status: 'td:nth-child(2)' },
     });
     assert.equal(withoutMapping.ok, false);
+
+    // getRoomStatus.status has 'unknown' in its canonical set, so at runtime
+    // EVERY string "parses" via onUnknown — the gate must not let a wrong
+    // cell self-grade through that fallback (review P1): assessment forces
+    // onUnknown=null, so unmapped junk still rejects.
+    const roomStatusJunk = gateRecoveredColumn({
+      actionKey: 'getRoomStatus', todayIso: TODAY,
+      learned: learnedForGate('getRoomStatus', undefined),
+      column: 'status', values: ['Floor 2', 'Floor 2', 'Floor 3'],
+      allValues: { status: ['Floor 2', 'Floor 2', 'Floor 3'] },
+      selector: 'td:nth-child(4)', allSelectors: { status: 'td:nth-child(4)' },
+    });
+    assert.equal(roomStatusJunk.ok, false);
+    assert.match((roomStatusJunk as { reason: string }).reason, /parse_majority/);
   });
 
   test('boolean flag column accepts sparse Y/N (blank cells ignored)', () => {
@@ -365,22 +405,41 @@ describe('templateFromSample', () => {
     assert.equal(r.template, 'https://pms.example.com/workorder/{pms_work_order_id}/view');
   });
 
-  test('fails closed: key not anchored / substring matches / ambiguous values', () => {
+  test('fails closed: key not anchored / substring matches; non-key values stay frozen', () => {
     // Key value nowhere in the URL.
     assert.equal(templateFromSample('https://pms.example.com/view?idx=7', row, 'pms_reservation_id').ok, false);
     // Substring inside a token must NOT anchor (whole-component matching).
     assert.equal(
-      templateFromSample('https://pms.example.com/view?sess=xABC123x', row, 'pms_reservation_id').ok,
+      templateFromSample('https://pms.example.com/view?s=xABC123x', row, 'pms_reservation_id').ok,
       false,
     );
-    // Two different columns share the matched value → ambiguous.
-    const amb = templateFromSample(
-      'https://pms.example.com/view?id=4031',
-      { pms_work_order_id: '4031', room_number: '4031' },
+    // ONLY the key anchors — an optional column's value (room) stays a frozen
+    // literal so a per-row blank can never become a required URL param
+    // (review P1: it would perma-fail a reconcile feed at poll time).
+    const keyOnly = templateFromSample(
+      'https://pms.example.com/view?id=4031&room=101',
+      { pms_work_order_id: '4031', room_number: '101' },
       'pms_work_order_id',
     );
-    assert.equal(amb.ok, false);
-    assert.match(amb.reason!, /ambiguous/);
+    assert.equal(keyOnly.ok, true);
+    assert.equal(keyOnly.template, 'https://pms.example.com/view?id={pms_work_order_id}&room=101');
+    assert.deepEqual(keyOnly.placeholders, ['pms_work_order_id']);
+  });
+
+  test('fails closed on session-token-shaped components (frozen sessions rot)', () => {
+    const r = templateFromSample(
+      'https://pms.example.com/view?id=ABC123&jsessionid=1A2B3C4D5E6F7A8B9C0D1E2F3A4B5C6D',
+      row,
+      'pms_reservation_id',
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.reason!, /session/i);
+  });
+
+  test('key value shorter than the anchor floor surfaces an actionable reason', () => {
+    const r = templateFromSample('https://pms.example.com/view?id=12', { pms_work_order_id: '12' }, 'pms_work_order_id');
+    assert.equal(r.ok, false);
+    assert.match(r.reason!, /shorter than/);
   });
 
   test('fails closed on an unanchored date-like component (frozen-date trap)', () => {
@@ -393,7 +452,11 @@ describe('templateFromSample', () => {
     assert.match(r.reason!, /date-like/);
     assert.equal(looksLikeDateToken('06/12/2026'), true);
     assert.equal(looksLikeDateToken('2026-06-12'), true);
+    assert.equal(looksLikeDateToken('20260612'), true);  // YYYYMMDD
+    assert.equal(looksLikeDateToken('06122026'), true);  // MMDDYYYY
     assert.equal(looksLikeDateToken('ABC123'), false);
+    assert.equal(looksLikeDateToken('12345678'), false); // order number, no century
+    assert.equal(looksLikeDateToken('1.2'), false);      // version segment, not a date
   });
 
   test('requires an absolute URL', () => {
@@ -605,6 +668,7 @@ const auditWith = (
   totalMatched = probeRows.length,
 ): PageAudit => ({
   verified: true,
+  pageUrl: 'https://pms.example.com/arrivals',
   probeRows,
   totalMatched,
   outstanding: new Map(outstanding),
@@ -699,6 +763,43 @@ describe('drillPreconditions', () => {
       drillPreconditions('getArrivals', auditWith([['arrival_date', 'dead']], probe(4), DETAIL_PER_POLL_MAX + 5)).ok,
       false,
     );
+  });
+});
+
+describe('isBetterCandidate (verified beats unverified)', () => {
+  test('an unverified clean-looking emission never displaces a verified candidate', () => {
+    // The regression the review caught: wandered page mid-recovery degrades
+    // the audit to structural-only; its "0 outstanding" must not win.
+    assert.equal(
+      isBetterCandidate(
+        { verified: false, outstandingCount: 0 },
+        { verified: true, outstandingCount: 2 },
+      ),
+      false,
+    );
+    assert.equal(
+      isBetterCandidate({ verified: true, outstandingCount: 2 }, { verified: false, outstandingCount: 0 }),
+      true,
+    );
+  });
+  test('among equals fewer outstanding wins, ties go to the newer emission', () => {
+    assert.equal(isBetterCandidate({ verified: true, outstandingCount: 1 }, { verified: true, outstandingCount: 2 }), true);
+    assert.equal(isBetterCandidate({ verified: true, outstandingCount: 2 }, { verified: true, outstandingCount: 1 }), false);
+    assert.equal(isBetterCandidate({ verified: true, outstandingCount: 1 }, { verified: true, outstandingCount: 1 }), true);
+    assert.equal(isBetterCandidate({ verified: false, outstandingCount: 3 }, null), true);
+  });
+});
+
+describe('findRowsWithAllBlankDetail (reconcile blank-success hole)', () => {
+  const columns = { status: '#st', out_of_order: '#ooo' };
+  test('counts rows whose recovered values are ALL blank (login-wall artifact)', () => {
+    assert.equal(findRowsWithAllBlankDetail([
+      { pms_work_order_id: '1', status: 'Open', out_of_order: '' },   // partial = data
+      { pms_work_order_id: '2', status: '', out_of_order: '' },       // all-blank = artifact
+      { pms_work_order_id: '3', status: '', out_of_order: undefined },
+    ], columns), 2);
+    assert.equal(findRowsWithAllBlankDetail([], columns), 0);
+    assert.equal(findRowsWithAllBlankDetail([{ a: '' }], {}), 0);
   });
 });
 

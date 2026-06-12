@@ -219,7 +219,11 @@ export function findBlankContractColumns(
 
 const DETAIL_FEED_BUDGET_MS = 20_000;
 const DETAIL_NAV_TIMEOUT_MS = 5_000;
-const DETAIL_CACHE_TTL_MS = 300_000; // 5 min — recovered detail fields lag the 30s list cadence by ≤5 min
+// 10 min — recovered detail fields lag the 30s list cadence by ≤10 min. Sized
+// so steady-state refresh (≈4-15 fetches per 20s slice per poll) comfortably
+// outruns expiry even on a slow PMS with a 60-row list (review: a 5-min TTL
+// could wedge cold-start convergence on reconcile feeds).
+const DETAIL_CACHE_TTL_MS = 600_000;
 const DETAIL_CACHE_MAX = 500;
 
 const detailCache = new Map<string, { values: Record<string, string>; at: number }>();
@@ -312,6 +316,11 @@ export async function enrichRowsWithDetail(args: {
     if (cacheKey) {
       const hit = detailCache.get(cacheKey);
       if (hit && now() - hit.at <= DETAIL_CACHE_TTL_MS) {
+        // Refresh recency (true LRU): a hot record must not be evicted just
+        // because it was inserted early. Original timestamp kept — recency
+        // protects against eviction, not against staleness.
+        detailCache.delete(cacheKey);
+        detailCache.set(cacheKey, hit);
         for (const [col, v] of Object.entries(hit.values)) row[col] = v;
         enrichedCount++;
         continue;
@@ -340,6 +349,22 @@ export async function enrichRowsWithDetail(args: {
     : { ok: false, enrichedCount, failedCount, reason: failReason ?? 'detail enrichment failed' };
 }
 
+/** Rows whose RECOVERED detail values are ALL blank. Every rowDetail column
+ *  was value-verified NON-BLANK at mapping time, so an all-blank extraction is
+ *  an artifact (login wall, half-rendered page), not data — on a reconcile
+ *  feed such a row would be writer-rejected and then auto-resolved as
+ *  "disappeared", closing a live record (review P1). Exported for tests. */
+export function findRowsWithAllBlankDetail(
+  rows: Array<Record<string, unknown>>,
+  detailColumns: Record<string, string>,
+): number {
+  const cols = Object.keys(detailColumns);
+  if (cols.length === 0) return 0;
+  const isBlank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  return rows.filter((r) => cols.every((c) => isBlank(r[c]))).length;
+}
+
 function makePageDetailFetcher(page: Page, allowedHost: string): DetailFetcher {
   return async (url, columns) => {
     await safeGoto(page, url, {
@@ -348,6 +373,15 @@ function makePageDetailFetcher(page: Page, allowedHost: string): DetailFetcher {
       waitUntil: 'domcontentloaded',
       timeoutMs: DETAIL_NAV_TIMEOUT_MS,
     });
+    // Login-wall / redirect detection: safeGoto pins the HOST, but an expired
+    // session redirects same-host to a login page whose extraction "succeeds"
+    // with blanks. A path mismatch is a systematic failure → throw so it
+    // routes through failedCount and the reconcile-strict path.
+    const requestedPath = new URL(url).pathname;
+    const landedPath = new URL(page.url()).pathname;
+    if (landedPath !== requestedPath) {
+      throw new Error(`detail navigation redirected: requested ${requestedPath}, landed ${landedPath}`);
+    }
     return extractDetailFields(page, columns);
   };
 }
@@ -417,6 +451,28 @@ export async function runSingleSourceTemplate(args: {
       });
       if (template.writeStrategy === 'reconcile') {
         const reason = `detail_enrichment_failed: ${enrich.reason ?? 'unknown'} (${enrich.enrichedCount} ok, ${enrich.failedCount} failed) — refusing partial batch on a reconcile feed`;
+        return {
+          ok: false,
+          rows: [],
+          sourceResults: [{ name: source.name, ok: false, rowCount: sourceResult.rows.length, reason }],
+          reason,
+        };
+      }
+    }
+    // Blank-success hole (review P1): a fetch that "succeeded" onto a broken/
+    // half-rendered page extracts all-blank detail values; on a reconcile feed
+    // the writer would reject those rows and auto-resolve them as disappeared.
+    // Mapping-time verification proved these columns non-blank, so all-blank
+    // is an artifact — refuse the batch.
+    if (template.writeStrategy === 'reconcile') {
+      const allBlank = findRowsWithAllBlankDetail(sourceResult.rows, template.rowDetail.columns);
+      if (allBlank > 0) {
+        const reason = `detail_enrichment_blank: ${allBlank} row(s) extracted all-blank detail values — refusing partial batch on a reconcile feed`;
+        log.warn('template-runner: row-detail enrichment produced blank rows on a reconcile feed', {
+          tableName: template.tableName,
+          sourceActionKey: template.sourceActionKey,
+          blankRows: allBlank,
+        });
         return {
           ok: false,
           rows: [],

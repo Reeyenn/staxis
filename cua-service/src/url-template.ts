@@ -235,34 +235,62 @@ export function templatePlaceholders(template: string): string[] {
 //
 // inferUrlTemplate needs ≥3 samples; column recovery drills exactly ONE record
 // (cost cap). With one URL nothing "varies", so instead we ANCHOR: find URL
-// components that exactly equal the clicked row's known column values and
-// replace them with {column} placeholders. Conservative by construction:
+// components that exactly equal the clicked row's KEY value and replace them
+// with a {keyColumn} placeholder. Conservative by construction:
+//   - ONLY the key column anchors (code review P1: anchoring optional columns
+//     like room_number makes them URL params, and one row with a blank value
+//     then perma-fails a reconcile feed at poll time). Non-key components
+//     stay frozen literals — the second-record verification mechanically
+//     proves a frozen param is inert, or rejects the template;
 //   - only WHOLE path segments / WHOLE query-param values match (a room "101"
 //     inside a session token can never anchor);
-//   - values shorter than MIN_ANCHOR_VALUE_LEN never anchor;
-//   - a value shared by two different columns is ambiguous → fail;
-//   - the target's KEY column MUST be among the placeholders — a template
-//     parameterized only by room/date/status fetches the WRONG record for
-//     sibling rows (plan review: Codex #6);
 //   - any UNMATCHED component that looks like a date fails the whole template:
 //     a frozen day-scoped param verifies today and silently serves wrong/empty
-//     detail pages from tomorrow (plan review: Claude #8).
+//     detail pages from tomorrow;
+//   - any UNMATCHED component that looks like a session/auth token fails too:
+//     it verifies during mapping (same live session) and dies on the next
+//     session rotation — a time-bomb template that would churn paid repairs.
 // The caller then mechanically verifies the template against a SECOND row
 // before accepting (substitute → navigate → extract → value-gate).
 
 export const MIN_ANCHOR_VALUE_LEN = 3;
 
 const DATE_TOKEN_RES = [
-  /^\d{4}-\d{1,2}-\d{1,2}$/,            // 2026-06-12
+  /^\d{4}-\d{1,2}-\d{1,2}$/,         // 2026-06-12
   /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/, // 06/12/2026, 12-06-26, 6.12.26
-  /^\d{1,2}[\/\-.]\d{1,2}$/,            // 06/12 (year-less)
-  /^(19|20)\d{6}$/,                     // 20260612
+  /^\d{1,2}[\/-]\d{1,2}$/,           // 06/12, 6-12 (year-less; '.' excluded —
+                                     // "1.2"-style version segments are not dates)
 ];
 
 export function looksLikeDateToken(value: string): boolean {
   const v = value.trim();
   if (v === '') return false;
-  return DATE_TOKEN_RES.some((re) => re.test(v));
+  if (DATE_TOKEN_RES.some((re) => re.test(v))) return true;
+  // 8-digit compact dates: YYYYMMDD, MMDDYYYY, DDMMYYYY — require a plausible
+  // century so order numbers like "12345678" don't false-positive.
+  if (/^\d{8}$/.test(v)) {
+    if (/^(19|20)\d{6}$/.test(v)) return true;                 // YYYYMMDD
+    if (/^\d{4}(19|20)\d{2}$/.test(v)) {                       // ____YYYY
+      const a = parseInt(v.slice(0, 2), 10);
+      const b = parseInt(v.slice(2, 4), 10);
+      if (a >= 1 && a <= 31 && b >= 1 && b <= 31 && (a <= 12 || b <= 12)) return true;
+    }
+  }
+  return false;
+}
+
+/** Session/auth-shaped URL components — frozen copies rot when the PMS
+ *  rotates the session, so a template containing one must fail closed. */
+const SESSION_PARAM_KEY_RE = /sess|token|csrf|auth|sid$|^sid|ticket/i;
+const SESSION_VALUE_RE = /^[A-Fa-f0-9]{16,}$|^[A-Za-z0-9+/_=-]{24,}$/;
+
+export function looksLikeSessionToken(key: string | null, value: string): boolean {
+  const v = value.trim();
+  if (v === '') return false;
+  if (key && SESSION_PARAM_KEY_RE.test(key)) return true;
+  // Path segments / unnamed values: only the long-opaque-blob shape counts
+  // (jsessionid-style); short ids and words must not false-positive.
+  return SESSION_VALUE_RE.test(v) && !/^\d+$/.test(v);
 }
 
 export interface SingleSampleTemplateResult {
@@ -283,8 +311,8 @@ const safeDecode = (s: string): string => {
 
 /**
  * Build a detail-URL template from ONE sample URL + the clicked row's column
- * values. `keyColumn` is the target's record-identity column
- * (DISCOVERY_KEY_COLUMNS) and must end up anchored.
+ * values. ONLY `keyColumn` (the target's record-identity column,
+ * DISCOVERY_KEY_COLUMNS) is anchored; it must appear as a whole component.
  */
 export function templateFromSample(
   sampleUrl: string,
@@ -301,26 +329,18 @@ export function templateFromSample(
     return { ok: false, reason: `unsupported scheme: ${url.protocol}` };
   }
 
-  // value → columns claiming it (ambiguity detection).
-  const valueToColumns = new Map<string, string[]>();
-  for (const [col, raw] of Object.entries(rowValues)) {
-    const v = (raw ?? '').trim();
-    if (v.length < MIN_ANCHOR_VALUE_LEN) continue;
-    const cols = valueToColumns.get(v) ?? [];
-    cols.push(col);
-    valueToColumns.set(v, cols);
+  const keyValue = (rowValues[keyColumn] ?? '').trim();
+  if (keyValue === '') {
+    return { ok: false, reason: `key column ${keyColumn} has a blank value on the sample row` };
+  }
+  if (keyValue.length < MIN_ANCHOR_VALUE_LEN) {
+    return {
+      ok: false,
+      reason: `key value "${keyValue}" is shorter than ${MIN_ANCHOR_VALUE_LEN} chars — too collision-prone to anchor a URL`,
+    };
   }
 
-  const placeholders: string[] = [];
-  const matchComponent = (
-    decoded: string,
-  ): { kind: 'anchor'; column: string } | { kind: 'ambiguous' } | { kind: 'none' } => {
-    const cols = valueToColumns.get(decoded.trim());
-    if (!cols || cols.length === 0) return { kind: 'none' };
-    const unique = [...new Set(cols)];
-    if (unique.length > 1) return { kind: 'ambiguous' };
-    return { kind: 'anchor', column: unique[0]! };
-  };
+  let anchored = false;
 
   const templatePathParts: string[] = [];
   for (const segment of url.pathname.split('/')) {
@@ -328,51 +348,46 @@ export function templateFromSample(
       templatePathParts.push(segment);
       continue;
     }
-    const m = matchComponent(safeDecode(segment));
-    if (m.kind === 'ambiguous') {
-      return { ok: false, reason: `ambiguous anchor: path segment "${safeDecode(segment).slice(0, 40)}" matches multiple columns` };
+    const decoded = safeDecode(segment).trim();
+    if (decoded === keyValue) {
+      templatePathParts.push(`{${keyColumn}}`);
+      anchored = true;
+      continue;
     }
-    if (m.kind === 'anchor') {
-      templatePathParts.push(`{${m.column}}`);
-      placeholders.push(m.column);
-    } else {
-      if (looksLikeDateToken(safeDecode(segment))) {
-        return { ok: false, reason: `unanchored date-like path segment "${safeDecode(segment)}" — a frozen date would go stale` };
-      }
-      templatePathParts.push(segment);
+    if (looksLikeDateToken(decoded)) {
+      return { ok: false, reason: `unanchored date-like path segment "${decoded}" — a frozen date would go stale` };
     }
+    if (looksLikeSessionToken(null, decoded)) {
+      return { ok: false, reason: `session-token-like path segment — a frozen session would rot on rotation` };
+    }
+    templatePathParts.push(segment);
   }
 
   const templateQueryEntries: string[] = [];
   for (const [key, value] of url.searchParams.entries()) {
-    const m = matchComponent(value);
-    if (m.kind === 'ambiguous') {
-      return { ok: false, reason: `ambiguous anchor: query param "${key}" matches multiple columns` };
+    if (value.trim() === keyValue) {
+      templateQueryEntries.push(`${key}={${keyColumn}}`);
+      anchored = true;
+      continue;
     }
-    if (m.kind === 'anchor') {
-      templateQueryEntries.push(`${key}={${m.column}}`);
-      placeholders.push(m.column);
-    } else {
-      if (looksLikeDateToken(value)) {
-        return { ok: false, reason: `unanchored date-like query param "${key}=${value.slice(0, 20)}" — a frozen date would go stale` };
-      }
-      templateQueryEntries.push(`${key}=${encodeURIComponent(value)}`);
+    if (looksLikeDateToken(value)) {
+      return { ok: false, reason: `unanchored date-like query param "${key}=${value.slice(0, 20)}" — a frozen date would go stale` };
     }
+    if (looksLikeSessionToken(key, value)) {
+      return { ok: false, reason: `session-token-like query param "${key}" — a frozen session would rot on rotation` };
+    }
+    templateQueryEntries.push(`${key}=${encodeURIComponent(value)}`);
   }
 
-  const uniquePlaceholders = [...new Set(placeholders)];
-  if (uniquePlaceholders.length === 0) {
-    return { ok: false, reason: 'no row value anchors any URL component' };
-  }
-  if (!uniquePlaceholders.includes(keyColumn)) {
+  if (!anchored) {
     return {
       ok: false,
-      reason: `key column ${keyColumn} is not anchored in the URL — a non-key template would fetch the wrong record for sibling rows`,
+      reason: `key column ${keyColumn} ("${keyValue.slice(0, 24)}") does not appear as a whole URL component — cannot build per-row detail URLs`,
     };
   }
 
   const template =
     `${url.protocol}//${url.host}${templatePathParts.join('/')}` +
     (templateQueryEntries.length > 0 ? `?${templateQueryEntries.join('&')}` : '');
-  return { ok: true, template, placeholders: uniquePlaceholders };
+  return { ok: true, template, placeholders: [keyColumn] };
 }

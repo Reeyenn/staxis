@@ -86,7 +86,16 @@ export async function extractDomRows(
       const rows = els.slice(0, args.cap).map((el: Element) => {
         const out: Record<string, string> = {};
         for (const p of args.pairs) {
-          const target = p.css === '.' ? el : el.querySelector(p.css);
+          // Per-selector fault isolation: one syntactically-invalid CSS
+          // selector (querySelector throws) must read as a blank CELL, not
+          // kill the whole feed's extraction — the blank then classifies as
+          // a dead column while the good columns keep working.
+          let target: Element | null = null;
+          try {
+            target = p.css === '.' ? el : el.querySelector(p.css);
+          } catch {
+            target = null;
+          }
           if (!target) {
             out[p.field] = '';
             continue;
@@ -120,7 +129,13 @@ export async function extractDetailFields(
           out[p.field] = '';
           continue;
         }
-        const target = document.querySelector(p.css);
+        // Same per-selector fault isolation as the row reader.
+        let target: Element | null = null;
+        try {
+          target = document.querySelector(p.css);
+        } catch {
+          target = null;
+        }
         if (!target) {
           out[p.field] = '';
           continue;

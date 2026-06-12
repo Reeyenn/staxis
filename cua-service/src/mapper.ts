@@ -50,6 +50,7 @@ import {
   buildRecoveryHint,
   learnedForGate,
   expectedShapeFor,
+  isBetterCandidate,
   VALUE_PROBE_ROW_CAP,
   DEADNESS_ROW_CAP,
   RECOVERY_DRILL_STEP_CAP,
@@ -1944,7 +1945,10 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         const success: ActionMapSuccess = {
           ok: true,
           action: {
-            steps: recordedSteps,
+            // Snapshot — recordedSteps keeps growing across re-asks/drills;
+            // by-reference sharing would retroactively mutate an OLDER best
+            // candidate's recipe with later wandering (code review P1).
+            steps: [...recordedSteps],
             parse: { mode: 'table', hint: { rowSelector: parsed.rowSelector, columns: learnedColumns } },
           },
           ...(learnedSamples && { valueSamples: learnedSamples }),
@@ -1978,15 +1982,32 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 
         // Best-candidate tracking: an abort (or a re-ask that breaks a
         // previously-good column) must never ship a WORSE map than one we
-        // already verified. Ties go to the newest candidate. bail() commits
-        // the finalized best — recovery churn can only park, never quarantine
-        // a feed we actually found.
-        if (!bestCandidate || audit.outstanding.size <= bestCandidate.audit.outstanding.size) {
+        // already verified. VERIFIED beats unverified at any size — a
+        // structural-only audit (wandered page / failed probe) proves nothing
+        // about values, so it can never displace a measured candidate (code
+        // review P1). Ties go to the newest candidate. bail() commits the
+        // finalized best — recovery churn can only park, never quarantine a
+        // feed we actually found.
+        if (isBetterCandidate(
+          { verified: audit.verified, outstandingCount: audit.outstanding.size },
+          bestCandidate
+            ? { verified: bestCandidate.audit.verified, outstandingCount: bestCandidate.audit.outstanding.size }
+            : null,
+        )) {
           bestCandidate = { success, audit };
         }
-        lastGoodAction = finalizeRecoveredSuccess(bestCandidate);
+        // Always non-null from here (the comparator accepts anything over
+        // null); the fallback only narrows the type.
+        const best = bestCandidate ?? { success, audit };
+        lastGoodAction = finalizeRecoveredSuccess(best);
 
-        if (audit.outstanding.size === 0) return success;
+        // Accept-now only when this emission is CLEAN BY MEASUREMENT — or was
+        // never under recovery at all. An unverified audit with columns still
+        // pending recovery must not short-circuit (its non-blank selector
+        // strings are exactly the evidence we already proved insufficient).
+        if (audit.outstanding.size === 0 && (audit.verified || pendingRecovery.size === 0)) {
+          return success;
+        }
 
         // Stage 1 — focused on-page re-ask. Bounded by MAX_COMPLETENESS_REASKS
         // plus the surrounding step/cost/wallclock/token caps (this `continue`
@@ -2032,12 +2053,22 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // measured from drill start (deliberately EXEMPT from the per-target
         // soft-abort, which is typically already spent by now; the job cost
         // cap, wallclock and token ceilings still apply).
-        if (!recoveryDrillAttempted && audit.verified && bestCandidate.audit.verified) {
+        if (!recoveryDrillAttempted && best.audit.verified) {
           recoveryDrillAttempted = true;
-          const pre = drillPreconditions(args.actionName as keyof Recipe['actions'], bestCandidate.audit);
+          const pre = drillPreconditions(args.actionName as keyof Recipe['actions'], best.audit);
           if (pre.ok) {
-            const preDrillUrl = args.page.url();
-            const best = bestCandidate;
+            // The drill MUST run against the page the best candidate was
+            // VERIFIED on — its rowSelector/probeRows/sampleKey describe that
+            // page, and drillDown.listUrl is persisted from it. The model may
+            // have wandered since (code review P1) — navigate back first.
+            const feedPageUrl = best.audit.pageUrl;
+            if (args.page.url() !== feedPageUrl) {
+              await safeGoto(args.page, feedPageUrl, {
+                allowedHost: new URL(args.credentials.loginUrl).host,
+                context: 'mapper:colrecovery:tofeed',
+              }).catch(() => {});
+              await args.page.waitForTimeout(800);
+            }
             const drill = await mapMissingColumnsViaDrilldown({
               page: args.page,
               actionName: args.actionName,
@@ -2047,7 +2078,7 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
               signal: args.signal,
               model: args.model,
               jobCostCapMicros: args.jobCostCapMicros,
-              feedPageUrl: preDrillUrl,
+              feedPageUrl,
               rowSelector: best.success.action.parse.mode === 'table'
                 ? best.success.action.parse.hint.rowSelector
                 : parsed.rowSelector,
@@ -2056,11 +2087,12 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
               payloadEnums: best.success.enumMappings,
               provisionalDateFormat: args.provisionalDateFormat,
               deadlineAt: phaseStartedAt + helpWaitMs + PHASE_WALLCLOCK_BUDGET_MS,
+              tokensAlreadyUsed: totalInputTokens,
             });
             totalInputTokens += drill.tokensUsed;
             // Back to the feed page either way — the Learning Board preview
             // reads the CURRENT page right after mapActionCore returns.
-            await safeGoto(args.page, preDrillUrl, {
+            await safeGoto(args.page, feedPageUrl, {
               allowedHost: new URL(args.credentials.loginUrl).host,
               context: 'mapper:colrecovery:return',
             }).catch(() => {});
@@ -2089,7 +2121,7 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // applied honestly (missing/dead/rejected → blank selector so the
         // promotion gate parks the feed and the daily backfill retries;
         // `unparseable` keeps its selector — see finalizeRecoveredSuccess).
-        return finalizeRecoveredSuccess(bestCandidate);
+        return finalizeRecoveredSuccess(best);
       }
       // "Unavailable" path: agent explored, found nothing, told us so.
       // Plan v7 — require evidence of real effort before accepting it.
@@ -2374,6 +2406,9 @@ export interface PageAudit {
    *  emitted URL, extraction worked, ≥1 row). False degrades the audit to
    *  the historical string-only structural check. */
   verified: boolean;
+  /** The page URL the audit ran against — stage 2 must drill THIS page, not
+   *  whatever the model wandered to afterwards (code review P1). */
+  pageUrl: string;
   /** First VALUE_PROBE_ROW_CAP extracted rows — reused by the gate + drill. */
   probeRows: Array<Record<string, string>>;
   totalMatched: number;
@@ -2397,10 +2432,11 @@ async function auditLearnedColumnsOnPage(args: {
 }): Promise<PageAudit> {
   const outstanding = new Map<string, 'missing' | 'dead' | 'unparseable' | 'rejected'>();
   const problems: RecoveryProblem[] = [];
+  const pageUrl = args.page.url();
 
   if (requiredLearnedFor(args.actionKey).length === 0) {
     // Non-core target — not column-gated, nothing to verify.
-    return { verified: false, probeRows: [], totalMatched: 0, outstanding, problems };
+    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, problems };
   }
 
   const structuralOnly = (reason: string): PageAudit => {
@@ -2408,10 +2444,24 @@ async function auditLearnedColumnsOnPage(args: {
       outstanding.set(col, 'missing');
       problems.push({ column: col, kind: 'missing' });
     }
+    // Columns ALREADY under recovery stay suspect on a degraded audit: their
+    // selector strings being non-blank is exactly the evidence verification
+    // already proved insufficient. Without this, a wandered page or failed
+    // probe mid-recovery would bless a junk selector (code review P1).
+    for (const col of args.pendingRecovery) {
+      if (outstanding.has(col)) continue;
+      if (!(col in args.columns)) continue;
+      outstanding.set(col, 'rejected');
+      problems.push({
+        column: col,
+        kind: 'rejected',
+        detail: `could not re-verify (${reason}) — return to the feed page and re-emit from there`,
+      });
+    }
     log.info('mapper: column audit degraded to structural check', {
       actionName: args.actionKey, reason, outstanding: [...outstanding.keys()],
     });
-    return { verified: false, probeRows: [], totalMatched: 0, outstanding, problems };
+    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, problems };
   };
 
   // Wandered-page guard: the model can emit its JSON after navigating away;
@@ -2489,7 +2539,7 @@ async function auditLearnedColumnsOnPage(args: {
     }
   }
 
-  return { verified: true, probeRows, totalMatched: extraction.totalMatched, outstanding, problems };
+  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, problems };
 }
 
 /**
@@ -2519,8 +2569,16 @@ export function finalizeRecoveredSuccess(
   const drillDown = drill?.ok && drill.drillDown
     ? { ...drill.drillDown, listColumns: finalColumns }
     : undefined;
-  const enumMappings = { ...(success.enumMappings ?? {}), ...(drill?.enumMappings ?? {}) };
-  const valueSamples = { ...(success.valueSamples ?? {}), ...(drill?.valueSamples ?? {}) };
+  // Per-COLUMN deep merge — a drill's mapping for a column must extend, not
+  // replace, vocabulary the list turn already learned (code review P1).
+  const enumMappings: Record<string, Record<string, string>> = { ...(success.enumMappings ?? {}) };
+  for (const [col, mapping] of Object.entries(drill?.enumMappings ?? {})) {
+    enumMappings[col] = { ...(enumMappings[col] ?? {}), ...mapping };
+  }
+  const valueSamples: Record<string, string[]> = { ...(success.valueSamples ?? {}) };
+  for (const [col, samples] of Object.entries(drill?.valueSamples ?? {})) {
+    valueSamples[col] = [...new Set([...(valueSamples[col] ?? []), ...samples])];
+  }
   return {
     ...success,
     action: {
@@ -2601,6 +2659,9 @@ async function mapMissingColumnsViaDrilldown(args: {
   payloadEnums?: Record<string, Record<string, string>>;
   provisionalDateFormat?: LearnedDateFormat;
   deadlineAt: number;
+  /** Caller's input-token spend so far — the drill shares the action's
+   *  MAX_INPUT_TOKENS_PER_RUN ceiling rather than getting a fresh one. */
+  tokensAlreadyUsed: number;
 }): Promise<RecoveryDrillResult> {
   const cfg = getModeConfig(args.model);
   const actionKey = args.actionName as keyof Recipe['actions'];
@@ -2655,8 +2716,15 @@ async function mapMissingColumnsViaDrilldown(args: {
 
   for (let stepIdx = 0; stepIdx < RECOVERY_DRILL_STEP_CAP; stepIdx++) {
     if (Date.now() > args.deadlineAt) return fail('wallclock budget exceeded');
+    if (args.tokensAlreadyUsed + tokensUsed > MAX_INPUT_TOKENS_PER_RUN) {
+      return fail('token budget exceeded');
+    }
     const budget = await isJobOverBudget(args.jobId, args.jobCostCapMicros);
     if (budget.over) return fail('job cost cap hit');
+    // Per-turn pre-check, same semantics as the per-target soft-abort: the
+    // in-flight call is already paid for, so a result that lands ON the turn
+    // that crosses the cap is still returned — overshoot is bounded by one
+    // turn's cost.
     if (args.jobId) {
       const spent = await getJobCostMicros(args.jobId);
       if (spent - costBaseline > RECOVERY_DRILL_COST_CAP_MICROS) {
@@ -2720,8 +2788,17 @@ async function mapMissingColumnsViaDrilldown(args: {
         return fail('drill returned no selectors for the missing fields');
       }
 
-      const drillEnums = coerceEnumMappings(parsed.enumMappings);
-      const drillSamples = coerceValueSamples(parsed.valueSamples);
+      // Scope learned-value contributions to the fields this drill owns — an
+      // unsolicited re-emission of e.g. `priority` must not later REPLACE the
+      // richer vocabulary the list turn learned (code review P1).
+      const onlyMissing = <T>(m: Record<string, T> | undefined): Record<string, T> | undefined => {
+        if (!m) return undefined;
+        const out: Record<string, T> = {};
+        for (const col of args.missingCols) if (m[col] !== undefined) out[col] = m[col]!;
+        return Object.keys(out).length > 0 ? out : undefined;
+      };
+      const drillEnums = onlyMissing(coerceEnumMappings(parsed.enumMappings));
+      const drillSamples = onlyMissing(coerceValueSamples(parsed.valueSamples));
       const dateSamples: string[] = [];
       for (const col of CORE_TARGET_CONTRACTS[actionKey]?.columns ?? []) {
         if (col.type !== 'date') continue;
@@ -2816,10 +2893,21 @@ async function mapMissingColumnsViaDrilldown(args: {
 
       // Stale-record guard: a PMS that ignores the id param re-renders the
       // SAME record for url2 — values gate-pass while being record 1's.
-      const bodyText: string = await args.page
-        .evaluate(() => document.body?.innerText ?? '')
-        .catch(() => '');
-      if (bodyText !== '' && bodyText.includes(sampleKey) && !bodyText.includes(verifyKey)) {
+      // Word-boundary matching so verifyKey "123" inside sampleKey "1234"
+      // (or inside totals/phones) can't fake a pass; an eval failure fails
+      // CLOSED — this is the only protection against that silent-wrong-data
+      // case (code review P1/P2).
+      let bodyText: string;
+      try {
+        bodyText = await args.page.evaluate(() => document.body?.innerText ?? '');
+      } catch {
+        return fail('stale-record check could not read the verification page');
+      }
+      const keyPresent = (key: string): boolean => {
+        const esc = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(?<![A-Za-z0-9])${esc}(?![A-Za-z0-9])`).test(bodyText);
+      };
+      if (keyPresent(sampleKey) && !keyPresent(verifyKey)) {
         return fail('verification page still shows the sample record — the URL parameter appears to be ignored');
       }
 
@@ -2848,7 +2936,9 @@ async function mapMissingColumnsViaDrilldown(args: {
     }
 
     const toolUses = responseContent.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
-    if (toolUses.length === 0) break;
+    if (toolUses.length === 0) {
+      return fail('model turn produced neither tool use nor final JSON');
+    }
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
