@@ -628,47 +628,41 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
             />
           </Card>
 
-          {/* WEEK-DAYS STRIP */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            margin: '2px 2px 10px', gap: 12, flexWrap: 'wrap',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <Caps>{expandedWeek.current ? (es ? 'Esta semana' : 'This week') : (es ? 'Semana del' : 'Week of')}</Caps>
-              <Caps c={T.caramelDeep}>{expandedWeek.label}</Caps>
+          {/* Bottom area: week-days strip + plan-by-week on the left,
+              time off beside them on the right — no extra row. */}
+          <div style={{ display: 'flex', gap: 22, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 520px', minWidth: 0 }}>
+              {/* WEEK-DAYS STRIP */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, margin: '2px 2px 10px' }}>
+                <Caps>{expandedWeek.current ? (es ? 'Esta semana' : 'This week') : (es ? 'Semana del' : 'Week of')}</Caps>
+                <Caps c={T.caramelDeep}>{expandedWeek.label}</Caps>
+              </div>
+              <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
+                {expandedWeek.days.map(dayCard)}
+              </div>
+
+              {/* PLAN BY WEEK */}
+              <div style={{ margin: '22px 2px 10px' }}>
+                <Caps>{es ? 'Planear por semana · dom–sáb' : 'Plan by week · Sun–Sat'}</Caps>
+              </div>
+              <div ref={dayRailRef} style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
+                {weeks.map(w => weekBoxCard(w, expandedWeekStart === w.start, () => setExpandedWeekStart(w.start)))}
+              </div>
             </div>
-            <span style={{
-              fontFamily: fonts.mono, fontSize: 10.5, letterSpacing: '0.06em',
-              color: data.pendingTor.length > 0 ? T.caramelDeep : T.ink3,
-              fontWeight: data.pendingTor.length > 0 ? 700 : 500, textTransform: 'uppercase',
-            }}>
-              {data.pendingTor.length} {es
-                ? `solicitud${data.pendingTor.length === 1 ? '' : 'es'} de tiempo libre`
-                : `time-off request${data.pendingTor.length === 1 ? '' : 's'} pending`}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
-            {expandedWeek.days.map(dayCard)}
-          </div>
 
-          {/* PLAN BY WEEK */}
-          <div style={{ margin: '22px 2px 10px' }}>
-            <Caps>{es ? 'Planear por semana · dom–sáb' : 'Plan by week · Sun–Sat'}</Caps>
+            {/* TIME OFF — right column */}
+            <div style={{ flex: '1 1 320px', maxWidth: 430, minWidth: 300 }}>
+              <TimeOffSection
+                pending={data.pendingTor}
+                decidedCount={data.decidedTor.length}
+                staff={staff}
+                today={data.today}
+                lang={lang}
+                onDecide={data.decideTor}
+                onOpenHistory={() => setTorHistoryOpen(true)}
+              />
+            </div>
           </div>
-          <div ref={dayRailRef} style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
-            {weeks.map(w => weekBoxCard(w, expandedWeekStart === w.start, () => setExpandedWeekStart(w.start)))}
-          </div>
-
-          {/* TIME OFF — pending requests, bottom-left */}
-          <TimeOffSection
-            pending={data.pendingTor}
-            decidedCount={data.decidedTor.length}
-            staff={staff}
-            today={data.today}
-            lang={lang}
-            onDecide={data.decideTor}
-            onOpenHistory={() => setTorHistoryOpen(true)}
-          />
         </>
       )}
 

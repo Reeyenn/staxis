@@ -65,7 +65,6 @@ export function TimeOffSection({
 
   return (
     <div style={{
-      marginTop: 24, maxWidth: 560,
       border: `1px solid ${T.rule}`, borderRadius: 16, background: T.paper, overflow: 'hidden',
     }}>
       <div style={{
