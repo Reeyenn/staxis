@@ -103,18 +103,19 @@ async function resolvePropertyByCode(code: string): Promise<{
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  // IP-keyed rate limit BEFORE the DB lookup. The lookup leaks "code
-  // exists yes/no" via response timing and 404-vs-200 status, so we
-  // cap the spray rate at the route boundary. Security review 2026-05-16
-  // (Pattern G). Apply to GET because it also leaks hotel-name + room
-  // count for a valid code.
-  const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
-  if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
-
   const code = new URL(req.url).searchParams.get('code') ?? '';
 
   const resolved = await resolvePropertyByCode(code);
   if (!resolved) {
+    // Rate-limit ONLY invalid-code probes (per IP). The bucket exists to cap
+    // blind code-spray enumeration — checking it only on the MISS path keeps
+    // that protection while never throttling a legitimate in-progress
+    // onboarding, which makes many valid GET/PATCH calls (now including
+    // back-navigation). Mirrors /api/onboard/mapping-status. Security review
+    // 2026-05-16 (Pattern G); refined 2026-06-13 to not 429-lock real
+    // operators who go back to fix a form.
+    const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
     return err('Invalid or expired code', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -124,7 +125,7 @@ export async function GET(req: NextRequest) {
   // anchor for unauth reads here.
   const { data: prop, error: propErr } = await supabaseAdmin
     .from('properties')
-    .select('id, name, total_rooms, timezone, brand, property_kind, pms_type, onboarding_state, onboarding_completed_at')
+    .select('id, name, total_rooms, timezone, brand, property_kind, pms_type, services_enabled, onboarding_state, onboarding_completed_at')
     .eq('id', resolved.propertyId)
     .maybeSingle();
   if (propErr || !prop) {
@@ -204,6 +205,10 @@ export async function GET(req: NextRequest) {
       brand: prop.brand,
       propertyKind: prop.property_kind,
       pmsType: prop.pms_type,
+      // Back-nav (2026-06-13): expose saved service toggles so Step 5 can
+      // re-hydrate them when the operator navigates back, instead of resetting
+      // every toggle to ON and silently overwriting their prior choices.
+      servicesEnabled: (prop.services_enabled as Record<string, boolean> | null) ?? null,
     },
     inviteRole: resolved.codeRow.role,
   }, { requestId });
@@ -218,10 +223,11 @@ interface PatchBody {
   // When the wizard hits Step 9 + the user clicks "Go to Dashboard",
   // the client sends finalize=true so we set onboarding_completed_at.
   finalize?: unknown;
-  // "Re-enter login" on a failed mapping (Step 7) sends resetPmsStep=true to
-  // walk the operator back to Step 6 (Connect PMS) so they can fix the
-  // credentials and retry.
-  resetPmsStep?: unknown;
+  // Back-navigation: the "← Back" / "Re-enter login" buttons send a list of
+  // onboarding_state keys to clear, which makes deriveCurrentStep land on an
+  // earlier step so the operator can edit a form they got wrong. Only keys in
+  // CLEARABLE_STATE_KEYS are honored.
+  clearStateKeys?: unknown;
 }
 
 const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
@@ -229,14 +235,19 @@ const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
   'region', 'climate_zone', 'size_tier', 'services_enabled',
 ]);
 
+// Back-navigation allow-list. Clearing one of these completion markers makes
+// deriveCurrentStep return the step that produced it, so the operator walks
+// back one form. Deliberately EXCLUDES the auth markers accountCreatedAt +
+// emailVerifiedAt: un-creating the account or un-verifying the email
+// mid-signup would strand the login (the auth user already exists). Welcome→
+// account is also not reversible here (nothing to edit on the welcome screen).
+const CLEARABLE_STATE_KEYS = new Set<keyof OnboardingState>([
+  'hotelDetailsAt', 'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
+  'mappingCompletedAt', 'staffAt',
+]);
+
 export async function PATCH(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-
-  // IP-keyed rate limit BEFORE the DB lookup (same rationale as GET —
-  // code-existence leaks via 404-vs-200). Security review 2026-05-16
-  // (Pattern G).
-  const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
-  if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
   let body: PatchBody;
   try {
@@ -248,6 +259,13 @@ export async function PATCH(req: NextRequest) {
   const code = typeof body.code === 'string' ? body.code : '';
   const resolved = await resolvePropertyByCode(code);
   if (!resolved) {
+    // Rate-limit ONLY invalid-code probes (per IP) — caps brute-force code
+    // enumeration without throttling a legitimate operator who makes many
+    // valid PATCHes (now including back-navigation). Same model as GET above
+    // + /api/onboard/mapping-status. Security review 2026-05-16 (Pattern G);
+    // refined 2026-06-13.
+    const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
     return err('Invalid or expired code', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -258,6 +276,15 @@ export async function PATCH(req: NextRequest) {
       return err('Invalid partialState shape', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
     partialState = body.partialState;
+  }
+
+  // Validate clearStateKeys shape if present (back-navigation). Must be a
+  // short array; a non-array or oversized payload is a client bug → 400
+  // (consistent with propertyUpdates' strict checks). Unknown / non-clearable
+  // keys are filtered later via the CLEARABLE_STATE_KEYS allow-list.
+  if (body.clearStateKeys !== undefined &&
+      (!Array.isArray(body.clearStateKeys) || body.clearStateKeys.length > 16)) {
+    return err('Invalid clearStateKeys shape', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   // Validate propertyUpdates: each key must be in the allow-list.
@@ -314,20 +341,25 @@ export async function PATCH(req: NextRequest) {
     ...currentState,
     ...partialState,
   };
-  // Retry support (2026-06-13): "Re-enter login" on a failed mapping sends
-  // resetPmsStep=true to walk the operator back to Step 6 (Connect PMS).
-  // We can't express "clear a key" through partialState (JSON.stringify drops
-  // undefined, and isValidPartialState rejects null), so handle it here:
-  // delete the PMS completion markers, which makes deriveCurrentStep return 6.
-  // The stale FAILED mapper job is deliberately left in place — it holds the
-  // per-property idempotency key, so the session driver can't auto-re-run with
-  // the OLD bad credentials in the gap before the operator re-submits. That
-  // job is cleared in /api/pms/save-credentials once NEW creds are saved,
-  // which lets the driver enqueue a fresh learn (~30s later).
-  if (body.resetPmsStep === true) {
-    delete mergedState.pmsCredentialsAt;
-    delete mergedState.pmsJobId;
-    delete mergedState.mappingCompletedAt;
+  // Back-navigation (2026-06-13): the "← Back" buttons (and "Re-enter login"
+  // on a failed mapping) send clearStateKeys to walk the operator back to an
+  // earlier form. We can't express "clear a key" through partialState
+  // (JSON.stringify drops undefined, and isValidPartialState rejects null), so
+  // handle it here: delete each allow-listed completion marker, which makes
+  // deriveCurrentStep return the corresponding earlier step. Auth markers are
+  // not in the allow-list, so a back can never strand the login.
+  //
+  // PMS retry note: going back from a FAILED mapping leaves the failed mapper
+  // job in place on purpose — it holds the per-property idempotency key, so
+  // the session driver can't auto-re-run with the OLD bad credentials in the
+  // gap before the operator re-submits. That job is cleared (and the session
+  // re-armed) in /api/pms/save-credentials once NEW creds are saved.
+  if (Array.isArray(body.clearStateKeys)) {
+    for (const k of body.clearStateKeys) {
+      if (typeof k === 'string' && CLEARABLE_STATE_KEYS.has(k as keyof OnboardingState)) {
+        delete mergedState[k as keyof OnboardingState];
+      }
+    }
   }
   // Recompute step from the merged state (don't trust client-sent step).
   mergedState.step = deriveCurrentStep(mergedState);

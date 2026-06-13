@@ -34,7 +34,7 @@ import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
-import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles } from 'lucide-react';
+import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles, ChevronLeft } from 'lucide-react';
 import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
 import { useLang } from '@/contexts/LanguageContext';
 import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
@@ -54,6 +54,7 @@ interface WizardStateResponse {
     brand: string | null;
     propertyKind: string | null;
     pmsType: string | null;
+    servicesEnabled: Record<string, boolean> | null;
   } | null;
   inviteRole: 'owner' | 'general_manager' | null;
 }
@@ -275,6 +276,63 @@ function FullPage({ children }: { children: React.ReactNode }) {
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center', padding: '20px',
     }}>{children}</div>
+  );
+}
+
+/**
+ * Reusable "← Back" control for the wizard's editable form steps. Sends the
+ * onboarding_state keys to clear (server allow-list = CLEARABLE_STATE_KEYS),
+ * which makes the next refetch land on the previous form so the operator can
+ * fix what they entered. Best-effort: a failed PATCH just leaves them on the
+ * current step. Only rendered on steps with a SAFE previous form — never on
+ * the account/email-verification steps (those are auth-locked) or the Welcome/
+ * Done endpoints.
+ */
+function WizardBackButton({ code, clearKeys, onNext }: {
+  code: string; clearKeys: string[]; onNext: () => Promise<void>;
+}) {
+  const [backing, setBacking] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const goBack = async () => {
+    if (backing) return;
+    setBacking(true);
+    setFailed(false);
+    try {
+      const res = await fetch('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code, clearStateKeys: clearKeys }),
+      });
+      if (res.ok) { await onNext(); return; }
+      setFailed(true);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBacking(false);
+    }
+  };
+  return (
+    <div style={{ marginBottom: '16px' }}>
+      <button
+        type="button"
+        onClick={goBack}
+        disabled={backing}
+        style={{
+          background: 'none', border: 'none', padding: 0,
+          cursor: backing ? 'default' : 'pointer',
+          color: 'var(--text-muted)', fontSize: '13px',
+          display: 'inline-flex', alignItems: 'center', gap: '4px',
+          opacity: backing ? 0.5 : 1,
+        }}
+      >
+        {backing ? <Loader2 size={14} className="spin" /> : <ChevronLeft size={15} />} Back
+      </button>
+      {failed && (
+        <span style={{ marginLeft: '8px', fontSize: '12px', color: 'var(--red, #ef4444)' }}>
+          Couldn&apos;t go back — try again.
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -574,9 +632,15 @@ const SERVICES = [
   { key: 'inventory', label: 'Inventory', hint: 'Auto-reorder + counts' },
 ];
 
-function Step5Services({ code, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+function Step5Services({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+  // Hydrate from saved selections so navigating BACK to this step doesn't reset
+  // every toggle to ON and silently overwrite the operator's prior choices on
+  // the next Continue. Cold start (nothing saved) → all on. A service key
+  // absent from the saved map also defaults on (forward-compat with new
+  // services added after the hotel first saved).
+  const savedServices = wizard.hotelDefaults?.servicesEnabled ?? null;
   const [selected, setSelected] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(SERVICES.map((s) => [s.key, true])),
+    Object.fromEntries(SERVICES.map((s) => [s.key, savedServices ? savedServices[s.key] !== false : true])),
   );
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -607,6 +671,7 @@ function Step5Services({ code, onNext }: { code: string; wizard: WizardStateResp
 
   return (
     <div>
+      <WizardBackButton code={code} clearKeys={['hotelDetailsAt']} onNext={onNext} />
       <SettingsIcon size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Which services do you want?</h2>
       <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
@@ -690,6 +755,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
 
   return (
     <div>
+      <WizardBackButton code={code} clearKeys={['servicesAt']} onNext={onNext} />
       <KeyRound size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Connect your PMS</h2>
       <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
@@ -865,8 +931,8 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
   };
 
   // "Re-enter login" on a failed mapping → walk back to Step 6 (Connect PMS)
-  // so the operator can fix the credentials and retry. resetPmsStep clears the
-  // PMS completion markers server-side (deriveCurrentStep → 6) and onNext()
+  // so the operator can fix the credentials and retry. clearStateKeys removes
+  // the PMS completion markers server-side (deriveCurrentStep → 6) and onNext()
   // refetches, which re-renders Step6ConnectPms. The corrected-creds save then
   // clears the stale failed mapper job (see /api/pms/save-credentials), so the
   // driver enqueues a fresh learn against the new login.
@@ -878,7 +944,7 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
       const res = await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, resetPmsStep: true }),
+        body: JSON.stringify({ code, clearStateKeys: ['pmsCredentialsAt', 'pmsJobId', 'mappingCompletedAt'] }),
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) { setReenterError(t.reenterError); return; }
@@ -1166,6 +1232,10 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
 
   return (
     <div>
+      {/* No "← Back" here: the only earlier step is the (completed) mapping
+          progress screen — not an editable form — so a back button would land
+          on a result screen the operator can't act on. Team is the last
+          optional form; "Skip" covers opting out. */}
       <Users size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Add your team (optional)</h2>
       <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
