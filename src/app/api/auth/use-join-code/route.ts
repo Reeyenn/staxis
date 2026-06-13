@@ -311,7 +311,20 @@ export async function POST(req: NextRequest) {
   // Non-fatal if the insert fails: the user can re-sign-in with the
   // password they just set via the regular /signin flow, which will
   // trigger the normal hook-based proof write.
-  const proofExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  //
+  // Window = 60 min (was 10). The proof is claimed by trust-device at the
+  // OTP-verification step of onboarding/signup, which can be MUCH later than
+  // account creation: the user has to receive the verification email, find
+  // it, and enter the code — easily >10 min on a slow inbox or a real person
+  // filling out the multi-step wizard. When the proof expired first,
+  // trust-device 403'd, the device was never trusted, and the next
+  // authenticated save bounced the user to "Your session ended" (confirmed in
+  // prod 2026-06-13: onboarding accounts with proofs that expired unused).
+  // The proof is single-use + user-scoped + only mints trust for the
+  // brand-new account that JUST set this password, so a 60-min window is a
+  // safe widening (it strictly extends an already-working fast path) and
+  // roughly matches the email-OTP validity the user is racing anyway.
+  const proofExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const { error: proofErr } = await supabaseAdmin
     .from('password_signin_proofs')
     .insert({
