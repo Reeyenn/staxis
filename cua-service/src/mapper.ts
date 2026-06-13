@@ -43,7 +43,8 @@ import { sendAdminSms } from './admin-sms.js';
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns, templateFromSample, substituteTemplate } from './url-template.js';
-import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS } from './target-contract.js';
+import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS, coreTargetSharesRequiredSchema } from './target-contract.js';
+import { shouldNudgeCommit, buildCommitNudge, COMMIT_DITHER_TURNS, type TabularSummary } from './commit-signal.js';
 import {
   auditRequiredColumns,
   gateRecoveredColumn,
@@ -1750,6 +1751,77 @@ async function captureBoardPreview(
   }
 }
 
+/**
+ * fix/cua-mapper-commit — purely-structural probe of the CURRENT page, feeding
+ * the deterministic commit-nudge (commit-signal.ts). Counts repeating,
+ * >=2-column tabular structures — native <table> and ARIA role=grid/table — and
+ * the most columns / DATA rows in any of them. UNIVERSAL: shape counts only, no
+ * PMS vocabulary / page name / URL. Never navigates.
+ *
+ * Fail-safe: ANY error (page closing/navigating mid-flight) OR a >2s stall
+ * resolves to an all-zero summary → hasCommittableStructure() is false → no
+ * nudge → EXACTLY today's behavior. The probe can therefore never make a run
+ * worse than it is now; at worst it stays silent. Runs at most once per
+ * candidate page (the caller gates it behind the dither/dashboard/stable
+ * checks), so the extra page.evaluate is not paid every turn.
+ */
+async function summarizeTabularStructure(page: Page): Promise<TabularSummary> {
+  const empty: TabularSummary = { tableCount: 0, maxColumns: 0, maxDataRows: 0 };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // .catch on the evaluate so that if the 2s timeout wins the race, a LATER
+    // rejection from the still-pending evaluate (page closed/navigated) is
+    // swallowed here rather than surfacing as an unhandled rejection.
+    const probe = page
+      .evaluate((): TabularSummary => {
+        let tableCount = 0;
+        let maxColumns = 0;
+        let maxDataRows = 0;
+        const note = (cols: number, dataRows: number) => {
+          if (cols < 2) return; // 1-column => nav menu / list, not a data table
+          tableCount += 1;
+          if (cols > maxColumns) maxColumns = cols;
+          if (dataRows > maxDataRows) maxDataRows = dataRows;
+        };
+        // Native HTML tables.
+        for (const t of Array.from(document.querySelectorAll('table'))) {
+          const trs = Array.from(t.querySelectorAll('tr'));
+          if (trs.length === 0) continue;
+          let cols = 0;
+          for (const tr of trs) {
+            const n = tr.querySelectorAll('td, th').length;
+            if (n > cols) cols = n;
+          }
+          // A data row contains at least one <td> (header-only rows excluded).
+          const dataRows = trs.filter((tr) => tr.querySelector('td')).length;
+          note(cols, dataRows);
+        }
+        // ARIA grids / tables (div-based renderers that opt into roles).
+        for (const g of Array.from(document.querySelectorAll('[role="grid"], [role="table"]'))) {
+          const rows = Array.from(g.querySelectorAll('[role="row"]'));
+          if (rows.length === 0) continue;
+          let cols = 0;
+          for (const r of rows) {
+            const n = r.querySelectorAll('[role="cell"], [role="gridcell"], [role="columnheader"]').length;
+            if (n > cols) cols = n;
+          }
+          const dataRows = rows.filter((r) => r.querySelector('[role="cell"], [role="gridcell"]')).length;
+          note(cols, dataRows);
+        }
+        return { tableCount, maxColumns, maxDataRows };
+      })
+      .catch((): TabularSummary => empty);
+    const timeout = new Promise<TabularSummary>((resolve) => {
+      timer = setTimeout(() => resolve(empty), 2000);
+    });
+    return await Promise.race([probe, timeout]);
+  } catch {
+    return empty;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | ActionMapFailure> {
   let capture: NetworkCaptureHandle | null = null;
   try {
@@ -1869,7 +1941,20 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 
   const fullGoal =
     args.goal +
-    `\n\nWORKFLOW (use the computer tool):\n` +
+    `\n\nCOMMIT RULE (read first): The FIRST page you reach that shows this feed's ` +
+    `data as a repeating table or list — i.e. you can see the columns/headers for ` +
+    `the required fields below — IS the answer. Emit the success JSON immediately. ` +
+    `Do NOT keep looking for a cleaner, fancier, or "report"-named version. Two ` +
+    `things are NOT reasons to keep searching: (a) the table has ZERO data rows ` +
+    `right now — a correct page that is simply empty today (e.g. no departures yet) ` +
+    `is a COMPLETE, valid capture; read the column selectors from the header row and ` +
+    `emit them; (b) the page is not titled "Report" — the data SHAPE is what matters, ` +
+    `not the page's name. The ONLY reason to keep navigating is if the page is a ` +
+    `DIFFERENT feed than your target (check the heading — e.g. you need DEPARTURES ` +
+    `but you are on ARRIVALS): then return to the dashboard and pick the adjacent ` +
+    `item. A dashboard summary TILE of totals is not the feed — find the page that ` +
+    `lists the individual records.\n\n` +
+    `WORKFLOW (use the computer tool):\n` +
     `1. Take a SCREENSHOT to see the dashboard.\n` +
     `2. SCAN the screenshot for any menu item / link / tab whose visible ` +
     `text matches the target (e.g. for housekeeping look for "Housekeeping", ` +
@@ -1888,7 +1973,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     `Arrivals/Departures and Check-In/Check-Out usually sit right next to each ` +
     `other — if you already found one, its sibling is normally the adjacent menu ` +
     `item, so look there.\n` +
-    `6. Once on the target page (you see a table with one row per record), ` +
+    `6. Once on the target page (you see a table/list whose COLUMNS match the ` +
+    `required fields — even if it has ZERO data rows right now), ` +
     `take a final screenshot and identify the table visually. Make your best ` +
     `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
     `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
@@ -1998,6 +2084,30 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
       ? { ...lastGoodAction, viaBail: true }
       : { ok: false, reason, finalUrl: args.page.url() };
 
+  // fix/cua-mapper-commit — deterministic commit-nudge state. When the agent
+  // lingers on the same page for several turns (dithering, not navigating) and
+  // that page already shows a committable tabular structure, the mapper appends
+  // a one-time "commit checkpoint" reminder so a feed that's actually FOUND gets
+  // captured instead of grinding to a cost-cap / loop-detector death.
+  //
+  // Eligibility is deliberately narrow so it can never deterministically commit a
+  // WRONG page:
+  //   - CORE feed only — optional/report feeds get NO post-emit value check
+  //     (auditLearnedColumnsOnPage returns empty for non-core), so a nudge there
+  //     could bless an arbitrary table; they rely on the prompt fixes.
+  //   - UNIQUE required-column schema only — a schema sibling (getArrivals vs
+  //     getDepartures, identical required columns) is indistinguishable to the
+  //     audit, so nudging one risks committing the other; siblings rely on the
+  //     model's heading/identity read in the COMMIT RULE + goal instead. The
+  //     feeds that DO nudge (room status, work orders) carry value audits
+  //     (status enum / out_of_order boolean) that genuinely gate a wrong shape.
+  const nudgeEligibleTarget =
+    requiredLearnedFor(args.actionName as keyof Recipe['actions']).length > 0 &&
+    !coreTargetSharesRequiredSchema(args.actionName as keyof Recipe['actions']);
+  let prevTurnFingerprint: string | null = null;
+  let samePageStreak = 0;
+  const commitNudgedFingerprints = new Set<string>();
+
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return bail('token budget exceeded');
@@ -2053,6 +2163,17 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     // to act on. Best-effort: errors fall back to a URL-only fingerprint
     // inside the helper.
     const turnPageFingerprint = await pageFingerprint(args.page);
+
+    // fix/cua-mapper-commit — dither tracking for the commit-nudge. Same-page
+    // streak = consecutive turns the model has REASONED on the identical page
+    // fingerprint (it keeps clicking no-ops / re-screenshotting instead of
+    // committing or navigating). The nudge gate below additionally re-checks the
+    // fingerprint AFTER this turn's action, so a turn that actually navigated (or
+    // an SPA route swap that kept the URL) can't inherit a stale streak.
+    samePageStreak = prevTurnFingerprint !== null && turnPageFingerprint === prevTurnFingerprint
+      ? samePageStreak + 1
+      : 0;
+    prevTurnFingerprint = turnPageFingerprint;
 
     // Plan v10 (FIX 1) — deliberate-backtrack accounting. Runs at the TOP of the
     // step (before this step's actions are recorded into the loop detector at the
@@ -2510,9 +2631,16 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
             signal: args.signal,
           });
           if (verdict.verdict === 'failure') {
+            // Commit-aware note (fix/cua-mapper-commit): a no-op click while the
+            // agent is ALREADY on the right page used to read as "you failed to
+            // reach the target — reconsider", nudging it to wander off a correct
+            // page. Reframe as commit-or-redirect: if a matching table is already
+            // visible, commit; otherwise go back and try a different link.
             const note =
-              `Critic note: that click does not appear to have achieved <${args.actionName}>. ` +
-              `${verdict.reason} Reconsider before next action.\n\n`;
+              `Critic note: that click did not visibly move you forward. ${verdict.reason} ` +
+              `If you are ALREADY looking at a table/list whose columns match this feed's ` +
+              `required fields, stop clicking and emit the success JSON now (an empty table ` +
+              `is a valid capture). Otherwise return to the dashboard and try a different link.\n\n`;
             execForToolResult = { ...exec, output: note + exec.output };
           } else if (verdict.verdict === 'unclear') {
             log.warn('critic: unclear verdict — continuing', {
@@ -2538,26 +2666,90 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
       }
     }
 
-    // Loop-detector input #2 — record each toolUse's (action, page)
-    // tuple and abort if any one trips the detector. Page fingerprint is
-    // `turnPageFingerprint` from above (the state Claude reasoned on),
-    // not the post-action state — we're detecting "agent keeps trying
-    // the same thing on the same starting state", which is the canonical
-    // stuck-in-a-loop pattern.
-    for (const toolUse of toolUses) {
-      const stuck = loopDetector.record(actionFingerprint(toolUse.input), turnPageFingerprint);
-      if (stuck.stuck) {
-        log.warn('mapper: action-loop detector tripped — aborting target', {
-          jobId: args.jobId ?? undefined,
-          actionName: args.actionName,
-          stepIdx,
-          reason: stuck.reason,
-        });
-        return bail('loop detector tripped');
+    // fix/cua-mapper-commit — deterministic commit-nudge. Decided BEFORE the
+    // loop-detector trip check (which can `bail` and return) so the reminder is
+    // actually delivered this turn, and a nudge turn RESETS the loop detector
+    // (seeded with this turn's tuples) so the freshly-reminded model gets a clean
+    // leg instead of racing the 4th-identical-tuple trip — same idiom as the
+    // recovery re-ask. Cheap gates run first; the page-fingerprint + structural
+    // probes run only on a genuine candidate turn. The page must be UNCHANGED
+    // across the turn (post-action fingerprint == the pre-action one the streak
+    // was built on) so a turn that navigated — or an SPA route swap that kept the
+    // URL — can't inherit a stale streak and get nudged on a page just reached.
+    // The nudge is model-mediated: the model still emits selectors and the column
+    // audit still verifies them, so it can never by itself commit a wrong page.
+    let commitNudgeText: string | null = null;
+    if (nudgeEligibleTarget && samePageStreak >= COMMIT_DITHER_TURNS) {
+      const turnEndUrl = safeUrl(args.page);
+      // Exclude the dashboard — a 2-column summary tile must never be nudged into
+      // a feed (the structural probe alone can't tell a totals tile from a feed).
+      if (turnEndUrl !== '' && !isDashboardUrl(turnEndUrl, args.postLoginUrl)) {
+        const turnEndFingerprint = await pageFingerprint(args.page);
+        if (
+          turnEndFingerprint === turnPageFingerprint &&
+          !commitNudgedFingerprints.has(turnEndFingerprint)
+        ) {
+          const structure = await summarizeTabularStructure(args.page);
+          if (shouldNudgeCommit({ samePageStreak, structure, alreadyNudgedThisPage: false })) {
+            commitNudgedFingerprints.add(turnEndFingerprint);
+            commitNudgeText = buildCommitNudge({
+              actionName: args.actionName,
+              requiredFields: args.requiredFields,
+              structure,
+            });
+            log.info('mapper: structural commit-nudge fired — reminding agent to capture', {
+              jobId: args.jobId ?? undefined,
+              actionName: args.actionName,
+              stepIdx,
+              samePageStreak,
+              columns: structure.maxColumns,
+              dataRows: structure.maxDataRows,
+            });
+          }
+        }
       }
     }
 
-    messages.push({ role: 'user', content: toolResults });
+    if (commitNudgeText) {
+      // Deliberate intervention — reset the loop detector so the reminded model
+      // gets a clean leg (mirrors the deliberate-backtrack + recovery-re-ask
+      // resets). Seed it with THIS turn's tuples so the reset clears the dithering
+      // history but does NOT grant a free pass: if the model ignores the reminder
+      // and keeps repeating, the fresh detector still converges and trips.
+      loopDetector = new ActionLoopDetector();
+      for (const toolUse of toolUses) {
+        loopDetector.record(actionFingerprint(toolUse.input), turnPageFingerprint);
+      }
+    } else {
+      // Loop-detector input #2 — record each toolUse's (action, page) tuple and
+      // abort if any one trips the detector. Page fingerprint is
+      // `turnPageFingerprint` from above (the state Claude reasoned on), not the
+      // post-action state — we're detecting "agent keeps trying the same thing on
+      // the same starting state", which is the canonical stuck-in-a-loop pattern.
+      for (const toolUse of toolUses) {
+        const stuck = loopDetector.record(actionFingerprint(toolUse.input), turnPageFingerprint);
+        if (stuck.stuck) {
+          log.warn('mapper: action-loop detector tripped — aborting target', {
+            jobId: args.jobId ?? undefined,
+            actionName: args.actionName,
+            stepIdx,
+            reason: stuck.reason,
+          });
+          return bail('loop detector tripped');
+        }
+      }
+    }
+
+    // The commit-nudge rides along as a trusted supervisor text block AFTER the
+    // tool_result blocks (API-valid: tool results lead the user turn, extra
+    // text/image blocks may follow). Same trusted-instruction channel as the
+    // recovery re-ask / supervisor-hint user turns — it carries only our own
+    // required-field names + generic guidance, never any PMS-derived page text.
+    const userTurnContent: Anthropic.Messages.ContentBlockParam[] = [...toolResults];
+    if (commitNudgeText) {
+      userTurnContent.push({ type: 'text', text: commitNudgeText });
+    }
+    messages.push({ role: 'user', content: userTurnContent });
 
     // Plan v7 — per-target cost soft-abort. After each round trip, check
     // how much THIS target has spent (current job spend minus the baseline
@@ -4430,14 +4622,15 @@ function scanBalancedBrace(s: string, start: number): number {
 // ─── Per-action goal prompts ─────────────────────────────────────────────
 
 const HOUSEKEEPING_GOAL =
-  `Find the DAILY HOUSEKEEPING report — sometimes called "Housekeeping ` +
-  `Check-off List", "Room Status Report", "Housekeeping Report", or ` +
-  `"Daily Maid Sheet". This is a per-room snapshot showing every occupied ` +
-  `+ vacant room in the property and its current status.\n\n` +
-  `Usually under "Reports", "Front Desk → Reports", or "Housekeeping". ` +
+  `Find the page that shows EVERY room and its current housekeeping/occupancy ` +
+  `status — a per-room status list (one row per room). It may be called a ` +
+  `"Room Status" report, a housekeeping board or grid, a "Check-off List", a ` +
+  `"Daily Maid Sheet", or simply the room list — ANY page that shows room-by-room ` +
+  `status IS the right one; you do NOT need a separately-named "report".\n\n` +
+  `It often sits under "Housekeeping", "Front Desk", "Rooms", or "Reports". ` +
   `You may need to set filters (date=today, all rooms, all statuses) ` +
-  `before the report renders.\n\n` +
-  `The right page shows a TABLE with one row per room. Use these EXACT keys ` +
+  `before it renders.\n\n` +
+  `Use these EXACT keys ` +
   `in your "columns" object (column labels vary by PMS — match what's closest):\n` +
   `  - room_number (required)\n` +
   `  - status (required — the room's current housekeeping/occupancy state; ` +
@@ -4478,7 +4671,11 @@ const DEPARTURES_GOAL =
   `  - guest_name (required)\n` +
   `  - arrival_date (required)\n` +
   `  - departure_date (required)\n` +
-  `  - room_number (optional)`;
+  `  - room_number (optional)\n\n` +
+  `If there are no departures right now, the page may show an empty list or a ` +
+  `"no records" message — that is STILL the correct page; capture it (read the ` +
+  `column selectors from the header row). Make sure the heading says ` +
+  `Departures / Check-Outs, not Arrivals — they sit next to each other.`;
 // num_nights left out of the prose — see the note on ARRIVALS_GOAL.
 
 // STAFF_GOAL removed in v8 Phase D.1 along with the getStaffRoster target.
@@ -4627,9 +4824,10 @@ const WORK_ORDERS_GOAL =
   `Find the WORK ORDERS / MAINTENANCE TICKETS / OUT-OF-ORDER ROOMS list. ` +
   `Sometimes called "Maintenance", "Work Orders", "OOO Rooms", or ` +
   `"Engineering". Shows open + in-progress + resolved orders.\n\n` +
-  `On Choice Advantage, there's a JSON endpoint (WorkOrders.jx) — try ` +
-  `to find a "Work Orders" menu item; the click usually fires a fetch ` +
-  `for the JSON. Report the fetch URL + body shape.\n\n` +
+  `Some PMSes render this list only after you open the section — a click on the ` +
+  `menu item may load the list via a background request rather than showing a ` +
+  `table immediately. If the menu item does not show a list right away, click it, ` +
+  `wait for the list to appear, then capture it.\n\n` +
   `Columns we need:\n` +
   `  - pms_work_order_id (required)\n` +
   `  - room_number (required if room-scoped)\n` +
