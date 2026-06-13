@@ -28,6 +28,7 @@ import {
   relDue, fmtDate, fmtDateShort, daysBetween,
 } from './_mt-snow';
 import { EquipmentRegistry } from './EquipmentRegistry';
+import { WheelDatePicker } from '@/components/ui/WheelDatePicker';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -155,8 +156,7 @@ function NewTaskModal({
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
         </Field>
         <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'Para configurar por primera vez' : 'For backfilling on first setup'}>
-          <input type="date" value={last} onChange={(e) => setLast(e.target.value)}
-            style={{ height: 44, padding: '0 14px', borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_SANS, fontSize: 15, color: last ? T.ink : T.ink3, width: '100%', boxSizing: 'border-box', outline: 'none' }} />
+          <WheelDatePicker value={last} onChange={setLast} lang={es ? 'es' : 'en'} />
         </Field>
         <div style={{ background: T.sageDim, border: '1px solid rgba(104,131,114,0.22)', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Caps size={10} c={T.sageDeep} weight={600}>{es ? 'Calculado' : 'Auto-calculated'}</Caps>
@@ -240,8 +240,7 @@ function TaskModal({
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
         </Field>
         <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'La próxima se calcula desde aquí.' : 'Next due is calculated from here.'}>
-          <input type="date" value={last} onChange={(e) => setLast(e.target.value)}
-            style={{ height: 44, padding: '0 14px', borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_SANS, fontSize: 15, color: last ? T.ink : T.ink3, width: '100%', boxSizing: 'border-box', outline: 'none' }} />
+          <WheelDatePicker value={last} onChange={setLast} lang={es ? 'es' : 'en'} />
         </Field>
         <Field label={es ? 'Notas' : 'Notes'} hint={es ? 'Lo que la próxima persona debería saber.' : 'What the next person should know.'}>
           <TextArea value={notes} onChange={setNotes} placeholder={es ? 'ej. MERV 8, 20×25×1. La caja está en el cuarto de máquinas.' : 'e.g. MERV 8, 20×25×1. Box is in the mechanical room.'} rows={3} />
