@@ -87,6 +87,9 @@ interface SessionRow {
   } | null;
   active_mapper_job: MapperJobSummary | null;
   last_mapper_job: MapperJobSummary | null;
+  /** feature/cua-live-assist — up to 5 finished runs for this hotel/family,
+   *  newest-first, so any past learning session is reopenable from the list. */
+  recent_mapper_jobs?: MapperJobSummary[];
   /** Latest missing-feed backfill attempt for this family (best-effort). */
   backfill: { last_at: string; last_outcome: string } | null;
 }
@@ -349,6 +352,18 @@ export default function PropertySessionsPage() {
                           <Btn variant="ghost" size="sm" href={`/admin/properties/mapper/${s.last_mapper_job.id}`} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
                             <Eye size={12} /> See the last learning run ({s.last_mapper_job.status})
                           </Btn>
+                        </div>
+                      )}
+                      {/* feature/cua-live-assist — older finished runs stay
+                          reopenable (closing the board no longer loses them). */}
+                      {!learning && (s.recent_mapper_jobs?.length ?? 0) > 1 && (
+                        <div style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.45), letterSpacing: '0.1em', textTransform: 'uppercase' }}>Past runs</span>
+                          {s.recent_mapper_jobs!.slice(1).map((j) => (
+                            <Btn key={j.id} variant="ghost" size="sm" href={`/admin/properties/mapper/${j.id}`} style={{ color: dimWhite(.8), borderColor: dimWhite(.18) }}>
+                              {new Date(j.created_at).toLocaleDateString()} ({j.status})
+                            </Btn>
+                          ))}
                         </div>
                       )}
 

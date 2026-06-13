@@ -114,6 +114,14 @@ const Schema = z.object({
   // via Fly secrets.
   HELP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(300_000),
 
+  // feature/cua-live-assist — idle timeout for a FOUNDER-driven takeover
+  // session: how long the robot waits between the founder's clicks before it
+  // gives up the takeover and hands control back to its own AI loop (the
+  // founder walked away). This is a dedicated control table (no DB TTL/sweep),
+  // so it isn't bound by the help-request TTL — but kept ≤10min so a forgotten
+  // takeover can't freeze a mapping job indefinitely. Tune via Fly secrets.
+  TAKEOVER_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(300_000),
+
   // Plan v8 final review B1 + S1 — org-wide daily mapping spend cap.
   // Sum of cost_micros for source='mapping' rows over the last 24h.
   // When exceeded, mapping-driver refuses new jobs (existing ones run

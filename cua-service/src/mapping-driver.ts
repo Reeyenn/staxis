@@ -38,6 +38,7 @@ import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import { checkDailyMappingSpend, microsToDollars } from './cost-cap.js';
 import { createLiveFramePublisher } from './live-frame.js';
+import { createTakeoverController } from './takeover.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { effectiveColumnsFromAction, missingRequiredColumns } from './target-contract.js';
@@ -244,6 +245,10 @@ type MappingEventType =
                             // `${jobId}/live.png`; METADATA ONLY (the image
                             // stays in the private bucket — this channel is
                             // anon-subscribable). Board re-fetches a signed URL.
+  | 'takeover'              // feature/cua-live-assist — founder takeover state
+                            // changed (paused / new frame / ended). METADATA
+                            // ONLY; the board refetches GET /api/admin/mapper/
+                            // live/[jobId] for the takeover session + frame URL.
   | 'mapping_completed'
   | 'mapping_failed';
 
@@ -369,6 +374,20 @@ export async function runMappingJob(
     }),
   });
 
+  // feature/cua-live-assist — founder-initiated, robot-paused takeover. The
+  // mapper polls this at the top of each step; on an open takeover the founder
+  // drives the page click-by-click. notify() nudges the board to refetch the
+  // takeover session + the fresh click-target frame; close() removes the
+  // takeover frame object on job end (mirrors liveFrames.close()).
+  const takeover = createTakeoverController(jobId, {
+    notify: () => void broadcastMappingEvent(channel, {
+      type: 'takeover',
+      jobId,
+      at: new Date().toISOString(),
+    }),
+    onLiveFrame: (pngBase64) => liveFrames.publish(pngBase64),
+  });
+
   try {
   // Plan v8 Phase B chunk 2 — Live Mapping admin UI watches for these.
   await broadcastMappingEvent(channel, {
@@ -447,6 +466,9 @@ export async function runMappingJob(
     // feature/cua-live-view — tee each vision screenshot to the Learning
     // Board's live view. publish() is fire-and-forget and never throws.
     onLiveFrame: (pngBase64) => liveFrames.publish(pngBase64),
+    // feature/cua-live-assist — founder takeover controller (gate polled at
+    // the top of each mapActionCore step).
+    takeover,
     onProgress: (label, pct) => {
       log.info('mapping-driver: progress', { jobId, label, pct });
       // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
@@ -624,6 +646,9 @@ export async function runMappingJob(
     // close so the (best-effort) teardown ordering can't drop a final
     // notify on a closed channel. Runs on success/failure/throw/abort.
     await liveFrames.close();
+    // feature/cua-live-assist — remove the takeover frame object too (best-
+    // effort), so a job that ended mid-takeover doesn't leak a redacted PNG.
+    await takeover.close();
     // Plan v8 hardening — close the per-job channel once, regardless of
     // success/failure/exception. Without this finally a thrown exception
     // would leak the WebSocket channel handle.

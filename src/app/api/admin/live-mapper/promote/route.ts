@@ -35,18 +35,14 @@
  */
 
 import { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
+import { promoteMap } from '@/lib/pms/promote-map';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-// A quarantined map is known-bad; promoting it must be a deliberate, separate
-// action (matches the worker's `.in(['draft','deprecated'])` guard).
-const PROMOTABLE = new Set(['draft', 'deprecated']);
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -67,150 +63,24 @@ export async function POST(req: NextRequest) {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
-  const id = idCheck.value;
-
   if (typeof body.expectedVersion !== 'number' || !Number.isInteger(body.expectedVersion)) {
     return err('expectedVersion is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (typeof body.expectedStatus !== 'string') {
     return err('expectedStatus is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  const expectedVersion = body.expectedVersion;
-  const expectedStatus = body.expectedStatus;
 
-  // ── 1. Pre-check the target BEFORE mutating anything. ──────────────────
-  const { data: target, error: readErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .select('id, pms_family, version, status')
-    .eq('id', id)
-    .maybeSingle();
-
-  if (readErr) {
-    return err(`Could not read map: ${readErr.message}`, {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-  if (!target) {
-    return err('Map not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
-  // Stale-UI / wrong-id guard: the row must still be exactly what the admin saw
-  // and confirmed in the dialog.
-  if (target.version !== expectedVersion || target.status !== expectedStatus) {
-    return err('This map changed since you opened it. Refresh and try again.', {
-      requestId, status: 409, code: ApiErrorCode.ValidationFailed,
-    });
-  }
-  if (target.status === 'active') {
-    return err('That map is already live.', {
-      requestId, status: 409, code: ApiErrorCode.ValidationFailed,
-    });
-  }
-  if (!PROMOTABLE.has(target.status as string)) {
-    return err(
-      `A ${target.status} map can't be made live directly. Only draft or retired maps can be promoted.`,
-      { requestId, status: 409, code: ApiErrorCode.ValidationFailed },
-    );
-  }
-
-  const family = target.pms_family as string;
-  const nowIso = new Date().toISOString();
-
-  // ── 2. Demote the family's current active → deprecated, capturing it so a
-  //     failed promote can roll it back. At most one active per family
-  //     (partial unique index), so maybeSingle is safe; null = none. ──────
-  const { data: previousActive, error: demoteErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .update({ status: 'deprecated', deprecated_at: nowIso })
-    .eq('pms_family', family)
-    .eq('status', 'active')
-    .select('id, promoted_to_active_at')
-    .maybeSingle();
-
-  if (demoteErr) {
-    return err(`Could not deactivate the current live map: ${demoteErr.message}`, {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-
-  // ── 3. Activate the target. Guarded on status so a concurrent change can't
-  //     double-promote; .select() confirms a row actually flipped. ────────
-  // Guard the write on the EXACT status the admin confirmed (not just "any
-  // promotable status") so the freshness check is atomic with the write — if
-  // the row changed at all since the pre-check read, this matches 0 rows and
-  // we fall into the rollback path below.
-  const { data: promoted, error: promoteErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .update({ status: 'active', promoted_to_active_at: nowIso })
-    .eq('id', id)
-    .eq('status', expectedStatus)
-    .select('id, pms_family, version, status, promoted_to_active_at')
-    .maybeSingle();
-
-  if (promoteErr || !promoted) {
-    // Promote failed after we demoted the old active (target deleted/changed
-    // concurrently, or a transient DB error). Roll the previous active back so
-    // the family is never left with zero live maps.
-    if (previousActive) {
-      const { error: rollbackErr } = await supabaseAdmin
-        .from('pms_knowledge_files')
-        .update({
-          status: 'active',
-          promoted_to_active_at: previousActive.promoted_to_active_at ?? nowIso,
-          deprecated_at: null,
-        })
-        .eq('id', previousActive.id);
-      if (rollbackErr) {
-        log.error('live-mapper: promote failed AND rollback failed — family has NO live map', {
-          requestId, id, family, promoteErr: promoteErr?.message ?? 'no row matched', rollbackErr: rollbackErr.message,
-        });
-        return err('Could not switch the live map and could not restore the previous one. Open the Live Mapper and check this brand.', {
-          requestId, status: 500, code: ApiErrorCode.InternalError,
-        });
-      }
-      log.warn('live-mapper: promote failed — restored previous live map', {
-        requestId, id, family, restored: previousActive.id, reason: promoteErr?.message ?? 'target row no longer promotable',
-      });
-      return err('Could not switch to that map — the previous live map was kept. Refresh and try again.', {
-        requestId, status: 409, code: ApiErrorCode.ValidationFailed,
-      });
-    }
-    // No previous active existed (family had none), so nothing was stranded.
-    log.error('live-mapper: promote matched no row (no previous active to restore)', {
-      requestId, id, family, promoteErr: promoteErr?.message ?? null,
-    });
-    return err('The map changed before it could be promoted. Refresh and try again.', {
-      requestId, status: 409, code: ApiErrorCode.ValidationFailed,
-    });
-  }
-
-  log.info('live-mapper: promoted to active', {
-    requestId, id, family, version: promoted.version,
-    demoted: previousActive?.id ?? null, promotedBy: auth.email ?? auth.userId,
+  // Quarantined maps stay non-promotable here (Manage maps); the deliberate
+  // "promote anyway" path is the Learning Board's Save & Finish (save-map).
+  const result = await promoteMap({
+    id: idCheck.value,
+    expectedVersion: body.expectedVersion,
+    expectedStatus: body.expectedStatus,
+    promotedBy: auth.email ?? auth.userId,
   });
 
-  // feat/cua-partial-promotion (hunter re-review P1-1) — the promote click
-  // must also REVIVE the robot. A family whose first learn parked (the
-  // founder-gated default for partial recipes) has its sessions sitting at
-  // paused_no_knowledge_file, and the supervisor only respawns
-  // starting/alive/paused_cost_cap — without this flip the recipe is active
-  // but no robot ever polls it, and the owner stares at "Connecting to your
-  // PMS…" forever. Same revive mapping-driver performs on auto_promote.
-  // Best-effort: a failure only delays polling until a manual restart.
-  const { data: revived, error: reviveErr } = await supabaseAdmin
-    .from('property_sessions')
-    .update({ status: 'starting', paused_reason: null, paused_until: null })
-    .eq('pms_family', family)
-    .eq('status', 'paused_no_knowledge_file')
-    .select('property_id');
-  if (reviveErr) {
-    log.warn('live-mapper: promoted OK but could not revive paused sessions', {
-      requestId, family, err: reviveErr.message,
-    });
-  } else if ((revived ?? []).length > 0) {
-    log.info('live-mapper: revived paused_no_knowledge_file sessions', {
-      requestId, family, count: (revived ?? []).length,
-    });
+  if (!result.ok) {
+    return err(result.message, { requestId, status: result.status, code: result.code });
   }
-
-  return ok({ map: promoted, revivedSessions: (revived ?? []).length }, { requestId });
+  return ok({ map: result.map, revivedSessions: result.revivedSessions }, { requestId });
 }
