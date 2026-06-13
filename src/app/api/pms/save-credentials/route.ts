@@ -178,5 +178,52 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // ─── Retry support (2026-06-13) ──────────────────────────────────────────
+  // When a prior mapper attempt for this property FAILED (e.g. wrong PMS
+  // password), re-saving corrected credentials must actually start a fresh
+  // learn. Two things block that, and we clear both here:
+  //
+  //   1. The session driver auto-enqueues the mapper with idempotency key
+  //      (property_id, 'mapper.learn_pms_family:<family>'). A lingering
+  //      terminal failed/cancelled row holds that key, so the re-enqueue
+  //      silently no-ops. → delete failed/cancelled mapper jobs (ONLY those:
+  //      never a running/queued in-flight job, never a completed/successful
+  //      map).
+  //
+  //   2. After the first attempt the session sits at
+  //      'paused_no_knowledge_file', which the supervisor does NOT spawn a
+  //      driver for, and the credentials RPC (0206) intentionally leaves
+  //      paused_* states alone. So nothing restarts the driver. → nudge ONLY
+  //      a 'paused_no_knowledge_file' session back to 'starting' (and reset
+  //      its restart window) so the supervisor's ~30s reconcile respawns the
+  //      driver, which re-enqueues the learn against the NEW creds. We never
+  //      touch alive / paused_mfa / paused_cost_cap / etc.
+  //
+  // Order matters: free the idempotency key BEFORE re-arming the session, so
+  // the respawned driver's enqueue succeeds. Both are best-effort — a failure
+  // here must not fail the credentials save (admin can still re-trigger).
+  const { error: clearErr } = await supabaseAdmin
+    .from('workflow_jobs')
+    .delete()
+    .eq('property_id', pidV.value!)
+    .like('kind', 'mapper.%')
+    .in('status', ['failed', 'cancelled']);
+  if (clearErr) {
+    log.warn('[pms/save-credentials] could not clear stale failed mapper jobs', {
+      err: clearErr, requestId, propertyId: pidV.value,
+    });
+  }
+
+  const { error: rearmErr } = await supabaseAdmin
+    .from('property_sessions')
+    .update({ status: 'starting', paused_reason: null, restart_count: 0 })
+    .eq('property_id', pidV.value!)
+    .eq('status', 'paused_no_knowledge_file');
+  if (rearmErr) {
+    log.warn('[pms/save-credentials] could not re-arm paused session for retry', {
+      err: rearmErr, requestId, propertyId: pidV.value,
+    });
+  }
+
   return ok({ propertyId: pidV.value!, pmsType: pmsTypeV.value }, { requestId });
 }

@@ -767,6 +767,8 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
   const [pollNonce, setPollNonce] = useState(0);
   const [advancing, setAdvancing] = useState(false);
   const [advanceError, setAdvanceError] = useState<string | null>(null);
+  const [reentering, setReentering] = useState(false);
+  const [reenterError, setReenterError] = useState<string | null>(null);
   const advancingRef = useRef(false);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
@@ -862,6 +864,32 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
     }
   };
 
+  // "Re-enter login" on a failed mapping → walk back to Step 6 (Connect PMS)
+  // so the operator can fix the credentials and retry. resetPmsStep clears the
+  // PMS completion markers server-side (deriveCurrentStep → 6) and onNext()
+  // refetches, which re-renders Step6ConnectPms. The corrected-creds save then
+  // clears the stale failed mapper job (see /api/pms/save-credentials), so the
+  // driver enqueues a fresh learn against the new login.
+  const reenterPms = async () => {
+    if (reentering) return;
+    setReentering(true);
+    setReenterError(null);
+    try {
+      const res = await fetch('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code, resetPmsStep: true }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) { setReenterError(t.reenterError); return; }
+      await onNext();
+    } catch {
+      setReenterError(t.reenterError);
+    } finally {
+      if (mountedRef.current) setReentering(false);
+    }
+  };
+
   if (phase === 'done') {
     return <Step7Done t={t} lang={lang} resp={resp as MappingStatus} advancing={advancing} error={advanceError} onContinue={advance} />;
   }
@@ -877,13 +905,26 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
         <AlertCircle size={28} color="var(--red, #ef4444)" style={{ marginBottom: '12px' }} />
         <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.failTitle}</h2>
         <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{msg}</p>
-        <button
-          className="btn btn-secondary"
-          onClick={() => { setResp(null); setBarPct(0); setMaxMilestone(-1); setPollNonce((n) => n + 1); }}
-          style={{ justifyContent: 'center' }}
-        >
-          {t.checkAgainBtn}
-        </button>
+        {reenterError && <ErrorBox msg={reenterError} />}
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-primary"
+            onClick={reenterPms}
+            disabled={reentering}
+            style={{ justifyContent: 'center' }}
+          >
+            {reentering ? <Loader2 size={14} className="spin" /> : null}
+            {reentering ? '…' : t.reenterLoginBtn}
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => { setResp(null); setBarPct(0); setMaxMilestone(-1); setPollNonce((n) => n + 1); }}
+            disabled={reentering}
+            style={{ justifyContent: 'center' }}
+          >
+            {t.checkAgainBtn}
+          </button>
+        </div>
       </div>
     );
   }

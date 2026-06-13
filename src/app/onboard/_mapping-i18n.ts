@@ -60,6 +60,8 @@ const STRINGS = {
     continueBtn: 'Looks good — continue →',
     continuePlain: 'Continue →',
     checkAgainBtn: 'Check again',
+    reenterLoginBtn: 'Re-enter login →',
+    reenterError: "Couldn't go back just now — tap to try again.",
     continueError: "Couldn't save just now — tap to try again.",
     // failed
     failTitle: "We couldn't finish connecting",
@@ -105,6 +107,8 @@ const STRINGS = {
     continueBtn: 'Se ve bien — continuar →',
     continuePlain: 'Continuar →',
     checkAgainBtn: 'Revisar de nuevo',
+    reenterLoginBtn: 'Volver a ingresar →',
+    reenterError: 'No se pudo regresar — toca para reintentar.',
     continueError: 'No se pudo guardar — toca para reintentar.',
     failTitle: 'No pudimos terminar la conexión',
     failLogin:

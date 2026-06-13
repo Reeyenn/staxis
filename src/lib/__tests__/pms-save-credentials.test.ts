@@ -92,6 +92,12 @@ beforeEach(() => {
     const builder: any = {
       select(...args: unknown[]) { chain.push(`select(${args.join(',')})`); return builder; },
       eq(...args: unknown[]) { chain.push(`eq(${args.join(',')})`); return builder; },
+      // Retry support: the route clears stale failed mapper jobs via
+      // .from('workflow_jobs').delete().eq().like().in() — which is awaited
+      // (resolves through the builder's `then` below).
+      delete(...args: unknown[]) { chain.push(`delete(${args.join(',')})`); return builder; },
+      like(...args: unknown[]) { chain.push(`like(${args.join(',')})`); return builder; },
+      in(...args: unknown[]) { chain.push(`in(${JSON.stringify(args)})`); return builder; },
       maybeSingle: async () => {
         chain.push('maybeSingle()');
         if (table === 'properties') {
@@ -243,6 +249,35 @@ describe('POST /api/pms/save-credentials — RPC contract', () => {
     // No upsert RPC was called.
     const upsertCalls = rpcCalls.filter(c => c.fn === 'staxis_upsert_scraper_credentials');
     assert.equal(upsertCalls.length, 0);
+  });
+
+  test('clears a prior FAILED mapper job so re-saved creds get a fresh learn', async () => {
+    // Retry path (2026-06-13): a wrong-password attempt leaves a terminal
+    // `failed` mapper job whose (property_id, family) idempotency key blocks
+    // re-enqueue. Re-saving corrected creds MUST clear it (failed/cancelled
+    // only) so the session driver enqueues a fresh learn against the new login.
+    const { POST } = await import('@/app/api/pms/save-credentials/route');
+    const res = await POST(makeRequest(VALID_BODY));
+    assert.equal(res.status, 200);
+
+    const wfDelete = fromCalls.find(c =>
+      c.table === 'workflow_jobs' && c.chain.some(s => s.startsWith('delete(')));
+    assert.ok(wfDelete, 'expected a workflow_jobs delete to clear stale failed mapper jobs');
+    assert.ok(wfDelete!.chain.some(s => s.includes('mapper.%')),
+      'delete must be scoped to the mapper.% kind');
+    assert.ok(wfDelete!.chain.some(s => s.includes('failed') && s.includes('cancelled')),
+      'delete must be scoped to failed/cancelled status — never a running/queued or completed job');
+
+    // …and re-arm ONLY a paused_no_knowledge_file session back to 'starting'
+    // so the supervisor respawns the driver and re-enqueues. Must be scoped to
+    // that one status — never bounce a live/mfa/cost-capped session.
+    const sessRearm = fromCalls.find(c =>
+      c.table === 'property_sessions' && c.chain.some(s => s.startsWith('update(')));
+    assert.ok(sessRearm, 'expected a property_sessions re-arm to restart the paused driver');
+    assert.ok(sessRearm!.chain.some(s => s.includes('paused_no_knowledge_file')),
+      're-arm must be scoped to paused_no_knowledge_file only');
+    assert.ok(sessRearm!.chain.some(s => s.includes('starting')),
+      're-arm must set status back to starting');
   });
 
   test('passwords are passed through unmodified — the encryption is the RPC\'s job', async () => {

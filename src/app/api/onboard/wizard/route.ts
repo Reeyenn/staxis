@@ -218,6 +218,10 @@ interface PatchBody {
   // When the wizard hits Step 9 + the user clicks "Go to Dashboard",
   // the client sends finalize=true so we set onboarding_completed_at.
   finalize?: unknown;
+  // "Re-enter login" on a failed mapping (Step 7) sends resetPmsStep=true to
+  // walk the operator back to Step 6 (Connect PMS) so they can fix the
+  // credentials and retry.
+  resetPmsStep?: unknown;
 }
 
 const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
@@ -310,6 +314,21 @@ export async function PATCH(req: NextRequest) {
     ...currentState,
     ...partialState,
   };
+  // Retry support (2026-06-13): "Re-enter login" on a failed mapping sends
+  // resetPmsStep=true to walk the operator back to Step 6 (Connect PMS).
+  // We can't express "clear a key" through partialState (JSON.stringify drops
+  // undefined, and isValidPartialState rejects null), so handle it here:
+  // delete the PMS completion markers, which makes deriveCurrentStep return 6.
+  // The stale FAILED mapper job is deliberately left in place — it holds the
+  // per-property idempotency key, so the session driver can't auto-re-run with
+  // the OLD bad credentials in the gap before the operator re-submits. That
+  // job is cleared in /api/pms/save-credentials once NEW creds are saved,
+  // which lets the driver enqueue a fresh learn (~30s later).
+  if (body.resetPmsStep === true) {
+    delete mergedState.pmsCredentialsAt;
+    delete mergedState.pmsJobId;
+    delete mergedState.mappingCompletedAt;
+  }
   // Recompute step from the merged state (don't trust client-sent step).
   mergedState.step = deriveCurrentStep(mergedState);
 
