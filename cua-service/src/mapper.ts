@@ -734,6 +734,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     label: t.progressLabel,
     goal: t.goal,
     optional: t.optional,
+    // feature/cua-live-assist — the board disables Take over / Skip for
+    // drilldown_sample feeds (mapDrillDownAction has no takeover gate in v1).
+    classification: t.classification,
   }));
   await mergeJobResult(opts.jobId, { targetCatalog }).catch((err) => {
     log.warn('mapper: board catalog persist failed (non-fatal)', {

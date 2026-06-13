@@ -57,6 +57,18 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ accepted: false, reason: 'no_active_takeover' }, { requestId });
   }
 
+  // Defend a hard-killed worker that left a dangling 'active' row (the graceful
+  // path ends it via the controller's close()): never accept a command no robot
+  // will ack. If the job is terminal, the takeover is dead.
+  const { data: job } = await supabaseAdmin
+    .from('workflow_jobs')
+    .select('status')
+    .eq('id', v.jobId)
+    .maybeSingle();
+  if (!job || (job.status !== 'queued' && job.status !== 'running')) {
+    return ok({ accepted: false, reason: 'run_finished' }, { requestId });
+  }
+
   // Bounds-check a click against the capture viewport (robot re-validates too).
   let coordinate: { x: number; y: number } | null = null;
   if (v.command === 'click') {

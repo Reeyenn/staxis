@@ -501,10 +501,11 @@ export default function LiveMappingPage() {
   // a `takeover` broadcast drops. Only runs during the (rare) open takeover.
   useEffect(() => {
     if (!jobId || !takeover || takeover.status === 'ended') return;
+    if (isTerminalJobStatus(job?.status)) return; // dead job → don't poll a dangling row
     const t = setInterval(() => { void load(); }, 2_500);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, takeover?.status, takeover?.id]);
+  }, [jobId, takeover?.status, takeover?.id, job?.status]);
 
   // feature/cua-live-view — keep the "Xs ago" freshness label honest while
   // a frame is showing. Re-render only; no fetching. Deps deliberately use
@@ -645,8 +646,9 @@ export default function LiveMappingPage() {
       });
       const json = await res.json();
       if (!json.ok) alert(`Failed: ${json.error ?? 'unknown'}`);
-      else if (json.data?.accepted !== false && command === 'click') setTakeoverMarker(null);
-      // accepted:false (robot_busy / no_active_takeover) → the refetch re-syncs.
+      // Clear the marker on ANY click attempt (accepted or not): a rejected
+      // click's marker sits on a now-stale frame and must not be re-sendable.
+      if (command === 'click') setTakeoverMarker(null);
       void load();
     } catch (err) {
       alert(`Failed: ${(err as Error).message}`);
@@ -716,9 +718,18 @@ export default function LiveMappingPage() {
   const takeoverFrameFresh = !!takeover && !!takeoverFrame && takeoverFrame.frameSeq === takeover.frame_seq;
   // "Send this click" is allowed only mid-turn-gap, against a current frame.
   const canSendClick = takeoverActive && robotIdle && takeoverFrameFresh && !takeoverBusy && !!takeoverMarker;
-  // Offer "Take over" only when a feed is actively searching (never a dead
-  // button during login / between feeds) and nothing else owns the screen.
-  const canStartTakeover = job?.status === 'running' && !!searchingRow && !takeover &&
+  // Drill-down feeds (getGuests etc.) run through mapDrillDownAction, which has
+  // no takeover gate in v1 — so Take over / Skip are not offered for them (the
+  // robot would never pick the request up, leaving the board stuck "Pausing…").
+  const drilldownKeys = useMemo(() => {
+    const catalog = (job?.result?.targetCatalog ?? []) as Array<{ key?: string; classification?: string }>;
+    return new Set(catalog.filter((d) => d.classification === 'drilldown_sample').map((d) => d.key));
+  }, [job]);
+  const searchingTakeoverable = !!searchingRow && !drilldownKeys.has(searchingRow.key);
+  // Offer "Take over" only when a takeover-able feed is actively searching
+  // (never a dead button during login / between feeds) and nothing else owns
+  // the screen.
+  const canStartTakeover = job?.status === 'running' && searchingTakeoverable && !takeover &&
     (!pendingHelp || pendingIsStale);
 
   // feature/cua-live-view — frame age in seconds (clamped at 0 to absorb
@@ -943,8 +954,9 @@ export default function LiveMappingPage() {
                         )}
                         <Pill tone={meta.tone}>{meta.label}</Pill>
                         {/* feature/cua-live-assist — skip this feed without
-                            taking over (usable while it's searching). */}
-                        {row.glyph === 'searching' && !jobTerminal && !takeover && (
+                            taking over (usable while it's searching; not for
+                            drill-down feeds, which have no takeover gate). */}
+                        {row.glyph === 'searching' && !jobTerminal && !takeover && !drilldownKeys.has(row.key) && (
                           <Btn
                             variant="ghost" size="sm"
                             onClick={() => void startTakeover('skip', row.key)}
@@ -1142,8 +1154,10 @@ export default function LiveMappingPage() {
 
             {/* feature/cua-live-assist — founder takeover panel: the robot is
                 paused and you drive it click-by-click. Owns the screen while a
-                takeover is open (the ambient live card is hidden below). */}
-            {takeover && takeover.status !== 'ended' && (
+                takeover is open (the ambient live card is hidden below). Hidden
+                once the job is terminal — a hard worker crash can leave a
+                dangling 'active' row, and a finished run has no robot to drive. */}
+            {takeover && takeover.status !== 'ended' && !jobTerminal && (
               <DarkCard style={{ padding: '20px 24px', marginBottom: 16, border: '2px solid var(--forest)' }}>
                 <Caps c="var(--forest)">You&rsquo;re driving — point and click</Caps>
                 <h2 style={{ fontFamily: FONT_SERIF, fontSize: 20, fontWeight: 400, fontStyle: 'italic', margin: '4px 0 10px', color: '#fff' }}>
@@ -1208,10 +1222,12 @@ export default function LiveMappingPage() {
                             : <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.5) }}>click the screen first</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-                      <Btn variant="forest" onClick={() => void sendTakeoverCommand('finish')} disabled={takeoverBusy || !robotIdle}>
+                      {/* Finish/Cancel only when the painted frame is current
+                          (robotIdle + fresh) — never decide against a stale view. */}
+                      <Btn variant="forest" onClick={() => void sendTakeoverCommand('finish')} disabled={takeoverBusy || !robotIdle || !takeoverFrameFresh}>
                         <CheckCircle2 size={13} /> Finish — this is the page
                       </Btn>
-                      <Btn variant="terracotta" onClick={() => void sendTakeoverCommand('cancel')} disabled={takeoverBusy || !robotIdle}>
+                      <Btn variant="terracotta" onClick={() => void sendTakeoverCommand('cancel')} disabled={takeoverBusy || !robotIdle || !takeoverFrameFresh}>
                         <XCircle size={13} /> Couldn&rsquo;t find it
                       </Btn>
                     </div>
@@ -1251,7 +1267,7 @@ export default function LiveMappingPage() {
                   {/* feature/cua-live-assist — pause the robot and drive it
                       yourself (only while a feed is actively searching). */}
                   {canStartTakeover && (
-                    <Btn variant="forest" size="sm" onClick={() => void startTakeover('start')} disabled={takeoverBusy} style={{ marginLeft: 'auto' }}>
+                    <Btn variant="forest" size="sm" onClick={() => void startTakeover('start', searchingRow?.key)} disabled={takeoverBusy} style={{ marginLeft: 'auto' }}>
                       <MousePointerClick size={13} /> Take over
                     </Btn>
                   )}

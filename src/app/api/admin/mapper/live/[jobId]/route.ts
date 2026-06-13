@@ -136,32 +136,21 @@ export async function GET(
   // the family. Selectors are NEVER returned — only a coverage summary.
   const result = (jobRes.data.result ?? {}) as Record<string, unknown>;
   const knowledgeFileId = typeof result.knowledge_file_id === 'string' ? result.knowledge_file_id : null;
-  const pmsFamily = typeof payload.pms_family === 'string' ? payload.pms_family : null;
   let draftMap: {
     id: string; version: number; status: string; pmsFamily: string;
     actionsFound: number; missingRequired: string[]; missingBusinessCritical: string[];
   } | null = null;
-  {
+  // STRICT: only the draft THIS run produced (knowledge_file_id). No newest-by-
+  // family fallback — Save/Discard resolve the same way (job-draft.ts), so the
+  // board summary and the action can never refer to a different run's map.
+  if (knowledgeFileId) {
     type KFRow = { id: string; version: number; status: string; pms_family: string; knowledge: unknown };
-    let row: KFRow | null = null;
-    if (knowledgeFileId) {
-      const { data } = await supabaseAdmin
-        .from('pms_knowledge_files')
-        .select('id, version, status, pms_family, knowledge')
-        .eq('id', knowledgeFileId)
-        .maybeSingle();
-      row = (data as KFRow | null) ?? null;
-    }
-    if (!row && pmsFamily) {
-      const { data } = await supabaseAdmin
-        .from('pms_knowledge_files')
-        .select('id, version, status, pms_family, knowledge')
-        .eq('pms_family', pmsFamily)
-        .order('version', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      row = (data as KFRow | null) ?? null;
-    }
+    const { data } = await supabaseAdmin
+      .from('pms_knowledge_files')
+      .select('id, version, status, pms_family, knowledge')
+      .eq('id', knowledgeFileId)
+      .maybeSingle();
+    const row = (data as KFRow | null) ?? null;
     if (row) {
       const knowledge = (row.knowledge ?? {}) as { actions?: Record<string, unknown>; feedGaps?: { missingRequired?: Array<{ target?: unknown }>; missingBusinessCritical?: unknown[] } };
       const gaps = knowledge.feedGaps;

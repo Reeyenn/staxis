@@ -138,6 +138,18 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
     return true;
   }
 
+  /** Publish with a few retries — captureHardenedScreenshot can transiently
+   *  return null mid-navigation. frame_seq must only ever advance on a REAL
+   *  publish (a stale image stamped fresh would mean a click against the wrong
+   *  page), so the caller ends the takeover if this returns false. */
+  async function publishFrameWithRetry(page: Page, attempts = 3): Promise<boolean> {
+    for (let i = 0; i < attempts; i++) {
+      if (await publishFrame(page)) return true;
+      await page.waitForTimeout(600).catch(() => {});
+    }
+    return false;
+  }
+
   async function endSession(id: string, reason: string, appliedSeq?: number): Promise<void> {
     const patch: Record<string, unknown> = {
       status: 'ended',
@@ -240,14 +252,15 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
     }
     if (!open) return { kind: 'none', waitedMs: 0 };
 
-    // Stale Skip: a Skip pressed against a DIFFERENT feed (the robot already
-    // moved past it) must NOT eat the current feed. End it as a no-op skip and
-    // proceed normally with the current feed.
-    if (open.command === 'skip' && open.target_key && open.target_key !== ctx.actionKey) {
-      log.info('takeover: stale skip for a finished feed — ignoring', {
-        jobId, skipTarget: open.target_key, currentFeed: ctx.actionKey,
+    // Stale request — a Skip OR a Take-over pressed against a DIFFERENT feed
+    // (the robot already finished it and moved on) must NOT touch the current
+    // feed. End it as a no-op and proceed normally. (Take-over carries a
+    // target_key now too, so this guards both.)
+    if (open.target_key && open.target_key !== ctx.actionKey) {
+      log.info('takeover: stale request for a finished feed — ignoring', {
+        jobId, requestTarget: open.target_key, currentFeed: ctx.actionKey, command: open.command,
       });
-      await endSession(open.id, 'skipped', open.command_seq);
+      await endSession(open.id, open.command === 'skip' ? 'skipped' : 'aborted', open.command_seq);
       return { kind: 'none', waitedMs: waited() };
     }
     // Skip for the current feed (or an untargeted skip) — immediate, no drive.
@@ -264,8 +277,15 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
     let frameSeq = open.frame_seq ?? 0;
     let lastApplied = open.applied_command_seq ?? 0;
 
-    // Activate + publish the first click-target frame (awaited).
-    await publishFrame(ctx.page);
+    // Publish the first click-target frame BEFORE going 'active' — the board
+    // must never see an active takeover without a frame to click. frame_seq
+    // advances only on a real publish; if we can't get a (redactable) picture
+    // even after retries, end the takeover rather than show a blank/stale one.
+    if (!(await publishFrameWithRetry(ctx.page))) {
+      log.warn('takeover: could not publish a first frame — ending takeover', { jobId, feed: ctx.actionKey });
+      await endSession(open.id, 'error', open.command_seq);
+      return { kind: 'none', waitedMs: waited() };
+    }
     frameSeq += 1;
     await supabase
       .from('mapper_takeover_sessions')
@@ -312,8 +332,13 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
         return { kind: 'skipped', waitedMs: waited(), reason: row.command_note?.trim() || 'Skipped by you' };
       }
 
-      // cmd === 'click' — execute the founder's nudge, then publish a fresh
-      // frame. Always ack (applied_command_seq=seq) so the board re-enables.
+      // cmd === 'click'. Two cases:
+      //  - valid click on the CURRENT frame → execute (page changes), then
+      //    publish the post-click frame; advance frame_seq ONLY on a real
+      //    publish (else the founder would click a stale image → wrong page).
+      //  - stale frame / out-of-bounds → page is UNCHANGED, so don't execute,
+      //    don't bump frame_seq; just ack so the board re-syncs to the current
+      //    frame and the founder re-clicks.
       const coord = validateCoord(row.command_coordinate, vw, vh);
       const frameMatches = row.command_frame_seq === frameSeq;
       if (coord && frameMatches) {
@@ -337,28 +362,54 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
             jobId, feed: ctx.actionKey, err: (err as Error).message,
           });
         }
+        // The page advanced — we MUST show the new page before the next click.
+        if (!(await publishFrameWithRetry(ctx.page))) {
+          log.warn('takeover: lost the picture after a click — ending takeover', { jobId, feed: ctx.actionKey });
+          await endSession(open.id, 'error', seq);
+          return { kind: 'none', waitedMs: waited() };
+        }
+        frameSeq += 1;
+        lastApplied = seq;
+        await supabase
+          .from('mapper_takeover_sessions')
+          .update({ frame_seq: frameSeq, applied_command_seq: seq })
+          .eq('id', open.id);
+        try { deps.notify(); } catch { /* noop */ }
       } else {
-        log.info('takeover: click dropped — stale frame or out-of-bounds; re-publishing', {
+        // Page unchanged — ack only (no frame bump). The board's painted frame
+        // catches up to frame_seq on the next refetch and the founder re-clicks.
+        log.info('takeover: click dropped — stale frame or out-of-bounds', {
           jobId, feed: ctx.actionKey, frameMatches, hadCoord: Boolean(coord),
           commandFrameSeq: row.command_frame_seq, currentFrameSeq: frameSeq,
         });
+        lastApplied = seq;
+        await supabase
+          .from('mapper_takeover_sessions')
+          .update({ applied_command_seq: seq })
+          .eq('id', open.id);
+        try { deps.notify(); } catch { /* noop */ }
       }
-
-      // Fresh frame for the next click (awaited), bump seq, ack the command.
-      await publishFrame(ctx.page);
-      frameSeq += 1;
-      lastApplied = seq;
-      await supabase
-        .from('mapper_takeover_sessions')
-        .update({ frame_seq: frameSeq, applied_command_seq: seq })
-        .eq('id', open.id);
-      try { deps.notify(); } catch { /* noop */ }
     }
   }
 
   async function close(): Promise<void> {
-    if (!everUploaded) return;
-    try { await supabase.storage.from(BUCKET).remove([objectKey]); } catch { /* noop */ }
+    // End any still-open takeover for this job. Called from mapping-driver's
+    // finally on EVERY job end (success/fail/throw/abort). A clean takeover
+    // already ended itself inside maybeRun (this matches 0 rows); this catches
+    // the case where the run died between steps / during login, so a dangling
+    // 'requested'/'active' row can't leave the board stuck on a live takeover
+    // panel forever. Best-effort. (A hard SIGKILL skips finally entirely — the
+    // board defends that by hiding the panel once the job is terminal.)
+    try {
+      await supabase
+        .from('mapper_takeover_sessions')
+        .update({ status: 'ended', ended_at: new Date().toISOString(), ended_reason: 'error' })
+        .eq('job_id', jobId)
+        .in('status', ['requested', 'active']);
+    } catch { /* noop */ }
+    if (everUploaded) {
+      try { await supabase.storage.from(BUCKET).remove([objectKey]); } catch { /* noop */ }
+    }
   }
 
   return { maybeRun, close };
