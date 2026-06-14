@@ -45,7 +45,7 @@ import { saveGenericTable } from './persistence/generic-table-writer.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
-import { safeGoto } from './browser-utils/navigate.js';
+import { safeGoto, normalizeUrl } from './browser-utils/navigate.js';
 import type { Recipe, ScraperCredentialsRow, TableTemplate } from './types.js';
 
 const VIEWPORT = { width: 1280, height: 800 };
@@ -198,6 +198,22 @@ export class SessionDriver {
     // false-reject its feed navigations as off-site. Derived after credentials
     // load because the per-hotel URL lives on the credentials row.
     this.allowedHost = this.currentAllowedHost();
+    // Fail closed: an empty host means neither the per-hotel URL nor the family
+    // startUrl could be parsed. Surface a failed_restart (admin-visible) rather
+    // than letting a downstream new URL() throw uncaught and silently drop the
+    // driver from the supervisor's map with no DB status.
+    if (!this.allowedHost) {
+      log.error('session-driver: could not derive a navigation host from the login URL', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+      });
+      await this.updateStatus({
+        status: 'failed_restart',
+        paused_reason: 'Could not derive a navigation host — login URL is malformed.',
+      });
+      this.running = false;
+      return;
+    }
 
     // 3. Launch Playwright with saved storageState (if any).
     try {
@@ -1376,29 +1392,41 @@ export class SessionDriver {
  * give each hotel its own subdomain aren't all funnelled to one tenant by
  * the single active knowledge file per pms_family. Empty/whitespace/null
  * per-hotel URLs (e.g. Choice Advantage) fall back to the family startUrl —
- * preserving current behavior. Exported for unit testing.
+ * byte-for-byte the pre-fix behavior. Exported for unit testing.
+ *
+ * The per-hotel value is normalized (normalizeUrl prepends https:// when the
+ * scheme is missing) so a common data-entry input like "hotel-a.opera.com"
+ * resolves to the SAME host the allowedHost guard is derived from — no skew
+ * between the navigation target and the host guard. The family fallback is
+ * returned verbatim (it is always a stored absolute URL) to keep the
+ * no-per-hotel-URL path identical to before.
  */
 export function resolveLoginUrl(
   perHotelLoginUrl: string | null | undefined,
   familyStartUrl: string,
 ): string {
   const perHotel = perHotelLoginUrl?.trim();
-  return perHotel ? perHotel : familyStartUrl;
+  return perHotel ? normalizeUrl(perHotel) : familyStartUrl;
 }
 
 /**
  * Host for safeGoto's same-site guard, anchored to the URL we ACTUALLY log
  * in at. Falls back to the family startUrl's host when the chosen login URL
- * can't be parsed — a malformed per-hotel URL then fails the login
- * navigation cleanly (safeGoto rejects it before any network request)
- * instead of throwing here and crashing the driver. Exported for unit
- * testing.
+ * can't be parsed — a malformed per-hotel URL then fails the login navigation
+ * cleanly (safeGoto rejects it before any network request) instead of throwing
+ * here. Returns '' only when BOTH URLs are unparseable; the caller treats an
+ * empty host as fail-closed (failed_restart) rather than crashing the driver.
+ * Never throws. Exported for unit testing.
  */
 export function resolveAllowedHost(loginUrl: string, familyStartUrl: string): string {
   try {
     return new URL(loginUrl).host;
   } catch {
-    return new URL(familyStartUrl).host;
+    try {
+      return new URL(familyStartUrl).host;
+    } catch {
+      return '';
+    }
   }
 }
 
