@@ -178,8 +178,6 @@ export class SessionDriver {
     // a full driver restart).
     this.knowledgeFileVersion = this.knowledgeFile.version;
 
-    this.allowedHost = new URL(this.knowledgeFile.knowledge.login.startUrl).host;
-
     // 2. Load credentials.
     this.credentials = await this.loadCredentials();
     if (!this.credentials) {
@@ -191,6 +189,15 @@ export class SessionDriver {
       this.running = false;
       return;
     }
+
+    // Anchor the navigation host guard to the URL THIS hotel actually logs in
+    // at (per-hotel > family — see currentLoginUrl). One active knowledge file
+    // per pms_family fixes login.startUrl for every hotel on the family, so a
+    // cloud PMS that gives each hotel its own subdomain (OPERA Cloud, Cloudbeds,
+    // Mews, RoomKey) must anchor allowedHost to its own host or safeGoto would
+    // false-reject its feed navigations as off-site. Derived after credentials
+    // load because the per-hotel URL lives on the credentials row.
+    this.allowedHost = this.currentAllowedHost();
 
     // 3. Launch Playwright with saved storageState (if any).
     try {
@@ -338,15 +345,44 @@ export class SessionDriver {
     this.page = await this.context.newPage();
   }
 
+  /**
+   * The login URL THIS hotel should navigate to. Precedence: the per-hotel
+   * URL from scraper_credentials (ca_login_url) when present, else the PMS
+   * family's shared knowledge-file login.startUrl.
+   *
+   * One active knowledge file per pms_family fixes login.startUrl for every
+   * hotel on the family. Cloud PMSes (OPERA Cloud, Cloudbeds, Mews, RoomKey)
+   * give each hotel its own subdomain, so without this the family startUrl
+   * would point them all at a single tenant. Hotels with no per-hotel URL
+   * (e.g. Choice Advantage) fall back to the family startUrl — unchanged.
+   */
+  private currentLoginUrl(): string {
+    const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
+    return resolveLoginUrl(this.credentials?.loginUrl, familyStartUrl);
+  }
+
+  /** Host for safeGoto's same-site guard, anchored to currentLoginUrl() so a
+   *  legitimate per-hotel subdomain isn't false-rejected as off-site. */
+  private currentAllowedHost(): string {
+    const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
+    return resolveAllowedHost(this.currentLoginUrl(), familyStartUrl);
+  }
+
   private async ensureLoggedIn(): Promise<boolean> {
     if (!this.page || !this.knowledgeFile || !this.credentials || !this.allowedHost) {
       throw new Error('ensureLoggedIn precondition failed');
     }
     const { login } = this.knowledgeFile.knowledge;
+    // Precedence: the per-hotel login URL (scraper_credentials.ca_login_url)
+    // wins over the family-shared startUrl; hotels with no per-hotel URL (e.g.
+    // Choice Advantage) fall back to the family startUrl — see currentLoginUrl.
+    // allowedHost stays null on this navigation: it's the session-establishing
+    // goto, host-guarded only for scheme/private-IP, not same-site.
+    const loginUrl = this.currentLoginUrl();
 
     // Probe: navigate to start URL. If we land on a login form, we're not logged in.
     try {
-      await safeGoto(this.page, login.startUrl, {
+      await safeGoto(this.page, loginUrl, {
         allowedHost: null,
         context: 'session-driver:probe',
       });
@@ -379,7 +415,7 @@ export class SessionDriver {
     // form render.
     try {
       await this.context!.clearCookies();
-      await safeGoto(this.page, login.startUrl, {
+      await safeGoto(this.page, loginUrl, {
         allowedHost: null,
         context: 'session-driver:relogin',
       });
@@ -398,7 +434,7 @@ export class SessionDriver {
       await pauseForMfa({
         propertyId: this.propertyId,
         detectedSelector: earlyMfa.selector,
-        loginUrl: login.startUrl,
+        loginUrl,
       });
       return false;
     }
@@ -434,7 +470,7 @@ export class SessionDriver {
       await pauseForMfa({
         propertyId: this.propertyId,
         detectedSelector: mfa.selector,
-        loginUrl: login.startUrl,
+        loginUrl,
       });
       return false;
     }
@@ -481,7 +517,7 @@ export class SessionDriver {
       await pauseForMfa({
         propertyId: this.propertyId,
         detectedSelector: postRedirectMfa.selector,
-        loginUrl: login.startUrl,
+        loginUrl,
       });
       return false;
     }
@@ -1109,7 +1145,11 @@ export class SessionDriver {
       });
       this.knowledgeFile = latest;
       this.knowledgeFileVersion = latest.version;
-      this.allowedHost = new URL(latest.knowledge.login.startUrl).host;
+      // Re-anchor the host guard to the per-hotel login URL (per-hotel >
+      // family). Credentials don't change on a knowledge hot-reload, so this
+      // must NOT silently revert allowedHost to the family startUrl's host —
+      // that would re-break per-hotel subdomains ~60s after every promotion.
+      this.allowedHost = this.currentAllowedHost();
       // No browser restart needed — next pollOnce uses the new feeds.
     } catch (err) {
       log.warn('session-driver: knowledge hot-reload check failed', {
@@ -1326,6 +1366,39 @@ export class SessionDriver {
     this.page = null;
     this.context = null;
     this.browser = null;
+  }
+}
+
+/**
+ * Pick the login URL for one hotel: the per-hotel URL
+ * (scraper_credentials.ca_login_url) when present, else the PMS family's
+ * shared knowledge-file login.startUrl. Per-hotel wins so cloud PMSes that
+ * give each hotel its own subdomain aren't all funnelled to one tenant by
+ * the single active knowledge file per pms_family. Empty/whitespace/null
+ * per-hotel URLs (e.g. Choice Advantage) fall back to the family startUrl —
+ * preserving current behavior. Exported for unit testing.
+ */
+export function resolveLoginUrl(
+  perHotelLoginUrl: string | null | undefined,
+  familyStartUrl: string,
+): string {
+  const perHotel = perHotelLoginUrl?.trim();
+  return perHotel ? perHotel : familyStartUrl;
+}
+
+/**
+ * Host for safeGoto's same-site guard, anchored to the URL we ACTUALLY log
+ * in at. Falls back to the family startUrl's host when the chosen login URL
+ * can't be parsed — a malformed per-hotel URL then fails the login
+ * navigation cleanly (safeGoto rejects it before any network request)
+ * instead of throwing here and crashing the driver. Exported for unit
+ * testing.
+ */
+export function resolveAllowedHost(loginUrl: string, familyStartUrl: string): string {
+  try {
+    return new URL(loginUrl).host;
+  } catch {
+    return new URL(familyStartUrl).host;
   }
 }
 
