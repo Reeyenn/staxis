@@ -495,6 +495,23 @@ describe('certifyColumns (first-emission proof of ALL required columns)', () => 
     assert.match((v as { reason: string }).reason, /text_mirror/);
   });
 
+  test('a thin (<3 row) plain-text column → uncertain, not blindly certified', () => {
+    // On a 1-2 row feed the mirror/constant heuristics can't run, so a wrong
+    // free-text selector would otherwise auto-promote. Abstain → founder review.
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['guest_name'],
+      allValues: { guest_name: ['John Smith', 'Jane Doe'] }, // only 2 non-blank
+      allSelectors: { guest_name: 'td:nth-child(2)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('guest_name');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /thin_text_evidence/);
+  });
+
   test('a constant plain-text column → uncertain (a header/label echoed down the column)', () => {
     const verdicts = certifyColumns({
       actionKey: 'getWorkOrders',

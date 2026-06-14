@@ -728,7 +728,9 @@ export function evaluatePromotionGate(
     // The field is never stripped from the active recipe, so without this a repair
     // would silently fail to auto-promote forever (Claude review P1). Only freshly
     // learned targets (absent from the seed) are subject to value-certification.
-    if (seedActions && (t in seedActions)) continue;
+    // Require a REAL seeded action (not just key presence): a malformed seed with
+    // `{ target: null }` must NOT be treated as already-live and exempt (review #2).
+    if (seedActions && seedActions[t] != null) continue;
     const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
     if (!Array.isArray(carried) || carried.length === 0) continue; // certified / legacy
     // Count only columns still SHIPPING (non-blank) — a blanked column is already

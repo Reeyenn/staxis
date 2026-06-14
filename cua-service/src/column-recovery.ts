@@ -435,7 +435,14 @@ function certifyPlainText(
   allValues: Record<string, string[]>,
 ): ColumnVerdict {
   const nonBlank = values.filter((v) => v !== '');
-  if (nonBlank.length >= 3 && new Set(nonBlank).size < 2) {
+  // Too few samples to corroborate structure (the constant + mirror checks below
+  // need ≥3 comparable rows). Abstain rather than certify a guess: on a 1–2 row
+  // feed a wrong free-text selector would otherwise auto-promote. The selector is
+  // kept and the feed parks for founder review (abstain-by-default; review #2).
+  if (nonBlank.length < 3) {
+    return { verdict: 'uncertain', reason: 'thin_text_evidence' };
+  }
+  if (new Set(nonBlank).size < 2) {
     return { verdict: 'uncertain', reason: 'constant_text' };
   }
   for (const [other, raw] of Object.entries(allValues)) {

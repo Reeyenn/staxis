@@ -3431,13 +3431,33 @@ async function auditLearnedColumnsOnPage(args: {
     problems.push({ column: col, kind: 'unparseable', probedRows: extraction.rows.length });
   }
 
-  // Acceptance gate for columns already under recovery that now extract
-  // something (the focused re-ask loop owns these).
+  // Value checks (both the recovery re-ask gate AND first-emission certification)
+  // run over the FULL deadness window (extraction.rows, ≤ DEADNESS_ROW_CAP), NOT
+  // the 8-row probe: a legitimately SPARSE required column (out_of_order set on 1
+  // row in 50) is blank in the first 8 rows but real — judging it on the probe
+  // alone would `all_blank`-reject a correct selector. The full window makes the
+  // gate's all-blank verdict consistent with auditRequiredColumns' deadness scan
+  // (a truly empty column is already classified 'dead' above). probeRows is kept
+  // only for the RETURNED audit (the drill's per-record URL templating).
   const probeRows = extraction.rows.slice(0, VALUE_PROBE_ROW_CAP);
   const allValues: Record<string, string[]> = {};
   for (const col of Object.keys(args.columns)) {
-    allValues[col] = probeRows.map((r) => (r[col] ?? '').trim());
+    allValues[col] = extraction.rows.map((r) => (r[col] ?? '').trim());
   }
+
+  // Columns kept (selector present, non-blank) but NOT value-certified: they must
+  // not auto-go-live unproven, yet blanking them could erase a correct selector
+  // or cascade to quarantine — so they keep the selector and route to founder
+  // review via the promotion gate's unprovenRequiredColumns. Shared by both loops.
+  const uncertain = new Set<string>();
+
+  // Acceptance gate for columns ALREADY under recovery that now extract something
+  // (the focused re-ask loop owns these). A `semantic_date_window` miss is the ONE
+  // failure down-ranked to uncertain (keep + park) rather than rejected (blank):
+  // a CORRECT date column re-learned on a rolling multi-day arrivals/departures
+  // view trips it, and blanking a correct column could cascade to quarantine —
+  // identical treatment to the first-emission path below. Every other failure is
+  // a strong wrong-column signal → 'rejected' (blank + keep recovering).
   for (const col of args.pendingRecovery) {
     if (outstanding.has(col)) continue;
     if (!(col in args.columns)) continue;
@@ -3452,8 +3472,12 @@ async function auditLearnedColumnsOnPage(args: {
       todayIso,
     });
     if (!verdict.ok) {
-      outstanding.set(col, 'rejected');
-      problems.push({ column: col, kind: 'rejected', detail: verdict.reason });
+      if (verdict.reason.startsWith('semantic_date_window')) {
+        uncertain.add(col);
+      } else {
+        outstanding.set(col, 'rejected');
+        problems.push({ column: col, kind: 'rejected', detail: verdict.reason });
+      }
     }
   }
 
@@ -3464,39 +3488,26 @@ async function auditLearnedColumnsOnPage(args: {
   // mapped to the key) shipped silently — the JSON-oracle path proves columns,
   // the DOM path did not. Run the SAME strong value checks on every required
   // column that still ships clean (present, non-blank, never flagged, and not
-  // already owned by the recovery loop above). A failed column joins `outstanding`
-  // as 'rejected' — exactly like a recovery rejection: it enters the focused
-  // re-ask loop and, if unrecovered, finalizes BLANK (→ a promotion-gate gap),
-  // never shipping wrong values. We have real rows here (verified=true), so
-  // certifyColumns returns only certified / failed — never uncertain.
-  //
-  // Certify over the FULL deadness window (extraction.rows, ≤ DEADNESS_ROW_CAP),
-  // NOT the 8-row probe: a legitimately SPARSE required column (out_of_order set
-  // on 1 row in 50) is blank in the first 8 rows but real — judging it on the
-  // probe alone would `all_blank`-reject a correct column. The full window makes
-  // the gate's all-blank verdict consistent with auditRequiredColumns' 200-row
-  // deadness check (a truly empty column is already classified 'dead' above).
-  const allValuesFull: Record<string, string[]> = {};
-  for (const col of Object.keys(args.columns)) {
-    allValuesFull[col] = extraction.rows.map((r) => (r[col] ?? '').trim());
-  }
+  // already owned by the recovery loop above).
+  //   - 'failed' → BLANK + recover (worse-than-blank: a provably wrong selector
+  //     must not ship): joins `outstanding` as 'rejected', exactly like a recovery
+  //     rejection — it enters the focused re-ask loop and, if unrecovered,
+  //     finalizes BLANK (→ a promotion-gate gap).
+  //   - 'uncertain' → KEEP the selector but record it unproven: a plain-text
+  //     column we can't corroborate (thin/constant/mirrors another column), or a
+  //     date column that only tripped the soft semantic-window heuristic on a
+  //     wider-than-today feed — both may be correct, so never blank them; the
+  //     promotion gate parks the feed for founder review instead.
   const unjudged = requiredLearnedFor(args.actionKey).filter(
     (col) =>
       !outstanding.has(col) &&
       !args.pendingRecovery.has(col) &&
       (args.columns[col] ?? '').trim() !== '',
   );
-  // 'failed' → BLANK + recover (worse-than-blank: a provably wrong selector must
-  // not ship). 'uncertain' → KEEP the selector but record it unproven so the
-  // promotion gate parks for founder review: a plain-text column we can't
-  // corroborate (constant / mirrors another column), or a date column that only
-  // tripped the soft semantic-window heuristic on a wider-than-today feed — both
-  // may be correct, so we never blank them.
-  const uncertain = new Set<string>();
   for (const [col, verdict] of certifyColumns({
     actionKey: args.actionKey,
     columns: unjudged,
-    allValues: allValuesFull,
+    allValues,
     allSelectors: args.columns,
     learned,
     todayIso,
