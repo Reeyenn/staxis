@@ -6,7 +6,7 @@
 // Search palette · Catch-up popover. All data via /api/comms/*. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Search, Sparkles, ListTodo, BookOpen, Megaphone, Plus, Reply, ArrowRight } from 'lucide-react';
+import { Search, Sparkles, ListTodo, BookOpen, Notebook, Megaphone, Plus, Reply, ArrowRight } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
@@ -16,6 +16,7 @@ import { T, SANS, SERIF, MONO, deptColor, deptColorDark, tint, Avatar, MonoLabel
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
 import { SearchPalette, CatchUp, NewMessageModal, TodoMode } from './CommsOverlays';
 import { KnowledgePane } from './KnowledgePane';
+import { LogbookMode } from './LogbookPane';
 
 export function CommsApp() {
   const { activePropertyId: pid } = useProperty();
@@ -40,7 +41,16 @@ export function CommsApp() {
   // client (the full app) → React hydration mismatch (#418). Gate the pid branch
   // on `mounted` so SSR and the first client render produce identical markup.
   const [mounted, setMounted] = React.useState(false);
-  React.useEffect(() => { setMounted(true); }, []);
+  React.useEffect(() => {
+    setMounted(true);
+    // Dashboard "Go to Log Book" deep-links with ?view=logbook. Read it
+    // client-only (after mount) so SSR/first-render markup stays identical —
+    // same hydration discipline as the pid branch below (#418).
+    try {
+      const v = new URLSearchParams(window.location.search).get('view');
+      if (v === 'logbook' || v === 'threads' || v === 'todo' || v === 'knowledge') setMode(v);
+    } catch { /* */ }
+  }, []);
 
   const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
@@ -176,6 +186,7 @@ export function CommsApp() {
           <NavItem icon={<Reply size={17} />} label={L('Threads', 'Hilos')} active={mode === 'threads'} onClick={() => switchMode('threads')} />
           <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openTasks || undefined} />
           <NavItem icon={<BookOpen size={17} />} label={L('Knowledge', 'Conocimiento')} active={mode === 'knowledge'} onClick={() => switchMode('knowledge')} />
+          <NavItem icon={<Notebook size={17} />} label={L('Log book', 'Bitácora')} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
 
           <SidebarSection label={L('Announcements', 'Anuncios')} onAdd={() => setSearchOpen(true)} tip={L('Post an announcement', 'Publicar un anuncio')} />
           {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
@@ -204,6 +215,7 @@ export function CommsApp() {
         {mode === 'threads' && <ThreadsList pid={pid} L={L} onOpen={(convId, parent) => { selectConversation(convId); setThreadParent(parent); }} />}
         {mode === 'todo' && <TodoMode pid={pid} tasks={tasks} staff={boot?.staff ?? []} L={L} reload={loadTasks} />}
         {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot?.me.isManager} L={L} /></div>}
+        {mode === 'logbook' && <LogbookMode pid={pid} meName={boot?.me.displayName ?? L('You', 'Tú')} L={L} />}
       </div>
 
       {/* ── Overlays ── */}

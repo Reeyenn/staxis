@@ -29,6 +29,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
 import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
+import { LogBookCard } from './_components/LogBookCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
@@ -810,6 +811,9 @@ export default function DashboardPage() {
               ))}
             </section>
           )}
+
+          {/* Shift Log Book — latest recaps; renders only once there's at least one */}
+          <LogBookCard />
 
           {/* What Staxis learned — self-learning Move #2; renders only once populated */}
           <MemoryRecapCard />

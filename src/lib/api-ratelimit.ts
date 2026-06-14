@@ -259,6 +259,12 @@ export type RateLimitEndpoint =
   | 'comms-send'
   | 'comms-read'
   | 'comms-task'
+  // Shift Log Book — recap list/post + reply list/post. Non-AI, per-user
+  // ((pid,userId) composite via hashToRateLimitKey, fail-open). Recaps + replies
+  // are deliberate writes and the panel polls the list ~8s; 400/hr per user
+  // covers heavy catch-up reading + posting without ever inconveniencing real
+  // use, and bounds a runaway tab / stolen session.
+  | 'comms-logbook'
   | 'comms-action'
   | 'comms-react'             // ✓ acknowledgement reaction toggle (Slack-redesign)
   | 'comms-pin'              // pin / unpin a message (Slack-redesign)
@@ -536,6 +542,7 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'comms-send':                 400,
   'comms-read':                3600,
   'comms-task':                 400,
+  'comms-logbook':              400,
   'comms-action':               200,
   'comms-react':               1200,
   'comms-pin':                  300,

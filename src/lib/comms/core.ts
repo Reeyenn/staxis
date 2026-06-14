@@ -14,7 +14,7 @@ import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { translateMessagesForReader } from './translate';
 import type {
   ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
-  AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO,
+  AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO, LogEntryDTO, LogReplyDTO,
 } from './types';
 import { CHANNEL_LABELS } from './types';
 
@@ -1186,6 +1186,125 @@ export async function deleteTask(
   if (!allowAny && byStaffId) q = q.eq('created_by_staff_id', byStaffId);
   const { data } = await q.select('id').maybeSingle();
   return !!data;
+}
+
+// ── Shift Log Book (recaps + threaded replies) ───────────────────────────────
+
+const LOG_CATEGORIES = new Set(['front_desk', 'housekeeping', 'maintenance', 'general']);
+
+export async function createLogEntry(
+  pid: string,
+  input: { authorStaffId?: string | null; title: string; body?: string | null; category?: string | null },
+): Promise<{ id: string }> {
+  const category = input.category && LOG_CATEGORIES.has(input.category) ? input.category : null;
+  const { data, error } = await supabaseAdmin
+    .from('comms_log_entries')
+    .insert({
+      property_id: pid,
+      author_staff_id: input.authorStaffId ?? null,
+      title: input.title,
+      body: input.body ?? '',
+      category,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return { id: data.id as string };
+}
+
+export async function listLogEntries(pid: string): Promise<LogEntryDTO[]> {
+  const { data } = await supabaseAdmin
+    .from('comms_log_entries')
+    .select('*')
+    .eq('property_id', pid)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => r.id as string);
+  // Reply counts — one scoped read, tallied in JS (entry page is small).
+  const { data: replyRows } = await supabaseAdmin
+    .from('comms_log_replies')
+    .select('entry_id')
+    .eq('property_id', pid)
+    .in('entry_id', ids);
+  const counts = new Map<string, number>();
+  for (const r of (replyRows ?? []) as { entry_id: string }[]) {
+    counts.set(r.entry_id, (counts.get(r.entry_id) ?? 0) + 1);
+  }
+
+  const authorIds = rows.map((r) => r.author_staff_id as string | null).filter((x): x is string => !!x);
+  const nameMap = await staffNameMap(pid, authorIds);
+
+  return rows.map((r) => ({
+    id: r.id as string,
+    title: r.title as string,
+    body: (r.body as string | null) ?? '',
+    category: (r.category as string | null) ?? null,
+    authorStaffId: (r.author_staff_id as string | null) ?? null,
+    authorName: r.author_staff_id ? (nameMap.get(r.author_staff_id as string) ?? null) : null,
+    replyCount: counts.get(r.id as string) ?? 0,
+    createdAt: r.created_at as string,
+    updatedAt: (r.updated_at as string | null) ?? (r.created_at as string),
+  }));
+}
+
+/** Confirm a recap exists in THIS property (cross-tenant write guard for replies). */
+async function logEntryInProperty(pid: string, entryId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('comms_log_entries')
+    .select('id')
+    .eq('id', entryId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  return !!data;
+}
+
+export async function listLogReplies(pid: string, entryId: string): Promise<LogReplyDTO[]> {
+  const { data } = await supabaseAdmin
+    .from('comms_log_replies')
+    .select('*')
+    .eq('property_id', pid)
+    .eq('entry_id', entryId)
+    .order('created_at', { ascending: true })
+    .limit(500);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  const authorIds = rows.map((r) => r.author_staff_id as string | null).filter((x): x is string => !!x);
+  const nameMap = await staffNameMap(pid, authorIds);
+  return rows.map((r) => ({
+    id: r.id as string,
+    entryId: r.entry_id as string,
+    body: r.body as string,
+    authorStaffId: (r.author_staff_id as string | null) ?? null,
+    authorName: r.author_staff_id ? (nameMap.get(r.author_staff_id as string) ?? null) : null,
+    createdAt: r.created_at as string,
+  }));
+}
+
+/**
+ * Post a reply to a recap. Returns null when the recap isn't in this property
+ * (the route maps that to a 404) so a caller can't attach replies to another
+ * hotel's log by guessing an entry id.
+ */
+export async function createLogReply(
+  pid: string,
+  entryId: string,
+  input: { authorStaffId?: string | null; body: string },
+): Promise<{ id: string } | null> {
+  if (!(await logEntryInProperty(pid, entryId))) return null;
+  const { data, error } = await supabaseAdmin
+    .from('comms_log_replies')
+    .insert({
+      property_id: pid,
+      entry_id: entryId,
+      author_staff_id: input.authorStaffId ?? null,
+      body: input.body,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return { id: data.id as string };
 }
 
 // ── Message → action (reuse the work-order + complaint creation paths) ──────
