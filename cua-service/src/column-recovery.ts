@@ -353,6 +353,105 @@ export function gateRecoveredColumn(ctx: GateContext): GateVerdict {
   return { ok: true };
 }
 
+// ─── First-emission certification (feature/cua-prove-columns) ────────────────
+//
+// gateRecoveredColumn above is only consulted for columns the audit already
+// flagged as suspect (recovery candidates). A CLEAN first emission on a plain
+// server-rendered HTML table therefore shipped its required columns after only
+// the weak missing/dead/unparseable audit — a wrong-but-plausible selector
+// (check-in ↔ check-out swap, a rate cell mapped to a date column, a status
+// string mapped to the key) passed silently. On a PMS that exposes a hidden
+// JSON feed the oracle reconcile (oracle-verify.ts) already proves every column;
+// the DOM path had no equivalent. certifyColumns closes that gap by making the
+// SAME strong value checks callable for ANY required-column set, with an explicit
+// three-state verdict the promotion gate can consume.
+//
+// Abstain-by-default (worse-than-blank): `certified` requires the value checks
+// to have actually RUN against real rows AND passed; when the page yielded no
+// value evidence at all (empty feed today, wandered page, probe failure) every
+// column is `uncertain` — the selector may be perfect, but it is unproven, so it
+// must surface for review and never auto-go-live.
+
+export type ColumnVerdict =
+  /** Value checks ran against real rows and passed — safe to ship + auto-promote. */
+  | { verdict: 'certified' }
+  /** Could not be proven either way (no value evidence). Keep the selector — it
+   *  may be correct — but never auto-promote; surface for founder review. */
+  | { verdict: 'uncertain'; reason: string }
+  /** A value check actively failed — the selector points at the wrong cell (or a
+   *  dead/untranslatable one). Worse than blank: must not ship as-is. */
+  | { verdict: 'failed'; reason: string };
+
+export interface CertifyColumnsInput {
+  actionKey: ActionKey;
+  /** Required columns to judge (caller passes the columns that currently SHIP
+   *  clean — present + non-blank + not already missing/dead/unparseable/under
+   *  recovery). */
+  columns: string[];
+  /** Probe values for every learned column (same rows, same order) — drives the
+   *  cross-column checks. Include the candidate columns themselves. */
+  allValues: Record<string, string[]>;
+  /** The full learned selector map (duplicate-selector detection). */
+  allSelectors: Record<string, string>;
+  /** In-flight learned translations (this action's sanitized enumMappings + the
+   *  provisional pooled date format) so gating matches the runtime config. */
+  learned?: LearnedTranslations;
+  /** yyyy-mm-dd "today" — injectable for tests. */
+  todayIso: string;
+  /** False when the page yielded NO value evidence (the audit degraded to the
+   *  structural-only check: empty feed, wandered page, or probe extraction
+   *  failed). Then NOTHING can be value-proven → every column is `uncertain`. */
+  hasValueEvidence: boolean;
+}
+
+/**
+ * Run the gateRecoveredColumn value checks over a whole required-column set and
+ * return a per-column verdict. PURE — same abstain-by-default checks as the
+ * recovery gate, just reusable for the first-emission path. `certified` columns
+ * ship and may auto-promote; `failed` columns must be re-mapped or blanked;
+ * `uncertain` columns keep their selector but route to founder review.
+ */
+export function certifyColumns(input: CertifyColumnsInput): Map<string, ColumnVerdict> {
+  const out = new Map<string, ColumnVerdict>();
+  for (const column of input.columns) {
+    if (!input.hasValueEvidence) {
+      out.set(column, { verdict: 'uncertain', reason: 'no_value_evidence' });
+      continue;
+    }
+    const verdict = gateRecoveredColumn({
+      actionKey: input.actionKey,
+      column,
+      values: input.allValues[column] ?? [],
+      allValues: input.allValues,
+      selector: input.allSelectors[column] ?? '',
+      allSelectors: input.allSelectors,
+      learned: input.learned,
+      todayIso: input.todayIso,
+    });
+    out.set(column, verdict.ok ? { verdict: 'certified' } : { verdict: 'failed', reason: verdict.reason });
+  }
+  return out;
+}
+
+/**
+ * The certification field stamped onto a TABLE-mode ActionRecipe at first
+ * emission so the promotion gate can refuse to auto-promote a required column it
+ * never proved. Carried as a STRUCTURAL extension (ActionRecipe lives in
+ * types.ts, out of scope for this change) — it serializes into the signed
+ * knowledge-file envelope alongside the rest of the action and is ignored by the
+ * runtime. ABSENT ⟹ proven / legacy: existing live recipes (and the JSON-oracle
+ * `api` path, whose columns are reconciled) have no field and stay trusted, so
+ * the fleet is never mass re-parked.
+ */
+export interface ColumnProofCarrier {
+  /** Required columns kept (non-blank) but NOT value-certified — either no value
+   *  evidence existed (empty/unreadable feed at onboarding) or the value parsed
+   *  as the wrong type on every sampled row (`unparseable`). The promotion gate
+   *  routes a feed carrying any of these to founder review instead of letting it
+   *  auto-go-live with a guessed column. */
+  unprovenRequiredColumns?: string[];
+}
+
 /** Canonical enum set for a column from the VALUE contract (what the gate and
  *  the recovery hint teach the model) — TARGET_VALUE_CONTRACTS stays the one
  *  source of truth. */

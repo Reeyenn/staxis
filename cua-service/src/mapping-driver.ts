@@ -705,6 +705,33 @@ export function evaluatePromotionGate(
   const found = new Set(Object.keys(recipe.actions));
   const feedGaps = computeFeedGaps(recipe.actions);
 
+  // feature/cua-prove-columns — a required target is TRUSTWORTHY FOR AUTO-PROMOTION
+  // only when each required column was PROVEN: oracle-reconciled (mode:'api', the
+  // JSON path, whose rows are reconciled against the DOM oracle) OR first-emission
+  // value-certified (mode:'table', the new DOM-path check). A table feed that
+  // carries `unprovenRequiredColumns` (columns kept but NOT value-certified — the
+  // page was empty/unreadable at onboarding so no value evidence existed, or the
+  // value parsed as the wrong type on every sampled row) must NEVER auto-go-live
+  // with a guessed column; it parks for founder review (park_partial). The field
+  // is read STRUCTURALLY (ActionRecipe is owned by types.ts, out of scope here)
+  // and is ABSENT ⟹ proven: legacy live recipes have no field and stay trusted,
+  // so a backfill/promote re-check never mass-reparks the fleet (monotonic).
+  const unprovenByTarget = new Map<string, string[]>();
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;                      // missing → already a computeFeedGaps gap
+    if (action.parse?.mode === 'api') continue; // oracle-reconciled JSON path — already strong
+    const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
+    if (!Array.isArray(carried) || carried.length === 0) continue; // certified / legacy
+    // Count only columns still SHIPPING (non-blank) — a blanked column is already
+    // a computeFeedGaps gap (incomplete_columns), not an "unproven but live" one.
+    const cols = effectiveColumnsFromAction(t, action);
+    const live = carried.filter(
+      (c): c is string => typeof c === 'string' && typeof cols[c] === 'string' && cols[c]!.trim() !== '',
+    );
+    if (live.length > 0) unprovenByTarget.set(String(t), live);
+  }
+
   // Plan v8 self-repair guard — a repair job seeds the existing recipe's
   // actions (minus the one failing target) and re-learns just that one,
   // so a successful repair yields seed-count + 1 actions. If the re-learn
@@ -738,9 +765,11 @@ export function evaluatePromotionGate(
   );
   const businessCriticalFound = BUSINESS_CRITICAL_TARGETS.filter((t) => found.has(t));
 
-  // All 4 required trustworthy → the pre-existing full path.
+  // All 4 required present + column-complete (non-blank). Auto-promote ONLY when
+  // every required column is also value-PROVEN AND enough business-critical feeds
+  // landed — otherwise park for the founder's Promote click.
   if (feedGaps.missingRequired.length === 0) {
-    if (businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
+    if (unprovenByTarget.size === 0 && businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
       return {
         decision: 'auto_promote',
         reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})`,
@@ -753,9 +782,21 @@ export function evaluatePromotionGate(
     // like a 3/4 one that meets the bar below; neither ships without him.
     // The BC gaps are recorded in feedGaps so the promoted file goes live
     // with the honesty annotations + daily backfill retries intact.
+    //
+    // feature/cua-prove-columns — a required column that ships but was NOT
+    // value-certified (unprovenByTarget) is treated exactly like a BC shortfall
+    // here: never auto-go-live, always founder-reviewed. The column keeps its
+    // selector (it may be correct) so a single Promote click ships it; we just
+    // refuse to do it automatically with a guessed column.
+    const unprovenNote = unprovenByTarget.size > 0
+      ? ` — required columns not value-certified (need founder review): ${[...unprovenByTarget].map(([t, cols]) => `${t} (${cols.join(', ')})`).join('; ')}`
+      : '';
+    const bcClause = businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO
+      ? `${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical`
+      : `only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion)`;
     return {
       decision: 'park_partial',
-      reason: `all required found but only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion) — parked for admin review; missing business-critical recorded for retry: ${feedGaps.missingBusinessCritical.join(', ')}`,
+      reason: `all required found but ${bcClause}${unprovenNote} — parked for admin review; missing business-critical recorded for retry: ${feedGaps.missingBusinessCritical.join(', ')}`,
       feedGaps,
     };
   }

@@ -567,6 +567,69 @@ describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotio
   });
 });
 
+describe('evaluatePromotionGate — value-certification (feature/cua-prove-columns)', () => {
+  // Stamp the structural proof carrier exactly as finalizeRecoveredSuccess does.
+  const withUnproven = (action: ActionRecipe, cols: string[]): ActionRecipe => {
+    (action as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns = cols;
+    return action;
+  };
+  const arrivalsCols = { pms_reservation_id: 'a', guest_name: 'b', arrival_date: 'c', departure_date: 'd' };
+
+  test('a required column that ships but is NOT value-certified blocks auto_promote → park_partial', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(tableAction(arrivalsCols), ['arrival_date']),
+    }));
+    assert.equal(g.decision, 'park_partial');
+    assert.equal(g.feedGaps.missingRequired.length, 0); // present + non-blank → NOT a gap
+    assert.match(g.reason, /value-certified/);
+    assert.match(g.reason, /arrival_date/);
+  });
+
+  test('a legacy table recipe (no proof field) still auto_promotes — no fleet re-park', () => {
+    const g = evaluatePromotionGate(fullRecipe()); // tableAction never stamps the field
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('an empty proof list is treated as proven (certified) → auto_promote', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(tableAction(arrivalsCols), []),
+    }));
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('the JSON-oracle (api) path is trusted even if a stale proof field is present → auto_promote', () => {
+    const apiArrivals = {
+      steps: [],
+      parse: { mode: 'api', hint: { url: 'https://pms.example.com/api/arr', method: 'GET', columns: arrivalsCols } },
+    } as unknown as ActionRecipe;
+    (apiArrivals as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns = ['arrival_date'];
+    const g = evaluatePromotionGate(fullRecipe({ getArrivals: apiArrivals }));
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('a proof entry naming a BLANK column is dropped (handled as a gap, not double-reported)', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(
+        tableAction({ pms_reservation_id: 'a', guest_name: 'b', arrival_date: '', departure_date: 'd' }),
+        ['arrival_date'],
+      ),
+    }));
+    assert.equal(g.decision, 'park_partial');
+    // The blank column is a real incomplete_columns gap — routed by computeFeedGaps,
+    // and the unproven filter drops it so the reason isn't a duplicate.
+    assert.ok(g.feedGaps.missingRequired.some((x) => x.target === 'getArrivals' && x.reason === 'incomplete_columns'));
+  });
+
+  test('unproven + below the partial bar never auto-promotes and never escalates to quarantine on its own', () => {
+    // All required present (so the bar is met) but two of them unproven → park_partial.
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(tableAction(arrivalsCols), ['arrival_date']),
+      getDepartures: withUnproven(tableAction(arrivalsCols), ['departure_date']),
+    }));
+    assert.equal(g.decision, 'park_partial');
+  });
+});
+
 describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT active', () => {
   const gapsOf = (r: Recipe) => computeFeedGaps(r.actions);
 
