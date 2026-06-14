@@ -108,17 +108,29 @@ export type VerifyResult =
  * a key rotation. After the grace window the previous-key env should be
  * unset so the verifier strictly requires the active key.
  *
- * Returns { ok: false, reason: 'no_signature' } when the row has no
- * stored signature (NULL `signature` or `signed_with_key_id`). Callers
+ * Returns { ok: false, reason: 'no_signature' } ONLY when the row has no
+ * stored `signature` BYTEA. A present signature with a NULL
+ * `signed_with_key_id` is still verifiable: the key-id is operator-facing
+ * metadata (which generation signed the row) and is NEVER an input to the
+ * HMAC math below, so refusing on its absence wrongly rejected a validly
+ * signed row — under enforce mode that silently halted polling. Callers
  * decide whether to refuse (enforce mode) or warn-and-proceed (warn
  * mode) based on the `RECIPE_SIGNING_ENFORCE` env.
+ *
+ * `storedKeyId` is retained in the signature for call-site compatibility
+ * (loadActive / recipe-runner / write-job-handler pass it positionally)
+ * and as a debugging breadcrumb in their log lines; it is intentionally
+ * not consulted here.
  */
 export function verifyRecipe(
   recipe: Recipe,
   storedSignature: Buffer | null,
   storedKeyId: string | null,
 ): VerifyResult {
-  if (!storedSignature || !storedKeyId) {
+  // `no_signature` means the signature column itself is NULL — nothing to
+  // verify. A missing key-id does NOT count (see docstring): it isn't part
+  // of the HMAC, so a present signature with a null key-id verifies below.
+  if (!storedSignature) {
     return { ok: false, reason: 'no_signature' };
   }
 

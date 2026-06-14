@@ -9,7 +9,9 @@
  *
  * This module is the typed access layer. The CUA worker calls
  * loadActive(pmsFamily) on session boot and after every status change.
- * The mapper (future, Phase 2+) calls saveDraft + promote.
+ * The live mapper path (cua-service/src/mapping-driver.ts) owns save +
+ * promote (saveDraftKnowledgeFile / promoteDraft); this module additionally
+ * exposes promoteEditedDraft for the coverage editor's delete/add-feed job.
  *
  * Knowledge schema (jsonb in pms_knowledge_files.knowledge):
  *   {
@@ -191,14 +193,20 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
   // every poll.
   //
   // Three failure shapes:
-  //   1. Signing IS configured but the row is unsigned (no signature col).
-  //      In FY25, this can only happen if mapper signing threw + saved
-  //      unsigned (only allowed in warn mode — see mapping-driver.ts).
-  //      Refuse the load unconditionally — even in warn mode — because
-  //      a configured environment seeing an unsigned active row is a
-  //      red flag that needs operator attention. Falling through silently
-  //      defeats the purpose of having signing on at all. (Codex A2 fix:
-  //      previous version only refused in 'enforce' mode, leaving warn
+  //   1. Signing IS configured but the row is unsigned. "Unsigned" here
+  //      means the `signature` BYTEA itself is NULL — verifyRecipe returns
+  //      'no_signature' ONLY for an absent signature. A present signature
+  //      with a NULL `signed_with_key_id` is NOT unsigned: the key-id is not
+  //      part of the HMAC, so such a row verifies (or mismatches) normally
+  //      and never lands here. (This is the matching definition for the
+  //      recipe-signing.ts no_signature fix — keep the two in lockstep.)
+  //      In FY25, a truly-unsigned active row can only happen if mapper
+  //      signing threw + saved unsigned (only allowed in warn mode — see
+  //      mapping-driver.ts). Refuse the load unconditionally — even in warn
+  //      mode — because a configured environment seeing an unsigned active
+  //      row is a red flag that needs operator attention. Falling through
+  //      silently defeats the purpose of having signing on at all. (Codex A2
+  //      fix: previous version only refused in 'enforce' mode, leaving warn
   //      mode operationally identical to "no signing".)
   //   2. Signing configured + signature present + verification fails:
   //      enforce refuses; warn logs + proceeds (per the env contract).
@@ -272,162 +280,14 @@ export async function listVersions(pmsFamily: string): Promise<LoadedKnowledgeFi
 
 // ─── Save ────────────────────────────────────────────────────────────────
 
-/**
- * Save a new draft knowledge file. Auto-increments version (max existing
- * + 1). Returns the new id. Throws on validation failure or write error.
- *
- * Drafts do not affect runtime — only 'active' versions are loaded by
- * the session-driver. Promote with promoteToActive() once verified.
- */
-export async function saveDraft(args: {
-  pmsFamily: string;
-  knowledge: KnowledgeFile;
-  createdBy: string;
-  notes?: string;
-}): Promise<{ id: string; version: number }> {
-  validate(args.knowledge);
-
-  // Find current max version for atomic +1.
-  const { data: existing } = await supabase
-    .from('pms_knowledge_files')
-    .select('version')
-    .eq('pms_family', args.pmsFamily)
-    .order('version', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const nextVersion = (existing?.version as number | undefined ?? 0) + 1;
-
-  const { data, error } = await supabase
-    .from('pms_knowledge_files')
-    .insert({
-      pms_family: args.pmsFamily,
-      version: nextVersion,
-      status: 'draft',
-      knowledge: args.knowledge,
-      created_by: args.createdBy,
-      notes: args.notes ?? null,
-    })
-    .select('id, version')
-    .single();
-
-  if (error || !data) {
-    throw new Error(`knowledge-file: saveDraft failed: ${error?.message ?? 'no data'}`);
-  }
-
-  log.info('knowledge-file: draft saved', {
-    pmsFamily: args.pmsFamily,
-    version: nextVersion,
-    createdBy: args.createdBy,
-  });
-
-  return { id: data.id as string, version: data.version as number };
-}
-
-/**
- * Promote a draft (or deprecated/quarantined version) to active.
- * Demotes the existing active version to 'deprecated' first so the
- * partial unique index (pms_knowledge_files_one_active_per_family) is
- * satisfied at all times.
- *
- * NOT atomic across the two updates — there's a millisecond window where
- * no version is active. Acceptable because session-drivers cache the
- * active version on boot, so a transient gap doesn't affect them.
- */
-export async function promoteToActive(args: {
-  pmsFamily: string;
-  version: number;
-  promotedBy: string;
-}): Promise<void> {
-  // Demote current active (if any).
-  const { error: demoteErr } = await supabase
-    .from('pms_knowledge_files')
-    .update({
-      status: 'deprecated',
-      deprecated_at: new Date().toISOString(),
-    })
-    .eq('pms_family', args.pmsFamily)
-    .eq('status', 'active');
-
-  if (demoteErr) {
-    throw new Error(`knowledge-file: failed to demote current active: ${demoteErr.message}`);
-  }
-
-  // Promote target.
-  const { error: promoteErr } = await supabase
-    .from('pms_knowledge_files')
-    .update({
-      status: 'active',
-      promoted_to_active_at: new Date().toISOString(),
-    })
-    .eq('pms_family', args.pmsFamily)
-    .eq('version', args.version)
-    .in('status', ['draft', 'deprecated']);
-
-  if (promoteErr) {
-    throw new Error(`knowledge-file: failed to promote v${args.version}: ${promoteErr.message}`);
-  }
-
-  log.info('knowledge-file: promoted to active', {
-    pmsFamily: args.pmsFamily,
-    version: args.version,
-    promotedBy: args.promotedBy,
-  });
-}
-
-/**
- * Mark a version as quarantined. Used when a self-heal repair produces
- * a known-bad knowledge file and we want to ensure it's not loaded.
- * Promotes the previous good version back to active (if asked).
- */
-export async function quarantine(args: {
-  pmsFamily: string;
-  version: number;
-  reason: string;
-  promotePreviousActive?: boolean;
-}): Promise<void> {
-  const { error } = await supabase
-    .from('pms_knowledge_files')
-    .update({
-      status: 'quarantined',
-      notes: `QUARANTINED: ${args.reason}`,
-    })
-    .eq('pms_family', args.pmsFamily)
-    .eq('version', args.version);
-
-  if (error) {
-    throw new Error(`knowledge-file: quarantine failed: ${error.message}`);
-  }
-
-  log.warn('knowledge-file: quarantined', {
-    pmsFamily: args.pmsFamily,
-    version: args.version,
-    reason: args.reason,
-  });
-
-  if (args.promotePreviousActive) {
-    const { data } = await supabase
-      .from('pms_knowledge_files')
-      .select('version')
-      .eq('pms_family', args.pmsFamily)
-      .eq('status', 'deprecated')
-      .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (data) {
-      await promoteToActive({
-        pmsFamily: args.pmsFamily,
-        version: data.version as number,
-        promotedBy: 'quarantine-rollback',
-      });
-    } else {
-      log.warn('knowledge-file: no previous version to promote after quarantine', {
-        pmsFamily: args.pmsFamily,
-      });
-    }
-  }
-}
+// NOTE: the former saveDraft / promoteToActive / quarantine exports were
+// removed (fix/cua-persistence-signing) — they had ZERO callers; the live
+// mapper path reimplements save+promote in mapping-driver.ts. Their two
+// load-bearing ideas were ported INTO that live path before deletion: the
+// `.in('status', ['draft', 'deprecated'])` promote guard, and the
+// quarantine→"promote newest deprecated" last-known-good rollback (so a
+// failed promote never strands a family at zero active). promoteEditedDraft
+// (below) and loadActive/loadByVersion/listVersions are the surviving API.
 
 /**
  * feature/cua-coverage-editor — NEVER-ZERO-ACTIVE, BASE-GUARDED promote of a
@@ -558,36 +418,4 @@ export function decodeBytea(raw: unknown): Buffer | null {
   }
   // assume base64
   try { return Buffer.from(raw, 'base64'); } catch { return null; }
-}
-
-/**
- * Validate the shape of a knowledge file before saving. Catches the
- * obvious "Claude returned garbage" case. Doesn't validate selector
- * syntax (Playwright will throw at runtime).
- */
-function validate(k: KnowledgeFile): void {
-  if (!k || typeof k !== 'object') {
-    throw new Error('knowledge-file: not an object');
-  }
-  if (k.schema !== 1) {
-    throw new Error(`knowledge-file: unsupported schema ${k.schema}`);
-  }
-  if (!k.login || typeof k.login !== 'object') {
-    throw new Error('knowledge-file: missing login');
-  }
-  if (typeof k.login.startUrl !== 'string' || !k.login.startUrl.startsWith('http')) {
-    throw new Error('knowledge-file: login.startUrl must be a http(s) URL');
-  }
-  if (!Array.isArray(k.login.steps)) {
-    throw new Error('knowledge-file: login.steps must be an array');
-  }
-  if (!Array.isArray(k.login.successSelectors) || k.login.successSelectors.length === 0) {
-    throw new Error('knowledge-file: login.successSelectors must be non-empty array');
-  }
-  // Plan v7 — knowledge files now use Recipe.actions shape (one per
-  // target table). Detailed validation lives in the recipe-adapter when
-  // it translates to TableTemplate; here we just check the envelope.
-  if (!k.actions || typeof k.actions !== 'object' || Object.keys(k.actions).length === 0) {
-    throw new Error('knowledge-file: missing actions (mapper output expected)');
-  }
 }

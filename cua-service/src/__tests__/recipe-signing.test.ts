@@ -118,6 +118,107 @@ describe('signRecipe → verifyRecipe round-trip', () => {
   });
 });
 
+// ─── ENVELOPE round-trip (the sign/verify split-brain regression) ─────────
+//
+// The store path (mapping-driver.ts saveDraftKnowledgeFile) does NOT sign the
+// bare recipe — it wraps it in a `knowledge` ENVELOPE (schema/description/hints
+// injected) and signs THAT exact object, then persists it. loadActive later
+// canonicalJson-verifies the stored envelope. If those two shapes ever diverge,
+// EVERY auto-mapped recipe fails verification and (under enforce) every hotel on
+// that family goes recipe-less. The round-trip test above signs and verifies the
+// SAME object, so it is structurally BLIND to that divergence. These tests close
+// the gap by reproducing the real envelope shape.
+
+/**
+ * Mirror of saveDraftKnowledgeFile's envelope construction (keep in sync). The
+ * load-bearing detail is the injected `hints: {}` default and the `description`
+ * fallback — keys the bare recipe lacks, which is exactly what the old bug
+ * canonicalJson-diffed away into a permanent 'mismatch'.
+ */
+function buildEnvelope(recipe: Recipe, version = 1): Record<string, unknown> {
+  return {
+    schema: 1,
+    description: recipe.description ?? `Auto-mapped by mapping-driver (v${version})`,
+    login: recipe.login,
+    actions: recipe.actions,
+    hints: recipe.hints ?? {},
+    ...(recipe.valueTranslations ? { valueTranslations: recipe.valueTranslations } : {}),
+    ...(recipe.dateFormat ? { dateFormat: recipe.dateFormat } : {}),
+  };
+}
+
+describe('ENVELOPE sign/verify — signed payload === stored payload', () => {
+  test('signing the envelope and verifying the envelope succeeds', () => {
+    const envelope = buildEnvelope(SAMPLE_RECIPE);
+    const { signature, signedWithKeyId } = signRecipe(envelope as unknown as Recipe);
+    const result = verifyRecipe(envelope as unknown as Recipe, signature, signedWithKeyId);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.keyGeneration, 'active');
+  });
+
+  test('REGRESSION: signing the BARE recipe but verifying the ENVELOPE → mismatch', () => {
+    // The exact pre-fix bug: signRecipe(recipe) over the bare shape (no
+    // `hints`, no `description`), then verifyRecipe against the envelope the
+    // DB actually stored (with `hints:{}` + description injected). canonicalJson
+    // key-sorts and the envelope carries keys the bare recipe lacks, so the
+    // digests never match. The signed side OMITS the optional fields; the
+    // verify side INCLUDES them.
+    const { signature, signedWithKeyId } = signRecipe(SAMPLE_RECIPE); // bare
+    const envelope = buildEnvelope(SAMPLE_RECIPE);                    // +hints +description
+    const result = verifyRecipe(envelope as unknown as Recipe, signature, signedWithKeyId);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'mismatch');
+  });
+});
+
+// ─── jsonb round-trip stability (present-undefined divergence class) ──────
+//
+// saveDraftKnowledgeFile signs AND stores JSON.parse(JSON.stringify(envelope))
+// — the exact shape jsonb persists and returns. The danger it guards: jsonb
+// silently DROPS a present-but-`undefined` nested field, but canonicalJson of
+// the raw in-memory object emits a literal `"k":undefined` for it. So signing
+// the raw object then verifying the read-back (jsonb) row would mismatch
+// forever → under enforce, the whole pms_family goes recipe-less. These tests
+// pin that signing the JSON-NORMALIZED shape survives the round-trip, and that
+// signing the RAW shape would NOT (the bug the normalization prevents).
+
+const ENVELOPE_WITH_UNDEFINED = {
+  schema: 1 as const,
+  description: 'has a present-undefined nested field',
+  login: {
+    startUrl: 'https://app.example.com/login',
+    // A login step carrying an explicit `undefined` optional — the exact
+    // shape a future builder could emit. jsonb will drop `timeoutMs`.
+    steps: [{ kind: 'fill', selector: 'input', value: '$username', timeoutMs: undefined }],
+    successSelectors: ['.dashboard'],
+  },
+  actions: SAMPLE_RECIPE.actions,
+  hints: {},
+};
+
+describe('signed payload survives the jsonb JSON round-trip', () => {
+  test('signing the JSON-normalized envelope verifies against the round-tripped shape', () => {
+    // What saveDraftKnowledgeFile now does: normalize, sign, store the same.
+    const stored = JSON.parse(JSON.stringify(ENVELOPE_WITH_UNDEFINED));
+    const { signature, signedWithKeyId } = signRecipe(stored as unknown as Recipe);
+    const readBack = JSON.parse(JSON.stringify(stored)); // jsonb round-trip ≈ JSON round-trip
+    const result = verifyRecipe(readBack as unknown as Recipe, signature, signedWithKeyId);
+    assert.equal(result.ok, true);
+  });
+
+  test('REGRESSION: signing the RAW (present-undefined) envelope but verifying the round-tripped shape → mismatch', () => {
+    // The pre-normalization hazard: the raw object has `timeoutMs: undefined`,
+    // canonicalJson emits "timeoutMs":undefined, but the stored/read-back row
+    // dropped the key. Digests differ → mismatch. This is exactly why
+    // saveDraftKnowledgeFile normalizes before signing.
+    const { signature, signedWithKeyId } = signRecipe(ENVELOPE_WITH_UNDEFINED as unknown as Recipe);
+    const readBack = JSON.parse(JSON.stringify(ENVELOPE_WITH_UNDEFINED));
+    const result = verifyRecipe(readBack as unknown as Recipe, signature, signedWithKeyId);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'mismatch');
+  });
+});
+
 describe('verifyRecipe — tamper detection', () => {
   test('mutating a selector breaks the signature', () => {
     const { signature, signedWithKeyId } = signRecipe(SAMPLE_RECIPE);
@@ -165,6 +266,24 @@ describe('verifyRecipe — tamper detection', () => {
     const result = verifyRecipe(SAMPLE_RECIPE, Buffer.from('too-short'), signedWithKeyId);
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'mismatch');
+  });
+});
+
+describe('verifyRecipe — no_signature means signature-absent ONLY (key-id is metadata)', () => {
+  test('present signature + NULL key-id still verifies (key-id is not in the HMAC)', () => {
+    // Regression for the false-positive: a validly-signed row whose
+    // signed_with_key_id is NULL (legacy/edge data) must NOT be refused. The
+    // key-id never feeds the HMAC, so verification proceeds and succeeds.
+    const { signature } = signRecipe(SAMPLE_RECIPE);
+    const result = verifyRecipe(SAMPLE_RECIPE, signature, null);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.keyGeneration, 'active');
+  });
+
+  test('NULL signature → no_signature even when a key-id is present', () => {
+    const result = verifyRecipe(SAMPLE_RECIPE, null, 'e942f947');
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'no_signature');
   });
 });
 

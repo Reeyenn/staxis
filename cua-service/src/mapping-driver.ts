@@ -911,22 +911,185 @@ async function promoteDraft(
   pmsFamily: string,
   newDraftId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  // Demote prior active first (partial unique index enforces one active
-  // per family — promote-before-demote would violate it).
+  const nowIso = new Date().toISOString();
+
+  // These are separate, non-transactional statements (no migration is in
+  // scope to add a demote+promote RPC — the truly atomic fix, mirroring
+  // FAILSAFES.md's promote_shadow_model_run). So the only authoritative truth
+  // is the DB, and every state-changing UPDATE below CONFIRMS its row-level
+  // effect with `.select().maybeSingle()` — a Supabase UPDATE reports no error
+  // even when it matched ZERO rows, so an unconfirmed update can't be trusted
+  // to mean "it happened". Small read helpers keep the never-zero-active logic
+  // honest and DRY (inlined here to respect this change's edit scope).
+  const familyActiveExists = async (): Promise<boolean | null> => {
+    const { data, error } = await supabase
+      .from('pms_knowledge_files')
+      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').maybeSingle();
+    if (error) return null; // unknown — caller decides conservatively
+    return !!data;
+  };
+  const draftIsActive = async (): Promise<boolean> => {
+    const { data } = await supabase
+      .from('pms_knowledge_files')
+      .select('status').eq('id', newDraftId).maybeSingle();
+    return (data?.status as string | undefined) === 'active';
+  };
+  // Re-activate the EXACT row we removed, by id. Guarded on status='deprecated'
+  // + the one-active partial index → can never create a second active (a
+  // would-be double-write just matches 0 rows). Returns true only if a row
+  // actually flipped, so a 0-row no-op is never mistaken for a restore.
+  const restoreActiveById = async (id: string, promotedAt: string | null): Promise<boolean> => {
+    const { data, error } = await supabase
+      .from('pms_knowledge_files')
+      .update({ status: 'active', promoted_to_active_at: promotedAt ?? nowIso, deprecated_at: null })
+      .eq('id', id).eq('status', 'deprecated')
+      .select('id').maybeSingle();
+    return !error && !!data;
+  };
+  // Last-DITCH only: promote the newest deprecated row. Used solely when the
+  // by-id restore could not be applied (the exact row changed under us). This
+  // may promote a DIFFERENT deprecated recipe than the one we removed, but it
+  // restores SERVICE rather than stranding the family at zero active — an
+  // acceptable last resort. Ported from the deleted knowledge-file.ts
+  // quarantine→promote-previous-active logic. Returns true only if a row flipped.
+  const restoreNewestDeprecated = async (): Promise<boolean> => {
+    const { data: prev } = await supabase
+      .from('pms_knowledge_files')
+      .select('id').eq('pms_family', pmsFamily).eq('status', 'deprecated')
+      .order('version', { ascending: false }).limit(1).maybeSingle();
+    if (!prev) return false;
+    return restoreActiveById(prev.id as string, null);
+  };
+
+  // Snapshot the EXACT active row up front. Capturing its id (vs guessing by
+  // version rank later) is what lets us, on any failure, (a) restore the right
+  // recipe by id, and (b) NOT resurrect deprecated history for a family that
+  // was already at zero active — a first learn, or one an admin deliberately
+  // took offline. `priorActive === null` means "we removed nothing".
+  const { data: priorActive, error: priorErr } = await supabase
+    .from('pms_knowledge_files')
+    .select('id, promoted_to_active_at')
+    .eq('pms_family', pmsFamily)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (priorErr) {
+    // We could not read the current active. REFUSE to start mutating: a failed
+    // snapshot would silently become `priorActive = null`, disabling the by-id
+    // recovery below — so a later demote+promote failure could strand the
+    // family at zero active. Bail before touching anything; the caller parks
+    // the draft and nothing has changed.
+    return { ok: false, error: `could not read current active before promote: ${priorErr.message}` };
+  }
+
+  // Demote the prior active FIRST — the partial unique index
+  // pms_knowledge_files_one_active_per_family forbids two active rows, so we
+  // can't promote-then-demote.
   const { error: demErr } = await supabase
     .from('pms_knowledge_files')
-    .update({ status: 'deprecated', deprecated_at: new Date().toISOString() })
+    .update({ status: 'deprecated', deprecated_at: nowIso })
     .eq('pms_family', pmsFamily)
     .eq('status', 'active');
-  if (demErr) return { ok: false, error: `demote failed: ${demErr.message}` };
+  if (demErr) {
+    // The demote response errored, but it MAY have committed server-side (a
+    // lost ack). Branch on what we can observe:
+    //   - active still exists → the demote didn't take → bail safely (the
+    //     prior active is live).
+    //   - active gone, OR the re-read itself failed (stillActive === null) —
+    //     and we HAD a prior active → attempt the guarded by-id restore. It
+    //     flips priorActive back to active ONLY if it is now 'deprecated' (the
+    //     committed case); if the demote didn't actually take, the
+    //     `.eq('status','deprecated')` guard makes it a safe 0-row no-op. So
+    //     trying it even when stillActive is unknown can only help, never
+    //     double-activate.
+    //   - we never had an active (priorActive === null) → restore NOTHING; do
+    //     not resurrect a deliberately-offline family.
+    const stillActive = await familyActiveExists();
+    if (stillActive !== true && priorActive) {
+      const restored = await restoreActiveById(
+        priorActive.id as string, priorActive.promoted_to_active_at as string | null,
+      );
+      if (restored) {
+        log.warn('mapping-driver: promoteDraft demote errored after committing — restored the prior active by id (no zero-active window)', {
+          pmsFamily, newDraftId, restoredId: priorActive.id, err: demErr.message,
+        });
+      } else if (stillActive === false) {
+        log.error('mapping-driver: promoteDraft demote errored after committing AND the by-id restore failed — family may have NO active recipe', {
+          pmsFamily, newDraftId, priorActiveId: priorActive.id, err: demErr.message,
+        });
+      }
+    } else if (stillActive === null) {
+      log.error('mapping-driver: promoteDraft demote errored and the active-state re-read also failed (no prior active to restore)', {
+        pmsFamily, newDraftId, err: demErr.message,
+      });
+    }
+    return { ok: false, error: `demote failed: ${demErr.message}` };
+  }
 
-  const { error: promErr } = await supabase
+  // Promote the new draft. Status-guarded (ported from the deleted
+  // knowledge-file.ts promoteToActive) so we only flip a real draft/deprecated
+  // row; maybeSingle returns null data + null error when nothing matched (e.g.
+  // the draft was concurrently changed) — treated as a failure, not a no-op.
+  const { data: promoted, error: promErr } = await supabase
     .from('pms_knowledge_files')
-    .update({ status: 'active', promoted_to_active_at: new Date().toISOString() })
-    .eq('id', newDraftId);
-  if (promErr) return { ok: false, error: `promote failed: ${promErr.message}` };
+    .update({ status: 'active', promoted_to_active_at: nowIso })
+    .eq('id', newDraftId)
+    .eq('pms_family', pmsFamily)
+    .in('status', ['draft', 'deprecated'])
+    .select('id')
+    .maybeSingle();
+  if (!promErr && promoted) return { ok: true };
 
-  return { ok: true };
+  const failReason = promErr?.message ?? 'draft was not in a promotable (draft/deprecated) state — no row matched';
+
+  // Partial-success guard: a promote can COMMIT server-side yet still surface
+  // an error/empty response (lost ack), or a concurrent promote may have
+  // activated this same draft. If the draft is already active, the desired
+  // end-state holds — return ok so the caller revives sessions instead of
+  // spuriously rolling back (which would trip the one-active unique index)
+  // and reporting a false failure.
+  if (await draftIsActive()) {
+    log.warn('mapping-driver: promoteDraft promote reported an error but the draft is active — treating as success', {
+      pmsFamily, newDraftId, reason: failReason,
+    });
+    return { ok: true };
+  }
+
+  // The new draft did NOT go live. Restore an active ONLY if THIS call removed
+  // one. If priorActive was null — the family was already at zero active (a
+  // first learn, or an admin who deliberately took it offline) — do NOT
+  // resurrect a deprecated recipe: leave the draft parked, return failure, and
+  // let the caller downgrade to park_draft for manual review.
+  if (priorActive) {
+    // (1) Undo the exact demotion, by id.
+    if (await restoreActiveById(priorActive.id as string, priorActive.promoted_to_active_at as string | null)) {
+      log.warn('mapping-driver: promoteDraft promote failed — restored the previously-active recipe by id (no zero-active window)', {
+        pmsFamily, newDraftId, restoredId: priorActive.id, reason: failReason,
+      });
+    } else if (await restoreNewestDeprecated()) {
+      // (2) The by-id restore didn't apply (row changed beneath us) — last
+      //     ditch: promote the newest deprecated to restore service.
+      log.warn('mapping-driver: promoteDraft promote failed and the by-id rollback did not apply — restored newest deprecated as last-known-good', {
+        pmsFamily, newDraftId, reason: failReason,
+      });
+    } else if (await draftIsActive()) {
+      // (3) Nothing to restore because the promote actually applied after all
+      //     (the earlier re-read mis-fired). The draft is live — success.
+      log.warn('mapping-driver: promoteDraft — draft is active after all; treating as success', {
+        pmsFamily, newDraftId,
+      });
+      return { ok: true };
+    } else {
+      log.error('mapping-driver: promoteDraft promote failed and NO active could be restored — family may have NO active recipe', {
+        pmsFamily, newDraftId, reason: failReason,
+      });
+    }
+  } else {
+    log.warn('mapping-driver: promoteDraft promote failed; no prior active existed, so leaving the new draft parked (not resurrecting deprecated history)', {
+      pmsFamily, newDraftId, reason: failReason,
+    });
+  }
+
+  return { ok: false, error: `promote failed: ${failReason}` };
 }
 
 // ─── Pre-flight check ───────────────────────────────────────────────────
@@ -1054,128 +1217,175 @@ export async function saveDraftKnowledgeFile(
   feedGaps?: FeedGaps,
   gateNote?: string,
 ): Promise<{ ok: true; id: string; version: number } | { ok: false; error: string }> {
-  // Find the highest existing version for this family; new version = max+1.
-  const { data: existing, error: selErr } = await supabase
-    .from('pms_knowledge_files')
-    .select('version')
-    .eq('pms_family', pmsFamily)
-    .order('version', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (selErr) return { ok: false, error: `version lookup failed: ${selErr.message}` };
-  const nextVersion = ((existing?.version as number | undefined) ?? 0) + 1;
+  // (pms_family, version) is UNIQUE. Under concurrency two jobs for the same
+  // family read the same max(version) and both try to insert max+1; the loser
+  // gets a 23505 and — without a retry — the mapped recipe (worth $2–25 of
+  // model spend) is thrown away. So the whole "read max → build envelope →
+  // sign → insert" sequence runs in a bounded retry loop: on a version
+  // collision we re-read the max and try again. Bounded (≤3) so a genuinely
+  // stuck constraint can't spin forever.
+  //
+  // The envelope is rebuilt EACH attempt on purpose: its `description` stamps
+  // nextVersion, so a retry at a higher version must re-derive AND re-sign the
+  // envelope — otherwise signed≠stored and the row would fail load-time verify.
+  const MAX_INSERT_ATTEMPTS = 3;
+  let lastCollision = '';
+  for (let attempt = 1; attempt <= MAX_INSERT_ATTEMPTS; attempt++) {
+    // Find the highest existing version for this family; new version = max+1.
+    const { data: existing, error: selErr } = await supabase
+      .from('pms_knowledge_files')
+      .select('version')
+      .eq('pms_family', pmsFamily)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (selErr) return { ok: false, error: `version lookup failed: ${selErr.message}` };
+    const nextVersion = ((existing?.version as number | undefined) ?? 0) + 1;
 
-  // Recipe → knowledge file jsonb shape. The recipe-adapter handles the
-  // detailed translation; here we wrap the recipe in the knowledge file
-  // envelope expected by `pms_knowledge_files.knowledge` (per migration
-  // 0203's seeded shape).
-  const knowledge = {
-    schema: 1,
-    description: recipe.description ?? `Auto-mapped by mapping-driver (v${nextVersion})`,
-    login: recipe.login,
-    actions: recipe.actions,
-    hints: recipe.hints ?? {},
-    // feat/pms-universal-translate — persist self-learned value translation in
-    // the SAME envelope that gets signed (so verifyRecipe at load stays
-    // consistent) and reloaded by the session-driver. Only present when the
-    // mapper actually learned them, so recipes without them keep their exact
-    // prior signed shape.
-    ...(recipe.valueTranslations ? { valueTranslations: recipe.valueTranslations } : {}),
-    ...(recipe.dateFormat ? { dateFormat: recipe.dateFormat } : {}),
-    // feat/cua-partial-promotion — persist which feeds are missing/dead so
-    // the app's honesty layer (src/lib/pms/feed-status.ts) can mark them
-    // "still learning" instead of rendering fake-empty data. Embedded only
-    // when non-empty, so clean recipes keep their exact prior signed shape.
-    // Inside the signed envelope on purpose: the app reads it, never writes.
-    ...(feedGaps && (feedGaps.missingRequired.length > 0 || feedGaps.missingBusinessCritical.length > 0)
-      ? { feedGaps }
-      : {}),
-  };
+    // Recipe → knowledge file jsonb shape. The recipe-adapter handles the
+    // detailed translation; here we wrap the recipe in the knowledge file
+    // envelope expected by `pms_knowledge_files.knowledge` (per migration
+    // 0203's seeded shape).
+    const knowledge = {
+      schema: 1,
+      description: recipe.description ?? `Auto-mapped by mapping-driver (v${nextVersion})`,
+      login: recipe.login,
+      actions: recipe.actions,
+      hints: recipe.hints ?? {},
+      // feat/pms-universal-translate — persist self-learned value translation in
+      // the SAME envelope that gets signed (so verifyRecipe at load stays
+      // consistent) and reloaded by the session-driver. Only present when the
+      // mapper actually learned them, so recipes without them keep their exact
+      // prior signed shape.
+      ...(recipe.valueTranslations ? { valueTranslations: recipe.valueTranslations } : {}),
+      ...(recipe.dateFormat ? { dateFormat: recipe.dateFormat } : {}),
+      // feat/cua-partial-promotion — persist which feeds are missing/dead so
+      // the app's honesty layer (src/lib/pms/feed-status.ts) can mark them
+      // "still learning" instead of rendering fake-empty data. Embedded only
+      // when non-empty, so clean recipes keep their exact prior signed shape.
+      // Inside the signed envelope on purpose: the app reads it, never writes.
+      ...(feedGaps && (feedGaps.missingRequired.length > 0 || feedGaps.missingBusinessCritical.length > 0)
+        ? { feedGaps }
+        : {}),
+    };
 
-  // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-
-  // mode recipe-injection vector: when admin drives the browser in Live
-  // Mapping, admin-recorded click_at / type_text steps land in this same
-  // insert. A compromised or socially-engineered admin could otherwise
-  // inject {kind: 'goto', url: 'attacker.example'} or {kind: 'fill',
-  // selector: ..., value: '$password'}. Signing ties the recipe to the
-  // active key; replay-time verifyRecipe refuses tampered rows under
-  // RECIPE_SIGNING_ENFORCE=enforce. When no key is configured (legacy
-  // dev), we log + skip — recipe-runner runs in warn mode and proceeds.
-  let signatureBytes: Buffer | null = null;
-  let signedWithKeyId: string | null = null;
-  let signedAt: string | null = null;
-  if (isRecipeSigningConfigured()) {
-    try {
-      // Sign/verify split-brain fix — the DB stores the `knowledge`
-      // ENVELOPE (recipe re-wrapped with schema/description + an empty
-      // `hints` default), but verifyRecipe canonicalJson-s that exact
-      // stored envelope at load time. Signing the bare `recipe` here
-      // produced a digest over a different shape, so verification NEVER
-      // matched — and under enforce mode that silently halts ALL polling.
-      // Sign the same envelope object that gets persisted.
-      const sig = signRecipe(knowledge as unknown as Recipe);
-      signatureBytes = sig.signature;
-      signedWithKeyId = sig.signedWithKeyId;
-      signedAt = sig.signedAt;
-    } catch (err) {
-      // Plan v8 Phase B review P1-5 (Codex finding) — under enforce mode,
-      // saving unsigned would silently break the hotel: recipe-runner
-      // refuses unsigned recipes on every poll, and the operator's only
-      // signal is a doctor red row. Fail the save loudly so the admin
-      // sees a clear error + can investigate (key corruption, HSM hiccup,
-      // env mismatch). In warn mode, preserve today's behavior (log +
-      // save unsigned — recipe-runner will log a warning and proceed).
-      if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
-        const msg = `signRecipe failed under enforce mode — refusing to save unsigned recipe: ${(err as Error).message}`;
-        log.warn('saveDraftKnowledgeFile: ' + msg, { pmsFamily, version: nextVersion });
-        return { ok: false, error: msg };
+    // canonicalJson-stability: sign AND store the JSON-normalized envelope
+    // (JSON.parse(JSON.stringify(...))) so the signed bytes equal exactly what
+    // jsonb persists and returns. jsonb silently drops any present-but-
+    // `undefined` nested field; signing the raw in-memory object could then
+    // digest a key the stored/read-back row lacks → a permanent verify
+    // 'mismatch' (a recipe-less family under enforce). No current builder
+    // emits such a field, but normalizing here makes signed===stored
+    // regression-proof against a future one. For undefined-free data this is a
+    // structural no-op, so existing signatures stay valid.
+    const stored = JSON.parse(JSON.stringify(knowledge)) as typeof knowledge;
+
+    // Plan v8 P1-7 — sign the recipe before persisting. Closes the takeover-
+    // mode recipe-injection vector: when admin drives the browser in Live
+    // Mapping, admin-recorded click_at / type_text steps land in this same
+    // insert. A compromised or socially-engineered admin could otherwise
+    // inject {kind: 'goto', url: 'attacker.example'} or {kind: 'fill',
+    // selector: ..., value: '$password'}. Signing ties the recipe to the
+    // active key; replay-time verifyRecipe refuses tampered rows under
+    // RECIPE_SIGNING_ENFORCE=enforce. When no key is configured (legacy
+    // dev), we log + skip — recipe-runner runs in warn mode and proceeds.
+    let signatureBytes: Buffer | null = null;
+    let signedWithKeyId: string | null = null;
+    let signedAt: string | null = null;
+    if (isRecipeSigningConfigured()) {
+      try {
+        // Sign/verify split-brain fix — the DB stores the `knowledge`
+        // ENVELOPE (recipe re-wrapped with schema/description + an empty
+        // `hints` default), but verifyRecipe canonicalJson-s that exact
+        // stored envelope at load time. Signing the bare `recipe` here
+        // produced a digest over a different shape, so verification NEVER
+        // matched — and under enforce mode that silently halts ALL polling.
+        // Sign the EXACT object we persist below (`stored`, JSON-normalized).
+        const sig = signRecipe(stored as unknown as Recipe);
+        signatureBytes = sig.signature;
+        signedWithKeyId = sig.signedWithKeyId;
+        signedAt = sig.signedAt;
+      } catch (err) {
+        // Plan v8 Phase B review P1-5 (Codex finding) — under enforce mode,
+        // saving unsigned would silently break the hotel: recipe-runner
+        // refuses unsigned recipes on every poll, and the operator's only
+        // signal is a doctor red row. Fail the save loudly so the admin
+        // sees a clear error + can investigate (key corruption, HSM hiccup,
+        // env mismatch). In warn mode, preserve today's behavior (log +
+        // save unsigned — recipe-runner will log a warning and proceed).
+        // Not a version collision — never retry; return immediately.
+        if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
+          const msg = `signRecipe failed under enforce mode — refusing to save unsigned recipe: ${(err as Error).message}`;
+          log.warn('saveDraftKnowledgeFile: ' + msg, { pmsFamily, version: nextVersion });
+          return { ok: false, error: msg };
+        }
+        log.warn('saveDraftKnowledgeFile: signRecipe failed — saving unsigned (warn mode)', {
+          err: (err as Error).message, pmsFamily, version: nextVersion,
+        });
       }
-      log.warn('saveDraftKnowledgeFile: signRecipe failed — saving unsigned (warn mode)', {
-        err: (err as Error).message, pmsFamily, version: nextVersion,
+    } else {
+      log.info('saveDraftKnowledgeFile: signing key not configured — saving unsigned', {
+        pmsFamily, version: nextVersion,
       });
     }
-  } else {
-    log.info('saveDraftKnowledgeFile: signing key not configured — saving unsigned', {
-      pmsFamily, version: nextVersion,
-    });
+
+    const { data: inserted, error: insErr } = await supabase
+      .from('pms_knowledge_files')
+      .insert({
+        pms_family: pmsFamily,
+        version: nextVersion,
+        status,                   // 'draft' (gate may promote) or 'quarantined'
+        knowledge: stored,        // the exact object we signed (JSON-normalized)
+        created_by: 'mapper:mapping-driver',
+        notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
+          (gateNote ? ` Gate: ${gateNote}` : ''),
+        signature: signatureBytes,
+        signed_with_key_id: signedWithKeyId,
+        signed_at: signedAt,
+      })
+      .select('id')
+      .single();
+    if (!insErr && inserted) return { ok: true, id: inserted.id as string, version: nextVersion };
+
+    // A 23505 here can ONLY be the (pms_family, version) unique constraint:
+    // this insert is status 'draft'/'quarantined', never 'active', so the
+    // partial one_active_per_family index can't fire. Treat it as a lost
+    // version race and retry with a freshly-read max. Any other error (or the
+    // final attempt) is terminal.
+    if (insErr?.code === '23505' && attempt < MAX_INSERT_ATTEMPTS) {
+      lastCollision = insErr.message;
+      log.warn('saveDraftKnowledgeFile: version collision — retrying with a fresh max(version)', {
+        pmsFamily, attemptedVersion: nextVersion, attempt, maxAttempts: MAX_INSERT_ATTEMPTS,
+      });
+      continue;
+    }
+    return { ok: false, error: `insert failed: ${insErr?.message ?? 'unknown'}` };
   }
 
-  const { data: inserted, error: insErr } = await supabase
-    .from('pms_knowledge_files')
-    .insert({
-      pms_family: pmsFamily,
-      version: nextVersion,
-      status,                   // 'draft' (gate may promote) or 'quarantined'
-      knowledge,
-      created_by: 'mapper:mapping-driver',
-      notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
-        (gateNote ? ` Gate: ${gateNote}` : ''),
-      signature: signatureBytes,
-      signed_with_key_id: signedWithKeyId,
-      signed_at: signedAt,
-    })
-    .select('id')
-    .single();
-  if (insErr || !inserted) return { ok: false, error: `insert failed: ${insErr?.message ?? 'unknown'}` };
-  return { ok: true, id: inserted.id as string, version: nextVersion };
+  // Exhausted the retry budget on repeated version collisions.
+  return {
+    ok: false,
+    error: `insert failed after ${MAX_INSERT_ATTEMPTS} version-collision retries: ${lastCollision || 'unknown'}`,
+  };
 }
 
 function computeStats(result: MapperResult & { ok: true }): {
   targetsFound: number;
-  targetsUnavailable: number;
-  targetsFailed: number;
+  /**
+   * Left UNKNOWN (omitted, not 0) on purpose. The real unavailable/failed
+   * counts live in mapper.ts's run log and aren't threaded through
+   * MapperResult yet (follow-up owned by the mapper chat). Previously this
+   * hardcoded 0, which the stored workflow result then surfaced as a
+   * confident "0 failed" even when targets were dropped — a false negative.
+   * Omitting the keys lets the admin board render "unknown" instead. Optional
+   * here so the value flows cleanly into MappingJobResult's `number?` fields.
+   */
+  targetsUnavailable?: number;
+  targetsFailed?: number;
 } {
   // Recipe.actions has entries for SUCCESSFULLY mapped targets only.
-  // Unavailable + failed counts come from the mapper's run log; we
-  // approximate from what's in the recipe vs what the TARGETS catalogue
-  // expects (13 entries).
   const found = Object.keys(result.recipe.actions).length;
-  // TODO: surface unavailable/failed counts via mapper return shape
-  // extension. For now report 0 (the admin UI shows which targets are
-  // present by inspecting recipe.actions keys).
-  return {
-    targetsFound: found,
-    targetsUnavailable: 0,
-    targetsFailed: 0,
-  };
+  // Do NOT fabricate unavailable/failed counts — report only what we can
+  // honestly know (targetsFound). See the return-type doc above.
+  return { targetsFound: found };
 }
