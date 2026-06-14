@@ -1641,6 +1641,24 @@ interface MapActionArgs {
   onLiveFrame?: (pngBase64: string) => void;
   /** feature/cua-live-assist — see MapperOptions.takeover. */
   takeover?: TakeoverController;
+  /** fix/cua-two-oracle — EARLY structured discovery, wired by mapAction. When
+   *  the success branch finds a structurally-sound table that is blind on a
+   *  required column, mapActionCore runs the backend-JSON reader BEFORE burning
+   *  the paid re-ask/drill recovery. Bound by mapAction to attemptStructured-
+   *  Discovery with the shared deps; omitted when network capture is off. */
+  runStructuredDiscovery?: (
+    success: ActionMapSuccess,
+    capturedCalls: CapturedCall[],
+    feedPageUrl: string,
+  ) => Promise<ActionMapSuccess | null>;
+  /** Snapshot the captured calls at the first committable (structurally-sound)
+   *  emit — i.e. before any paid re-ask/drill recovery runs. The 50-slot capture
+   *  LRU evicts the feed's JSON during a multi-minute recovery, so the early-
+   *  discovery attempt must use this early snapshot, not a late capture.recent(). */
+  snapshotCapturedCalls?: () => CapturedCall[];
+  /** Shared mutable flag so mapAction's LATE discovery skips when mapActionCore
+   *  already ran the (single) paid identify call for this feed. */
+  discoveryState?: { earlyAttempted: boolean };
 }
 
 /**
@@ -1873,7 +1891,50 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     });
   }
   try {
-    const result = await mapActionCore(args);
+    // fix/cua-two-oracle — build the discovery deps ONCE and share them between
+    // the EARLY in-core attempt (before paid recovery) and the LATE post-success
+    // attempt. `discoveryState` ensures at most ONE paid identify call per feed.
+    const deps = makeDefaultDiscoveryDeps(args);
+    const discoveryState = { earlyAttempted: false };
+    const runStructuredDiscovery = capture
+      ? async (
+          success: ActionMapSuccess,
+          capturedCalls: CapturedCall[],
+          feedPageUrl: string,
+        ): Promise<ActionMapSuccess | null> => {
+          try {
+            return await attemptStructuredDiscovery(
+              {
+                actionName: args.actionName as keyof Recipe['actions'],
+                success,
+                capturedCalls,
+                loginUrl: args.credentials.loginUrl,
+                feedPageUrl,
+                jobId: args.jobId,
+                signal: args.signal,
+              },
+              deps,
+            );
+          } catch (err) {
+            log.warn('mapper: structured discovery threw — keeping DOM recipe', {
+              actionName: args.actionName,
+              err: err instanceof Error ? err.message : String(err),
+            });
+            return null;
+          }
+        }
+      : undefined;
+
+    const result = await mapActionCore({
+      ...args,
+      ...(runStructuredDiscovery && capture
+        ? {
+            runStructuredDiscovery,
+            snapshotCapturedCalls: () => capture!.recent(),
+            discoveryState,
+          }
+        : {}),
+    });
     // Learning Board — preview BEFORE discovery (which can navigate away /
     // swap parse to api-mode). viaBail successes are skipped for the same
     // reason discovery skips them: the page may have wandered off the feed
@@ -1886,30 +1947,18 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     // would collide with the adapter's drillDown collapse, and the DOM oracle
     // is missing the very required columns the drill just recovered, so the
     // reconcile would abstain anyway.
-    if (!result.ok || result.viaBail || result.action.parse.mode !== 'table' || result.action.drillDown || !capture) {
+    // fix/cua-two-oracle — also skip when mapActionCore already ran the (single)
+    // EARLY discovery attempt: re-running here would pay a second identify call
+    // and use a staler capture.recent() (the early snapshot was the freshest).
+    if (
+      !result.ok || result.viaBail || result.action.parse.mode !== 'table'
+      || result.action.drillDown || !capture || !runStructuredDiscovery
+      || discoveryState.earlyAttempted
+    ) {
       return result;
     }
-    try {
-      const upgraded = await attemptStructuredDiscovery(
-        {
-          actionName: args.actionName as keyof Recipe['actions'],
-          success: result,
-          capturedCalls: capture.recent(),
-          loginUrl: args.credentials.loginUrl,
-          feedPageUrl: args.page.url(),
-          jobId: args.jobId,
-          signal: args.signal,
-        },
-        makeDefaultDiscoveryDeps(args),
-      );
-      return upgraded ?? result;
-    } catch (err) {
-      log.warn('mapper: structured discovery threw — keeping DOM recipe', {
-        actionName: args.actionName,
-        err: err instanceof Error ? err.message : String(err),
-      });
-      return result;
-    }
+    const upgraded = await runStructuredDiscovery(result, capture.recent(), args.page.url());
+    return upgraded ?? result;
   } finally {
     try { capture?.detach(); } catch { /* idempotent per contract */ }
   }
@@ -1927,6 +1976,33 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // feed.
   const { stepCap: targetStepCap, costCapMicros: targetCostCapMicros } =
     targetBudget(classification, args.required === false);
+
+  // fix/cua-two-oracle (build #4) — per-target cost ENVELOPE. Starts at the base
+  // per-classification cap. ONLY after a committable, structurally-sound table
+  // is found for a REQUIRED CORE feed do we widen it — and only ADDITIVELY by
+  // the detail-drill's own envelope, so a found feed's certification (early
+  // discovery → re-ask → drill) isn't guillotined mid-flight. This is NARROW by
+  // design: the 2026-06-11 revert removed a FIND-PHASE multiplier that inflated
+  // the cost of feeds that were never found; this widening fires AFTER a table
+  // is found and is bounded (base + one drill envelope ≈ $1.10), so it can't
+  // recreate that. The job-wide cap (isJobOverBudget) stays the hard ceiling.
+  const isRequiredCoreFeed = !!CORE_TARGET_CONTRACTS[args.actionName as keyof Recipe['actions']];
+  let effectiveTargetCostCapMicros = targetCostCapMicros;
+  const widenEnvelopeForFoundCoreFeed = (audit: PageAudit): void => {
+    if (!isRequiredCoreFeed) return;
+    if (effectiveTargetCostCapMicros === Number.POSITIVE_INFINITY) return;
+    if (!structurallySoundForDiscovery(audit, args.actionName as keyof Recipe['actions'])) return;
+    const widened = targetCostCapMicros + RECOVERY_DRILL_COST_CAP_MICROS;
+    if (widened > effectiveTargetCostCapMicros) {
+      effectiveTargetCostCapMicros = widened;
+      log.info('mapper: committable core table found — widening per-target certification envelope', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        baseCapMicros: targetCostCapMicros,
+        effectiveCapMicros: effectiveTargetCostCapMicros,
+      });
+    }
+  };
 
   // Plan v7 — `unavailable: true` floor. Agent can short-circuit a target
   // with {unavailable: true}, but only AFTER demonstrating real effort:
@@ -2109,6 +2185,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   const pendingRecovery = new Set<string>();
   let bestCandidate: { success: ActionMapSuccess; audit: PageAudit } | null = null;
   let recoveryDrillAttempted = false;
+  // fix/cua-two-oracle — captured-calls snapshot taken at the FIRST committable
+  // emit (LRU eviction guard); reused by the single early-discovery attempt.
+  let earlyCapturedCalls: CapturedCall[] | null = null;
 
   // Crash-safety for the re-ask (fix: core feeds were quarantining). Once the
   // agent has emitted a VALID table parse, remember it. If a later re-ask
@@ -2412,6 +2491,49 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           return success;
         }
 
+        // ── fix/cua-two-oracle (build #2 + #4): EARLY backend-JSON discovery ──
+        // The table is FOUND but blind on a required column. BEFORE burning the
+        // paid Stage-1 re-asks (which can blow the per-target cost cap and bail
+        // viaBail, skipping discovery entirely), widen the cost envelope for a
+        // committable core table and try the cheap backend-JSON reader — with
+        // the SECOND ORACLE certifying a DOM-blind semantic date column. If it
+        // emits a verified api recipe, skip recovery entirely.
+        widenEnvelopeForFoundCoreFeed(best.audit);
+        if (
+          args.runStructuredDiscovery && args.snapshotCapturedCalls && args.discoveryState
+          && !args.discoveryState.earlyAttempted
+          && best.success.action.parse.mode === 'table' && !best.success.viaBail
+          && structurallySoundForDiscovery(best.audit, args.actionName as keyof Recipe['actions'])
+        ) {
+          // Snapshot captured calls ONCE, at the first committable emit — the
+          // 50-slot LRU evicts the feed's JSON during the multi-minute recovery
+          // that may follow, so a late capture.recent() could miss it.
+          if (!earlyCapturedCalls) earlyCapturedCalls = args.snapshotCapturedCalls();
+          if (earlyCapturedCalls.length > 0) {
+            args.discoveryState.earlyAttempted = true;
+            const feedPageUrl = best.audit.pageUrl;
+            const upgraded = await args.runStructuredDiscovery(best.success, earlyCapturedCalls, feedPageUrl);
+            if (upgraded) {
+              log.info('mapper: early structured discovery upgraded a blind feed to api — skipping paid recovery', {
+                jobId: args.jobId ?? undefined,
+                actionName: args.actionName,
+              });
+              return upgraded;
+            }
+            // Abstained: discovery navigated to postLoginUrl for its replay
+            // context and does NOT restore the feed page. The Stage-1 re-ask /
+            // drill below MUST continue from the FEED page, not the dashboard
+            // (review P0-3) — navigate back before proceeding.
+            if (safeUrl(args.page) !== feedPageUrl) {
+              await safeGoto(args.page, feedPageUrl, {
+                allowedHost: new URL(args.credentials.loginUrl).host,
+                context: 'mapper:earlydiscovery:restore',
+              }).catch(() => {});
+              await args.page.waitForTimeout(500);
+            }
+          }
+        }
+
         // Stage 1 — focused on-page re-ask. Bounded by MAX_COMPLETENESS_REASKS
         // plus the surrounding step/cost/wallclock/token caps (this `continue`
         // re-enters the same capped for-loop).
@@ -2456,7 +2578,15 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // measured from drill start (deliberately EXEMPT from the per-target
         // soft-abort, which is typically already spent by now; the job cost
         // cap, wallclock and token ceilings still apply).
-        if (!recoveryDrillAttempted && best.audit.verified) {
+        // fix/cua-two-oracle (build #3) — no longer gated on `best.audit.verified`:
+        // the verified-page guarantee MOVES into drillPreconditions, which fails
+        // closed unless best.audit has ≥2 distinct-key probe rows — and only a
+        // VALUE-verified audit produces probe rows (structuralOnly returns []).
+        // So an unverified/wandered audit still cannot drive the drill, but a
+        // feed whose latest emit degraded yet has a verified BEST candidate now
+        // recovers its missing column from a record page (the no-backend-JSON
+        // path, incl. Choice Advantage arrivals).
+        if (!recoveryDrillAttempted) {
           recoveryDrillAttempted = true;
           const pre = drillPreconditions(args.actionName as keyof Recipe['actions'], best.audit);
           if (pre.ok) {
@@ -2858,10 +2988,14 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     // let it complete and return whatever it had. Measuring the delta (not
     // cumulative job spend) means late targets still get their full
     // per-target budget instead of being aborted with zero exploration.
-    if (args.jobId && targetCostCapMicros !== Number.POSITIVE_INFINITY) {
+    // fix/cua-two-oracle — compare against the EFFECTIVE cap, which is widened
+    // (additively, by one drill envelope) once a committable core table is
+    // found, so certification isn't guillotined mid-flight. Until a table is
+    // found it equals the base cap, so a LOST feed still stops at the base cap.
+    if (args.jobId && effectiveTargetCostCapMicros !== Number.POSITIVE_INFINITY) {
       const totalSpent = await getJobCostMicros(args.jobId);
       const targetSpent = totalSpent - targetStartSpentMicros;
-      if (targetSpent > targetCostCapMicros) {
+      if (targetSpent > effectiveTargetCostCapMicros) {
         targetOverBudget = true;
       }
     }
@@ -2894,6 +3028,69 @@ export interface PageAudit {
    *  worse than blanks). */
   outstanding: Map<string, 'missing' | 'dead' | 'unparseable' | 'rejected'>;
   problems: RecoveryProblem[];
+}
+
+// fix/cua-two-oracle — INERT query params that spuriously differ between the
+// model's reported URL and the live URL (cache busters, session/CSRF tokens,
+// volatile timestamps). Stripped ONLY for the audit's same-page comparison.
+// SEMANTIC params (type=arrival, view=…, date=…) are KEPT — so a page that
+// differs by a real query param is NOT treated as the same page (a departures
+// page must never audit/drill as arrivals). Weak generic names count as inert
+// only when their value is numeric (a timestamp/version, not `t=arrivals`).
+const AUDIT_INERT_PARAMS_STRONG = new Set([
+  '_', '_t', 'cb', 'nocache', 'cachebuster', 'rnd', 'rand', '__rnd', 'cache',
+  'jsessionid', 'phpsessid', 'sid', 'sessionid', 'session', 'csrf', 'csrftoken',
+  'xsrf', '_csrf', 'authenticity_token',
+]);
+const AUDIT_INERT_PARAMS_WEAK = new Set(['ts', 't', 'r', 'v']);
+
+/** Normalize a URL for the audit's same-page check: drop the hash, a trailing
+ *  slash, and inert params; sort the rest so param order can't matter. On an
+ *  unparseable URL, fall back to a hash-stripped raw string (today's behavior).
+ *  PURELY about URL shape — no PMS vocabulary. */
+export function normalizeUrlForAudit(u: string): string {
+  let parsed: URL;
+  try { parsed = new URL(u); } catch { return u.split('#')[0] ?? u; }
+  const kept: Array<[string, string]> = [];
+  for (const [k, v] of parsed.searchParams) {
+    const lower = k.toLowerCase();
+    if (AUDIT_INERT_PARAMS_STRONG.has(lower)) continue;
+    // Weak generic names (t, v, r, ts) are inert ONLY when their value is
+    // cache-buster-shaped (≥6-digit epoch or a float) — a SMALL integer like
+    // t=2 is almost certainly a semantic tab/page selector (arrivals vs
+    // departures) and MUST be kept (Codex review high finding).
+    if (AUDIT_INERT_PARAMS_WEAK.has(lower) && /^\d{6,}$|^\d+\.\d+$/.test(v)) continue;
+    kept.push([k, v]);
+  }
+  kept.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)));
+  const path = parsed.pathname.length > 1 && parsed.pathname.endsWith('/')
+    ? parsed.pathname.slice(0, -1)
+    : parsed.pathname;
+  const query = kept.map(([k, v]) => `${k}=${v}`).join('&');
+  return `${parsed.origin}${path}${query === '' ? '' : `?${query}`}`;
+}
+
+/**
+ * fix/cua-two-oracle — is a feed's audit a COMMITTABLE table worth running
+ * backend-JSON discovery against (and worth widening the cost envelope for)?
+ * "Structurally sound" = value-verified audit (so probeRows reflect the real
+ * page), a readable+distinct key column on the probe rows, and ≥ the discovery
+ * row floor. PURELY shape/contract — no PMS vocabulary. This is exactly the
+ * precondition early discovery needs (a key to bijection against ≥MIN rows),
+ * and the gate for the cost-envelope widening so a LOST feed (no committable
+ * table) still stops at the base cap.
+ */
+export function structurallySoundForDiscovery(
+  audit: PageAudit,
+  actionKey: keyof Recipe['actions'],
+): boolean {
+  if (!audit.verified) return false;
+  const keyCol = DISCOVERY_KEY_COLUMNS[actionKey];
+  if (!keyCol) return false;
+  if (audit.outstanding.has(keyCol)) return false; // key itself blind → not sound
+  if (audit.totalMatched < MIN_ORACLE_ROWS) return false;
+  const keys = audit.probeRows.map((r) => (r[keyCol] ?? '').trim()).filter((v) => v !== '');
+  return new Set(keys).size >= 2;
 }
 
 async function auditLearnedColumnsOnPage(args: {
@@ -2943,9 +3140,15 @@ async function auditLearnedColumnsOnPage(args: {
 
   // Wandered-page guard: the model can emit its JSON after navigating away;
   // probing the wrong page would poison every classification below.
+  // fix/cua-two-oracle (build #3) — normalize BOTH urls (drop hash, trailing
+  // slash, inert cache-buster/session params) before comparing, so a SPURIOUS
+  // diff (the model reported the URL with a stale cache-buster / session id)
+  // no longer demotes the audit to structural-only and silently blocks the
+  // detail-drill. A genuine page difference (different path, or a SEMANTIC
+  // query param like type=arrival) still demotes — we never audit a wandered
+  // page, and never re-scrape the current one (that would bless a wrong page).
   if (args.emittedUrl) {
-    const strip = (u: string) => u.split('#')[0] ?? u;
-    if (strip(args.page.url()) !== strip(args.emittedUrl)) {
+    if (normalizeUrlForAudit(args.page.url()) !== normalizeUrlForAudit(args.emittedUrl)) {
       return structuralOnly(`page url ${args.page.url().slice(0, 80)} differs from emitted url`);
     }
   }
@@ -3075,6 +3278,12 @@ export function drillPreconditions(
 ): { ok: true; keyColumn: string } | { ok: false; reason: string } {
   const keyColumn = DISCOVERY_KEY_COLUMNS[actionKey];
   if (!keyColumn) return { ok: false, reason: 'no key column configured for this target' };
+  // fix/cua-two-oracle — explicit fail-closed: the drill builds a per-record URL
+  // template from probeRows, which only a VALUE-verified audit produces (a
+  // structural-only/wandered audit returns probeRows:[]). Belt-and-suspenders so
+  // the drill can never anchor on stale rows from an unverified audit, now that
+  // the caller no longer pre-gates on audit.verified (Codex review).
+  if (!audit.verified) return { ok: false, reason: 'audit not value-verified — cannot anchor a detail URL template' };
   if (audit.outstanding.has(keyColumn)) {
     return {
       ok: false,
@@ -3674,16 +3883,39 @@ export async function attemptStructuredDiscovery(
   const localToday = isoFromLocalClock(deps.now());
   const utcToday = new Date(deps.now()).toISOString().slice(0, 10);
   let anchorIso: string | null = null;
+  // SECOND ORACLE (fix/cua-two-oracle): set when the live DOM is blind on the
+  // feed's semantic date column (selector absent OR reads blank on EVERY row —
+  // a checkout date the page paints by JS / hides on a detail page). The column
+  // is then certified by temporal proofs (today-anchor + yesterday + tomorrow
+  // date-shift) instead of the absent DOM cell. SOME-but-not-all blank stays a
+  // hard abstain (a wrong selector reading blank on a few rows must not be
+  // laundered into "the page hides it").
+  let domBlindSemanticDate = false;
   if (semanticDateCol) {
     const sel = tableHint.columns[semanticDateCol];
-    if (!sel || sel.trim() === '') return abstain('semantic_date_col_unlearned');
-    const raws = new Set(domRows.map((r) => (r[semanticDateCol] ?? '').trim()));
-    if (raws.size !== 1 || [...raws][0] === '') return abstain('oracle_date_not_uniform');
-    const raw = [...raws][0]!;
-    const interps = interpretDomDate(raw);
-    anchorIso = interps.find((i) => i === localToday || i === utcToday) ?? null;
-    if (!anchorIso) return abstain('oracle_date_not_today', { raw: raw.slice(0, 20) });
+    const raws = sel && sel.trim() !== ''
+      ? new Set(domRows.map((r) => (r[semanticDateCol] ?? '').trim()))
+      : new Set<string>(['']);
+    const allBlank = [...raws].every((v) => v === '');
+    if (allBlank) {
+      // Wrong-selector smell (review #3): if the model CLAIMED to read dates for
+      // this column (valueSamples) but the live selector is blank, the selector
+      // is wrong — the column is NOT genuinely hidden — so there is no real DOM
+      // oracle and the API field must not be blind-trusted. Abstain.
+      const claimed = input.success.valueSamples?.[semanticDateCol];
+      if (Array.isArray(claimed) && claimed.some((s) => s.trim() !== '')) {
+        return abstain('blind_date_selector_suspect');
+      }
+      domBlindSemanticDate = true;
+    } else {
+      if (raws.size !== 1) return abstain('oracle_date_not_uniform');
+      const raw = [...raws][0]!;
+      const interps = interpretDomDate(raw);
+      anchorIso = interps.find((i) => i === localToday || i === utcToday) ?? null;
+      if (!anchorIso) return abstain('oracle_date_not_today', { raw: raw.slice(0, 20) });
+    }
   }
+  const blindDateColumns = domBlindSemanticDate ? [semanticDateCol!] : undefined;
 
   // ── 3. Pure prefilter ──
   const pre = prefilterCandidates({
@@ -3755,10 +3987,50 @@ export async function attemptStructuredDiscovery(
     domEnumMappings: input.success.enumMappings,
     enumValueSets,
     anchorIso,
+    ...(blindDateColumns ? { blindDateColumns } : {}),
     mode: 'learn',
   });
   if (!verdict.reconciles) return abstain(`reconcile_failed:${verdict.reason}`);
   for (const col of verdict.droppedOptionalColumns ?? []) delete columns[col];
+
+  // ── SECOND-ORACLE static gates (only when DOM-blind on the semantic date) ──
+  // reconcile signalled the column as trusted-unverified; before emitting we
+  // pin down the column's IDENTITY (not just that it follows the date window),
+  // then certify VALUE via the temporal proofs in steps 8-9b.
+  if (domBlindSemanticDate) {
+    if (!verdict.trustedUnverifiedColumns?.includes(semanticDateCol!)) {
+      return abstain('blind_date_not_flagged');
+    }
+    // jsonPath uniqueness: the blind column must not alias another mapped
+    // column's field — mapping two columns to one JSON field is a wrong-mapping
+    // smell that key-bijection + temporal proofs cannot catch.
+    const blindPath = columns[semanticDateCol!];
+    if (Object.entries(columns).some(([c, p]) => c !== semanticDateCol && p === blindPath)) {
+      return abstain('blind_date_path_aliased');
+    }
+    // Sibling discriminator (Codex P0-1): the OTHER required date column must be
+    // DOM-verified (mapped, not itself blind) and NON-UNIFORM (≥2 distinct
+    // non-blank raws). A mislabeled arrivals-as-departures page has a uniformly-
+    // today sibling and fails this — the only signal that distinguishes a
+    // uniformly-today field wrongly picked for the blind date from the genuine
+    // window date.
+    const siblingDateCol = (CORE_TARGET_CONTRACTS[input.actionName]?.columns ?? [])
+      .filter((c) => c.required && c.type === 'date' && c.name !== semanticDateCol)
+      .map((c) => c.name)[0];
+    if (!siblingDateCol) return abstain('blind_date_no_sibling_discriminator');
+    if (!columns[siblingDateCol]) return abstain('blind_date_sibling_unmapped');
+    if (verdict.trustedUnverifiedColumns?.includes(siblingDateCol)) {
+      return abstain('blind_date_sibling_also_blind');
+    }
+    const sibRaws = new Set(domRows.map((r) => (r[siblingDateCol] ?? '').trim()).filter((v) => v !== ''));
+    if (sibRaws.size < 2) return abstain('blind_date_sibling_uniform');
+  }
+  // Anchor (today) key set — used by the blind date-shift proofs to prove the
+  // param SELECTS records by date, not merely echoes a stamped date (below).
+  const normKeyLoose = (v: unknown): string => String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const anchorKeys: Set<string> = domBlindSemanticDate
+    ? new Set(domRows.map((r) => normKeyLoose(r[keyCol])).filter((v) => v !== ''))
+    : new Set();
 
   // ── 6. Header sanitization ──
   const sanitized = sanitizeHeaders(cand.call.requestHeaders, {
@@ -3790,6 +4062,10 @@ export async function attemptStructuredDiscovery(
   // A templated date on a target with no semantic date column cannot be
   // probe-verified (nothing in the response proves which day it served).
   if (templatedCount > 0 && !semanticDateCol) return abstain('untestable_date_param');
+  // SECOND ORACLE: a DOM-blind semantic date can ONLY be certified by the
+  // date-shift probes, which need a load-bearing templated date param. No
+  // templated date ⇒ no proof possible ⇒ abstain (the drill recovers it).
+  if (domBlindSemanticDate && templatedCount === 0) return abstain('blind_date_no_templated_param');
 
   // ── 8. Replay-confirm from the runtime's context ──
   if (input.signal?.aborted) return abstain('aborted');
@@ -3838,6 +4114,7 @@ export async function attemptStructuredDiscovery(
     domEnumMappings: input.success.enumMappings,
     enumValueSets,
     anchorIso,
+    ...(blindDateColumns ? { blindDateColumns } : {}),
     mode: 'replay',
   });
   if (!replayVerdict.reconciles) return abstain(`replay_reconcile_failed:${replayVerdict.reason}`);
@@ -3847,6 +4124,24 @@ export async function attemptStructuredDiscovery(
   for (const col of replayVerdict.droppedOptionalColumns ?? []) {
     delete columns[col];
     if (verdict.derivedEnumMappings) delete verdict.derivedEnumMappings[col];
+  }
+
+  // ── SECOND-ORACLE today-anchor proof (live replay) ──
+  // The LIVE replay rows' blind semantic date must be uniformly == today and
+  // self-describing. This + the tomorrow probe (step 9b) is what separates the
+  // genuine window date from a co-moving audit timestamp (changed_at), which
+  // the captured-body reconcile alone cannot tell apart.
+  if (domBlindSemanticDate) {
+    if (!replayVerdict.trustedUnverifiedColumns?.includes(semanticDateCol!)) {
+      return abstain('blind_date_replay_not_flagged');
+    }
+    const todayProj = projectRows(replayRows.rows, columns).slice(0, 50);
+    if (todayProj.length === 0) return abstain('blind_date_today_anchor_empty');
+    for (const r of todayProj) {
+      if (selfDescribingIso(r[semanticDateCol!]) !== effectiveAnchor) {
+        return abstain('blind_date_today_anchor_failed');
+      }
+    }
   }
 
   // ── 9. Date-shift probe ──
@@ -3874,7 +4169,10 @@ export async function attemptStructuredDiscovery(
         // order was unambiguous on the learn day (a single variant). With two
         // candidate orders, an empty set proves neither, and locking in the
         // wrong order could make a lenient server serve wrong-day rows later.
-        if (probeRows.reason === 'jsonpath_empty_array' && variants.length === 1) {
+        // NEVER a weak pass for a DOM-blind date: with no DOM oracle the blind
+        // column's value is wholly trusted to the probes, so it must see a real
+        // non-empty uniformly-yesterday set.
+        if (probeRows.reason === 'jsonpath_empty_array' && variants.length === 1 && !domBlindSemanticDate) {
           chosen = variant;
           break;
         }
@@ -3889,9 +4187,58 @@ export async function attemptStructuredDiscovery(
         if (iso !== probeIso) allYesterday = false;
       }
       if (anyAnchorDay) return abstain('probe_param_ignored');
-      if (allYesterday) { chosen = variant; break; }
+      if (allYesterday) {
+        // Blind date: the yesterday rows must be DIFFERENT records than today's.
+        // An endpoint that ignores the param but ECHOES the requested date into
+        // the field (reportDate/businessDate) renders uniformly-yesterday yet
+        // returns the SAME reservations — disjoint keys reject it (Codex
+        // blocker). A real date filter returns disjoint sets (a reservation
+        // departs/arrives on exactly one date).
+        if (domBlindSemanticDate) {
+          const probeKeys = projected.map((r) => normKeyLoose(r[keyCol])).filter((v) => v !== '');
+          if (probeKeys.length === 0 || probeKeys.some((k) => anchorKeys.has(k))) {
+            return abstain('blind_date_shift_keys_not_disjoint');
+          }
+        }
+        chosen = variant; break;
+      }
     }
     if (!chosen) return abstain('probe_inconclusive');
+  }
+
+  // ── 9b. FORWARD (tomorrow) probe — the decisive blind-date guard ──
+  // BLOCKER from the adversarial review: a `changed_at` / `processed_at`
+  // timestamp that co-moves BACKWARD with the date window passes today-anchor
+  // AND the yesterday probe with no DOM oracle to catch it. But an audit
+  // timestamp can NEVER be in the future, while a real arrival/departure date
+  // CAN. So for a DOM-blind semantic date we additionally require the column to
+  // render uniformly TOMORROW, non-empty, self-describing — a co-moving
+  // past-timestamp confound fails this; the genuine window date passes.
+  if (domBlindSemanticDate) {
+    if (input.signal?.aborted) return abstain('aborted');
+    const tomorrowIso = isoAddDays(effectiveAnchor, 1);
+    const fwd = await deps.replayFetch({
+      url: renderTemplateAtDate(chosen.url, tomorrowIso),
+      method: cand.call.method,
+      ...(chosen.body !== undefined ? { body: renderTemplateAtDate(chosen.body, tomorrowIso) } : {}),
+      ...(sanitized.headers ? { headers: sanitized.headers } : {}),
+    });
+    if (!fwd.ok) return abstain('blind_date_forward_probe_failed');
+    const fwdRows = extractRowsAtPath(fwd.data, jsonPath);
+    if (!fwdRows.ok) return abstain('blind_date_forward_probe_empty');
+    const fwdProj = projectRows(fwdRows.rows, columns).slice(0, 50);
+    if (fwdProj.length === 0) return abstain('blind_date_forward_probe_empty');
+    for (const r of fwdProj) {
+      if (selfDescribingIso(r[semanticDateCol!]) !== tomorrowIso) {
+        return abstain('blind_date_forward_not_tomorrow');
+      }
+    }
+    // Tomorrow's rows must also be DIFFERENT records than today's (same
+    // echo/ignored-param guard as the yesterday probe, in the forward direction).
+    const fwdKeys = fwdProj.map((r) => normKeyLoose(r[keyCol])).filter((v) => v !== '');
+    if (fwdKeys.length === 0 || fwdKeys.some((k) => anchorKeys.has(k))) {
+      return abstain('blind_date_forward_keys_not_disjoint');
+    }
   }
 
   // ── 10. Emit ──
@@ -3946,6 +4293,16 @@ function isoOfApiDateValue(v: unknown): string | null {
   if (direct) return direct;
   const interps = numericDateInterpretations(v);
   return interps.length === 1 ? interps[0]! : null;
+}
+
+/** ISO of an API date value ONLY when SELF-DESCRIBING (ISO YYYY-MM-DD or
+ *  textual-month). Unlike isoOfApiDateValue this NEVER guesses a numeric M/D
+ *  order: a DOM-blind date column has no DOM-learned order, so a numeric or
+ *  ambiguous value must never be trusted by the blind-date temporal proofs
+ *  (fix/cua-two-oracle, review P1). */
+function selfDescribingIso(v: unknown): string | null {
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  return parseIsoDate(v) ?? parseTextualDate(v);
 }
 
 /** Union the agent's DOM enum vocabulary with the verified API-side raws.

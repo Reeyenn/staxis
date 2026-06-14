@@ -1090,6 +1090,19 @@ export interface ReconcileInput {
   /** 'learn' = strict; 'replay' = small drift tolerated (data moved between
    *  capture and the confirm fetch). */
   mode?: 'learn' | 'replay';
+  /** fix/cua-two-oracle — SECOND-ORACLE partial mode. The caller passes a
+   *  required DATE column here ONLY when the live DOM is blind on it (blank on
+   *  EVERY row — e.g. a checkout date the page paints by JS / hides on a detail
+   *  page). reconcile then does NOT fail that column on the blank DOM cell;
+   *  instead it confirms (a) the DOM truly is blank on every row and (b) the API
+   *  carries a self-describing date on every matched row, and reports the column
+   *  in `trustedUnverifiedColumns` for the caller to CERTIFY via temporal proofs
+   *  (today-anchor + yesterday + tomorrow date-shift) before emitting. reconcile
+   *  itself NEVER grants final trust. Hardened (Codex/senior review): only the
+   *  target's own DISCOVERY_SEMANTIC_DATE_COLUMNS value is accepted here, and a
+   *  blind column forces FULL bijection (surplus 0, zero key misses, no
+   *  pagination exception) so no un-corroborated surplus row can carry it. */
+  blindDateColumns?: string[];
 }
 
 export interface ReconcileResult {
@@ -1108,6 +1121,11 @@ export interface ReconcileResult {
   /** Required text columns accepted without value corroboration because every
    *  API value was redaction-masked (logged for transparency). */
   maskAcceptedColumns?: string[];
+  /** fix/cua-two-oracle — DOM-blind required date columns that reconcile did
+   *  NOT fail (DOM blank on every row, API carries a self-describing date) but
+   *  did NOT verify either. The caller MUST certify each via the temporal proofs
+   *  before emitting an api recipe; an unverified-but-emitted column is a bug. */
+  trustedUnverifiedColumns?: string[];
 }
 
 const fail = (reason: string): ReconcileResult => ({ reconciles: false, reason });
@@ -1119,6 +1137,21 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
   const keyCol = DISCOVERY_KEY_COLUMNS[input.actionKey];
   if (!keyCol) return fail('no_key_column_for_target');
   if (!input.mappedColumns.includes(keyCol)) return fail('key_not_mapped');
+
+  // ── SECOND-ORACLE blind-date columns: validate the caller (never trust it) ──
+  // Only the target's OWN semantic date column may be DOM-blind-accepted, and
+  // only when it's required + type date. Anything else is a misuse → abstain.
+  const blindDateCols = new Set<string>();
+  if (input.blindDateColumns && input.blindDateColumns.length > 0) {
+    const semantic = DISCOVERY_SEMANTIC_DATE_COLUMNS[input.actionKey];
+    for (const c of input.blindDateColumns) {
+      if (!semantic || c !== semantic) return fail(`blind_date_not_semantic:${c}`);
+      const spec = contract.columns.find((col) => col.name === c);
+      if (!spec || spec.type !== 'date' || !spec.required) return fail(`blind_date_not_required_date:${c}`);
+      if (!input.mappedColumns.includes(c)) return fail(`blind_date_not_mapped:${c}`);
+      blindDateCols.add(c);
+    }
+  }
 
   const { domRows, apiRows } = input;
   if (input.domTruncated) return fail('dom_truncated');
@@ -1173,6 +1206,14 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
   const semanticDateCol = DISCOVERY_SEMANTIC_DATE_COLUMNS[input.actionKey];
   const replaySlack = mode === 'replay' ? Math.max(2, Math.ceil(domRows.length * 0.1)) : 0;
 
+  // A DOM-blind date column carries NO DOM ground truth, so a surplus / superset
+  // row (or a key miss) would ride along an UN-corroborated date. Require strict
+  // bijection BEFORE the pagination exception (which reads the blank semantic
+  // DOM cell and would otherwise fail with a confusing reason). Review P1.
+  if (blindDateCols.size > 0 && (misses > 0 || surplus !== 0)) {
+    return fail('blind_date_requires_bijection');
+  }
+
   if (surplus > replaySlack) {
     // The DOM may legitimately be paginated (showing 25 of 60). We accept an
     // API superset ONLY when the target has a semantic date column and EVERY
@@ -1205,6 +1246,7 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
   const colByName = new Map<string, CoreColumn>(contract.columns.map((c) => [c.name, c]));
   const dropped: string[] = [];
   const maskAccepted: string[] = [];
+  const trustedUnverified: string[] = [];
   const derivedEnums: Record<string, Record<string, string>> = {};
   let verifiedNonKeyCols = 0;
   let verifiedNonUniformCols = 0;
@@ -1213,6 +1255,20 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
     if (col === keyCol) continue;
     const spec = colByName.get(col);
     if (!spec) return fail(`mapped_column_not_in_contract:${col}`);
+
+    // SECOND-ORACLE: a DOM-blind semantic date column. Do NOT corroborate
+    // against the (blank) DOM cell — instead confirm the DOM is blank on EVERY
+    // row (blank-on-SOME stays a hard mismatch) and the API carries a
+    // self-describing date on every matched row, then flag it for the caller to
+    // certify via the temporal proofs. It does NOT count as a corroborating
+    // column, so the "≥1 other varying column" gate below still bites.
+    if (blindDateCols.has(col)) {
+      const verdict = classifyBlindDateColumn(col, matchedPairs, domRows, apiRows);
+      if (verdict !== 'ok') return fail(verdict);
+      trustedUnverified.push(col);
+      continue;
+    }
+
     const enumValues = input.enumValueSets?.[col];
 
     if (enumValues && enumValues.length > 0) {
@@ -1286,7 +1342,43 @@ export function reconcileRows(input: ReconcileInput): ReconcileResult {
     ...(dropped.length > 0 ? { droppedOptionalColumns: dropped } : {}),
     ...(Object.keys(derivedEnums).length > 0 ? { derivedEnumMappings: derivedEnums } : {}),
     ...(maskAccepted.length > 0 ? { maskAcceptedColumns: maskAccepted } : {}),
+    ...(trustedUnverified.length > 0 ? { trustedUnverifiedColumns: trustedUnverified } : {}),
   };
+}
+
+/**
+ * SECOND-ORACLE blind-date classifier (fix/cua-two-oracle). The DOM is blind on
+ * a required date column (the page hides the feed's window date). Returns 'ok'
+ * to let reconcile flag the column as trusted-unverified — but only when:
+ *   - EVERY DOM row is blank for this column (a column blank on SOME rows only
+ *     is a real per-row mismatch and stays a hard fail: a wrong selector that
+ *     reads blank on a few rows must NOT be laundered into "the page hides it");
+ *   - EVERY matched API value is present AND self-describing as a concrete date
+ *     (ISO `YYYY-MM-DD` or textual-month). A numeric/ambiguous API date is a
+ *     HARD fail: a DOM-blind column has NO learned date order, so the runtime
+ *     `generic_date` could silently misparse `06/07` as Jun-7 or Jul-6.
+ * Uses apiDateSafety with an EMPTY domRaw (never compareDates, which short-
+ * circuits to 'fail' on a blank DOM cell before reaching the safety check).
+ */
+function classifyBlindDateColumn(
+  col: string,
+  matchedPairs: Array<[number, number]>,
+  domRows: Array<Record<string, string>>,
+  apiRows: Array<Record<string, unknown>>,
+): 'ok' | string {
+  for (const r of domRows) {
+    if ((r[col] ?? '').trim() !== '') return `required_column_mismatch:${col}`;
+  }
+  let seen = 0;
+  for (const [, apiIdx] of matchedPairs) {
+    const apiRaw = apiRows[apiIdx]![col];
+    if (apiRaw == null || apiRaw === '') return `blind_date_api_empty:${col}`;
+    const safety = apiDateSafety(apiRaw, '');
+    if (!safety.safe || safety.iso == null) return `blind_date_api_not_self_describing:${col}`;
+    seen++;
+  }
+  if (seen === 0) return `blind_date_no_matched_rows:${col}`;
+  return 'ok';
 }
 
 /** Rownum smell: a key column of 0/1-based consecutive integers is almost

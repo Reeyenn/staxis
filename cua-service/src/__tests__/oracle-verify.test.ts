@@ -943,3 +943,124 @@ describe('date format derivation + rendering', () => {
     assert.equal(looksMasked(''), false);
   });
 });
+
+// ─── SECOND ORACLE: DOM-blind required date column (fix/cua-two-oracle) ──────
+//
+// When the live DOM is blank on the feed's SEMANTIC date column (the page paints
+// it by JS / hides it on a detail page) the caller passes it in `blindDateColumns`.
+// reconcile must NOT fail it on the blank DOM cell — it confirms the DOM is blank
+// on EVERY row + the API carries a self-describing date, and reports the column in
+// `trustedUnverifiedColumns` for the caller to certify via temporal proofs. These
+// prove the SIGNAL is produced ONLY when safe; the temporal certification itself
+// lives in mapper-structured-discovery.test.ts.
+
+const DEP_COLS = ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date', 'room_number'];
+
+/** 6 departures: the DOM is BLANK on departure_date (the feed's semantic date),
+ *  arrival_date VARIES (the sibling discriminator), rooms vary. */
+function departuresBlindDom(): Array<Record<string, string>> {
+  const arr = ['06/07/2026', '06/08/2026', '06/09/2026', '06/06/2026', '06/08/2026', '06/05/2026'];
+  return [1, 2, 3, 4, 5, 6].map((i) => ({
+    pms_reservation_id: `R20${i}7`,
+    guest_name: `Guest${i}, Test`,
+    arrival_date: arr[i - 1]!,
+    departure_date: '', // BLIND — the page hides it
+    room_number: `${300 + i}`,
+  }));
+}
+
+/** The same 6 as a projected API rowset — departureDate present & ISO (today). */
+function departuresBlindApi(over: (i: number) => Record<string, unknown> = () => ({})): Array<Record<string, unknown>> {
+  const arr = ['2026-06-07', '2026-06-08', '2026-06-09', '2026-06-06', '2026-06-08', '2026-06-05'];
+  return [1, 2, 3, 4, 5, 6].map((i) => ({
+    pms_reservation_id: `R20${i}7`,
+    guest_name: `Guest${i}, Test`,
+    arrival_date: arr[i - 1]!,
+    departure_date: '2026-06-10',
+    room_number: `${300 + i}`,
+    ...over(i),
+  }));
+}
+
+function departuresBlindInput(over: Partial<ReconcileInput> = {}): ReconcileInput {
+  return {
+    actionKey: 'getDepartures',
+    domRows: departuresBlindDom(),
+    apiRows: departuresBlindApi(),
+    mappedColumns: [...DEP_COLS],
+    blindDateColumns: ['departure_date'],
+    anchorIso: ANCHOR,
+    mode: 'learn',
+    ...over,
+  };
+}
+
+describe('reconcileRows — SECOND ORACLE blind date column', () => {
+  test('ACCEPT: DOM blank on departure_date, API carries a self-describing ISO date → trusted-unverified', () => {
+    const r = reconcileRows(departuresBlindInput());
+    assert.equal(r.reconciles, true, r.reason);
+    assert.deepEqual(r.trustedUnverifiedColumns, ['departure_date']);
+    // It does NOT count as corroboration: arrival_date / room_number carried that.
+    assert.equal(r.matchedCount, 6);
+    assert.equal(r.surplus, 0);
+  });
+
+  test('MUST ABSTAIN: blank on SOME rows only stays a hard required_column_mismatch', () => {
+    const dom = departuresBlindDom();
+    dom[0]!.departure_date = '06/10/2026'; // one row DOES render it → not "page hides it"
+    const r = reconcileRows(departuresBlindInput({ domRows: dom }));
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'required_column_mismatch:departure_date');
+  });
+
+  test('MUST ABSTAIN: ambiguous/numeric API date for the blind col (no learned order) → hard fail', () => {
+    const api = departuresBlindApi(() => ({ departure_date: '06/10/2026' })); // numeric, ambiguous
+    const r = reconcileRows(departuresBlindInput({ apiRows: api }));
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'blind_date_api_not_self_describing:departure_date');
+  });
+
+  test('MUST ABSTAIN: any surplus row in blind mode (no un-corroborated row may carry the blind date)', () => {
+    const api = [...departuresBlindApi(), {
+      pms_reservation_id: 'R9999', guest_name: 'Extra, Person',
+      arrival_date: '2026-06-01', departure_date: '2026-06-10', room_number: '999',
+    }];
+    const r = reconcileRows(departuresBlindInput({ apiRows: api }));
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'blind_date_requires_bijection');
+  });
+
+  test('MUST ABSTAIN: caller passes a NON-semantic column as blind (caller-trust guard)', () => {
+    // departure_date IS required+date but is NOT the semantic col for getArrivals
+    // (arrival_date is) — reconcile must reject the caller, never trust it.
+    const r = reconcileRows(arrivalsInput({ blindDateColumns: ['departure_date'] }));
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'blind_date_not_semantic:departure_date');
+  });
+
+  test('MUST ABSTAIN: blind date + no OTHER corroborating column → no_corroborating_columns', () => {
+    // Only the key + the blind date are mapped: nothing independent proves the
+    // rows are the SAME records, so even a self-describing blind date is refused.
+    const r = reconcileRows(departuresBlindInput({ mappedColumns: ['pms_reservation_id', 'departure_date'] }));
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'no_corroborating_columns');
+  });
+});
+
+describe('reconcileRows — a blind required STATUS/TEXT column can NEVER be auto-trusted', () => {
+  test('work-orders status blank in DOM, present in API, NO blindDateColumns → hard fail (the real path)', () => {
+    // getWorkOrders has no semantic date column, so discovery never sets the
+    // blind path; reconcile sees a required enum blank on every DOM row and fails.
+    const dom = workOrdersDomRows().map((r) => ({ ...r, status: '' }));
+    const r = reconcileRows(workOrdersInput({ domRows: dom }));
+    assert.equal(r.reconciles, false);
+    assert.match(r.reason, /enum_presence_mismatch:status|required_column/);
+  });
+
+  test('even a BUGGY caller that puts status in blindDateColumns is rejected (it is not a date)', () => {
+    const dom = workOrdersDomRows().map((r) => ({ ...r, status: '' }));
+    const r = reconcileRows(workOrdersInput({ domRows: dom, blindDateColumns: ['status'] }));
+    assert.equal(r.reconciles, false);
+    assert.equal(r.reason, 'blind_date_not_semantic:status');
+  });
+});

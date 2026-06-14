@@ -517,3 +517,257 @@ describe('attemptStructuredDiscovery — abstains to DOM', () => {
     assert.equal(result, null);
   });
 });
+
+// ─── SECOND ORACLE: DOM-blind semantic date column (fix/cua-two-oracle) ──────
+//
+// The DOM is blank on the feed's semantic date column (a checkout date the page
+// paints by JS / hides on a detail page). Discovery certifies it via THREE
+// temporal proofs — today-anchor + yesterday + TOMORROW date-shift — bound to a
+// load-bearing date param. The tomorrow probe is the decisive guard: an audit
+// timestamp (changed_at) co-moves with the window BACKWARD but can never be in
+// the future, so it fails the tomorrow render where a real departure date passes.
+
+const DEP_ARR_DOM = ['06/07/2026', '06/08/2026', '06/09/2026', '06/06/2026', '06/08/2026', '06/05/2026'];
+const DEP_ARR_ISO = ['2026-06-07', '2026-06-08', '2026-06-09', '2026-06-06', '2026-06-08', '2026-06-05'];
+
+/** Departures DOM: departure_date BLANK on every row; arrival_date VARIES. */
+function depDomBlind(over: Partial<Record<string, string>> = {}): Array<Record<string, string>> {
+  return [1, 2, 3, 4, 5, 6].map((i) => ({
+    pms_reservation_id: `R20${i}7`,
+    guest_name: `Guest${i}, Test`,
+    arrival_date: DEP_ARR_DOM[i - 1]!,
+    departure_date: '', // BLIND
+    room_number: `${300 + i}`,
+    ...over,
+  }));
+}
+
+/** Projected-ready API rows. `depField`/`depVal` set which JSON field carries
+ *  the (uniform) value the model maps `departure_date` to. */
+/** Projected-ready API rows for a given WINDOW date. The anchor day reuses the
+ *  DOM keys (R20i7) so the learn reconcile matches; OTHER days return DISJOINT
+ *  reservation keys (a reservation departs on exactly one date) so the date-shift
+ *  proofs see real record turnover, not an echoed date stamp. `depField`/`depVal`
+ *  set which JSON field carries the value the model maps `departure_date` to. */
+function depApiRaw(iso: string, depField = 'departureDate', depVal?: string): Array<Record<string, unknown>> {
+  const isAnchor = iso === '2026-06-10';
+  return [1, 2, 3, 4, 5, 6].map((i) => ({
+    resvId: isAnchor ? `R20${i}7` : `D${iso.replace(/-/g, '')}${i}`,
+    guest: { name: `Guest${i}, Test` },
+    arrivalDate: DEP_ARR_ISO[i - 1]!,
+    [depField]: depVal ?? iso,
+    room: `${300 + i}`,
+  }));
+}
+
+function depSuccess(): ReturnType<typeof tableSuccess> {
+  return {
+    ok: true,
+    action: {
+      steps: [{ kind: 'goto', url: 'https://pms.example.com/dash' }],
+      parse: {
+        mode: 'table',
+        hint: {
+          rowSelector: 'tr.dep',
+          columns: {
+            pms_reservation_id: 'td.id',
+            guest_name: 'td.name',
+            arrival_date: 'td.arr',
+            departure_date: 'td.dep', // selector present, but reads blank live → blind
+            room_number: 'td.room',
+          },
+        },
+      },
+    },
+    // NO departure_date in valueSamples → no wrong-selector smell.
+    valueSamples: { arrival_date: ['06/07/2026'] },
+  };
+}
+
+const DEP_PROPOSAL = (depField: string): string => JSON.stringify({
+  candidateIndex: 0,
+  jsonPath: 'data.departures',
+  columns: {
+    pms_reservation_id: 'resvId',
+    guest_name: 'guest.name',
+    arrival_date: 'arrivalDate',
+    departure_date: depField,
+    room_number: 'room',
+  },
+});
+
+/** Window date (MM/DD/YYYY) rendered into the request → ISO. */
+function isoFromReqUrl(url: string): string | null {
+  const m = url.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : null;
+}
+
+function depInput(over: Partial<StructuredDiscoveryInput> = {}): StructuredDiscoveryInput {
+  return {
+    actionName: 'getDepartures',
+    success: depSuccess(),
+    capturedCalls: [mkCall({
+      url: 'https://pms.example.com/api/departures?date=06/10/2026',
+      responseBody: { data: { departures: depApiRaw('2026-06-10') } },
+    })],
+    loginUrl: 'https://pms.example.com/login',
+    feedPageUrl: 'https://pms.example.com/frontdesk/departures',
+    jobId: 'job-dep-1',
+    ...over,
+  };
+}
+
+describe('attemptStructuredDiscovery — SECOND ORACLE blind semantic date', () => {
+  test('ACCEPT: DOM omits departure_date, API carries it, all 3 temporal proofs pass → api emitted', async () => {
+    const { deps } = makeDeps({
+      extractOracleRows: async () => depDomBlind(),
+      identify: async () => DEP_PROPOSAL('departureDate'),
+      replayFetch: async (req) => {
+        const iso = isoFromReqUrl(req.url);
+        if (!iso) return { ok: false, reason: 'no date' };
+        return { ok: true, data: { data: { departures: depApiRaw(iso) } } };
+      },
+    });
+    const result = await attemptStructuredDiscovery(depInput(), deps);
+    assert.ok(result, 'blind departure_date should be certified and upgraded');
+    const hint = result.action.parse.mode === 'api' ? result.action.parse.hint : null;
+    assert.ok(hint);
+    assert.equal(hint.columns.departure_date, 'departureDate');
+    assert.equal(hint.url, 'https://pms.example.com/api/departures?date={today:MM/DD/YYYY}');
+  });
+
+  test('BLOCKER GUARD: a changed_at-style field that co-moves BACKWARD but is never FUTURE → abstain on the tomorrow probe', async () => {
+    // The model maps departure_date → `touchedAt` (an audit timestamp). It is
+    // uniformly today on today, uniformly yesterday on yesterday (co-moves
+    // backward) — passing today-anchor + the yesterday probe — but on the
+    // tomorrow render it is capped at today (an audit stamp can't be in the
+    // future), so the forward probe rejects it. Without the forward probe this
+    // would write `touchedAt` as the checkout date forever.
+    const { deps } = makeDeps({
+      extractOracleRows: async () => depDomBlind(),
+      identify: async () => DEP_PROPOSAL('touchedAt'),
+      replayFetch: async (req) => {
+        const iso = isoFromReqUrl(req.url);
+        if (!iso) return { ok: false, reason: 'no date' };
+        const touched = iso <= '2026-06-10' ? iso : '2026-06-10'; // never future
+        return { ok: true, data: { data: { departures: depApiRaw(iso, 'touchedAt', touched) } } };
+      },
+    });
+    const call = mkCall({
+      url: 'https://pms.example.com/api/departures?date=06/10/2026',
+      responseBody: { data: { departures: depApiRaw('2026-06-10', 'touchedAt', '2026-06-10') } },
+    });
+    const result = await attemptStructuredDiscovery(depInput({ capturedCalls: [call] }), deps);
+    assert.equal(result, null, 'a backward-co-moving audit timestamp must be rejected by the tomorrow probe');
+  });
+
+  test('MUST ABSTAIN: no templated date param (cannot run the date-shift proofs)', async () => {
+    const { deps } = makeDeps({
+      extractOracleRows: async () => depDomBlind(),
+      identify: async () => DEP_PROPOSAL('departureDate'),
+      replayFetch: async () => ({ ok: true, data: { data: { departures: depApiRaw('2026-06-10') } } }),
+    });
+    const call = mkCall({
+      url: 'https://pms.example.com/api/departures/today', // no date param
+      responseBody: { data: { departures: depApiRaw('2026-06-10') } },
+    });
+    assert.equal(await attemptStructuredDiscovery(depInput({ capturedCalls: [call] }), deps), null);
+  });
+
+  test('MUST ABSTAIN: today-anchor non-uniform (a forward superset, not "today\'s departures")', async () => {
+    const { deps } = makeDeps({
+      extractOracleRows: async () => depDomBlind(),
+      identify: async () => DEP_PROPOSAL('departureDate'),
+      replayFetch: async (req) => {
+        const iso = isoFromReqUrl(req.url);
+        if (!iso) return { ok: false, reason: 'no date' };
+        // Mixed departure dates on every render → not uniformly the window day.
+        const rows = depApiRaw(iso).map((r, idx) => ({ ...r, departureDate: idx < 3 ? iso : '2026-06-15' }));
+        return { ok: true, data: { data: { departures: rows } } };
+      },
+    });
+    assert.equal(await attemptStructuredDiscovery(depInput(), deps), null);
+  });
+
+  test('MUST ABSTAIN: sibling arrival_date is UNIFORM (mislabeled arrivals-as-departures page)', async () => {
+    // Every row's arrival_date == today → looks like an ARRIVALS page; the
+    // sibling discriminator refuses to blind-trust departure_date here.
+    const { deps } = makeDeps({
+      extractOracleRows: async () => depDomBlind({ arrival_date: '06/10/2026' }),
+      identify: async () => DEP_PROPOSAL('departureDate'),
+      replayFetch: async (req) => {
+        const iso = isoFromReqUrl(req.url);
+        if (!iso) return { ok: false, reason: 'no date' };
+        const rows = depApiRaw(iso).map((r) => ({ ...r, arrivalDate: '2026-06-10' }));
+        return { ok: true, data: { data: { departures: rows } } };
+      },
+    });
+    const call = mkCall({
+      url: 'https://pms.example.com/api/departures?date=06/10/2026',
+      responseBody: { data: { departures: depApiRaw('2026-06-10').map((r) => ({ ...r, arrivalDate: '2026-06-10' })) } },
+    });
+    assert.equal(await attemptStructuredDiscovery(depInput({ capturedCalls: [call] }), deps), null);
+  });
+
+  test('MUST ABSTAIN: wrong-selector smell — model claims to SEE departure dates but the live selector is blank', async () => {
+    const success = depSuccess();
+    success.valueSamples = { departure_date: ['06/10/2026'] }; // claimed but reads blank
+    const { deps } = makeDeps({
+      extractOracleRows: async () => depDomBlind(),
+      identify: async () => DEP_PROPOSAL('departureDate'),
+      replayFetch: async (req) => {
+        const iso = isoFromReqUrl(req.url);
+        return iso ? { ok: true, data: { data: { departures: depApiRaw(iso) } } } : { ok: false, reason: 'no date' };
+      },
+    });
+    assert.equal(await attemptStructuredDiscovery(depInput({ success }), deps), null);
+  });
+
+  test('MUST STILL ABSTAIN: a blank required STATUS column (work orders) is NEVER auto-trusted', async () => {
+    // getWorkOrders has no semantic date column, so the blind path never fires;
+    // a status blank on every DOM row but present in the API is a hard reconcile
+    // failure — a wrong status would auto-close a real ticket.
+    const woDom = [1, 2, 3, 4, 5, 6].map((i) => ({
+      pms_work_order_id: `WO-${i}`,
+      description: `Fix thing ${i}`,
+      status: '', // BLANK in the DOM
+      out_of_order: i % 2 === 0 ? 'Yes' : 'No',
+      room_number: `${400 + i}`,
+    }));
+    const woRaw = [1, 2, 3, 4, 5, 6].map((i) => ({
+      woId: `WO-${i}`,
+      desc: `Fix thing ${i}`,
+      st: i % 2 === 0 ? 'open' : 'in_progress',
+      ooo: i % 2 === 0,
+      room: `${400 + i}`,
+    }));
+    const success = depSuccess();
+    success.action.parse = {
+      mode: 'table',
+      hint: {
+        rowSelector: 'tr.wo',
+        columns: {
+          pms_work_order_id: 'td.id', description: 'td.desc',
+          status: 'td.st', out_of_order: 'td.ooo', room_number: 'td.room',
+        },
+      },
+    };
+    delete success.valueSamples;
+    const call = mkCall({
+      url: 'https://pms.example.com/api/workorders',
+      responseBody: { rows: woRaw },
+    });
+    const { deps } = makeDeps({
+      extractOracleRows: async () => woDom,
+      identify: async () => JSON.stringify({
+        candidateIndex: 0, jsonPath: 'rows',
+        columns: { pms_work_order_id: 'woId', description: 'desc', status: 'st', out_of_order: 'ooo', room_number: 'room' },
+      }),
+    });
+    const result = await attemptStructuredDiscovery(
+      depInput({ actionName: 'getWorkOrders', success, capturedCalls: [call] }),
+      deps,
+    );
+    assert.equal(result, null, 'a blank required status must never be auto-trusted');
+  });
+});
