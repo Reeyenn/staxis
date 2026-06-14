@@ -2174,6 +2174,12 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // instantly eligible to re-declare unavailable.
         readPageCount = 0;
         navigationCount = 0;
+        // Wave-1 stitch hardening: also clear the commit-nudge dither state so a
+        // founder-confirmed page starts nudge accounting fresh and can't inherit
+        // a pre-takeover dither streak (the one place the takeover gate + the
+        // commit-nudge share an iteration). Mirrors the resets above.
+        samePageStreak = 0;
+        prevTurnFingerprint = null;
         // fall through — this iteration's Claude call now carries the override.
       }
       // kind === 'none' → no takeover; proceed with the normal agent step.
