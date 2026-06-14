@@ -45,7 +45,7 @@ import { saveGenericTable } from './persistence/generic-table-writer.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
-import { safeGoto } from './browser-utils/navigate.js';
+import { safeGoto, normalizeUrl } from './browser-utils/navigate.js';
 import type { Recipe, ScraperCredentialsRow, TableTemplate } from './types.js';
 
 const VIEWPORT = { width: 1280, height: 800 };
@@ -178,8 +178,6 @@ export class SessionDriver {
     // a full driver restart).
     this.knowledgeFileVersion = this.knowledgeFile.version;
 
-    this.allowedHost = new URL(this.knowledgeFile.knowledge.login.startUrl).host;
-
     // 2. Load credentials.
     this.credentials = await this.loadCredentials();
     if (!this.credentials) {
@@ -187,6 +185,31 @@ export class SessionDriver {
       await this.updateStatus({
         status: 'failed_restart',
         paused_reason: 'No active scraper_credentials row.',
+      });
+      this.running = false;
+      return;
+    }
+
+    // Anchor the navigation host guard to the URL THIS hotel actually logs in
+    // at (per-hotel > family — see currentLoginUrl). One active knowledge file
+    // per pms_family fixes login.startUrl for every hotel on the family, so a
+    // cloud PMS that gives each hotel its own subdomain (OPERA Cloud, Cloudbeds,
+    // Mews, RoomKey) must anchor allowedHost to its own host or safeGoto would
+    // false-reject its feed navigations as off-site. Derived after credentials
+    // load because the per-hotel URL lives on the credentials row.
+    this.allowedHost = this.currentAllowedHost();
+    // Fail closed: an empty host means neither the per-hotel URL nor the family
+    // startUrl could be parsed. Surface a failed_restart (admin-visible) rather
+    // than letting a downstream new URL() throw uncaught and silently drop the
+    // driver from the supervisor's map with no DB status.
+    if (!this.allowedHost) {
+      log.error('session-driver: could not derive a navigation host from the login URL', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+      });
+      await this.updateStatus({
+        status: 'failed_restart',
+        paused_reason: 'Could not derive a navigation host — login URL is malformed.',
       });
       this.running = false;
       return;
@@ -338,15 +361,66 @@ export class SessionDriver {
     this.page = await this.context.newPage();
   }
 
+  /**
+   * The login URL THIS hotel should navigate to. Precedence: the per-hotel
+   * URL from scraper_credentials (ca_login_url) when present, else the PMS
+   * family's shared knowledge-file login.startUrl.
+   *
+   * One active knowledge file per pms_family fixes login.startUrl for every
+   * hotel on the family. Cloud PMSes (OPERA Cloud, Cloudbeds, Mews, RoomKey)
+   * give each hotel its own subdomain, so without this the family startUrl
+   * would point them all at a single tenant. Hotels with no per-hotel URL
+   * (e.g. Choice Advantage) fall back to the family startUrl — unchanged.
+   */
+  private currentLoginUrl(): string {
+    const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
+    return resolveLoginUrl(this.credentials?.loginUrl, familyStartUrl);
+  }
+
+  /** Host for safeGoto's same-site guard, derived from exactly the URL we log
+   *  in at (currentLoginUrl) so a per-hotel subdomain isn't false-rejected as
+   *  off-site AND the guard can never skew from the navigation target. '' when
+   *  no host can be derived — start() treats that as fail-closed. */
+  private currentAllowedHost(): string {
+    return resolveAllowedHost(this.currentLoginUrl());
+  }
+
+  /**
+   * Re-point a login `goto` step at THIS hotel's login URL.
+   *
+   * The learner ALWAYS records the initial login navigation as
+   * `{ kind: 'goto', url: <startUrl> }` (mapper.ts:1179), baking in the MAPPER
+   * tenant's URL. One active knowledge file per pms_family means every hotel
+   * replays that same baked goto — which, for a per-subdomain cloud PMS, shares
+   * the family's registrable domain and so PASSES safeGoto's same-site guard,
+   * silently funnelling the hotel back to the mapper's tenant. Re-pointing the
+   * goto whose url is the family startUrl to currentLoginUrl() closes that hole.
+   *
+   * Only that one step is rewritten: every other recorded goto (intra-login
+   * hops, SSO providers, shared-auth subdomains) is replayed exactly as learned
+   * — blindly re-hosting those could break shared infra. No-op for hotels with
+   * no per-hotel URL (currentLoginUrl() === family startUrl).
+   */
+  private loginGotoTarget(rawUrl: string): string {
+    const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
+    return resolveLoginGotoUrl(rawUrl, familyStartUrl, this.credentials?.loginUrl);
+  }
+
   private async ensureLoggedIn(): Promise<boolean> {
     if (!this.page || !this.knowledgeFile || !this.credentials || !this.allowedHost) {
       throw new Error('ensureLoggedIn precondition failed');
     }
     const { login } = this.knowledgeFile.knowledge;
+    // Precedence: the per-hotel login URL (scraper_credentials.ca_login_url)
+    // wins over the family-shared startUrl; hotels with no per-hotel URL (e.g.
+    // Choice Advantage) fall back to the family startUrl — see currentLoginUrl.
+    // allowedHost stays null on this navigation: it's the session-establishing
+    // goto, host-guarded only for scheme/private-IP, not same-site.
+    const loginUrl = this.currentLoginUrl();
 
     // Probe: navigate to start URL. If we land on a login form, we're not logged in.
     try {
-      await safeGoto(this.page, login.startUrl, {
+      await safeGoto(this.page, loginUrl, {
         allowedHost: null,
         context: 'session-driver:probe',
       });
@@ -379,7 +453,7 @@ export class SessionDriver {
     // form render.
     try {
       await this.context!.clearCookies();
-      await safeGoto(this.page, login.startUrl, {
+      await safeGoto(this.page, loginUrl, {
         allowedHost: null,
         context: 'session-driver:relogin',
       });
@@ -398,7 +472,7 @@ export class SessionDriver {
       await pauseForMfa({
         propertyId: this.propertyId,
         detectedSelector: earlyMfa.selector,
-        loginUrl: login.startUrl,
+        loginUrl,
       });
       return false;
     }
@@ -434,7 +508,7 @@ export class SessionDriver {
       await pauseForMfa({
         propertyId: this.propertyId,
         detectedSelector: mfa.selector,
-        loginUrl: login.startUrl,
+        loginUrl,
       });
       return false;
     }
@@ -481,7 +555,7 @@ export class SessionDriver {
       await pauseForMfa({
         propertyId: this.propertyId,
         detectedSelector: postRedirectMfa.selector,
-        loginUrl: login.startUrl,
+        loginUrl,
       });
       return false;
     }
@@ -603,7 +677,10 @@ export class SessionDriver {
     };
     switch (kind) {
       case 'goto':
-        await safeGoto(this.page, step.url as string, {
+        // Re-point the learner's baked-in login goto to THIS hotel's URL
+        // (see loginGotoTarget) so a per-subdomain cloud PMS isn't
+        // funnelled back to the mapper's tenant by the recorded step.
+        await safeGoto(this.page, this.loginGotoTarget(step.url as string), {
           allowedHost: this.allowedHost,
           context: 'session-driver:login:goto',
         });
@@ -1109,7 +1186,11 @@ export class SessionDriver {
       });
       this.knowledgeFile = latest;
       this.knowledgeFileVersion = latest.version;
-      this.allowedHost = new URL(latest.knowledge.login.startUrl).host;
+      // Re-anchor the host guard to the per-hotel login URL (per-hotel >
+      // family). Credentials don't change on a knowledge hot-reload, so this
+      // must NOT silently revert allowedHost to the family startUrl's host —
+      // that would re-break per-hotel subdomains ~60s after every promotion.
+      this.allowedHost = this.currentAllowedHost();
       // No browser restart needed — next pollOnce uses the new feeds.
     } catch (err) {
       log.warn('session-driver: knowledge hot-reload check failed', {
@@ -1327,6 +1408,68 @@ export class SessionDriver {
     this.context = null;
     this.browser = null;
   }
+}
+
+/**
+ * Pick the login URL for one hotel: the per-hotel URL
+ * (scraper_credentials.ca_login_url) when present, else the PMS family's
+ * shared knowledge-file login.startUrl. Per-hotel wins so cloud PMSes that
+ * give each hotel its own subdomain aren't all funnelled to one tenant by
+ * the single active knowledge file per pms_family. Empty/whitespace/null
+ * per-hotel URLs (e.g. Choice Advantage) fall back to the family startUrl —
+ * byte-for-byte the pre-fix behavior. Exported for unit testing.
+ *
+ * The per-hotel value is normalized (normalizeUrl prepends https:// when the
+ * scheme is missing) so a common data-entry input like "hotel-a.opera.com"
+ * resolves to the SAME host the allowedHost guard is derived from — no skew
+ * between the navigation target and the host guard. The family fallback is
+ * returned verbatim (it is always a stored absolute URL) to keep the
+ * no-per-hotel-URL path identical to before.
+ */
+export function resolveLoginUrl(
+  perHotelLoginUrl: string | null | undefined,
+  familyStartUrl: string,
+): string {
+  const perHotel = perHotelLoginUrl?.trim();
+  return perHotel ? normalizeUrl(perHotel) : familyStartUrl;
+}
+
+/**
+ * Host for safeGoto's same-site guard, derived from exactly the URL we log in
+ * at (so the guard can never skew from the navigation target — both come from
+ * resolveLoginUrl). Returns '' when no host can be derived: a malformed URL
+ * (new URL throws) or a hostless scheme like mailto:/tel: (host === ''). The
+ * caller treats '' as fail-closed (failed_restart) — never a silent wrong-host
+ * guard, never a crash. Never throws. Exported for unit testing.
+ */
+export function resolveAllowedHost(loginUrl: string): string {
+  try {
+    return new URL(loginUrl).host;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Re-point a recorded login `goto` step at this hotel's login URL. The learner
+ * ALWAYS records the initial login navigation as `{ kind: 'goto', url: startUrl }`
+ * (mapper.ts:1179), so the family knowledge file bakes in the MAPPER tenant's
+ * URL. Replaying that verbatim funnels every hotel on a per-subdomain cloud PMS
+ * back to the mapper's tenant — the baked host shares the family registrable
+ * domain, so safeGoto's same-site guard passes and the wrong-tenant navigation
+ * goes through. Only the goto whose url is the family startUrl is rewritten (to
+ * the per-hotel URL); every other recorded goto — intra-login hops, SSO
+ * providers, shared-auth subdomains — replays exactly as learned, since blindly
+ * re-hosting those could break shared infrastructure. No-op when there is no
+ * per-hotel URL. Exported for unit testing.
+ */
+export function resolveLoginGotoUrl(
+  rawUrl: string,
+  familyStartUrl: string,
+  perHotelLoginUrl: string | null | undefined,
+): string {
+  if (rawUrl !== familyStartUrl) return rawUrl;
+  return resolveLoginUrl(perHotelLoginUrl, familyStartUrl);
 }
 
 function todayInTimezone(tz: string): string {
