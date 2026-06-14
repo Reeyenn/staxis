@@ -195,10 +195,16 @@ export function parserForColumn(table: string, col: { name: string; type: Descri
 // date/_cents columns stay unparsed, exactly as before this change — NOT a
 // regression): the optional report feeds getRevenueDaily / getRatesAndInventory
 // / getChannelPerformance / getForecastDaily / getGroupsAndBlocks /
-// getLostAndFound / getActivityLog / getGuests / getRoomLayout /
-// getDashboardCounts / getHistoricalOccupancy. They have never run end-to-end;
+// getLostAndFound / getActivityLog / getGuests. They have never run end-to-end;
 // wiring them is a follow-up that must mirror each one's CURRENT live descriptor
 // (several drifted from 0207 — see the room-status / work-order note above).
+//
+// feature/cua-per-hotel-data — getDashboardCounts (pms_in_house_snapshot),
+// getRoomLayout (pms_rooms_inventory) and getHistoricalOccupancy
+// (pms_revenue_daily) are NOW WIRED below (mirroring 0207). Until this their
+// integer/numeric/currency columns scraped as raw DOM strings and the writer's
+// type check (generic-table-writer validateRows) rejected every row — two of
+// the three "extract-but-reject" newly-enrolled feeds.
 
 export interface ValueColumn {
   name: string;
@@ -259,6 +265,47 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'room_number', type: 'text' },
       { name: 'priority', type: 'text', enumValues: ['urgent', 'high', 'medium', 'low'] },
       { name: 'assigned_to', type: 'text' },
+    ],
+  },
+  // ── 3 report/dashboard feeds (feature/cua-per-hotel-data — mirror 0207) ──
+  // None carry an enum column, so a dashboard/inventory/revenue report needs
+  // ONLY generic format parsers (integer / numeric / currency / date). Mirrors
+  // the LIVE pms_table_schemas descriptors (migration 0207, unchanged by
+  // 0209/0224/0237). Writer-stamped timestamptz (pms_in_house_snapshot's
+  // captured_at) is excluded, same as the other feeds above.
+  getDashboardCounts: {
+    table: 'pms_in_house_snapshot',
+    columns: [
+      { name: 'total_guests_in_house', type: 'integer' },
+      { name: 'total_occupied_rooms', type: 'integer' },
+      { name: 'total_vacant_clean', type: 'integer' },
+      { name: 'arrivals_remaining_today', type: 'integer' },
+      { name: 'departures_remaining_today', type: 'integer' },
+    ],
+  },
+  getRoomLayout: {
+    table: 'pms_rooms_inventory',
+    columns: [
+      { name: 'room_number', type: 'text' },
+      { name: 'room_type', type: 'text' },
+      { name: 'bed_config', type: 'text' },
+      { name: 'max_occupancy', type: 'integer' },
+      { name: 'floor', type: 'text' },
+    ],
+  },
+  getHistoricalOccupancy: {
+    table: 'pms_revenue_daily',
+    columns: [
+      { name: 'date', type: 'date' },
+      { name: 'rooms_revenue_cents', type: 'bigint' },
+      { name: 'fnb_revenue_cents', type: 'bigint' },
+      { name: 'tax_cents', type: 'bigint' },
+      { name: 'occupied_rooms', type: 'integer' },
+      // numeric (0..100) → generic_number; the 0..100 range is layer-2's
+      // validateRevenueDaily job (validators-phase2.ts), not the parser's.
+      { name: 'occupancy_pct', type: 'numeric' },
+      { name: 'adr_cents', type: 'bigint' },
+      { name: 'revpar_cents', type: 'bigint' },
     ],
   },
   // ── 5 net-new feeds (mirror migration 0276; all-text status = free text,
