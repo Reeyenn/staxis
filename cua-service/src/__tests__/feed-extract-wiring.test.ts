@@ -105,6 +105,25 @@ describe('recordLandingGoto (mapper)', () => {
     assert.deepEqual(tmpl!.sources[0]!.extra?.preSteps, [{ kind: 'click_at', x: 30, y: 40 }]);
     assert.equal(tmpl!.incomplete, undefined);
   });
+
+  test('SAME-turn batched nav+Generate: per-action anchoring keeps the Generate click as a preStep', () => {
+    // The per-action recordLandingGoto call (in the tool loop) handles the case
+    // where ONE agent turn batches a navigating click and an in-page click and
+    // the nav commits synchronously (SPA pushState). Both clicks land in the
+    // same turn; the goto must still slot between them.
+    const steps: RecipeStep[] = [{ kind: 'goto', url: DASH }];
+    steps.push({ kind: 'click_at', x: 10, y: 20 });          // open Reports
+    recordLandingGoto(steps, 'https://pms.example/reports');  // per-action #1 (url changed)
+    steps.push({ kind: 'click_at', x: 30, y: 40 });          // Generate (url stays)
+    recordLandingGoto(steps, 'https://pms.example/reports');  // per-action #2 (no change)
+
+    const tmpl = actionRecipeToTableTemplate('getArrivals', {
+      steps,
+      parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: { guest_name: 'td.name' } } },
+    });
+    assert.equal(tmpl!.sources[0]!.url, 'https://pms.example/reports');
+    assert.deepEqual(tmpl!.sources[0]!.extra?.preSteps, [{ kind: 'click_at', x: 30, y: 40 }]);
+  });
 });
 
 // ─── 2. recipe-adapter — dom_table pre-step derivation ───────────────────────

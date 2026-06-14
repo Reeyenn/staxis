@@ -3015,7 +3015,18 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         : null;
 
       const exec = await executeVisionAction(args.page, action, args.credentials, 'action');
-      if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      if (exec.recordedStep) {
+        recordedSteps.push(exec.recordedStep);
+        // feature/cua-feed-extract — anchor the landing URL right after THIS
+        // action too, not only at the turn top. A single turn can batch a
+        // navigating click followed by an in-page click (e.g. open a report,
+        // then a "Generate"/filter click that keeps the URL); recording the
+        // goto here keeps it BEFORE the later click so that click survives as a
+        // replayable pre-step instead of being stranded after a trailing goto.
+        // Zero added latency (just a URL read); the turn-top call stays the
+        // backstop for a navigation that only commits after this point.
+        recordLandingGoto(recordedSteps, safeUrl(args.page));
+      }
       // feature/cua-live-view — tee the (already privacy-hardened)
       // screenshot to the Learning Board's live view. Fire-and-forget.
       if (exec.screenshotB64) args.onLiveFrame?.(exec.screenshotB64);
