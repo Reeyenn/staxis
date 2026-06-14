@@ -133,8 +133,8 @@ export const MAPPING_SYSTEM_PROMPT =
   `spam it for every target.\n\n` +
 
   `UNAVAILABLE TARGETS:\n` +
-  `Some PMS tiers don't expose certain data (Choice Advantage franchise ` +
-  `edition doesn't expose revenue or forecast reports). If you've ` +
+  `Some PMS tiers don't expose certain data (a limited or franchise-edition ` +
+  `PMS may not expose revenue or forecast reports). If you've ` +
   `screenshot'd top-level menus + tried at least 3 navigation paths and the ` +
   `target genuinely doesn't exist, emit ` +
   `{"unavailable": true, "reason": "<short cause>"}. Asking for admin help ` +
@@ -154,8 +154,9 @@ export const MAPPING_SYSTEM_PROMPT =
   `Desk" menus. Staff/users live under "Staff", "Users", "Setup", or "Admin".\n` +
   `2. Login flows — single-page form, two-step (username → password), or ` +
   `with a property picker. Expect 5-15 actions to reach the dashboard. ` +
-  `Choice Advantage specifically lands on a "Welcome" splash; click ` +
-  `"Continue" / "Enter PMS" / the property name to reach the dashboard.\n` +
+  `Some PMS land on a "Welcome" / splash page or a property picker after ` +
+  `sign-in; click "Continue" / "Enter" / the property name to reach the ` +
+  `dashboard.\n` +
   `3. Modals — dismiss any cookie banner, "what's new" dialog, or "session ` +
   `active" warning by clicking Close / X / Continue / OK.\n` +
   `   MFA/2FA is the EXCEPTION: if you hit a two-factor / one-time-code / ` +
