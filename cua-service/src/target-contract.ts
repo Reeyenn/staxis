@@ -459,6 +459,33 @@ export function requiredLearnedFor(actionKey: keyof Recipe['actions']): string[]
 }
 
 /**
+ * fix/cua-mapper-commit — does ANOTHER core target share this target's EXACT
+ * required-column set? Such "schema siblings" — getArrivals and getDepartures
+ * both require {pms_reservation_id, guest_name, arrival_date, departure_date} —
+ * are INDISTINGUISHABLE to auditLearnedColumnsOnPage: an Arrivals page committed
+ * as Departures (or vice-versa) passes every column/value check, and an empty
+ * sibling page degrades to a structural-only accept with no value check at all.
+ * The deterministic commit-nudge therefore SKIPS schema siblings — they rely on
+ * the model's heading/identity read (the COMMIT RULE + per-goal heading check in
+ * the prompt) instead, which is the only signal that can tell two same-shaped
+ * feeds apart. The nudge still fires for core feeds with a UNIQUE required-column
+ * shape (room status, work orders), whose value audits (status enum, out_of_order
+ * boolean) give real semantic gating. Pure + contract-derived — no PMS
+ * vocabulary, no page names, so it generalizes to any PMS.
+ */
+export function coreTargetSharesRequiredSchema(actionKey: keyof Recipe['actions']): boolean {
+  const mine = requiredLearnedFor(actionKey);
+  if (mine.length === 0) return false; // non-core target — never nudged anyway
+  const key = [...mine].sort().join('|');
+  for (const other of Object.keys(CORE_TARGET_CONTRACTS) as Array<keyof Recipe['actions']>) {
+    if (other === actionKey) continue;
+    const theirs = requiredLearnedFor(other);
+    if (theirs.length > 0 && [...theirs].sort().join('|') === key) return true;
+  }
+  return false;
+}
+
+/**
  * Which of a CORE target's required-learned columns are missing/blank in a
  * learned column map. Non-core targets are not column-gated → always []. Used
  * by the promotion gate; the mapper re-ask uses this too (keyed off actionName)
