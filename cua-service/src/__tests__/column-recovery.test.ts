@@ -456,6 +456,60 @@ describe('certifyColumns (first-emission proof of ALL required columns)', () => 
     }
   });
 
+  test('a wide multi-day arrivals view (correct order) → semantic-window miss is UNCERTAIN, not failed/blanked', () => {
+    // Far-future dates (PMS shows a rolling window, not today-only) but arrival<=
+    // departure on every row → only the soft semantic-window heuristic trips. We
+    // must NOT blank a correct column (that could cascade to quarantine) — park it.
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date'],
+      allValues: {
+        arrival_date: ['07/20/2026', '07/21/2026', '07/22/2026'],
+        departure_date: ['07/22/2026', '07/23/2026', '07/24/2026'],
+      },
+      allSelectors: { arrival_date: 'td:nth-child(5)', departure_date: 'td:nth-child(6)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('arrival_date');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /semantic_date_window/);
+  });
+
+  test('plain-text column mirroring another mapped column → uncertain (not blindly certified)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['guest_name'],
+      allValues: {
+        guest_name: ['A100', 'A200', 'A300'],
+        pms_reservation_id: ['A100', 'A200', 'A300'], // selector pointed at the id cell
+      },
+      allSelectors: { guest_name: 'td:nth-child(2)', pms_reservation_id: 'td:nth-child(1)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('guest_name');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /text_mirror/);
+  });
+
+  test('a constant plain-text column → uncertain (a header/label echoed down the column)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['description'],
+      allValues: { description: ['Maintenance', 'Maintenance', 'Maintenance'] },
+      allSelectors: { description: 'td:nth-child(2)' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('description');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /constant_text/);
+  });
+
   test('a sparse-but-real boolean (out_of_order set on 1 row in 8) certifies, not all_blank-rejected', () => {
     // The mapper feeds certifyColumns the FULL deadness window, so a column blank
     // in most rows but real in one is proven, not falsely failed. Guards the

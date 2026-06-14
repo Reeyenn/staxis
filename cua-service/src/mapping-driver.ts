@@ -721,6 +721,14 @@ export function evaluatePromotionGate(
     const action = recipe.actions[t];
     if (!action) continue;                      // missing → already a computeFeedGaps gap
     if (action.parse?.mode === 'api') continue; // oracle-reconciled JSON path — already strong
+    // SEEDED targets are already LIVE — they passed this gate (or the founder's
+    // Promote click) on a prior job, so a stale `unprovenRequiredColumns` they
+    // carry (e.g. a feed onboarded empty, then founder-approved) must NOT re-park
+    // a successful self-repair/backfill that only re-learned a DIFFERENT target.
+    // The field is never stripped from the active recipe, so without this a repair
+    // would silently fail to auto-promote forever (Claude review P1). Only freshly
+    // learned targets (absent from the seed) are subject to value-certification.
+    if (seedActions && (t in seedActions)) continue;
     const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
     if (!Array.isArray(carried) || carried.length === 0) continue; // certified / legacy
     // Count only columns still SHIPPING (non-blank) — a blanked column is already
@@ -731,6 +739,9 @@ export function evaluatePromotionGate(
     );
     if (live.length > 0) unprovenByTarget.set(String(t), live);
   }
+  const unprovenNote = unprovenByTarget.size > 0
+    ? ` — required columns not value-certified (need founder review): ${[...unprovenByTarget].map(([t, cols]) => `${t} (${cols.join(', ')})`).join('; ')}`
+    : '';
 
   // Plan v8 self-repair guard — a repair job seeds the existing recipe's
   // actions (minus the one failing target) and re-learns just that one,
@@ -788,9 +799,6 @@ export function evaluatePromotionGate(
     // here: never auto-go-live, always founder-reviewed. The column keeps its
     // selector (it may be correct) so a single Promote click ships it; we just
     // refuse to do it automatically with a guessed column.
-    const unprovenNote = unprovenByTarget.size > 0
-      ? ` — required columns not value-certified (need founder review): ${[...unprovenByTarget].map(([t, cols]) => `${t} (${cols.join(', ')})`).join('; ')}`
-      : '';
     const bcClause = businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO
       ? `${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical`
       : `only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion)`;
@@ -814,7 +822,7 @@ export function evaluatePromotionGate(
       .join('; ');
     return {
       decision: 'park_partial',
-      reason: `partial recipe parked for admin review — trustworthy: ${[...trustworthyRequired].join(', ')}; still missing required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}`,
+      reason: `partial recipe parked for admin review — trustworthy: ${[...trustworthyRequired].join(', ')}; still missing required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}${unprovenNote}`,
       feedGaps,
     };
   }

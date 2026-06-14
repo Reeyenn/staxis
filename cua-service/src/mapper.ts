@@ -3486,6 +3486,13 @@ async function auditLearnedColumnsOnPage(args: {
       !args.pendingRecovery.has(col) &&
       (args.columns[col] ?? '').trim() !== '',
   );
+  // 'failed' → BLANK + recover (worse-than-blank: a provably wrong selector must
+  // not ship). 'uncertain' → KEEP the selector but record it unproven so the
+  // promotion gate parks for founder review: a plain-text column we can't
+  // corroborate (constant / mirrors another column), or a date column that only
+  // tripped the soft semantic-window heuristic on a wider-than-today feed — both
+  // may be correct, so we never blank them.
+  const uncertain = new Set<string>();
   for (const [col, verdict] of certifyColumns({
     actionKey: args.actionKey,
     columns: unjudged,
@@ -3498,10 +3505,12 @@ async function auditLearnedColumnsOnPage(args: {
     if (verdict.verdict === 'failed') {
       outstanding.set(col, 'rejected');
       problems.push({ column: col, kind: 'rejected', detail: `first-emission: ${verdict.reason}` });
+    } else if (verdict.verdict === 'uncertain') {
+      uncertain.add(col);
     }
   }
 
-  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, problems };
+  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, uncertain, problems };
 }
 
 /**

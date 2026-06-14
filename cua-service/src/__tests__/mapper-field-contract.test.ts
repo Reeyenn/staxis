@@ -628,6 +628,26 @@ describe('evaluatePromotionGate — value-certification (feature/cua-prove-colum
     }));
     assert.equal(g.decision, 'park_partial');
   });
+
+  test('a SEEDED already-live target carrying a stale proof field does NOT block a successful repair', () => {
+    // getWorkOrders was onboarded empty and founder-promoted earlier → it carries
+    // a stale unprovenRequiredColumns in the active recipe. A self-repair re-learns
+    // only getRoomStatus; the seeded getWorkOrders must not re-park the repair.
+    const r = fullRecipe();
+    withUnproven(r.actions.getWorkOrders!, ['out_of_order']);
+    const seed = { ...r.actions };
+    delete (seed as Recipe['actions']).getRoomStatus; // recipe is seed+1 (passes the seed guard)
+    const g = evaluatePromotionGate(r, seed);
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('the same proof field on a FRESH onboarding (no seed) DOES block auto_promote', () => {
+    const r = fullRecipe();
+    withUnproven(r.actions.getWorkOrders!, ['out_of_order']);
+    const g = evaluatePromotionGate(r); // no seedActions → fresh onboarding
+    assert.equal(g.decision, 'park_partial');
+    assert.match(g.reason, /value-certified/);
+  });
 });
 
 describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT active', () => {

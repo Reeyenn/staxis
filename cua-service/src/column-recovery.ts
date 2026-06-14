@@ -404,12 +404,71 @@ export interface CertifyColumnsInput {
   hasValueEvidence: boolean;
 }
 
+/** A column carries a TYPE-SPECIFIC value check (so an `ok` gate verdict is
+ *  POSITIVE proof, not merely "no check failed") when it is the target's key
+ *  column or resolves to a runtime parser (date / enum / boolean / numeric).
+ *  Plain-text columns (guest_name, description) resolve to no parser and aren't
+ *  the key — their only value evidence is "non-blank + unique selector", which
+ *  is not proof of meaning. */
+function hasTypeSpecificCheck(
+  actionKey: ActionKey,
+  column: string,
+  learned?: LearnedTranslations,
+): boolean {
+  if (DISCOVERY_KEY_COLUMNS[actionKey] === column) return true;
+  return resolveColumnParser(actionKey, column, learned) !== undefined;
+}
+
+/** Best-effort certification for a required PLAIN-TEXT column once the gate has
+ *  passed (non-blank, unique selector). Value alone can't prove a free-text cell
+ *  is the RIGHT field, so we only DOWN-rank the two cases a value check CAN see:
+ *  a constant column (a header/label echoed down every row) and a column whose
+ *  values mirror another mapped column (the selector is pointing at THAT cell).
+ *  Both → `uncertain` (keep the selector, route to founder review). Everything
+ *  else certifies: a free-text selector at a DISTINCT but semantically-wrong cell
+ *  is unprovable from the DOM alone — only the JSON oracle's row-level ground
+ *  truth catches that — so it is an accepted residual (the model's column-heading
+ *  read is the other backstop). */
+function certifyPlainText(
+  column: string,
+  values: string[],
+  allValues: Record<string, string[]>,
+): ColumnVerdict {
+  const nonBlank = values.filter((v) => v !== '');
+  if (nonBlank.length >= 3 && new Set(nonBlank).size < 2) {
+    return { verdict: 'uncertain', reason: 'constant_text' };
+  }
+  for (const [other, raw] of Object.entries(allValues)) {
+    if (other === column) continue;
+    if (identicalOnComparable(values, raw.map((v) => trimmed(v)), 3)) {
+      return { verdict: 'uncertain', reason: `text_mirror:${other}` };
+    }
+  }
+  return { verdict: 'certified' };
+}
+
 /**
  * Run the gateRecoveredColumn value checks over a whole required-column set and
  * return a per-column verdict. PURE — same abstain-by-default checks as the
- * recovery gate, just reusable for the first-emission path. `certified` columns
- * ship and may auto-promote; `failed` columns must be re-mapped or blanked;
- * `uncertain` columns keep their selector but route to founder review.
+ * recovery gate, just reusable for the first-emission path.
+ *
+ * Verdict mapping (worse-than-blank, abstain-by-default):
+ *   - no value evidence (empty/unreadable feed) → every column `uncertain`.
+ *   - gate FAILS on `semantic_date_window` → `uncertain`, NOT `failed`: a PMS
+ *     whose Arrivals/Departures view is a rolling multi-day window (not today
+ *     only) trips this on a CORRECT date column; we keep the selector and route
+ *     to review rather than blanking it (which could cascade to quarantine). The
+ *     check-in↔check-out SWAP is still caught — `date_order_violation` fires
+ *     before the window check, returning `failed`.
+ *   - gate FAILS otherwise (parse majority, date order, identical/mirror vectors,
+ *     duplicate selector, key degeneracy, enum collision) → `failed`.
+ *   - gate PASSES on a column with a type-specific check (key/date/enum/boolean/
+ *     numeric) → `certified` (positive proof).
+ *   - gate PASSES on a plain-text column → certifyPlainText (constant/mirror →
+ *     `uncertain`, else `certified`).
+ *
+ * `certified` columns ship and may auto-promote; `failed` columns are re-mapped
+ * or blanked; `uncertain` columns keep their selector but route to founder review.
  */
 export function certifyColumns(input: CertifyColumnsInput): Map<string, ColumnVerdict> {
   const out = new Map<string, ColumnVerdict>();
@@ -418,17 +477,32 @@ export function certifyColumns(input: CertifyColumnsInput): Map<string, ColumnVe
       out.set(column, { verdict: 'uncertain', reason: 'no_value_evidence' });
       continue;
     }
+    const values = (input.allValues[column] ?? []).map((v) => trimmed(v));
     const verdict = gateRecoveredColumn({
       actionKey: input.actionKey,
       column,
-      values: input.allValues[column] ?? [],
+      values,
       allValues: input.allValues,
       selector: input.allSelectors[column] ?? '',
       allSelectors: input.allSelectors,
       learned: input.learned,
       todayIso: input.todayIso,
     });
-    out.set(column, verdict.ok ? { verdict: 'certified' } : { verdict: 'failed', reason: verdict.reason });
+    if (!verdict.ok) {
+      out.set(
+        column,
+        verdict.reason.startsWith('semantic_date_window')
+          ? { verdict: 'uncertain', reason: verdict.reason }
+          : { verdict: 'failed', reason: verdict.reason },
+      );
+      continue;
+    }
+    out.set(
+      column,
+      hasTypeSpecificCheck(input.actionKey, column, input.learned)
+        ? { verdict: 'certified' }
+        : certifyPlainText(column, values, input.allValues),
+    );
   }
   return out;
 }
