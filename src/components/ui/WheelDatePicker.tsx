@@ -6,9 +6,9 @@
 // optional/backfill semantics are preserved (empty stays empty until touched).
 //
 // Half-peek layout: one full-height selected row with the neighbours above and
-// below clipped to half, so the whole control stays compact (default 64px tall
-// for a 32px row). Snow design tokens + EN/ES month labels keep it on-brand and
-// bilingual everywhere it's dropped in.
+// below clipped to a thin sliver, so the whole control stays compact (default
+// ~48px tall for a 32px row at 25% peek). Snow design tokens + EN/ES month
+// labels keep it on-brand and bilingual everywhere it's dropped in.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -47,6 +47,7 @@ type WheelProps = {
   items: string[];
   index: number;
   rowHeight: number;
+  peek: number;
   committed: boolean;
   ariaLabel: string;
   elRef: React.MutableRefObject<HTMLDivElement | null>;
@@ -54,9 +55,8 @@ type WheelProps = {
   onSettle: () => void;
 };
 
-function Wheel({ items, index, rowHeight, committed, ariaLabel, elRef, onTouch, onSettle }: WheelProps) {
+function Wheel({ items, index, rowHeight, peek, committed, ariaLabel, elRef, onTouch, onSettle }: WheelProps) {
   const ROW = rowHeight;
-  const HALF = ROW / 2;
   const [active, setActive] = useState(index);
   const scrolling = useRef(false);
   const settleTimer = useRef<number | null>(null);
@@ -117,12 +117,12 @@ function Wheel({ items, index, rowHeight, committed, ariaLabel, elRef, onTouch, 
         el.scrollTo({ top: next * ROW, behavior: 'smooth' });
       }}
       style={{
-        flex: 1, minWidth: 0, height: ROW * 2, overflowY: 'scroll',
+        flex: 1, minWidth: 0, height: ROW + peek * 2, overflowY: 'scroll',
         scrollSnapType: 'y mandatory', scrollbarWidth: 'none', textAlign: 'center',
         position: 'relative', zIndex: 1, WebkitOverflowScrolling: 'touch', outline: 'none',
       }}
     >
-      <div aria-hidden style={{ height: HALF }} />
+      <div aria-hidden style={{ height: peek }} />
       {items.map((it, i) => {
         const on = i === active;
         return (
@@ -154,7 +154,7 @@ function Wheel({ items, index, rowHeight, committed, ariaLabel, elRef, onTouch, 
           </div>
         );
       })}
-      <div aria-hidden style={{ height: HALF }} />
+      <div aria-hidden style={{ height: peek }} />
     </div>
   );
 }
@@ -164,8 +164,10 @@ export type WheelDatePickerProps = {
   value: string;
   onChange: (value: string) => void;
   lang?: 'en' | 'es';
-  /** Selected-row height; total control height is 2× this (default 32 → 64px). */
+  /** Selected-row height in px (default 32). */
   rowHeight?: number;
+  /** Fraction of a row each neighbour peeks in (default 0.25 → ~48px total). */
+  peekFraction?: number;
   minYear?: number;
   maxYear?: number;
   /** Show the Month/Day/Year column headers above the wheels (default true). */
@@ -173,10 +175,11 @@ export type WheelDatePickerProps = {
 };
 
 export function WheelDatePicker({
-  value, onChange, lang = 'en', rowHeight = 32, minYear, maxYear, showHeaders = true,
+  value, onChange, lang = 'en', rowHeight = 32, peekFraction = 0.25, minYear, maxYear, showHeaders = true,
 }: WheelDatePickerProps) {
   useHideScrollbar();
   const ROW = rowHeight;
+  const peek = Math.max(1, Math.round(ROW * peekFraction));
   const es = lang === 'es';
   const MONTHS = es ? MONTHS_ES : MONTHS_EN;
 
@@ -245,14 +248,14 @@ export function WheelDatePicker({
         background: 'var(--snow-bg)', border: '1px solid var(--snow-rule)',
         borderRadius: 12, padding: '0 8px', overflow: 'hidden',
       }}>
-        <Wheel items={MONTHS} index={monthIndex} rowHeight={ROW} committed={committed}
+        <Wheel items={MONTHS} index={monthIndex} rowHeight={ROW} peek={peek} committed={committed}
           ariaLabel={headers[0]} elRef={monthEl} onTouch={onTouch} onSettle={commit} />
-        <Wheel items={dayItems} index={dayIndex} rowHeight={ROW} committed={committed}
+        <Wheel items={dayItems} index={dayIndex} rowHeight={ROW} peek={peek} committed={committed}
           ariaLabel={headers[1]} elRef={dayEl} onTouch={onTouch} onSettle={commit} />
-        <Wheel items={YEARS.map(String)} index={yearIndex} rowHeight={ROW} committed={committed}
+        <Wheel items={YEARS.map(String)} index={yearIndex} rowHeight={ROW} peek={peek} committed={committed}
           ariaLabel={headers[2]} elRef={yearEl} onTouch={onTouch} onSettle={commit} />
         <div aria-hidden style={{
-          position: 'absolute', left: 8, right: 8, top: ROW / 2, height: ROW,
+          position: 'absolute', left: 8, right: 8, top: peek, height: ROW,
           pointerEvents: 'none', borderRadius: 8,
           background: committed ? 'rgba(92,122,96,0.10)' : 'transparent',
           borderTop: '1px solid var(--snow-rule)', borderBottom: '1px solid var(--snow-rule)',
