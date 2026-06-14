@@ -2096,6 +2096,55 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
   }
 }
 
+/**
+ * feature/cua-feed-extract — the URL of the LAST recorded `goto` step (the
+ * anchor recipe-adapter derives a feed's source URL from). '' when none.
+ */
+export function lastRecordedGotoUrl(steps: RecipeStep[]): string {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i]!;
+    if (s.kind === 'goto') return s.url;
+  }
+  return '';
+}
+
+/**
+ * feature/cua-feed-extract — record the feed's REAL landing URL.
+ *
+ * The #1 onboarding blocker: a feed reached by CLICKING through menus recorded
+ * only `click_at` steps, never a `goto` for the page it landed on — so
+ * recipe-adapter derived the feed's source URL as the LAST goto (= the
+ * dashboard/postLoginUrl) and the dom_table extractor navigated to the
+ * dashboard, waited for a row selector that never appeared, and returned ZERO
+ * rows.
+ *
+ * Called at the TOP of each agent turn (the prior turn's navigation has
+ * settled, so `page.url()` is reliable). Whenever click-navigation has moved
+ * the page to a NEW url since the last recorded goto, we append a `goto` for
+ * it. Effects, by feed shape:
+ *   - menu-nav to a distinct URL → a trailing goto becomes the source URL, so
+ *     replay navigates STRAIGHT to the feed (the click steps fall BEFORE the
+ *     goto and recipe-adapter drops them — direct nav beats replaying clicks);
+ *   - nav-then-in-page-interaction (report page + a "Generate"/filter click
+ *     that keeps the URL) → the goto is recorded BEFORE that click, so the
+ *     click survives as a replayable pre-step after the source URL;
+ *   - SPA route swap (URL unchanged) → no goto; the click stays in the step
+ *     list and recipe-adapter carries it as a pre-step replayed at extraction.
+ *
+ * Compared on the audit-normalized URL so a cache-buster query can't
+ * masquerade as navigation while a semantic `?view=arrivals` still does. Pure +
+ * idempotent: a no-op when the URL is unchanged, unreadable, or unseeded.
+ */
+export function recordLandingGoto(steps: RecipeStep[], currentUrl: string): void {
+  if (currentUrl === '') return;
+  const lastGoto = lastRecordedGotoUrl(steps);
+  // recordedSteps always seeds a leading goto(postLoginUrl); defend anyway so a
+  // malformed step list never starts emitting bare gotos.
+  if (lastGoto === '') return;
+  if (normalizeUrlForAudit(currentUrl) === normalizeUrlForAudit(lastGoto)) return;
+  steps.push({ kind: 'goto', url: currentUrl });
+}
+
 async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | ActionMapFailure> {
   const cfg = getModeConfig(args.model);
   // Plan v7: per-target step + cost caps. Drill-down targets get fewer
@@ -2510,6 +2559,15 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         maxReturns: MAX_DASHBOARD_RETURNS,
       });
     }
+
+    // feature/cua-feed-extract — anchor the feed's real landing URL. Runs at the
+    // turn top (prior turn's click-navigation has settled) so a click-reached
+    // feed records a goto for the page it landed on, instead of leaving the
+    // recipe pointing at the dashboard. See recordLandingGoto for the per-shape
+    // behaviour (direct-nav URL vs. replayable pre-steps). Best-effort: an
+    // unreadable url is a no-op and the pre-step fallback in recipe-adapter
+    // still reaches the feed by replaying the recorded clicks.
+    recordLandingGoto(recordedSteps, safeUrl(args.page));
 
     const response = await anthropic.beta.messages.create({
       model: cfg.model,
@@ -5593,6 +5651,65 @@ const CANCELLATIONS_GOAL =
   `  - arrival_date (optional — the date they were due to arrive)\n` +
   `  - reason (optional — cancellation reason if shown)`;
 
+const ROOM_LAYOUT_GOAL =
+  `Find the ROOM LIST / ROOM CONFIGURATION — the master list of every physical ` +
+  `room in the hotel (NOT today's housekeeping status, NOT reservations). One ` +
+  `ROW per room, showing the room number and its fixed attributes (room type, ` +
+  `bed config, floor, max occupancy). Sometimes called "Rooms", "Room List", ` +
+  `"Room Setup", "Room Configuration", "Room Inventory", "Unit List", or "Room ` +
+  `Types & Rooms".\n\n` +
+  `Usually under "Setup", "Configuration", "Property", "Admin", or "Rooms" — ` +
+  `often 2-3 clicks deep in a settings menu. It is a STATIC list (it does not ` +
+  `change daily), so any page that enumerates all rooms with their types is the ` +
+  `answer; do NOT confuse it with the live housekeeping board.\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - room_number (required — the room's number/name, the unique id)\n` +
+  `  - room_type (optional — room type / class / category code)\n` +
+  `  - bed_config (optional — e.g. "1 King", "2 Queen")\n` +
+  `  - floor (optional)\n` +
+  `  - max_occupancy (optional — max guests, a number)`;
+
+const DASHBOARD_COUNTS_GOAL =
+  `Capture the LIVE "RIGHT NOW" OCCUPANCY COUNTERS shown on the home dashboard ` +
+  `— the summary numbers for how full the hotel is this moment: occupied rooms, ` +
+  `vacant clean / vacant dirty, out-of-order, arrivals still to come today, ` +
+  `departures still to come today.\n\n` +
+  `IMPORTANT — this feed is the EXCEPTION to the "a dashboard tile of totals is ` +
+  `not the feed" rule below: for THIS target the dashboard's summary counters ` +
+  `ARE exactly what we want. Do NOT drill into a per-room or per-reservation ` +
+  `list — stay on the home/dashboard page and read the counters there. These ` +
+  `are single NUMBERS (one value each), not a repeating table.\n\n` +
+  `Emit a "rowSelector" that matches the SINGLE container element wrapping the ` +
+  `counters (so it matches exactly one element), and put a selector to each ` +
+  `counter's number in "columns". Use these EXACT keys (include only the ones ` +
+  `actually shown):\n` +
+  `  - total_occupied_rooms (the count of rooms currently occupied)\n` +
+  `  - total_vacant_clean (optional)\n` +
+  `  - total_vacant_dirty (optional)\n` +
+  `  - total_ooo (optional — out-of-order rooms)\n` +
+  `  - arrivals_remaining_today (optional — arrivals not yet checked in)\n` +
+  `  - departures_remaining_today (optional — departures not yet checked out)\n` +
+  `  - total_guests_in_house (optional)`;
+
+const HISTORICAL_OCCUPANCY_GOAL =
+  `Find a HISTORICAL DAILY OCCUPANCY report — one ROW per PAST date showing how ` +
+  `full the hotel was that day (occupied rooms, occupancy %). Sometimes called ` +
+  `"Occupancy History", "Daily Occupancy", "Historical Statistics", "Manager's ` +
+  `Report" (history view), "Trend Report", or "Daily Operating Report" across a ` +
+  `date range.\n\n` +
+  `Usually under "Reports → Statistics", "Reports → Occupancy", or "Reports → ` +
+  `Manager". If you can pick a date range, choose RECENT PAST dates (the last ` +
+  `week or two). On smaller franchise-tier PMSes this may not exist — if so, ` +
+  `emit unavailable per the system prompt rules (after the evidence floor). Do ` +
+  `NOT confuse it with the FORWARD-looking forecast/pace report.\n\n` +
+  `Use these EXACT keys in your "columns" object:\n` +
+  `  - date (required — the business date this row is for)\n` +
+  `  - occupied_rooms (required — rooms sold that night)\n` +
+  `  - occupancy_pct (optional — percent occupied)\n` +
+  `  - available_rooms (optional — rooms available to sell)\n` +
+  `  - adr_cents (optional — Average Daily Rate, if shown)\n` +
+  `  - rooms_revenue_cents (optional — room revenue, if shown)`;
+
 // ─── TARGETS — the full Plan v7 mapper catalogue ──────────────────────────
 // Ordered by business priority. Top entries run first so that even on a
 // global-cap abort the partial recipe still contains the most valuable
@@ -5646,6 +5763,35 @@ TARGETS = [
     progressPct: 52,
   },
 
+  // feature/cua-feed-extract — two ACTIVE feeds that had write-routes
+  // (pms_in_house_snapshot / pms_rooms_inventory) but were never in TARGETS, so
+  // the learner never learned them. Optional so they never gate or regress the
+  // 4 core required feeds; placed in Tier 1 because both are live operational
+  // data. getDashboardCounts IS the in-house snapshot (no separate target).
+  {
+    key: 'getDashboardCounts',
+    goal: DASHBOARD_COUNTS_GOAL,
+    // pms_in_house_snapshot: property_id is the PK (writer-stamped) and the
+    // counts are all optional integers; total_occupied_rooms is the one we
+    // most need, so it's the prompt's required field.
+    requiredFields: ['total_occupied_rooms'],
+    classification: 'list_page',
+    optional: true,
+    progressLabel: 'Reading the live occupancy dashboard…',
+    progressPct: 53,
+  },
+  {
+    key: 'getRoomLayout',
+    goal: ROOM_LAYOUT_GOAL,
+    // pms_rooms_inventory natural key is (property_id, room_number); room_number
+    // is the one column the model must emit.
+    requiredFields: ['room_number'],
+    classification: 'report_menu',  // room setup is usually 2-3 clicks deep
+    optional: true,
+    progressLabel: 'Finding the room list / room types…',
+    progressPct: 54,
+  },
+
   // Tier 2 — business-critical net-new (revenue / rates / channels).
   // Auto-promotion needs ≥3 of these to clear the gate (plan v7).
   {
@@ -5656,6 +5802,19 @@ TARGETS = [
     optional: true,        // franchise tiers may not expose this
     progressLabel: 'Finding the daily revenue summary…',
     progressPct: 56,
+  },
+  {
+    // feature/cua-feed-extract — historical daily occupancy. Shares the
+    // pms_revenue_daily table with getRevenueDaily (upsert by property_id+date),
+    // but focuses on the OCCUPANCY columns and PAST dates. Optional — never
+    // gates promotion.
+    key: 'getHistoricalOccupancy',
+    goal: HISTORICAL_OCCUPANCY_GOAL,
+    requiredFields: ['date', 'occupied_rooms'],
+    classification: 'report_menu',
+    optional: true,
+    progressLabel: 'Finding historical daily occupancy…',
+    progressPct: 58,
   },
   {
     key: 'getRatesAndInventory',
@@ -5777,3 +5936,12 @@ TARGETS = [
     progressPct: 96,
   },
 ];
+
+/**
+ * feature/cua-feed-extract — test accessor for the ordered target keys the
+ * learner actually loops over (the `for (const target of TARGETS)` in mapPMS).
+ * Lets a unit test assert a net-new feed is genuinely enrolled, not just routed.
+ */
+export function targetKeysForTests(): Array<keyof Recipe['actions']> {
+  return TARGETS.map((t) => t.key);
+}

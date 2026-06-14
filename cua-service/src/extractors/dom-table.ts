@@ -15,7 +15,9 @@ import type { Page } from 'playwright';
 import { log } from '../log.js';
 import { safeGoto } from '../browser-utils/navigate.js';
 import { extractDomRows } from './dom-rows.js';
+import { parsePreSteps, replayPreSteps } from './pre-steps.js';
 import type { FeedSpec } from '../knowledge-file.js';
+import type { LearnedDateFormat } from '../types.js';
 
 export interface DomTableExtractOptions {
   page: Page;
@@ -59,6 +61,30 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
       });
     } catch (err) {
       return { ok: false, rows: [], reason: `navigate failed: ${(err as Error).message}` };
+    }
+  }
+
+  if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
+
+  // feature/cua-feed-extract — replay the in-page interaction flow the mapper
+  // recorded to reach this feed WITHOUT a url change (an SPA route swap, or an
+  // in-page "Generate"/filter click on a report page). recipe-adapter carries
+  // these on extra.preSteps; directly-navigable feeds have none. Mirrors the
+  // csv-download extractor's pre-step replay — same credential hygiene and
+  // stale-date {today} rendering. A malformed list or a failed replay fails the
+  // feed loudly rather than scraping a half-navigated page.
+  const parsedPre = parsePreSteps(feedSpec.extra?.preSteps);
+  if (!parsedPre.ok) {
+    return { ok: false, rows: [], reason: `invalid preSteps: ${parsedPre.reason}` };
+  }
+  if (parsedPre.steps.length > 0) {
+    const replay = await replayPreSteps(page, parsedPre.steps, {
+      signal,
+      learnedFormat: feedSpec.extra?.dateRender as LearnedDateFormat | undefined,
+      timezone: feedSpec.extra?.timezone as string | undefined,
+    });
+    if (!replay.ok) {
+      return { ok: false, rows: [], reason: replay.reason };
     }
   }
 
