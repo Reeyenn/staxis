@@ -79,6 +79,7 @@ import {
   parseIsoDate,
   parseTextualDate,
   numericDateInterpretations,
+  sameRegistrableDomain,
 } from './oracle-verify.js';
 import { inferDateFormat, sanitizeEnumMapping, mergeValueTranslation, pickDateFormat } from './value-learning.js';
 import type { LearnedValueTranslations, LearnedDateFormat } from './types.js';
@@ -88,6 +89,14 @@ import {
 } from './history-pruning.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
+// fix/cua-login-universal — how many times we let the agent re-claim
+// "logged in" while the universal confirmation gate (isLoginConfirmed) still
+// rejects it (credential form still up, or an MFA/one-time-code page). Past
+// this we stop the churn and surface a clean failure instead of burning the
+// whole login step budget. Kept small on purpose: the old behaviour retried a
+// brittle visible-dashboard-selector probe ~7× (full vision round-trip + 3s
+// timeout each), which is exactly the ~4-minute hang this change removes.
+const MAX_LOGIN_CONFIRM_RETRIES = 2;
 // Higher cap for per-action mapping — action 4 (staff) is buried in
 // admin menus on most PMSes and needs more exploration than login.
 const MAX_AGENT_STEPS_PER_ACTION = 80;
@@ -1085,6 +1094,52 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
 
 // ─── Login mapping ───────────────────────────────────────────────────────
 
+/**
+ * fix/cua-login-universal — the universal, PMS-neutral test for "the login
+ * actually completed", used to accept a model `{loggedIn:true}` claim.
+ *
+ * Deliberately does NOT require a visible dashboard CSS selector. Dashboards
+ * render in iframes / canvas / shadow DOM, and some PMS keep the post-login
+ * URL identical to the login-action URL — so probing a named selector's
+ * visibility is unreliable across families and caused a ~4-minute confirmation
+ * loop (full vision round-trip + 3s isVisible per wrong guess, retried ~7×).
+ *
+ * Instead we accept when ALL of:
+ *  - `onPmsDomain`        — still on the PMS registrable domain (off-domain =
+ *                           a failed/redirected nav; rejected separately with a
+ *                           distinct error). Reuses sameRegistrableDomain so
+ *                           ccTLDs (co.uk, com.au, …) bucket correctly.
+ *  - `credentialsSubmitted` — the agent actually typed the password this run.
+ *                           This is the positive corroborator that "no login
+ *                           form on screen" needs: without it, a pre-password
+ *                           screen (2-step username page, SSO chooser, splash)
+ *                           — which also has no password field — would
+ *                           false-accept. It's DOM-independent, so it holds for
+ *                           iframe / shadow-DOM / canvas logins too.
+ *  - `!loginFormVisible`  — the credential form is gone (no visible password
+ *                           input, shadow DOM included). A re-rendered login
+ *                           form means bad creds, not success.
+ *  - `!mfaChallengeVisible` — not sitting on a one-time-code / MFA interstitial
+ *                           (handled separately; never accepted as "logged in").
+ *
+ * Pure + exported so the truth table is unit-testable. Mirrors the runtime
+ * replay confirmation in session-driver.ts (URL-moved + form-detached + MFA
+ * re-check, with the success selector only a non-gating hint).
+ */
+export function isLoginConfirmed(signals: {
+  onPmsDomain: boolean;
+  credentialsSubmitted: boolean;
+  loginFormVisible: boolean;
+  mfaChallengeVisible: boolean;
+}): boolean {
+  return (
+    signals.onPmsDomain &&
+    signals.credentialsSubmitted &&
+    !signals.loginFormVisible &&
+    !signals.mfaChallengeVisible
+  );
+}
+
 interface LoginMapResult {
   ok: true;
   steps: LoginSteps;
@@ -1140,12 +1195,16 @@ async function mapLogin(
     `  password placeholder: "$password"\n\n`;
 
   const successCriteria =
-    `WHEN YOU'RE LOGGED IN (you see a dashboard with hotel-specific data: ` +
-    `room counts, today's date, guest names, navigation menu with ` +
-    `reports/front-desk/etc.), reply with JSON ONLY (no commentary):\n` +
-    `  {"loggedIn": true, "dashboardSelector": "<a CSS selector that's only ` +
-    `present after login, like '.dashboard' or '#mainNav' or 'a[href*=\\"reports\\"]'>"}\n` +
-    `Then stop.\n\n` +
+    `WHEN YOU'RE LOGGED IN — you've reached the main operational screen with ` +
+    `property-specific data and/or a primary navigation menu. Depending on the ` +
+    `PMS this may be a dashboard, a room rack, a reservations grid, an arrivals/` +
+    `departures list, or a report/home menu — anything past the login and any ` +
+    `welcome/property-picker screens, where the username/password fields are ` +
+    `gone. Reply with JSON ONLY (no commentary):\n` +
+    `  {"loggedIn": true, "dashboardSelector": "<a CSS selector for something ` +
+    `only present after login, e.g. a nav container or menu link>"}\n` +
+    `The selector is a best-effort hint, not a gate — if you can't name a good ` +
+    `one, still report {"loggedIn": true}. Then stop.\n\n` +
 
     `IF login fails permanently (wrong creds, account locked, PMS down), ` +
     `reply with {"error": "<short reason>"} and stop.`;
@@ -1161,10 +1220,13 @@ async function mapLogin(
     `6. Click the submit / log-in button.\n` +
     `7. Wait for the next page (use {action: "wait", duration: 2} if slow), ` +
     `then take a fresh screenshot.\n` +
-    `8. If you land on a property picker, click the FIRST property. If ` +
-    `you land on a "Welcome" splash (Choice Advantage), click "Continue" ` +
-    `or "Enter PMS" or the property name.\n` +
-    `9. Repeat screenshot + click as needed to reach the dashboard.\n\n` +
+    `8. If you land on an interstitial, splash, "welcome", or property-picker ` +
+    `screen — anything that isn't the main operational screen yet — continue ` +
+    `through it: select the property or click the primary "continue"/"enter"/` +
+    `proceed action (if it's a list with no obvious primary, pick the first ` +
+    `option) to reach the main operational screen.\n` +
+    `9. Repeat screenshot + click as needed to reach the main operational ` +
+    `screen.\n\n` +
     successCriteria;
 
   const messages: Anthropic.Messages.MessageParam[] = [
@@ -1194,6 +1256,17 @@ async function mapLogin(
   let pendingAuthCode: string | null = null;
   let suppressRecording = false;
   let mfaResolutions = 0;
+
+  // fix/cua-login-universal — login-confirmation state.
+  // credentialsSubmitted: flips true once the agent types the $password
+  //   placeholder. The positive corroborator isLoginConfirmed() needs so that
+  //   "no login form on screen" can't false-accept a pre-password page (2-step
+  //   username screen, SSO chooser, splash). DOM-independent, so it holds for
+  //   iframe / shadow-DOM / canvas logins where the form isn't queryable.
+  // loginConfirmRetries: counts rejected `{loggedIn:true}` claims so we cap the
+  //   re-confirm churn at MAX_LOGIN_CONFIRM_RETRIES instead of spinning.
+  let credentialsSubmitted = false;
+  let loginConfirmRetries = 0;
 
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS_LOGIN; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
@@ -1376,15 +1449,23 @@ async function mapLogin(
       const finalText = extractFinalText(responseContent);
       const parsed = tryParseJson(finalText) as { loggedIn?: unknown; dashboardSelector?: unknown; error?: unknown } | null;
       if (parsed && parsed.loggedIn) {
-        // Sanity check the URL we landed on. We've seen the agent declare
-        // "loggedIn: true" while sitting on chrome-error://chromewebdata
-        // after a navigation timed out; downstream actions then can't
-        // navigate back to anywhere useful. Reject and let the agent
-        // recover (or surface a real failure to the user).
+        // Sanity-check the page we landed on before trusting the claim. We've
+        // seen the agent declare "loggedIn: true" while sitting on
+        // chrome-error://chromewebdata after a nav timeout, on a re-rendered
+        // login form (bad creds), or on an MFA interstitial. The OLD gate
+        // required a *visible* dashboard CSS selector, which churned for ~4
+        // minutes on PMS whose dashboard lives in an iframe / keeps the URL on
+        // the login-action URL. Replace it with a universal, PMS-neutral gate
+        // (isLoginConfirmed): on-domain + credentials-actually-submitted +
+        // login-form-gone + not-MFA. The selector is now only a recorded hint.
         const currentUrl = page.url();
         const loginHost = (() => { try { return new URL(creds.loginUrl).host; } catch { return null; } })();
         const currentHost = (() => { try { return new URL(currentUrl).host; } catch { return null; } })();
-        const onPmsDomain = loginHost && currentHost && currentHost.split('.').slice(-2).join('.') === loginHost.split('.').slice(-2).join('.');
+        // sameRegistrableDomain handles multi-label ccTLDs (co.uk, com.au, …)
+        // that a naive last-two-labels compare would mis-bucket. KEEP the
+        // off-domain rejection — a post-login nav off the PMS domain (SSO bounce,
+        // error redirect) is a real failure, surfaced with its distinct message.
+        const onPmsDomain = Boolean(loginHost && currentHost && sameRegistrableDomain(currentHost, loginHost));
         if (!onPmsDomain) {
           log.warn('login claimed success but URL is off-domain', { currentUrl, loginUrl: creds.loginUrl });
           return {
@@ -1393,52 +1474,91 @@ async function mapLogin(
             detail: { phase: 'login_mapping', currentUrl, loginUrl: creds.loginUrl, reason: 'post_login_off_domain' },
           };
         }
-        // The on-domain check alone is weak evidence of login: a redirect
-        // back to the login page (or an interstitial) is still on-domain.
-        // Require a NON-TRIVIAL dashboard selector — 'body'/'html' match
-        // any page including the login form, so they're no evidence at all
-        // (C3) — AND assert it's actually visible before accepting. On
-        // failure, push a hint and let the agent keep working rather than
-        // recording a worthless 'body' success selector into the recipe.
-        const successSelector = typeof parsed.dashboardSelector === 'string' ? parsed.dashboardSelector : '';
-        const trivialSelector = successSelector === '' || successSelector === 'body' || successSelector === 'html';
-        let selectorVisible = false;
-        if (!trivialSelector) {
-          selectorVisible = await page
-            .locator(successSelector)
-            .first()
-            .isVisible({ timeout: 3000 })
-            .catch(() => false);
-        }
-        if (trivialSelector || !selectorVisible) {
-          log.warn('login claimed success but dashboard selector is missing/trivial/not visible', {
-            reason: 'dashboard_selector_not_found',
-            currentUrl, dashboardSelector: successSelector || null, trivialSelector, selectorVisible,
+
+        // Universal confirmation signals (PMS-neutral, no selector visibility).
+        const loginFormVisible = await loginFormPresent(page);
+        const mfaChallengeVisible = await detectMfaScreen(page);
+
+        if (isLoginConfirmed({ onPmsDomain, credentialsSubmitted, loginFormVisible, mfaChallengeVisible })) {
+          // Confirmed. Record the model's dashboardSelector as a NON-GATING
+          // hint (drop 'body'/'html'/'' — they match the login page too, so
+          // they're no evidence and pollute the recipe). We do NOT require it
+          // to be visible; a best-effort 1s probe (down from 3s) only enriches
+          // the log so selector quality stays observable. session-driver and
+          // recipe-runner treat successSelectors as a secondary hint and
+          // tolerate an empty list (they skip / filter it).
+          const successSelector = typeof parsed.dashboardSelector === 'string' ? parsed.dashboardSelector : '';
+          const trivialSelector = successSelector === '' || successSelector === 'body' || successSelector === 'html';
+          let selectorVisible = false;
+          if (!trivialSelector) {
+            selectorVisible = await page
+              .locator(successSelector)
+              .first()
+              .isVisible({ timeout: 1000 })
+              .catch(() => false);
+          }
+          log.info('login confirmed by universal gate', {
+            jobId: ctx.jobId ?? undefined, stepIdx, currentUrl,
+            dashboardSelector: trivialSelector ? null : successSelector,
+            selectorVisible, recorded: !trivialSelector,
           });
-          messages.push({
-            role: 'user',
-            content: [{
-              type: 'text',
-              text:
-                `That doesn't confirm you're logged in: ${trivialSelector
-                  ? `"${successSelector || '(none)'}" is too generic — 'body'/'html' match the login page too.`
-                  : `the selector "${successSelector}" is not visible on the current page.`} ` +
-                `Take a fresh screenshot. If you ARE on a dashboard with hotel-specific data, reply with ` +
-                `{"loggedIn": true, "dashboardSelector": "<a CSS selector that exists ONLY after login, e.g. '#mainNav' or 'a[href*=\\"reports\\"]'>"}. ` +
-                `If you're NOT logged in yet, keep working.`,
-            }],
-          });
-          continue;
+          return {
+            ok: true,
+            steps: {
+              startUrl: creds.loginUrl,
+              steps: recordedSteps,
+              successSelectors: trivialSelector ? [] : [successSelector],
+              timeoutMs: 30_000,
+            },
+          };
         }
-        return {
-          ok: true,
-          steps: {
-            startUrl: creds.loginUrl,
-            steps: recordedSteps,
-            successSelectors: [successSelector],
-            timeoutMs: 30_000,
-          },
-        };
+
+        // Not confirmed. Figure out why so the hint + the log are specific, and
+        // cap the re-confirm churn (the agent re-claiming "logged in" while the
+        // gate still rejects) instead of burning the whole step budget.
+        const rejectReason = !credentialsSubmitted
+          ? 'credentials_not_submitted'
+          : mfaChallengeVisible
+            ? 'mfa_screen'
+            : loginFormVisible
+              ? 'login_form_present'
+              : 'unconfirmed';
+        loginConfirmRetries += 1;
+        log.warn('login claim not confirmed by universal gate', {
+          jobId: ctx.jobId ?? undefined, stepIdx, reason: rejectReason,
+          currentUrl, credentialsSubmitted, loginFormVisible, mfaChallengeVisible,
+          attempt: loginConfirmRetries,
+        });
+        if (loginConfirmRetries > MAX_LOGIN_CONFIRM_RETRIES) {
+          return {
+            ok: false,
+            userMessage:
+              "We couldn't confirm the login finished. Please double-check your username, password, " +
+              'and login URL, or contact support.',
+            detail: {
+              phase: 'login_mapping', reason: 'login_unconfirmed',
+              rejectReason, currentUrl,
+            },
+          };
+        }
+        const hint =
+          rejectReason === 'mfa_screen'
+            ? "That looks like a one-time verification / security-code screen, not the logged-in app. Complete it, then continue."
+            : rejectReason === 'login_form_present'
+              ? "A username/password field is still on screen, so you're not logged in yet. Finish entering the credentials and submit, then continue."
+              : rejectReason === 'credentials_not_submitted'
+                ? "You haven't submitted the password yet — enter the username and password and submit before reporting success."
+                : "That doesn't look like the logged-in app yet. Wait for the page to finish loading, take a fresh screenshot, and keep going.";
+        messages.push({
+          role: 'user',
+          content: [{
+            type: 'text',
+            text:
+              `${hint} Once you've reached the main operational screen (and the login form is gone), ` +
+              `reply with {"loggedIn": true, "dashboardSelector": "<a selector only present after login, or omit if none>"}.`,
+          }],
+        });
+        continue;
       }
       // 2026-05-12 (Codex audit): scrub creds out of model text before
       // returning. If Claude ever echoes the username/password (or login
@@ -1475,6 +1595,18 @@ async function mapLogin(
       const exec = await executeVisionAction(page, toolUse.input as VisionAction, creds, 'login', {
         authCode: pendingAuthCode,
       });
+      // fix/cua-login-universal — note when the agent actually submitted the
+      // password. This is the positive corroborator isLoginConfirmed requires
+      // before "login form gone" can mean "logged in", so a premature loggedIn
+      // claim on a pre-password screen (2-step username page, SSO chooser,
+      // splash) can't slip through. Keyed on the executor's RECORDED step
+      // (value === '$password' whether the agent typed the placeholder or the
+      // raw secret) — NOT the raw model text — so a non-substituted
+      // "$password\n", or MFA '$auth_code' typing, can't flip it. DOM-
+      // independent → holds for iframe / shadow-DOM / canvas logins.
+      if (exec.recordedStep?.kind === 'type_text' && exec.recordedStep.value === '$password') {
+        credentialsSubmitted = true;
+      }
       if (exec.recordedStep && !suppressRecording) recordedSteps.push(exec.recordedStep);
       // feature/cua-live-view — tee the (already privacy-hardened)
       // screenshot to the Learning Board's live view. Fire-and-forget.
@@ -4948,45 +5080,139 @@ function makeToolResult(
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 /**
- * Detect a one-time-code / MFA login screen. Returns true when the page
- * shows a common OTP/MFA prompt (visible "verification code" / "one-time
- * code" / "two-factor" / "authentication code" text) OR a 6-digit code
- * input. Used in mapLogin to bail with a distinct `mfa_required` reason
- * instead of spinning until the step budget times out.
+ * Detect a one-time-code / MFA login screen. Used in mapLogin to (a) pause for
+ * a code via the 2FA flow instead of spinning, and (b) as a hard guard in the
+ * login-confirmation gate (isLoginConfirmed) — an MFA interstitial is never
+ * accepted as "logged in".
  *
- * Best-effort: any evaluate error returns false so the caller proceeds
- * exactly as it did before this check existed.
+ * fix/cua-login-universal — strengthened to stay reliable across 10+ PMS
+ * families and languages, because the looser confirmation gate now leans on
+ * it: an MFA page has no password field, so MFA detection is the main thing
+ * standing between "challenge screen" and a false "logged in". Three signals,
+ * all language-independent except the (best-effort) phrase list:
+ *   - VISIBLE input whose NAME/id/autocomplete matches otp|mfa|2fa|totp|
+ *     one-time|passcode (specific tokens that essentially never appear on a
+ *     normal logged-in page). Deliberately NOT "verification" — that would
+ *     false-match the hidden ASP.NET `__RequestVerificationToken` antiforgery
+ *     field present on every page of many PMS;
+ *   - autocomplete="one-time-code" (web standard), or a VISIBLE 6-digit numeric
+ *     input (the OTP norm; bare-length stays at 6 to avoid matching hotel
+ *     room-number / confirmation-number / PIN fields — 4/8-digit codes still
+ *     match via the name or autocomplete branch);
+ *   - common code-screen phrases in several languages (innerText is inherently
+ *     visible text, so hidden tokens don't leak in here either).
+ * Shadow-DOM piercing + frame-aware (some PMS render the challenge in an
+ * iframe), and HIDDEN inputs are ignored so antiforgery/CSRF tokens can't
+ * masquerade as a code field.
+ *
+ * Best-effort: any evaluate error returns false so the caller proceeds exactly
+ * as it did before this check existed.
  */
 async function detectMfaScreen(page: Page): Promise<boolean> {
-  try {
-    return await page.evaluate(() => {
-      const text = (document.body?.innerText ?? '').toLowerCase();
-      const phrases = [
-        'verification code',
-        'one-time code',
-        'one time code',
-        'one-time passcode',
-        'two-factor',
-        'two factor',
-        'authentication code',
-        'security code',
-        'enter the code',
-      ];
-      if (phrases.some((p) => text.includes(p))) return true;
-      // A dedicated 6-digit code input is a strong MFA signal even when the
-      // surrounding copy is unusual. Match maxlength=6 numeric/otp inputs or
-      // a one-time-code autocomplete hint.
-      const inputs = Array.from(document.querySelectorAll('input'));
-      return inputs.some((el) => {
-        const input = el as HTMLInputElement;
-        const maxLen = input.getAttribute('maxlength');
-        const inputMode = (input.getAttribute('inputmode') ?? '').toLowerCase();
-        const autocomplete = (input.getAttribute('autocomplete') ?? '').toLowerCase();
-        if (autocomplete.includes('one-time-code')) return true;
-        if (maxLen === '6' && (input.type === 'tel' || input.type === 'number' || inputMode === 'numeric')) return true;
-        return false;
+  return anyFrameMatches(page, () => {
+    const text = (document.body?.innerText ?? '').toLowerCase();
+    const phrases = [
+      // English
+      'verification code', 'one-time code', 'one time code', 'one-time passcode',
+      'two-factor', 'two factor', 'multi-factor', 'authentication code',
+      'security code', 'enter the code',
+      // Common localizations (language ≠ PMS-specific) — keep the universal
+      // path working for non-English PMS.
+      'código de verificación', 'código de seguridad', // ES
+      'code de vérification', 'code de sécurité',       // FR
+      'verifizierungscode', 'sicherheitscode', 'bestätigungscode', // DE
+      'código de verificação',                          // PT
+      'codice di verifica', 'codice di sicurezza',      // IT
+      'verificatiecode',                                // NL
+    ];
+    if (phrases.some((p) => text.includes(p))) return true;
+    // Collect inputs across the light DOM AND open shadow roots.
+    const inputs: HTMLInputElement[] = [];
+    const walk = (root: ParentNode) => {
+      root.querySelectorAll('*').forEach((el) => {
+        if (el instanceof HTMLInputElement) inputs.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
       });
+    };
+    walk(document);
+    const visible = (el: HTMLElement): boolean => {
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const codeNameRe = /otp|mfa|2fa|totp|one[-_]?time|passcode/i;
+    return inputs.some((input) => {
+      // Ignore hidden inputs — antiforgery tokens (__RequestVerificationToken),
+      // CSRF fields, etc. are never the visible code box the user types into.
+      if (!visible(input)) return false;
+      const nameBlob =
+        (input.getAttribute('name') ?? '') + ' ' + input.id + ' ' +
+        (input.getAttribute('autocomplete') ?? '');
+      const autocomplete = (input.getAttribute('autocomplete') ?? '').toLowerCase();
+      const maxLen = input.getAttribute('maxlength');
+      const inputMode = (input.getAttribute('inputmode') ?? '').toLowerCase();
+      const numeric = input.type === 'tel' || input.type === 'number' || inputMode === 'numeric';
+      if (autocomplete.includes('one-time-code')) return true;
+      if (codeNameRe.test(nameBlob)) return true;
+      if (maxLen === '6' && numeric) return true;
+      return false;
     });
+  });
+}
+
+/**
+ * fix/cua-login-universal — is a live credential-entry form on screen? Used by
+ * the login-confirmation gate to reject a premature "logged in" claim that's
+ * actually still sitting on the login (or a re-rendered/re-auth) page.
+ *
+ * Universal signal: a VISIBLE password input. It's the one cross-PMS marker of
+ * a credential form with a low false-positive rate (a generic text input is
+ * indistinguishable from a search box). Pierces open shadow roots and scans all
+ * accessible frames so web-component and iframe-hosted logins are seen.
+ * Best-effort — any evaluate error returns false so confirmation proceeds (the
+ * credentials-submitted corroborator and the MFA guard still apply). Known
+ * limitation: a login form inside a CROSS-origin iframe can't be read; the
+ * credentials-submitted gate still prevents accepting before the agent types
+ * the password.
+ */
+async function loginFormPresent(page: Page): Promise<boolean> {
+  return anyFrameMatches(page, () => {
+    const inputs: HTMLInputElement[] = [];
+    const walk = (root: ParentNode) => {
+      root.querySelectorAll('*').forEach((el) => {
+        if (el instanceof HTMLInputElement) inputs.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      });
+    };
+    walk(document);
+    const visible = (el: HTMLElement): boolean => {
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    // `.type` is the IDL property — always normalized lowercase, so this is
+    // case-robust without an attribute-selector `i` flag.
+    return inputs.some((el) => el.type === 'password' && visible(el));
+  });
+}
+
+/**
+ * fix/cua-login-universal — run a DOM predicate in EVERY accessible frame (the
+ * top document + same-origin child frames) and return true if any frame yields
+ * true. Cross-origin frames throw on evaluate and are skipped. Best-effort: a
+ * total failure returns false so callers proceed exactly as before. Frame-aware
+ * because some PMS render the login form OR the post-login app inside an iframe,
+ * and a top-document-only probe would miss a re-rendered login / MFA challenge
+ * there and false-accept.
+ */
+async function anyFrameMatches(page: Page, predicate: () => boolean): Promise<boolean> {
+  try {
+    const results = await Promise.all(
+      page.frames().map((frame) => frame.evaluate(predicate).catch(() => false)),
+    );
+    return results.some(Boolean);
   } catch {
     return false;
   }
