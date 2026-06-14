@@ -55,7 +55,7 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
-  deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, type FeedRow,
+  deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, prettifyTargetKey, type FeedRow,
 } from '@/lib/pms/learning-board';
 import {
   ArrowLeft, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight,
@@ -130,6 +130,39 @@ interface LiveFrameState {
   updatedAt: string | null;
 }
 
+/** feature/cua-live-assist — the open founder-takeover session for this job
+ *  (from GET /api/admin/mapper/live/[jobId]). */
+interface TakeoverState {
+  id: string;
+  status: 'requested' | 'active' | 'ended';
+  target_key: string | null;
+  frame_seq: number;
+  viewport_w: number;
+  viewport_h: number;
+  command_seq: number;
+  applied_command_seq: number;
+  started_at: string | null;
+  /** Signed URL for the click-target frame ({jobId}/takeover.png); null until
+   *  the robot has published one. */
+  frameUrl: string | null;
+}
+
+/** The takeover click-target frame currently PAINTED, stamped with the
+ *  frame_seq it was loaded at — the "Send click" gate compares this against
+ *  the live row's frame_seq so a click can't be sent against a stale image. */
+interface TakeoverFrame { url: string; frameSeq: number; }
+
+/** feature/cua-live-assist — draft-map summary for Save & Finish / Discard. */
+interface DraftMap {
+  id: string;
+  version: number;
+  status: string;
+  pmsFamily: string;
+  actionsFound: number;
+  missingRequired: string[];
+  missingBusinessCritical: string[];
+}
+
 const GLYPH_META: Record<FeedRow['glyph'], { tone: PillTone; label: string }> = {
   found:        { tone: 'forest',     label: 'Found' },
   searching:    { tone: 'gold',       label: 'Searching…' },
@@ -187,6 +220,16 @@ export default function LiveMappingPage() {
   const [liveFrame, setLiveFrame] = useState<LiveFrameState | null>(null);
   // Re-render tick so the "Xs ago" freshness label stays honest.
   const [frameTick, setFrameTick] = useState(0);
+  // feature/cua-live-assist — founder takeover + save/discard.
+  const [takeover, setTakeover] = useState<TakeoverState | null>(null);
+  const [takeoverFrame, setTakeoverFrame] = useState<TakeoverFrame | null>(null);
+  const [takeoverMarker, setTakeoverMarker] = useState<ClickMarker | null>(null);
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
+  const [draftMap, setDraftMap] = useState<DraftMap | null>(null);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'discarding' | 'discarded'>('idle');
+  // Guards the takeover-frame preload (latest-wins; never commit an older seq).
+  const takeoverFrameSeqRef = useRef(0);
+  const takeoverFrameBusyRef = useRef(false);
 
   const activityRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -199,6 +242,36 @@ export default function LiveMappingPage() {
   // so a slow in-flight frame fetch can never commit another job's screen
   // — or set state after unmount.
   const frameGenRef = useRef(0);
+
+  // feature/cua-live-assist — preload the takeover click-target frame, then
+  // commit it only when its frame_seq advances (latest-wins). The "Send click"
+  // gate compares the PAINTED frame's seq to the live row's, so committing on
+  // load (not on every signed-URL rotation) keeps the founder clicking a frame
+  // the robot still considers current. Clears the marker on a new frame.
+  const preloadTakeoverFrame = async (t: TakeoverState) => {
+    if (!t.frameUrl || t.frame_seq <= takeoverFrameSeqRef.current) return;
+    if (takeoverFrameBusyRef.current) return;
+    takeoverFrameBusyRef.current = true;
+    const seq = t.frame_seq;
+    const url = t.frameUrl;
+    try {
+      await new Promise<void>((resolve) => {
+        const img = new window.Image();
+        img.onload = () => {
+          if (seq > takeoverFrameSeqRef.current) {
+            takeoverFrameSeqRef.current = seq;
+            setTakeoverFrame({ url, frameSeq: seq });
+            setTakeoverMarker(null);
+          }
+          resolve();
+        };
+        img.onerror = () => resolve();
+        img.src = url;
+      });
+    } finally {
+      takeoverFrameBusyRef.current = false;
+    }
+  };
 
   // Initial fetch of state.
   const load = async () => {
@@ -225,6 +298,16 @@ export default function LiveMappingPage() {
           return next;
         });
         setRecentHelp(json.data.recentHelpRequests);
+        // feature/cua-live-assist — takeover session + draft-map summary.
+        const t = (json.data.takeover ?? null) as TakeoverState | null;
+        setTakeover(t);
+        setDraftMap((json.data.draftMap ?? null) as DraftMap | null);
+        if (!t || t.status === 'ended') {
+          takeoverFrameSeqRef.current = 0;
+          setTakeoverFrame(null);
+        } else {
+          void preloadTakeoverFrame(t);
+        }
         setError(null);
       } else {
         setError(json.error ?? 'Failed to load mapping job');
@@ -412,6 +495,18 @@ export default function LiveMappingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, job?.status]);
 
+  // feature/cua-live-assist — fast poll WHILE a takeover is open. Takeover is
+  // turn-based (the founder clicks, the robot acts ~2-3s, publishes a fresh
+  // frame); a 2.5s poll keeps the click-target frame + ack state snappy even if
+  // a `takeover` broadcast drops. Only runs during the (rare) open takeover.
+  useEffect(() => {
+    if (!jobId || !takeover || takeover.status === 'ended') return;
+    if (isTerminalJobStatus(job?.status)) return; // dead job → don't poll a dangling row
+    const t = setInterval(() => { void load(); }, 2_500);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, takeover?.status, takeover?.id, job?.status]);
+
   // feature/cua-live-view — keep the "Xs ago" freshness label honest while
   // a frame is showing. Re-render only; no fetching. Deps deliberately use
   // job?.status (not the job object, whose identity changes every load()).
@@ -498,6 +593,97 @@ export default function LiveMappingPage() {
     setMarker({ x, y, leftPct: relX * 100, topPct: relY * 100 });
   };
 
+  // feature/cua-live-assist — founder takeover handlers.
+  const onTakeoverFrameClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!takeover) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const vw = takeover.viewport_w ?? 1280;
+    const vh = takeover.viewport_h ?? 800;
+    const relX = (e.clientX - rect.left) / rect.width;
+    const relY = (e.clientY - rect.top) / rect.height;
+    const x = Math.min(vw - 1, Math.max(0, Math.round(relX * vw)));
+    const y = Math.min(vh - 1, Math.max(0, Math.round(relY * vh)));
+    setTakeoverMarker({ x, y, leftPct: relX * 100, topPct: relY * 100 });
+  };
+
+  // intent='start' → pause the robot and drive; intent='skip' → abandon a feed
+  // without taking over (targetKey scopes it so a stale skip can't eat the next).
+  const startTakeover = async (intent: 'start' | 'skip', targetKey?: string) => {
+    setTakeoverBusy(true);
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/takeover', {
+        method: 'POST',
+        body: JSON.stringify({ jobId, intent, ...(targetKey ? { targetKey } : {}) }),
+      });
+      const json = await res.json();
+      if (!json.ok) alert(`Failed: ${json.error ?? 'unknown'}`);
+      else if (json.data?.accepted === false && json.data?.reason === 'run_finished') {
+        alert('This run already finished.');
+      }
+      void load();
+    } catch (err) {
+      alert(`Failed: ${(err as Error).message}`);
+    } finally {
+      setTakeoverBusy(false);
+    }
+  };
+
+  const sendTakeoverCommand = async (
+    command: 'click' | 'finish' | 'cancel',
+    coordinate?: { x: number; y: number },
+    frameSeq?: number,
+  ) => {
+    setTakeoverBusy(true);
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/takeover-command', {
+        method: 'POST',
+        body: JSON.stringify({
+          jobId, command,
+          ...(coordinate ? { coordinate } : {}),
+          ...(typeof frameSeq === 'number' ? { frameSeq } : {}),
+        }),
+      });
+      const json = await res.json();
+      if (!json.ok) alert(`Failed: ${json.error ?? 'unknown'}`);
+      // Clear the marker on ANY click attempt (accepted or not): a rejected
+      // click's marker sits on a now-stale frame and must not be re-sendable.
+      if (command === 'click') setTakeoverMarker(null);
+      void load();
+    } catch (err) {
+      alert(`Failed: ${(err as Error).message}`);
+    } finally {
+      setTakeoverBusy(false);
+    }
+  };
+
+  const saveMap = async () => {
+    setSaveState('saving');
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/save-map', { method: 'POST', body: JSON.stringify({ jobId }) });
+      const json = await res.json();
+      if (!json.ok) { alert(`Couldn’t make it live: ${json.error ?? 'unknown'}`); setSaveState('idle'); return; }
+      setSaveState('saved');
+      void load();
+    } catch (err) {
+      alert(`Couldn’t make it live: ${(err as Error).message}`); setSaveState('idle');
+    }
+  };
+
+  const discardMap = async () => {
+    if (!confirm('Throw this learned map away? It will NOT go live, and a future run starts learning from scratch.')) return;
+    setSaveState('discarding');
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/discard-map', { method: 'POST', body: JSON.stringify({ jobId }) });
+      const json = await res.json();
+      if (!json.ok) { alert(`Couldn’t discard: ${json.error ?? 'unknown'}`); setSaveState('idle'); return; }
+      setSaveState('discarded');
+      void load();
+    } catch (err) {
+      alert(`Couldn’t discard: ${(err as Error).message}`); setSaveState('idle');
+    }
+  };
+
   const toggleFeed = (key: string) => {
     setExpandedFeeds((prev) => {
       const next = new Set(prev);
@@ -522,6 +708,29 @@ export default function LiveMappingPage() {
     pendingHelp && feedRows.some((r) => r.key === pendingHelp.target_key && r.glyph === 'found'),
   );
   const jobTerminal = isTerminalJobStatus(job?.status);
+
+  // feature/cua-live-assist — takeover derived state.
+  const takeoverActive = takeover?.status === 'active';
+  const takeoverPending = takeover?.status === 'requested';
+  // Robot has acked the last command (idle, ready for the next click).
+  const robotIdle = !!takeover && takeover.applied_command_seq === takeover.command_seq;
+  // The painted click-target frame matches the row the robot is on now.
+  const takeoverFrameFresh = !!takeover && !!takeoverFrame && takeoverFrame.frameSeq === takeover.frame_seq;
+  // "Send this click" is allowed only mid-turn-gap, against a current frame.
+  const canSendClick = takeoverActive && robotIdle && takeoverFrameFresh && !takeoverBusy && !!takeoverMarker;
+  // Drill-down feeds (getGuests etc.) run through mapDrillDownAction, which has
+  // no takeover gate in v1 — so Take over / Skip are not offered for them (the
+  // robot would never pick the request up, leaving the board stuck "Pausing…").
+  const drilldownKeys = useMemo(() => {
+    const catalog = (job?.result?.targetCatalog ?? []) as Array<{ key?: string; classification?: string }>;
+    return new Set(catalog.filter((d) => d.classification === 'drilldown_sample').map((d) => d.key));
+  }, [job]);
+  const searchingTakeoverable = !!searchingRow && !drilldownKeys.has(searchingRow.key);
+  // Offer "Take over" only when a takeover-able feed is actively searching
+  // (never a dead button during login / between feeds) and nothing else owns
+  // the screen.
+  const canStartTakeover = job?.status === 'running' && searchingTakeoverable && !takeover &&
+    (!pendingHelp || pendingIsStale);
 
   // feature/cua-live-view — frame age in seconds (clamped at 0 to absorb
   // small client/storage clock skew); null when unknown. frameTick keeps
@@ -649,6 +858,53 @@ export default function LiveMappingPage() {
               </DarkCard>
             )}
 
+            {/* feature/cua-live-assist — Save & Finish / Discard & Cancel when
+                the run is done. No nag gate: the founder sees exactly what was
+                learned (count + what's missing) and decides. */}
+            {jobTerminal && draftMap && (
+              <DarkCard style={{
+                padding: '20px 24px', marginBottom: 16,
+                border: `2px solid ${draftMap.status === 'active' || saveState === 'saved' ? 'var(--forest)' : dimWhite(.18)}`,
+              }}>
+                <Caps c={dimWhite(.5)}>This run is done — your call</Caps>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', margin: '6px 0 10px' }}>
+                  <span style={{ fontFamily: FONT_SERIF, fontSize: 20, fontStyle: 'italic', color: '#fff' }}>
+                    {draftMap.actionsFound} {draftMap.actionsFound === 1 ? 'feed' : 'feeds'} learned
+                  </span>
+                  {draftMap.status === 'active' || saveState === 'saved'
+                    ? <Pill tone="forest"><CheckCircle2 size={11} /> Live now</Pill>
+                    : <Pill tone="neutral">version {draftMap.version} · {draftMap.status}</Pill>}
+                </div>
+                {(draftMap.missingRequired.length > 0 || draftMap.missingBusinessCritical.length > 0) && (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.6), marginBottom: 12 }}>
+                    Not captured: {[...draftMap.missingRequired, ...draftMap.missingBusinessCritical].map((t) => prettifyTargetKey(t)).join(', ')}
+                  </div>
+                )}
+                {draftMap.status === 'active' || saveState === 'saved' ? (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: 'var(--forest)' }}>
+                    <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                    It&rsquo;s live — this hotel&rsquo;s robot is starting to use it. It shows in the PMS coverage list.
+                  </div>
+                ) : saveState === 'discarded' ? (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.6) }}>
+                    Thrown away. A future run starts learning from scratch.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <Btn variant="forest" onClick={() => void saveMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
+                      <CheckCircle2 size={13} /> {saveState === 'saving' ? 'Making it live…' : 'Save & Finish — make this live'}
+                    </Btn>
+                    <Btn variant="terracotta" onClick={() => void discardMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
+                      {saveState === 'discarding' ? 'Discarding…' : 'Discard & Cancel'}
+                    </Btn>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                      Save makes this the hotel&rsquo;s live PMS recipe. Discard throws it away.
+                    </span>
+                  </div>
+                )}
+              </DarkCard>
+            )}
+
             {/* Per-feed board */}
             {job && feedRows.length > 0 && (
               <DarkCard style={{ padding: '10px 24px 14px', marginBottom: 16 }}>
@@ -697,6 +953,20 @@ export default function LiveMappingPage() {
                           <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.45) }} title="Carried over from an earlier attempt or from the existing recipe (repair run)">carried</span>
                         )}
                         <Pill tone={meta.tone}>{meta.label}</Pill>
+                        {/* feature/cua-live-assist — skip this feed without
+                            taking over (usable while it's searching; not for
+                            drill-down feeds, which have no takeover gate). */}
+                        {row.glyph === 'searching' && !jobTerminal && !takeover && !drilldownKeys.has(row.key) && (
+                          <Btn
+                            variant="ghost" size="sm"
+                            onClick={() => void startTakeover('skip', row.key)}
+                            disabled={takeoverBusy}
+                            title="Stop working this feed and move to the next one"
+                            style={{ color: dimWhite(.7), borderColor: dimWhite(.18) }}
+                          >
+                            Skip
+                          </Btn>
+                        )}
                         {expandable && (expanded
                           ? <ChevronDown size={14} color={dimWhite(.45)} />
                           : <ChevronRight size={14} color={dimWhite(.45)} />)}
@@ -882,13 +1152,102 @@ export default function LiveMappingPage() {
               </DarkCard>
             )}
 
+            {/* feature/cua-live-assist — founder takeover panel: the robot is
+                paused and you drive it click-by-click. Owns the screen while a
+                takeover is open (the ambient live card is hidden below). Hidden
+                once the job is terminal — a hard worker crash can leave a
+                dangling 'active' row, and a finished run has no robot to drive. */}
+            {takeover && takeover.status !== 'ended' && !jobTerminal && (
+              <DarkCard style={{ padding: '20px 24px', marginBottom: 16, border: '2px solid var(--forest)' }}>
+                <Caps c="var(--forest)">You&rsquo;re driving — point and click</Caps>
+                <h2 style={{ fontFamily: FONT_SERIF, fontSize: 20, fontWeight: 400, fontStyle: 'italic', margin: '4px 0 10px', color: '#fff' }}>
+                  {feedRows.find((r) => r.key === takeover.target_key)?.label ??
+                    (takeover.target_key ? prettifyTargetKey(takeover.target_key) : 'this feed')}
+                </h2>
+                {takeoverPending ? (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.7), display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Loader2 size={14} style={{ animation: 'spin 1.2s linear infinite' }} />
+                    Pausing the robot — it finishes its current step, then hands you the wheel…
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <MousePointerClick size={14} color="var(--forest)" />
+                      <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
+                        Click where the robot should click. It does it, then shows you the new screen.
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                        (passwords and payment details are blacked out automatically)
+                      </span>
+                    </div>
+                    {takeoverFrame ? (
+                      <div style={{
+                        position: 'relative', display: 'inline-block', width: '100%', maxWidth: 980,
+                        border: `1px solid ${dimWhite(.14)}`, borderRadius: 8, overflow: 'hidden', lineHeight: 0,
+                      }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={takeoverFrame.url}
+                          alt="The robot's current screen — click where it should click (sensitive fields redacted)"
+                          onClick={onTakeoverFrameClick}
+                          style={{ width: '100%', height: 'auto', display: 'block', cursor: (robotIdle && takeoverFrameFresh) ? 'crosshair' : 'wait' }}
+                        />
+                        {takeoverMarker && (
+                          <div style={{
+                            position: 'absolute', left: `${takeoverMarker.leftPct}%`, top: `${takeoverMarker.topPct}%`,
+                            transform: 'translate(-50%, -50%)', pointerEvents: 'none', width: 22, height: 22, borderRadius: '50%',
+                            border: '3px solid var(--forest)', background: 'rgba(60,156,104,0.3)', boxShadow: '0 0 0 3px rgba(255,255,255,0.85)',
+                          }} />
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5), padding: '10px 0' }}>
+                        Waiting for the robot&rsquo;s screen…
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+                      <Btn
+                        variant="forest"
+                        onClick={() => takeoverMarker && void sendTakeoverCommand('click', { x: takeoverMarker.x, y: takeoverMarker.y }, takeoverFrame?.frameSeq)}
+                        disabled={!canSendClick}
+                      >
+                        <MousePointerClick size={13} /> Send this click
+                      </Btn>
+                      {!robotIdle
+                        ? <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: 'var(--gold)' }}><Loader2 size={11} style={{ animation: 'spin 1.2s linear infinite', verticalAlign: 'middle', marginRight: 4 }} />robot is clicking…</span>
+                        : !takeoverFrameFresh
+                          ? <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.5) }}>loading the latest screen…</span>
+                          : takeoverMarker
+                            ? <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.66) }}>will click at ({takeoverMarker.x}, {takeoverMarker.y})</span>
+                            : <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.5) }}>click the screen first</span>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                      {/* Finish/Cancel only when the painted frame is current
+                          (robotIdle + fresh) — never decide against a stale view. */}
+                      <Btn variant="forest" onClick={() => void sendTakeoverCommand('finish')} disabled={takeoverBusy || !robotIdle || !takeoverFrameFresh}>
+                        <CheckCircle2 size={13} /> Finish — this is the page
+                      </Btn>
+                      <Btn variant="terracotta" onClick={() => void sendTakeoverCommand('cancel')} disabled={takeoverBusy || !robotIdle || !takeoverFrameFresh}>
+                        <XCircle size={13} /> Couldn&rsquo;t find it
+                      </Btn>
+                    </div>
+                    <p style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5), marginTop: 8, lineHeight: 1.5 }}>
+                      <strong>Finish</strong> tells the robot this is the right page — it reads the columns and saves this feed.
+                      <strong> Couldn&rsquo;t find it</strong> marks the feed not-found and moves on.
+                    </p>
+                  </>
+                )}
+              </DarkCard>
+            )}
+
             {/* feature/cua-live-view — the robot's screen, continuously.
                 Subsumes the old "working on its own" placeholder card.
                 Hidden while an ACTIONABLE help request is open: the help
                 panel above already shows the robot's (frozen) screen, and
                 stacking two near-identical screenshots would be confusing.
-                NOT clickable — click-to-teach stays on the help panel. */}
-            {(!pendingHelp || pendingIsStale) && job?.status === 'running' && (
+                NOT clickable — click-to-teach stays on the help panel.
+                Hidden during a takeover — the takeover panel owns the screen. */}
+            {(!pendingHelp || pendingIsStale) && job?.status === 'running' && !takeover && (
               <DarkCard style={{ padding: '16px 20px', marginBottom: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <Caps c={dimWhite(.5)}>Robot&rsquo;s screen</Caps>
@@ -904,6 +1263,13 @@ export default function LiveMappingPage() {
                     <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>
                       updated {frameAgeLabel}
                     </span>
+                  )}
+                  {/* feature/cua-live-assist — pause the robot and drive it
+                      yourself (only while a feed is actively searching). */}
+                  {canStartTakeover && (
+                    <Btn variant="forest" size="sm" onClick={() => void startTakeover('start', searchingRow?.key)} disabled={takeoverBusy} style={{ marginLeft: 'auto' }}>
+                      <MousePointerClick size={13} /> Take over
+                    </Btn>
                   )}
                 </div>
                 {liveFrame ? (

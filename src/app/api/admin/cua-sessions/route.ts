@@ -231,12 +231,15 @@ export async function GET(req: NextRequest) {
   const enriched = sessions.map((s) => {
     // Rows are newest-first, so find() = most recent.
     const active = activeJobs.find((j) => jobMatchesSession(j, s));
-    // "Last run" link only matters when the hotel is parked waiting on a
-    // knowledge file and nothing is running — Reeyen can open the finished
-    // board to see what was found / what failed.
-    const last = !active && s.status === 'paused_no_knowledge_file'
-      ? terminalJobs.find((j) => jobMatchesSession(j, s))
-      : undefined;
+    // feature/cua-live-assist — findability fix: a finished learning run must
+    // be reopenable for ANY session, not only paused_no_knowledge_file ones.
+    // Previously, once a session went alive/stopped/failed the link vanished
+    // and the board was reachable only by hand-typing the URL. terminalJobs is
+    // already fetched (newest-first, capped); surface the most-recent matching
+    // terminal run whenever nothing is actively running, plus up to 5 recent
+    // runs for a "past runs" list.
+    const matchingTerminal = terminalJobs.filter((j) => jobMatchesSession(j, s)); // newest-first
+    const last = !active ? matchingTerminal[0] : undefined;
     return {
       ...s,
       display_name: displayNames.get(s.property_id) ?? s.property_id,
@@ -247,6 +250,8 @@ export async function GET(req: NextRequest) {
       last_mapper_job: last
         ? ({ id: last.id, status: last.status, created_at: last.created_at } satisfies MapperJobSummary)
         : null,
+      recent_mapper_jobs: matchingTerminal.slice(0, 5).map((j) =>
+        ({ id: j.id, status: j.status, created_at: j.created_at } satisfies MapperJobSummary)),
       backfill: backfillByFamily.get(s.pms_family) ?? null,
     };
   });

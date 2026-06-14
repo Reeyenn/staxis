@@ -44,7 +44,7 @@ export async function GET(
     return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });
   }
 
-  const [jobRes, pendingRes, recentRes] = await Promise.all([
+  const [jobRes, pendingRes, recentRes, takeoverRes] = await Promise.all([
     supabaseAdmin
       .from('workflow_jobs')
       .select('id, property_id, kind, status, attempts, max_attempts, payload, created_at, started_at, completed_at, error, result, claude_cost_micros')
@@ -62,6 +62,15 @@ export async function GET(
       .eq('job_id', jobId)
       .order('created_at', { ascending: false })
       .limit(5),
+    // feature/cua-live-assist — the open founder-takeover session (if any).
+    supabaseAdmin
+      .from('mapper_takeover_sessions')
+      .select('id, status, target_key, frame_seq, viewport_w, viewport_h, command_seq, applied_command_seq, started_at')
+      .eq('job_id', jobId)
+      .in('status', ['requested', 'active'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   if (jobRes.error) {
@@ -107,10 +116,66 @@ export async function GET(
     }
   }
 
+  // feature/cua-live-assist — takeover session + a signed URL for the
+  // click-target frame (its OWN object {jobId}/takeover.png, published awaited
+  // by the worker — NOT the heartbeat-gated ambient live.png). Only mint once
+  // a frame exists (frame_seq > 0); the board preloads so a transient miss
+  // keeps the prior frame.
+  let takeover: Record<string, unknown> | null = takeoverRes.data ?? null;
+  if (takeover && typeof takeover.frame_seq === 'number' && takeover.frame_seq > 0) {
+    const { data: signed, error: signErr } = await supabaseAdmin.storage
+      .from('mapping-screenshots')
+      .createSignedUrl(`${jobId}/takeover.png`, 3600);
+    takeover = { ...takeover, frameUrl: signErr ? null : (signed?.signedUrl ?? null) };
+  } else if (takeover) {
+    takeover = { ...takeover, frameUrl: null };
+  }
+
+  // feature/cua-live-assist — draft map summary for Save & Finish / Discard.
+  // Prefer the id the run wrote into result; fall back to the newest draft for
+  // the family. Selectors are NEVER returned — only a coverage summary.
+  const result = (jobRes.data.result ?? {}) as Record<string, unknown>;
+  const knowledgeFileId = typeof result.knowledge_file_id === 'string' ? result.knowledge_file_id : null;
+  let draftMap: {
+    id: string; version: number; status: string; pmsFamily: string;
+    actionsFound: number; missingRequired: string[]; missingBusinessCritical: string[];
+  } | null = null;
+  // STRICT: only the draft THIS run produced (knowledge_file_id). No newest-by-
+  // family fallback — Save/Discard resolve the same way (job-draft.ts), so the
+  // board summary and the action can never refer to a different run's map.
+  if (knowledgeFileId) {
+    type KFRow = { id: string; version: number; status: string; pms_family: string; knowledge: unknown };
+    const { data } = await supabaseAdmin
+      .from('pms_knowledge_files')
+      .select('id, version, status, pms_family, knowledge')
+      .eq('id', knowledgeFileId)
+      .maybeSingle();
+    const row = (data as KFRow | null) ?? null;
+    if (row) {
+      const knowledge = (row.knowledge ?? {}) as { actions?: Record<string, unknown>; feedGaps?: { missingRequired?: Array<{ target?: unknown }>; missingBusinessCritical?: unknown[] } };
+      const gaps = knowledge.feedGaps;
+      draftMap = {
+        id: row.id,
+        version: row.version,
+        status: row.status,
+        pmsFamily: row.pms_family,
+        actionsFound: Object.keys(knowledge.actions ?? {}).length,
+        missingRequired: Array.isArray(gaps?.missingRequired)
+          ? gaps!.missingRequired.map((e) => (typeof e?.target === 'string' ? e.target : '')).filter(Boolean)
+          : [],
+        missingBusinessCritical: Array.isArray(gaps?.missingBusinessCritical)
+          ? (gaps!.missingBusinessCritical as unknown[]).filter((t): t is string => typeof t === 'string')
+          : [],
+      };
+    }
+  }
+
   return ok({
     job: jobRes.data,
     property,
     pendingHelpRequest,
     recentHelpRequests: recentRes.data ?? [],
+    takeover,
+    draftMap,
   }, { requestId });
 }

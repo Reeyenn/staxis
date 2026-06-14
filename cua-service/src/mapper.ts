@@ -21,6 +21,7 @@ import { anthropic, getModeConfig, type MapperModelId } from './anthropic-client
 import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
 import { clearSetOfMark } from './set-of-mark.js';
 import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
+import type { TakeoverController } from './takeover.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
@@ -462,6 +463,13 @@ interface MapperOptions {
    * fire-and-forget and never throw; the mapper does not await them.
    */
   onLiveFrame?: (pngBase64: string) => void;
+  /**
+   * feature/cua-live-assist — founder-initiated, robot-paused takeover.
+   * When set, mapActionCore polls it at the top of each step; on an open
+   * takeover the founder drives the page click-by-click (Finish/Cancel/Skip).
+   * Absent (dev/test/no-board runs) → the agent loop runs untouched.
+   */
+  takeover?: TakeoverController;
   // For Claude API spend attribution. Both nullable so dev/test runs work.
   propertyId?: string | null;
   jobId?: string | null;
@@ -727,6 +735,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     label: t.progressLabel,
     goal: t.goal,
     optional: t.optional,
+    // feature/cua-live-assist — the board disables Take over / Skip for
+    // drilldown_sample feeds (mapDrillDownAction has no takeover gate in v1).
+    classification: t.classification,
   }));
   await mergeJobResult(opts.jobId, { targetCatalog }).catch((err) => {
     log.warn('mapper: board catalog persist failed (non-fatal)', {
@@ -938,6 +949,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             // runtime eventually will.
             provisionalDateFormat: pickDateFormat(inferDateFormat(learnedDateSamples), opts.seedDateFormat),
             onLiveFrame: opts.onLiveFrame,
+            // feature/cua-live-assist — founder takeover gate (list/report
+            // feeds). Drill-down feeds use mapDrillDownAction (no gate in v1).
+            takeover: opts.takeover,
           });
       if (result.ok) {
         actions[target.key] = result.action;
@@ -1601,6 +1615,8 @@ interface MapActionArgs {
   provisionalDateFormat?: LearnedDateFormat;
   /** feature/cua-live-view — see MapperOptions.onLiveFrame. */
   onLiveFrame?: (pngBase64: string) => void;
+  /** feature/cua-live-assist — see MapperOptions.takeover. */
+  takeover?: TakeoverController;
 }
 
 /**
@@ -2109,6 +2125,59 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   const commitNudgedFingerprints = new Set<string>();
 
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
+    // ── feature/cua-live-assist — founder takeover gate ──────────────────
+    // Cheap no-op (one indexed read) unless the founder pressed Take over /
+    // Skip on the Learning Board. When a takeover is live, maybeRun owns the
+    // ENTIRE multi-click loop and returns only on finish/cancel/skip/timeout —
+    // so the founder's clicks consume ZERO stepIdx (they never re-enter this
+    // for-loop) and the agent's decision logic below is untouched. We credit
+    // the human time to helpWaitMs so the wall-clock budget (next check) isn't
+    // starved — identical to the existing supervisor-wait credit at the
+    // unavailable/ask_admin branches.
+    if (args.takeover) {
+      const t = await args.takeover.maybeRun({
+        page: args.page,
+        credentials: args.credentials,
+        actionKey: args.actionName,
+        signal: args.signal,
+        recordStep: (s) => recordedSteps.push(s),
+      });
+      helpWaitMs += t.waitedMs;
+      if (t.kind === 'cancelled') {
+        // Founder drove and couldn't find it → not-found, mapPMS moves on.
+        return { ok: false, reason: t.reason, finalUrl: args.page.url() };
+      }
+      if (t.kind === 'skipped') {
+        return { ok: false, reason: t.reason, finalUrl: args.page.url() };
+      }
+      if (t.kind === 'finished') {
+        // Founder confirmed THIS page is the feed. Hand back to the EXISTING
+        // extraction by appending a supervisor instruction to the trailing
+        // user turn (loop-top is always user; a standalone push would be
+        // consecutive-user → API-invalid). The unchanged agent loop then reads
+        // this page and emits rowSelector+columns — we do NOT fork it.
+        const finishHint = {
+          type: 'text' as const,
+          text:
+            'SUPERVISOR OVERRIDE: I (your supervisor) navigated the browser to the correct page ' +
+            `for "${args.actionName}". Do NOT navigate away. Read the page you are on NOW and emit the ` +
+            'first-line JSON {"url": "<current url>", "rowSelector": "...", "columns": {...}} for THIS page. ' +
+            'If it is a list/table, give the row selector and per-column selectors; capture the columns you can see.',
+        };
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content)) {
+          last.content.push(finishHint);
+        } else {
+          messages.push({ role: 'user', content: [finishHint] });
+        }
+        // Mirror the supervisor-hint reset so a post-takeover agent isn't
+        // instantly eligible to re-declare unavailable.
+        readPageCount = 0;
+        navigationCount = 0;
+        // fall through — this iteration's Claude call now carries the override.
+      }
+      // kind === 'none' → no takeover; proceed with the normal agent step.
+    }
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       return bail('token budget exceeded');
     }

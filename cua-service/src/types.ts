@@ -585,6 +585,9 @@ export interface BoardTargetDescriptor {
   /** Business-domain goal text (what the robot is looking for). */
   goal: string;
   optional: boolean;
+  /** feature/cua-live-assist — drives the board's Take over / Skip gating
+   *  (drilldown_sample feeds have no takeover gate in v1). Additive/optional. */
+  classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
 }
 
 /** Small captured-data preview attached when a feed is found. */
