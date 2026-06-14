@@ -70,19 +70,46 @@ export function validateRoomsInventory(row: Record<string, unknown>): ValidatorR
 
 export function validateRevenueDaily(row: Record<string, unknown>): ValidatorResult {
   if (!validISODate(row.date)) return { ok: false, reason: 'date must be ISO YYYY-MM-DD' };
-  if (!validCents(row.rooms_revenue_cents)) return { ok: false, reason: 'rooms_revenue_cents must be non-negative integer' };
   if (!validInteger(row.occupied_rooms, { min: 0 })) return { ok: false, reason: 'occupied_rooms required, non-negative' };
-  if (!validPercent(row.occupancy_pct)) return { ok: false, reason: 'occupancy_pct must be 0..100' };
-  if (!validCents(row.adr_cents)) return { ok: false, reason: 'adr_cents must be non-negative integer' };
-  if (!validCents(row.revpar_cents)) return { ok: false, reason: 'revpar_cents must be non-negative integer' };
-  // Cross-field: RevPAR = ADR * occupancy/100. Allow 5% slop for rounding.
-  const adr = row.adr_cents as number;
-  const occ = row.occupancy_pct as number;
-  const revpar = row.revpar_cents as number;
-  const expected = adr * (occ / 100);
-  const slop = Math.max(50, expected * 0.05);  // 50¢ floor or 5%
-  if (Math.abs(revpar - expected) > slop) {
-    return { ok: false, reason: `RevPAR mismatch: expected ~${expected.toFixed(0)}, got ${revpar} (ADR=${adr}, occ=${occ}%)` };
+  // feature/cua-per-hotel-data — validate the revenue / RevPAR metrics ONLY when
+  // the feed actually extracted them. A historical-OCCUPANCY report (and some
+  // partial getRevenueDaily reports) legitimately carry occupancy WITHOUT
+  // rooms-revenue / ADR / RevPAR; hard-requiring all four made this layer-2
+  // validator STRICTER than the descriptor and rejected those rows outright.
+  // `null` is the writer's "column not extracted" sentinel (applyTemplateParsers
+  // maps an absent column to null) so treat null/undefined as absent. Present
+  // values are still fully checked — nothing else is loosened.
+  //
+  // NOTE: the live pms_revenue_daily descriptor still marks these columns
+  // required (layer-1, generic-table-writer.validateRows), so a row genuinely
+  // missing them is gated THERE. This change only stops layer-2 from
+  // double-rejecting a row layer-1 already accepts, and unblocks partial reports
+  // on any revenue-shaped table whose descriptor does not require every metric.
+  const present = (v: unknown): boolean => v !== undefined && v !== null;
+  if (present(row.rooms_revenue_cents) && !validCents(row.rooms_revenue_cents)) {
+    return { ok: false, reason: 'rooms_revenue_cents must be non-negative integer' };
+  }
+  if (present(row.occupancy_pct) && !validPercent(row.occupancy_pct)) {
+    return { ok: false, reason: 'occupancy_pct must be 0..100' };
+  }
+  if (present(row.adr_cents) && !validCents(row.adr_cents)) {
+    return { ok: false, reason: 'adr_cents must be non-negative integer' };
+  }
+  if (present(row.revpar_cents) && !validCents(row.revpar_cents)) {
+    return { ok: false, reason: 'revpar_cents must be non-negative integer' };
+  }
+  // Cross-field: RevPAR = ADR * occupancy/100. Allow 5% slop for rounding. Only
+  // checkable when all three are present (an occupancy-only row has nothing to
+  // cross-check); each was individually range-validated above when present.
+  if (present(row.adr_cents) && present(row.occupancy_pct) && present(row.revpar_cents)) {
+    const adr = row.adr_cents as number;
+    const occ = row.occupancy_pct as number;
+    const revpar = row.revpar_cents as number;
+    const expected = adr * (occ / 100);
+    const slop = Math.max(50, expected * 0.05);  // 50¢ floor or 5%
+    if (Math.abs(revpar - expected) > slop) {
+      return { ok: false, reason: `RevPAR mismatch: expected ~${expected.toFixed(0)}, got ${revpar} (ADR=${adr}, occ=${occ}%)` };
+    }
   }
   return { ok: true };
 }

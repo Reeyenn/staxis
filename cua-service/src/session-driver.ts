@@ -132,6 +132,24 @@ export class SessionDriver {
    */
   private consecutiveZeroRowsByAction: Map<string, number> = new Map();
 
+  /**
+   * feature/cua-per-hotel-data (Task 4) — consume template.incomplete at replay.
+   * recipe-adapter flags a feed `incomplete` when it's genuinely un-locatable (a
+   * csv flow with no recorded download trigger, a dom_table/inline feed with no
+   * source URL, an inline feed needing interaction the inline extractor can't
+   * replay). Such a feed can NEVER produce rows, so polling it every 30s only
+   * burns a navigation, counts as a failed feed (dragging read_failure_streak),
+   * and can mis-fire a paid self-repair. We skip it and surface it for review.
+   *
+   *  - loggedIncompleteFeeds: keys already log-warned this knowledge version, so
+   *    we log ONCE (not every poll). Cleared on knowledge hot-reload so a
+   *    promoted fix drops the flag and a still-broken feed re-surfaces.
+   *  - incompleteFeedSummary: compact list of currently-skipped feeds, folded
+   *    into the heartbeat `notes` so /admin/property-sessions shows it. '' = none.
+   */
+  private loggedIncompleteFeeds: Set<string> = new Set();
+  private incompleteFeedSummary = '';
+
   constructor(opts: SessionDriverOptions) {
     this.propertyId = opts.propertyId;
     this.pmsFamily = opts.pmsFamily;
@@ -404,6 +422,30 @@ export class SessionDriver {
   private loginGotoTarget(rawUrl: string): string {
     const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
     return resolveLoginGotoUrl(rawUrl, familyStartUrl, this.credentials?.loginUrl);
+  }
+
+  /**
+   * feature/cua-per-hotel-data (Task 1) — re-point every runnable feed's source
+   * URL(s) AND per-row detail URL template at THIS hotel's tenant origin (the
+   * data-read analogue of loginGotoTarget). Mutates the freshly-built templates
+   * in place: they're rebuilt from the knowledge file every poll, local to
+   * runAllFeeds, so no shared/persisted state is touched. No-op for hotels with
+   * no per-hotel URL (Choice Advantage) and for feeds not on the learned tenant
+   * — see rehostFeedUrl.
+   */
+  private rehostFeedUrlsForHotel(templates: TableTemplate[]): void {
+    const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
+    const perHotelLoginUrl = this.credentials?.loginUrl;
+    for (const template of templates) {
+      for (const source of template.sources) {
+        source.url = rehostFeedUrl(source.url, familyStartUrl, perHotelLoginUrl);
+      }
+      if (template.rowDetail) {
+        template.rowDetail.urlTemplate = rehostFeedUrl(
+          template.rowDetail.urlTemplate, familyStartUrl, perHotelLoginUrl,
+        );
+      }
+    }
   }
 
   private async ensureLoggedIn(): Promise<boolean> {
@@ -886,9 +928,50 @@ export class SessionDriver {
     // tell a quietly-stuck session (logged-out, drifted) from a healthy one.
     let anySuccessfulFeed = false;
 
+    // feature/cua-per-hotel-data (Task 4) — gate out feeds recipe-adapter flagged
+    // `incomplete` (genuinely un-locatable). Skip them, record them in this
+    // poll's results, and surface them for operator review (log once + heartbeat
+    // note). Done BEFORE the per-hotel URL rewrite so we never bother re-hosting
+    // a feed we're not going to run.
+    const runnable: TableTemplate[] = [];
+    const incompleteNow: string[] = [];
+    for (const template of adaptResult.templates) {
+      if (template.incomplete) {
+        const key = (template.sourceActionKey as string | undefined) ?? template.tableName;
+        incompleteNow.push(key);
+        results.push({ table: template.tableName, ok: false, reason: 'incomplete_feed_skipped_for_review' });
+        if (!this.loggedIncompleteFeeds.has(key)) {
+          this.loggedIncompleteFeeds.add(key);
+          log.warn('session-driver: feed flagged incomplete (un-locatable) — skipping poll, needs operator review', {
+            propertyId: this.propertyId,
+            pmsFamily: this.pmsFamily,
+            tableName: template.tableName,
+            sourceActionKey: template.sourceActionKey,
+            knowledgeFileVersion: this.knowledgeFileVersion,
+          });
+        }
+        continue;
+      }
+      runnable.push(template);
+    }
+    // Recompute every poll so a promoted fix clears the note (and a newly-broken
+    // feed appears) without waiting for a restart.
+    this.incompleteFeedSummary = incompleteNow.length > 0 ? [...incompleteNow].sort().join(',') : '';
+
+    // feature/cua-per-hotel-data (Task 1) — re-host each runnable feed's source +
+    // detail URLs onto THIS hotel's tenant origin. The recipe's URLs were
+    // recorded on the MAPPER tenant; one active knowledge file per pms_family
+    // replays them for every hotel, so a per-subdomain cloud PMS (OPERA Cloud,
+    // Cloudbeds, Mews, RoomKey) would log into ITS tenant (per-hotel login fix)
+    // yet still READ the mapper tenant's data — the feed host shares the family
+    // registrable domain, so safeGoto's same-site guard (registrable-domain, not
+    // exact-host) waves it through. Mirrors the per-hotel login goto rewrite;
+    // hotels with no per-hotel URL (Choice Advantage) are a no-op.
+    this.rehostFeedUrlsForHotel(runnable);
+
     // Process in stable order: dashboard / in-house snapshot first
     // (cheapest, most-displayed), then list pages, then drill-down.
-    const sorted = [...adaptResult.templates].sort((a, b) => priorityOf(a.tableName) - priorityOf(b.tableName));
+    const sorted = [...runnable].sort((a, b) => priorityOf(a.tableName) - priorityOf(b.tableName));
 
     for (const template of sorted) {
       if (signal.aborted) break;
@@ -1030,7 +1113,12 @@ export class SessionDriver {
         last_alive_at: new Date().toISOString(),
         worker_machine_id: this.workerMachineId,
         current_browser_url: this.page ? safeUrl(this.page) : null,
-        notes: `polling: completed=${metrics.completed} skipped=${metrics.skipped} timedOut=${metrics.timedOut}`,
+        // feature/cua-per-hotel-data (Task 4) — surface un-locatable feeds
+        // skipped this version on /admin/property-sessions, alongside the
+        // single-flight metrics (no schema change: folded into `notes`).
+        notes:
+          `polling: completed=${metrics.completed} skipped=${metrics.skipped} timedOut=${metrics.timedOut}` +
+          (this.incompleteFeedSummary ? ` | incomplete_feeds_skipped=${this.incompleteFeedSummary}` : ''),
       })
       .eq('property_id', this.propertyId);
     if (error) {
@@ -1191,6 +1279,11 @@ export class SessionDriver {
       // must NOT silently revert allowedHost to the family startUrl's host —
       // that would re-break per-hotel subdomains ~60s after every promotion.
       this.allowedHost = this.currentAllowedHost();
+      // feature/cua-per-hotel-data (Task 4) — a promoted version may fix (or
+      // newly break) which feeds are un-locatable. Reset the log-once set so a
+      // still-incomplete feed re-surfaces under the new version and a fixed one
+      // stops being flagged; incompleteFeedSummary is recomputed on the next poll.
+      this.loggedIncompleteFeeds.clear();
       // No browser restart needed — next pollOnce uses the new feeds.
     } catch (err) {
       log.warn('session-driver: knowledge hot-reload check failed', {
@@ -1259,10 +1352,15 @@ export class SessionDriver {
    * Live polling picks up new selectors on the next hot-reload tick
    * (~60s) after a promotion.
    *
-   * Idempotency key = `mapper.repair:{family}:{actionKey}` prevents
-   * double-enqueue while a repair is in-flight OR after a failed
-   * repair (failed = constraint persists = no silent re-trigger; admin
-   * must manually retry from the UI).
+   * Idempotency key = `mapper.repair:{family}:{propertyId}:{actionKey}` prevents
+   * double-enqueue while a repair is in-flight OR after a failed repair (failed
+   * = constraint persists = no silent re-trigger; admin must manually retry from
+   * the UI). Scoped PER-HOTEL (feature/cua-per-hotel-data): a family-only key let
+   * ONE stuck hotel's lingering (failed, max_attempts=1) repair row block every
+   * sibling on the same pms_family from ever enqueuing its own — one hotel's
+   * broken feed silently froze self-repair fleet-wide. The aggregate
+   * daily-mapping spend cap (checkDailyMappingSpend, below) stays the cost
+   * backstop against many hotels repairing the same drifted family feed at once.
    */
   private maybeFireSelfRepair(template: TableTemplate, rowCount: number, suppress = false, runFailed = false): void {
     const actionKey = template.sourceActionKey;
@@ -1347,7 +1445,7 @@ export class SessionDriver {
     const seedActions: Recipe['actions'] = { ...allActions };
     delete seedActions[actionKey];
 
-    const idempotencyKey = `mapper.repair:${this.pmsFamily}:${actionKey}`;
+    const idempotencyKey = `mapper.repair:${this.pmsFamily}:${this.propertyId}:${actionKey}`;
     const { error } = await supabase.from('workflow_jobs').insert({
       property_id: this.propertyId,
       kind: 'mapper.learn_pms_family',
@@ -1470,6 +1568,74 @@ export function resolveLoginGotoUrl(
 ): string {
   if (rawUrl !== familyStartUrl) return rawUrl;
   return resolveLoginUrl(perHotelLoginUrl, familyStartUrl);
+}
+
+/**
+ * feature/cua-per-hotel-data (Task 1) — re-host a recorded FEED url onto THIS
+ * hotel's tenant origin: the data-read analogue of resolveLoginGotoUrl.
+ *
+ * The mapper records every feed URL on ITS tenant; one active knowledge file per
+ * pms_family replays those same URLs for every hotel. So a per-subdomain cloud
+ * PMS (OPERA Cloud, Cloudbeds, Mews, RoomKey) logs into its own tenant (the
+ * per-hotel login fix) yet still READS the mapper tenant's data — the feed host
+ * shares the family's registrable domain, so safeGoto's same-site guard
+ * (registrable-domain, NOT exact-host) lets the wrong-tenant read through. This
+ * swaps the ORIGIN (scheme + host[:port]) of feed URLs that live on the LEARNED
+ * tenant for the per-hotel origin, leaving everything after the origin verbatim:
+ *
+ *   - No per-hotel URL (e.g. Choice Advantage) → returned verbatim — byte-for-
+ *     byte the pre-fix behavior (family fallback).
+ *   - Per-hotel origin == learned origin → verbatim (no-op). Covers the mapper
+ *     tenant itself AND a single-host multi-tenant PMS like Choice Advantage,
+ *     where tenancy is by login/session, not by host.
+ *   - Feed URL NOT on the learned origin (a cross-host SSO / shared report host)
+ *     → verbatim — exactly as resolveLoginGotoUrl leaves non-login gotos alone.
+ *   - Otherwise → per-hotel origin + the recorded path/query/hash, unchanged.
+ *
+ * Pure string surgery on the path tail (the origin is matched by a
+ * boundary-anchored regex that stops at the first '/', '?' or '#'), so the
+ * {today}/{date}/{placeholder} tokens that ride feed + detail URLs — rendered at
+ * navigation time by template-runner / substituteTemplate — survive verbatim. A
+ * `new URL(rawUrl).toString()` round-trip would percent-encode '{'/'}' and break
+ * them. Never throws; any unparseable input is returned unchanged (and safeGoto
+ * stays the navigation guard regardless). Exported for unit testing.
+ */
+export function rehostFeedUrl(
+  rawUrl: string,
+  familyStartUrl: string,
+  perHotelLoginUrl: string | null | undefined,
+): string {
+  const perHotel = perHotelLoginUrl?.trim();
+  if (!perHotel || !rawUrl) return rawUrl;            // family fallback / nothing to rewrite
+  const learnedOrigin = feedOrigin(familyStartUrl);
+  const perHotelOrigin = feedOrigin(normalizeUrl(perHotel));
+  const rawOrigin = feedOrigin(rawUrl);
+  // Any origin unparseable (relative / malformed / no startUrl) → leave unchanged.
+  if (!learnedOrigin || !perHotelOrigin || !rawOrigin) return rawUrl;
+  // Same tenant already (the mapper tenant itself, or a single-host PMS) → no-op.
+  if (sameOrigin(learnedOrigin, perHotelOrigin)) return rawUrl;
+  // Only re-host feeds on the LEARNED tenant origin; cross-host URLs (SSO,
+  // shared report servers) replay exactly as learned.
+  if (!sameOrigin(rawOrigin, learnedOrigin)) return rawUrl;
+  return perHotelOrigin + rawUrl.slice(rawOrigin.length);
+}
+
+/**
+ * The origin (scheme://host[:port]) prefix of an absolute http(s) URL, matched
+ * up to the first '/', '?' or '#' so a `{placeholder}` further down the path is
+ * never parsed. Returns null for a relative / malformed / non-http(s) URL — the
+ * caller leaves such inputs unchanged. Boundary-anchored, so it can't be tricked
+ * into prefix-matching `https://learned.com.evil.com` as `https://learned.com`.
+ */
+function feedOrigin(url: string): string | null {
+  const m = /^(https?:\/\/[^/?#]+)/i.exec(url);
+  return m ? m[1]! : null;
+}
+
+/** Case-insensitive origin-string comparison (scheme + host are both
+ *  case-insensitive; ports are digits). */
+function sameOrigin(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 function todayInTimezone(tz: string): string {
