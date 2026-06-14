@@ -75,6 +75,17 @@ export interface MappingJobInput {
    *  set to SHRINK vs the current active before promoting (a self-repair's
    *  point is same-shape-better-selectors, so it must NOT get that check). */
   backfill_missing_feeds?: boolean;
+  /** feature/cua-coverage-editor — single-target allowlist. When the coverage
+   *  editor enqueues an "edit one feed" / "add one feed" run, it sets this so
+   *  the mapper learns EXACTLY the requested target instead of hunting every
+   *  unlearned catalogue target. Threaded straight to mapPMS's onlyTargets. */
+  only_targets?: string[];
+  /** feature/cua-coverage-editor — assist-first (start-paused). Set with a
+   *  single-element only_targets: runMappingJob pre-opens a 'requested' takeover
+   *  for that feed so the robot pauses for the founder the moment it reaches it
+   *  (no race with the autonomous agent). Opened INSIDE the run so the finally's
+   *  takeover.close() always cleans it up — a never-run job never opens one. */
+  assist_first?: boolean;
 }
 
 export interface MappingJobResult {
@@ -441,6 +452,29 @@ export async function runMappingJob(
     at: new Date().toISOString(),
   });
 
+  // 1.7. feature/cua-coverage-editor — assist-first (start-paused). For a
+  //      single-feed edit/add, pre-open a 'requested' takeover for that feed so
+  //      the robot pauses for the founder the instant it reaches it (no race
+  //      with the autonomous agent). Opened HERE, inside the run, so the
+  //      finally's takeover.close() always cleans it up — a never-claimed job
+  //      never leaves a phantom takeover (senior review P1).
+  const assistTarget = input.assist_first && input.only_targets?.length === 1
+    ? input.only_targets[0]
+    : null;
+  if (assistTarget) {
+    const { error: takeoverErr } = await supabase
+      .from('mapper_takeover_sessions')
+      .insert({ job_id: jobId, status: 'requested', target_key: assistTarget });
+    if (takeoverErr) {
+      // Non-fatal: the founder can still press "Take over" on the board.
+      log.warn('mapping-driver: assist-first takeover pre-open failed (non-fatal)', {
+        jobId, target: assistTarget, err: takeoverErr.message,
+      });
+    } else {
+      log.info('mapping-driver: assist-first — pre-opened takeover for founder', { jobId, target: assistTarget });
+    }
+  }
+
   // 2. Run mapPMS. The mapper opens its own browser via chromium.launch.
   // Plan v8 review P0-A: thread per-job cost cap through. Without this
   // vision-mode jobs would hit the DOM mode's $5 env default and abort.
@@ -463,6 +497,8 @@ export async function runMappingJob(
     seedActions: input.seed_actions,
     seedValueTranslations: input.seed_value_translations,
     seedDateFormat: input.seed_date_format,
+    // feature/cua-coverage-editor — single-target allowlist (edit/add one feed).
+    onlyTargets: input.only_targets,
     // feature/cua-live-view — tee each vision screenshot to the Learning
     // Board's live view. publish() is fire-and-forget and never throws.
     onLiveFrame: (pngBase64) => liveFrames.publish(pngBase64),
@@ -1007,7 +1043,11 @@ async function loadCredentials(propertyId: string): Promise<PMSCredentials | nul
   };
 }
 
-async function saveDraftKnowledgeFile(
+// Exported for feature/cua-coverage-editor: the delete-feed worker job
+// (recipe-edit.ts) reuses this EXACT signed-write path so a hand-built
+// "active recipe minus one feed" lands as a properly HMAC-signed new draft
+// version (the app can't re-sign — RECIPE_SIGNING_KEY is Fly-only).
+export async function saveDraftKnowledgeFile(
   pmsFamily: string,
   recipe: Recipe,
   status: 'draft' | 'quarantined' = 'draft',

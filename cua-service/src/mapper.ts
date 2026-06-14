@@ -517,6 +517,16 @@ interface MapperOptions {
    */
   seedValueTranslations?: LearnedValueTranslations;
   seedDateFormat?: LearnedDateFormat;
+  /**
+   * feature/cua-coverage-editor — single-target ALLOWLIST. When set, the
+   * per-target loop maps ONLY these keys (in addition to the seedActions skip),
+   * so the coverage editor's "edit one feed" / "add one feed" runs learn EXACTLY
+   * the requested feed instead of hunting every unlearned catalogue target.
+   * Without it (the default), an absent-target seeded job would grind the whole
+   * catalogue (repair-feed's documented over-hunt). Undefined = today's
+   * behaviour (map every un-seeded target). Empty array = map nothing.
+   */
+  onlyTargets?: string[];
 }
 
 /**
@@ -884,12 +894,26 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     const learnedValueTranslations: LearnedValueTranslations = { ...(opts.seedValueTranslations ?? {}) };
     const learnedDateSamples: string[] = [];
 
+    // feature/cua-coverage-editor — single-target allowlist. null = no
+    // restriction (today's behaviour). A Set so the loop check is O(1).
+    const onlyTargets = opts.onlyTargets ? new Set(opts.onlyTargets) : null;
+    if (onlyTargets) {
+      log.info('mapper: single-target mode — mapping only the requested feed(s)', {
+        jobId: opts.jobId ?? undefined, onlyTargets: [...onlyTargets],
+      });
+    }
+
     for (const target of TARGETS) {
       // Skip targets already mapped in a prior attempt (B6 reclaim path).
       if (actions[target.key]) {
         log.info('mapper: skipping target — already completed in prior attempt', {
           jobId: opts.jobId ?? undefined, actionName: target.key,
         });
+        continue;
+      }
+      // feature/cua-coverage-editor — when an allowlist is set, map only those
+      // targets. Skipped targets aren't touched (no board 'searching' churn).
+      if (onlyTargets && !onlyTargets.has(target.key)) {
         continue;
       }
       opts.onProgress?.(target.progressLabel, target.progressPct);

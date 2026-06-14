@@ -51,6 +51,7 @@ import {
   ExternalLink,
   Loader2,
   Eye,
+  Layers,
 } from 'lucide-react';
 
 interface MapperJobSummary {
@@ -280,6 +281,11 @@ export default function PropertySessionsPage() {
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {s.knowledge_file?.active != null && (
+                            <Btn variant="ghost" size="sm" href={`/admin/properties/coverage/${s.property_id}`} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
+                              <Layers size={12} /> Coverage
+                            </Btn>
+                          )}
                           {s.status === 'paused_mfa' && (
                             <Btn variant="terracotta" size="sm" href={`/admin/mfa-resume/${s.property_id}`}>
                               <ShieldAlert size={12} /> Resolve MFA

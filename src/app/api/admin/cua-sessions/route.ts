@@ -95,22 +95,25 @@ export async function GET(req: NextRequest) {
       .select('pms_family, version, status, learned_at, feed_gaps:knowledge->feedGaps')
       .order('pms_family')
       .order('version', { ascending: false }),
-    // Learning Board — mapper jobs so each session card can link to the
-    // live board. Mapper jobs are enqueued once per PMS FAMILY (with one
+    // Learning Board — mapper LEARNING jobs so each session card can link to
+    // the live board. Mapper jobs are enqueued once per PMS FAMILY (with one
     // representative property_id), so matching below is by family OR
     // property. Active jobs are fetched UNCAPPED (inherently few — one per
     // family being learned); terminal jobs capped at the most recent 100,
     // which only feed the "see the last run" link.
+    // feature/cua-coverage-editor — scope to 'mapper.learn_pms_family' (NOT the
+    // broader 'mapper.%') so a non-browser 'mapper.edit_recipe' delete job never
+    // shows as "Learning its PMS now" or links to an empty learning board.
     supabaseAdmin
       .from('workflow_jobs')
       .select('id, property_id, status, payload, created_at')
-      .like('kind', 'mapper.%')
+      .eq('kind', 'mapper.learn_pms_family')
       .in('status', ['queued', 'running'])
       .order('created_at', { ascending: false }),
     supabaseAdmin
       .from('workflow_jobs')
       .select('id, property_id, status, payload, created_at')
-      .like('kind', 'mapper.%')
+      .eq('kind', 'mapper.learn_pms_family')
       .in('status', ['completed', 'failed', 'cancelled'])
       .order('created_at', { ascending: false })
       .limit(100),

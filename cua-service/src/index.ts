@@ -33,6 +33,7 @@ import { env } from './env.js';
 import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
 import { runMappingJob, mappingJobResultToWorkflowResult, type MappingJobInput } from './mapping-driver.js';
+import { runRecipeEditJob, type RecipeEditJobInput } from './recipe-edit.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
 import { writeJobHandler } from './write-job-handler.js';
 
@@ -114,6 +115,17 @@ async function main(): Promise<void> {
     // workflow_jobs.result, so the Learning Board keys must pass through
     // (see mappingJobResultToWorkflowResult).
     return { ok: true, result: mappingJobResultToWorkflowResult(result) };
+  });
+
+  // ─── feature/cua-coverage-editor — mapper.edit_recipe handler ─────────
+  // Non-browser recipe edit (delete a feed). No-driver kind: it loads the
+  // active map, drops the feed, re-signs a new draft, and promotes it under
+  // the never-zero-active base-guarded primitive — all without a browser or
+  // Claude call. Result carries knowledge_file_id so the live board resolves
+  // the produced draft (same contract as a learn run).
+  runtime.registerHandler('mapper.edit_recipe', async (ctx) => {
+    const input = ctx.payload as unknown as RecipeEditJobInput;
+    return runRecipeEditJob(input, ctx.jobId);
   });
 
   // Phase 3 — PMS write-back handler. Alive-driver kind: the runtime hands it

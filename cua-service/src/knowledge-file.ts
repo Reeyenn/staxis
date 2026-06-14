@@ -429,6 +429,95 @@ export async function quarantine(args: {
   }
 }
 
+/**
+ * feature/cua-coverage-editor — NEVER-ZERO-ACTIVE, BASE-GUARDED promote of a
+ * freshly-saved edit draft (used by the delete-feed worker job).
+ *
+ * Mirrors the app-side promoteMap (src/lib/pms/promote-map.ts) rollback
+ * semantics, but runs INSIDE the worker so the whole "load active → build draft
+ * → promote" sequence is one continuous execution with no UI round-trip — which
+ * closes the stale-base race the two-hop design had (Codex review E-P0): we
+ * demote ONLY the exact active row the draft was derived from (`expectedActiveId`
+ * + status='active'). If the family's active moved underneath us (a concurrent
+ * promote / backfill), the demote matches 0 rows and we ABORT without ever
+ * stranding the family at zero — the new draft simply stays a draft for the
+ * founder to review in Manage maps.
+ *
+ * Why not reuse promote-map.ts: that module imports the Next app's
+ * supabase-admin client and can't run on the worker; the never-zero invariant
+ * is identical, the client differs.
+ */
+export async function promoteEditedDraft(args: {
+  pmsFamily: string;
+  /** The new draft to make live. */
+  draftId: string;
+  /** The active row this draft was derived from — demote ONLY this row. */
+  expectedActiveId: string;
+}): Promise<{ ok: true } | { ok: false; reason: 'base_changed' | 'promote_failed'; detail?: string }> {
+  const nowIso = new Date().toISOString();
+
+  // 1. Demote the EXACT active the draft was built from. Guarding on
+  //    id=expectedActiveId (not just status='active') is the race-safety: if
+  //    the family's active changed, this matches 0 rows and we abort.
+  const { data: demoted, error: demoteErr } = await supabase
+    .from('pms_knowledge_files')
+    .update({ status: 'deprecated', deprecated_at: nowIso })
+    .eq('id', args.expectedActiveId)
+    .eq('pms_family', args.pmsFamily)
+    .eq('status', 'active')
+    .select('id, promoted_to_active_at')
+    .maybeSingle();
+  if (demoteErr) {
+    return { ok: false, reason: 'promote_failed', detail: `demote failed: ${demoteErr.message}` };
+  }
+  if (!demoted) {
+    // Active moved (or already gone) — do NOT activate a stale draft over a
+    // newer recipe. Leave the draft parked for manual review.
+    log.warn('knowledge-file: promoteEditedDraft aborted — active base changed', {
+      pmsFamily: args.pmsFamily, expectedActiveId: args.expectedActiveId, draftId: args.draftId,
+    });
+    return { ok: false, reason: 'base_changed' };
+  }
+
+  // 2. Activate the new draft.
+  const { data: promoted, error: promoteErr } = await supabase
+    .from('pms_knowledge_files')
+    .update({ status: 'active', promoted_to_active_at: nowIso })
+    .eq('id', args.draftId)
+    .in('status', ['draft', 'deprecated', 'quarantined'])
+    .select('id')
+    .maybeSingle();
+
+  if (promoteErr || !promoted) {
+    // 3. Roll the demoted base back to active so the family is never stranded.
+    const { error: rollbackErr } = await supabase
+      .from('pms_knowledge_files')
+      .update({
+        status: 'active',
+        promoted_to_active_at: (demoted.promoted_to_active_at as string | null) ?? nowIso,
+        deprecated_at: null,
+      })
+      .eq('id', args.expectedActiveId);
+    if (rollbackErr) {
+      log.error('knowledge-file: promoteEditedDraft promote AND rollback failed — family has NO live map', {
+        pmsFamily: args.pmsFamily, draftId: args.draftId,
+        promoteErr: promoteErr?.message ?? 'no row matched', rollbackErr: rollbackErr.message,
+      });
+    } else {
+      log.warn('knowledge-file: promoteEditedDraft promote failed — restored previous active', {
+        pmsFamily: args.pmsFamily, draftId: args.draftId,
+        reason: promoteErr?.message ?? 'draft no longer promotable',
+      });
+    }
+    return { ok: false, reason: 'promote_failed', detail: promoteErr?.message ?? 'draft no longer promotable' };
+  }
+
+  log.info('knowledge-file: promoteEditedDraft activated edit draft', {
+    pmsFamily: args.pmsFamily, draftId: args.draftId, demotedBase: args.expectedActiveId,
+  });
+  return { ok: true };
+}
+
 // ─── Internals ────────────────────────────────────────────────────────────
 
 function unwrap(row: Record<string, unknown>): LoadedKnowledgeFile | null {

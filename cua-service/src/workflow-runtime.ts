@@ -64,7 +64,10 @@ function pickMapperTimeoutMs(job: WorkflowJobRow): number {
 // (precisely when no driver is alive), so claimNextJob's alive-driver
 // filter would deadlock them forever. These kinds get a separate
 // claim path + handler dispatch.
-const NO_DRIVER_KINDS = new Set<string>(['mapper.learn_pms_family']);
+// feature/cua-coverage-editor — `mapper.edit_recipe` is a non-browser recipe
+// edit (delete a feed); it never needs an alive SessionDriver, so it shares the
+// no-driver claim lane + handler dispatch with mapper.learn_pms_family.
+const NO_DRIVER_KINDS = new Set<string>(['mapper.learn_pms_family', 'mapper.edit_recipe']);
 
 interface WorkflowJobRow {
   id: string;
