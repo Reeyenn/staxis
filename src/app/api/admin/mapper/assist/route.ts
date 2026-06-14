@@ -118,10 +118,12 @@ export function validateCoordinateBounds(
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  // Codebase-standard admin gate: requireAdmin already builds the correct
+  // response (403 for a non-admin session, requireSession's 401 for no
+  // session). Re-minting a flat 401 here masked the 403 and dropped the
+  // standard envelope — return its response verbatim instead.
   const admin = await requireAdmin(req);
-  if (!admin.ok) {
-    return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
-  }
+  if (!admin.ok) return admin.response;
 
   let body: unknown;
   try {
