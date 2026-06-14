@@ -249,11 +249,15 @@ interface DerivedCsvFlow {
  *  benign compounds like '#tokenizedSearch' (Codex P2 false-positive). */
 const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|api[-_]?key|token(?![a-z0-9])/i;
 
-export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
-  const lastGotoIdx = steps.reduce((acc, s, i) => (s.kind === 'goto' ? i : acc), -1);
-  const inPage = steps.slice(lastGotoIdx + 1);
-
-  // Translate the in-page recipe steps to replayable PreSteps, keeping order.
+/**
+ * Translate the recorded in-page RecipeSteps (those AFTER the last `goto`) into
+ * replayable PreSteps, preserving order and dropping credential-bearing
+ * fills/type_text. Shared by the csv download-flow derivation and the
+ * dom_table pre-step derivation so both enforce identical credential hygiene
+ * (extraction must never replay a recorded secret — recipe-runner stance).
+ * `goto` is handled via source.url; screenshot/eval_text are non-interactive.
+ */
+function mapInPageStepsToPreSteps(inPage: RecipeStep[], context: 'csv' | 'dom_table'): PreStep[] {
   const mapped: PreStep[] = [];
   for (const s of inPage) {
     switch (s.kind) {
@@ -265,14 +269,14 @@ export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
         break;
       case 'fill':
         if (s.value === '$username' || s.value === '$password') {
-          log.warn('recipe-adapter: dropping csv pre-step fill that references credentials', {});
+          log.warn(`recipe-adapter: dropping ${context} pre-step fill that references credentials`, {});
           break;
         }
         if (CREDENTIAL_SELECTOR_RE.test(s.selector)) {
           // A literal value into a credential-looking field — the value may
           // BE a recorded secret (Codex P1). Never carry it into the runtime
           // source (and never log the value).
-          log.warn('recipe-adapter: dropping csv pre-step fill into a credential-looking field', {
+          log.warn(`recipe-adapter: dropping ${context} pre-step fill into a credential-looking field`, {
             selector: s.selector,
           });
           break;
@@ -281,7 +285,7 @@ export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
         break;
       case 'type_text':
         if (s.value === '$username' || s.value === '$password') {
-          log.warn('recipe-adapter: dropping csv pre-step type_text that references credentials', {});
+          log.warn(`recipe-adapter: dropping ${context} pre-step type_text that references credentials`, {});
           break;
         }
         mapped.push({ kind: 'type_text', value: s.value });
@@ -305,6 +309,35 @@ export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
         break;
     }
   }
+  return mapped;
+}
+
+/** Index of the LAST `goto` step, or -1. The steps after it are the in-page
+ *  interaction flow (the goto itself is replayed as source.url). */
+function lastGotoIndex(steps: RecipeStep[]): number {
+  return steps.reduce((acc, s, i) => (s.kind === 'goto' ? i : acc), -1);
+}
+
+/**
+ * feature/cua-feed-extract — the in-page interaction flow for a DOM feed: the
+ * steps the mapper recorded AFTER the last `goto` with NO url change (an SPA
+ * route swap, or an in-page "Generate"/filter click on a report page). The
+ * extractor navigates to the source url (the last goto) then replays these
+ * before scraping. URL-change navigations are already captured as the source
+ * url (the mapper records the landing page as a trailing goto), so their
+ * clicks fall BEFORE that goto and are correctly excluded here — direct
+ * navigation is preferred over replaying fragile coordinate clicks.
+ */
+export function deriveDomPreStepsFromSteps(steps: RecipeStep[]): PreStep[] {
+  const inPage = steps.slice(lastGotoIndex(steps) + 1);
+  return mapInPageStepsToPreSteps(inPage, 'dom_table');
+}
+
+export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
+  const inPage = steps.slice(lastGotoIndex(steps) + 1);
+
+  // Translate the in-page recipe steps to replayable PreSteps, keeping order.
+  const mapped: PreStep[] = mapInPageStepsToPreSteps(inPage, 'csv');
 
   // The download trigger is the LAST click-like step.
   let triggerIdx = -1;
@@ -398,6 +431,16 @@ export function actionRecipeToTableTemplate(
     columns = action.parse.hint.columns;
     if (action.parse.hint.skipSelector) {
       selectors.skipSelector = action.parse.hint.skipSelector;
+    }
+    // feature/cua-feed-extract — carry the in-page interaction flow (steps the
+    // mapper recorded AFTER the last goto with NO url change: an SPA route
+    // swap, an in-page Generate/filter click on a report page) so
+    // extractors/dom-table replays them before scraping. Empty for
+    // directly-navigable feeds — the mapper captured their landing page as the
+    // source url (the last goto), so their click steps were dropped above.
+    const domPreSteps = deriveDomPreStepsFromSteps(action.steps);
+    if (domPreSteps.length > 0) {
+      extra = { ...(extra ?? {}), preSteps: domPreSteps };
     }
   } else if (action.parse.mode === 'inline_text') {
     columns = action.parse.fields;
@@ -504,34 +547,40 @@ export function actionRecipeToTableTemplate(
     sourceActionKey: actionKey,
   };
 
-  // For DOM modes the adapter only replays the LAST `goto` as the source
-  // URL — every click / select / type_text / wait_for / press_key the mapper
-  // recorded to reach the table is DISCARDED. For feeds that need interaction
-  // before the table renders, the extractor would then time out and churn
-  // paid re-mapping every 30s. Full DOM pre-step replay is deferred; for now,
-  // flag the template `incomplete` (surfaces in admin review) and warn,
-  // rather than silently timing out. Allowed no-interaction kinds: goto,
-  // screenshot, wait_ms.
+  // feature/cua-feed-extract — `incomplete` means "the runtime genuinely can't
+  // LOCATE this feed's data", which the replay-time gate (sibling chat) surfaces
+  // for operator review. After this change every recorded interaction IS
+  // reproducible, so the flag reflects only un-locatable feeds:
   //
-  // Two modes are EXEMPT — their recorded interaction is not discarded:
   //   - 'csv': the click-flow is carried on the source (preSteps +
-  //     downloadButton, derived above) and replayed by the extractor;
-  //   - 'api': runtime calls the learned endpoint directly with the page's
-  //     cookies — the recorded steps were only the mapping-time trigger that
-  //     made the page fire the request we captured.
-  //
-  // EXCEPTION (Codex P1): a csv flow with NO recorded trigger click can never
-  // download anything — the extractor would fail "missing downloadButton"
-  // every poll. Flag it incomplete so it surfaces in admin review instead of
-  // silently churning.
+  //     downloadButton) and replayed — EXCEPT a csv flow with NO recorded
+  //     trigger click can never download anything (Codex P1), so it's
+  //     incomplete.
+  //   - 'api': the runtime calls the learned endpoint directly with the page's
+  //     cookies — always locatable from apiUrl; never incomplete here.
+  //   - 'table' (dom_table): the mapper records the landing page as the source
+  //     url (a trailing goto) AND this adapter carries any residual in-page
+  //     interactions as preSteps replayed before scraping. So a table feed is
+  //     locatable whenever it has a source url. Incomplete ONLY when that url
+  //     is blank — i.e. no goto was ever recorded (a malformed/hand-written
+  //     recipe; never from a live mapper run, which always seeds a goto).
+  //   - 'inline_text': dom-inline does not (yet) replay pre-steps, so an
+  //     inline feed needing interaction, or lacking a url, stays incomplete.
   if (action.parse.mode === 'csv' && csvTriggerless) {
     template.incomplete = true;
     log.warn(
       'recipe-adapter: csv flow has no download trigger click — flagged incomplete for operator review',
       { actionKey, tableName: route.tableName },
     );
-  }
-  if (action.parse.mode !== 'api' && action.parse.mode !== 'csv') {
+  } else if (action.parse.mode === 'table') {
+    if (sourceUrl.trim() === '') {
+      template.incomplete = true;
+      log.warn(
+        'recipe-adapter: dom_table feed has no source URL (no goto recorded) — cannot locate; flagged incomplete for operator review',
+        { actionKey, tableName: route.tableName },
+      );
+    }
+  } else if (action.parse.mode === 'inline_text') {
     const NON_INTERACTION_KINDS = new Set(['goto', 'screenshot', 'wait_ms']);
     const interactionKinds = [
       ...new Set(
@@ -540,15 +589,11 @@ export function actionRecipeToTableTemplate(
           .filter((k) => !NON_INTERACTION_KINDS.has(k)),
       ),
     ];
-    if (interactionKinds.length > 0) {
+    if (sourceUrl.trim() === '' || interactionKinds.length > 0) {
       template.incomplete = true;
       log.warn(
-        'recipe-adapter: action requires pre-table interaction the adapter does not replay — flagged incomplete for operator review',
-        {
-          actionKey,
-          tableName: route.tableName,
-          interactionKinds,
-        },
+        'recipe-adapter: inline_text feed needs interaction the inline extractor cannot replay (or has no url) — flagged incomplete for operator review',
+        { actionKey, tableName: route.tableName, interactionKinds },
       );
     }
   }

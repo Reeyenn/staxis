@@ -11,8 +11,10 @@
  *   2. extractCsvDownload runs END-TO-END from an adapter-built source on a
  *      fake page: pre-steps replayed in order, trigger clicked, download
  *      parsed, rows → canonical columns via applyTemplateParsers.
- *   3. Credential fills never survive into preSteps; dom_table recipes with
- *      interaction steps STILL flag incomplete (regression).
+ *   3. Credential fills never survive into preSteps. (feature/cua-feed-extract:
+ *      dom_table recipes with in-page interaction steps now carry them as
+ *      replayable preSteps and are NO LONGER flagged incomplete — see
+ *      feed-extract-wiring.test.ts for the full dom_table coverage.)
  */
 
 import { test, describe } from 'node:test';
@@ -210,12 +212,39 @@ describe('adapter csv wiring', () => {
     assert.equal(withoutLearned!.sources[0]!.extra, undefined);
   });
 
-  test('REGRESSION: dom_table with interaction steps still flags incomplete', () => {
+  test('feature/cua-feed-extract: dom_table with in-page interaction now carries preSteps + is NOT incomplete', () => {
     const t = actionRecipeToTableTemplate('getArrivals', {
       steps: [
         { kind: 'goto', url: 'https://pms.example/arrivals' },
         { kind: 'click', selector: '#expand' },
       ],
+      parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: { guest_name: 'td.name' } } },
+    });
+    assert.equal(t!.incomplete, undefined, 'a replayable interaction is no longer "can\'t locate"');
+    assert.equal(t!.sources[0]!.url, 'https://pms.example/arrivals');
+    assert.deepEqual(t!.sources[0]!.extra?.preSteps, [{ kind: 'click', selector: '#expand' }]);
+  });
+
+  test('feature/cua-feed-extract: a trailing landing goto becomes the source url; earlier clicks dropped (direct nav)', () => {
+    const t = actionRecipeToTableTemplate('getArrivals', {
+      // What the mapper now records for a click-navigated feed: dashboard goto,
+      // the menu click, then the real landing-page goto.
+      steps: [
+        { kind: 'goto', url: 'https://pms.example/dashboard' },
+        { kind: 'click_at', x: 120, y: 80 },
+        { kind: 'goto', url: 'https://pms.example/reservations/arrivals' },
+      ],
+      parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: { guest_name: 'td.name' } } },
+    });
+    assert.equal(t!.incomplete, undefined);
+    assert.equal(t!.sources[0]!.url, 'https://pms.example/reservations/arrivals');
+    // The click fell BEFORE the last goto → dropped (direct nav beats replay).
+    assert.equal(t!.sources[0]!.extra?.preSteps, undefined);
+  });
+
+  test('feature/cua-feed-extract: dom_table with NO goto at all is flagged incomplete (un-locatable)', () => {
+    const t = actionRecipeToTableTemplate('getArrivals', {
+      steps: [{ kind: 'click', selector: '#expand' }],   // no goto → no source url
       parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: { guest_name: 'td.name' } } },
     });
     assert.equal(t!.incomplete, true);
