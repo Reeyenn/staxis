@@ -122,6 +122,30 @@ describe('rehostFeedUrl — swap the LEARNED tenant origin for the per-hotel one
     );
   });
 
+  test('strips userinfo from the recorded origin and still re-hosts on the TRUE host', () => {
+    // A recorded `user:pass@host` form must compare on the host (not be treated
+    // as a different origin and left un-rehosted on the mapper tenant).
+    assert.equal(
+      rehostFeedUrl('https://user:pass@hotel-learned.opera-cloud.com/r/x', FAMILY, PER_HOTEL),
+      'https://hotel-a.opera-cloud.com/r/x',
+    );
+  });
+
+  test('canonicalizes a trailing-dot / explicit-default-port learned host (no wrong-tenant slip-through)', () => {
+    // Equivalent host forms share the per-hotel registrable domain, so if they
+    // were NOT recognized as the learned origin they'd stay un-rehosted and pass
+    // safeGoto's same-site guard — reading the mapper tenant. Canonicalize so
+    // they re-host correctly.
+    assert.equal(
+      rehostFeedUrl('https://hotel-learned.opera-cloud.com./r', FAMILY, PER_HOTEL),
+      'https://hotel-a.opera-cloud.com/r',
+    );
+    assert.equal(
+      rehostFeedUrl('https://hotel-learned.opera-cloud.com:443/r', FAMILY, PER_HOTEL),
+      'https://hotel-a.opera-cloud.com/r',
+    );
+  });
+
   test('malformed / relative / non-http feed URL → returned unchanged (never throws)', () => {
     assert.doesNotThrow(() => rehostFeedUrl('not a url', FAMILY, PER_HOTEL));
     assert.equal(rehostFeedUrl('not a url', FAMILY, PER_HOTEL), 'not a url');
@@ -308,6 +332,20 @@ describe('Task 2 — the 3 feeds now extract-and-WRITE (raw DOM strings → pars
       occupied_rooms: '42', occupancy_pct: '75.5%', adr_cents: '$120.00', revpar_cents: '$90.60',
     }], REVENUE_DESCRIPTOR);
     assert.equal(v.valid.length, 0);
+  });
+
+  test('DOCUMENTED LIMIT: an occupancy-only revenue row passes layer-2 but the descriptor gates it at layer-1', () => {
+    // The live pms_revenue_daily descriptor (0207) marks rooms_revenue_cents /
+    // adr_cents / revpar_cents required, so the WRITER's layer-1 validateRows
+    // still rejects a genuinely occupancy-only row. The Task-3 leniency only
+    // stops layer-2 (validateRevenueDaily) from double-rejecting a row layer-1
+    // already accepts. Making occupancy-only rows WRITE needs a descriptor change
+    // (a migration) — out of this change's owned scope. This pins that boundary.
+    const occOnly = { property_id: PID, date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80 };
+    assert.deepEqual(validateRevenueDaily(occOnly), { ok: true });   // layer-2 allows it
+    const v = validateRows([occOnly], REVENUE_DESCRIPTOR);            // layer-1 still gates it
+    assert.equal(v.valid.length, 0);
+    assert.match(v.rejected[0]!.reason, /rooms_revenue_cents|adr_cents|revpar_cents/);
   });
 });
 

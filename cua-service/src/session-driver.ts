@@ -141,14 +141,14 @@ export class SessionDriver {
    * burns a navigation, counts as a failed feed (dragging read_failure_streak),
    * and can mis-fire a paid self-repair. We skip it and surface it for review.
    *
-   *  - loggedIncompleteFeeds: keys already log-warned this knowledge version, so
-   *    we log ONCE (not every poll). Cleared on knowledge hot-reload so a
-   *    promoted fix drops the flag and a still-broken feed re-surfaces.
-   *  - incompleteFeedSummary: compact list of currently-skipped feeds, folded
-   *    into the heartbeat `notes` so /admin/property-sessions shows it. '' = none.
+   * Holds the action/table keys flagged incomplete for the CURRENT knowledge
+   * version (incompleteness is a static property of the recipe, so within a
+   * version this set is stable). Single source of truth: drives BOTH the
+   * log-ONCE warn (not every 30s poll) AND the heartbeat `notes` annotation
+   * (/admin/property-sessions). Cleared on knowledge hot-reload so a promoted
+   * fix drops the flag and a still-broken feed re-surfaces under the new version.
    */
   private loggedIncompleteFeeds: Set<string> = new Set();
-  private incompleteFeedSummary = '';
 
   constructor(opts: SessionDriverOptions) {
     this.propertyId = opts.propertyId;
@@ -934,11 +934,9 @@ export class SessionDriver {
     // note). Done BEFORE the per-hotel URL rewrite so we never bother re-hosting
     // a feed we're not going to run.
     const runnable: TableTemplate[] = [];
-    const incompleteNow: string[] = [];
     for (const template of adaptResult.templates) {
       if (template.incomplete) {
         const key = (template.sourceActionKey as string | undefined) ?? template.tableName;
-        incompleteNow.push(key);
         results.push({ table: template.tableName, ok: false, reason: 'incomplete_feed_skipped_for_review' });
         if (!this.loggedIncompleteFeeds.has(key)) {
           this.loggedIncompleteFeeds.add(key);
@@ -954,9 +952,6 @@ export class SessionDriver {
       }
       runnable.push(template);
     }
-    // Recompute every poll so a promoted fix clears the note (and a newly-broken
-    // feed appears) without waiting for a restart.
-    this.incompleteFeedSummary = incompleteNow.length > 0 ? [...incompleteNow].sort().join(',') : '';
 
     // feature/cua-per-hotel-data (Task 1) — re-host each runnable feed's source +
     // detail URLs onto THIS hotel's tenant origin. The recipe's URLs were
@@ -1118,7 +1113,9 @@ export class SessionDriver {
         // single-flight metrics (no schema change: folded into `notes`).
         notes:
           `polling: completed=${metrics.completed} skipped=${metrics.skipped} timedOut=${metrics.timedOut}` +
-          (this.incompleteFeedSummary ? ` | incomplete_feeds_skipped=${this.incompleteFeedSummary}` : ''),
+          (this.loggedIncompleteFeeds.size > 0
+            ? ` | incomplete_feeds_skipped=${[...this.loggedIncompleteFeeds].sort().join(',')}`
+            : ''),
       })
       .eq('property_id', this.propertyId);
     if (error) {
@@ -1280,9 +1277,10 @@ export class SessionDriver {
       // that would re-break per-hotel subdomains ~60s after every promotion.
       this.allowedHost = this.currentAllowedHost();
       // feature/cua-per-hotel-data (Task 4) — a promoted version may fix (or
-      // newly break) which feeds are un-locatable. Reset the log-once set so a
-      // still-incomplete feed re-surfaces under the new version and a fixed one
-      // stops being flagged; incompleteFeedSummary is recomputed on the next poll.
+      // newly break) which feeds are un-locatable. Reset the incomplete-feed set
+      // so a still-incomplete feed re-surfaces (re-logs + re-appears in the
+      // heartbeat note) under the new version, and a fixed one stops being
+      // flagged. Repopulated on the next poll from the new templates.
       this.loggedIncompleteFeeds.clear();
       // No browser restart needed — next pollOnce uses the new feeds.
     } catch (err) {
@@ -1607,35 +1605,55 @@ export function rehostFeedUrl(
 ): string {
   const perHotel = perHotelLoginUrl?.trim();
   if (!perHotel || !rawUrl) return rawUrl;            // family fallback / nothing to rewrite
-  const learnedOrigin = feedOrigin(familyStartUrl);
-  const perHotelOrigin = feedOrigin(normalizeUrl(perHotel));
-  const rawOrigin = feedOrigin(rawUrl);
+  const learned = feedOrigin(familyStartUrl);
+  const perHotelO = feedOrigin(normalizeUrl(perHotel));
+  const raw = feedOrigin(rawUrl);
   // Any origin unparseable (relative / malformed / no startUrl) → leave unchanged.
-  if (!learnedOrigin || !perHotelOrigin || !rawOrigin) return rawUrl;
+  if (!learned || !perHotelO || !raw) return rawUrl;
   // Same tenant already (the mapper tenant itself, or a single-host PMS) → no-op.
-  if (sameOrigin(learnedOrigin, perHotelOrigin)) return rawUrl;
+  if (learned.origin === perHotelO.origin) return rawUrl;
   // Only re-host feeds on the LEARNED tenant origin; cross-host URLs (SSO,
   // shared report servers) replay exactly as learned.
-  if (!sameOrigin(rawOrigin, learnedOrigin)) return rawUrl;
-  return perHotelOrigin + rawUrl.slice(rawOrigin.length);
+  if (raw.origin !== learned.origin) return rawUrl;
+  // Swap the recorded origin (incl. any userinfo prefix) for the per-hotel
+  // origin; the path/query/hash tail is preserved byte-for-byte.
+  return perHotelO.origin + rawUrl.slice(raw.prefixLen);
 }
 
 /**
- * The origin (scheme://host[:port]) prefix of an absolute http(s) URL, matched
- * up to the first '/', '?' or '#' so a `{placeholder}` further down the path is
- * never parsed. Returns null for a relative / malformed / non-http(s) URL — the
- * caller leaves such inputs unchanged. Boundary-anchored, so it can't be tricked
+ * Parse the ORIGIN of an absolute http(s) URL WITHOUT a `new URL()` round-trip
+ * (which would percent-encode the {today}/{date}/{placeholder} tokens feed +
+ * detail URLs carry). Returns:
+ *   - origin:    canonical scheme://host[:port] (lower-cased, userinfo stripped,
+ *                trailing FQDN dot + explicit default port removed) — so
+ *                equivalent host forms compare equal AND re-host correctly.
+ *   - prefixLen: length of the matched prefix in the INPUT (scheme + any
+ *                userinfo + host[:port]) so the caller slices off exactly the
+ *                path/query/hash tail (which keeps its original case + tokens).
+ * Boundary-anchored (stops at the first '/', '?' or '#') so it can't be tricked
  * into prefix-matching `https://learned.com.evil.com` as `https://learned.com`.
+ * Returns null for a relative / malformed / non-http(s) URL — the caller leaves
+ * those unchanged (safeGoto stays the navigation guard regardless).
+ *
+ * Deliberately an EXACT-origin check: navigate.ts's hostsAreSameSite is a
+ * registrable-DOMAIN check, which is precisely what must NOT be used here —
+ * sibling tenant subdomains share a registrable domain, and that same-site
+ * pass-through is the wrong-tenant read this fix closes.
  */
-function feedOrigin(url: string): string | null {
-  const m = /^(https?:\/\/[^/?#]+)/i.exec(url);
-  return m ? m[1]! : null;
-}
-
-/** Case-insensitive origin-string comparison (scheme + host are both
- *  case-insensitive; ports are digits). */
-function sameOrigin(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
+function feedOrigin(url: string): { origin: string; prefixLen: number } | null {
+  const m = /^(https?:\/\/)(?:[^/?#@]*@)?([^/?#]+)/i.exec(url);
+  if (!m) return null;
+  const scheme = m[1]!.toLowerCase();        // 'https://' | 'http://'
+  let host = m[2]!.toLowerCase();            // host[:port]; userinfo already dropped
+  // Canonicalize equivalent host forms so the comparison + re-host are exact and
+  // can't be fooled by a trailing FQDN dot or an explicit default port (a hand-
+  // crafted recipe URL of `learned.opera.com.` shares the per-hotel registrable
+  // domain, so safeGoto's same-site guard would otherwise let the un-rehosted,
+  // wrong-tenant read through). Placeholders never appear in the origin, so
+  // normalizing here is token-safe.
+  host = host.replace(/\.(?=:|$)/, '');                               // trailing '.' (before port or end)
+  host = host.replace(scheme === 'https://' ? /:443$/ : /:80$/, '');  // explicit default port
+  return { origin: scheme + host, prefixLen: m[0]!.length };
 }
 
 function todayInTimezone(tz: string): string {
