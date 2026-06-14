@@ -59,6 +59,13 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
 
   const selected = selectedId ? entries.find((e) => e.id === selectedId) ?? null : null;
 
+  // If the open recap drops out of the polled list (deleted / fell past the
+  // window), drop back to the list cleanly instead of snapping back into a stale
+  // detail view if a later poll resurfaces it.
+  React.useEffect(() => {
+    if (loaded && selectedId && !entries.some((e) => e.id === selectedId)) setSelectedId(null);
+  }, [loaded, entries, selectedId]);
+
   if (selectedId && selected) {
     return <LogEntryDetail pid={pid} entry={selected} meName={meName} L={L} onBack={() => setSelectedId(null)} onReplied={load} />;
   }

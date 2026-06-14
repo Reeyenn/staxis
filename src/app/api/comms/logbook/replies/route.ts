@@ -25,7 +25,8 @@ export async function GET(req: NextRequest): Promise<Response> {
   const idV = validateUuid(searchParams.get('entryId'), 'entryId');
   if (idV.error) return err(idV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
 
-  const rl = await checkAndIncrementRateLimit('comms-logbook', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
+  // Polled read (~8s in the detail view) → shared 'comms-read' bucket (3600/hr).
+  const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const replies = await listLogReplies(ctx.pid, idV.value!);

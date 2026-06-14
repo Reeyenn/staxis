@@ -259,11 +259,13 @@ export type RateLimitEndpoint =
   | 'comms-send'
   | 'comms-read'
   | 'comms-task'
-  // Shift Log Book — recap list/post + reply list/post. Non-AI, per-user
-  // ((pid,userId) composite via hashToRateLimitKey, fail-open). Recaps + replies
-  // are deliberate writes and the panel polls the list ~8s; 400/hr per user
-  // covers heavy catch-up reading + posting without ever inconveniencing real
-  // use, and bounds a runaway tab / stolen session.
+  // Shift Log Book — recap/reply POST (WRITES only). Non-AI, per-user
+  // ((pid,userId) composite via hashToRateLimitKey, fail-open). The Log book
+  // panel polls its GETs every ~8s (list + replies + the dashboard card), so the
+  // READS go through the shared 'comms-read' bucket (3600/hr) like every other
+  // polled comms read (see tasks/route.ts) — NOT this one. Keeping reads off this
+  // bucket is what lets the write cap stay tight: 400/hr is "a person posting
+  // recaps + replies" with wide headroom, and bounds a runaway/stolen session.
   | 'comms-logbook'
   | 'comms-action'
   | 'comms-react'             // ✓ acknowledgement reaction toggle (Slack-redesign)

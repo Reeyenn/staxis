@@ -215,7 +215,7 @@ export function CommsApp() {
         {mode === 'threads' && <ThreadsList pid={pid} L={L} onOpen={(convId, parent) => { selectConversation(convId); setThreadParent(parent); }} />}
         {mode === 'todo' && <TodoMode pid={pid} tasks={tasks} staff={boot?.staff ?? []} L={L} reload={loadTasks} />}
         {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot?.me.isManager} L={L} /></div>}
-        {mode === 'logbook' && <LogbookMode pid={pid} meName={boot?.me.displayName ?? L('You', 'Tú')} L={L} />}
+        {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot?.me.displayName ?? L('You', 'Tú')} L={L} />}
       </div>
 
       {/* ── Overlays ── */}
