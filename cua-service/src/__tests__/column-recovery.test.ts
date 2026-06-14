@@ -34,6 +34,7 @@ import assert from 'node:assert/strict';
 import {
   auditRequiredColumns,
   gateRecoveredColumn,
+  certifyColumns,
   learnedForGate,
   buildRecoveryHint,
   expectedShapeFor,
@@ -365,6 +366,210 @@ describe('gateRecoveredColumn (worse-than-blank protections)', () => {
       selector: 'td:nth-child(7) input@value', allSelectors: { out_of_order: 'td:nth-child(7) input@value' },
     });
     assert.equal(verdict.ok, true);
+  });
+});
+
+// ─── 3b. First-emission certification (feature/cua-prove-columns) ────────────
+
+describe('certifyColumns (first-emission proof of ALL required columns)', () => {
+  const TODAY_ISO = TODAY; // 2026-06-12
+
+  // A correct arrivals map: key distinct, names text, dates near-today + ordered.
+  const correctArrivals = {
+    pms_reservation_id: ['R1001', 'R1002', 'R1003'],
+    guest_name: ['John Smith', 'Jane Doe', 'Bob Lee'],
+    arrival_date: ['06/12/2026', '06/12/2026', '06/13/2026'],
+    departure_date: ['06/14/2026', '06/15/2026', '06/14/2026'],
+  };
+  const arrivalsSelectors = {
+    pms_reservation_id: 'td:nth-child(1) a@href',
+    guest_name: 'td:nth-child(2)',
+    arrival_date: 'td:nth-child(5)',
+    departure_date: 'td:nth-child(6)',
+  };
+
+  test('a correct populated table → every required column certified', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date'],
+      allValues: correctArrivals,
+      allSelectors: arrivalsSelectors,
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    for (const col of ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date']) {
+      assert.equal(verdicts.get(col)?.verdict, 'certified', `${col} should certify`);
+    }
+  });
+
+  test('THE GAP: a check-in ↔ check-out swap on a plain HTML table is caught (failed), not shipped', () => {
+    // arrival_date selector points at the CHECKOUT cell (future dates), and
+    // departure_date at the CHECK-IN cell (today) — the classic silent corruption.
+    const swapped = {
+      pms_reservation_id: ['R1001', 'R1002', 'R1003'],
+      guest_name: ['John Smith', 'Jane Doe', 'Bob Lee'],
+      arrival_date: ['06/15/2026', '06/16/2026', '06/17/2026'],   // really checkout
+      departure_date: ['06/12/2026', '06/12/2026', '06/13/2026'], // really checkin
+    };
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date', 'departure_date'],
+      allValues: swapped,
+      allSelectors: arrivalsSelectors,
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    // arrival_date is provably wrong (later than departure AND far from today).
+    assert.equal(verdicts.get('arrival_date')?.verdict, 'failed');
+    // departure_date is also caught by the same date-order invariant.
+    assert.equal(verdicts.get('departure_date')?.verdict, 'failed');
+  });
+
+  test('a status string mapped into a date column → failed (parse majority)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date'],
+      allValues: { arrival_date: ['Confirmed', 'Confirmed', 'Booked'] },
+      allSelectors: { arrival_date: 'td:nth-child(3)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(verdicts.get('arrival_date')?.verdict, 'failed');
+    assert.match((verdicts.get('arrival_date') as { reason: string }).reason, /parse_majority/);
+  });
+
+  test('no value evidence (empty/unreadable feed) → every column UNCERTAIN, never certified', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date'],
+      allValues: {},
+      allSelectors: arrivalsSelectors,
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: false,
+    });
+    for (const col of ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date']) {
+      assert.equal(verdicts.get(col)?.verdict, 'uncertain', `${col} should be uncertain with no evidence`);
+    }
+  });
+
+  test('a wide multi-day arrivals view (correct order) → semantic-window miss is UNCERTAIN, not failed/blanked', () => {
+    // Far-future dates (PMS shows a rolling window, not today-only) but arrival<=
+    // departure on every row → only the soft semantic-window heuristic trips. We
+    // must NOT blank a correct column (that could cascade to quarantine) — park it.
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date'],
+      allValues: {
+        arrival_date: ['07/20/2026', '07/21/2026', '07/22/2026'],
+        departure_date: ['07/22/2026', '07/23/2026', '07/24/2026'],
+      },
+      allSelectors: { arrival_date: 'td:nth-child(5)', departure_date: 'td:nth-child(6)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('arrival_date');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /semantic_date_window/);
+  });
+
+  test('plain-text column mirroring another mapped column → uncertain (not blindly certified)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['guest_name'],
+      allValues: {
+        guest_name: ['A100', 'A200', 'A300'],
+        pms_reservation_id: ['A100', 'A200', 'A300'], // selector pointed at the id cell
+      },
+      allSelectors: { guest_name: 'td:nth-child(2)', pms_reservation_id: 'td:nth-child(1)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('guest_name');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /text_mirror/);
+  });
+
+  test('a thin (<3 row) plain-text column → uncertain, not blindly certified', () => {
+    // On a 1-2 row feed the mirror/constant heuristics can't run, so a wrong
+    // free-text selector would otherwise auto-promote. Abstain → founder review.
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['guest_name'],
+      allValues: { guest_name: ['John Smith', 'Jane Doe'] }, // only 2 non-blank
+      allSelectors: { guest_name: 'td:nth-child(2)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('guest_name');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /thin_text_evidence/);
+  });
+
+  test('a constant plain-text column → uncertain (a header/label echoed down the column)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['description'],
+      allValues: { description: ['Maintenance', 'Maintenance', 'Maintenance'] },
+      allSelectors: { description: 'td:nth-child(2)' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('description');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /constant_text/);
+  });
+
+  test('a sparse-but-real boolean (out_of_order set on 1 row in 8) certifies, not all_blank-rejected', () => {
+    // The mapper feeds certifyColumns the FULL deadness window, so a column blank
+    // in most rows but real in one is proven, not falsely failed. Guards the
+    // sparse-column regression.
+    const verdicts = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['out_of_order'],
+      allValues: { out_of_order: ['', '', '', '', '', '', '', 'Y'] },
+      allSelectors: { out_of_order: 'td:nth-child(7) input@value' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(verdicts.get('out_of_order')?.verdict, 'certified');
+  });
+
+  test('work-orders: a correct status enum with model vocab certifies; the key mirroring another column fails', () => {
+    // status maps cleanly via the model's emitted vocabulary → certified.
+    const certified = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['status'],
+      allValues: { status: ['Open', 'In Progress', 'Open'] },
+      allSelectors: { status: 'td:nth-child(3)' },
+      learned: learnedForGate('getWorkOrders', { status: { Open: 'open', 'In Progress': 'in_progress' } }),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(certified.get('status')?.verdict, 'certified');
+
+    // The key column whose values mirror another column is provably wrong.
+    const mirrored = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['pms_work_order_id'],
+      allValues: {
+        pms_work_order_id: ['101', '102', '103'],
+        room_number: ['101', '102', '103'],
+      },
+      allSelectors: { pms_work_order_id: 'td:nth-child(1)', room_number: 'td:nth-child(5)' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(mirrored.get('pms_work_order_id')?.verdict, 'failed');
   });
 });
 
@@ -737,6 +942,90 @@ describe('finalizeRecoveredSuccess (residual policy)', () => {
       missingRequiredColumns('getArrivals', effectiveColumnsFromAction('getArrivals', out.action)),
       [],
     );
+  });
+});
+
+describe('finalizeRecoveredSuccess — unprovenRequiredColumns stamp (feature/cua-prove-columns)', () => {
+  const read = (action: ActionRecipe): string[] | undefined =>
+    (action as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns;
+
+  const success = {
+    ok: true as const,
+    action: {
+      steps: [],
+      parse: {
+        mode: 'table' as const,
+        hint: {
+          rowSelector: 'tbody tr',
+          columns: {
+            pms_reservation_id: 'td:nth-child(1)', guest_name: 'td:nth-child(2)',
+            arrival_date: 'td:nth-child(5)', departure_date: 'td:nth-child(6)',
+          },
+        },
+      },
+    },
+  };
+
+  test('fully-certified emission carries NO field (legacy/clean shape preserved)', () => {
+    const out = finalizeRecoveredSuccess({ success, audit: auditWith([]) });
+    assert.equal(read(out.action), undefined);
+  });
+
+  test('an unparseable column keeps its selector AND is recorded unproven', () => {
+    const out = finalizeRecoveredSuccess({
+      success,
+      audit: auditWith([['arrival_date', 'unparseable']]),
+    });
+    const cols = out.action.parse.mode === 'table' ? out.action.parse.hint.columns : {};
+    assert.equal(cols.arrival_date, 'td:nth-child(5)');       // selector kept (thin-evidence rule)
+    assert.deepEqual(read(out.action), ['arrival_date']);     // but never auto-promoted
+  });
+
+  test('a blanked (dead/rejected) column is NOT in the unproven list — it is a gap, not a live column', () => {
+    const out = finalizeRecoveredSuccess({
+      success,
+      audit: auditWith([['arrival_date', 'dead'], ['departure_date', 'rejected']]),
+    });
+    assert.equal(read(out.action), undefined); // both blanked → handled by computeFeedGaps
+  });
+
+  test('an UNCERTAIN audit (empty/unreadable feed) records every still-shipping required column', () => {
+    const audit: PageAudit = {
+      verified: false,
+      pageUrl: 'https://pms.example.com/arrivals',
+      probeRows: [],
+      totalMatched: 0,
+      outstanding: new Map(),
+      uncertain: new Set(['arrival_date', 'departure_date']),
+      problems: [],
+    };
+    const out = finalizeRecoveredSuccess({ success, audit });
+    assert.deepEqual(read(out.action)?.sort(), ['arrival_date', 'departure_date']);
+    // selectors are kept — they may be perfect, just unproven on an empty feed.
+    const cols = out.action.parse.mode === 'table' ? out.action.parse.hint.columns : {};
+    assert.equal(cols.arrival_date, 'td:nth-child(5)');
+  });
+
+  test('a column recovered on the detail page (drill) is proven-by-drill → excluded from unproven', () => {
+    const out = finalizeRecoveredSuccess(
+      { success, audit: auditWith([['arrival_date', 'unparseable']]) },
+      {
+        ok: true,
+        tokensUsed: 0,
+        drillDown: {
+          listUrl: 'https://pms.example.com/arrivals',
+          listRowSelector: 'tbody tr',
+          listColumns: {},
+          detailUrlTemplate: 'https://pms.example.com/r?id={pms_reservation_id}',
+          detailUrlParams: { pms_reservation_id: 'pms_reservation_id' },
+          detailColumns: { arrival_date: '#arr' },
+          fieldCoverage: { arrival_date: '1/1' },
+          samplesDrilled: 1,
+          templateVerified: true,
+        },
+      },
+    );
+    assert.equal(read(out.action), undefined); // arrival_date proven by the drill
   });
 });
 
