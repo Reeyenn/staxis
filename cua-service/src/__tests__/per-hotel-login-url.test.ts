@@ -6,22 +6,25 @@
  * (OPERA Cloud, Cloudbeds, Mews, RoomKey) were all funnelled at one tenant.
  * The per-hotel URL (scraper_credentials.ca_login_url) was loaded but ignored.
  *
- * `resolveLoginUrl` / `resolveAllowedHost` are the pure core of the fix:
+ * Three pure helpers are the core of the fix:
  *   - resolveLoginUrl: per-hotel URL wins (normalized, so a schemeless input
  *     still resolves to the same host the guard uses); absent/empty → family.
- *   - resolveAllowedHost: the same-site host guard is anchored to whichever
- *     URL we actually log in at, so a per-hotel subdomain isn't false-rejected
- *     — and a malformed per-hotel URL falls back to the family host instead of
- *     throwing (fails closed: the login navigation itself is what rejects it).
+ *   - resolveAllowedHost: the same-site guard host, derived from EXACTLY the
+ *     URL we log in at (no skew). '' when no host can be derived (malformed or
+ *     hostless scheme) — the driver treats '' as fail-closed (failed_restart).
+ *   - resolveLoginGotoUrl: re-points the learner's baked-in login `goto` step
+ *     (always recorded as the family startUrl — mapper.ts:1179) to the
+ *     per-hotel URL, so a per-subdomain PMS isn't funnelled back to the
+ *     mapper's tenant by the recorded step. Other gotos replay as learned.
  *
  * SCOPE: this is the LOGIN-navigation fix. Feed reads still navigate to the
  * recipe's recorded (family-tenant) URLs — anchoring those to the per-hotel
  * host is a separate change in the extractors/recipe-adapter, out of scope here.
  *
- * The assertions exercise only the two pure helpers, but importing
- * session-driver pulls in Playwright + the Supabase client at module load —
- * hence the ws-polyfill import below (same constraint as
- * login-confirmation.test.ts). No browser/Anthropic/DB call is made.
+ * The assertions exercise only the pure helpers, but importing session-driver
+ * pulls in Playwright + the Supabase client at module load — hence the
+ * ws-polyfill import below (same constraint as login-confirmation.test.ts).
+ * No browser/Anthropic/DB call is made.
  */
 
 // MUST be first: install the WebSocket shim before any supabase-importing
@@ -32,7 +35,7 @@ import './ws-polyfill.js';
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveLoginUrl, resolveAllowedHost } from '../session-driver.js';
+import { resolveLoginUrl, resolveAllowedHost, resolveLoginGotoUrl } from '../session-driver.js';
 
 const FAMILY = 'https://login.opera-cloud.com/';
 
@@ -79,63 +82,90 @@ describe('resolveLoginUrl — per-hotel > family precedence', () => {
   });
 });
 
-describe('resolveAllowedHost — anchored to the URL we actually log in at', () => {
+describe('resolveAllowedHost — derived from exactly the login URL (no skew)', () => {
   test('derives the host from the per-hotel login URL (subdomain not false-rejected)', () => {
-    assert.equal(
-      resolveAllowedHost('https://hotel-a.opera-cloud.com/signin', FAMILY),
-      'hotel-a.opera-cloud.com',
-    );
+    assert.equal(resolveAllowedHost('https://hotel-a.opera-cloud.com/signin'), 'hotel-a.opera-cloud.com');
   });
 
-  test('derives the family host when no per-hotel URL is in play', () => {
-    assert.equal(resolveAllowedHost(FAMILY, FAMILY), 'login.opera-cloud.com');
+  test('derives the family host for the family startUrl (no-per-hotel path)', () => {
+    assert.equal(resolveAllowedHost(FAMILY), 'login.opera-cloud.com');
   });
 
   test('keeps a non-default port in the host (host, not hostname)', () => {
-    assert.equal(resolveAllowedHost('https://h.example.com:8443/x', FAMILY), 'h.example.com:8443');
+    assert.equal(resolveAllowedHost('https://h.example.com:8443/x'), 'h.example.com:8443');
   });
 
-  test('falls back to the family host when the chosen login URL is unparseable (no throw)', () => {
-    assert.equal(resolveAllowedHost('not a url', FAMILY), 'login.opera-cloud.com');
-    assert.equal(resolveAllowedHost('', FAMILY), 'login.opera-cloud.com');
+  test('returns "" (never throws) for a malformed URL — caller fails closed', () => {
+    assert.doesNotThrow(() => resolveAllowedHost('not a url'));
+    assert.equal(resolveAllowedHost('not a url'), '');
+    assert.equal(resolveAllowedHost(''), '');
   });
 
-  test('returns empty string (never throws) when BOTH URLs are unparseable — caller fails closed', () => {
-    // The driver treats '' as a fail-closed signal (failed_restart) rather than
-    // letting a downstream new URL() throw uncaught. Must NOT throw here.
-    assert.doesNotThrow(() => resolveAllowedHost('not a url', 'also not a url'));
-    assert.equal(resolveAllowedHost('not a url', 'also not a url'), '');
-    assert.equal(resolveAllowedHost('', ''), '');
+  test('returns "" for a parseable-but-hostless scheme (mailto:/tel:) — fails closed, no wrong-host guard', () => {
+    assert.equal(resolveAllowedHost('mailto:ops@example.com'), '');
+    assert.equal(resolveAllowedHost('tel:+15551234567'), '');
   });
 });
 
-describe('end-to-end precedence (login nav target + allowedHost agree)', () => {
-  test('per-hotel hotel: per-hotel URL drives BOTH the login nav target and allowedHost', () => {
+describe('resolveLoginGotoUrl — re-point the learner\'s baked-in login goto', () => {
+  const A = 'https://hotel-a.opera-cloud.com/login'; // mapper tenant = family startUrl
+  const B = 'https://hotel-b.opera-cloud.com/login'; // a different hotel on the family
+
+  test('rewrites the baked goto (== family startUrl) to the per-hotel URL', () => {
+    // Without this, hotel-b would be funnelled back to hotel-a (same registrable
+    // domain → safeGoto same-site guard passes).
+    assert.equal(resolveLoginGotoUrl(A, A, B), B);
+  });
+
+  test('leaves a non-login goto (e.g. SSO / shared-auth subdomain) exactly as learned', () => {
+    const sso = 'https://idp.okta.com/authorize';
+    assert.equal(resolveLoginGotoUrl(sso, A, B), sso);
+    const sharedAuth = 'https://auth.opera-cloud.com/oauth';
+    assert.equal(resolveLoginGotoUrl(sharedAuth, A, B), sharedAuth);
+  });
+
+  test('no-op for a hotel with no per-hotel URL (Choice Advantage): baked goto stays the family URL', () => {
+    assert.equal(resolveLoginGotoUrl(A, A, null), A);
+    assert.equal(resolveLoginGotoUrl(A, A, ''), A);
+  });
+
+  test('the mapper tenant itself is unaffected (its per-hotel URL == family startUrl)', () => {
+    assert.equal(resolveLoginGotoUrl(A, A, A), A);
+  });
+
+  test('normalizes a schemeless per-hotel URL when rewriting the goto', () => {
+    assert.equal(resolveLoginGotoUrl(A, A, 'hotel-b.opera-cloud.com/login'), 'https://hotel-b.opera-cloud.com/login');
+  });
+});
+
+describe('end-to-end precedence (login nav target + allowedHost + goto all agree)', () => {
+  test('per-hotel hotel: per-hotel URL drives login nav, allowedHost, AND the baked goto', () => {
+    const family = 'https://hotel-a.cloudbeds.com/login';
     const perHotel = 'https://tenant-123.cloudbeds.com/login';
-    const url = resolveLoginUrl(perHotel, FAMILY);
+    const url = resolveLoginUrl(perHotel, family);
     assert.equal(url, perHotel);
-    assert.equal(resolveAllowedHost(url, FAMILY), 'tenant-123.cloudbeds.com');
+    assert.equal(resolveAllowedHost(url), 'tenant-123.cloudbeds.com');
+    assert.equal(resolveLoginGotoUrl(family, family, perHotel), perHotel);
   });
 
   test('schemeless per-hotel URL: nav target and allowedHost stay consistent (no skew)', () => {
     const url = resolveLoginUrl('tenant-123.cloudbeds.com/login', FAMILY);
     assert.equal(url, 'https://tenant-123.cloudbeds.com/login');
-    // allowedHost is derived from the SAME (normalized) value — same host.
-    assert.equal(resolveAllowedHost(url, FAMILY), 'tenant-123.cloudbeds.com');
+    assert.equal(resolveAllowedHost(url), 'tenant-123.cloudbeds.com');
   });
 
   test('Choice Advantage (no per-hotel URL): family navigation + family allowedHost, unchanged', () => {
     const url = resolveLoginUrl(null, FAMILY);
     assert.equal(url, FAMILY);
-    assert.equal(resolveAllowedHost(url, FAMILY), 'login.opera-cloud.com');
+    assert.equal(resolveAllowedHost(url), 'login.opera-cloud.com');
   });
 
   test('two hotels on the SAME family resolve to DIFFERENT hosts', () => {
     const a = resolveLoginUrl('https://hotel-a.mews.com/', FAMILY);
     const b = resolveLoginUrl('https://hotel-b.mews.com/', FAMILY);
     assert.notEqual(a, b);
-    assert.notEqual(resolveAllowedHost(a, FAMILY), resolveAllowedHost(b, FAMILY));
-    assert.equal(resolveAllowedHost(a, FAMILY), 'hotel-a.mews.com');
-    assert.equal(resolveAllowedHost(b, FAMILY), 'hotel-b.mews.com');
+    assert.notEqual(resolveAllowedHost(a), resolveAllowedHost(b));
+    assert.equal(resolveAllowedHost(a), 'hotel-a.mews.com');
+    assert.equal(resolveAllowedHost(b), 'hotel-b.mews.com');
   });
 });
