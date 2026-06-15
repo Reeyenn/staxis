@@ -33,9 +33,6 @@ export const WORKLIST_DEEPLINK: Record<WorklistItem['sourceType'], string> = {
   pm: '/maintenance?tab=preventive',
 };
 
-/** A preventive task counts as worklist-worthy once it's overdue or due within this window. */
-const PM_SOON_MS = 2 * 86_400_000;
-
 const QUERY_ROW_CAP = 500;
 
 /**
@@ -202,13 +199,18 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
     });
   }
 
-  // ── Preventive maintenance (overdue / due-soon; derived, recurring) ──────────
+  // ── Preventive maintenance (overdue / due today; derived, recurring) ─────────
+  // Surface a PM only when it's overdue or due by end of today. Completing one
+  // stamps last_completed_at=now, pushing next-due to now+frequency — so even a
+  // daily PM drops off the list the moment it's done (no "I tapped done but it's
+  // still here" confusion), then returns tomorrow.
+  const endOfTodayMs = (() => { const d = new Date(now); d.setHours(23, 59, 59, 999); return d.getTime(); })();
   for (const r of (pmRes.data ?? []) as Record<string, unknown>[]) {
     const freqDays = Number(r.frequency_days ?? 1);
     const lastCompleted = (r.last_completed_at as string | null) ?? null;
     // Never completed → due now. Otherwise next-due = last + frequency.
     const nextDueMs = lastCompleted ? Date.parse(lastCompleted) + freqDays * 86_400_000 : now;
-    if (nextDueMs > now + PM_SOON_MS) continue;   // not yet worth chasing
+    if (nextDueMs > endOfTodayMs) continue;   // not due yet
     const overdue = nextDueMs < now;
     items.push({
       id: `pm:${r.id}`,

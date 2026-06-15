@@ -46,8 +46,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const sourceType = typeV.value!;
   const sourceId = idV.value!;
 
-  // Floor staff may only complete their own manual to-dos. The cross-department
-  // sources (complaint/workorder/pm/inspection) are management + front-desk only.
+  // Floor staff may only complete manual to-dos (same property-wide scope as the
+  // existing /api/comms/tasks PATCH). The cross-department sources
+  // (complaint/workorder/pm/inspection) are management + front-desk only.
   // Checked before any row read, so it never leaks whether an id exists.
   if (sourceType !== 'task' && !worklistSeesAllSources(ctx.role)) {
     return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });

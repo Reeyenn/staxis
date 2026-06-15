@@ -54,8 +54,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   const sourceType = typeV.value!;
   const sourceId = idV.value!;
 
-  // Floor staff may only assign their own manual to-dos. Reassigning a complaint
-  // or changing a work order's priority lane is management + front-desk only.
+  // Floor staff may only assign manual to-dos. Reassigning a complaint or
+  // changing a work order's priority lane is management + front-desk only.
   // Checked before any row read, so it never leaks whether an id exists.
   if (sourceType !== 'task' && !worklistSeesAllSources(ctx.role)) {
     return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
