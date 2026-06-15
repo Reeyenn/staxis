@@ -22,6 +22,7 @@ import {
   registerGoldenFixture,
   loadGoldenFixture,
   clearGoldenFixtures,
+  KNOWN_GOLDEN_FIXTURES,
   type GoldenFixture,
   type FreshExtractionShape,
 } from '../golden-fixtures.js';
@@ -134,6 +135,9 @@ describe('registry — absent ⟹ skip', () => {
     assert.ok(loadGoldenFixture('fam', 'getArrivals'));
     clearGoldenFixtures();
     assert.equal(loadGoldenFixture('fam', 'getArrivals'), null);
+  });
+  test('KNOWN_GOLDEN_FIXTURES is EMPTY by default → gate inert in prod (no rollout re-park)', () => {
+    assert.equal(KNOWN_GOLDEN_FIXTURES.length, 0);
   });
 });
 

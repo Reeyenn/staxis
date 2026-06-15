@@ -82,11 +82,13 @@ const REANCHOR_PROBE_CAP = 60;
  *  loop; beyond it, self-repair goes straight to the paid path. */
 const MAX_REANCHOR_ATTEMPTS = 2;
 
-/** Local-clock ISO date (yyyy-mm-dd) for re-anchor value certification. */
+/** ISO "today" (yyyy-mm-dd) in the PMS timezone for re-anchor value
+ *  certification. Uses the PMS tz (the same CUA_PMS_TZ → America/Chicago default
+ *  the runtime date-templating + cost-cap use) instead of the Fly box's UTC
+ *  clock, so the date-window certification doesn't skew near midnight in
+ *  far-from-UTC timezones (which would wrongly abstain a valid date column). */
 function reanchorTodayIso(): string {
-  const d = new Date();
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return todayInTimezone(process.env.CUA_PMS_TZ || 'America/Chicago');
 }
 
 /** Transpose extracted rows → per-column value arrays (same row order). Missing
@@ -182,6 +184,13 @@ export class SessionDriver {
   /** feature/cua-self-heal-reach — lifetime rung-2 re-anchor attempts per feed
    *  this session (bounds version-churn; see MAX_REANCHOR_ATTEMPTS). */
   private reanchorAttemptsByAction: Map<string, number> = new Map();
+
+  /** feature/cua-self-heal-reach — feeds whose zero-row streak tripped this poll.
+   *  Self-heal is DEFERRED to AFTER the poll's single-flight read mutex releases
+   *  (drainSelfHeal in pollOnce): the rung-2 re-anchor probe re-acquires that same
+   *  per-hotel mutex, so running it inline (still inside the poll's lock) would
+   *  always see the lock busy and fall straight through to the paid path. */
+  private pendingSelfHeal: Set<keyof Recipe['actions']> = new Set();
 
   /**
    * feature/cua-per-hotel-data (Task 4) — consume template.incomplete at replay.
@@ -870,6 +879,31 @@ export class SessionDriver {
         err: err instanceof Error ? err.message : String(err),
       });
     });
+
+    // feature/cua-self-heal-reach — process queued self-heals AFTER the poll's
+    // read mutex has RELEASED. The rung-2 re-anchor probe re-acquires that same
+    // mutex; running it here (not inside runAllFeeds) is what lets it actually
+    // take the lock. scheduleNextPoll only fires after pollOnce() resolves, so
+    // a bounded re-anchor probe can't overlap the next poll.
+    await this.drainSelfHeal();
+  }
+
+  /** Run each queued self-heal (rung-2 re-anchor → rung-1 paid re-learn) now that
+   *  the poll mutex is free. Bounded (one entry per feed per threshold-trip);
+   *  errors are isolated so one feed's failure never blocks another's. */
+  private async drainSelfHeal(): Promise<void> {
+    if (this.pendingSelfHeal.size === 0) return;
+    const pending = [...this.pendingSelfHeal];
+    this.pendingSelfHeal.clear();
+    for (const actionKey of pending) {
+      try {
+        await this.attemptSelfHeal(actionKey);
+      } catch (err) {
+        log.warn('session-driver: self-heal drain error', {
+          propertyId: this.propertyId, actionKey, err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   /**
@@ -1457,9 +1491,12 @@ export class SessionDriver {
     // next poll tick. Reset the counter after the attempt so we don't
     // hammer the workflow_jobs INSERT every 30s if something's wrong.
     this.consecutiveZeroRowsByAction.set(actionKey, 0);
-    // feature/cua-self-heal-reach — try the FREE rung-2 re-anchor FIRST; only
-    // fall through to the $3 paid re-learn when it abstains / can't heal.
-    void this.attemptSelfHeal(actionKey, template);
+    // feature/cua-self-heal-reach — QUEUE the self-heal; it runs in drainSelfHeal
+    // AFTER this poll's read mutex releases (the re-anchor probe needs that same
+    // mutex). Firing it inline here would deadlock-skip every time. `template` is
+    // not needed downstream (the recipe action is the source of truth).
+    this.pendingSelfHeal.add(actionKey);
+    void template;
   }
 
   /**
@@ -1468,10 +1505,10 @@ export class SessionDriver {
    * fleet-safe (its promotion goes through the SAME sample-verify + golden-fixture
    * gauntlet as a paid re-learn); ANY doubt falls through to enqueueSelfRepairJob.
    */
-  private async attemptSelfHeal(actionKey: keyof Recipe['actions'], template: TableTemplate): Promise<void> {
+  private async attemptSelfHeal(actionKey: keyof Recipe['actions']): Promise<void> {
     if (reanchorEnabled()) {
       try {
-        const healed = await this.tryReanchor(actionKey, template);
+        const healed = await this.tryReanchor(actionKey);
         if (healed) {
           log.info('session-driver: rung-2 self-heal succeeded — skipped $3 paid re-learn', {
             propertyId: this.propertyId, pmsFamily: this.pmsFamily, actionKey,
@@ -1497,11 +1534,10 @@ export class SessionDriver {
    * it never overlaps a poll; a busy mutex ⟹ skip ⟹ abstain → paid path. The DB
    * promotion runs OUTSIDE the mutex (it touches no page).
    */
-  private async tryReanchor(actionKey: keyof Recipe['actions'], template: TableTemplate): Promise<boolean> {
+  private async tryReanchor(actionKey: keyof Recipe['actions']): Promise<boolean> {
     if (!this.page || !this.knowledgeFile || !this.allowedHost) return false;
     const attempts = this.reanchorAttemptsByAction.get(String(actionKey)) ?? 0;
     if (attempts >= MAX_REANCHOR_ATTEMPTS) return false; // bounded — avoid version churn
-    void template; // the recipe action is the source of truth; template is the trigger context
 
     const k = this.knowledgeFile.knowledge;
     const recipe: Recipe = {
@@ -1542,6 +1578,19 @@ export class SessionDriver {
     // run it through the SHARED fleet-safety gauntlet (gate → sample-verify →
     // golden-fixture → save → promote). Only an auto-promote actually heals.
     const candidate = applyColumnReanchor(recipe, actionKey, probe.changes);
+    // The heal re-extracted + re-certified the feed's required columns with the
+    // NEW selectors (probe.freshShape). Refresh the candidate's value-proof state
+    // from that REAL evidence: a STALE unprovenRequiredColumns inherited from the
+    // active recipe (e.g. a column onboarded empty, since populated) must not block
+    // auto-promotion of a now-certified feed; a column STILL not certified must
+    // keep the feed in founder review (review P1).
+    const healedAction = candidate.actions[actionKey] as ActionRecipe & { unprovenRequiredColumns?: string[] };
+    const stillUnproven = requiredColumnsForTarget(actionKey).filter((c) => {
+      const v = probe.freshShape.columnVerdicts[c];
+      return v !== undefined && v !== 'certified'; // shipping + judged + not certified
+    });
+    if (stillUnproven.length > 0) healedAction.unprovenRequiredColumns = stillUnproven;
+    else delete healedAction.unprovenRequiredColumns;
     const seedActions: Recipe['actions'] = { ...recipe.actions };
     delete seedActions[actionKey];
     const promoted = await promoteRecipeChange({
@@ -1655,6 +1704,11 @@ export class SessionDriver {
     for (const cand of candidates) {
       if (signal.aborted) return abstain();
       const cext = await extractDomRows(this.page, hint.rowSelector, { [col]: cand.selector }, { cap: REANCHOR_PROBE_CAP });
+      // The candidate uses the SAME rowSelector that yielded `rows`; if its match
+      // count differs, the page shifted mid-probe (rowSelector instability) and
+      // the per-row values would mis-align with otherValues → drop this candidate
+      // rather than risk a mis-aligned (false) certification.
+      if (cext.rows.length !== rows.length) continue;
       candidateResults.push({
         headerIndex: cand.headerIndex,
         selector: cand.selector,
@@ -1662,6 +1716,7 @@ export class SessionDriver {
         headerText: cand.headerText,
       });
     }
+    if (candidateResults.length === 0) return abstain();
     const otherValues: Record<string, string[]> = {};
     const otherSelectors: Record<string, string> = {};
     for (const [c, v] of Object.entries(allValues)) if (c !== col) otherValues[c] = v;

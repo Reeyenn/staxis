@@ -28,7 +28,7 @@
  * from the per-hotel daily cost cap.
  */
 
-import type { Browser } from 'playwright';
+import type { Browser, BrowserContextOptions } from 'playwright';
 import { chromium } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
@@ -59,6 +59,10 @@ import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 // feature/cua-self-heal-reach — one-fix-generalizes (sample-verify) + golden-fixture gates.
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
+// rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
+// from here, so this is a cycle — but BOTH cross-module references are call-time
+// (inside functions/methods), never load-time, so it resolves safely under CJS+ESM.
+import { rehostFeedUrl } from './session-driver.js';
 import { requiredColumnsForTarget } from './reanchor.js';
 import {
   loadGoldenFixture,
@@ -697,9 +701,14 @@ export async function runMappingJob(
   //      → park_draft; the live fleet is never re-parked. Fail-OPEN: a thrown
   //      sample-verify is advisory (already caught inside computeSampleVerifyGate).
   if (gate.decision === 'auto_promote' && (sampleVerifyEnabled() || goldenFixtureGateEnabled())) {
+    // A SEEDED job re-learned only the non-seeded target(s) → gate exactly those.
+    // An UNSEEDED full learn (fresh family OR admin regenerate of a family that
+    // already has live siblings) replaced the WHOLE recipe → gate EVERY emitted
+    // feed, not just the required core, so a regressed business-critical feed
+    // can't go fleet-wide unchecked (Codex P1). Bounded by sampleVerifyN siblings.
     const changedTargets = input.seed_actions
       ? Object.keys(result.recipe.actions).filter((k) => !(k in (input.seed_actions as Record<string, unknown>)))
-      : REQUIRED_TARGETS.map(String).filter((t) => t in result.recipe.actions);
+      : Object.keys(result.recipe.actions);
     let sampleVerify: SampleVerifyGateInput | undefined;
     let goldenFixture: GoldenFixtureGateInput | undefined;
     if (goldenFixtureGateEnabled()) {
@@ -1105,6 +1114,12 @@ const SAMPLE_VERIFY_REPLAY_TIMEOUT_MS = 60_000;
 /** A required column present on < this fraction of a sibling's rows is read as a
  *  POSITIVE selector failure (the candidate points at the wrong/empty cell there). */
 const SAMPLE_VERIFY_MIN_COVERAGE = 0.5;
+/** Hard caps on the WHOLE gate (siblings × changed feeds can be large for an
+ *  unseeded full re-learn). Bound both the replay COUNT and the wall-clock so a
+ *  promotion is never blocked for minutes; un-replayed feeds are simply not
+ *  sampled (never a false fail). */
+const SAMPLE_VERIFY_MAX_TOTAL_REPLAYS = 16;
+const SAMPLE_VERIFY_TOTAL_BUDGET_MS = 180_000;
 
 /** Injectable seam: the gate's selection + aggregation is unit-testable with
  *  fakes; production wires the real Supabase + Playwright replay. */
@@ -1147,8 +1162,17 @@ export async function computeSampleVerifyGate(args: {
     return { enabled: true, sampled: 0, failedSiblings: 0, note: 'no eligible sibling hotels' };
   }
   const results: SiblingVerifyResult[] = [];
+  const deadline = Date.now() + SAMPLE_VERIFY_TOTAL_BUDGET_MS;
+  let replays = 0;
+  let truncated = false;
+  outer:
   for (const propertyId of siblings) {
     for (const actionKey of args.changedTargets) {
+      if (replays >= SAMPLE_VERIFY_MAX_TOTAL_REPLAYS || Date.now() >= deadline) {
+        truncated = true;
+        break outer;
+      }
+      replays++;
       try {
         results.push(await args.deps.replayFeedOnSibling(propertyId, args.recipe, actionKey));
       } catch (err) {
@@ -1161,7 +1185,7 @@ export async function computeSampleVerifyGate(args: {
     enabled: true,
     sampled: agg.sampled,
     failedSiblings: agg.failedSiblings,
-    note: `pass=${agg.passed} fail=${agg.failed} inconclusive=${agg.inconclusive}`,
+    note: `pass=${agg.passed} fail=${agg.failed} inconclusive=${agg.inconclusive}${truncated ? ' (budget-truncated)' : ''}`,
   };
 }
 
@@ -1191,11 +1215,22 @@ async function replaySiblingFeedReadOnly(
   if (template.incomplete) return out('inconclusive', 'feed_incomplete');
   if (template.sources.length !== 1) return out('inconclusive', 'multi_source_unsupported');
 
+  // Re-host the feed URL onto THIS sibling's tenant origin (per-subdomain PMS).
+  // The recipe URL is the MAPPER tenant's; without this, safeGoto's same-site
+  // (registrable-domain) guard would let a wrong-tenant read through and the
+  // replay would "verify" against the mapper's data → a false pass. Same-host
+  // PMS (Choice Advantage) → no-op.
+  const familyStartUrl = recipe.login?.startUrl ?? '';
+  for (const source of template.sources) {
+    source.url = rehostFeedUrl(source.url, familyStartUrl, credentials.loginUrl);
+  }
+
   let browser: Browser | null = null;
   try {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
-      storageState: storageState as Parameters<Browser['newContext']>[0] extends { storageState?: infer S } ? S : never,
+      // Reuse the sibling's STORED session (jsonb) — never a fresh login.
+      storageState: storageState as BrowserContextOptions['storageState'],
       acceptDownloads: true,
     });
     const page = await context.newPage();
@@ -1255,7 +1290,12 @@ export function recipeFreshShape(recipe: Recipe, actionKey: string): FreshExtrac
   const unproven = new Set(Array.isArray(carried) ? carried.filter((c): c is string => typeof c === 'string') : []);
   const columnVerdicts: Record<string, FixtureColumnVerdict> = {};
   for (const c of columns) columnVerdicts[c] = unproven.has(c) ? 'uncertain' : 'certified';
-  return { parseMode: action.parse.mode, columns, columnVerdicts, hasValueEvidence: true, rowCount: -1 };
+  // hasValueEvidence:false on purpose — this path has NO live re-extraction, only
+  // recipe structure. So the golden-fixture gate uses it ONLY to detect a DROPPED
+  // certified column (a structural regression a re-learn can introduce); a
+  // certified→failed VALUE regression needs real rows and is caught on the
+  // re-anchor path's freshShape, which carries honest hasValueEvidence.
+  return { parseMode: action.parse.mode, columns, columnVerdicts, hasValueEvidence: false, rowCount: -1 };
 }
 
 export function computeGoldenFixtureGate(args: {

@@ -253,6 +253,15 @@ describe('attemptInlineTextDiscovery', () => {
     const out = await attemptInlineTextDiscovery(input, inlineDeps({ isOverBudget: async () => true }));
     assert.equal(out, null);
   });
+
+  test('abstains when the page is only reachable via a post-goto interaction (inline has no preStep replay)', async () => {
+    const action: ActionRecipe = {
+      steps: [{ kind: 'goto', url: 'https://pms.example/dash' }, { kind: 'click', selector: '#counts-tab' }],
+      parse: { mode: 'table', hint: { rowSelector: '#dash', columns: { occupied_count: '.occ' } } },
+    };
+    const out = await attemptInlineTextDiscovery({ actionName: 'getDashboardCounts' as const, success: { ok: true as const, action }, feedPageUrl: 'x', jobId: null }, inlineDeps());
+    assert.equal(out, null);
+  });
 });
 
 // ─── inline_text emit → runtime extract end-to-end ───────────────────────────

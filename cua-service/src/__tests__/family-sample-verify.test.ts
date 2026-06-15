@@ -216,4 +216,48 @@ describe('computeGoldenFixtureGate (mapping path)', () => {
     assert.deepEqual(out.regressedFeeds, []);
     clearGoldenFixtures();
   });
+
+  test('recipeFreshShape (structural path) reports hasValueEvidence:false — honest, no live data', () => {
+    const s = recipeFreshShape(fullRecipe(), 'getArrivals');
+    assert.ok(s);
+    assert.equal(s!.hasValueEvidence, false);
+    assert.ok(s!.columns.includes('arrival_date'));
+  });
+});
+
+// ─── Review fix: a re-anchored (non-seeded) target carrying a STALE
+//     unprovenRequiredColumns must block auto-promote — which is exactly why
+//     tryReanchor refreshes that field from the heal's real re-extraction. ─────
+describe('evaluatePromotionGate — unprovenRequiredColumns on a re-anchored target', () => {
+  test('a non-seeded target still carrying unprovenRequiredColumns → park_partial (NOT auto_promote)', () => {
+    const arr = tableAction({ pms_reservation_id: 'a', guest_name: 'b', arrival_date: 'c', departure_date: 'd' });
+    (arr as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns = ['arrival_date'];
+    const r = fullRecipe({ getArrivals: arr });
+    const seed = { ...r.actions };
+    delete seed.getArrivals; // the re-anchored target is NOT seeded
+    assert.equal(evaluatePromotionGate(r, seed).decision, 'park_partial');
+  });
+  test('same recipe WITHOUT the stale field → auto_promote (the refresh enables the heal)', () => {
+    const r = fullRecipe();
+    const seed = { ...r.actions };
+    delete seed.getArrivals;
+    assert.equal(evaluatePromotionGate(r, seed).decision, 'auto_promote');
+  });
+});
+
+// ─── Review fix: bounded sample-verify replay budget (cost discipline) ────────
+describe('computeSampleVerifyGate — bounded replay budget', () => {
+  test('caps total replays even with many siblings × many targets', async () => {
+    let calls = 0;
+    const manyTargets = Array.from({ length: 12 }, (_, i) => `getArrivals`); // count is what matters
+    const out = await computeSampleVerifyGate({
+      pmsFamily: 'fam', recipe: fullRecipe(), changedTargets: manyTargets, excludePropertyId: 'self',
+      deps: {
+        selectSiblings: async () => ['A', 'B', 'C', 'D', 'E'],
+        replayFeedOnSibling: async (propertyId, _r, actionKey) => { calls++; return { propertyId, actionKey, verdict: 'pass', reason: '' }; },
+      },
+    });
+    assert.ok(calls <= 16, `expected ≤16 replays, got ${calls}`);
+    assert.equal(out.enabled, true);
+  });
 });

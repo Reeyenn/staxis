@@ -5098,6 +5098,17 @@ export async function attemptInlineTextDiscovery(
   if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
   if (await deps.isOverBudget()) return abstain('job_over_budget');
 
+  // inline_text has NO preStep replay in recipe-adapter, so a single-value page
+  // reachable ONLY via an in-page interaction AFTER the last goto would be flagged
+  // `incomplete` and silently skipped at runtime. Emit inline ONLY for a
+  // directly-navigable page (goto-only after the last goto); else keep the table.
+  const steps = input.success.action.steps;
+  let lastGoto = -1;
+  for (let i = steps.length - 1; i >= 0; i--) { if (steps[i]!.kind === 'goto') { lastGoto = i; break; } }
+  if (steps.slice(lastGoto + 1).some((s) => s.kind !== 'goto')) {
+    return abstain('post_goto_interaction_unsupported_for_inline');
+  }
+
   const tableHint = input.success.action.parse.hint as TableRowHint;
   const cols = Object.entries(tableHint.columns).filter(([, css]) => typeof css === 'string' && css.trim() !== '');
   if (cols.length === 0) return abstain('no_columns');

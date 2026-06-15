@@ -206,7 +206,18 @@ export function loadGoldenFixture(pmsFamily: string, actionKey: string): GoldenF
   return REGISTRY.get(regKey(pmsFamily, actionKey)) ?? null;
 }
 
-/** Test seam — drop all registered fixtures. */
+/** Test seam — drop all registered fixtures (then re-seed the committed set). */
 export function clearGoldenFixtures(): void {
   REGISTRY.clear();
 }
+
+// ─── Committed production fixtures ──────────────────────────────────────────
+//
+// EMPTY by default ⟹ the gate is INERT in production (absent ⟹ skip = today's
+// behaviour) — the live fleet is never re-parked on rollout. To ACTIVATE the
+// gate for a family+feed, append a privacy-safe GoldenFixture captured from a
+// known-good extraction (use buildGoldenFixture; column names + per-column
+// verdicts + coarse shapes + a row COUNT only — NEVER raw rows). Registered at
+// module load so any committed entry is live without an fs read or migration.
+export const KNOWN_GOLDEN_FIXTURES: GoldenFixture[] = [];
+for (const f of KNOWN_GOLDEN_FIXTURES) registerGoldenFixture(f);
