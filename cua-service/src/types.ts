@@ -173,6 +173,20 @@ export interface TableRowHint {
   rowSelector: string;
   columns: Record<string, string>;
   skipSelector?: string;
+  /** feature/cua-semantic-columns — DURABLE per-column HEADER anchor, written
+   *  ALONGSIDE (never instead of) the flat `columns` map and keyed by the SAME
+   *  field names. Each entry carries the working positional `css` (the identical
+   *  string in `columns`, kept as fallback) PLUS a `roleName`
+   *  {role:'cell'|'gridcell', name:<header text>} so the runtime can re-resolve a
+   *  column by its HEADER MEANING when a PMS reorders columns. Written ONLY for
+   *  feeds with a reliable header row (no colspan, header cell-count == body
+   *  cell-count) AND only for columns whose positional css is rebaseable; ABSENT
+   *  ⟹ the legacy positional-only path replays byte-identically. */
+  columnsTiered?: Record<string, TieredSelector>;
+  /** feature/cua-semantic-columns — tiered alternative for `rowSelector`. `css`
+   *  is the same string as `rowSelector` today; `xpath` is reserved for a future
+   *  structural fallback the runtime already honors. Present iff columnsTiered is. */
+  rowSelectorTiered?: TieredSelector;
 }
 
 /** A learned STRUCTURED-DATA endpoint — the JSON the page itself fetches under

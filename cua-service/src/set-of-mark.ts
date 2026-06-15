@@ -313,3 +313,173 @@ export async function clearSetOfMark(page: Page): Promise<void> {
     });
   }
 }
+
+// ─── feature/cua-semantic-columns — HEADER Set-of-Mark ───────────────────────
+//
+// The clickable Set-of-Mark above grounds NAVIGATION. This second mark grounds
+// COLUMN MAPPING: on a data-table page it badges each column HEADER with an
+// "H<n>" tag so the mapper can map a required field to a column by its HEADER
+// MEANING (then write `td:nth-child(N)` for that column's position) instead of
+// eyeballing a pixel nth-child. Header anchoring is what lets the runtime
+// re-find a column if the PMS later reorders/renames columns. Distinct data
+// attribute + a blue, square badge (vs the clickable pink circle) and a lower
+// z-index keep the two mark layers visually and structurally separate.
+
+/** One header mark: which column, by meaning and by position. */
+export interface HeaderMarkInfo {
+  /** The "H<markId>" badge number. */
+  markId: number;
+  /** Visible header text (trimmed, ≤60 chars). Empty for icon-only headers. */
+  headerText: string;
+  /** 1-based position among the header cell's siblings (matches `td:nth-child(N)`). */
+  columnIndex: number;
+  /** 'columnheader' (th / role=columnheader) or 'cell' (header-less first-row cell). */
+  role: string;
+  /** Center coordinate of the header cell (for an optional future header click). */
+  x: number;
+  y: number;
+}
+
+/** Cap on header marks — even the widest PMS report rarely exceeds ~30 columns. */
+const MAX_HEADER_MARKS = 40;
+
+/**
+ * Badge the column headers of the most prominent data table on the page (the
+ * widest header set wins — a layout table with 1 cell never qualifies). Returns
+ * a map markId → HeaderMarkInfo. Best-effort: an empty map on any failure OR
+ * when the page has no qualifying data table (so non-table pages aren't
+ * cluttered). Mirrors applySetOfMark's inline-only evaluate constraints (no
+ * closures, no named helpers — the esbuild `__name` gotcha).
+ */
+export async function applyHeaderMark(page: Page): Promise<Map<number, HeaderMarkInfo>> {
+  try {
+    const raw = await page.evaluate(
+      ({ maxMarks }) => {
+        const out: Array<{
+          id: number;
+          headerText: string;
+          columnIndex: number;
+          role: string;
+          x: number;
+          y: number;
+        }> = [];
+
+        // Collect candidate header-cell sets from every table/grid, inline.
+        const headerSets: Element[][] = [];
+        for (const t of Array.from(document.querySelectorAll('table'))) {
+          let cells = Array.from(t.querySelectorAll('thead th'));
+          if (cells.length === 0) {
+            const firstTr = t.querySelector('tr');
+            if (firstTr) cells = Array.from(firstTr.querySelectorAll(':scope > th'));
+          }
+          if (cells.length === 0) {
+            const bodyTr = t.querySelector('tbody tr') || t.querySelector('tr');
+            if (bodyTr) cells = Array.from(bodyTr.querySelectorAll(':scope > td'));
+          }
+          if (cells.length >= 2) headerSets.push(cells);
+        }
+        for (const g of Array.from(document.querySelectorAll('[role="grid"], [role="table"], [role="treegrid"]'))) {
+          let cells = Array.from(g.querySelectorAll('[role="columnheader"]'));
+          if (cells.length === 0) {
+            const firstRow = g.querySelector('[role="row"]');
+            if (firstRow) cells = Array.from(firstRow.querySelectorAll('[role="cell"], [role="gridcell"]'));
+          }
+          if (cells.length >= 2) headerSets.push(cells);
+        }
+
+        // The widest header set is the data feed (not a 2-cell layout table).
+        let best: Element[] | null = null;
+        for (const set of headerSets) {
+          if (!best || set.length > best.length) best = set;
+        }
+        if (!best) return out;
+
+        let nextId = 1;
+        for (const c of best) {
+          if (out.length >= maxMarks) break;
+          const rect = c.getBoundingClientRect();
+          if (rect.width < 4 || rect.height < 4) continue;
+          if (rect.bottom < 0 || rect.right < 0) continue;
+          if (rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+          const style = window.getComputedStyle(c);
+          if (style.visibility === 'hidden' || style.display === 'none') continue;
+
+          // 1-based element position among siblings (matches nth-child), inline.
+          let columnIndex = -1;
+          const parent = c.parentElement;
+          if (parent) {
+            let i = 0;
+            for (const ch of Array.from(parent.children)) { i++; if (ch === c) { columnIndex = i; break; } }
+          }
+
+          const isHeaderRole =
+            c.getAttribute('role') === 'columnheader' || c.tagName.toLowerCase() === 'th';
+          const role = isHeaderRole ? 'columnheader' : 'cell';
+          const headerText = (c.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          const cx = Math.round(rect.left + Math.min(rect.width / 2, 40));
+          const cy = Math.round(rect.top + rect.height / 2);
+          const id = nextId++;
+
+          const badge = document.createElement('div');
+          badge.dataset.staxisHeaderMark = String(id);
+          badge.textContent = 'H' + id;
+          badge.style.position = 'fixed';
+          badge.style.left = Math.max(0, Math.min(window.innerWidth - 30, rect.left)) + 'px';
+          badge.style.top = Math.max(0, Math.min(window.innerHeight - 18, rect.top)) + 'px';
+          badge.style.minWidth = '22px';
+          badge.style.height = '16px';
+          badge.style.padding = '0 4px';
+          badge.style.borderRadius = '3px';
+          badge.style.background = '#1F6FFF';
+          badge.style.color = '#FFFFFF';
+          badge.style.fontFamily = 'system-ui, sans-serif';
+          badge.style.fontSize = '11px';
+          badge.style.fontWeight = '700';
+          badge.style.lineHeight = '16px';
+          badge.style.textAlign = 'center';
+          badge.style.border = '1px solid #FFFFFF';
+          badge.style.boxShadow = '0 1px 2px rgba(0,0,0,0.4)';
+          badge.style.zIndex = '2147483645';  // just below the clickable SoM layer
+          badge.style.pointerEvents = 'none';  // never block a click
+          badge.style.userSelect = 'none';
+          document.body.appendChild(badge);
+
+          out.push({ id, headerText, columnIndex, role, x: cx, y: cy });
+        }
+        return out;
+      },
+      { maxMarks: MAX_HEADER_MARKS },
+    );
+
+    const map = new Map<number, HeaderMarkInfo>();
+    for (const m of raw) {
+      map.set(m.id, {
+        markId: m.id,
+        headerText: m.headerText,
+        columnIndex: m.columnIndex,
+        role: m.role,
+        x: m.x,
+        y: m.y,
+      });
+    }
+    return map;
+  } catch (err) {
+    log.warn('applyHeaderMark: evaluate failed', { message: (err as Error).message });
+    return new Map();
+  }
+}
+
+/** Remove every header mark. Safe when none are present. */
+export async function clearHeaderMark(page: Page): Promise<void> {
+  try {
+    await page.evaluate(() => {
+      document
+        .querySelectorAll('[data-staxis-header-mark]')
+        .forEach((el) => el.remove());
+    });
+  } catch (err) {
+    log.warn('clearHeaderMark: evaluate failed', {
+      message: (err as Error).message,
+    });
+  }
+}

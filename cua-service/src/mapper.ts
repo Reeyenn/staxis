@@ -42,7 +42,7 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns, templateFromSample, substituteTemplate } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS, coreTargetSharesRequiredSchema } from './target-contract.js';
 import { shouldNudgeCommit, buildCommitNudge, COMMIT_DITHER_TURNS, type TabularSummary } from './commit-signal.js';
@@ -62,7 +62,14 @@ import {
   type RecoveryProblem,
   type ColumnProofCarrier,
 } from './column-recovery.js';
-import { extractDomRows, extractDetailFields } from './extractors/dom-rows.js';
+import {
+  extractDomRows,
+  extractDetailFields,
+  readTableHeaders,
+  headerGateOk,
+  parseFirstNthIndex,
+  type CapturedTableHeaders,
+} from './extractors/dom-rows.js';
 import { attachNetworkCapture, type NetworkCaptureHandle, type CapturedCall } from './network-capture.js';
 import {
   DISCOVERY_KEY_COLUMNS,
@@ -2273,12 +2280,16 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     `other — if you already found one, its sibling is normally the adjacent menu ` +
     `item, so look there.\n` +
     `6. Once on the target page (you see a table/list whose COLUMNS match the ` +
-    `required fields — even if it has ZERO data rows right now), ` +
-    `take a final screenshot and identify the table visually. Make your best ` +
-    `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
-    `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
-    `your selectors on the first extraction; if wrong, a self-heal job will ` +
-    `re-engage you.\n` +
+    `required fields — even if it has ZERO data rows right now), take a final ` +
+    `screenshot. Each column HEADER is tagged with a numbered badge (e.g. "H1", ` +
+    `"H2", …). Map each required field to a column by its HEADER MEANING FIRST: ` +
+    `read the header text, decide which header is that field, and note its column ` +
+    `position N (counting cells from 1, left to right). THEN write that column's ` +
+    `selector as \`td:nth-child(N)\` for the SAME N. Anchoring on the header — not ` +
+    `a pixel guess — is what lets us re-find the column if the PMS later reorders ` +
+    `or renames its columns. Most PMSes use \`tr\` or \`tbody tr\` for rows. The ` +
+    `runtime verifies your selectors on the first extraction; if wrong, a ` +
+    `self-heal job re-engages you.\n` +
     `7. If the page DOES NOT have the data we need (no equivalent report ` +
     `exists in this PMS, or it's behind a paid module), reply with ` +
     `{"unavailable": true, "reason": "<why>"} so we can mark this target ` +
@@ -3244,6 +3255,11 @@ export interface PageAudit {
    *  review. Optional so hand-built test audits stay valid. */
   uncertain?: Set<string>;
   problems: RecoveryProblem[];
+  /** feature/cua-semantic-columns — the live header row captured on the feed
+   *  page during this audit (when we were confident we're on the right page).
+   *  finalizeRecoveredSuccess uses it to author per-column header anchors. Absent
+   *  on degraded/structural audits where the page wasn't trustworthy. */
+  headers?: CapturedTableHeaders;
 }
 
 // fix/cua-two-oracle — INERT query params that spuriously differ between the
@@ -3330,6 +3346,14 @@ async function auditLearnedColumnsOnPage(args: {
     return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, problems };
   }
 
+  // feature/cua-semantic-columns — the live header row, captured below once we've
+  // confirmed we're on the right feed page. Threaded into EVERY audit return from
+  // that point (incl. the empty-feed structural path) so finalize can author
+  // header anchors even for a feed that's empty today. Closure-captured by
+  // structuralOnly; undefined until the capture line, so the wandered-page return
+  // above structuralOnly's capture never carries (stale) headers.
+  let capturedHeaders: CapturedTableHeaders | undefined;
+
   const structuralOnly = (reason: string): PageAudit => {
     for (const col of missingRequiredColumns(args.actionKey, args.columns)) {
       outstanding.set(col, 'missing');
@@ -3375,7 +3399,7 @@ async function auditLearnedColumnsOnPage(args: {
       actionName: args.actionKey, reason,
       outstanding: [...outstanding.keys()], uncertain: [...uncertain],
     });
-    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, uncertain, problems };
+    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, uncertain, problems, ...(capturedHeaders ? { headers: capturedHeaders } : {}) };
   };
 
   // Wandered-page guard: the model can emit its JSON after navigating away;
@@ -3392,6 +3416,12 @@ async function auditLearnedColumnsOnPage(args: {
       return structuralOnly(`page url ${args.page.url().slice(0, 80)} differs from emitted url`);
     }
   }
+
+  // feature/cua-semantic-columns — capture the header row now that the page is
+  // confirmed to be the feed page. Best-effort (null on failure); finalize only
+  // authors anchors when the header gate passes, so a missing/spanning header
+  // simply yields no tiered shape (positional-only, exactly as today).
+  capturedHeaders = (await readTableHeaders(args.page, args.rowSelector)) ?? undefined;
 
   let extraction: { rows: Array<Record<string, string>>; totalMatched: number };
   try {
@@ -3521,7 +3551,7 @@ async function auditLearnedColumnsOnPage(args: {
     }
   }
 
-  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, uncertain, problems };
+  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, uncertain, problems, ...(capturedHeaders ? { headers: capturedHeaders } : {}) };
 }
 
 /**
@@ -3536,6 +3566,44 @@ async function auditLearnedColumnsOnPage(args: {
  * and the drillDown's listColumns mirror the finalized map (the eligibility
  * predicate resolves placeholders against it).
  */
+/**
+ * feature/cua-semantic-columns — author the DURABLE per-column HEADER anchors
+ * from the live header row captured during the audit. For each FINAL column whose
+ * positional css carries a rebaseable `:nth-child(K)` AND whose K maps to a
+ * non-blank header cell, emit a TieredSelector { roleName:{role,name:<header>},
+ * css }. The flat `columns` map is always still written; this is purely additive.
+ *
+ * Returns {} (no tiered shape) when the header gate fails (no header row /
+ * colspan / header-vs-body cell-count mismatch) or no column resolves an anchor —
+ * so headerless feeds (CA housekeeping center, scalar inline feeds) and legacy
+ * recipes keep their exact positional-only shape and replay byte-identically.
+ */
+function buildColumnHeaderAnchors(
+  columns: Record<string, string>,
+  rowSelector: string,
+  headers: CapturedTableHeaders | undefined,
+): { columnsTiered?: Record<string, TieredSelector>; rowSelectorTiered?: TieredSelector } {
+  if (!headers || !headerGateOk(headers)) return {};
+  const textByIndex = new Map<number, string>();
+  for (const c of headers.cells) {
+    if (c.index >= 1 && c.raw.trim() !== '') textByIndex.set(c.index, c.raw);
+  }
+  const tiered: Record<string, TieredSelector> = {};
+  let any = false;
+  for (const [field, cssRaw] of Object.entries(columns)) {
+    const css = (cssRaw ?? '').trim();
+    if (css === '') continue;            // blanked/dead column — no anchor
+    const idx = parseFirstNthIndex(css);
+    if (idx == null) continue;            // non-positional (class/attr) — reorder-immune
+    const headerText = textByIndex.get(idx);
+    if (!headerText) continue;            // no header text at that column index
+    tiered[field] = { roleName: { role: headers.roleKind, name: headerText }, css };
+    any = true;
+  }
+  if (!any) return {};
+  return { columnsTiered: tiered, rowSelectorTiered: { css: rowSelector } };
+}
+
 export function finalizeRecoveredSuccess(
   candidate: { success: ActionMapSuccess; audit: PageAudit },
   drill?: RecoveryDrillResult,
@@ -3583,9 +3651,14 @@ export function finalizeRecoveredSuccess(
     (col) => !drilledColumns.has(col) && (finalColumns[col] ?? '').trim() !== '',
   );
 
+  // feature/cua-semantic-columns — author header anchors against the FINAL
+  // (post-recovery) list columns + the header row captured during the audit.
+  // Written alongside the flat columns; absent ⟹ positional-only (back-compat).
+  const headerAnchors = buildColumnHeaderAnchors(finalColumns, hint.rowSelector, audit.headers);
+
   const action: ActionRecipe = {
     ...success.action,
-    parse: { mode: 'table', hint: { ...hint, columns: finalColumns } },
+    parse: { mode: 'table', hint: { ...hint, columns: finalColumns, ...headerAnchors } },
     ...(drillDown ? { drillDown } : {}),
   };
   if (unprovenRequiredColumns.length > 0) {
@@ -4779,9 +4852,12 @@ async function mapDrillDownAction(args: {
     `1. Take a SCREENSHOT to see the dashboard menus.\n` +
     `2. Navigate to the LIST page by clicking visible menus (e.g. ` +
     `reservations list, lost-items list).\n` +
-    `3. Look at the list visually. Make your best-guess CSS selectors for ` +
-    `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
-    `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n` +
+    `3. Look at the list visually. Its column HEADERS are tagged with numbered ` +
+    `badges (e.g. "H1", "H2", …). Map each row field to a column by its HEADER ` +
+    `MEANING first, note that header's column position N, and write the cell ` +
+    `selector as \`td:nth-child(N)\` for the SAME N (most PMSes use \`tr\` for ` +
+    `rows). Header-anchoring — not a pixel guess — is what lets us re-find a ` +
+    `column if the PMS reorders or renames its columns later.\n` +
     `4. Pick up to ${SAMPLE_COUNT} sample rows (fewer is fine if the list ` +
     `has only 1-2 records — even ONE sample is enough). For each one:\n` +
     `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
