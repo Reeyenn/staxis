@@ -72,6 +72,10 @@ import {
 } from './extractors/dom-rows.js';
 import { attachNetworkCapture, type NetworkCaptureHandle, type CapturedCall } from './network-capture.js';
 import {
+  chooseConsensusProposal,
+  type DiscoveryProposalShape,
+} from './proposal-entropy.js';
+import {
   DISCOVERY_KEY_COLUMNS,
   DISCOVERY_SEMANTIC_DATE_COLUMNS,
   MIN_ORACLE_ROWS,
@@ -4099,8 +4103,11 @@ export interface DiscoveryDeps {
     columns: Record<string, string>,
     cap: number,
   ) => Promise<Array<Record<string, string>>>;
-  /** ONE bounded identify call; returns the model's raw text. */
-  identify: (prompt: string) => Promise<string>;
+  /** A bounded identify call; returns the model's raw text. `sample` (default 0)
+   *  distinguishes the N draws of the semantic-entropy abstain loop so the
+   *  default impl can vary its idempotency key — without that, every draw would
+   *  reuse one cached response and the entropy signal would be vacuous. */
+  identify: (prompt: string, sample?: number) => Promise<string>;
   /** In-page fetch with the page's cookies (mirrors extractors/fetch-api.ts,
    *  plus cache:'no-store' so a cached response can't fake a pass). */
   replayFetch: (req: {
@@ -4123,10 +4130,15 @@ function makeDefaultDiscoveryDeps(args: MapActionArgs): DiscoveryDeps {
     extractOracleRows: (rowSelector, columns, cap) =>
       extractDomRows(args.page, rowSelector, columns, { cap }).then((r) => r.rows),
 
-    identify: async (prompt) => {
+    identify: async (prompt, sample = 0) => {
+      // Per-sample idempotency key: the N-sample entropy loop must get N
+      // INDEPENDENT draws. A fixed key would make Anthropic return one cached
+      // response for every draw → entropy always 0 → the abstain signal is
+      // useless. The `:s${sample}` suffix keeps each draw independently
+      // idempotent (a retry of draw i reuses draw i's key).
       const idempotencyKey = args.jobId
-        ? `${args.jobId}:${args.actionName}:discovery`
-        : `anon:${args.actionName}:discovery:${Date.now()}`;
+        ? `${args.jobId}:${args.actionName}:discovery:s${sample}`
+        : `anon:${args.actionName}:discovery:s${sample}:${Date.now()}`;
       const cfg = getModeConfig(args.model);
       const response = await anthropic.messages.create({
         model: cfg.model,
@@ -4250,6 +4262,25 @@ export async function attemptStructuredDiscovery(
   if (input.capturedCalls.length === 0) return abstain('no_captured_calls');
   if (await deps.isOverBudget()) return abstain('job_over_budget');
 
+  // ── best-class verification knobs (feature/cua-bestclass-verify) ──
+  // Read from process.env (mirrors the CUA_STRUCTURED_DISCOVERY_ENABLED read
+  // above so tests can mutate per-case; env.ts is out of scope for this change).
+  // ALL DEFAULT TO TODAY'S BEHAVIOUR: 1 identify draw, 1 replay pass. The
+  // cost-multiplying paths only activate when explicitly raised, and only ever
+  // at onboarding (this pipeline never runs at the 30s poll).
+  const clampInt = (raw: string | undefined, def: number, lo: number, hi: number): number => {
+    const n = raw == null ? def : parseInt(raw, 10);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const clampFloat = (raw: string | undefined, def: number, lo: number, hi: number): number => {
+    const n = raw == null ? def : parseFloat(raw);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const identifySampleCount = (): number => clampInt(process.env.CUA_DISCOVERY_IDENTIFY_SAMPLES, 1, 1, 5);
+  const identifyMaxEntropy = (): number => clampFloat(process.env.CUA_DISCOVERY_MAX_ENTROPY, 0.5, 0, 1);
+  const identifyMinDominance = (): number => clampFloat(process.env.CUA_DISCOVERY_MIN_DOMINANCE, 0.5, 0, 1);
+  const replayPassCount = (): number => clampInt(process.env.CUA_VERIFY_REPLAY_PASSES, 1, 1, 5);
+
   const tableHint = input.success.action.parse.hint;
 
   // ── 1. Fresh oracle scrape ──
@@ -4334,7 +4365,13 @@ export async function attemptStructuredDiscovery(
     });
   }
 
-  // ── 4. ONE LLM identify call (hypothesis only) ──
+  // ── 4. LLM identify (hypothesis only) — N-sample SEMANTIC-ENTROPY abstain ──
+  // A single identify() can be confidently WRONG on an ambiguous page (two
+  // near-identical arrays, two plausible date fields). When CUA_DISCOVERY_
+  // IDENTIFY_SAMPLES > 1 we draw the proposal N times and abstain unless the
+  // draws AGREE ON MEANING (proposal-entropy.ts). This is ONBOARDING-ONLY (this
+  // whole pipeline never runs at the 30s poll) and DEFAULTS TO 1 — a single draw
+  // is one cluster, entropy 0, behaviourally identical to today's one call.
   const valueContract = TARGET_VALUE_CONTRACTS[input.actionName];
   const prompt = buildIdentifyPrompt({
     actionName: input.actionName,
@@ -4342,29 +4379,71 @@ export async function attemptStructuredDiscovery(
     domRows,
     candidates: pre.candidates,
   });
-  let rawText: string;
-  try {
-    rawText = await deps.identify(prompt);
-  } catch (err) {
-    return abstain('identify_call_failed', { err: err instanceof Error ? err.message : String(err) });
-  }
-  const proposal = tryParseJson(rawText) as
-    | { none?: unknown; candidateIndex?: unknown; jsonPath?: unknown; columns?: unknown }
-    | null;
-  if (!proposal || proposal.none === true) return abstain('identify_none');
-  const idx = typeof proposal.candidateIndex === 'number' ? proposal.candidateIndex : -1;
-  if (idx < 0 || idx >= pre.candidates.length) return abstain('identify_bad_index');
-  const jsonPath = typeof proposal.jsonPath === 'string' ? proposal.jsonPath.trim() : '';
-  if (!proposal.columns || typeof proposal.columns !== 'object') return abstain('identify_bad_columns');
 
   const contractCols = new Set(contract.columns.map((c) => c.name));
-  const columns: Record<string, string> = {};
-  for (const [col, path] of Object.entries(proposal.columns as Record<string, unknown>)) {
-    if (typeof path !== 'string' || path.trim() === '') continue;
-    if (!contractCols.has(col)) continue; // extra fields would be dropped by the writer anyway
-    columns[col] = path.trim();
+  /** Parse one raw identify response → a normalized, contract-filtered proposal
+   *  with the key column present, or null (malformed / {none} / unmappable —
+   *  counts as the "none" meaning in clustering, diluting consensus). */
+  const normalizeProposal = (rawText: string): DiscoveryProposalShape | null => {
+    const p = tryParseJson(rawText) as
+      | { none?: unknown; candidateIndex?: unknown; jsonPath?: unknown; columns?: unknown }
+      | null;
+    if (!p || p.none === true) return null;
+    const ci = typeof p.candidateIndex === 'number' ? p.candidateIndex : -1;
+    if (ci < 0 || ci >= pre.candidates.length) return null;
+    if (!p.columns || typeof p.columns !== 'object') return null;
+    const cols: Record<string, string> = {};
+    for (const [col, path] of Object.entries(p.columns as Record<string, unknown>)) {
+      if (typeof path !== 'string' || path.trim() === '') continue;
+      if (!contractCols.has(col)) continue; // extra fields would be dropped by the writer anyway
+      cols[col] = path.trim();
+    }
+    if (!cols[keyCol]) return null;
+    return { candidateIndex: ci, jsonPath: typeof p.jsonPath === 'string' ? p.jsonPath.trim() : '', columns: cols };
+  };
+
+  const sampleCount = identifySampleCount();
+  const proposalSamples: Array<DiscoveryProposalShape | null> = [];
+  let identifyCalls = 0;
+  for (let s = 0; s < sampleCount; s++) {
+    // Budget governs the loop: each draw is a paid call. The first draw always
+    // runs (the top-of-function isOverBudget already passed); re-check before
+    // each EXTRA draw so N-sampling can never blow the per-job cost cap.
+    if (s > 0 && await deps.isOverBudget()) break;
+    if (input.signal?.aborted) break;
+    let rawText: string;
+    try {
+      rawText = await deps.identify(prompt, s);
+    } catch (err) {
+      if (identifyCalls === 0) {
+        return abstain('identify_call_failed', { err: err instanceof Error ? err.message : String(err) });
+      }
+      break; // a later draw failed — decide on the draws we have
+    }
+    identifyCalls++;
+    proposalSamples.push(normalizeProposal(rawText));
   }
-  if (!columns[keyCol]) return abstain('identify_missing_key_column');
+  if (identifyCalls === 0) return abstain('identify_call_failed', { reason: 'no_draws' });
+
+  const consensus = chooseConsensusProposal(proposalSamples, {
+    minSamples: 1,
+    maxEntropy: identifyMaxEntropy(),
+    minDominance: identifyMinDominance(),
+  });
+  if (!consensus.ok) {
+    return abstain(`identify_no_consensus:${consensus.reason}`, {
+      samples: consensus.samples, entropy: Number(consensus.entropy.toFixed(3)), agreement: Number(consensus.agreement.toFixed(3)),
+    });
+  }
+  if (sampleCount > 1) {
+    log.info('mapper: identify consensus across samples', {
+      actionName: input.actionName, jobId: input.jobId ?? undefined,
+      draws: identifyCalls, agreement: Number(consensus.agreement.toFixed(3)), entropy: Number(consensus.entropy.toFixed(3)),
+    });
+  }
+  const idx = consensus.proposal.candidateIndex;
+  const jsonPath = consensus.proposal.jsonPath;
+  const columns: Record<string, string> = { ...consensus.proposal.columns };
 
   // ── 5. Mechanical reconcile against the captured body ──
   const cand = pre.candidates[idx]!;
@@ -4526,6 +4605,48 @@ export async function attemptStructuredDiscovery(
   for (const col of replayVerdict.droppedOptionalColumns ?? []) {
     delete columns[col];
     if (verdict.derivedEnumMappings) delete verdict.derivedEnumMappings[col];
+  }
+
+  // ── 8b. pass^N replay consistency (feature/cua-bestclass-verify) ──
+  // The replay-confirm above proves the endpoint reconciles ONCE. A flaky /
+  // load-balanced / occasionally-stale endpoint can pass a single confirm by
+  // luck. When CUA_VERIFY_REPLAY_PASSES > 1 we re-fetch the SAME anchor-day
+  // request that many MORE times (reusing the existing replay machinery) and
+  // require every pass to still reconcile in 'replay' mode against the SAME
+  // (post-drop) column set — any wobble abstains. HTTP-only, no LLM; gated to
+  // onboarding; DEFAULT 1 ⟹ no extra fetches, today's behaviour.
+  const extraReplayPasses = replayPassCount() - 1;
+  for (let p = 0; p < extraReplayPasses; p++) {
+    if (input.signal?.aborted) return abstain('aborted');
+    const rerun = await deps.replayFetch({
+      url: renderTemplateAtDate(variants[0]!.url, effectiveAnchor),
+      method: cand.call.method,
+      ...(variants[0]!.body !== undefined
+        ? { body: renderTemplateAtDate(variants[0]!.body, effectiveAnchor) }
+        : {}),
+      ...(sanitized.headers ? { headers: sanitized.headers } : {}),
+    });
+    if (!rerun.ok) return abstain(`replay_consistency_fetch_failed:${rerun.reason ?? 'unknown'}`);
+    const rerunRows = extractRowsAtPath(rerun.data, jsonPath);
+    if (!rerunRows.ok) return abstain(`replay_consistency_extract_failed:${rerunRows.reason}`);
+    if (findEnvelopeDecoy(rerun.data, jsonPath)) return abstain('replay_consistency_envelope_decoy');
+    const rerunVerdict = reconcileRows({
+      actionKey: input.actionName,
+      domRows,
+      apiRows: projectRows(rerunRows.rows, columns),
+      mappedColumns: Object.keys(columns),
+      domEnumMappings: input.success.enumMappings,
+      enumValueSets,
+      anchorIso,
+      ...(blindDateColumns ? { blindDateColumns } : {}),
+      mode: 'replay',
+    });
+    if (!rerunVerdict.reconciles) return abstain(`replay_consistency_failed:${rerunVerdict.reason}`);
+  }
+  if (extraReplayPasses > 0) {
+    log.info('mapper: replay pass^N consistency confirmed', {
+      actionName: input.actionName, jobId: input.jobId ?? undefined, passes: extraReplayPasses + 1,
+    });
   }
 
   // ── SECOND-ORACLE today-anchor proof (live replay) ──

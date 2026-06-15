@@ -42,7 +42,45 @@ import { createTakeoverController } from './takeover.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { effectiveColumnsFromAction, missingRequiredColumns } from './target-contract.js';
-import type { FeedGaps, FeedGapEntry } from './knowledge-file.js';
+import type { FeedGaps, FeedGapEntry, RecipeVerification } from './knowledge-file.js';
+import {
+  computeCommitScore,
+  decideCommit,
+  valueFingerprint,
+  recipeFingerprintString,
+  fingerprintsMatch,
+  DEFAULT_COMMIT_THRESHOLD,
+  DEFAULT_REQUIRED_PASSES,
+  type CommitSignals,
+  type SignalVerdict,
+  type FeedFingerprint,
+} from './commit-gate.js';
+import { reconcileCrossFeed, parseCounter, type FeedObservation } from './cross-feed-reconcile.js';
+import { DISCOVERY_KEY_COLUMNS } from './oracle-verify.js';
+
+// ── best-class verification config knobs (feature/cua-bestclass-verify) ──
+// Read from process.env (env.ts is out of scope for this change). ALL DEFAULT
+// to today's behaviour: enforcement OFF (signals computed + persisted for
+// observability, but never downgrade), one required pass, the calibrated
+// threshold. Flip CUA_VERIFY_ENFORCE=true (+ optionally raise the passes) for
+// the prove-it-before-family-wide rollout posture.
+const verifyEnforceOn = (): boolean =>
+  (process.env.CUA_VERIFY_ENFORCE ?? 'false').toLowerCase() === 'true';
+const verifyThreshold = (): number =>
+  clampFloatCfg(process.env.CUA_VERIFY_COMMIT_THRESHOLD, DEFAULT_COMMIT_THRESHOLD, 0, 1);
+const verifyRequiredPasses = (): number =>
+  clampIntCfg(process.env.CUA_VERIFY_REQUIRED_PASSES, DEFAULT_REQUIRED_PASSES, 1, 9);
+const secondModelVoteOn = (): boolean =>
+  (process.env.CUA_VERIFY_SECOND_MODEL_ENABLED ?? 'false').toLowerCase() === 'true';
+
+function clampFloatCfg(raw: string | undefined, def: number, lo: number, hi: number): number {
+  const n = raw == null ? def : parseFloat(raw);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+}
+function clampIntCfg(raw: string | undefined, def: number, lo: number, hi: number): number {
+  const n = raw == null ? def : parseInt(raw, 10);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+}
 
 export interface MappingJobInput {
   pms_family: string;
@@ -532,9 +570,46 @@ export async function runMappingJob(
     return { ok: false, error: result.userMessage };
   }
 
+  // 2.9. feature/cua-bestclass-verify — compute the multi-signal verification
+  //      verdict, but ONLY for a FRESH, full, unseeded learn. A self-repair /
+  //      backfill / coverage-edit seeds an existing recipe and is EXEMPT (same
+  //      rationale as the gate's seeded-target exemption), so a repair is never
+  //      newly parked. Signals are always computed + persisted for ops
+  //      visibility; they only DOWNGRADE auto-promotion when CUA_VERIFY_ENFORCE
+  //      is on. Fail-open: a thrown verification never blocks the learn.
+  const isFreshFullLearn =
+    !input.seed_actions && !input.backfill_missing_feeds &&
+    !(input.only_targets && input.only_targets.length > 0);
+  let verification: ComputedVerification | null = null;
+  if (isFreshFullLearn) {
+    try {
+      verification = await computeRecipeVerification({
+        pmsFamily: input.pms_family,
+        recipe: result.recipe,
+        boardTargets: result.boardTargets,
+        jobId,
+        propertyId: input.property_id,
+        signal,
+      });
+      log.info('mapping-driver: best-class verification computed', {
+        jobId,
+        score: verification.gateInput.score,
+        enforce: verification.gateInput.enforce,
+        consistentPasses: verification.gateInput.consistentPasses,
+        requiredPasses: verification.gateInput.requiredPasses,
+        note: verification.gateInput.note,
+      });
+    } catch (err) {
+      log.warn('mapping-driver: best-class verification threw — proceeding without it (advisory)', {
+        jobId, err: (err as Error).message,
+      });
+      verification = null;
+    }
+  }
+
   // 3. Evaluate the auto-promotion gate (Plan v7 — replaces the "≥60%
   //    of targets" magic number with required-target-class checks).
-  const gate = evaluatePromotionGate(result.recipe, input.seed_actions);
+  const gate = evaluatePromotionGate(result.recipe, input.seed_actions, verification?.gateInput);
   log.info('mapping-driver: promotion gate evaluated', {
     jobId, decision: gate.decision, reason: gate.reason,
   });
@@ -608,6 +683,9 @@ export async function runMappingJob(
     // Hunter re-review P2-5 — the admin reviewing Manage maps needs to see
     // WHY a draft parked, not just which targets it has.
     `${gate.decision}: ${gate.reason}`,
+    // feature/cua-bestclass-verify — persist the verification telemetry +
+    // pass^N counter inside the signed envelope (only on fresh learns).
+    verification?.persist,
   );
   if (!draft.ok) {
     return { ok: false, error: `recipe mapped successfully but draft save failed: ${draft.error}` };
@@ -694,9 +772,30 @@ export async function runMappingJob(
 
 // ─── Promotion gate ────────────────────────────────────────────────────
 
+/**
+ * feature/cua-bestclass-verify — the calibrated multi-signal verdict the
+ * orchestration feeds into the gate. ABSENT ⟹ today's behaviour (the gate
+ * decides exactly as before). When present AND `enforce`, a recipe that would
+ * AUTO-PROMOTE is held for founder review (park_partial — never quarantine,
+ * never re-park) unless it clears the calibrated threshold AND pass^N. The
+ * orchestration only ever passes this for FRESH, unseeded full learns, so a
+ * self-repair / backfill / coverage-edit (and every already-live recipe, which
+ * the gate is never re-run on) is exempt — the live fleet cannot mass re-park.
+ */
+export interface VerificationGateInput {
+  enforce: boolean;
+  score: number;
+  threshold: number;
+  consistentPasses: number;
+  requiredPasses: number;
+  /** Short human note appended to the gate reason (signal summary). */
+  note?: string;
+}
+
 export function evaluatePromotionGate(
   recipe: Recipe,
   seedActions?: Recipe['actions'],
+  verification?: VerificationGateInput,
 ): {
   decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   reason: string;
@@ -783,9 +882,32 @@ export function evaluatePromotionGate(
   // landed — otherwise park for the founder's Promote click.
   if (feedGaps.missingRequired.length === 0) {
     if (unprovenByTarget.size === 0 && businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
+      // feature/cua-bestclass-verify — when enforcement is ON, a recipe that
+      // would auto-promote must additionally clear the calibrated multi-signal
+      // threshold AND pass^N. Failing either holds it for the founder's Promote
+      // click (park_partial) — never quarantine, never a live re-park (this
+      // branch is only reached for fresh learns the orchestration verified).
+      if (verification?.enforce) {
+        const d = decideCommit({
+          score: verification.score,
+          threshold: verification.threshold,
+          consistentPasses: verification.consistentPasses,
+          requiredPasses: verification.requiredPasses,
+        });
+        if (!d.commit) {
+          return {
+            decision: 'park_partial',
+            reason: `held for founder review by best-class verification — ${d.reason}${verification.note ? `; ${verification.note}` : ''}`,
+            feedGaps,
+          };
+        }
+      }
+      const verifyNote = verification
+        ? ` [verify score ${verification.score.toFixed(2)}≥${verification.threshold}, passes ${verification.consistentPasses}/${verification.requiredPasses}${verification.enforce ? '' : ', advisory'}]`
+        : '';
       return {
         decision: 'auto_promote',
-        reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})`,
+        reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})${verifyNote}`,
         feedGaps,
       };
     }
@@ -834,6 +956,289 @@ export function evaluatePromotionGate(
     reason: `below the partial-promotion bar (need getRoomStatus, or getArrivals + getDepartures, learned and complete) — missing/dead required targets: ${feedGaps.missingRequired.map((g) => `${g.target} (${g.reason})`).join(', ')}`,
     feedGaps,
   };
+}
+
+// ─── Best-class verification (feature/cua-bestclass-verify) ─────────────────
+//
+// Computed ONCE per FRESH, unseeded full learn (the orchestration gates on
+// that), NEVER at the 30s poll. Folds four INDEPENDENT signals into the
+// calibrated commit decision the gate consumes, and persists the telemetry +
+// pass^N counter into the signed envelope. Cross-feed + fingerprint are pure
+// (free); the second-model vote is env-gated OFF by default; the prior-pass
+// read is one cheap query. Everything fail-OPEN: any error degrades to "no
+// signal", never blocks a learn.
+
+/** Build cross-feed-reconcile inputs from the Learning-Board previews carried
+ *  out of mapPMS (boardTargets). getDashboardCounts is a single-row counter
+ *  feed → its first preview row supplies the dashboard counters; every other
+ *  feed contributes its rowCount (and a truncated sample). NEVER routes
+ *  getDashboardCounts through reconcileRows. Pure + exported for tests. */
+export function gatherCrossFeedObservation(
+  boardTargets: Record<string, BoardTargetState> | undefined,
+): { feeds: Record<string, FeedObservation>; dashboardCounters: Record<string, number | null> } {
+  const feeds: Record<string, FeedObservation> = {};
+  const dashboardCounters: Record<string, number | null> = {};
+  for (const [key, st] of Object.entries(boardTargets ?? {})) {
+    const preview = st?.preview;
+    if (!preview) continue;
+    if (key === 'getDashboardCounts') {
+      const row = preview.sample?.[0];
+      if (row) for (const [col, val] of Object.entries(row)) dashboardCounters[col] = parseCounter(val);
+      continue;
+    }
+    const obs: FeedObservation = {};
+    if (typeof preview.rowCount === 'number') obs.rowCount = preview.rowCount;
+    if (Array.isArray(preview.sample)) {
+      obs.rows = preview.sample;
+      // The board preview keeps ≤3 rows, so it is "complete" only when it
+      // genuinely covers the whole feed (tiny feeds). Otherwise the exact
+      // predicate count would undercount → cross-feed falls back to the sound
+      // lower-bound check (see cross-feed-reconcile.ts).
+      obs.rowsComplete = typeof preview.rowCount === 'number' && preview.sample.length >= preview.rowCount;
+    }
+    feeds[key] = obs;
+  }
+  return { feeds, dashboardCounters };
+}
+
+/** Coarse value-distribution fingerprint of the recipe's REQUIRED feeds, from
+ *  the board previews. Used as the pass^N consistency anchor (compared across
+ *  learns) and to surface a degenerate distribution. Pure + exported. */
+export function computeRecipeFingerprint(
+  recipe: Recipe,
+  boardTargets: Record<string, BoardTargetState> | undefined,
+): { fingerprint: string; sane: boolean } {
+  const fps: FeedFingerprint[] = [];
+  let sane = true;
+  for (const t of REQUIRED_TARGETS) {
+    if (!recipe.actions[t]) continue;
+    const keyField = DISCOVERY_KEY_COLUMNS[t];
+    const preview = boardTargets?.[String(t)]?.preview;
+    const rows = Array.isArray(preview?.sample) ? preview!.sample! : [];
+    const fp = valueFingerprint({
+      feed: String(t),
+      rows,
+      ...(keyField ? { keyField } : {}),
+      statusField: 'status',
+      ...(typeof preview?.rowCount === 'number' ? { rowCount: preview.rowCount } : {}),
+    });
+    fps.push(fp);
+    if (!fp.sane) sane = false;
+  }
+  return { fingerprint: recipeFingerprintString(fps), sane };
+}
+
+/** Reconcile (proof) signal for the score: 'fail' iff a required target ships a
+ *  live, non-blank required column that was NOT value-certified / api-reconciled
+ *  (the same shape the gate's unprovenByTarget uses). Mirrors — does not fork —
+ *  the proof state; reconcileRows / certifyColumns own the verdicts. */
+function reconcileSignalForRecipe(recipe: Recipe): SignalVerdict {
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;
+    if (action.parse?.mode === 'api') continue; // oracle-reconciled JSON path
+    const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
+    if (!Array.isArray(carried) || carried.length === 0) continue;
+    const cols = effectiveColumnsFromAction(t, action);
+    const live = carried.some(
+      (c): c is string => typeof c === 'string' && typeof cols[c] === 'string' && cols[c]!.trim() !== '',
+    );
+    if (live) return 'fail';
+  }
+  return 'pass';
+}
+
+export interface ComputedVerification {
+  gateInput: VerificationGateInput;
+  persist: RecipeVerification;
+}
+
+/**
+ * Compute the full verification verdict for a fresh learn: gather the four
+ * signals, score them, read the prior family pass^N counter, and assemble both
+ * the gate input and the envelope telemetry to persist. Read-only DB access;
+ * fail-open throughout.
+ */
+export async function computeRecipeVerification(args: {
+  pmsFamily: string;
+  recipe: Recipe;
+  boardTargets?: Record<string, BoardTargetState>;
+  jobId: string | null;
+  propertyId: string | null;
+  signal?: AbortSignal;
+  /** Injectable for tests; defaults to the real (env-gated, fail-open) vote. */
+  secondModelVote?: (a: SecondModelVoteArgs) => Promise<SignalVerdict>;
+}): Promise<ComputedVerification> {
+  const enforce = verifyEnforceOn();
+  const threshold = verifyThreshold();
+  const requiredPasses = verifyRequiredPasses();
+
+  // (b) cross-feed reconciliation.
+  const obs = gatherCrossFeedObservation(args.boardTargets);
+  const crossFeedResult = reconcileCrossFeed({ feeds: obs.feeds, dashboardCounters: obs.dashboardCounters });
+  const crossFeed: SignalVerdict =
+    crossFeedResult.signal === 'fail' ? 'fail' : crossFeedResult.signal === 'pass' ? 'pass' : 'abstain';
+
+  // (c) value-fingerprint: degenerate distribution ⟹ fail; else decided below
+  //     by cross-pass consistency.
+  const fp = computeRecipeFingerprint(args.recipe, args.boardTargets);
+
+  // (a) reconcile/certify proof state.
+  const reconcile = reconcileSignalForRecipe(args.recipe);
+
+  // (d) cheap second-model vote (env-gated OFF by default → 'abstain').
+  const voteFn = args.secondModelVote ?? secondModelRecipeVote;
+  let secondModel: SignalVerdict = 'abstain';
+  try {
+    secondModel = await voteFn({
+      recipe: args.recipe, boardTargets: args.boardTargets,
+      jobId: args.jobId, propertyId: args.propertyId, signal: args.signal,
+    });
+  } catch {
+    secondModel = 'abstain'; // fail-open
+  }
+
+  // ── pass^N: read the family's most-recent prior verification fingerprint ──
+  const prior = await loadPriorVerification(args.pmsFamily);
+  const matchedPrior = fingerprintsMatch(prior?.fingerprint, fp.fingerprint);
+  const fingerprint: SignalVerdict = !fp.sane ? 'fail' : matchedPrior ? 'pass' : 'abstain';
+
+  const signals: CommitSignals = { reconcile, crossFeed, fingerprint, secondModel };
+  const { score } = computeCommitScore(signals);
+
+  // A "consistent pass" is one that BOTH met the threshold AND re-derived the
+  // same fingerprint as the prior qualifying pass. A sub-threshold pass resets
+  // the counter to 0 (nothing to build on); a fresh/divergent shape resets to 1.
+  const qualifies = score >= threshold;
+  const priorQualified = (prior?.consistentPasses ?? 0) > 0;
+  const consistentPasses = !qualifies ? 0 : (priorQualified && matchedPrior) ? (prior!.consistentPasses ?? 0) + 1 : 1;
+
+  const note = `signals reconcile=${reconcile} crossFeed=${crossFeed} fingerprint=${fingerprint} secondModel=${secondModel}`;
+
+  return {
+    gateInput: { enforce, score, threshold, consistentPasses, requiredPasses, note },
+    persist: {
+      threshold, score, consistentPasses, requiredPasses,
+      enforced: enforce,
+      fingerprint: fp.fingerprint,
+      computedAt: new Date().toISOString(),
+      signals: { reconcile, crossFeed, fingerprint, secondModel },
+    },
+  };
+}
+
+/** The most-recent prior verification telemetry for a family (latest version,
+ *  any status) — drives the pass^N counter. Fail-open: any error ⟹ null (the
+ *  counter simply starts fresh). */
+async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerification | null> {
+  try {
+    const { data, error } = await supabase
+      .from('pms_knowledge_files')
+      .select('knowledge')
+      .eq('pms_family', pmsFamily)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    const v = (data.knowledge as { verification?: RecipeVerification } | null)?.verification;
+    return v && typeof v === 'object' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface SecondModelVoteArgs {
+  recipe: Recipe;
+  boardTargets?: Record<string, BoardTargetState>;
+  jobId: string | null;
+  propertyId: string | null;
+  signal?: AbortSignal;
+}
+
+const VOTE_SYSTEM =
+  'You are a strict reviewer of an automatically-learned data-extraction recipe ' +
+  'for a hotel PMS. You are given, per required feed, the column→source mapping ' +
+  'and a few sample values. Judge whether the mapping is PLAUSIBLE (each column ' +
+  'name matches the kind of value sampled for it). Respond on TWO lines, no ' +
+  'preamble, no markdown:\nVERDICT: <approve|unclear|reject>\nREASON: <one short sentence>\n' +
+  '- approve: every sampled value matches its column meaning.\n' +
+  '- reject: at least one column is clearly mapped to the WRONG kind of value ' +
+  '(e.g. a date in a name column, a status string in an id column).\n' +
+  '- unclear: you cannot tell from the samples.';
+
+/**
+ * Cheap second-model sanity vote on the learned recipe (mirrors critic.ts:
+ * Sonnet, fail-open, cost-attributed, abort-aware). ENV-GATED OFF by default —
+ * returns 'abstain' with zero LLM cost unless CUA_VERIFY_SECOND_MODEL_ENABLED=
+ * true. Onboarding-only (called from computeRecipeVerification). Lazy-imports
+ * the SDK + usage log so the module-load graph (and the test suite) is
+ * unaffected when the vote is off.
+ */
+export async function secondModelRecipeVote(args: SecondModelVoteArgs): Promise<SignalVerdict> {
+  if (!secondModelVoteOn()) return 'abstain';
+  try {
+    const prompt = buildVotePrompt(args.recipe, args.boardTargets);
+    if (!prompt) return 'abstain'; // nothing concrete to judge
+    const { anthropic } = await import('./anthropic-client.js');
+    const resp = await anthropic.messages.create(
+      {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: VOTE_SYSTEM,
+        messages: [{ role: 'user', content: prompt }],
+      },
+      args.signal ? { signal: args.signal } : undefined,
+    );
+    try {
+      const { logClaudeUsage } = await import('./usage-log.js');
+      await logClaudeUsage(resp.usage ?? {}, {
+        // Reuse the mapping-action workload so this onboarding-only spend is
+        // tagged source='mapping' (excluded from the per-hotel daily cost cap,
+        // migration 0208); the phase metadata distinguishes the verify vote.
+        workload: 'cua_mapping_action',
+        model: 'claude-sonnet-4-6',
+        propertyId: args.propertyId,
+        jobId: args.jobId,
+        metadata: { phase: 'second_model_verify_vote' },
+      });
+    } catch { /* cost log is best-effort */ }
+    const text = resp.content
+      .filter((c) => c.type === 'text')
+      .map((c) => (c as { text?: string }).text ?? '')
+      .join('\n');
+    const m = text.match(/VERDICT\s*:\s*(approve|unclear|reject)/i);
+    const v = m?.[1]?.toLowerCase();
+    return v === 'approve' ? 'pass' : v === 'reject' ? 'fail' : 'abstain';
+  } catch {
+    return 'abstain'; // fail-open: a vote error never blocks a learn
+  }
+}
+
+/** Build a compact, PII-light vote prompt from the required feeds' column maps +
+ *  a couple of sample values. Returns '' when there's nothing concrete. */
+function buildVotePrompt(
+  recipe: Recipe,
+  boardTargets: Record<string, BoardTargetState> | undefined,
+): string {
+  const lines: string[] = [];
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;
+    const cols = effectiveColumnsFromAction(t, action);
+    const colNames = Object.keys(cols).filter((c) => (cols[c] ?? '').trim() !== '');
+    if (colNames.length === 0) continue;
+    lines.push(`FEED ${String(t)}:`);
+    const sample = boardTargets?.[String(t)]?.preview?.sample?.[0] ?? {};
+    for (const c of colNames) {
+      const raw = sample[c];
+      const masked = /name|guest|assigned|changed_by/i.test(c) && typeof raw === 'string'
+        ? raw.replace(/[A-Za-z]/g, 'x').replace(/\d/g, '#')
+        : raw;
+      const shown = masked == null ? '(no sample)' : String(masked).slice(0, 40);
+      lines.push(`  ${c} ⟵ ${shown}`);
+    }
+  }
+  return lines.length > 0 ? `Recipe to review:\n${lines.join('\n')}` : '';
 }
 
 /**
@@ -1267,6 +1672,7 @@ export async function saveDraftKnowledgeFile(
   status: 'draft' | 'quarantined' = 'draft',
   feedGaps?: FeedGaps,
   gateNote?: string,
+  verification?: RecipeVerification,
 ): Promise<{ ok: true; id: string; version: number } | { ok: false; error: string }> {
   // (pms_family, version) is UNIQUE. Under concurrency two jobs for the same
   // family read the same max(version) and both try to insert max+1; the loser
@@ -1318,6 +1724,11 @@ export async function saveDraftKnowledgeFile(
       ...(feedGaps && (feedGaps.missingRequired.length > 0 || feedGaps.missingBusinessCritical.length > 0)
         ? { feedGaps }
         : {}),
+      // feature/cua-bestclass-verify — persist the verification telemetry +
+      // pass^N counter inside the SAME signed envelope (only when computed: a
+      // fresh learn). Absent on seeded/edit jobs and on legacy rows, keeping
+      // their exact prior signed shape — so old signed rows still verify+load.
+      ...(verification ? { verification } : {}),
     };
 
     // canonicalJson-stability: sign AND store the JSON-normalized envelope
