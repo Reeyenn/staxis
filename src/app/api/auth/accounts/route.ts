@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
@@ -207,21 +208,30 @@ export async function POST(req: NextRequest) {
   // Step 1: create the auth.users row with the real email. email_confirm:
   // true skips Supabase's verification step — the invite/code flow in
   // Phase 3 will do its own email verification.
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+  // createOrReclaimAuthUser reclaims an orphan login (an auth.users row left
+  // behind by a flaked hotel-delete with no accounts row) instead of failing
+  // with "email already registered". A login that has a REAL accounts row is
+  // never deleted — we return a 409 telling the admin to sign in / look it up
+  // instead of the confusing "already registered" auth error.
+  const authResult = await createOrReclaimAuthUser({
     email: normalizedEmail,
     password,
-    email_confirm: true,
-    user_metadata: { username: normalizedUsername, displayName: displayName || normalizedUsername },
+    userMetadata: { username: normalizedUsername, displayName: displayName || normalizedUsername },
   });
-
-  if (authErr || !authData.user) {
-    log.error('[accounts:POST] auth.admin.createUser failed', { requestId, msg: errToString(authErr) });
+  if (authResult.alreadyHasAccount) {
+    return err('An account with this email already exists — please sign in instead.', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (!authResult.user) {
+    log.error('[accounts:POST] createOrReclaimAuthUser failed', { requestId, msg: authResult.error?.message });
     // 422 is what Supabase returns for weak-password/invalid-email; surface
     // the message so the settings UI can display it.
-    return err(authErr?.message ?? 'Failed to create auth user', {
+    return err(authResult.error?.message ?? 'Failed to create auth user', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
+  const authData = { user: authResult.user };
 
   // Admin accounts don't get explicit property_access — RLS grants them
   // access to everything via the accounts.role = 'admin' branch in

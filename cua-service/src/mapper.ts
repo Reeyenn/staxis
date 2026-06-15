@@ -42,7 +42,7 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, CsvHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns, templateFromSample, substituteTemplate } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS, coreTargetSharesRequiredSchema } from './target-contract.js';
 import { shouldNudgeCommit, buildCommitNudge, COMMIT_DITHER_TURNS, type TabularSummary } from './commit-signal.js';
@@ -2097,13 +2097,45 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     // and use a staler capture.recent() (the early snapshot was the freshest).
     if (
       !result.ok || result.viaBail || result.action.parse.mode !== 'table'
-      || result.action.drillDown || !capture || !runStructuredDiscovery
-      || discoveryState.earlyAttempted
+      || result.action.drillDown
     ) {
       return result;
     }
-    const upgraded = await runStructuredDiscovery(result, capture.recent(), args.page.url());
-    return upgraded ?? result;
+    // api upgrade (existing) — needs network capture + the discovery closure +
+    // not-already-attempted-early. Unchanged: when any of those is absent the
+    // api path is skipped exactly as before.
+    if (capture && runStructuredDiscovery && !discoveryState.earlyAttempted) {
+      const upgraded = await runStructuredDiscovery(result, capture.recent(), args.page.url());
+      if (upgraded) return upgraded;
+    }
+    // feature/cua-self-heal-reach — OPTIONAL csv / inline_text upgrades. Both
+    // DEFAULT OFF, so with flags unset this is a no-op and the function returns
+    // `result` exactly as before. Each runs only on a clean table result the api
+    // path did NOT upgrade, is abstain-by-default, and a throw keeps the table
+    // recipe (mirrors the api upgrade's fall-through).
+    if (result.action.parse.mode === 'table' && csvDiscoveryEnabled()) {
+      try {
+        const csv = await attemptCsvDiscovery(
+          { actionName: args.actionName as keyof Recipe['actions'], success: result, feedPageUrl: args.page.url(), jobId: args.jobId, signal: args.signal },
+          makeDefaultCsvDiscoveryDeps(args),
+        );
+        if (csv) return csv;
+      } catch (err) {
+        log.warn('mapper: csv discovery threw — keeping table recipe', { actionName: args.actionName, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (result.action.parse.mode === 'table' && inlineDiscoveryEnabled()) {
+      try {
+        const inline = await attemptInlineTextDiscovery(
+          { actionName: args.actionName as keyof Recipe['actions'], success: result, feedPageUrl: args.page.url(), jobId: args.jobId, signal: args.signal },
+          makeDefaultInlineDiscoveryDeps(args),
+        );
+        if (inline) return inline;
+      } catch (err) {
+        log.warn('mapper: inline discovery threw — keeping table recipe', { actionName: args.actionName, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return result;
   } finally {
     try { capture?.detach(); } catch { /* idempotent per contract */ }
   }
@@ -4795,6 +4827,438 @@ export async function attemptStructuredDiscovery(
     ...input.success,
     action: { ...input.success.action, parse: { mode: 'api', hint } },
     ...(mergedEnums ? { enumMappings: mergedEnums } : {}),
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// feature/cua-self-heal-reach — CSV-export + single-value (inline_text) learning
+//
+// The mapper has only ever emitted parse:{mode:'table'} (mapActionCore) and
+// parse:{mode:'api'} (attemptStructuredDiscovery above). The runtime + adapter
+// already CONSUME csv (csv_download) and inline_text (dom_inline) — see
+// extractors/csv-download.ts, extractors/dom-inline.ts, recipe-adapter.ts, and
+// csv-adapter-wiring.test.ts — but nothing LEARNED them. These two self-contained
+// strategies close that gap WITHOUT touching the table-emit core: each runs as an
+// OPTIONAL post-table upgrade (like attemptStructuredDiscovery), default-OFF via
+// its own env flag, mirroring the same abstain-by-default verify ladder and the
+// same injected-deps testability seam.
+//
+// Both REUSE the safety cores (reconcileRows / certifyColumns) for value proof —
+// a learned csv/inline feed only emits when its data CORROBORATES the DOM oracle
+// (csv) or value-certifies (inline). Any doubt → return null → keep the table
+// recipe (exactly attemptStructuredDiscovery's fall-through contract).
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Default OFF (monotonic): with the flag unset the dispatch never runs these,
+ *  so the mapper behaves byte-for-byte as today (table + api only). */
+function csvDiscoveryEnabled(): boolean {
+  return (process.env.CUA_CSV_DISCOVERY_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+function inlineDiscoveryEnabled(): boolean {
+  return (process.env.CUA_INLINE_DISCOVERY_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+
+// ─── CSV-export discovery ───────────────────────────────────────────────────
+
+export interface CsvDiscoveryInput {
+  actionName: keyof Recipe['actions'];
+  /** The clean DOM-table success from mapActionCore (the oracle source). */
+  success: ActionMapSuccess;
+  /** page.url() at success time. */
+  feedPageUrl: string;
+  jobId: string | null;
+  signal?: AbortSignal;
+}
+
+export interface CsvDiscoveryDeps {
+  /** Re-scrape the current page with the table recipe's selectors (the oracle the
+   *  CSV must reconcile against). */
+  extractOracleRows: (
+    rowSelector: string,
+    columns: Record<string, string>,
+    cap: number,
+  ) => Promise<Array<Record<string, string>>>;
+  /** Detect a CSV/Export affordance on the current feed page and return the
+   *  recorded click flow ENDING in the download trigger (so deriveCsvFlowFromSteps
+   *  reads the last click as the download button). Abstains when none found. */
+  findCsvExport: () => Promise<{ ok: true; steps: RecipeStep[] } | { ok: false; reason: string }>;
+  /** Replay `steps` and parse the downloaded CSV into header + rows. READ-ONLY
+   *  apart from triggering the export download. */
+  downloadCsv: (
+    steps: RecipeStep[],
+  ) => Promise<{ ok: true; headers: string[]; rows: Array<Record<string, string>> } | { ok: false; reason: string }>;
+  isOverBudget: () => Promise<boolean>;
+}
+
+const normCell = (v: unknown): string => (typeof v === 'string' ? v.trim().toLowerCase() : '');
+
+/** Do a DOM cell value and a CSV cell value describe the same datum? Exact
+ *  (normalized) match OR same ISO date (the CSV may format dates differently
+ *  than the on-screen table). */
+function csvValuesAgree(domVal: string, csvVal: string): boolean {
+  if (domVal === csvVal) return true;
+  const dIso = parseIsoDate(domVal) ?? parseTextualDate(domVal);
+  const cIso = parseIsoDate(csvVal) ?? parseTextualDate(csvVal);
+  if (dIso && cIso) return dIso === cIso;
+  // Ambiguous numeric dates: agree iff their interpretation sets intersect.
+  const di = numericDateInterpretations(domVal);
+  const ci = numericDateInterpretations(csvVal);
+  if (di.length > 0 && ci.length > 0) return di.some((x) => ci.includes(x));
+  return false;
+}
+
+/**
+ * PURE. Learn a canonical-field → CSV-header map by VALUE-JOINING the downloaded
+ * CSV against the DOM oracle on the feed's key column. Returns null-mapping
+ * (ok:false) unless the key column maps with high overlap; other columns map only
+ * when ≥90% of their per-key values agree. reconcileRows then VERIFIES the whole
+ * proposal (the safety core), so a sloppy match still can't ship.
+ */
+export function proposeCsvColumnMap(input: {
+  keyColumn: string;
+  candidateColumns: string[];
+  domRows: Array<Record<string, string>>;
+  csvRows: Array<Record<string, string>>;
+  csvHeaders: string[];
+}): { ok: true; map: Record<string, string>; keyHeader: string } | { ok: false; reason: string } {
+  const { keyColumn, candidateColumns, domRows, csvRows, csvHeaders } = input;
+  const domKeySet = new Set(domRows.map((r) => normCell(r[keyColumn])).filter((k) => k !== ''));
+  if (domKeySet.size < MIN_ORACLE_ROWS) return { ok: false, reason: 'dom_keyset_too_small' };
+
+  // 1. The CSV key header = the header whose value set best covers the DOM keys.
+  let keyHeader: string | null = null;
+  let keyOverlap = 0;
+  for (const h of csvHeaders) {
+    const csvSet = new Set(csvRows.map((r) => normCell(r[h])).filter((v) => v !== ''));
+    const overlap = [...domKeySet].filter((k) => csvSet.has(k)).length / domKeySet.size;
+    if (overlap > keyOverlap) { keyOverlap = overlap; keyHeader = h; }
+  }
+  if (!keyHeader || keyOverlap < 0.9) return { ok: false, reason: `no_csv_key_header(best=${keyOverlap.toFixed(2)})` };
+
+  // 2. Per-key lookups for value-join.
+  const domByKey = new Map<string, Record<string, string>>();
+  for (const r of domRows) { const k = normCell(r[keyColumn]); if (k) domByKey.set(k, r); }
+  const csvByKey = new Map<string, Record<string, string>>();
+  for (const r of csvRows) { const k = normCell(r[keyHeader]); if (k && !csvByKey.has(k)) csvByKey.set(k, r); }
+  const sharedKeys = [...domKeySet].filter((k) => csvByKey.has(k));
+  if (sharedKeys.length < MIN_ORACLE_ROWS) return { ok: false, reason: 'too_few_shared_keys' };
+
+  // 3. Map each remaining canonical column to its best-agreeing CSV header.
+  const map: Record<string, string> = { [keyColumn]: keyHeader };
+  for (const canon of candidateColumns) {
+    if (canon === keyColumn) continue;
+    let best: string | null = null;
+    let bestScore = 0;
+    for (const h of csvHeaders) {
+      if (h === keyHeader) continue;
+      let match = 0;
+      let total = 0;
+      for (const k of sharedKeys) {
+        const dv = normCell(domByKey.get(k)?.[canon]);
+        if (dv === '') continue;
+        total++;
+        if (csvValuesAgree(dv, normCell(csvByKey.get(k)?.[h]))) match++;
+      }
+      const score = total > 0 ? match / total : 0;
+      if (score > bestScore) { bestScore = score; best = h; }
+    }
+    // Unmappable columns are simply omitted (optional); the reconcile + promotion
+    // gate still demand the contract's required columns, so a dropped REQUIRED
+    // column fails downstream rather than shipping blank.
+    if (best && bestScore >= 0.9) map[canon] = best;
+  }
+  return { ok: true, map, keyHeader };
+}
+
+/**
+ * Learn a parse:{mode:'csv'} recipe for a feed that exposes a CSV/Export
+ * download. Abstain-by-default ladder; emits ONLY when the CSV reconciles with
+ * the DOM oracle (reconcileRows). Self-contained — never mutates the table core.
+ */
+export async function attemptCsvDiscovery(
+  input: CsvDiscoveryInput,
+  deps: CsvDiscoveryDeps,
+): Promise<ActionMapSuccess | null> {
+  const abstain = (reason: string, extra?: Record<string, unknown>): null => {
+    log.info('mapper: csv discovery abstain', { actionName: input.actionName, reason, jobId: input.jobId ?? undefined, ...extra });
+    return null;
+  };
+  const actionKey = input.actionName;
+  const contract = CORE_TARGET_CONTRACTS[actionKey];
+  const keyCol = DISCOVERY_KEY_COLUMNS[actionKey];
+  if (!contract || !keyCol) return null; // non-core target — silent (no csv reconcile possible)
+  if (input.signal?.aborted) return abstain('aborted');
+  if (input.success.viaBail) return abstain('via_bail');
+  if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
+  if (await deps.isOverBudget()) return abstain('job_over_budget');
+
+  const tableHint = input.success.action.parse.hint as TableRowHint;
+  if (!tableHint.columns[keyCol]) return abstain('key_column_unmapped');
+
+  const exp = await deps.findCsvExport();
+  if (!exp.ok) return abstain('no_csv_affordance', { reason: exp.reason });
+
+  const dl = await deps.downloadCsv(exp.steps);
+  if (!dl.ok) return abstain('csv_download_failed', { reason: dl.reason });
+  if (dl.rows.length === 0) return abstain('csv_empty');
+
+  const domRows = await deps.extractOracleRows(tableHint.rowSelector, tableHint.columns, MAX_ORACLE_ROWS);
+  if (domRows.length < MIN_ORACLE_ROWS) return abstain('oracle_too_small', { rows: domRows.length });
+
+  const proposal = proposeCsvColumnMap({
+    keyColumn: keyCol,
+    candidateColumns: Object.keys(tableHint.columns),
+    domRows,
+    csvRows: dl.rows,
+    csvHeaders: dl.headers,
+  });
+  if (!proposal.ok) return abstain('csv_column_map_failed', { reason: proposal.reason });
+
+  // Project the CSV rows through the learned map and VERIFY against the DOM oracle
+  // with the SAME safety core the api path uses (never forked).
+  const csvAsApi = dl.rows.map((r) => {
+    const o: Record<string, unknown> = {};
+    for (const [canon, header] of Object.entries(proposal.map)) o[canon] = r[header];
+    return o;
+  });
+  const verdict = reconcileRows({
+    actionKey,
+    domRows,
+    apiRows: csvAsApi,
+    mappedColumns: Object.keys(proposal.map),
+    mode: 'learn',
+  });
+  if (!verdict.reconciles) return abstain('csv_reconcile_failed', { reason: verdict.reason });
+
+  // Drop optional columns reconcile flagged as unverifiable.
+  const finalMap: Record<string, string> = { ...proposal.map };
+  for (const c of verdict.droppedOptionalColumns ?? []) delete finalMap[c];
+  if (!finalMap[keyCol]) return abstain('key_dropped_post_reconcile');
+
+  const hint: CsvHint = { columns: finalMap, requiredColumn: finalMap[keyCol] };
+  // steps = the recorded nav to the report page + the export click flow. The last
+  // click in exp.steps becomes the download trigger (deriveCsvFlowFromSteps);
+  // credential fills are stripped by the adapter + extractor (defense-in-depth).
+  const steps = [...input.success.action.steps, ...exp.steps];
+  log.info('mapper: csv discovery VERIFIED — emitting csv recipe', {
+    actionName: input.actionName,
+    jobId: input.jobId ?? undefined,
+    columnCount: Object.keys(finalMap).length,
+    matched: verdict.matchedCount,
+    surplus: verdict.surplus,
+  });
+  return {
+    ...input.success,
+    action: { ...input.success.action, steps, downloadsCsv: true, parse: { mode: 'csv', hint } },
+  };
+}
+
+// ─── Single-value (inline_text) discovery ───────────────────────────────────
+
+export interface InlineDiscoveryInput {
+  actionName: keyof Recipe['actions'];
+  success: ActionMapSuccess;
+  feedPageUrl: string;
+  jobId: string | null;
+  signal?: AbortSignal;
+}
+
+export interface InlineDiscoveryDeps {
+  /** Re-scrape the table recipe's row(s) to confirm the page is a single record. */
+  extractOracleRows: (
+    rowSelector: string,
+    columns: Record<string, string>,
+    cap: number,
+  ) => Promise<Array<Record<string, string>>>;
+  /** Read each field's value via a DOCUMENT-rooted selector (dom_inline reads the
+   *  whole page, not a row). Returns null for a missing element. */
+  extractInline: (fields: Record<string, string>) => Promise<Record<string, string | null>>;
+  isOverBudget: () => Promise<boolean>;
+}
+
+const COUNT_RE = /^-?\d{1,3}(,\d{3})*(\.\d+)?$|^-?\d+(\.\d+)?$/;
+
+/**
+ * Learn a parse:{mode:'inline_text'} recipe for a SINGLE-VALUE page (a dashboard
+ * counter view — the documented dom_inline use). Abstain-by-default: emits ONLY
+ * when the page is a single record AND every field reads a non-blank NUMERIC
+ * value (counters). Free-text single values are out of scope (un-provable) →
+ * abstain. Self-contained; never mutates the table core.
+ */
+export async function attemptInlineTextDiscovery(
+  input: InlineDiscoveryInput,
+  deps: InlineDiscoveryDeps,
+): Promise<ActionMapSuccess | null> {
+  const abstain = (reason: string, extra?: Record<string, unknown>): null => {
+    log.info('mapper: inline discovery abstain', { actionName: input.actionName, reason, jobId: input.jobId ?? undefined, ...extra });
+    return null;
+  };
+  if (input.signal?.aborted) return abstain('aborted');
+  if (input.success.viaBail) return abstain('via_bail');
+  if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
+  if (await deps.isOverBudget()) return abstain('job_over_budget');
+
+  // inline_text has NO preStep replay in recipe-adapter, so a single-value page
+  // reachable ONLY via an in-page interaction AFTER the last goto would be flagged
+  // `incomplete` and silently skipped at runtime. Emit inline ONLY for a
+  // directly-navigable page (goto-only after the last goto); else keep the table.
+  const steps = input.success.action.steps;
+  let lastGoto = -1;
+  for (let i = steps.length - 1; i >= 0; i--) { if (steps[i]!.kind === 'goto') { lastGoto = i; break; } }
+  if (steps.slice(lastGoto + 1).some((s) => s.kind !== 'goto')) {
+    return abstain('post_goto_interaction_unsupported_for_inline');
+  }
+
+  const tableHint = input.success.action.parse.hint as TableRowHint;
+  const cols = Object.entries(tableHint.columns).filter(([, css]) => typeof css === 'string' && css.trim() !== '');
+  if (cols.length === 0) return abstain('no_columns');
+
+  // Single-value pages are NOT multi-row tables. Confirm at most one row matched.
+  const domRows = await deps.extractOracleRows(tableHint.rowSelector, tableHint.columns, 5);
+  if (domRows.length > 1) return abstain('multi_row_table_not_inline', { rows: domRows.length });
+
+  // Build DOCUMENT-rooted field → selector map. The dom_inline extractor reads
+  // document.querySelector(sel), so compose rowSelector + the per-column css
+  // (row-rooted) into an absolute selector. '.' (the row itself) → the rowSelector.
+  const fields: Record<string, string> = {};
+  for (const [field, css] of cols) {
+    fields[field] = css === '.' ? tableHint.rowSelector : `${tableHint.rowSelector} ${css}`;
+  }
+
+  const values = await deps.extractInline(fields);
+  const numericByField: Record<string, string[]> = {};
+  for (const field of Object.keys(fields)) {
+    const v = (values[field] ?? '').trim();
+    if (v === '') return abstain('blank_field', { field });
+    if (!COUNT_RE.test(v)) return abstain('non_numeric_field', { field, sample: v.slice(0, 24) });
+    numericByField[field] = [v];
+  }
+
+  log.info('mapper: inline discovery VERIFIED — emitting inline_text recipe', {
+    actionName: input.actionName,
+    jobId: input.jobId ?? undefined,
+    fieldCount: Object.keys(fields).length,
+  });
+  return {
+    ...input.success,
+    action: { ...input.success.action, parse: { mode: 'inline_text', fields } },
+  };
+}
+
+// ─── Default live-page deps for the two strategies ──────────────────────────
+
+/** Minimal RFC-4180-ish CSV parser (quoted fields, embedded commas/newlines,
+ *  doubled quotes). Returns header + rows keyed by header. Self-contained so the
+ *  mapper's learn-time download never depends on the runtime extractor's
+ *  FeedSpec-coupled parser. */
+export function parseCsvText(text: string): { headers: string[]; rows: Array<Record<string, string>> } {
+  const records: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else { field += ch; }
+      continue;
+    }
+    if (ch === '"') { inQuotes = true; continue; }
+    if (ch === ',') { row.push(field); field = ''; continue; }
+    if (ch === '\r') { continue; }
+    if (ch === '\n') { row.push(field); records.push(row); field = ''; row = []; continue; }
+    field += ch;
+  }
+  if (field !== '' || row.length > 0) { row.push(field); records.push(row); }
+  const nonEmpty = records.filter((r) => r.some((c) => c.trim() !== ''));
+  if (nonEmpty.length === 0) return { headers: [], rows: [] };
+  const headers = nonEmpty[0]!.map((h) => h.trim());
+  const rows = nonEmpty.slice(1).map((r) => {
+    const o: Record<string, string> = {};
+    headers.forEach((h, idx) => { o[h] = (r[idx] ?? '').trim(); });
+    return o;
+  });
+  return { headers, rows };
+}
+
+/** Heuristic export-affordance finder: a link/button whose text or attributes
+ *  read as a CSV/export control. Records a single click step ending the flow
+ *  (the download trigger). Abstains when nothing plausible is on the page. */
+function makeDefaultCsvDiscoveryDeps(args: MapActionArgs): CsvDiscoveryDeps {
+  return {
+    extractOracleRows: (rowSelector, columns, cap) =>
+      extractDomRows(args.page, rowSelector, columns, { cap }).then((r) => r.rows),
+    findCsvExport: async () => {
+      const EXPORT_SELECTORS = [
+        'a[href$=".csv" i]',
+        'a[download][href*="csv" i]',
+        'button:has-text("Export CSV")',
+        'button:has-text("Download CSV")',
+        'a:has-text("Export CSV")',
+        'a:has-text("Download CSV")',
+        'button:has-text("Export")',
+        'a:has-text("Export")',
+        '[aria-label*="export" i]',
+        '[data-export*="csv" i]',
+      ];
+      for (const sel of EXPORT_SELECTORS) {
+        try {
+          const loc = args.page.locator(sel).first();
+          if (await loc.isVisible({ timeout: 1_000 }).catch(() => false)) {
+            return { ok: true, steps: [{ kind: 'click', selector: sel }] };
+          }
+        } catch { /* selector unsupported / not present — try next */ }
+      }
+      return { ok: false, reason: 'no_export_control_found' };
+    },
+    downloadCsv: async (steps) => {
+      try {
+        // Replay every step except the LAST click, then race the download against
+        // the final trigger click (the same ordering the runtime extractor uses).
+        const trigger = steps[steps.length - 1];
+        const pre = steps.slice(0, -1);
+        for (const s of pre) {
+          if (s.kind === 'click') await args.page.click(s.selector, { timeout: 10_000 });
+          else if (s.kind === 'select') await args.page.selectOption(s.selector, s.value);
+          else if (s.kind === 'fill') await args.page.fill(s.selector, s.value);
+          else if (s.kind === 'wait_for') await args.page.waitForSelector(s.selector, { timeout: s.timeoutMs ?? 10_000 });
+          else if (s.kind === 'wait_ms') await args.page.waitForTimeout(s.ms);
+        }
+        if (!trigger || trigger.kind !== 'click') return { ok: false, reason: 'no_trigger_click' };
+        const [download] = await Promise.all([
+          args.page.waitForEvent('download', { timeout: 30_000 }),
+          args.page.click(trigger.selector, { timeout: 10_000 }),
+        ]);
+        const stream = await download.createReadStream();
+        const chunks: Buffer[] = [];
+        for await (const c of stream) chunks.push(Buffer.from(c));
+        const parsed = parseCsvText(Buffer.concat(chunks).toString('utf8'));
+        if (parsed.headers.length === 0) return { ok: false, reason: 'empty_or_unparseable_csv' };
+        return { ok: true, headers: parsed.headers, rows: parsed.rows };
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message };
+      }
+    },
+    isOverBudget: async () => (await isJobOverBudget(args.jobId, args.jobCostCapMicros)).over,
+  };
+}
+
+function makeDefaultInlineDiscoveryDeps(args: MapActionArgs): InlineDiscoveryDeps {
+  return {
+    extractOracleRows: (rowSelector, columns, cap) =>
+      extractDomRows(args.page, rowSelector, columns, { cap }).then((r) => r.rows),
+    extractInline: async (fields) =>
+      args.page.evaluate((fieldsMap: Record<string, string>) => {
+        const out: Record<string, string | null> = {};
+        for (const [field, sel] of Object.entries(fieldsMap)) {
+          let el: Element | null = null;
+          try { el = document.querySelector(sel); } catch { el = null; }
+          out[field] = el ? (el.textContent ?? '').trim() : null;
+        }
+        return out;
+      }, fields),
+    isOverBudget: async () => (await isJobOverBudget(args.jobId, args.jobCostCapMicros)).over,
   };
 }
 

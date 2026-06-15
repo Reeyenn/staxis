@@ -16,6 +16,7 @@
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit, logSecurityEvent } from '@/lib/audit';
@@ -235,17 +236,30 @@ export async function POST(req: NextRequest) {
     }
   };
 
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+  // createOrReclaimAuthUser handles the orphan-login case: a prior hotel
+  // delete may have left an auth.users row with no accounts row, which used
+  // to make this createUser fail with "email already registered" for up to a
+  // week (until the orphan sweeper ran). The helper reclaims that orphan;
+  // and if the email belongs to a REAL account it refuses to touch it and
+  // returns alreadyHasAccount so we can say "sign in instead."
+  const authResult = await createOrReclaimAuthUser({
     email: normalizedEmail,
     password,
-    email_confirm: true,
-    user_metadata: { username, displayName },
+    userMetadata: { username, displayName },
   });
-  if (authErr || !authData.user) {
-    log.error('[use-join-code] createUser failed', { err: authErr, requestId });
+  if (authResult.alreadyHasAccount) {
+    await releaseSlot();
+    return err(
+      'An account with this email already exists — please sign in instead.',
+      { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+    );
+  }
+  if (!authResult.user) {
+    log.error('[use-join-code] createOrReclaimAuthUser failed', { err: authResult.error, requestId });
     await releaseSlot();
     return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  const authUser = authResult.user;
 
   // Insert with collision-retry against accounts.username UNIQUE. On any
   // non-unique-violation error, bail to the cleanup path below (release
@@ -257,7 +271,7 @@ export async function POST(req: NextRequest) {
       display_name: displayName,
       role: finalRole,
       property_access: [row.hotel_id],
-      data_user_id: authData.user.id,
+      data_user_id: authUser.id,
       phone: normalizedPhone,
     });
     if (!error) { insErr = null; break; }
@@ -271,9 +285,9 @@ export async function POST(req: NextRequest) {
     // silently swallowed rollback failures, leaving orphan auth.users
     // rows. Log loudly + Sentry so the orphan sweeper cron and on-call
     // both have visibility if rollback fails.
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+    await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
       log.error('[use-join-code] AUTH ROLLBACK FAILED', {
-        auth_user_id: authData.user.id,
+        auth_user_id: authUser.id,
         email: normalizedEmail,
         err: rollErr,
         requestId,
@@ -281,7 +295,7 @@ export async function POST(req: NextRequest) {
       captureException(rollErr, {
         subsystem: 'auth',
         failure_mode: 'rollback_failed',
-        auth_user_id: authData.user.id,
+        auth_user_id: authUser.id,
         flow: 'use-join-code',
       });
     });
@@ -328,14 +342,14 @@ export async function POST(req: NextRequest) {
   const { error: proofErr } = await supabaseAdmin
     .from('password_signin_proofs')
     .insert({
-      user_id: authData.user.id,
+      user_id: authUser.id,
       expires_at: proofExpiresAt,
       user_agent: req.headers.get('user-agent') ?? null,
       ip: ip || null,
     });
   if (proofErr) {
     log.warn('[use-join-code] password_signin_proofs write failed (non-fatal)', {
-      requestId, userId: authData.user.id, err: proofErr.message,
+      requestId, userId: authUser.id, err: proofErr.message,
     });
   }
 
@@ -350,7 +364,7 @@ export async function POST(req: NextRequest) {
   if (finalRole === 'owner') {
     const { error: ownerXferErr } = await supabaseAdmin
       .from('properties')
-      .update({ owner_id: authData.user.id })
+      .update({ owner_id: authUser.id })
       .eq('id', row.hotel_id);
     if (ownerXferErr) {
       // Non-fatal: account is created; owner_id semantic is wrong but
@@ -359,7 +373,7 @@ export async function POST(req: NextRequest) {
       log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
         requestId,
         hotelId: row.hotel_id,
-        newOwner: authData.user.id,
+        newOwner: authUser.id,
         err: ownerXferErr,
       });
     }
@@ -367,7 +381,7 @@ export async function POST(req: NextRequest) {
 
   await writeAudit({
     action: 'join_code.use',
-    actorUserId: authData.user.id,
+    actorUserId: authUser.id,
     actorEmail: normalizedEmail,
     targetType: 'join_code',
     targetId: row.id,

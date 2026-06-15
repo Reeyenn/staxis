@@ -11,6 +11,7 @@
 import { NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
@@ -97,17 +98,27 @@ export async function POST(req: NextRequest) {
     username = deriveUsername(invite.email);
   }
 
-  // Create auth user.
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+  // Create auth user. createOrReclaimAuthUser reclaims an orphan login (an
+  // auth.users row left behind by a flaked hotel-delete with no accounts
+  // row) instead of failing with "email already registered" for a week. If
+  // the email belongs to a REAL account it is never touched — we surface a
+  // 409 telling the invitee to sign in instead.
+  const authResult = await createOrReclaimAuthUser({
     email: invite.email,
     password,
-    email_confirm: true,
-    user_metadata: { username, displayName },
+    userMetadata: { username, displayName },
   });
-  if (authErr || !authData.user) {
-    log.error('[accept-invite] createUser failed', { err: authErr, requestId });
+  if (authResult.alreadyHasAccount) {
+    return err(
+      'An account with this email already exists — please sign in instead.',
+      { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+    );
+  }
+  if (!authResult.user) {
+    log.error('[accept-invite] createOrReclaimAuthUser failed', { err: authResult.error, requestId });
     return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  const authUser = authResult.user;
 
   // Insert with collision-retry against the UNIQUE constraint.
   let insErr: { code?: string; message?: string } | null = null;
@@ -117,7 +128,7 @@ export async function POST(req: NextRequest) {
       display_name: displayName,
       role: invite.role,
       property_access: [invite.hotel_id],
-      data_user_id: authData.user.id,
+      data_user_id: authUser.id,
     });
     if (!error) { insErr = null; break; }
     insErr = error;
@@ -132,9 +143,9 @@ export async function POST(req: NextRequest) {
     // breadcrumb. Log loudly + Sentry so the orphan sweeper cron has
     // backup observability and on-call gets paged if rollback fails
     // routinely.
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+    await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
       log.error('[accept-invite] AUTH ROLLBACK FAILED', {
-        auth_user_id: authData.user.id,
+        auth_user_id: authUser.id,
         email: invite.email,
         err: rollErr,
         requestId,
@@ -142,7 +153,7 @@ export async function POST(req: NextRequest) {
       captureException(rollErr, {
         subsystem: 'auth',
         failure_mode: 'rollback_failed',
-        auth_user_id: authData.user.id,
+        auth_user_id: authUser.id,
         flow: 'accept-invite',
       });
     });
@@ -157,7 +168,7 @@ export async function POST(req: NextRequest) {
 
   await writeAudit({
     action: 'invite.accept',
-    actorUserId: authData.user.id,
+    actorUserId: authUser.id,
     actorEmail: invite.email,
     targetType: 'invite',
     targetId: invite.id,
