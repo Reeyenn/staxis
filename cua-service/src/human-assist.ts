@@ -8,18 +8,25 @@
  * Flow:
  *
  *   1. mapper.ts calls requestHelp({jobId, targetKey, question, ...}).
- *   2. We check if any admin is online (heartbeat in last 5min). If not,
- *      resolve immediately as 'unavailable' so the mapper doesn't idle-wait
- *      for an absent admin (Plan v8 P1-2 — 13 targets × 5min wait would
- *      consume the entire job budget on a one-admin team).
+ *   2. PER-JOB presence gate (feature/cua-polish): is an admin watching THIS
+ *      job right now? (getWatcherFreshness reads the watcher heartbeat the
+ *      Learning Board POSTs to /api/admin/mapper/live/[jobId] every 30s while
+ *      its tab is open + visible.) If not 'fresh', drop an audit tombstone and
+ *      resolve immediately as 'unavailable' — no idle-wait for an absent admin.
+ *      (Replaces the old GLOBAL accounts.last_seen_at check, which made a job
+ *      wait whenever ANY admin was on ANY admin page.)
  *   3. INSERT a mapping_help_requests row with status='pending'.
  *      Per P1-6, REUSE an existing pending row for the same (job_id,
  *      target_key) — happens when a worker restarts mid-wait and the new
  *      mapper attempt sees the prior request still open.
- *   4. Subscribe to UPDATEs on this row via Supabase realtime
- *      postgres_changes. Race against:
+ *   4. HOLD until the watcher acts. Subscribe to UPDATEs on this row via
+ *      Supabase realtime postgres_changes and race against:
  *        - status flipping to 'answered' (admin responded)
- *        - HELP_REQUEST_TIMEOUT_MS firing (default 90s — P1-2)
+ *        - the watcher leaving (getWatcherFreshness goes 'stale' on the 30s
+ *          re-check — they closed the tab / walked away)
+ *        - HELP_REQUEST_TIMEOUT_MS firing — the HARD safety cap, so a
+ *          watched-but-abandoned request (tab still pinging, nobody acting)
+ *          still expires under the row's DB TTL
  *        - AbortSignal firing (SIGTERM / job cancel)
  *   5. On admin answer: resolve with {actionType, responseText,
  *      responseCoordinate}. Mapper switches on actionType:
@@ -27,8 +34,9 @@
  *        - 'unavailable' → mark target unavailable, move on
  *        - 'takeover' → enter takeover mode (Phase B chunk 2)
  *        - 'abort' → fail the whole job
- *   6. On timeout: update row status='expired', resolve as 'unavailable'
- *      so help-flood circuit-breaker (P2-4) counts it correctly.
+ *   6. On hard-cap / watcher-left: update row status='expired', resolve as
+ *      'unavailable' (source 'timeout'). These do NOT count toward the flood
+ *      breaker (only admin-answered unavailable/abort do).
  *   7. On abort signal: update row status='aborted', reject so caller's
  *      AbortError unwinds cleanly.
  *
@@ -36,8 +44,8 @@
  * request per job at any time. Enforced at DB level by a partial unique
  * index. Mapper processes targets sequentially so this is naturally true.
  *
- * Help-flood circuit-breaker (P2-4): checkHelpFlood(jobId) returns true
- * after 3 unsuccessful (unavailable / abort / expired) requests on the
+ * Help-flood circuit-breaker (P2-4): checkHelpFlood(jobId) returns true after
+ * an admin has explicitly judged 3 DIFFERENT targets unavailable/abort on the
  * same job. mapper.ts calls this before requestHelp to short-circuit a
  * fundamentally-broken-PMS mapping run.
  */
@@ -85,27 +93,68 @@ export interface HelpResponse {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
+/** Bucket + object key for the per-job watcher heartbeat (feature/cua-polish). */
+const WATCHER_BUCKET = 'mapping-screenshots';
+const watcherObjectKey = (jobId: string) => `${jobId}/watcher.json`;
 /**
- * Plan v8 P1-2 — admin-online check. We track heartbeats in
- * `accounts.last_seen_at`; the front-end pings /api/admin/heartbeat every
- * 30s while the Live Mapping tab is open. If no admin pinged in the last
- * 5 minutes, treat the org as "nobody's home" — skip requestHelp and let
- * mapper fall through to today's unavailable behavior.
+ * A watcher heartbeat counts as "fresh" if the Learning Board pinged within
+ * this window. The board pings POST /api/admin/mapper/live/[jobId] every 30s
+ * while its tab is open AND visible; 2.5min tolerates a tab reload and a few
+ * dropped pings without abandoning a genuinely-present admin.
  */
-async function isAnyAdminOnline(): Promise<boolean> {
-  const cutoff = new Date(Date.now() - 5 * 60_000).toISOString();
-  const { count, error } = await supabase
-    .from('accounts')
-    .select('id', { count: 'exact', head: true })
-    .eq('role', 'admin')
-    .gte('last_seen_at', cutoff);
-  if (error) {
-    log.warn('isAnyAdminOnline: query failed — assuming offline', {
-      err: error.message,
-    });
-    return false;
+const WATCHER_FRESH_MS = 150_000;
+/** How often, mid-wait, we re-check the watcher is still on THIS job. */
+const WATCHER_RECHECK_MS = 30_000;
+
+type WatcherFreshness = 'fresh' | 'stale' | 'unknown';
+
+/**
+ * Per-job, per-watcher presence (feature/cua-polish — replaces the old GLOBAL
+ * `accounts.last_seen_at` admin-online check). Reads the tiny watcher object
+ * the Learning Board writes for THIS job and judges its freshness:
+ *
+ *   - 'fresh'   — object exists and was pinged within WATCHER_FRESH_MS: an
+ *                 admin is actively watching this job right now.
+ *   - 'stale'   — object exists but its last ping is older than the window:
+ *                 the watcher closed the tab / walked away. (A job with NO
+ *                 watcher ever has no object → surfaces as a download error →
+ *                 'unknown', handled fail-closed at the entry gate.)
+ *   - 'unknown' — transient storage error, missing object, or unparseable
+ *                 body: we can't prove presence.
+ *
+ * The `at` timestamp is read from the object BODY (not storage metadata, which
+ * doesn't reliably refresh on an in-place overwrite). Never throws.
+ */
+async function getWatcherFreshness(jobId: string): Promise<WatcherFreshness> {
+  // One immediate retry absorbs a transient storage blip so a momentary read
+  // failure doesn't drop a help request while an admin is actually watching
+  // (Codex review [1]). A genuinely-absent watcher object errors on BOTH tries
+  // → 'unknown' → the entry gate fails closed (no idle wait for an absent
+  // admin), which is the intended conservative default — we deliberately do
+  // NOT treat 'unknown' as present, or an unwatched run would camp the hard
+  // cap on every stuck target.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data, error } = await supabase.storage
+        .from(WATCHER_BUCKET)
+        .download(watcherObjectKey(jobId));
+      if (error || !data) {
+        if (attempt === 0) continue;
+        return 'unknown';
+      }
+      const text = await data.text();
+      const at = Date.parse((JSON.parse(text) as { at?: string })?.at ?? '');
+      if (!Number.isFinite(at)) return 'unknown';
+      return Date.now() - at <= WATCHER_FRESH_MS ? 'fresh' : 'stale';
+    } catch (err) {
+      if (attempt === 0) continue;
+      log.warn('getWatcherFreshness: read failed — treating as unknown', {
+        jobId, err: (err as Error).message,
+      });
+      return 'unknown';
+    }
   }
-  return (count ?? 0) > 0;
+  return 'unknown';
 }
 
 interface PendingRequestRow {
@@ -243,31 +292,45 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
 // ─── Public API ───────────────────────────────────────────────────────────
 
 /**
- * Request live admin help. Returns when admin answers OR timeout fires
- * (default 90s — env.HELP_REQUEST_TIMEOUT_MS) OR signal aborts.
+ * Request live admin help. Behaviour (feature/cua-polish):
+ *   - If an admin is watching THIS job right now (per-job watcher heartbeat
+ *     'fresh'), HOLD the request until they act, re-checking presence as we
+ *     wait. Bounded by a hard safety cap (env.HELP_REQUEST_TIMEOUT_MS) so a
+ *     watched-but-then-abandoned request still expires.
+ *   - If nobody is watching this job (freshness not 'fresh'), fast-path:
+ *     drop an audit tombstone and return 'unavailable' immediately — no idle
+ *     wait for an absent admin.
+ *   - Resolves early as answered when the admin clicks/types, or as aborted
+ *     on SIGTERM.
  *
  * The mapper agent's conversation history is preserved on the caller side
  * — this function does not touch it. Caller (mapper.ts) applies the
  * P0-2 rewind+push-user pattern when actionType is 'guidance'.
  */
 export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse> {
-  // Step 1: skip entirely when no admin online (P1-2).
-  const adminOnline = await isAnyAdminOnline();
-  if (!adminOnline) {
-    log.info('help-request: skipped — no admin online', {
-      jobId: input.jobId, targetKey: input.targetKey,
+  // Step 1: PER-JOB presence gate (feature/cua-polish). Only hold for an admin
+  // who's actually watching THIS job — an admin parked on another job (or any
+  // admin page) must not make this stuck job wait. 'stale'/'unknown' both
+  // fall through fail-closed: no provable watcher → no wait.
+  const freshness = await getWatcherFreshness(input.jobId);
+  if (freshness !== 'fresh') {
+    log.info('help-request: skipped — no admin watching this job', {
+      jobId: input.jobId, targetKey: input.targetKey, freshness,
     });
-    // Plan v8 hardening (Codex P2 #6) — insert a tombstone row so
-    // checkHelpFlood counts this attempt. Without the tombstone, a job
-    // could hit "no admin online" on every target endlessly without
-    // tripping the 3-attempt circuit-breaker.
+    // Audit tombstone so the Learning Board's "recent help requests" history
+    // shows the robot got stuck while nobody was watching. NOTE: this row does
+    // NOT count toward the help-flood breaker (checkHelpFlood counts only
+    // admin-ANSWERED unavailable/abort) — the no-watcher path is a fast-path
+    // with no wait, so there's no wait-amplification to guard against, and an
+    // unwatched run is better off marking targets unavailable and finishing a
+    // partial map than aborting the whole job.
     try {
       await supabase
         .from('mapping_help_requests')
         .insert({
           job_id: input.jobId,
           target_key: input.targetKey,
-          question: `[skipped — no admin online] ${input.question}`,
+          question: `[skipped — no admin watching this job] ${input.question}`,
           what_ive_tried: input.whatIveTried ?? [],
           suggested_paths: input.suggestedPaths ?? [],
           screenshot_storage_path: input.screenshotStoragePath,
@@ -275,15 +338,15 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
           scroll_y: input.scroll?.y ?? 0,
           viewport_w: input.viewport?.w ?? 1280,
           viewport_h: input.viewport?.h ?? 800,
-          status: 'expired',     // counts toward flood (per checkHelpFlood OR clause)
+          status: 'expired',     // never 'pending' → no one-pending-index conflict
           action_type: 'unavailable',
-          response_text: 'no admin online',
+          response_text: 'no admin watching this job',
           answered_at: new Date().toISOString(),
         });
     } catch (err) {
-      // Best-effort tombstone. If the INSERT fails the flood breaker
-      // just won't count this attempt — degraded but not broken.
-      log.warn('help-request: no-admin tombstone insert failed', {
+      // Best-effort tombstone — a failed insert just omits this from the
+      // board history. Degraded, not broken.
+      log.warn('help-request: no-watcher tombstone insert failed', {
         err: (err as Error).message, jobId: input.jobId, targetKey: input.targetKey,
       });
     }
@@ -313,6 +376,7 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
+      clearInterval(recheckHandle);
       if (channel) void channel.unsubscribe();
       try { input.signal.removeEventListener('abort', abortHandler); } catch { /* noop */ }
       resolve(resp);
@@ -341,14 +405,19 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
     };
 
     const timeoutMs = env.HELP_REQUEST_TIMEOUT_MS;
-    const timeoutHandle = setTimeout(() => {
-      void (async () => {
-        // Plan v8 P1-6: mark row 'expired' so help-flood (P2-4) counts it.
-        // feature/cua-assist-board — the expire UPDATE is the race arbiter:
-        // it matches only while the row is still 'pending'. Zero rows
-        // matched means an admin answer COMMITTED before the timeout but
-        // its realtime event hasn't reached us — honor the answer (the
-        // founder's click must not be silently dropped at the buzzer).
+
+    // Mark the row 'expired' (only while still 'pending') and settle as a
+    // non-answer. The expire UPDATE is the race arbiter: zero rows matched
+    // means an admin answer COMMITTED first but its realtime event hasn't
+    // reached us — honor it (the founder's click must not be dropped at the
+    // buzzer). Shared by the hard-cap timeout AND the watcher-left re-check.
+    const expireOrHonor = async (cause: 'hard_cap' | 'watcher_left'): Promise<void> => {
+      if (settled) return;
+      // Wrap the DB round-trip so a thrown/rejected query can NEVER leave the
+      // hold pending (Codex review [2]): the hard cap is the last line of
+      // defense against a hang, so it must settle even when the expire UPDATE
+      // fails. On error we fail safe — release the hold as a timeout.
+      try {
         const { data: expired } = await supabase
           .from('mapping_help_requests')
           .update({ status: 'expired', answered_at: new Date().toISOString() })
@@ -363,15 +432,45 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
             .eq('id', requestId)
             .maybeSingle();
           if (row && (row as { status?: string }).status === 'answered') {
-            log.info('help-request: answer beat the timeout — honoring it', { requestId });
+            log.info('help-request: answer beat the expire — honoring it', { requestId, cause });
             settleFromAnsweredRow(row as Record<string, unknown>);
             return;
           }
         }
-        log.info('help-request: timed out — marking expired', { requestId, timeoutMs });
-        settle({ actionType: 'unavailable', source: 'timeout', requestId });
+      } catch (err) {
+        log.warn('help-request: expire query failed — releasing hold as timeout anyway', {
+          requestId, cause, err: (err as Error).message,
+        });
+      }
+      log.info('help-request: expiring hold', { requestId, cause, timeoutMs });
+      settle({ actionType: 'unavailable', source: 'timeout', requestId });
+    };
+
+    // Hard safety cap — bounds a watched-but-abandoned wait (the admin's tab
+    // is still pinging but nobody is acting). Stays under the row's 15-min DB
+    // TTL so the expire cron can't sweep the row mid-wait.
+    const timeoutHandle = setTimeout(() => { void expireOrHonor('hard_cap'); }, timeoutMs);
+
+    // Hold-until-acts release valve (feature/cua-polish): while we hold, re-
+    // check the watcher is still on THIS job. A DEFINITIVE 'stale' (object
+    // exists, last ping older than the window) means they closed the tab /
+    // walked away — release the hold early instead of camping to the hard cap.
+    // 'unknown' (transient storage blip) keeps holding; the hard cap bounds the
+    // worst case either way.
+    const recheckHandle = setInterval(() => {
+      void (async () => {
+        if (settled) return;
+        const f = await getWatcherFreshness(input.jobId);
+        if (f === 'stale') {
+          log.info('help-request: watcher left — releasing the hold', {
+            requestId, jobId: input.jobId,
+          });
+          await expireOrHonor('watcher_left');
+        }
       })();
-    }, timeoutMs);
+    }, WATCHER_RECHECK_MS);
+    // Never let the recheck timer keep the worker process alive on its own.
+    recheckHandle.unref?.();
 
     const abortHandler = () => {
       // Plan v8 P1-6: mark row 'aborted' on SIGTERM so admin UI doesn't
@@ -438,34 +537,33 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
 
 /**
  * Plan v8 P2-4 — help-flood circuit-breaker. Mapper calls this BEFORE
- * each requestHelp; if 3+ unsuccessful (unavailable / abort / expired /
- * aborted / no-admin-online) requests have stacked up on this job, the
- * PMS is fundamentally hard for the mapper and we auto-abort instead
- * of asking for help on a 4th target.
+ * each requestHelp; if 3+ DIFFERENT targets have been explicitly judged
+ * unmappable by an admin, the PMS is fundamentally hard and we auto-abort
+ * instead of asking for help on a 4th target.
  *
- * Plan v8 hardening (Codex P2 #6) — previous version missed two cases:
- *   1. status='aborted' rows (SIGTERM during a help-wait) had no
- *      action_type set, so the old `action_type.in.(unavailable,abort)`
- *      filter skipped them.
- *   2. no-admin-online early returns inserted NO row at all, so the
- *      mapper could endlessly hit "no admin online" without ever
- *      tripping the flood breaker.
- *
- * Both fixed: filter now includes status.in.(expired,aborted), and
- * requestHelp() inserts a tombstone row when no admin is online so the
- * counter captures it.
+ * feature/cua-polish — count ONLY admin-ANSWERED unavailable/abort rows.
+ * The breaker now exists for exactly one signal: a watching admin keeps
+ * saying "this PMS doesn't have it" / "stop" across ≥3 targets. Everything
+ * else is deliberately excluded:
+ *   - no-watcher tombstones (status='expired') — the no-watcher path is a
+ *     fast-path with no wait, so an unwatched run should mark targets
+ *     unavailable and finish a partial map, NOT abort the whole job.
+ *   - hard-cap / watcher-left expiries (status='expired') and SIGTERM
+ *     aborts (status='aborted') — a slow or departed human isn't evidence
+ *     the PMS lacks the data.
+ * (Bounded regardless by the per-job cost cap + the 90-min job timeout.)
  */
 export async function checkHelpFlood(jobId: string): Promise<boolean> {
-  // Plan v8 final review B2 — count UNIQUE target_keys, not rows.
-  // Previous version counted rows, so 3 retries of the SAME target (e.g.
-  // admin sent 3 unhelpful hints, all rejected) tripped the breaker even
-  // though only one target was actually unmappable. We want to abort
-  // when 3 DIFFERENT targets are unmappable.
+  // Plan v8 final review B2 — count UNIQUE target_keys, not rows, so 3
+  // retries of the SAME target (admin sent 3 unhelpful hints) don't trip the
+  // breaker; we abort only when 3 DIFFERENT targets are admin-confirmed
+  // unmappable.
   const { data, error } = await supabase
     .from('mapping_help_requests')
     .select('target_key')
     .eq('job_id', jobId)
-    .or('action_type.in.(unavailable,abort),status.in.(expired,aborted)');
+    .eq('status', 'answered')
+    .in('action_type', ['unavailable', 'abort']);
   if (error) {
     log.warn('checkHelpFlood: query failed — treating as no-flood', {
       err: error.message, jobId,

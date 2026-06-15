@@ -201,6 +201,89 @@ function DarkScope({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * 2FA code box on the live watch page (feature/cua-polish).
+ *
+ * Surfaces the SAME manual-2FA path the Launch Bay already uses — it posts to
+ * the existing POST /api/admin/pms-auth-code (which drops the code into the
+ * pms_auth_codes table the robot's fetchLatestAuthCode() poller claims). No
+ * new route, table, or status: this is purely a second surface for the one
+ * 2FA mechanism. Shown only while the worker flags the job awaiting_2fa.
+ */
+function LiveMfaBox({ propertyId, sinceIso }: { propertyId: string; sinceIso: string | null }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+
+  const send = async () => {
+    const trimmed = code.replace(/[\s-]/g, '');
+    if (!/^\d{4,8}$/.test(trimmed)) {
+      setNote({ tone: 'err', text: 'Codes are 4-8 digits.' });
+      return;
+    }
+    setBusy(true);
+    setNote(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/pms-auth-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId, code: trimmed }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setCode('');
+        setNote({ tone: 'ok', text: 'Handed to the robot — it types it in within a few seconds.' });
+      } else {
+        setNote({ tone: 'err', text: json.error ?? 'Could not send the code.' });
+      }
+    } catch (e) {
+      setNote({ tone: 'err', text: `Network error: ${(e as Error).message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <DarkCard style={{ padding: '20px 24px', marginBottom: 16, border: '2px solid var(--gold)' }}>
+      <Caps c="var(--gold)">Waiting on a 2FA code</Caps>
+      <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: '#fff', margin: '6px 0 12px' }}>
+        The PMS sent a verification code{sinceIso ? ` (sent ${new Date(sinceIso).toLocaleTimeString()})` : ''}.
+        If it went to your phone, type it here and the robot enters it within a few seconds.
+        Emailed codes are read automatically — you can ignore this if one lands.
+      </p>
+      <div style={{ display: 'flex', gap: 8, maxWidth: 440 }}>
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void send(); }}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="Code from your phone"
+          maxLength={10}
+          style={{
+            flex: 1, minWidth: 0, fontFamily: FONT_MONO, fontSize: 14, letterSpacing: '.18em',
+            padding: '9px 12px', background: 'rgba(0,0,0,.3)', color: '#fff',
+            border: `1px solid ${dimWhite(.3)}`, borderRadius: 8, outline: 'none',
+          }}
+        />
+        <Btn
+          variant="ghost"
+          onClick={() => void send()}
+          disabled={busy || code.trim() === ''}
+          style={{ color: 'var(--gold)', borderColor: 'rgba(201,154,46,.5)', background: 'rgba(201,154,46,.12)' }}
+        >
+          {busy ? '…' : 'Send to robot'}
+        </Btn>
+      </div>
+      {note && (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11.5, marginTop: 7, color: note.tone === 'ok' ? 'var(--forest)' : 'var(--terracotta)' }}>
+          {note.text}
+        </div>
+      )}
+    </DarkCard>
+  );
+}
+
 export default function LiveMappingPage() {
   const { user, loading: authLoading } = useAuth();
   const params = useParams();
@@ -208,6 +291,10 @@ export default function LiveMappingPage() {
 
   const [job, setJob] = useState<WorkflowJobRow | null>(null);
   const [property, setProperty] = useState<PropertyInfo | null>(null);
+  // feature/cua-polish — worker-set awaiting-2FA signal (workflow_jobs.result),
+  // surfaced by GET /api/admin/mapper/live/[jobId]. Drives the 2FA code box.
+  const [awaiting2fa, setAwaiting2fa] = useState(false);
+  const [awaiting2faSince, setAwaiting2faSince] = useState<string | null>(null);
   const [pendingHelp, setPendingHelp] = useState<HelpRequestRow | null>(null);
   const [recentHelp, setRecentHelp] = useState<HelpRequestRow[]>([]);
   const [activity, setActivity] = useState<MappingEvent[]>([]);
@@ -281,6 +368,8 @@ export default function LiveMappingPage() {
       if (json.ok) {
         setJob(json.data.job);
         setProperty(json.data.property ?? null);
+        setAwaiting2fa(Boolean(json.data.awaiting2fa));
+        setAwaiting2faSince((json.data.awaiting2faSince as string | null) ?? null);
         // Keep the previous signed screenshot URL when the underlying
         // object hasn't changed — every load() mints a fresh signed URL
         // (new query string), which would re-download and flicker the
@@ -391,15 +480,20 @@ export default function LiveMappingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
-  // Heartbeat ping (P1-2 — keeps cua-service isAnyAdminOnline() true while
-  // this tab is open AND VISIBLE). Visibility-gated: the robot waits up to
-  // HELP_REQUEST_TIMEOUT_MS for a watching founder — a backgrounded tab
-  // must not impersonate one.
+  // Heartbeat ping while this tab is open AND VISIBLE. Two signals, both
+  // visibility-gated so a backgrounded tab can't impersonate a watching founder:
+  //   - global /api/admin/heartbeat (accounts.last_seen_at) → gates
+  //     cua-service/src/live-frame.ts's "robot's screen" tee.
+  //   - per-job POST /api/admin/mapper/live/[jobId] (feature/cua-polish) →
+  //     gates human-assist.ts's PER-JOB help hold: the robot waits up to
+  //     HELP_REQUEST_TIMEOUT_MS for a click only while THIS job is being
+  //     watched, and releases the hold early when this ping stops.
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
     const ping = () => {
       if (document.visibilityState !== 'visible') return;
       void fetchWithAuth('/api/admin/heartbeat', { method: 'POST' });
+      if (jobId) void fetchWithAuth(`/api/admin/mapper/live/${jobId}`, { method: 'POST' });
     };
     ping();
     const t = setInterval(ping, 30_000);
@@ -408,7 +502,7 @@ export default function LiveMappingPage() {
       clearInterval(t);
       document.removeEventListener('visibilitychange', ping);
     };
-  }, [user]);
+  }, [user, jobId]);
 
   // Subscribe to mapping_help_requests postgres_changes for this job.
   // If the channel disconnects, fall back to 10s polling until it
@@ -856,6 +950,14 @@ export default function LiveMappingPage() {
                   </div>
                 </div>
               </DarkCard>
+            )}
+
+            {/* feature/cua-polish — 2FA code box. Surfaces the existing manual-
+                2FA path (POST /api/admin/pms-auth-code) right here on the watch
+                page when the worker parks the robot on a verification screen.
+                Hidden unless the job is flagged awaiting_2fa and still live. */}
+            {awaiting2fa && !jobTerminal && job?.property_id && (
+              <LiveMfaBox propertyId={job.property_id} sinceIso={awaiting2faSince} />
             )}
 
             {/* feature/cua-live-assist — Save & Finish / Discard & Cancel when

@@ -22,10 +22,10 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  // Codebase-standard admin gate — return requireAdmin's response verbatim
+  // (correct 403 for a non-admin session) instead of re-minting a flat 401.
   const admin = await requireAdmin(req);
-  if (!admin.ok) {
-    return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
-  }
+  if (!admin.ok) return admin.response;
   return err(
     'Full takeover sessions are not implemented. Single-click takeover is live on /api/admin/mapper/assist (actionType=takeover + responseCoordinate).',
     { requestId, status: 501, code: 'not_implemented' },

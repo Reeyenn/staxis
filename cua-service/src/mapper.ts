@@ -49,6 +49,7 @@ import { shouldNudgeCommit, buildCommitNudge, COMMIT_DITHER_TURNS, type TabularS
 import {
   auditRequiredColumns,
   gateRecoveredColumn,
+  certifyColumns,
   buildRecoveryHint,
   learnedForGate,
   expectedShapeFor,
@@ -59,6 +60,7 @@ import {
   RECOVERY_DRILL_COST_CAP_MICROS,
   DETAIL_PER_POLL_MAX,
   type RecoveryProblem,
+  type ColumnProofCarrier,
 } from './column-recovery.js';
 import { extractDomRows, extractDetailFields } from './extractors/dom-rows.js';
 import { attachNetworkCapture, type NetworkCaptureHandle, type CapturedCall } from './network-capture.js';
@@ -2677,8 +2679,14 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // never under recovery at all. An unverified audit with columns still
         // pending recovery must not short-circuit (its non-blank selector
         // strings are exactly the evidence we already proved insufficient).
+        // Return the FINALIZED best (lastGoodAction), not the raw success: for a
+        // value-verified clean emission this is identical, but for an unverified
+        // accept (empty/unreadable feed, pendingRecovery still empty) it carries
+        // the `unprovenRequiredColumns` stamp so the promotion gate parks the
+        // feed for founder review instead of auto-promoting a guessed column
+        // (feature/cua-prove-columns).
         if (audit.outstanding.size === 0 && (audit.verified || pendingRecovery.size === 0)) {
-          return success;
+          return lastGoodAction;
         }
 
         // ── fix/cua-two-oracle (build #2 + #4): EARLY backend-JSON discovery ──
@@ -3228,6 +3236,13 @@ export interface PageAudit {
    *  failed the value gate (its selector must not ship — wrong values are
    *  worse than blanks). */
   outstanding: Map<string, 'missing' | 'dead' | 'unparseable' | 'rejected'>;
+  /** feature/cua-prove-columns — required columns that SHIP (selector kept,
+   *  non-blank) but could NOT be value-certified because the page yielded no
+   *  value evidence (empty feed / wandered / probe failure, i.e. verified=false).
+   *  Distinct from `outstanding`: these keep their selector (they may be correct)
+   *  but must never auto-promote — the promotion gate routes them to founder
+   *  review. Optional so hand-built test audits stay valid. */
+  uncertain?: Set<string>;
   problems: RecoveryProblem[];
 }
 
@@ -3308,6 +3323,7 @@ async function auditLearnedColumnsOnPage(args: {
   const outstanding = new Map<string, 'missing' | 'dead' | 'unparseable' | 'rejected'>();
   const problems: RecoveryProblem[] = [];
   const pageUrl = args.page.url();
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   if (requiredLearnedFor(args.actionKey).length === 0) {
     // Non-core target — not column-gated, nothing to verify.
@@ -3333,10 +3349,33 @@ async function auditLearnedColumnsOnPage(args: {
         detail: `could not re-verify (${reason}) — return to the feed page and re-emit from there`,
       });
     }
+    // feature/cua-prove-columns — every OTHER required column that still ships
+    // (present, non-blank, not already flagged) is UNCERTAIN: a structural-only
+    // audit gathered zero value evidence (empty feed today / wandered page /
+    // probe failure), so its selector — though it may be perfect — was never
+    // proven. Keep the selector (don't blank a possibly-correct column) but mark
+    // it unproven so the promotion gate parks the feed for founder review instead
+    // of auto-promoting a guessed column. certifyColumns is the single source of
+    // the verdict semantics (hasValueEvidence:false → uncertain).
+    const uncertain = new Set<string>();
+    const unjudged = requiredLearnedFor(args.actionKey).filter(
+      (col) => !outstanding.has(col) && (args.columns[col] ?? '').trim() !== '',
+    );
+    for (const [col, v] of certifyColumns({
+      actionKey: args.actionKey,
+      columns: unjudged,
+      allValues: {},
+      allSelectors: args.columns,
+      todayIso,
+      hasValueEvidence: false,
+    })) {
+      if (v.verdict === 'uncertain') uncertain.add(col);
+    }
     log.info('mapper: column audit degraded to structural check', {
-      actionName: args.actionKey, reason, outstanding: [...outstanding.keys()],
+      actionName: args.actionKey, reason,
+      outstanding: [...outstanding.keys()], uncertain: [...uncertain],
     });
-    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, problems };
+    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, uncertain, problems };
   };
 
   // Wandered-page guard: the model can emit its JSON after navigating away;
@@ -3392,15 +3431,33 @@ async function auditLearnedColumnsOnPage(args: {
     problems.push({ column: col, kind: 'unparseable', probedRows: extraction.rows.length });
   }
 
-  // Acceptance gate — only for columns under recovery that now extract
-  // something. First-emission columns that were never flagged are NOT
-  // re-judged here (recovery must not regress feeds that work today).
+  // Value checks (both the recovery re-ask gate AND first-emission certification)
+  // run over the FULL deadness window (extraction.rows, ≤ DEADNESS_ROW_CAP), NOT
+  // the 8-row probe: a legitimately SPARSE required column (out_of_order set on 1
+  // row in 50) is blank in the first 8 rows but real — judging it on the probe
+  // alone would `all_blank`-reject a correct selector. The full window makes the
+  // gate's all-blank verdict consistent with auditRequiredColumns' deadness scan
+  // (a truly empty column is already classified 'dead' above). probeRows is kept
+  // only for the RETURNED audit (the drill's per-record URL templating).
   const probeRows = extraction.rows.slice(0, VALUE_PROBE_ROW_CAP);
   const allValues: Record<string, string[]> = {};
   for (const col of Object.keys(args.columns)) {
-    allValues[col] = probeRows.map((r) => (r[col] ?? '').trim());
+    allValues[col] = extraction.rows.map((r) => (r[col] ?? '').trim());
   }
-  const todayIso = new Date().toISOString().slice(0, 10);
+
+  // Columns kept (selector present, non-blank) but NOT value-certified: they must
+  // not auto-go-live unproven, yet blanking them could erase a correct selector
+  // or cascade to quarantine — so they keep the selector and route to founder
+  // review via the promotion gate's unprovenRequiredColumns. Shared by both loops.
+  const uncertain = new Set<string>();
+
+  // Acceptance gate for columns ALREADY under recovery that now extract something
+  // (the focused re-ask loop owns these). A `semantic_date_window` miss is the ONE
+  // failure down-ranked to uncertain (keep + park) rather than rejected (blank):
+  // a CORRECT date column re-learned on a rolling multi-day arrivals/departures
+  // view trips it, and blanking a correct column could cascade to quarantine —
+  // identical treatment to the first-emission path below. Every other failure is
+  // a strong wrong-column signal → 'rejected' (blank + keep recovering).
   for (const col of args.pendingRecovery) {
     if (outstanding.has(col)) continue;
     if (!(col in args.columns)) continue;
@@ -3415,12 +3472,56 @@ async function auditLearnedColumnsOnPage(args: {
       todayIso,
     });
     if (!verdict.ok) {
-      outstanding.set(col, 'rejected');
-      problems.push({ column: col, kind: 'rejected', detail: verdict.reason });
+      if (verdict.reason.startsWith('semantic_date_window')) {
+        uncertain.add(col);
+      } else {
+        outstanding.set(col, 'rejected');
+        problems.push({ column: col, kind: 'rejected', detail: verdict.reason });
+      }
     }
   }
 
-  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, problems };
+  // feature/cua-prove-columns — FIRST-EMISSION certification. Previously a clean
+  // first emission returned here after only the missing/dead/unparseable audit,
+  // so a wrong-but-plausible required column on a plain HTML table (a swapped
+  // check-in/check-out, a rate cell mapped to a date column, a status string
+  // mapped to the key) shipped silently — the JSON-oracle path proves columns,
+  // the DOM path did not. Run the SAME strong value checks on every required
+  // column that still ships clean (present, non-blank, never flagged, and not
+  // already owned by the recovery loop above).
+  //   - 'failed' → BLANK + recover (worse-than-blank: a provably wrong selector
+  //     must not ship): joins `outstanding` as 'rejected', exactly like a recovery
+  //     rejection — it enters the focused re-ask loop and, if unrecovered,
+  //     finalizes BLANK (→ a promotion-gate gap).
+  //   - 'uncertain' → KEEP the selector but record it unproven: a plain-text
+  //     column we can't corroborate (thin/constant/mirrors another column), or a
+  //     date column that only tripped the soft semantic-window heuristic on a
+  //     wider-than-today feed — both may be correct, so never blank them; the
+  //     promotion gate parks the feed for founder review instead.
+  const unjudged = requiredLearnedFor(args.actionKey).filter(
+    (col) =>
+      !outstanding.has(col) &&
+      !args.pendingRecovery.has(col) &&
+      (args.columns[col] ?? '').trim() !== '',
+  );
+  for (const [col, verdict] of certifyColumns({
+    actionKey: args.actionKey,
+    columns: unjudged,
+    allValues,
+    allSelectors: args.columns,
+    learned,
+    todayIso,
+    hasValueEvidence: true,
+  })) {
+    if (verdict.verdict === 'failed') {
+      outstanding.set(col, 'rejected');
+      problems.push({ column: col, kind: 'rejected', detail: `first-emission: ${verdict.reason}` });
+    } else if (verdict.verdict === 'uncertain') {
+      uncertain.add(col);
+    }
+  }
+
+  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, uncertain, problems };
 }
 
 /**
@@ -3460,13 +3561,40 @@ export function finalizeRecoveredSuccess(
   for (const [col, samples] of Object.entries(drill?.valueSamples ?? {})) {
     valueSamples[col] = [...new Set([...(valueSamples[col] ?? []), ...samples])];
   }
+
+  // feature/cua-prove-columns — record required columns that SHIP but were NOT
+  // value-certified, so the promotion gate refuses to auto-promote them (it
+  // parks the feed for founder review instead of letting a guessed column go
+  // live). Two kinds, both keep their selector: (1) `uncertain` — no value
+  // evidence existed (empty/unreadable feed at onboarding); (2) `unparseable` —
+  // present but parsed as the wrong type on every sampled row (residual policy
+  // keeps the selector for a different-day retry, but it must not auto-go-live).
+  // A column the drill recovered on the detail page is proven-by-drill → excluded.
+  // Filtered to columns still non-blank in the finalized map. Empty/absent ⟹
+  // proven, so legacy recipes and fully-certified feeds keep their exact shape.
+  const drilledColumns = new Set(
+    drill?.ok && drill.drillDown ? Object.keys(drill.drillDown.detailColumns) : [],
+  );
+  const unproven = new Set<string>(audit.uncertain ?? []);
+  for (const [col, cls] of audit.outstanding) {
+    if (cls === 'unparseable') unproven.add(col);
+  }
+  const unprovenRequiredColumns = [...unproven].filter(
+    (col) => !drilledColumns.has(col) && (finalColumns[col] ?? '').trim() !== '',
+  );
+
+  const action: ActionRecipe = {
+    ...success.action,
+    parse: { mode: 'table', hint: { ...hint, columns: finalColumns } },
+    ...(drillDown ? { drillDown } : {}),
+  };
+  if (unprovenRequiredColumns.length > 0) {
+    (action as ColumnProofCarrier).unprovenRequiredColumns = unprovenRequiredColumns;
+  }
+
   return {
     ...success,
-    action: {
-      ...success.action,
-      parse: { mode: 'table', hint: { ...hint, columns: finalColumns } },
-      ...(drillDown ? { drillDown } : {}),
-    },
+    action,
     ...(Object.keys(valueSamples).length > 0 ? { valueSamples } : {}),
     ...(Object.keys(enumMappings).length > 0 ? { enumMappings } : {}),
   };
