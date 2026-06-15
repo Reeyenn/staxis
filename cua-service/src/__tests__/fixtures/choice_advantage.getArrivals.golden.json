@@ -1,0 +1,21 @@
+{
+  "pmsFamily": "choice_advantage",
+  "actionKey": "getArrivals",
+  "capturedAt": "2026-06-14T12:00:00.000Z",
+  "capturedFromVersion": 7,
+  "parseMode": "table",
+  "columns": ["arrival_date", "departure_date", "guest_name", "pms_reservation_id"],
+  "columnVerdicts": {
+    "pms_reservation_id": "certified",
+    "guest_name": "certified",
+    "arrival_date": "certified",
+    "departure_date": "certified"
+  },
+  "columnShapes": {
+    "pms_reservation_id": "text",
+    "guest_name": "text",
+    "arrival_date": "date",
+    "departure_date": "date"
+  },
+  "rowCount": 18
+}
