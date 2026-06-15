@@ -224,6 +224,7 @@ function inDateBucket(it: WorklistItem, bucket: DateBucket): boolean {
 
 export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items: WorklistItem[]; staff: StaffLite[]; L: L; reload: () => void }) {
   const [adding, setAdding] = React.useState(false);
+  const [assignTarget, setAssignTarget] = React.useState<WorklistItem | null>(null);
   const [typeFilter, setTypeFilter] = React.useState<WorklistSourceType | 'all'>('all');
   const [bucket, setBucket] = React.useState<DateBucket>('all');
   const meta = sourceMeta(L);
@@ -290,17 +291,83 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
             </div>
           )}
           {filtered.map((it) => (
-            <WorklistRow key={it.id} it={it} meta={meta[it.sourceType]} L={L} onComplete={() => complete(it)} onDelete={() => deleteTask(it)} />
+            <WorklistRow key={it.id} it={it} meta={meta[it.sourceType]} L={L} onComplete={() => complete(it)} onAssign={() => setAssignTarget(it)} onDelete={() => deleteTask(it)} />
           ))}
         </div>
       </div>
 
       {adding && <TodoComposer pid={pid} staff={staff} L={L} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
+      {assignTarget && <AssignModal item={assignTarget} pid={pid} staff={staff} L={L} onClose={() => setAssignTarget(null)} onDone={() => { setAssignTarget(null); reload(); }} />}
     </div>
   );
 }
 
-function WorklistRow({ it, meta, L, onComplete, onDelete }: { it: WorklistItem; meta: { label: string; color: string }; L: L; onComplete: () => void; onDelete: () => void }) {
+// ── Assign / reassign popup (staff for task & complaint; priority lane for work order) ──
+function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistItem; pid: string; staff: StaffLite[]; L: L; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = React.useState(false);
+  const isPriority = item.sourceType === 'workorder';
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const post = async (payload: Record<string, unknown>) => {
+    if (busy) return; setBusy(true);
+    try { await apiPost('/api/worklist/assign', { pid, sourceType: item.sourceType, sourceId: item.sourceId, ...payload }); onDone(); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,.3)', zIndex: 71, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '94%', maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(24,22,17,.22)' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15 }}>{isPriority ? L('Set priority', 'Definir prioridad') : L('Assign to', 'Asignar a')}</span>
+          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
+        </div>
+
+        {isPriority ? (
+          <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {([['urgent', L('Urgent', 'Urgente'), T.terracotta], ['normal', L('Normal', 'Normal'), T.dim], ['low', L('Low', 'Baja'), T.teal]] as [string, string, string][]).map(([id, lbl, col]) => {
+              const on = item.priority === id;
+              return (
+                <button key={id} disabled={busy} onClick={() => post({ priority: id })} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? tint(col, .5) : T.hair}`, background: on ? tint(col, .12) : T.bg, fontFamily: SANS, fontSize: 14, fontWeight: 600, color: on ? deptColorDark(col) : T.ink, textAlign: 'left' }}>
+                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: col }} />
+                  <span style={{ flex: 1 }}>{lbl}</span>
+                  {on && <Check size={15} color={deptColorDark(col)} />}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ overflowY: 'auto', padding: '6px 0' }}>
+            <button disabled={busy} onClick={() => post({ assigneeStaffId: null })} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>
+              <span style={{ width: 28, height: 28, borderRadius: '50%', border: `1.5px dashed ${T.hairer}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={14} /></span>
+              {L('Unassigned', 'Sin asignar')}
+            </button>
+            {staff.map((s) => {
+              const on = item.assigneeStaffId === s.id;
+              return (
+                <button key={s.id} disabled={busy} onClick={() => post({ assigneeStaffId: s.id })} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: on ? T.paper : 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 14 }}>
+                  <Avatar name={s.name} dept={(s.channel === 'all_staff' ? 'management' : s.channel) as CommsDept} size={28} />
+                  <span style={{ flex: 1 }}>{s.name} <span style={{ fontSize: 12, color: T.dim }}>· {s.department ?? L('staff', 'personal')}</span></span>
+                  {on && <Check size={15} color={T.forest} />}
+                </button>
+              );
+            })}
+            {staff.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{L('No staff found', 'Sin personal')}</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function prioLabel(p: WorklistItem['priority'], L: L): string {
+  return p === 'urgent' ? L('Urgent', 'Urgente') : p === 'high' ? L('High', 'Alta') : p === 'low' ? L('Low', 'Baja') : L('Normal', 'Normal');
+}
+
+function WorklistRow({ it, meta, L, onComplete, onAssign, onDelete }: { it: WorklistItem; meta: { label: string; color: string }; L: L; onComplete: () => void; onAssign: () => void; onDelete: () => void }) {
   const [hover, setHover] = React.useState(false);
   const isTask = it.sourceType === 'task';
   const prColor = it.priority === 'urgent' ? T.terracotta : it.priority === 'high' ? T.gold : T.dim;
@@ -326,7 +393,19 @@ function WorklistRow({ it, meta, L, onComplete, onDelete }: { it: WorklistItem; 
         </div>
         <div style={{ fontFamily: SANS, fontSize: 14, color: T.ink, lineHeight: 1.35, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.title}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 5, flexWrap: 'wrap' }}>
-          {it.assigneeName && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Avatar name={it.assigneeName} size={16} /><MonoLabel style={{ fontSize: 10 }}>{it.assigneeName}</MonoLabel></span>}
+          {it.canAssign ? (
+            <button onClick={onAssign} title={it.sourceType === 'workorder' ? L('Set priority', 'Definir prioridad') : L('Assign', 'Asignar')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, border: `1px solid ${T.hair}`, borderRadius: 999, padding: '2px 9px 2px 6px', background: T.bg, cursor: 'pointer' }}
+              onMouseEnter={(e) => (e.currentTarget.style.borderColor = T.hairer)} onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.hair)}>
+              {it.sourceType === 'workorder'
+                ? <MonoLabel style={{ fontSize: 10, color: prColor }}>{prioLabel(it.priority, L)}</MonoLabel>
+                : it.assigneeName
+                  ? <><Avatar name={it.assigneeName} size={15} /><MonoLabel style={{ fontSize: 10 }}>{it.assigneeName}</MonoLabel></>
+                  : <MonoLabel style={{ fontSize: 10 }}>{L('Assign', 'Asignar')}</MonoLabel>}
+            </button>
+          ) : (
+            it.assigneeName && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Avatar name={it.assigneeName} size={16} /><MonoLabel style={{ fontSize: 10 }}>{it.assigneeName}</MonoLabel></span>
+          )}
           {it.overdue && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} color={T.terracotta} /><MonoLabel style={{ fontSize: 10, color: T.terracotta }}>{L('Overdue', 'Vencida')}</MonoLabel></span>}
           {dueLabel && !it.overdue && <MonoLabel style={{ fontSize: 10, color: prColor }}>{dueLabel}</MonoLabel>}
         </div>
