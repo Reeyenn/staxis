@@ -10,7 +10,8 @@ import { Search, Sparkles, ListTodo, BookOpen, Megaphone, Plus, Reply, ArrowRigh
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
-import type { ConversationDTO, MessageDTO, TaskDTO, CommsDept } from '@/lib/comms/types';
+import type { ConversationDTO, MessageDTO, CommsDept } from '@/lib/comms/types';
+import type { WorklistItem } from '@/lib/worklist/types';
 import type { BootstrapData, ViewMode, RightPanel, L as LType } from './comms-types-fe';
 import { T, SANS, SERIF, MONO, deptColor, deptColorDark, tint, Avatar, MonoLabel, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
@@ -31,7 +32,7 @@ export function CommsApp() {
   const [catchOpen, setCatchOpen] = React.useState(false);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [showNew, setShowNew] = React.useState(false);
-  const [tasks, setTasks] = React.useState<TaskDTO[]>([]);
+  const [worklist, setWorklist] = React.useState<WorklistItem[]>([]);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   // `pid` comes from a client-only context (reads localStorage), so it's null
@@ -61,13 +62,13 @@ export function CommsApp() {
     }
   }, [pid, selId]);
 
-  const loadTasks = React.useCallback(async () => {
+  const loadWorklist = React.useCallback(async () => {
     if (!pid) return;
-    const r = await apiGet<{ tasks: TaskDTO[] }>(`/api/comms/tasks?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setTasks(r.data.tasks);
+    const r = await apiGet<{ items: WorklistItem[] }>(`/api/worklist?pid=${encodeURIComponent(pid)}`);
+    if (r.ok && r.data) setWorklist(r.data.items);
   }, [pid]);
 
-  React.useEffect(() => { void loadBoot(); void loadTasks(); }, [loadBoot, loadTasks]);
+  React.useEffect(() => { void loadBoot(); void loadWorklist(); }, [loadBoot, loadWorklist]);
   React.useEffect(() => {
     if (!pid) return;
     const iv = setInterval(() => { if (!document.hidden) void loadBoot(); }, 8000);
@@ -80,7 +81,12 @@ export function CommsApp() {
     const iv = setInterval(() => { if (!document.hidden) void loadThread(); }, 3000);
     return () => clearInterval(iv);
   }, [selId, mode, loadThread]);
-  React.useEffect(() => { if (mode === 'todo') void loadTasks(); }, [mode, loadTasks]);
+  React.useEffect(() => { if (mode === 'todo') void loadWorklist(); }, [mode, loadWorklist]);
+  React.useEffect(() => {
+    if (mode !== 'todo' || !pid) return;
+    const iv = setInterval(() => { if (!document.hidden) void loadWorklist(); }, 15000);
+    return () => clearInterval(iv);
+  }, [mode, pid, loadWorklist]);
 
   // Member count for the selected conversation header.
   React.useEffect(() => {
@@ -115,7 +121,7 @@ export function CommsApp() {
     if (!pid) return;
     await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || L('Message task', 'Tarea de mensaje'), sourceMessageId: m.id });
     setMode('todo'); setThreadParent(null); setPanel(null);
-    await loadTasks();
+    await loadWorklist();
   };
   const openDm = async (staffId: string) => {
     if (!pid) return;
@@ -137,7 +143,7 @@ export function CommsApp() {
   const dms = conversations.filter((c) => c.kind === 'dm');
   const onShiftCount = (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
   const catchCount = conversations.filter((c) => c.unread > 0 || (c.pendingAck ?? 0) > 0).length;
-  const openTasks = tasks.filter((t) => t.status === 'open').length;
+  const openItems = worklist.length;
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
@@ -174,7 +180,7 @@ export function CommsApp() {
             </button>
           </div>
           <NavItem icon={<Reply size={17} />} label={L('Threads', 'Hilos')} active={mode === 'threads'} onClick={() => switchMode('threads')} />
-          <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openTasks || undefined} />
+          <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openItems || undefined} />
           <NavItem icon={<BookOpen size={17} />} label={L('Knowledge', 'Conocimiento')} active={mode === 'knowledge'} onClick={() => switchMode('knowledge')} />
 
           <SidebarSection label={L('Announcements', 'Anuncios')} onAdd={() => setSearchOpen(true)} tip={L('Post an announcement', 'Publicar un anuncio')} />
@@ -202,7 +208,7 @@ export function CommsApp() {
           </>
         )}
         {mode === 'threads' && <ThreadsList pid={pid} L={L} onOpen={(convId, parent) => { selectConversation(convId); setThreadParent(parent); }} />}
-        {mode === 'todo' && <TodoMode pid={pid} tasks={tasks} staff={boot?.staff ?? []} L={L} reload={loadTasks} />}
+        {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot?.staff ?? []} L={L} reload={loadWorklist} />}
         {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot?.me.isManager} L={L} /></div>}
       </div>
 

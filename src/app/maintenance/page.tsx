@@ -47,8 +47,11 @@ export default function MaintenancePage() {
     if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
-  // Restore tab choice from localStorage on mount (guarded).
+  // Restore tab choice on mount. A `?tab=` deep-link (e.g. from the worklist)
+  // wins over the saved choice; otherwise fall back to localStorage (guarded).
   useEffect(() => {
+    const urlTab = new URLSearchParams(window.location.search).get('tab') as MaintenanceTabKey | null;
+    if (urlTab && VALID_TABS.includes(urlTab)) { setTabState(urlTab); safeStore.set(STORAGE_KEY, urlTab); return; }
     const saved = safeStore.get(STORAGE_KEY) as MaintenanceTabKey | null;
     if (saved && VALID_TABS.includes(saved)) setTabState(saved);
   }, []);

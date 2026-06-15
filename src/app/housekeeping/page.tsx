@@ -53,13 +53,16 @@ export default function HousekeepingPage() {
     if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
-  // Restore tab from localStorage on mount
+  // Restore tab on mount. A `?tab=` deep-link (e.g. from the worklist) wins
+  // over the saved choice; otherwise fall back to localStorage.
   useEffect(() => {
+    const valid: TabKey[] = ['rooms', 'schedule', 'quality', 'deepclean'];
+    const urlTab = new URLSearchParams(window.location.search).get('tab');
+    if (urlTab && (valid as string[]).includes(urlTab)) { setActiveTabState(urlTab as TabKey); localStorage.setItem('hk-tab', urlTab); return; }
     const saved = localStorage.getItem('hk-tab');
     // Legacy keys: the former Inspections / Performance tabs are now merged
     // into Quality, so anyone whose last tab was one of those lands on Quality.
     if (saved === 'inspections' || saved === 'performance') { setActiveTabState('quality'); return; }
-    const valid: TabKey[] = ['rooms', 'schedule', 'quality', 'deepclean'];
     if (saved && (valid as string[]).includes(saved)) setActiveTabState(saved as TabKey);
   }, []);
 
