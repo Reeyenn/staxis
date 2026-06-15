@@ -28,6 +28,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
+import { WorklistCard } from './_components/WorklistCard';
 import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
 import {
   subscribeToRooms,
@@ -810,6 +811,9 @@ export default function DashboardPage() {
               ))}
             </section>
           )}
+
+          {/* Open items — unified worklist window; renders only when there's open work */}
+          <WorklistCard />
 
           {/* What Staxis learned — self-learning Move #2; renders only once populated */}
           <MemoryRecapCard />
