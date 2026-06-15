@@ -1,17 +1,15 @@
 /**
- * Activity log role gate — verifies which roles can read the page.
+ * Legacy canManageTeam helper — pins the original manager-only trio.
  *
- * The HTTP gate routes through verifyTeamManager → canManageTeam.
- * We test canManageTeam directly so the contract is pinned even if
- * verifyTeamManager swaps implementations.
+ * NOTE: as of the per-hotel access-control work, the activity-log surface no
+ * longer routes through canManageTeam — it uses the `view_activity_log`
+ * capability, which defaults to EVERY role and is restricted per hotel from the
+ * Access tab (see capabilities-resolver.test.ts). This file now just keeps the
+ * legacy canManageTeam helper honest for the callers that still use it
+ * (verifyTeamManager's legacy path, display logic).
  *
- *   admin           → allowed
- *   owner           → allowed
- *   general_manager → allowed
- *   front_desk      → denied
- *   housekeeping    → denied
- *   maintenance     → denied
- *   staff           → denied
+ *   admin / owner / general_manager → true
+ *   front_desk / housekeeping / maintenance / staff → false
  */
 
 import { test, describe } from 'node:test';

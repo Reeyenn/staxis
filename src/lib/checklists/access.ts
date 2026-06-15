@@ -20,13 +20,13 @@ export type ChecklistGate =
   | { ok: false; status: number; code: string; error: string };
 
 export async function gateChecklistAccess(req: NextRequest, propertyId: string): Promise<ChecklistGate> {
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_checklists', propertyId });
   if (!caller) {
     return {
       ok: false,
       status: 403,
       code: 'forbidden',
-      error: 'Checklists are restricted to managers, owners, and admins.',
+      error: 'Checklists are restricted for your role at this property.',
     };
   }
   if (!canManageHotel(caller, propertyId)) {

@@ -14,7 +14,8 @@ import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail,
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { captureException } from '@/lib/sentry';
 
-import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole, type AssignableRole } from '@/lib/roles';
+import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, type AppRole, type AssignableRole } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 
 interface AccountRow {
   accountId: string;
@@ -49,6 +50,7 @@ export default function AccountsPage() {
   const { properties } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
+  const can = useCan();
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,8 +66,8 @@ export default function AccountsPage() {
   // Allow admin / owner / general_manager. Front-desk / housekeeping /
   // maintenance roles get bounced back to /settings.
   useEffect(() => {
-    if (user && !canManageTeam(user.role)) router.replace('/settings');
-  }, [user, router]);
+    if (user && !can('manage_team')) router.replace('/settings');
+  }, [user, can, router]);
 
   const isAdmin = user?.role === 'admin';
 
@@ -361,7 +363,7 @@ export default function AccountsPage() {
     setForm(f => ({ ...f, propertyAccess: admin ? ['*'] : [] }));
   };
 
-  if (!user || !canManageTeam(user.role)) return null;
+  if (!user || !can('manage_team')) return null;
 
   return (
     <AppLayout>

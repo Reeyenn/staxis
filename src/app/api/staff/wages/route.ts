@@ -11,7 +11,7 @@
  * no longer touch hourly_wage; the column is now reachable only through this
  * route, which:
  *   - requires a valid session (requireSession)
- *   - gates on management roles (canManageTeam → admin / owner / general_manager)
+ *   - gates on the view_wages capability (default: every role; restricted per hotel)
  *   - verifies the caller actually manages the target property
  *   - verifies the staff row belongs to that property (no cross-property IDOR)
  *

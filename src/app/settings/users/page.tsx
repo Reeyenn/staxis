@@ -11,7 +11,8 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronLeft, UserCog, UserX, UserCheck, Crown, ShieldCheck } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole } from '@/lib/roles';
+import { ASSIGNABLE_ROLES, roleLabel, type AppRole } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 
 interface UserRow {
   accountId: string;
@@ -29,10 +30,11 @@ export default function UsersPage() {
   const { user } = useAuth();
   const { properties } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
   useEffect(() => {
-    if (user && !canManageTeam(user.role)) router.replace('/settings');
-  }, [user, router]);
+    if (user && !can('manage_users')) router.replace('/settings');
+  }, [user, can, router]);
 
   const [propertyId, setPropertyId] = useState<string>('');
   useEffect(() => {
@@ -97,7 +99,7 @@ export default function UsersPage() {
     });
   }, [users]);
 
-  if (!user || !canManageTeam(user.role)) return null;
+  if (!user || !can('manage_users')) return null;
 
   return (
     <AppLayout>

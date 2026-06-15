@@ -6,7 +6,8 @@
  *   PATCH  { pid, id, ...same fields }                 → edit   (MANAGERS)
  *   DELETE ?pid=&id=                                    → delete (MANAGERS)
  *
- * Auth: commsContext; writes require canManageTeam. Service-role via core.
+ * Auth: commsContext; writes require the manage_knowledge capability
+ * (default: every role; restricted per hotel from the Access tab). Service-role via core.
  */
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';

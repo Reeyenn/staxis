@@ -41,6 +41,7 @@ import { writeAudit } from '@/lib/audit';
 import { writeRoleChange } from '@/lib/audit-role-changes';
 import { validateUuid } from '@/lib/api-validate';
 import { isAssignableRole, type AppRole, type AssignableRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -73,10 +74,6 @@ function callerCanManageProperty(caller: CallerContext, propertyId: string): boo
   if (caller.role === 'admin') return true;
   if (caller.propertyAccess.includes('*')) return true;
   return caller.propertyAccess.includes(propertyId);
-}
-
-function callerCanChangeRoles(caller: CallerContext): boolean {
-  return caller.role === 'admin' || caller.role === 'owner' || caller.role === 'general_manager';
 }
 
 /**
@@ -137,14 +134,15 @@ export async function GET(req: NextRequest) {
 
   const caller = await loadCaller(session.userId, session.email);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!callerCanChangeRoles(caller)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
+  // The "who can manage users" gate moved below to a per-hotel manage_users
+  // capability check (needs the property id). Default: every role; an admin can
+  // switch a role OFF per hotel. The fine-grained owner/GM privilege-escalation
+  // rules in validateRoleChange still apply on top of this.
 
   const url = new URL(req.url);
   const pidV = validateUuid(url.searchParams.get('propertyId'), 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerCanManageProperty(caller, pidV.value!)) {
+  if (!callerCanManageProperty(caller, pidV.value!) || !(await canForProperty({ role: caller.role }, 'manage_users', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -215,13 +213,14 @@ export async function PUT(req: NextRequest) {
 
   const caller = await loadCaller(session.userId, session.email);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!callerCanChangeRoles(caller)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
+  // The "who can manage users" gate moved below to a per-hotel manage_users
+  // capability check (needs the property id). Default: every role; an admin can
+  // switch a role OFF per hotel. The fine-grained owner/GM privilege-escalation
+  // rules in validateRoleChange still apply on top of this.
 
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerCanManageProperty(caller, pidV.value!)) {
+  if (!callerCanManageProperty(caller, pidV.value!) || !(await canForProperty({ role: caller.role }, 'manage_users', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

@@ -234,34 +234,12 @@ export function isAdminOnlyCapability(cap: CapabilityKey): boolean {
   return ADMIN_ONLY_CAPABILITIES.has(cap);
 }
 
-// ── Live vs. fast-follow enforcement ─────────────────────────────────────────
-//
-// LIVE capabilities have their hotel-facing gates wired to the resolver, so an
-// Access-tab toggle takes effect immediately (default: every role; admin can
-// switch a role OFF per hotel). These are the operational surfaces — money,
-// inventory, work assignment, equipment, front desk, announcements, knowledge.
-//
-// The team / role / settings-management capabilities are intentionally NOT here
-// yet: they keep their manager-only default (safer — you would not want a
-// non-manager editing roles or team settings), and per-hotel control over them
-// is a fast-follow. The Access grid renders non-live, non-admin capabilities as
-// "manager default" (not yet adjustable) so the admin is never shown a toggle
-// that does nothing. Admin-only caps are always locked regardless of this set.
-export const LIVE_CAPABILITIES: ReadonlySet<CapabilityKey> = new Set<CapabilityKey>([
-  'view_financials',
-  'view_wages',
-  'manage_inventory_orders',
-  'assign_work',
-  'manage_equipment',
-  'use_lost_and_found',
-  'use_complaints',
-  'use_packages',
-  'post_announcements',
-  'manage_knowledge',
-]);
-
+// Every hotel-facing capability is live — its gates consult the resolver, so an
+// Access-tab toggle takes effect immediately (default: every role gets it; an
+// admin switches a role OFF per hotel). Only the admin-only Staxis-internal caps
+// are never toggleable (they render as a locked row).
 export function isLiveCapability(cap: CapabilityKey): boolean {
-  return LIVE_CAPABILITIES.has(cap);
+  return !isAdminOnlyCapability(cap);
 }
 
 // ── ROLE_DEFAULTS ────────────────────────────────────────────────────────────

@@ -17,7 +17,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
+import { verifyTeamManager, callerCan } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
 import type { StaffDepartment } from '@/types';
 
@@ -51,11 +51,11 @@ function validShiftList(list: unknown): list is TemplateShift[] {
 }
 
 async function authedHotelId(req: NextRequest, hotelIdRaw: unknown, requestId: string) {
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_shifts' });
   if (!caller) return { failure: err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized }) };
   const check = validateUuid(hotelIdRaw as string | null | undefined, 'hotelId');
   if (check.error) return { failure: err(check.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed }) };
-  if (!canManageHotel(caller, check.value!)) {
+  if (!(await callerCan(caller, 'manage_shifts', check.value!))) {
     return { failure: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized }) };
   }
   return { hotelId: check.value!, caller };

@@ -7,7 +7,8 @@
  *   DELETE ?pid=&id=                                  → delete (MANAGERS only)
  *
  * Auth: commsContext (session + property access). Writes additionally require
- * canManageTeam(role). All access is service-role via supabaseAdmin (the
+ * the manage_knowledge capability (default: every role; restricted per hotel
+ * from the Access tab). All access is service-role via supabaseAdmin (the
  * knowledge_* tables are deny-all to the browser) — see migration 0250.
  */
 import type { NextRequest } from 'next/server';

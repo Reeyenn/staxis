@@ -15,7 +15,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   EDITABLE_CLEANING_TYPES,
@@ -45,9 +45,11 @@ export default function CleanTimesPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
-  // Manager-only — matches settings/shifts.
-  if (!user || !canManageTeam(user.role)) {
+  // Gated by per-hotel manage_clean_times (default: every role; admin can
+  // switch a role OFF per hotel from the Access tab).
+  if (!user || !can('manage_clean_times')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
