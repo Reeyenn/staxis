@@ -17,7 +17,7 @@ import { safeGoto } from '../browser-utils/navigate.js';
 import { extractDomRows } from './dom-rows.js';
 import { parsePreSteps, replayPreSteps } from './pre-steps.js';
 import type { FeedSpec } from '../knowledge-file.js';
-import type { LearnedDateFormat } from '../types.js';
+import type { LearnedDateFormat, TieredSelector } from '../types.js';
 
 export interface DomTableExtractOptions {
   page: Page;
@@ -90,10 +90,30 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
 
   if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
 
+  // feature/cua-semantic-columns — the durable per-column header anchors (and an
+  // optional rowSelector xpath fallback) ride feedSpec.extra: the runtime
+  // FeedSpec / template-runner bridge forwards only `extra` verbatim, so
+  // recipe-adapter mirrors source.columnsTiered/rowSelectorTiered there. Absent
+  // ⟹ the reader takes its byte-identical legacy path.
+  const columnsTiered = feedSpec.extra?.columnsTiered as Record<string, TieredSelector> | undefined;
+  const rowSelectorTiered = feedSpec.extra?.rowSelectorTiered as TieredSelector | undefined;
+
+  // Wait for the rows to materialize. The css rowSelector is primary; if it
+  // never appears AND an xpath tier exists, wait on the xpath instead — without
+  // this pre-wait fallback the reader's own row-xpath tier could never engage on
+  // a broken css selector (it returns early here first).
   try {
     await page.waitForSelector(rowSelector, { timeout: WAIT_TIMEOUT_MS });
   } catch (err) {
-    return { ok: false, rows: [], reason: `row selector did not appear: ${(err as Error).message}` };
+    if (rowSelectorTiered?.xpath) {
+      try {
+        await page.waitForSelector(`xpath=${rowSelectorTiered.xpath}`, { timeout: WAIT_TIMEOUT_MS });
+      } catch {
+        return { ok: false, rows: [], reason: `row selector did not appear (css + xpath): ${(err as Error).message}` };
+      }
+    } else {
+      return { ok: false, rows: [], reason: `row selector did not appear: ${(err as Error).message}` };
+    }
   }
 
   if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
@@ -102,7 +122,28 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
     // Shared reader (extractors/dom-rows.ts) — the SAME implementation the
     // mapper verifies selectors with, including the '@attr' convention. Any
     // fork here re-opens the "verified at mapping, blank at poll" bug class.
-    const { rows, totalMatched } = await extractDomRows(page, rowSelector, columns, { cap: maxRows });
+    const extraction = await extractDomRows(page, rowSelector, columns, {
+      cap: maxRows,
+      ...(columnsTiered ? { columnsTiered } : {}),
+      ...(rowSelectorTiered ? { rowSelectorTiered } : {}),
+    });
+    const { rows, totalMatched } = extraction;
+
+    // Tier telemetry — CSS-drift / self-heal observability over weeks. One
+    // compact line per poll, only when tiered selectors were actually in play.
+    if (extraction.resolution && extraction.resolution.length > 0) {
+      const tiers = { roleName: 0, css: 0, xpath: 0, legacy: 0 };
+      for (const r of extraction.resolution) tiers[r.tier]++;
+      const selfHealed = extraction.resolution
+        .filter((r) => r.drift)
+        .map((r) => `${r.field}:${r.fromIndex}->${r.toIndex}`);
+      log.info('extractor:dom_table tier resolution', {
+        rowSelector,
+        rowSelectorTier: extraction.rowSelectorTier,
+        tiers,
+        ...(selfHealed.length > 0 ? { selfHealed } : {}),
+      });
+    }
 
     if (totalMatched > maxRows) {
       log.warn('extractor:dom_table: row count over cap, truncating', {

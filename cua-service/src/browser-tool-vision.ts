@@ -42,7 +42,7 @@
 import type { Page } from 'playwright';
 import type { PMSCredentials, RecipeStep } from './types.js';
 import { log } from './log.js';
-import { applySetOfMark, clearSetOfMark, type BadgeInfo } from './set-of-mark.js';
+import { applySetOfMark, clearSetOfMark, applyHeaderMark, clearHeaderMark, type BadgeInfo, type HeaderMarkInfo } from './set-of-mark.js';
 import { captureHardenedScreenshot } from './screenshot-privacy.js';
 
 /**
@@ -67,6 +67,10 @@ export type MappingPhase = 'login' | 'action';
 // up stale entries across navigations on our own. The badge DOM itself is
 // removed at the start of every non-screenshot action (see executeVisionAction).
 const setOfMarkStore = new WeakMap<Page, Map<number, BadgeInfo>>();
+// feature/cua-semantic-columns — header marks captured on the last screenshot
+// (column-mapping phase only). Kept for parity with the clickable badge store;
+// lets a future "click header H<n>" action resolve a header coordinate.
+const headerMarkStore = new WeakMap<Page, Map<number, HeaderMarkInfo>>();
 
 // ─── Viewport-drift guard ────────────────────────────────────────────────
 //
@@ -394,6 +398,7 @@ export async function executeVisionAction(
     // here — the screenshot handler does a fresh clear+apply itself.
     if (action.action !== 'screenshot') {
       await clearSetOfMark(page);
+      await clearHeaderMark(page);
     }
 
     switch (action.action) {
@@ -416,8 +421,20 @@ export async function executeVisionAction(
         //      image — and tell the agent to retry, rather than risk leaking an
         //      unredacted screenshot to Claude.
         await clearSetOfMark(page);
+        await clearHeaderMark(page);
         const badges = await applySetOfMark(page);
         setOfMarkStore.set(page, badges);
+        // feature/cua-semantic-columns — column-mapping aid: badge the data
+        // table's column HEADERS ("H<n>") so the model maps each field to a
+        // column by HEADER MEANING. Gated to the 'action' (mapping) phase —
+        // never during login — and intrinsically empty on non-table pages
+        // (applyHeaderMark returns {} without a qualifying data table), so
+        // navigation/dashboard screenshots aren't cluttered.
+        let headerMarks: Map<number, HeaderMarkInfo> = new Map();
+        if (phase === 'action') {
+          headerMarks = await applyHeaderMark(page);
+          headerMarkStore.set(page, headerMarks);
+        }
         const buf = await captureHardenedScreenshot(page);
         if (!buf) {
           return {
@@ -428,12 +445,17 @@ export async function executeVisionAction(
             isError: true,
           };
         }
+        const headerNote =
+          headerMarks.size > 0
+            ? ` Column headers labeled with ${headerMarks.size} "H<n>" badge(s): map each required field to a column by its HEADER MEANING, then write that column's selector as td:nth-child(N) for its position N.`
+            : '';
         return {
           output:
-            badges.size > 0
+            (badges.size > 0
               ? `Screenshot captured. Set-of-Mark applied: ${badges.size} clickable element(s) labeled with numbered badges. ` +
                 `Click a badge by sending {action: "left_click", coordinate: [x, y], text: "#N"} where N is the badge number.`
-              : 'Screenshot captured. (No clickable elements detected for Set-of-Mark — click by pixel coordinate as usual.)',
+              : 'Screenshot captured. (No clickable elements detected for Set-of-Mark — click by pixel coordinate as usual.)') +
+            headerNote,
           screenshotB64: buf.toString('base64'),
         };
       }

@@ -34,6 +34,7 @@ import type {
   TableTemplate,
   TableTemplateSource,
   TableTemplateField,
+  TieredSelector,
   WriteStrategy,
   SnapshotScope,
   ExtractionMode,
@@ -374,6 +375,14 @@ export function actionRecipeToTableTemplate(
   // Set in the csv branch below; drives the incomplete-flag logic at the end.
   let csvTriggerless = false;
 
+  // feature/cua-semantic-columns — durable per-column header anchors, carried
+  // verbatim from the persisted table parse hint (built by the mapper at
+  // finalize). Undefined for every non-table recipe and every legacy table
+  // recipe with no header (→ source.columnsTiered stays undefined; the runtime
+  // reader takes its byte-identical positional path).
+  let tieredColumns: Record<string, TieredSelector> | undefined;
+  let tieredRowSelector: TieredSelector | undefined;
+
   // Build a TableTemplate field, attaching the UNIVERSAL value parser + its
   // learned config (date order / enum mapping from the knowledge file). The
   // generic parsers normalize ANY PMS's scraped string to the type validateRows
@@ -431,6 +440,11 @@ export function actionRecipeToTableTemplate(
     columns = action.parse.hint.columns;
     if (action.parse.hint.skipSelector) {
       selectors.skipSelector = action.parse.hint.skipSelector;
+    }
+    // feature/cua-semantic-columns — carry the durable header anchors through.
+    if (action.parse.hint.columnsTiered && Object.keys(action.parse.hint.columnsTiered).length > 0) {
+      tieredColumns = action.parse.hint.columnsTiered;
+      tieredRowSelector = action.parse.hint.rowSelectorTiered;
     }
     // feature/cua-feed-extract — carry the in-page interaction flow (steps the
     // mapper recorded AFTER the last goto with NO url change: an SPA route
@@ -531,6 +545,33 @@ export function actionRecipeToTableTemplate(
         fields[col] = { ...buildField(col, selectorOrColumn), origin: 'detail_page' };
       }
     }
+  }
+
+  // feature/cua-semantic-columns — attach the durable header anchors to the
+  // (single) primary source. We populate BOTH the typed fields (the contract
+  // shape Chat 7/8 + any typed consumer read) AND an `extra` mirror, because the
+  // runtime dom_table reader pulls them from feedSpec.extra: template-runner's
+  // sourceToFeedSpec forwards only mode/url/selectors/columns/EXTRA, so the typed
+  // columnsTiered/selectorsTiered would otherwise never reach the reader. Both
+  // branches (single-source + drill-down) keep the SAME field-keyed list columns,
+  // so the same anchors apply. Absent ⟹ no-op (legacy back-compat: the
+  // selector-fallback test pins source.{columnsTiered,selectorsTiered}===undefined).
+  if (tieredColumns && Object.keys(tieredColumns).length > 0) {
+    const primary = sources[0]!;
+    // Keep rowSelectorTiered.css in sync with the EFFECTIVE row selector — the
+    // drill-down branch above swaps source.selectors.rowSelector to the list-row
+    // selector, which can differ from the authored hint.rowSelector. (The reader
+    // only consults .xpath today, but a stale .css would be a latent landmine.)
+    const effectiveRowTiered: TieredSelector | undefined = tieredRowSelector
+      ? { ...tieredRowSelector, ...(primary.selectors?.rowSelector ? { css: primary.selectors.rowSelector } : {}) }
+      : undefined;
+    primary.columnsTiered = tieredColumns;
+    if (effectiveRowTiered) primary.selectorsTiered = { rowSelector: effectiveRowTiered };
+    primary.extra = {
+      ...(primary.extra ?? {}),
+      columnsTiered: tieredColumns,
+      ...(effectiveRowTiered ? { rowSelectorTiered: effectiveRowTiered } : {}),
+    };
   }
 
   const template: TableTemplate = {
