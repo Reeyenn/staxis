@@ -93,18 +93,29 @@ export async function POST(req: NextRequest) {
   // Remove the accounts that existed ONLY for this hotel + free their
   // emails. Delete the account row first, then the auth user (both
   // accounts.data_user_id and properties.owner_id CASCADE from auth.users,
-  // but the property is already gone). Best-effort on the auth side — the
-  // orphan-auth sweeper is the backstop if one flakes.
+  // but the property is already gone).
+  //
+  // Retry the auth deleteUser up to 3 times before giving up. A flaked auth
+  // delete here is exactly what leaves an ORPHAN login (auth.users row with
+  // no accounts row), which used to block recreating the same email until the
+  // 7-day sweeper ran. Signup now reclaims orphans in-line
+  // (createOrReclaimAuthUser), but retrying here makes them rare in the first
+  // place. The orphan-auth sweeper stays the final backstop if all 3 flake.
   let accountsRemoved = 0;
   for (const uid of plan.deleteUserIds) {
     await supabaseAdmin.from('accounts').delete().eq('data_user_id', uid);
-    try {
-      const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(uid);
-      if (authErr) console.warn('[admin/properties/delete] deleteUser error', { uid, msg: authErr.message });
-      else accountsRemoved += 1;
-    } catch (e) {
-      console.warn('[admin/properties/delete] deleteUser threw', { uid, msg: (e as Error).message });
+    let deleted = false;
+    for (let attempt = 1; attempt <= 3 && !deleted; attempt++) {
+      try {
+        const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(uid);
+        if (!authErr) { deleted = true; break; }
+        console.warn('[admin/properties/delete] deleteUser error', { uid, attempt, msg: authErr.message });
+      } catch (e) {
+        console.warn('[admin/properties/delete] deleteUser threw', { uid, attempt, msg: (e as Error).message });
+      }
+      if (attempt < 3) await new Promise(r => setTimeout(r, 200 * attempt));
     }
+    if (deleted) accountsRemoved += 1;
   }
 
   await logSecurityEvent({
