@@ -46,13 +46,62 @@ import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { safeGoto, normalizeUrl } from './browser-utils/navigate.js';
-import type { Recipe, ScraperCredentialsRow, TableTemplate } from './types.js';
+import type { Recipe, ScraperCredentialsRow, TableTemplate, ActionRecipe, TableRowHint } from './types.js';
+// feature/cua-self-heal-reach — RUNG-2 cheap re-anchor (decision core + safety cores).
+import { extractDomRows, readTableHeaders, headerGateOk } from './extractors/dom-rows.js';
+import { certifyColumns } from './column-recovery.js';
+import {
+  checkFeedHealth,
+  decideColumnReanchor,
+  buildCandidateSelectors,
+  applyColumnReanchor,
+  requiredColumnsForTarget,
+  MIN_REANCHOR_ROWS,
+  type ColumnChange,
+} from './reanchor.js';
+import { promoteRecipeChange } from './mapping-driver.js';
+import type { FreshExtractionShape, FixtureColumnVerdict } from './golden-fixtures.js';
 
 const VIEWPORT = { width: 1280, height: 800 };
 const POLL_INTERVAL_MS = 30_000;
 const POLL_JITTER_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const READ_TIMEOUT_MS = 120_000;
+
+// feature/cua-self-heal-reach — RUNG-2 re-anchor knobs.
+/** DEFAULT OFF (monotonic): unset ⟹ self-repair goes straight to the $3 paid
+ *  re-learn exactly as today. Flip to try the free re-anchor first. */
+function reanchorEnabled(): boolean {
+  return (process.env.CUA_REANCHOR_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+/** The re-anchor live-page probe runs under the read mutex with this timeout. */
+const REANCHOR_TIMEOUT_MS = 90_000;
+/** Rows scraped for the re-anchor health/candidate probe. */
+const REANCHOR_PROBE_CAP = 60;
+/** Lifetime re-anchor attempts per feed per session — bounds any version-churn
+ *  loop; beyond it, self-repair goes straight to the paid path. */
+const MAX_REANCHOR_ATTEMPTS = 2;
+
+/** ISO "today" (yyyy-mm-dd) in the PMS timezone for re-anchor value
+ *  certification. Uses the PMS tz (the same CUA_PMS_TZ → America/Chicago default
+ *  the runtime date-templating + cost-cap use) instead of the Fly box's UTC
+ *  clock, so the date-window certification doesn't skew near midnight in
+ *  far-from-UTC timezones (which would wrongly abstain a valid date column). */
+function reanchorTodayIso(): string {
+  return todayInTimezone(process.env.CUA_PMS_TZ || 'America/Chicago');
+}
+
+/** Transpose extracted rows → per-column value arrays (same row order). Missing
+ *  cells read as '' so all column arrays stay length-aligned for cross-column
+ *  certification checks. */
+function transposeColumns(
+  rows: Array<Record<string, string>>,
+  cols: string[],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const c of cols) out[c] = rows.map((r) => r[c] ?? '');
+  return out;
+}
 // Plan v7 Phase 2c — knowledge hot-reload poll. Every 60s, the driver
 // checks whether the active version for its pms_family has changed
 // (e.g. mapping-driver promoted a new draft). If so, reload in place
@@ -131,6 +180,17 @@ export class SessionDriver {
    * already in-flight.
    */
   private consecutiveZeroRowsByAction: Map<string, number> = new Map();
+
+  /** feature/cua-self-heal-reach — lifetime rung-2 re-anchor attempts per feed
+   *  this session (bounds version-churn; see MAX_REANCHOR_ATTEMPTS). */
+  private reanchorAttemptsByAction: Map<string, number> = new Map();
+
+  /** feature/cua-self-heal-reach — feeds whose zero-row streak tripped this poll.
+   *  Self-heal is DEFERRED to AFTER the poll's single-flight read mutex releases
+   *  (drainSelfHeal in pollOnce): the rung-2 re-anchor probe re-acquires that same
+   *  per-hotel mutex, so running it inline (still inside the poll's lock) would
+   *  always see the lock busy and fall straight through to the paid path. */
+  private pendingSelfHeal: Set<keyof Recipe['actions']> = new Set();
 
   /**
    * feature/cua-per-hotel-data (Task 4) — consume template.incomplete at replay.
@@ -819,6 +879,31 @@ export class SessionDriver {
         err: err instanceof Error ? err.message : String(err),
       });
     });
+
+    // feature/cua-self-heal-reach — process queued self-heals AFTER the poll's
+    // read mutex has RELEASED. The rung-2 re-anchor probe re-acquires that same
+    // mutex; running it here (not inside runAllFeeds) is what lets it actually
+    // take the lock. scheduleNextPoll only fires after pollOnce() resolves, so
+    // a bounded re-anchor probe can't overlap the next poll.
+    await this.drainSelfHeal();
+  }
+
+  /** Run each queued self-heal (rung-2 re-anchor → rung-1 paid re-learn) now that
+   *  the poll mutex is free. Bounded (one entry per feed per threshold-trip);
+   *  errors are isolated so one feed's failure never blocks another's. */
+  private async drainSelfHeal(): Promise<void> {
+    if (this.pendingSelfHeal.size === 0) return;
+    const pending = [...this.pendingSelfHeal];
+    this.pendingSelfHeal.clear();
+    for (const actionKey of pending) {
+      try {
+        await this.attemptSelfHeal(actionKey);
+      } catch (err) {
+        log.warn('session-driver: self-heal drain error', {
+          propertyId: this.propertyId, actionKey, err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   /**
@@ -1406,7 +1491,273 @@ export class SessionDriver {
     // next poll tick. Reset the counter after the attempt so we don't
     // hammer the workflow_jobs INSERT every 30s if something's wrong.
     this.consecutiveZeroRowsByAction.set(actionKey, 0);
-    void this.enqueueSelfRepairJob(actionKey);
+    // feature/cua-self-heal-reach — QUEUE the self-heal; it runs in drainSelfHeal
+    // AFTER this poll's read mutex releases (the re-anchor probe needs that same
+    // mutex). Firing it inline here would deadlock-skip every time. `template` is
+    // not needed downstream (the recipe action is the source of truth).
+    this.pendingSelfHeal.add(actionKey);
+    void template;
+  }
+
+  /**
+   * feature/cua-self-heal-reach — rung-2 (free re-anchor) → rung-1 ($3 re-learn).
+   * Fire-and-forget from maybeFireSelfRepair. Re-anchor is ABSTAIN-BY-DEFAULT and
+   * fleet-safe (its promotion goes through the SAME sample-verify + golden-fixture
+   * gauntlet as a paid re-learn); ANY doubt falls through to enqueueSelfRepairJob.
+   */
+  private async attemptSelfHeal(actionKey: keyof Recipe['actions']): Promise<void> {
+    if (reanchorEnabled()) {
+      try {
+        const healed = await this.tryReanchor(actionKey);
+        if (healed) {
+          log.info('session-driver: rung-2 self-heal succeeded — skipped $3 paid re-learn', {
+            propertyId: this.propertyId, pmsFamily: this.pmsFamily, actionKey,
+          });
+          return;
+        }
+      } catch (err) {
+        log.warn('session-driver: rung-2 re-anchor threw — falling through to paid re-learn', {
+          propertyId: this.propertyId, actionKey, err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    await this.enqueueSelfRepairJob(actionKey);
+  }
+
+  /**
+   * Attempt a FREE re-anchor of a drifted feed. Returns true ONLY when the feed
+   * is confirmed healthy on a fresh extraction (transient) OR a confident
+   * single-column re-anchor was minted AND auto-promoted through the fleet-safety
+   * gauntlet. Every other outcome returns false (caller pays for the re-learn).
+   *
+   * The live-page probe runs UNDER THE READ MUTEX (schedule = skip-if-busy), so
+   * it never overlaps a poll; a busy mutex ⟹ skip ⟹ abstain → paid path. The DB
+   * promotion runs OUTSIDE the mutex (it touches no page).
+   */
+  private async tryReanchor(actionKey: keyof Recipe['actions']): Promise<boolean> {
+    if (!this.page || !this.knowledgeFile || !this.allowedHost) return false;
+    const attempts = this.reanchorAttemptsByAction.get(String(actionKey)) ?? 0;
+    if (attempts >= MAX_REANCHOR_ATTEMPTS) return false; // bounded — avoid version churn
+
+    const k = this.knowledgeFile.knowledge;
+    const recipe: Recipe = {
+      schema: 1,
+      ...(k.description ? { description: k.description } : {}),
+      login: k.login as Recipe['login'],
+      actions: k.actions as Recipe['actions'],
+      ...(k.hints ? { hints: k.hints as Recipe['hints'] } : {}),
+      ...(k.valueTranslations ? { valueTranslations: k.valueTranslations } : {}),
+      ...(k.dateFormat ? { dateFormat: k.dateFormat } : {}),
+    };
+    const action = recipe.actions[actionKey] as ActionRecipe | undefined;
+    if (!action || action.parse.mode !== 'table') return false; // re-anchor is table-only
+
+    // READ-mutex (skip-if-busy): the probe is a page read; it must not overlap a
+    // poll. schedule() returns null ONLY when the mutex was busy (the probe
+    // itself never returns null — it returns an explicit 'abstain'). A busy mutex
+    // is a transient scheduling artifact, NOT a re-anchor attempt, so it doesn't
+    // burn the per-feed attempt budget; we just yield to the paid path this time.
+    const probe = await singleFlight(this.propertyId, REANCHOR_TIMEOUT_MS, (signal) =>
+      this.probeReanchor(actionKey, recipe, action, signal),
+    );
+    if (probe === null) return false; // mutex busy → paid path (no attempt counted)
+
+    // The probe RAN — count it against the bounded budget (abstain included) so a
+    // persistently-drifted feed can't re-probe every streak forever.
+    this.reanchorAttemptsByAction.set(String(actionKey), attempts + 1);
+    if (probe.kind === 'abstain') return false; // ran, decided no → paid path
+
+    if (probe.kind === 'healthy') {
+      log.info('session-driver: rung-2 confirmed feed healthy on fresh extraction (transient) — no recipe change', {
+        propertyId: this.propertyId, actionKey,
+      });
+      return true; // skip the paid re-learn; nothing to promote
+    }
+
+    // probe.kind === 'reanchor' — mint a candidate (changed selector only) and
+    // run it through the SHARED fleet-safety gauntlet (gate → sample-verify →
+    // golden-fixture → save → promote). Only an auto-promote actually heals.
+    const candidate = applyColumnReanchor(recipe, actionKey, probe.changes);
+    // The heal re-extracted + re-certified the feed's required columns with the
+    // NEW selectors (probe.freshShape). Refresh the candidate's value-proof state
+    // from that REAL evidence: a STALE unprovenRequiredColumns inherited from the
+    // active recipe (e.g. a column onboarded empty, since populated) must not block
+    // auto-promotion of a now-certified feed; a column STILL not certified must
+    // keep the feed in founder review (review P1).
+    const healedAction = candidate.actions[actionKey] as ActionRecipe & { unprovenRequiredColumns?: string[] };
+    const stillUnproven = requiredColumnsForTarget(actionKey).filter((c) => {
+      const v = probe.freshShape.columnVerdicts[c];
+      return v !== undefined && v !== 'certified'; // shipping + judged + not certified
+    });
+    if (stillUnproven.length > 0) healedAction.unprovenRequiredColumns = stillUnproven;
+    else delete healedAction.unprovenRequiredColumns;
+    const seedActions: Recipe['actions'] = { ...recipe.actions };
+    delete seedActions[actionKey];
+    const promoted = await promoteRecipeChange({
+      pmsFamily: this.pmsFamily,
+      recipe: candidate,
+      seedActions,
+      changedTargets: [String(actionKey)],
+      freshShapeFor: (key) => (key === String(actionKey) ? probe.freshShape : null),
+      origin: 'reanchor',
+      excludePropertyId: this.propertyId,
+    });
+    if (promoted.activated) {
+      log.info('session-driver: rung-2 re-anchor PROMOTED a new recipe version', {
+        propertyId: this.propertyId, actionKey, version: promoted.version,
+        changes: probe.changes.map((c) => c.column),
+      });
+      return true; // hot-reload (~60s) picks up the healed recipe
+    }
+    log.info('session-driver: rung-2 re-anchor parked (not auto-promoted) — falling through to paid re-learn', {
+      propertyId: this.propertyId, actionKey, decision: promoted.decision, reason: promoted.reason,
+    });
+    return false; // abstain-by-default: a non-activating heal yields to the paid path
+  }
+
+  /**
+   * Live-page probe (runs under the read mutex). Re-navigates the feed, extracts
+   * with the CURRENT selectors, and decides — entirely via the PURE reanchor core
+   * + the SAME certify/header safety machinery the mapper uses:
+   *   - rows present + all required certify          → { healthy } (transient)
+   *   - exactly ONE required column drifted, and a UNIQUE header candidate
+   *     value-certifies                              → { reanchor, changes, freshShape }
+   *   - anything else (rowSelector drift, ≥2 drifted, ambiguous, no headers) → { abstain }
+   *
+   * Returns an explicit { abstain } (never null) so the caller can tell a real
+   * probe-decided abstain from a busy-mutex skip (schedule()'s null).
+   */
+  private async probeReanchor(
+    actionKey: keyof Recipe['actions'],
+    recipe: Recipe,
+    action: ActionRecipe,
+    signal: AbortSignal,
+  ): Promise<{ kind: 'healthy' } | { kind: 'abstain' } | { kind: 'reanchor'; changes: ColumnChange[]; freshShape: FreshExtractionShape }> {
+    const abstain = (): { kind: 'abstain' } => ({ kind: 'abstain' });
+    if (!this.page || !this.allowedHost || signal.aborted) return abstain();
+    if (action.parse.mode !== 'table') return abstain();
+    const hint = action.parse.hint as TableRowHint;
+
+    // Resolve + re-host the feed's source URL exactly like a normal poll.
+    const { templates } = recipeToTableTemplates(recipe, {
+      valueTranslations: recipe.valueTranslations,
+      dateFormat: recipe.dateFormat,
+    });
+    const template = templates.find((t) => t.sourceActionKey === actionKey);
+    if (!template || template.incomplete || template.sources.length !== 1) return abstain();
+    this.rehostFeedUrlsForHotel([template]);
+    const sourceUrl = template.sources[0]!.url;
+    if (!sourceUrl) return abstain();
+    try {
+      await safeGoto(this.page, sourceUrl, { allowedHost: this.allowedHost, context: 'reanchor:probe' });
+    } catch {
+      return abstain(); // can't even load the feed page — abstain (paid path)
+    }
+    if (signal.aborted) return abstain();
+
+    const columns = hint.columns;
+    const learned = { valueTranslations: recipe.valueTranslations, dateFormat: recipe.dateFormat };
+    const todayIso = reanchorTodayIso();
+    const requiredAll = requiredColumnsForTarget(actionKey);
+    const shippingRequired = requiredAll.filter(
+      (c) => typeof columns[c] === 'string' && columns[c]!.trim() !== '',
+    );
+
+    // Fresh extraction with the CURRENT selectors (+ Chat-6 tiered self-heal).
+    const ext = await extractDomRows(this.page, hint.rowSelector, columns, {
+      cap: REANCHOR_PROBE_CAP,
+      ...(hint.columnsTiered ? { columnsTiered: hint.columnsTiered } : {}),
+      ...(hint.rowSelectorTiered ? { rowSelectorTiered: hint.rowSelectorTiered } : {}),
+    });
+    const rows = ext.rows;
+    // rowSelector drift / page wander (zero/near-zero rows) is NOT safely
+    // re-anchorable from value evidence we don't have → abstain (paid path).
+    if (rows.length < MIN_REANCHOR_ROWS) return abstain();
+    if (shippingRequired.length === 0) return abstain();
+
+    const allValues = transposeColumns(rows, Object.keys(columns));
+
+    // CASE A — transient health: fresh extraction certifies → no change needed.
+    const health = checkFeedHealth({
+      actionKey, requiredColumns: shippingRequired, allValues, allSelectors: columns,
+      rowCount: rows.length, learned, todayIso,
+    });
+    if (health.healthy) return { kind: 'healthy' };
+
+    // CASE B — exactly one drifted required column, re-anchored by header.
+    const verdicts = certifyColumns({
+      actionKey, columns: shippingRequired, allValues, allSelectors: columns,
+      learned, todayIso, hasValueEvidence: true,
+    });
+    const drifted = shippingRequired.filter((c) => verdicts.get(c)?.verdict !== 'certified');
+    if (drifted.length !== 1) return abstain(); // 0 (contradiction) or ≥2 (too risky) → abstain
+    const col = drifted[0]!;
+
+    const headers = await readTableHeaders(this.page, hint.rowSelector);
+    if (!headers || !headerGateOk(headers)) return abstain(); // can't trust header positions
+    const liveHeaders = headers.cells.map((c) => ({ index: c.index, text: c.text }));
+
+    const candidates = buildCandidateSelectors({ oldSelector: columns[col] ?? '', headers: liveHeaders });
+    if (candidates.length === 0) return abstain(); // not positionally rebaseable → abstain
+
+    const candidateResults = [];
+    for (const cand of candidates) {
+      if (signal.aborted) return abstain();
+      const cext = await extractDomRows(this.page, hint.rowSelector, { [col]: cand.selector }, { cap: REANCHOR_PROBE_CAP });
+      // The candidate uses the SAME rowSelector that yielded `rows`; if its match
+      // count differs, the page shifted mid-probe (rowSelector instability) and
+      // the per-row values would mis-align with otherValues → drop this candidate
+      // rather than risk a mis-aligned (false) certification.
+      if (cext.rows.length !== rows.length) continue;
+      candidateResults.push({
+        headerIndex: cand.headerIndex,
+        selector: cand.selector,
+        values: cext.rows.map((r) => r[col] ?? ''),
+        headerText: cand.headerText,
+      });
+    }
+    if (candidateResults.length === 0) return abstain();
+    const otherValues: Record<string, string[]> = {};
+    const otherSelectors: Record<string, string> = {};
+    for (const [c, v] of Object.entries(allValues)) if (c !== col) otherValues[c] = v;
+    for (const [c, s] of Object.entries(columns)) if (c !== col) otherSelectors[c] = s;
+
+    const decision = decideColumnReanchor({
+      actionKey, column: col, oldSelector: columns[col] ?? '',
+      anchorHeaderText: hint.columnsTiered?.[col]?.roleName?.name,
+      candidates: candidateResults, otherValues, otherSelectors, learned, todayIso,
+    });
+    if (decision.action !== 'reanchor') return abstain(); // abstain → paid path
+
+    const changes: ColumnChange[] = [{ column: col, newSelector: decision.newSelector }];
+
+    // Build the golden-fixture FRESH SHAPE from a re-extraction with the NEW
+    // selector — real value evidence (catches a certified→failed regression).
+    const healed = applyColumnReanchor(recipe, actionKey, changes);
+    const healedAction = healed.actions[actionKey] as ActionRecipe;
+    const healedHint = healedAction.parse.mode === 'table' ? healedAction.parse.hint : hint;
+    const reext = await extractDomRows(this.page, healedHint.rowSelector, healedHint.columns, { cap: REANCHOR_PROBE_CAP });
+    const healedValues = transposeColumns(reext.rows, Object.keys(healedHint.columns));
+    const healedVerdicts = certifyColumns({
+      actionKey, columns: shippingRequired, allValues: healedValues, allSelectors: healedHint.columns,
+      learned, todayIso, hasValueEvidence: reext.rows.length > 0,
+    });
+    const shipCols = Object.keys(healedHint.columns).filter(
+      (c) => typeof healedHint.columns[c] === 'string' && healedHint.columns[c]!.trim() !== '',
+    );
+    const columnVerdicts: Record<string, FixtureColumnVerdict> = {};
+    for (const c of shipCols) {
+      const v = healedVerdicts.get(c)?.verdict;
+      columnVerdicts[c] = v === 'certified' ? 'certified' : v === 'failed' ? 'failed' : 'uncertain';
+    }
+    const freshShape: FreshExtractionShape = {
+      parseMode: 'table',
+      columns: shipCols,
+      columnVerdicts,
+      hasValueEvidence: reext.rows.length > 0,
+      rowCount: reext.rows.length,
+    };
+    return { kind: 'reanchor', changes, freshShape };
   }
 
   private async enqueueSelfRepairJob(actionKey: keyof Recipe['actions']): Promise<void> {
