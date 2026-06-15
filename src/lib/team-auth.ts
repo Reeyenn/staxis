@@ -12,6 +12,8 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { requireSession } from '@/lib/api-auth';
+import { canForProperty } from '@/lib/capabilities/server';
+import type { CapabilityKey } from '@/lib/capabilities/registry';
 
 export interface TeamCaller {
   accountId: string;
@@ -22,7 +24,10 @@ export interface TeamCaller {
   isAdmin: boolean;
 }
 
-export async function verifyTeamManager(req: NextRequest): Promise<TeamCaller | null> {
+export async function verifyTeamManager(
+  req: NextRequest,
+  opts?: { capability?: CapabilityKey; propertyId?: string | null },
+): Promise<TeamCaller | null> {
   // requireSession enforces device-trust by default (Phase 1 audit). If
   // it fails — invalid JWT, no device cookie, skip_2fa refusal — we
   // return null and the caller surfaces a generic 403. (We swallow the
@@ -40,7 +45,17 @@ export async function verifyTeamManager(req: NextRequest): Promise<TeamCaller | 
   if (acctErr || !account) return null;
 
   const role = account.role as AppRole;
-  if (!canManageTeam(role)) return null;
+  // Gate: when the caller names a capability, use the per-hotel resolver
+  // (default: every role gets it; an admin can switch a role OFF for this hotel
+  // from the Access tab). Pass propertyId to enforce that hotel's restrictions;
+  // omit it for the everyone-default. Auth + 2FA above are untouched — this only
+  // replaces the old manager-only role comparison. Legacy callers that pass no
+  // capability keep the manager-only check unchanged.
+  if (opts?.capability) {
+    if (!(await canForProperty({ role }, opts.capability, opts.propertyId ?? null))) return null;
+  } else if (!canManageTeam(role)) {
+    return null;
+  }
 
   return {
     accountId: account.id,
@@ -55,4 +70,21 @@ export async function verifyTeamManager(req: NextRequest): Promise<TeamCaller | 
 export function canManageHotel(caller: TeamCaller, hotelId: string): boolean {
   if (caller.isAdmin) return true;
   return caller.propertyAccess.includes(hotelId);
+}
+
+/**
+ * Property-scope AND per-hotel capability in one check, for routes that resolve
+ * the caller before they know the hotel. Returns true only if the caller has
+ * access to `hotelId` (canManageHotel) AND the capability is allowed for their
+ * role at that hotel (default: every role; an admin can switch it OFF per hotel
+ * from the Access tab). Use this in place of a bare canManageHotel at the gate
+ * site when the caller was resolved with an everyone-default capability.
+ */
+export async function callerCan(
+  caller: TeamCaller,
+  capability: CapabilityKey,
+  hotelId: string,
+): Promise<boolean> {
+  if (!canManageHotel(caller, hotelId)) return false;
+  return canForProperty({ role: caller.role }, capability, hotelId);
 }

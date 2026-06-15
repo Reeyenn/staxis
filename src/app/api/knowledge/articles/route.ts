@@ -7,14 +7,16 @@
  *   DELETE ?pid=&id=                                  → delete (MANAGERS only)
  *
  * Auth: commsContext (session + property access). Writes additionally require
- * canManageTeam(role). All access is service-role via supabaseAdmin (the
+ * the manage_knowledge capability (default: every role; restricted per hotel
+ * from the Access tab). All access is service-role via supabaseAdmin (the
  * knowledge_* tables are deny-all to the browser) — see migration 0250.
  */
 import type { NextRequest } from 'next/server';
 import { after } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
-import { canManageTeam, type AppRole } from '@/lib/roles';
+import { type AppRole } from '@/lib/roles';
+import { canForUserId } from '@/lib/capabilities/server';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { listArticles, createArticle, updateArticle, deleteArticle } from '@/lib/knowledge/core';
 import { indexArticle } from '@/lib/knowledge/indexing';
@@ -57,7 +59,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, raw.pid ?? null);
   if (!ctx.ok) return ctx.response;
-  if (!canManageTeam(ctx.role as AppRole)) {
+  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
     return err('Only managers can publish knowledge articles', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
   const v = validateArticleFields(raw);
@@ -76,7 +78,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, raw.pid ?? null);
   if (!ctx.ok) return ctx.response;
-  if (!canManageTeam(ctx.role as AppRole)) {
+  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
     return err('Only managers can edit knowledge articles', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
   const idV = validateUuid(raw.id, 'id');
@@ -95,7 +97,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 export async function DELETE(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
   if (!ctx.ok) return ctx.response;
-  if (!canManageTeam(ctx.role as AppRole)) {
+  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
     return err('Only managers can delete knowledge articles', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
   const idV = validateUuid(req.nextUrl.searchParams.get('id'), 'id');

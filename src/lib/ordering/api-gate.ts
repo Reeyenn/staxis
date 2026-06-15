@@ -22,7 +22,8 @@ import { requireSession } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { canManageInventory, type AppRole } from '@/lib/roles';
+import { type AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -83,11 +84,12 @@ export async function requireOrderingAccess(
   }
   const role = ((account.role as string) ?? 'staff') as AppRole;
 
-  // 4) Role gate — owner / GM / admin only.
-  if (!canManageInventory(role)) {
+  // 4) Capability gate — manage_inventory_orders, honoring this hotel's Access-tab
+  //    restrictions (default: every role; an admin can switch a role OFF per hotel).
+  if (!(await canForProperty({ role }, 'manage_inventory_orders', pid))) {
     return {
       ok: false,
-      response: err('forbidden: ordering is restricted to owner / general manager / admin', {
+      response: err('forbidden: ordering is restricted for your role at this property', {
         requestId,
         status: 403,
         code: 'forbidden_role',

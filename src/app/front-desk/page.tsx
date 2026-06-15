@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { useCan } from '@/lib/capabilities/useCan';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/db';
@@ -21,8 +22,6 @@ import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 
 const FD_TAB_KEY = 'fd-tab';
-// Roles that may use the Lost & Found surface (management home).
-const FD_MANAGEMENT_ROLES = ['admin', 'owner', 'general_manager', 'front_desk'];
 
 /* ════════════════════════════════════════════════════════════════════════════
    HELPERS
@@ -123,6 +122,7 @@ export default function FrontDeskPage() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
   const router = useRouter();
 
   // Reactive: rolls over at Central midnight so the rooms subscription
@@ -137,9 +137,11 @@ export default function FrontDeskPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [tab, setTabState] = useState<FrontDeskTabKey>('rooms');
 
-  // Lost & Found is a management surface; housekeeping/maintenance see only the
-  // Rooms tab (existing access is unchanged — we don't redirect them away).
-  const isManagement = !!user && FD_MANAGEMENT_ROLES.includes(user.role);
+  // Per-hotel capability gates (default: every role; an admin can switch a role
+  // OFF per hotel from the Access tab). Rooms is always available.
+  const canLostFound = !!user && can('use_lost_and_found');
+  const canComplaints = !!user && can('use_complaints');
+  const canPackages = !!user && can('use_packages');
 
   // Material Symbols font is loaded globally via globals.css
 
@@ -155,8 +157,10 @@ export default function FrontDeskPage() {
     if (saved === 'lost-and-found' || saved === 'rooms' || saved === 'complaints' || saved === 'packages') setTabState(saved);
   }, []);
   useEffect(() => {
-    if ((tab === 'lost-and-found' || tab === 'complaints') && !isManagement) setTabState('rooms');
-  }, [tab, isManagement]);
+    if (tab === 'lost-and-found' && !canLostFound) setTabState('rooms');
+    else if (tab === 'complaints' && !canComplaints) setTabState('rooms');
+    else if (tab === 'packages' && !canPackages) setTabState('rooms');
+  }, [tab, canLostFound, canComplaints, canPackages]);
 
   const setTab = (t: FrontDeskTabKey) => {
     setTabState(t);
@@ -328,18 +332,17 @@ export default function FrontDeskPage() {
         .fd-filter-pill:hover { background: rgba(54,66,98,0.06); }
       `}</style>
 
-      <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={isManagement} />
+      <FrontDeskTabBar tab={tab} onTab={setTab} lang={lang} showLostFound={canLostFound} showComplaints={canComplaints} showPackages={canPackages} />
 
-      {/* Packages — all front-desk staff (no management gate), like Rooms. */}
-      {tab === 'packages' && activePropertyId && (
+      {tab === 'packages' && canPackages && activePropertyId && (
         <PackagesTab pid={activePropertyId} lang={lang} />
       )}
 
-      {tab === 'lost-and-found' && isManagement && activePropertyId && (
+      {tab === 'lost-and-found' && canLostFound && activePropertyId && (
         <LostFoundTab pid={activePropertyId} lang={lang} />
       )}
 
-      {tab === 'complaints' && isManagement && (
+      {tab === 'complaints' && canComplaints && (
         <ComplaintsTab />
       )}
 

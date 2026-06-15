@@ -15,6 +15,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { canForUserId } from '@/lib/capabilities/server';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { draftServiceRecovery } from '@/lib/complaints-ai';
 import { fromComplaintRow } from '@/lib/complaints-shared';
@@ -52,6 +53,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  if (!(await canForUserId(session.userId, 'use_complaints', pid))) {
+    return err('forbidden — complaints are restricted for your role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  }
 
   // Per-PROPERTY billing bucket — key must be a real properties.id (FK), not a
   // hashed composite, or the fail-closed limiter 429s every call. See log/route.

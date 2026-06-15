@@ -11,7 +11,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { isManager } from '@/lib/compliance/api-helpers';
+import { canForUserId } from '@/lib/capabilities/server';
 import { TEMPLATES, getTemplate } from '@/lib/compliance/templates';
 import { applySeeds } from '@/lib/compliance/store';
 
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  if (!(await isManager(session.userId))) {
+  if (!(await canForUserId(session.userId, 'manage_equipment', pid))) {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   const rl = await checkAndIncrementRateLimit('compliance-config', pid);

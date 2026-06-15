@@ -10,7 +10,7 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
-import { canManageTeam, type AppRole } from '@/lib/roles';
+import { canForUserId } from '@/lib/capabilities/server';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { presignDocument } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, raw.pid ?? null);
   if (!ctx.ok) return ctx.response;
-  if (!canManageTeam(ctx.role as AppRole)) {
+  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
     return err('Only managers can upload documents', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
   const rl = await checkAndIncrementRateLimit('knowledge-presign', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));

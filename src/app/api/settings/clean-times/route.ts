@@ -23,7 +23,8 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { canManageTeam, isValidRole, type AppRole } from '@/lib/roles';
+import { isValidRole, type AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 import {
   EDITABLE_CLEANING_TYPES,
   CLEAN_TIME_DEFAULT_MINUTES,
@@ -112,7 +113,7 @@ export async function GET(req: NextRequest) {
     {
       standards,
       defaults: CLEAN_TIME_DEFAULT_MINUTES,
-      canEdit: canManageTeam(account.role),
+      canEdit: await canForProperty({ role: account.role }, 'manage_clean_times', pidV.value!),
       min: MIN_CLEAN_MINUTES,
       max: MAX_CLEAN_MINUTES,
     },
@@ -139,8 +140,9 @@ export async function PUT(req: NextRequest) {
   if (!callerHasPropertyAccess(account, pidV.value!)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  // Writes are management-only — match /api/settings/users.
-  if (!canManageTeam(account.role)) {
+  // Writes honor the per-hotel manage_clean_times capability (default: every
+  // role; an admin can switch a role OFF for this hotel from the Access tab).
+  if (!(await canForProperty({ role: account.role }, 'manage_clean_times', pidV.value!))) {
     return err('Only managers can change cleaning times', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });

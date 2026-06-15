@@ -15,13 +15,13 @@ export type ReportsGate =
   | { ok: false; status: number; code: string; error: string };
 
 export async function gateReportsAccess(req: NextRequest, propertyId: string): Promise<ReportsGate> {
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'run_reports', propertyId });
   if (!caller) {
     return {
       ok: false,
       status: 403,
       code: 'forbidden',
-      error: 'Reports are restricted to managers, owners, and admins.',
+      error: 'Reports are restricted for your role at this property.',
     };
   }
   if (!canManageHotel(caller, propertyId)) {

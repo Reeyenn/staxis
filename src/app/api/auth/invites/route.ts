@@ -12,7 +12,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
+import { verifyTeamManager, callerCan } from '@/lib/team-auth';
 import { isAssignableRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 
@@ -32,13 +32,13 @@ function inviteUrlBase(req: NextRequest): string {
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_team' });
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { searchParams } = new URL(req.url);
   const hotelId = searchParams.get('hotelId');
   if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!canManageHotel(caller, hotelId)) {
+  if (!(await callerCan(caller, 'manage_team', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_team' });
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json() as { hotelId?: string; email?: string; role?: string };
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
   if (!hotelId || !email || !role) {
     return err('hotelId, email, and role are required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!canManageHotel(caller, hotelId)) {
+  if (!(await callerCan(caller, 'manage_team', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
   if (!isAssignableRole(role)) {
@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_team' });
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { searchParams } = new URL(req.url);
@@ -138,7 +138,7 @@ export async function DELETE(req: NextRequest) {
     .eq('id', id)
     .maybeSingle();
   if (!row) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!canManageHotel(caller, row.hotel_id)) {
+  if (!(await callerCan(caller, 'manage_team', row.hotel_id))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

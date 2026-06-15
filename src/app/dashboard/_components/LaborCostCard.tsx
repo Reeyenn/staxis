@@ -13,7 +13,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { canViewLaborCost } from '@/lib/labor-cost';
+import { useCan } from '@/lib/capabilities/useCan';
 import { formatCentsCompact } from '@/lib/financials/shared';
 import { fetchLaborCost, type LaborCostSummary } from '@/lib/db';
 
@@ -49,8 +49,9 @@ export function LaborCostCard() {
   const router = useRouter();
   const [summary, setSummary] = useState<LaborCostSummary | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const can = useCan();
 
-  const canSee = !!user && canViewLaborCost(user.role);
+  const canSee = !!user && can('view_wages');
 
   useEffect(() => {
     if (!canSee || !activePropertyId) return;

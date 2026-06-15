@@ -15,7 +15,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { ShiftPreset, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, Btn, Caps } from '@/app/staff/_components/_tokens';
@@ -48,9 +48,10 @@ export default function ShiftPresetsPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
-  // Manager-only.
-  if (!user || !canManageTeam(user.role)) {
+  // Gated by per-hotel manage_shifts (default: every role; admin can restrict).
+  if (!user || !can('manage_shifts')) {
     return <AppLayout><div style={{ padding: 24 }}>Manager access only.</div></AppLayout>;
   }
 

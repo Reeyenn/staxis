@@ -16,6 +16,7 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext, listAccessiblePropertyIds } from '@/lib/comms/route-helpers';
+import { canForUserId } from '@/lib/capabilities/server';
 import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
 
@@ -32,8 +33,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, body.pid ?? null);
   if (!ctx.ok) return ctx.response;
 
-  if (!ctx.isManager) {
-    return err('only managers can post announcements', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
+  if (!(await canForUserId(ctx.userId, 'post_announcements', ctx.pid))) {
+    return err('posting announcements is restricted for your role at this property', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
 
   const text = (body.body ?? '').trim();

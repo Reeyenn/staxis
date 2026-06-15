@@ -31,6 +31,7 @@ import {
 } from '@/lib/api-ratelimit';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 
 export interface PkgGateOk<TBody> {
   ok: true;
@@ -94,6 +95,12 @@ export async function gatePackagesRead(
 
   const { accountId, role } = await resolveAccount(session.userId);
 
+  // use_packages capability gate (default: every role; an admin can switch a
+  // role OFF per hotel from the Access tab).
+  if (!(await canForProperty({ role }, 'use_packages', pid))) {
+    return { ok: false, response: err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+  }
+
   const rl = await checkAndIncrementRateLimit(endpoint, pid);
   if (!rl.allowed) {
     return { ok: false, response: rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) };
@@ -146,6 +153,12 @@ export async function gatePackagesWrite<TBody extends { pid?: unknown }>(
   }
 
   const { accountId, role } = await resolveAccount(session.userId);
+
+  // use_packages capability gate (default: every role; an admin can switch a
+  // role OFF per hotel from the Access tab).
+  if (!(await canForProperty({ role }, 'use_packages', pid))) {
+    return { ok: false, response: err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+  }
 
   const rl = await checkAndIncrementRateLimit(endpoint, pid);
   if (!rl.allowed) {

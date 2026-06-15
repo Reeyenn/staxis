@@ -30,9 +30,9 @@ export async function gateActivityLogAccess(
   req: NextRequest,
   propertyId: string,
 ): Promise<GateResult> {
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'view_activity_log', propertyId });
   if (!caller) {
-    return { ok: false, status: 403, code: 'forbidden', error: 'Activity log access is restricted to managers, owners, and admins.' };
+    return { ok: false, status: 403, code: 'forbidden', error: 'Activity log access is restricted for your role at this property.' };
   }
   if (!canManageHotel(caller, propertyId)) {
     return { ok: false, status: 403, code: 'property_access_denied', error: 'You do not have access to that property.' };

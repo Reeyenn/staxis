@@ -20,7 +20,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { T, fonts, Btn, Caps } from '@/app/staff/_components/_tokens';
 import { formatCell } from '@/lib/reports/catalog/format';
@@ -101,11 +101,12 @@ export default function ReportsPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
   if (!user) {
     return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
   }
-  if (!canManageTeam(user.role)) {
+  if (!can('run_reports')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>

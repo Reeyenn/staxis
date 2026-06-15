@@ -20,7 +20,7 @@ import {
   type DailyAverages,
 } from '@/lib/inventory-predictions';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { canManageInventory } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import type { OrderingMode } from '@/lib/ordering/types';
 import type {
   InventoryItem,
@@ -77,7 +77,8 @@ export function InventoryShell() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const canManage = !!user && canManageInventory(user.role);
+  const can = useCan();
+  const canManage = !!user && can('manage_inventory_orders');
 
   // ── Core data state ────────────────────────────────────────────────
   const [items, setItems] = useState<InventoryItem[]>([]);

@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { canViewFinancials } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import {
   LayoutDashboard, BedDouble, Wrench, Package, Users,
   Bell, Settings, LogOut, Globe, DollarSign,
@@ -17,6 +17,7 @@ export function Sidebar() {
   const { lang, setLang } = useLang();
   const { user, signOut } = useAuth();
   const { activeProperty } = useProperty();
+  const can = useCan();
 
   const navLinks = [
     { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard',       icon: LayoutDashboard },
@@ -25,7 +26,7 @@ export function Sidebar() {
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory',   icon: Package },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff',         icon: Users },
     // Financials — owner/GM/admin only (sensitive); same gate as the Header nav.
-    ...(user && canViewFinancials(user.role)
+    ...(user && can('view_financials')
       ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials', icon: DollarSign }]
       : []),
   ];
