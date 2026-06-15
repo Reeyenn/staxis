@@ -47,16 +47,15 @@ import {
   computeCommitScore,
   decideCommit,
   valueFingerprint,
-  recipeFingerprintString,
   fingerprintsMatch,
   DEFAULT_COMMIT_THRESHOLD,
   DEFAULT_REQUIRED_PASSES,
   type CommitSignals,
   type SignalVerdict,
-  type FeedFingerprint,
 } from './commit-gate.js';
 import { reconcileCrossFeed, parseCounter, type FeedObservation } from './cross-feed-reconcile.js';
 import { DISCOVERY_KEY_COLUMNS } from './oracle-verify.js';
+import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 
 // ── best-class verification config knobs (feature/cua-bestclass-verify) ──
 // Read from process.env (env.ts is out of scope for this change). ALL DEFAULT
@@ -990,42 +989,82 @@ export function gatherCrossFeedObservation(
     if (typeof preview.rowCount === 'number') obs.rowCount = preview.rowCount;
     if (Array.isArray(preview.sample)) {
       obs.rows = preview.sample;
-      // The board preview keeps ≤3 rows, so it is "complete" only when it
-      // genuinely covers the whole feed (tiny feeds). Otherwise the exact
-      // predicate count would undercount → cross-feed falls back to the sound
-      // lower-bound check (see cross-feed-reconcile.ts).
-      obs.rowsComplete = typeof preview.rowCount === 'number' && preview.sample.length >= preview.rowCount;
+      // NEVER mark the board preview "complete": its rows are RAW DOM text
+      // (un-translated — e.g. "Occ"/"VC", not the canonical occupied/vacant_clean
+      // the exact predicate expects) and truncated to ≤3. Either alone makes an
+      // exact predicate count unsound (review P2: a tiny-property preview could
+      // exact-count 0 against a positive counter → false mismatch). Cross-feed
+      // therefore uses ONLY the SOUND lower-bound (rowCount ≥ counter) from this
+      // wiring. The exact path stays in cross-feed-reconcile.ts for callers that
+      // pass canonical full rows (a documented follow-up: canonicalize preview
+      // statuses to enable exact occupancy reconcile).
+      obs.rowsComplete = false;
     }
     feeds[key] = obs;
   }
   return { feeds, dashboardCounters };
 }
 
-/** Coarse value-distribution fingerprint of the recipe's REQUIRED feeds, from
- *  the board previews. Used as the pass^N consistency anchor (compared across
- *  learns) and to surface a degenerate distribution. Pure + exported. */
+/**
+ * STRUCTURAL fingerprint of the recipe's REQUIRED feeds — the pass^N
+ * consistency anchor. Adversarial review (both reviewers, P1) showed a
+ * fingerprint derived from the ≤3-row live preview NEVER converges: the specific
+ * rows differ between two onboarding passes minutes apart (occupancy changes,
+ * paging), so the counter reset to 1 every time and pass^N (N≥2) could never
+ * accumulate. This builds the anchor from STABLE recipe structure instead — feed
+ * present + parse mode + sorted mapped columns + the learned enum vocabulary —
+ * so an unchanged recipe re-derives an IDENTICAL fingerprint (converges), AND
+ * two hotels on the SAME family with the same structure corroborate each other
+ * (genuine "before it goes family-wide"). The live preview is used ONLY for the
+ * one-shot degenerate-key SANITY flag, never for the cross-pass string. Pure +
+ * exported. */
 export function computeRecipeFingerprint(
   recipe: Recipe,
   boardTargets: Record<string, BoardTargetState> | undefined,
 ): { fingerprint: string; sane: boolean } {
-  const fps: FeedFingerprint[] = [];
+  const parts: string[] = [];
   let sane = true;
   for (const t of REQUIRED_TARGETS) {
-    if (!recipe.actions[t]) continue;
+    const action = recipe.actions[t];
+    if (!action) continue;
+    const mode = action.parse?.mode ?? 'none';
+    const colMap = effectiveColumnsFromAction(t, action);
+    const cols = Object.keys(colMap)
+      .filter((c) => typeof colMap[c] === 'string' && colMap[c]!.trim() !== '')
+      .sort();
+    const table = CORE_TARGET_CONTRACTS[t]?.table;
+    const vocab = table ? learnedVocabFor(recipe.valueTranslations, table) : '';
+    parts.push(`${String(t)}|${mode}|${cols.join(',')}|${vocab}`);
+
+    // One-shot sanity (degenerate key) from the live preview — NOT part of the
+    // cross-pass string (those rows vary between passes).
     const keyField = DISCOVERY_KEY_COLUMNS[t];
-    const preview = boardTargets?.[String(t)]?.preview;
-    const rows = Array.isArray(preview?.sample) ? preview!.sample! : [];
-    const fp = valueFingerprint({
-      feed: String(t),
-      rows,
-      ...(keyField ? { keyField } : {}),
-      statusField: 'status',
-      ...(typeof preview?.rowCount === 'number' ? { rowCount: preview.rowCount } : {}),
-    });
-    fps.push(fp);
-    if (!fp.sane) sane = false;
+    const rows = boardTargets?.[String(t)]?.preview?.sample;
+    if (keyField && Array.isArray(rows) && rows.length > 0) {
+      const fp = valueFingerprint({ feed: String(t), rows, keyField });
+      if (!fp.sane) sane = false;
+    }
   }
-  return { fingerprint: recipeFingerprintString(fps), sane };
+  return { fingerprint: parts.sort().join(';'), sane };
+}
+
+/** Sorted, stable summary of the learned enum vocabulary for a table from
+ *  recipe.valueTranslations (keyed `${table}.${col}`) — part of the structural
+ *  fingerprint so a recipe that re-learned a DIFFERENT status vocabulary is a
+ *  different shape, while the SAME vocabulary corroborates. */
+function learnedVocabFor(
+  valueTranslations: Recipe['valueTranslations'] | undefined,
+  table: string,
+): string {
+  if (!valueTranslations) return '';
+  const cols: string[] = [];
+  for (const [key, mapping] of Object.entries(valueTranslations)) {
+    if (!key.startsWith(`${table}.`)) continue;
+    const col = key.slice(table.length + 1);
+    const canon = [...new Set(Object.values(mapping ?? {}).map((v) => String(v)))].sort();
+    cols.push(`${col}=${canon.join('/')}`);
+  }
+  return cols.sort().join('&');
 }
 
 /** Reconcile (proof) signal for the score: 'fail' iff a required target ships a
@@ -1086,16 +1125,20 @@ export async function computeRecipeVerification(args: {
   // (a) reconcile/certify proof state.
   const reconcile = reconcileSignalForRecipe(args.recipe);
 
-  // (d) cheap second-model vote (env-gated OFF by default → 'abstain').
+  // (d) cheap second-model vote (env-gated OFF by default → 'abstain'). Skip the
+  //     paid call entirely if the job is already aborting (don't honor a doomed
+  //     request) — fail-open to 'abstain'.
   const voteFn = args.secondModelVote ?? secondModelRecipeVote;
   let secondModel: SignalVerdict = 'abstain';
-  try {
-    secondModel = await voteFn({
-      recipe: args.recipe, boardTargets: args.boardTargets,
-      jobId: args.jobId, propertyId: args.propertyId, signal: args.signal,
-    });
-  } catch {
-    secondModel = 'abstain'; // fail-open
+  if (!args.signal?.aborted) {
+    try {
+      secondModel = await voteFn({
+        recipe: args.recipe, boardTargets: args.boardTargets,
+        jobId: args.jobId, propertyId: args.propertyId, signal: args.signal,
+      });
+    } catch {
+      secondModel = 'abstain'; // fail-open
+    }
   }
 
   // ── pass^N: read the family's most-recent prior verification fingerprint ──

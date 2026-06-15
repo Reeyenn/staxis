@@ -153,41 +153,39 @@ export function decideCommit(input: CommitDecisionInput): CommitDecision {
 
 export interface FingerprintInput {
   feed: string;
-  /** Sampled canonical rows for the feed. */
+  /** Sampled rows for the feed (the ≤3-row board preview). */
   rows: Array<Record<string, unknown>>;
-  /** The feed's key column (DISCOVERY_KEY_COLUMNS) — drives key-distinctness. */
+  /** The feed's key column (DISCOVERY_KEY_COLUMNS) — drives the sanity check. */
   keyField?: string;
-  /** The feed's enum/status column — drives the value-vocabulary profile. */
-  statusField?: string;
-  /** Total rows the feed matched (may exceed rows.length when rows is a sample). */
-  rowCount?: number;
 }
 
 export interface FeedFingerprint {
   feed: string;
-  rowCount: number;
   /** 'all' (every key distinct) | 'high' (≥90% distinct) | 'low' | 'na'. */
   keyDistinctBucket: 'all' | 'high' | 'low' | 'na';
-  /** Sorted distinct normalized status values seen (the enum vocabulary), or ''. */
-  enumProfile: string;
   /** A degenerate distribution that no correct feed should show — e.g. a key
-   *  column that is constant across ≥3 rows. */
+   *  column that is constant across ≥3 sampled rows (a wrong-key smell). */
   sane: boolean;
 }
 
 const normLower = (v: unknown): string =>
   v == null ? '' : String(v).trim().toLowerCase().replace(/\s+/g, ' ');
 
-/** Compute a coarse, drift-tolerant value fingerprint for one feed. Coarse on
- *  purpose: it must be STABLE across two onboarding passes minutes apart (a
- *  guest checking in must not change it), while still distinguishing a genuinely
- *  different recipe shape. Distinct from certifyColumns: this is an aggregate
- *  DISTRIBUTION summary, not a per-column identity proof — it does not certify a
- *  column, it characterises the feed for cross-pass consistency. */
+/**
+ * A one-shot SANITY check on a feed's sampled rows: does the key column look
+ * like a real per-row identifier? Adversarial review (both reviewers) showed the
+ * earlier value-DISTRIBUTION fingerprint (enum vocabulary + row-count buckets
+ * derived from the ≤3-row live preview) was UNSTABLE across passes minutes apart
+ * — so it must NOT be the pass^N consistency anchor (that anchor is now the
+ * STRUCTURAL recipe fingerprint, see mapping-driver.computeRecipeFingerprint).
+ * This function is only the degenerate-key SANITY signal: a key constant across
+ * the sample is the kind of wrong-column smell a value check CAN see.
+ *
+ * Distinct from certifyColumns: it does not certify a column's identity, it just
+ * flags an obviously degenerate key distribution.
+ */
 export function valueFingerprint(input: FingerprintInput): FeedFingerprint {
   const rows = input.rows ?? [];
-  const rowCount = input.rowCount ?? rows.length;
-
   let keyDistinctBucket: FeedFingerprint['keyDistinctBucket'] = 'na';
   let sane = true;
   if (input.keyField) {
@@ -200,41 +198,13 @@ export function valueFingerprint(input: FingerprintInput): FeedFingerprint {
       if (keys.length >= 3 && distinct < 2) sane = false;
     }
   }
-
-  let enumProfile = '';
-  if (input.statusField) {
-    const vals = [...new Set(rows.map((r) => normLower(r[input.statusField!])).filter((v) => v !== ''))].sort();
-    enumProfile = vals.join(',');
-  }
-
-  return { feed: input.feed, rowCount, keyDistinctBucket, enumProfile, sane };
+  return { feed: input.feed, keyDistinctBucket, sane };
 }
 
-/** Stable serialization of a set of feed fingerprints → one string suitable for
- *  persisting in the signed envelope and comparing across passes. Order-stable
- *  (sorted by feed). rowCount is bucketed coarsely so ±small drift between
- *  passes doesn't change the string. */
-export function recipeFingerprintString(fps: FeedFingerprint[]): string {
-  return [...fps]
-    .sort((a, b) => (a.feed < b.feed ? -1 : a.feed > b.feed ? 1 : 0))
-    .map((f) => `${f.feed}:${rowCountBucket(f.rowCount)}:${f.keyDistinctBucket}:${f.enumProfile}`)
-    .join(';');
-}
-
-/** Coarse exponential-ish bucket so a one-or-two row drift keeps the same label. */
-function rowCountBucket(n: number): string {
-  if (n <= 0) return '0';
-  if (n <= 5) return '1-5';
-  if (n <= 20) return '6-20';
-  if (n <= 50) return '21-50';
-  if (n <= 100) return '51-100';
-  if (n <= 300) return '101-300';
-  return '300+';
-}
-
-/** Two recipe fingerprints are CONSISTENT iff their bucketed serializations are
+/** Two recipe fingerprints are CONSISTENT iff their (structural) strings are
  *  identical. Used to decide whether a fresh onboarding pass corroborated the
- *  prior one (→ increment the pass^N counter) or diverged (→ reset to 1). */
+ *  prior one (→ increment the pass^N counter) or diverged (→ reset to 1).
+ *  Missing on either side ⟹ not a match (no false consistency). */
 export function fingerprintsMatch(a: string | undefined, b: string | undefined): boolean {
   return !!a && !!b && a === b;
 }

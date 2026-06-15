@@ -44,6 +44,21 @@ describe('reconcileCrossFeed — wrong-row-set detection (the hero case)', () =>
     assert.match(arr.reason, /lower_bound_violated/);
   });
 
+  test('an empty feed vs a SMALL positive counter (1 or 2) → FAIL, not swallowed by tolerance', () => {
+    // Regression (review P1): with abs tolerance 2, rowCount 0 vs counter 1/2
+    // must NOT "match" — an empty feed can't witness any positive counter.
+    for (const counter of [1, 2]) {
+      const r = reconcileCrossFeed({
+        feeds: { getDepartures: { rowCount: 0 } },
+        dashboardCounters: { departures_remaining_today: counter },
+      });
+      assert.equal(r.signal, 'fail', `counter ${counter} with an empty feed must fail`);
+      const dep = r.checks.find((c) => c.counter === 'departures_remaining_today')!;
+      assert.equal(dep.verdict, 'mismatch');
+      assert.match(dep.reason, /empty_feed/);
+    }
+  });
+
   test('a too-SMALL room-status feed vs dashboard occupied count → FAIL (lower bound)', () => {
     // 5 rooms scraped but the dashboard reports 30 occupied — impossible: the
     // feed learned the wrong / a partial table.

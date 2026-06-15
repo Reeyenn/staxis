@@ -4410,7 +4410,7 @@ export async function attemptStructuredDiscovery(
     // runs (the top-of-function isOverBudget already passed); re-check before
     // each EXTRA draw so N-sampling can never blow the per-job cost cap.
     if (s > 0 && await deps.isOverBudget()) break;
-    if (input.signal?.aborted) break;
+    if (input.signal?.aborted) return abstain('aborted');
     let rawText: string;
     try {
       rawText = await deps.identify(prompt, s);
@@ -4425,8 +4425,11 @@ export async function attemptStructuredDiscovery(
   }
   if (identifyCalls === 0) return abstain('identify_call_failed', { reason: 'no_draws' });
 
+  // When N>1 was requested, require a MAJORITY of the draws to actually land
+  // (review): a budget-truncated 1-of-5 must not be silently trusted as if it
+  // were the full sample — abstain instead (keeps the safe DOM recipe).
   const consensus = chooseConsensusProposal(proposalSamples, {
-    minSamples: 1,
+    minSamples: sampleCount > 1 ? Math.ceil(sampleCount / 2) : 1,
     maxEntropy: identifyMaxEntropy(),
     minDominance: identifyMinDominance(),
   });

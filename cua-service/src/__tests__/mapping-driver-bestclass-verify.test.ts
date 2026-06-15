@@ -128,20 +128,29 @@ describe('gatherCrossFeedObservation', () => {
   });
 });
 
-describe('computeRecipeFingerprint — stable across snapshots', () => {
+describe('computeRecipeFingerprint — STRUCTURAL (stable across live-data drift)', () => {
   const bt = (rowCount: number): Record<string, BoardTargetState> => ({
     getArrivals: { status: 'found', preview: { rowCount, sample: [{ pms_reservation_id: 'A' }, { pms_reservation_id: 'B' }, { pms_reservation_id: 'C' }] } },
   });
-  test('same shape, ±1 row → identical fingerprint', () => {
+  test('same recipe, WILDLY different live row counts → identical fingerprint (pass^N can converge)', () => {
     const a = computeRecipeFingerprint(fullRecipe(), bt(30));
-    const b = computeRecipeFingerprint(fullRecipe(), bt(31));
-    assert.equal(a.fingerprint, b.fingerprint);
+    const b = computeRecipeFingerprint(fullRecipe(), bt(3)); // different bucket, occupancy churned
+    assert.equal(a.fingerprint, b.fingerprint, 'structural fingerprint must ignore live-data drift');
     assert.equal(a.sane, true);
   });
-  test('a different row-count BUCKET → different fingerprint', () => {
+  test('a DIFFERENT recipe shape (a column dropped) → different fingerprint (counter resets)', () => {
     const a = computeRecipeFingerprint(fullRecipe(), bt(30));
-    const b = computeRecipeFingerprint(fullRecipe(), bt(5));
+    const b = computeRecipeFingerprint(
+      fullRecipe({ getArrivals: tableAction({ pms_reservation_id: 'a', guest_name: 'b', arrival_date: 'c' }) }), // no departure_date
+      bt(30),
+    );
     assert.notEqual(a.fingerprint, b.fingerprint);
+  });
+  test('a degenerate (constant) key in the preview flags not-sane', () => {
+    const degenerate: Record<string, BoardTargetState> = {
+      getArrivals: { status: 'found', preview: { rowCount: 3, sample: [{ pms_reservation_id: 'X' }, { pms_reservation_id: 'X' }, { pms_reservation_id: 'X' }] } },
+    };
+    assert.equal(computeRecipeFingerprint(fullRecipe(), degenerate).sane, false);
   });
 });
 

@@ -174,6 +174,12 @@ export function chooseConsensusProposal(
     // Plurality meaning is "no mappable candidate" (or no samples at all).
     return { ok: false, reason: 'plurality_is_none', entropy, agreement, samples };
   }
+  // A genuine TIE (the runner-up cluster has the same count as the top) has no
+  // dominant meaning, regardless of how lax maxEntropy/minDominance are set —
+  // `top` would otherwise be the lexicographic tie-winner, which is arbitrary.
+  if (clusters.length >= 2 && clusters[1]!.count === top.count) {
+    return { ok: false, reason: 'tie_no_plurality', entropy, agreement, samples };
+  }
   if (entropy > maxEntropy) {
     return { ok: false, reason: `entropy_too_high:${entropy.toFixed(3)}>${maxEntropy}`, entropy, agreement, samples };
   }

@@ -160,7 +160,7 @@ describe('attemptStructuredDiscovery — N-sample identify (Task 2)', () => {
     assert.equal(result, null);
   });
 
-  test('N-sampling stops early when the budget is exhausted mid-loop (cost discipline)', async () => {
+  test('N-sampling stops early when the budget is exhausted mid-loop, and ABSTAINS (does not trust a truncated sample set)', async () => {
     process.env.CUA_DISCOVERY_IDENTIFY_SAMPLES = '5';
     let calls = 0;
     const { deps } = makeDeps({
@@ -169,8 +169,9 @@ describe('attemptStructuredDiscovery — N-sample identify (Task 2)', () => {
       isOverBudget: async () => calls >= 1,
     });
     const result = await attemptStructuredDiscovery(mkInput(), deps);
-    // One usable unanimous draw → still upgrades; never drew the full 5.
-    assert.ok(result);
+    // Opted into 5 samples but only 1 landed (< majority) → abstain to the safe
+    // DOM recipe, and crucially: never paid for the full 5.
+    assert.equal(result, null);
     assert.ok(calls < 5, `expected an early stop, drew ${calls}`);
   });
 });

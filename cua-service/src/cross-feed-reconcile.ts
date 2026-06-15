@@ -194,6 +194,19 @@ export function reconcileCrossFeed(input: CrossFeedInput): CrossFeedResult {
         checks.push({ ...base, counterValue, observed: feedObs.rowCount, reason: 'counter_zero_uninformative' });
         continue;
       }
+      // An EMPTY feed can never witness a POSITIVE counter — that is the exact
+      // wrong/empty-feed signal, and the drift tolerance must NOT swallow it
+      // (review P1: with abs tolerance 2, rowCount 0 would otherwise "match" a
+      // counter of 1 or 2). Treat 0-vs-positive as a hard mismatch.
+      if (feedObs.rowCount === 0) {
+        checks.push({
+          counter: check.counter, feed: check.feed,
+          verdict: 'mismatch', mode: 'lower_bound',
+          counterValue, observed: 0,
+          reason: `lower_bound_violated:empty_feed_vs_counter=${counterValue}`,
+        });
+        continue;
+      }
       const ok = feedObs.rowCount >= counterValue - tol;
       checks.push({
         counter: check.counter, feed: check.feed,

@@ -11,7 +11,6 @@ import {
   computeCommitScore,
   decideCommit,
   valueFingerprint,
-  recipeFingerprintString,
   fingerprintsMatch,
   DEFAULT_COMMIT_THRESHOLD,
   DEFAULT_REQUIRED_PASSES,
@@ -93,30 +92,12 @@ describe('decideCommit — pass^N (Task 5)', () => {
   });
 });
 
-describe('valueFingerprint + cross-pass consistency (the pass^N anchor)', () => {
-  const rooms = (statuses: string[]) =>
-    statuses.map((s, i) => ({ room_number: String(100 + i), status: s }));
-
-  test('two passes of the same recipe → matching fingerprint (counter increments)', () => {
-    const fpA = valueFingerprint({ feed: 'getRoomStatus', rows: rooms(['occupied', 'vacant_clean', 'occupied']), keyField: 'room_number', statusField: 'status', rowCount: 42 });
-    // Same shape, one extra guest checked in (43 vs 42 — within the same bucket).
-    const fpB = valueFingerprint({ feed: 'getRoomStatus', rows: rooms(['occupied', 'vacant_clean', 'occupied']), keyField: 'room_number', statusField: 'status', rowCount: 43 });
-    assert.ok(fingerprintsMatch(recipeFingerprintString([fpA]), recipeFingerprintString([fpB])));
-  });
-
-  test('a different recipe shape → fingerprint diverges (counter resets)', () => {
-    const fpA = valueFingerprint({ feed: 'getRoomStatus', rows: rooms(['occupied', 'vacant_clean']), keyField: 'room_number', statusField: 'status', rowCount: 42 });
-    // A wrong re-learn: 5 rooms only (different rowCount bucket) + different vocab.
-    const fpB = valueFingerprint({ feed: 'getRoomStatus', rows: rooms(['dirty', 'clean']), keyField: 'room_number', statusField: 'status', rowCount: 5 });
-    assert.equal(fingerprintsMatch(recipeFingerprintString([fpA]), recipeFingerprintString([fpB])), false);
-  });
-
+describe('valueFingerprint — degenerate-key SANITY signal only', () => {
   test('a constant key column across ≥3 rows is flagged not-sane (wrong-key smell)', () => {
     const fp = valueFingerprint({
       feed: 'getArrivals',
       rows: [{ pms_reservation_id: 'X' }, { pms_reservation_id: 'X' }, { pms_reservation_id: 'X' }],
       keyField: 'pms_reservation_id',
-      rowCount: 3,
     });
     assert.equal(fp.sane, false);
     assert.equal(fp.keyDistinctBucket, 'low');
@@ -127,13 +108,21 @@ describe('valueFingerprint + cross-pass consistency (the pass^N anchor)', () => 
       feed: 'getArrivals',
       rows: [{ pms_reservation_id: 'A' }, { pms_reservation_id: 'B' }, { pms_reservation_id: 'C' }],
       keyField: 'pms_reservation_id',
-      rowCount: 3,
     });
     assert.equal(fp.sane, true);
     assert.equal(fp.keyDistinctBucket, 'all');
   });
 
-  test('fingerprintsMatch is false when either side is missing (no false consistency)', () => {
+  test('fewer than 3 rows is not enough to flag (abstains from the sanity call)', () => {
+    const fp = valueFingerprint({ feed: 'getArrivals', rows: [{ pms_reservation_id: 'X' }, { pms_reservation_id: 'X' }], keyField: 'pms_reservation_id' });
+    assert.equal(fp.sane, true);
+  });
+});
+
+describe('fingerprintsMatch — cross-pass consistency primitive', () => {
+  test('identical structural strings match; missing either side does not (no false consistency)', () => {
+    assert.equal(fingerprintsMatch('getArrivals|table|a,b', 'getArrivals|table|a,b'), true);
+    assert.equal(fingerprintsMatch('getArrivals|table|a,b', 'getArrivals|api|a,b'), false);
     assert.equal(fingerprintsMatch(undefined, 'x'), false);
     assert.equal(fingerprintsMatch('x', undefined), false);
     assert.equal(fingerprintsMatch(undefined, undefined), false);

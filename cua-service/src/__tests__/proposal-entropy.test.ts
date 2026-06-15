@@ -101,15 +101,18 @@ describe('chooseConsensusProposal', () => {
     const r = chooseConsensusProposal([A(), B(), C()], { maxEntropy: 0.5, minDominance: 0.5 });
     assert.equal(r.ok, false);
     if (!r.ok) {
-      // entropy 1.0 > 0.5 is the first tripwire.
-      assert.match(r.reason, /entropy_too_high|no_dominant_cluster/);
+      // 3 distinct meanings each count 1 → a tie (no plurality); had they not
+      // tied, entropy 1.0 > 0.5 would also abstain. Either is a correct refusal.
+      assert.match(r.reason, /tie_no_plurality|entropy_too_high|no_dominant_cluster/);
     }
   });
 
-  test('ABSTAIN: a 50/50 split has no strict majority', () => {
-    const r = chooseConsensusProposal([A(), A(), B(), B()], { maxEntropy: 1, minDominance: 0.51 });
+  test('ABSTAIN: a 50/50 split is a tie with no plurality (even with lax thresholds)', () => {
+    // Deliberately lax maxEntropy + minDominance: the explicit tie guard must
+    // still abstain rather than pick the arbitrary lexicographic tie-winner.
+    const r = chooseConsensusProposal([A(), A(), B(), B()], { maxEntropy: 1, minDominance: 0.1 });
     assert.equal(r.ok, false);
-    if (!r.ok) assert.match(r.reason, /no_dominant_cluster/);
+    if (!r.ok) assert.equal(r.reason, 'tie_no_plurality');
   });
 
   test('ABSTAIN: plurality meaning is "none" (model mostly gave up)', () => {
