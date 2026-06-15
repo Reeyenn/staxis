@@ -7,7 +7,7 @@ import React from 'react';
 import {
   Search, X, Megaphone, ArrowRight, ArrowUpRight, AlertTriangle, Sparkles, Plus, Check, Clock, ChevronDown, Loader2,
 } from 'lucide-react';
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
+import { apiGet, apiPost, apiDelete } from '@/lib/comms/client';
 import type { ConversationDTO, StaffLite, SearchHitDTO, CommsDept } from '@/lib/comms/types';
 import type { WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 import type { L } from './comms-types-fe';
@@ -234,11 +234,12 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
     .map((t) => ({ t, n: items.filter((it) => it.sourceType === t).length }))
     .filter((x) => x.n > 0);
 
-  // Phase 1 wires inline completion for manual to-dos; every other source routes
-  // through its own module via the deep-link until the worklist complete-
-  // dispatcher lands. Manual to-dos can also be deleted from here.
-  const completeTask = async (it: WorklistItem) => {
-    await apiPatch('/api/comms/tasks', { pid, taskId: it.sourceId, status: 'done' });
+  // Complete-from-here: every completable source routes through the worklist
+  // dispatcher, which writes back to the item's real module. Inspections aren't
+  // completable inline (canComplete=false) — their row deep-links to the inspect
+  // flow instead. Manual to-dos can also be deleted from here.
+  const complete = async (it: WorklistItem) => {
+    await apiPost('/api/worklist/complete', { pid, sourceType: it.sourceType, sourceId: it.sourceId });
     reload();
   };
   const deleteTask = async (it: WorklistItem) => {
@@ -289,7 +290,7 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
             </div>
           )}
           {filtered.map((it) => (
-            <WorklistRow key={it.id} it={it} meta={meta[it.sourceType]} L={L} onComplete={() => completeTask(it)} onDelete={() => deleteTask(it)} />
+            <WorklistRow key={it.id} it={it} meta={meta[it.sourceType]} L={L} onComplete={() => complete(it)} onDelete={() => deleteTask(it)} />
           ))}
         </div>
       </div>
@@ -307,9 +308,10 @@ function WorklistRow({ it, meta, L, onComplete, onDelete }: { it: WorklistItem; 
 
   return (
     <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', border: `1px solid ${it.overdue ? tint(T.terracotta, .35) : T.hair}`, borderRadius: 12, background: T.bg }}>
-      {/* Complete control — manual to-dos complete inline; other sources are
-          actioned in their own module (deep-link), so they show a source dot. */}
-      {isTask ? (
+      {/* Complete control — completable items get a check that routes back to
+          their module; inspections (canComplete=false) show a source dot and are
+          actioned via the deep-link instead. */}
+      {it.canComplete ? (
         <button onClick={onComplete} aria-label={L('Mark done', 'Marcar hecho')} style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1.5px solid ${hover ? T.forest : T.hairer}`, background: T.bg }}>
           {hover && <Check size={14} strokeWidth={2.6} color={T.forest} />}
         </button>
