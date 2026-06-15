@@ -12,7 +12,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deriveCurrentStep, isValidPartialState, type OnboardingState } from '@/lib/onboarding/state';
+import { deriveCurrentStep, isValidPartialState, isOnboardingInProgress, type OnboardingState } from '@/lib/onboarding/state';
 
 describe('deriveCurrentStep — fresh wizard', () => {
   test('empty state → step 1 (welcome)', () => {
@@ -181,5 +181,60 @@ describe('isValidPartialState', () => {
     assert.equal(isValidPartialState(null), false);
     assert.equal(isValidPartialState([]), true);  // arrays are objects in JS — no harm
     assert.equal(isValidPartialState('not an object'), false);
+  });
+});
+
+describe('isOnboardingInProgress — login-funnel gate', () => {
+  // This decides whether a signed-in owner is sent into the wizard or onto
+  // the dashboard. Getting it wrong in the "false positive" direction would
+  // TRAP a real, live hotel in a wizard it can't finish — so the legacy /
+  // complete cases below are the load-bearing ones.
+
+  test('mid-onboarding owner (account created, not completed) → true', () => {
+    assert.equal(
+      isOnboardingInProgress(null, { step: 3, accountCreatedAt: '2026-06-15T19:28:43Z' }),
+      true,
+    );
+  });
+
+  test('mid-onboarding at a later step (e.g. PMS) → still true', () => {
+    assert.equal(
+      isOnboardingInProgress(null, {
+        step: 6,
+        accountCreatedAt: '2026-06-15T19:28:43Z',
+        emailVerifiedAt: '2026-06-15T19:29:00Z',
+        hotelDetailsAt: '2026-06-15T19:30:00Z',
+        servicesAt: '2026-06-15T19:31:00Z',
+      }),
+      true,
+    );
+  });
+
+  test('COMPLETED onboarding → false (normal login to dashboard)', () => {
+    assert.equal(
+      isOnboardingInProgress('2026-06-15T20:00:00Z', {
+        step: 9,
+        accountCreatedAt: '2026-06-15T19:28:43Z',
+      }),
+      false,
+    );
+  });
+
+  test('legacy / imported hotel — both null → false (NEVER trap a live hotel)', () => {
+    assert.equal(isOnboardingInProgress(null, null), false);
+    assert.equal(isOnboardingInProgress(null, undefined), false);
+    assert.equal(isOnboardingInProgress(undefined, undefined), false);
+  });
+
+  test('legacy hotel with a stale {step:1} state but no accountCreatedAt → false', () => {
+    // e.g. Test Hotel after an onboarding reset — must log in normally.
+    assert.equal(isOnboardingInProgress(null, { step: 1 }), false);
+  });
+
+  test('completed wins even if accountCreatedAt is also present', () => {
+    assert.equal(
+      isOnboardingInProgress('2026-06-15T20:00:00Z', { step: 9, accountCreatedAt: 'x' }),
+      false,
+    );
   });
 });

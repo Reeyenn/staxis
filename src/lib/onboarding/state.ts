@@ -81,6 +81,43 @@ export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
 }
 
 /**
+ * Is this property an owner who STARTED the signup wizard but hasn't
+ * finished it? Used by the login funnel (property-selector + dashboard)
+ * to keep a mid-onboarding owner inside the wizard instead of dropping
+ * them on an empty dashboard with no PMS connected.
+ *
+ * The signal is deliberately narrow:
+ *   - `completedAt` set  → fully onboarded, never gated (normal login).
+ *   - `accountCreatedAt` set + not completed → the wizard minted an owner
+ *     account (Step 2) but the 9 steps aren't done → resume the wizard.
+ *
+ * Legacy / admin-imported hotels (e.g. Test Hotel) have BOTH null —
+ * `accountCreatedAt` was never written — so they are treated as fully
+ * live and log in normally. This is the load-bearing guard that stops
+ * the gate from trapping existing hotels in a wizard they can't finish.
+ */
+export function isOnboardingInProgress(
+  completedAt: string | null | undefined,
+  state: OnboardingState | null | undefined,
+): boolean {
+  if (completedAt) return false;
+  return !!state?.accountCreatedAt;
+}
+
+/**
+ * sessionStorage flag, set by the login-funnel gate (property-selector /
+ * dashboard) right before it sends a mid-onboarding owner to
+ * /api/onboard/resume. It is a ONE-SHOT loop-breaker: if the resume route
+ * can't complete (e.g. the device-trust/2FA session lapsed, or no join code
+ * could be produced) it falls back to /property-selector — which would
+ * otherwise re-fire the gate for a single-property owner and loop forever.
+ * With the flag already set, the gate degrades gracefully to the dashboard
+ * instead of re-attempting. The wizard clears it on successful load (so a
+ * later resume works), and sign-out clears it too.
+ */
+export const RESUME_GUARD_KEY = 'staxis-onboard-resume-tried';
+
+/**
  * Validate that an arbitrary input matches the OnboardingState shape.
  * Used by the PATCH endpoint to reject malformed client submissions.
  *

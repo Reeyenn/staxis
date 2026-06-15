@@ -26,6 +26,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
 import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
@@ -309,9 +310,26 @@ export default function DashboardPage() {
   const ES = lang === 'es';
 
   useEffect(() => {
-    if (!authLoading && !propLoading && !user) router.replace('/signin');
-    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
-  }, [user, authLoading, propLoading, activePropertyId, router]);
+    if (authLoading || propLoading) return;
+    if (!user) { router.replace('/signin'); return; }
+    if (!activePropertyId) { router.replace('/onboarding'); return; }
+    // Backstop for the login-funnel gate: if anything lands a mid-onboarding
+    // owner on the dashboard (their hotel has no PMS and an empty board),
+    // send them back into the wizard to finish. Legacy/complete hotels have
+    // no accountCreatedAt → never gated, so normal login is untouched. Admins
+    // are never gated (they manage hotels, not own the signup). One-shot via
+    // RESUME_GUARD_KEY so a failed resume degrades here instead of looping.
+    if (
+      user.role !== 'admin' &&
+      activeProperty &&
+      isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState) &&
+      typeof window !== 'undefined' &&
+      !sessionStorage.getItem(RESUME_GUARD_KEY)
+    ) {
+      sessionStorage.setItem(RESUME_GUARD_KEY, '1');
+      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`;
+    }
+  }, [user, authLoading, propLoading, activePropertyId, activeProperty, router]);
 
   // ── live data ──────────────────────────────────────────────────────
   const [rooms, setRooms] = useState<Room[]>([]);

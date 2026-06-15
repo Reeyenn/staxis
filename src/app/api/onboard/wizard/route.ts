@@ -145,6 +145,11 @@ export async function GET(req: NextRequest) {
   //   - Authenticated caller who owns the property → full payload
   //     (state + hotelDefaults), same as before.
   let sessionUserId: string | null = null;
+  // Distinct from isOwnerSession (which is also true for ANY admin viewing the
+  // hotel): callerOwnsProperty is true only for the actual property owner. The
+  // durable emailVerified backfill below keys on THIS so an admin merely
+  // looking at a mid-onboarding hotel never mutates the owner's onboarding.
+  let callerOwnsProperty = false;
   const session = await requireSession(req);
   if (session.ok) {
     const { data: account } = await supabaseAdmin
@@ -154,7 +159,8 @@ export async function GET(req: NextRequest) {
       .maybeSingle();
     const access = (account?.property_access ?? []) as string[];
     const isAdmin = account?.role === 'admin';
-    if (isAdmin || access.includes(resolved.propertyId)) {
+    callerOwnsProperty = access.includes(resolved.propertyId);
+    if (isAdmin || callerOwnsProperty) {
       sessionUserId = session.userId;
     }
   }
@@ -175,7 +181,32 @@ export async function GET(req: NextRequest) {
     }, { requestId });
   }
 
-  const state = (prop.onboarding_state as OnboardingState) ?? { step: 1 };
+  let state = (prop.onboarding_state as OnboardingState) ?? { step: 1 };
+
+  // Durable email-verified backfill (2026-06-15). An authenticated owner has,
+  // by definition, already passed the email-OTP step — their session was
+  // minted by verifyOtp, the second factor. But the client-side PATCH that
+  // writes `emailVerifiedAt` at Step 3 can be lost if the browser navigates
+  // away the instant the verified session lands (the "verify dumps me on the
+  // dashboard" bug). Without this, resuming the wizard would bounce the owner
+  // back to Step 3 forever — a redirect loop with the login-funnel gate. So
+  // when an owner session loads the wizard with an account created but
+  // email-verified missing, write it now and advance. Idempotent; only ever
+  // moves the step FORWARD, never sets onboarding_completed_at.
+  if (callerOwnsProperty && state.accountCreatedAt && !state.emailVerifiedAt) {
+    const backfilled: OnboardingState = { ...state, emailVerifiedAt: new Date().toISOString() };
+    backfilled.step = deriveCurrentStep(backfilled);
+    const { error: bfErr } = await supabaseAdmin
+      .from('properties')
+      .update({ onboarding_state: backfilled })
+      .eq('id', resolved.propertyId);
+    if (bfErr) {
+      log.error('[onboard/wizard:GET] emailVerified backfill failed', { requestId, msg: errToString(bfErr) });
+    } else {
+      state = backfilled;
+    }
+  }
+
   const currentStep = deriveCurrentStep(state);
 
   if (!isOwnerSession) {

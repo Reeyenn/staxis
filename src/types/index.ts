@@ -1,5 +1,7 @@
 // ─── Property & Settings ───────────────────────────────────────────────────
 
+import type { OnboardingState } from '@/lib/onboarding/state';
+
 export interface Property {
   id: string;
   name: string;
@@ -48,6 +50,16 @@ export interface Property {
    * should treat that as "fall back to whatever the rooms table contains."
    */
   roomInventory?: string[];
+  /**
+   * Onboarding tracking (M1.5 wizard). `onboardingCompletedAt` is set only
+   * when the 9-step wizard finishes; `onboardingState` carries the in-progress
+   * step markers. The login funnel (property-selector + dashboard) reads these
+   * via `isOnboardingInProgress` to keep a mid-onboarding owner inside the
+   * wizard instead of dropping them on an empty dashboard. Legacy / imported
+   * hotels have BOTH null → treated as fully live (never gated).
+   */
+  onboardingCompletedAt?: string | null;
+  onboardingState?: OnboardingState | null;
   createdAt: Date;
 }
 

@@ -35,7 +35,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles, ChevronLeft } from 'lucide-react';
-import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
+import { PLACEHOLDER_HOTEL_NAME, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { useLang } from '@/contexts/LanguageContext';
 import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
 
@@ -125,6 +125,10 @@ function OnboardWizard() {
         return;
       }
       const data = json.data as WizardStateResponse;
+      // We made it into the wizard — clear the login-funnel's one-shot resume
+      // guard so (a) a future resume can fire again and (b) navigating to the
+      // dashboard mid-wizard correctly re-gates back here instead of escaping.
+      if (typeof window !== 'undefined') sessionStorage.removeItem(RESUME_GUARD_KEY);
       if (data.completed) {
         // Already done — bounce them to dashboard.
         router.push('/dashboard');
@@ -1267,7 +1271,6 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
 // ─── Step 9: All set ────────────────────────────────────────────────────
 
 function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
-  const router = useRouter();
   const [going, setGoing] = useState(false);
   const finalize = async () => {
     setGoing(true);
@@ -1277,7 +1280,12 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ code, finalize: true }),
       });
-      router.push('/dashboard');
+      // Full navigation (not router.push) so PropertyContext re-fetches the
+      // property FRESH — now with onboarding_completed_at set. A client-side
+      // push would leave the cached (pre-completion) property in context, and
+      // the dashboard's onboarding gate would bounce the owner back through
+      // the wizard once before settling. A reload lands them cleanly.
+      window.location.href = '/dashboard';
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress
       setGoing(false);
