@@ -31,6 +31,7 @@ export interface AppUser {
   role: AppRole;
   propertyAccess: string[];  // ["*"] = all properties (admin-only convention), or specific property UUIDs
   staffId: string | null;    // accounts.staff_id — link to the staff roster row this login represents (null = manager-only login or unlinked)
+  isDemo: boolean;           // accounts.skip_2fa — shared demo/investor login; unlocks the Manager⇄Staff view-preview switch on /staff
 }
 
 interface AuthContextType {
@@ -66,7 +67,7 @@ const AuthContext = createContext<AuthContextType>({
 async function loadAppUser(authUid: string): Promise<AppUser | null> {
   const fetchRow = () => supabase
     .from('accounts')
-    .select('id, username, display_name, role, property_access, data_user_id, staff_id')
+    .select('id, username, display_name, role, property_access, data_user_id, staff_id, skip_2fa')
     .eq('data_user_id', authUid)
     .maybeSingle();
 
@@ -103,6 +104,7 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
     role,
     propertyAccess,
     staffId: (data as { staff_id?: string | null }).staff_id ?? null,
+    isDemo: Boolean((data as { skip_2fa?: boolean | null }).skip_2fa),
   };
 }
 
