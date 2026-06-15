@@ -25,6 +25,7 @@ import { commsContext } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { sendSms } from '@/lib/sms';
 import { COMPLAINT_DEPTS } from '@/lib/complaints-shared';
+import { worklistSeesAllSources } from '@/lib/worklist/core';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
 
 export const runtime = 'nodejs';
@@ -52,6 +53,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   const sourceType = typeV.value!;
   const sourceId = idV.value!;
+
+  // Floor staff may only assign their own manual to-dos. Reassigning a complaint
+  // or changing a work order's priority lane is management + front-desk only.
+  // Checked before any row read, so it never leaks whether an id exists.
+  if (sourceType !== 'task' && !worklistSeesAllSources(ctx.role)) {
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  }
 
   const rl = await checkAndIncrementRateLimit('worklist-assign', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

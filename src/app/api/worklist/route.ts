@@ -14,7 +14,7 @@ import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { gatherWorklist } from '@/lib/worklist/core';
+import { gatherWorklist, worklistSeesAllSources } from '@/lib/worklist/core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -30,7 +30,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {
-    const items = await gatherWorklist(ctx.pid);
+    // Floor staff (housekeeping/maintenance/staff) see only their manual to-dos;
+    // complaints/work-orders/inspections/pm stay management + front-desk only.
+    const items = await gatherWorklist(ctx.pid, { tasksOnly: !worklistSeesAllSources(ctx.role) });
     return ok({ items }, { requestId: ctx.requestId, headers: ctx.headers });
   } catch (e) {
     log.error('[worklist] GET failed', { requestId: ctx.requestId, pid: ctx.pid, err: errToString(e) });

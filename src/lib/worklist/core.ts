@@ -38,10 +38,22 @@ const PM_SOON_MS = 2 * 86_400_000;
 
 const QUERY_ROW_CAP = 500;
 
+/**
+ * Roles that see the FULL cross-department worklist (complaints, work orders,
+ * inspections, preventive). Everyone else (housekeeping / maintenance / staff)
+ * sees only their manual to-dos — complaints in particular are management-gated
+ * everywhere else and must not leak into a floor-staff To-do view.
+ */
+export function worklistSeesAllSources(role: string): boolean {
+  return role === 'admin' || role === 'owner' || role === 'general_manager' || role === 'front_desk';
+}
+
 /** Gather every open actionable item for one property, normalized + sorted. */
-export async function gatherWorklist(pid: string): Promise<WorklistItem[]> {
+export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } = {}): Promise<WorklistItem[]> {
   const now = Date.now();
   const today = todayStr();
+  const tasksOnly = !!opts.tasksOnly;
+  const emptyRes = () => Promise.resolve({ data: [] as Record<string, unknown>[], error: null as { message: string } | null });
 
   const [taskRes, complaintRes, workorderRes, pmRes, inspectionQueue] = await Promise.all([
     supabaseAdmin
@@ -50,25 +62,25 @@ export async function gatherWorklist(pid: string): Promise<WorklistItem[]> {
       .eq('property_id', pid)
       .eq('status', 'open')
       .limit(QUERY_ROW_CAP),
-    supabaseAdmin
+    tasksOnly ? emptyRes() : supabaseAdmin
       .from('complaints')
       .select('id, room_number, category, severity, description, status, assigned_to, assigned_name, assigned_dept, created_at')
       .eq('property_id', pid)
       .in('status', ['open', 'in_progress'])
       .limit(QUERY_ROW_CAP),
-    supabaseAdmin
+    tasksOnly ? emptyRes() : supabaseAdmin
       .from('work_orders')
       .select('id, room_number, description, severity, status, created_at')
       .eq('property_id', pid)
       .neq('status', 'resolved')
       .limit(QUERY_ROW_CAP),
-    supabaseAdmin
+    tasksOnly ? emptyRes() : supabaseAdmin
       .from('preventive_tasks')
       .select('id, name, area, frequency_days, last_completed_at, created_at')
       .eq('property_id', pid)
       .limit(QUERY_ROW_CAP),
     // Inspection queue is derived (rooms clean-but-uninspected / failed-re-cleaned).
-    buildInspectionQueue(pid, today).catch((e) => {
+    tasksOnly ? Promise.resolve([] as Awaited<ReturnType<typeof buildInspectionQueue>>) : buildInspectionQueue(pid, today).catch((e) => {
       log.error('[worklist] inspection queue failed', { pid, err: e instanceof Error ? e.message : String(e) });
       return [];
     }),
