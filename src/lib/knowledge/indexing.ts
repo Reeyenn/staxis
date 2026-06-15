@@ -97,6 +97,9 @@ async function embedAndStoreChunks(opts: {
   propertyId: string;
   accountId: string;
   visibility: KnowledgeVisibility;
+  /** Denormalized department for visibility='dept' documents; null otherwise
+   *  (and always null for articles). Mirrored to knowledge_chunks.visible_dept. */
+  visibleDept: string | null;
   sourceType: 'document' | 'article';
   documentId: string | null;
   articleId: string | null;
@@ -149,6 +152,7 @@ async function embedAndStoreChunks(opts: {
     content: c.content,
     section: c.section,
     visibility: opts.visibility,
+    visible_dept: opts.visibleDept,
     embedding: vectors[i] ? toVectorLiteral(vectors[i] as number[]) : null,
     char_count: c.charCount,
   }));
@@ -207,6 +211,8 @@ export interface IndexDocumentInput {
   mime: string;
   accountId: string;
   visibility: KnowledgeVisibility;
+  /** Department for visibility='dept' docs; null otherwise. Stamped on chunks. */
+  visibleDept: string | null;
   embedder?: Embedder;
 }
 
@@ -216,7 +222,7 @@ export interface IndexDocumentInput {
  * extraction_status so the UI/agent always sees a definite state.
  */
 export async function indexDocument(input: IndexDocumentInput): Promise<ExtractionStatus> {
-  const { propertyId, docId, filePath, mime, accountId, visibility } = input;
+  const { propertyId, docId, filePath, mime, accountId, visibility, visibleDept } = input;
   try {
     await setDocStatus(propertyId, docId, 'processing');
     // Clear any prior chunks (idempotent re-index).
@@ -245,7 +251,7 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
     // Store the (capped) text for keyword fallback + fetch_document_section.
     const chunks = chunkText(outcome.text);
     const emb = await embedAndStoreChunks({
-      propertyId, accountId, visibility,
+      propertyId, accountId, visibility, visibleDept,
       sourceType: 'document', documentId: docId, articleId: null,
       chunks, embedder: input.embedder,
     });
@@ -292,6 +298,7 @@ export async function indexArticle(input: IndexArticleInput): Promise<void> {
     if (chunks.length === 0) return;
     await embedAndStoreChunks({
       propertyId: input.propertyId, accountId: input.accountId, visibility: input.visibility,
+      visibleDept: null, // SOPs never use the 'dept' tier.
       sourceType: 'article', documentId: null, articleId: input.articleId,
       chunks, embedder: input.embedder,
     });

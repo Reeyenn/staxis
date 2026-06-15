@@ -16,15 +16,42 @@ import { log } from '@/lib/log';
 import type { AppRole } from '@/lib/roles';
 import { KNOWLEDGE_LIMITS } from './types';
 import type {
-  KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeContactDTO,
-  KnowledgeEventDTO, ContactCategory, KnowledgeVisibility, ExtractionStatus,
+  KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO, KnowledgeContactDTO,
+  KnowledgeEventDTO, ContactCategory, KnowledgeVisibility, ExtractionStatus, Dept,
 } from './types';
+import { normalizeDept } from '@/lib/capabilities/dept-scope';
 import { getDefaultEmbedder, toVectorLiteral, type Embedder } from './embeddings';
 import { meterEmbeddingCost } from './indexing';
 import {
   canRoleSeeManagerOnly, sanitizeSearchTerm, makeSnippet, blendChunkHits,
+  docVisibilityScope, canReadDocVisibility, type DocVisibilityScope,
   type ChunkHit, type BlendedPassage,
 } from './search-helpers';
+
+/** A caller resolved for a READ — role + their own department (from commsContext
+ *  or the agent ToolContext). Drives the per-department document gate. */
+export interface KnowledgeReader {
+  role: AppRole;
+  dept: string | null;
+}
+
+/**
+ * Translate a document visibility scope into PostgREST filter instructions.
+ * `scope.dept` is one of the three closed dept enums (never user input), so the
+ * value interpolated into the `.or()` string can't widen or break the filter.
+ */
+function docScopeFilter(scope: DocVisibilityScope): { orFilter?: string; eqAllStaff?: boolean } {
+  if (scope.kind === 'all') return {};
+  if (scope.kind === 'allStaffOnly') return { eqAllStaff: true };
+  return { orFilter: `visibility.eq.all_staff,and(visibility.eq.dept,visible_dept.eq.${scope.dept})` };
+}
+
+/** Normalize an access pair to the DB invariant: a non-'dept' tier carries no
+ *  department; a 'dept' tier requires a real department (else null → caller error). */
+function normalizeAccess(visibility: KnowledgeVisibility, visibleDept: string | null | undefined): { visibility: KnowledgeVisibility; visibleDept: Dept | null } {
+  if (visibility !== 'dept') return { visibility, visibleDept: null };
+  return { visibility, visibleDept: normalizeDept(visibleDept) };
+}
 
 const BUCKET = 'knowledge-docs';
 const SIGNED_URL_TTL = 60 * 60; // 1h download URLs
@@ -207,21 +234,35 @@ export async function deleteArticle(pid: string, id: string): Promise<boolean> {
 
 // ── Documents ──────────────────────────────────────────────────────────────────
 
-const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extraction_status, visibility, uploaded_by_name, created_at';
+const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extraction_status, visibility, visible_dept, folder_id, uploaded_by_name, created_at';
 
 /**
- * List documents visible to `role`, each with a short-lived signed download
- * URL. Manager-only documents are filtered out at the QUERY level for floor
- * staff — they never receive the row, so the signed URL is never minted for a
- * doc they can't see (enforces the "signed-URL endpoint" permission). The
- * badge state comes from extraction_status.
+ * List documents visible to `reader`, each with a short-lived signed download
+ * URL. Visibility is enforced at the QUERY level via the shared dept checker
+ * (docVisibilityScope): managers see all; other staff see all_staff + their own
+ * department; managers-only and other-department docs are never returned — so
+ * the signed URL is never minted for a doc the caller can't see. The badge state
+ * comes from extraction_status.
+ *
+ * `opts.folderId`: undefined → all folders; null → unfiled only; a uuid → that folder.
  */
-export async function listDocuments(pid: string, role: AppRole): Promise<KnowledgeDocumentDTO[]> {
+export async function listDocuments(
+  pid: string,
+  reader: KnowledgeReader,
+  opts: { folderId?: string | null } = {},
+): Promise<KnowledgeDocumentDTO[]> {
   let q = supabaseAdmin
     .from('knowledge_documents')
     .select(DOC_COLS)
     .eq('property_id', pid);
-  if (!canRoleSeeManagerOnly(role)) q = q.eq('visibility', 'all_staff');
+
+  const f = docScopeFilter(docVisibilityScope(reader.role, reader.dept));
+  if (f.eqAllStaff) q = q.eq('visibility', 'all_staff');
+  else if (f.orFilter) q = q.or(f.orFilter);
+
+  if (opts.folderId === null) q = q.is('folder_id', null);
+  else if (typeof opts.folderId === 'string') q = q.eq('folder_id', opts.folderId);
+
   const { data, error } = await q.order('created_at', { ascending: false }).limit(500);
   if (error) log.warn('knowledge.listDocuments failed', { err: error.message });
   const rows = (data ?? []) as Record<string, unknown>[];
@@ -243,11 +284,104 @@ export async function listDocuments(pid: string, role: AppRole): Promise<Knowled
       hasText: status === 'ready' || status === 'partial',
       extractionStatus: status,
       visibility: ((r.visibility as KnowledgeVisibility | null) ?? 'all_staff'),
+      visibleDept: ((r.visible_dept as Dept | null) ?? null),
+      folderId: ((r.folder_id as string | null) ?? null),
       uploadedByName: (r.uploaded_by_name as string | null) ?? null,
       createdAt: r.created_at as string,
       downloadUrl,
     };
   }));
+}
+
+// ── Folders ──────────────────────────────────────────────────────────────────
+
+const FOLDER_COLS = 'id, name, parent_id, created_by_name, created_at';
+
+function toFolderDTO(r: Record<string, unknown>): KnowledgeFolderDTO {
+  return {
+    id: r.id as string,
+    name: (r.name as string) ?? '',
+    parentId: (r.parent_id as string | null) ?? null,
+    createdByName: (r.created_by_name as string | null) ?? null,
+    createdAt: r.created_at as string,
+  };
+}
+
+/** All folders for a property (folders carry no per-row visibility — the
+ *  documents inside them do). */
+export async function listFolders(pid: string): Promise<KnowledgeFolderDTO[]> {
+  const { data, error } = await supabaseAdmin
+    .from('knowledge_folders')
+    .select(FOLDER_COLS)
+    .eq('property_id', pid)
+    .order('name', { ascending: true })
+    .limit(500);
+  if (error) log.warn('knowledge.listFolders failed', { err: error.message });
+  return ((data ?? []) as Record<string, unknown>[]).map(toFolderDTO);
+}
+
+/** Confirm a folder id belongs to this property (defense against cross-tenant
+ *  folder ids on register/move/create-nested). */
+async function folderBelongsToProperty(pid: string, folderId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('knowledge_folders')
+    .select('id')
+    .eq('id', folderId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  return !!data;
+}
+
+export async function createFolder(
+  pid: string,
+  input: { name: string; parentId: string | null },
+  actor: KnowledgeActor,
+): Promise<{ id: string } | { error: string }> {
+  const name = clean(input.name).trim();
+  if (!name) return { error: 'Folder name is required.' };
+  if (input.parentId && !(await folderBelongsToProperty(pid, input.parentId))) {
+    return { error: 'Parent folder not found.' };
+  }
+  const { data, error } = await supabaseAdmin
+    .from('knowledge_folders')
+    .insert({
+      property_id: pid,
+      parent_id: input.parentId,
+      name: name.slice(0, KNOWLEDGE_LIMITS.FOLDER_NAME_MAX),
+      created_by: actor.accountId,
+      created_by_name: actor.name,
+    })
+    .select('id')
+    .single();
+  if (error || !data) { log.error('knowledge.createFolder failed', { err: error?.message }); return { error: 'Could not create the folder.' }; }
+  return { id: data.id as string };
+}
+
+export async function renameFolder(pid: string, id: string, name: string): Promise<boolean> {
+  const clean_ = clean(name).trim();
+  if (!clean_) return false;
+  const { data } = await supabaseAdmin
+    .from('knowledge_folders')
+    .update({ name: clean_.slice(0, KNOWLEDGE_LIMITS.FOLDER_NAME_MAX) })
+    .eq('id', id)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  return !!data;
+}
+
+/** Delete a folder. Its documents are un-filed automatically (knowledge_documents
+ *  .folder_id is ON DELETE SET NULL) — the files + embeddings are NEVER deleted.
+ *  Descendant folder rows cascade away; their documents un-file too. */
+export async function deleteFolder(pid: string, id: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('knowledge_folders')
+    .delete()
+    .eq('id', id)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  return !!data;
 }
 
 /**
@@ -283,7 +417,7 @@ export async function presignDocument(
  */
 export async function registerDocument(
   pid: string,
-  input: { title: string; path: string; mimeType: string; sizeBytes: number | null; visibility: KnowledgeVisibility },
+  input: { title: string; path: string; mimeType: string; sizeBytes: number | null; visibility: KnowledgeVisibility; visibleDept: string | null; folderId: string | null },
   actor: KnowledgeActor,
 ): Promise<{ id: string } | { error: string }> {
   // Enforce the EXACT shape presignDocument mints: <pid>/knowledge/<uuid>.<ext>.
@@ -299,6 +433,15 @@ export async function registerDocument(
   if (!Object.values(EXT_TO_MIME).includes(input.mimeType)) {
     return { error: 'unsupported document type' };
   }
+  // Normalize the access pair to the DB invariant; a 'dept' tier needs a real dept.
+  const access = normalizeAccess(input.visibility, input.visibleDept);
+  if (input.visibility === 'dept' && !access.visibleDept) {
+    return { error: 'Pick a department for a department-only document.' };
+  }
+  // A folder id (if any) must belong to this property.
+  if (input.folderId && !(await folderBelongsToProperty(pid, input.folderId))) {
+    return { error: 'Folder not found.' };
+  }
 
   // Insert the row as `pending` FIRST (no extraction inline). The upload route
   // schedules indexDocument() via after() so a slow PDF/embedding never blocks
@@ -313,7 +456,9 @@ export async function registerDocument(
       size_bytes: input.sizeBytes,
       extracted_text: null,
       extraction_status: 'pending',
-      visibility: input.visibility,
+      visibility: access.visibility,
+      visible_dept: access.visibleDept,
+      folder_id: input.folderId,
       uploaded_by: actor.accountId,
       uploaded_by_name: actor.name,
     })
@@ -348,6 +493,56 @@ export async function deleteDocument(pid: string, id: string): Promise<boolean> 
   if (!del) return false;
   try { await supabaseAdmin.storage.from(BUCKET).remove([row.file_path as string]); } catch { /* orphaned object is harmless */ }
   return true;
+}
+
+/**
+ * Change who can see a document (access tier + department). Documents are
+ * immutable in content, so this NEVER re-embeds — it only updates the row, then
+ * SYNCHRONOUSLY re-flips the denormalized scope on its existing chunks before
+ * returning. Without that synchronous flip a doc just tightened to managers-only
+ * / a department would still be searchable through its stale all_staff chunks
+ * (the exact leak updateArticle() guards against — see HIGH-1/HIGH-2 there).
+ */
+export async function updateDocumentAccess(
+  pid: string,
+  id: string,
+  input: { visibility: KnowledgeVisibility; visibleDept: string | null },
+): Promise<{ ok: boolean } | { error: string }> {
+  const access = normalizeAccess(input.visibility, input.visibleDept);
+  if (input.visibility === 'dept' && !access.visibleDept) {
+    return { error: 'Pick a department for a department-only document.' };
+  }
+  const { data } = await supabaseAdmin
+    .from('knowledge_documents')
+    .update({ visibility: access.visibility, visible_dept: access.visibleDept })
+    .eq('id', id)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  if (!data) return { ok: false };
+  // SECURITY: synchronously mirror the new scope onto this doc's chunks before
+  // returning, so AI search can never surface the doc via stale-scoped chunks.
+  const { error: visErr } = await supabaseAdmin
+    .from('knowledge_chunks')
+    .update({ visibility: access.visibility, visible_dept: access.visibleDept })
+    .eq('document_id', id)
+    .eq('property_id', pid);
+  if (visErr) log.warn('knowledge.updateDocumentAccess chunk-scope sync failed', { err: visErr.message });
+  return { ok: true };
+}
+
+/** Move a document into a folder (or out to unfiled with folderId=null). Pure
+ *  metadata — no chunk/embedding change (folders don't affect visibility). */
+export async function moveDocument(pid: string, id: string, folderId: string | null): Promise<{ ok: boolean } | { error: string }> {
+  if (folderId && !(await folderBelongsToProperty(pid, folderId))) return { error: 'Folder not found.' };
+  const { data } = await supabaseAdmin
+    .from('knowledge_documents')
+    .update({ folder_id: folderId })
+    .eq('id', id)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  return { ok: !!data };
 }
 
 // ── Contacts ───────────────────────────────────────────────────────────────────
@@ -510,6 +705,9 @@ export interface SearchKnowledgeOpts {
   /** Asker's accounts.id — for metering the query-embedding cost to the
    *  property ledger. Omit to skip metering (e.g. internal callers). */
   accountId?: string;
+  /** Asker's own department (staff.department) — gates 'dept'-scoped documents
+   *  via the shared checker. Omit/null → all_staff only for non-managers. */
+  dept?: string | null;
   /** Inject a fake embedder in tests. */
   embedder?: Embedder;
 }
@@ -525,6 +723,9 @@ export async function searchKnowledge(
 ): Promise<KnowledgeSearchResult> {
   const term = sanitizeSearchTerm(rawQuery);
   const includeManagerOnly = canRoleSeeManagerOnly(role);
+  // Document dept gate (managers → no filter; other staff → all_staff + own dept).
+  const docFilter = docScopeFilter(docVisibilityScope(role, opts.dept ?? null));
+  const deptNorm = includeManagerOnly ? null : normalizeDept(opts.dept ?? null);
   if (term.length < 2) {
     return {
       query: term, passages: [], articles: [], documents: [], contacts: [], events: [],
@@ -549,6 +750,7 @@ export async function searchKnowledge(
         p_property_id: pid,
         p_query_embedding: toVectorLiteral(qvec),
         p_include_manager_only: includeManagerOnly,
+        p_dept: deptNorm,
         p_match_count: VECTOR_MATCH_COUNT,
       });
       if (error) {
@@ -580,10 +782,18 @@ export async function searchKnowledge(
     .ilike('content', pattern);
   let artTitleQ = supabaseAdmin.from(A).select('id, title, category, body, visibility').eq('property_id', pid).ilike('title', pattern);
   let docTitleQ = supabaseAdmin.from(D).select('id, title, visibility, extraction_status').eq('property_id', pid).ilike('title', pattern);
-  if (!includeManagerOnly) {
+  // SOPs (articles) stay binary — no 'dept' tier. Documents + their chunks use
+  // the 3-tier dept gate. The chunk arm spans both sources: article chunks are
+  // all_staff/managers (visible_dept null), so the dept filter keeps their
+  // all_staff rows and drops managers-only rows for non-managers, exactly as
+  // before; only documents add the extra dept branch.
+  if (!includeManagerOnly) artTitleQ = artTitleQ.eq('visibility', 'all_staff');
+  if (docFilter.eqAllStaff) {
     chunkKw = chunkKw.eq('visibility', 'all_staff');
-    artTitleQ = artTitleQ.eq('visibility', 'all_staff');
     docTitleQ = docTitleQ.eq('visibility', 'all_staff');
+  } else if (docFilter.orFilter) {
+    chunkKw = chunkKw.or(docFilter.orFilter);
+    docTitleQ = docTitleQ.or(docFilter.orFilter);
   }
 
   const [chunkKwRes, artTitle, docTitle, conName, conCompany, evtTitle, evtNotes] = await Promise.all([
@@ -707,22 +917,22 @@ const SECTION_WINDOW_MAX = 4000;
  */
 export async function getDocumentSection(
   pid: string,
-  role: AppRole,
+  reader: KnowledgeReader,
   input: { sourceType: 'document' | 'article'; sourceId: string; offset?: number },
 ): Promise<DocumentSectionResult | { error: string }> {
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
-  const includeManagerOnly = canRoleSeeManagerOnly(role);
 
   if (input.sourceType === 'document') {
     const { data, error } = await supabaseAdmin
       .from('knowledge_documents')
-      .select('id, title, visibility, extracted_text, extraction_status')
+      .select('id, title, visibility, visible_dept, extracted_text, extraction_status')
       .eq('id', input.sourceId)
       .eq('property_id', pid)
       .maybeSingle();
     if (error || !data) return { error: 'Document not found.' };
     const visibility = ((data.visibility as KnowledgeVisibility | null) ?? 'all_staff');
-    if (visibility === 'managers' && !includeManagerOnly) return { error: 'Document not found.' };
+    // Same dept gate as list/search — a doc the caller can't reach is "not found".
+    if (!canReadDocVisibility(reader, visibility, (data.visible_dept as string | null) ?? null)) return { error: 'Document not found.' };
     const full = (data.extracted_text as string | null) ?? '';
     if (!full) return { error: 'This document has no readable text (it may be a scanned image or still processing).' };
     const slice = full.slice(offset, offset + SECTION_WINDOW_MAX);
@@ -742,7 +952,8 @@ export async function getDocumentSection(
     .maybeSingle();
   if (error || !data) return { error: 'SOP not found.' };
   const visibility = ((data.visibility as KnowledgeVisibility | null) ?? 'all_staff');
-  if (visibility === 'managers' && !includeManagerOnly) return { error: 'SOP not found.' };
+  // SOPs are binary (all_staff|managers); canReadDocVisibility handles both.
+  if (!canReadDocVisibility(reader, visibility, null)) return { error: 'SOP not found.' };
   const full = (data.body as string | null) ?? '';
   const slice = full.slice(offset, offset + SECTION_WINDOW_MAX);
   return {

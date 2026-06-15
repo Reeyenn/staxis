@@ -6,6 +6,14 @@
 // file free of supabaseAdmin / env so it can be bundled into the client.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// dept-scope.ts is PURE + standalone (no server-only / env), so this stays
+// client-safe. `Dept` is the single source of truth for the department set;
+// the Documents cabinet's per-department access reuses it.
+import type { Dept } from '@/lib/capabilities/dept-scope';
+export type { Dept };
+/** The departments a document can be scoped to (visibility='dept'). */
+export const KNOWLEDGE_DEPTS: readonly Dept[] = ['front_desk', 'housekeeping', 'maintenance'];
+
 /** The four knowledge sub-tabs. */
 export type KnowledgeSection = 'sops' | 'documents' | 'contacts' | 'calendar';
 
@@ -14,13 +22,17 @@ export type ContactCategory = 'vendor' | 'emergency' | 'brand' | 'local';
 export const CONTACT_CATEGORIES: readonly ContactCategory[] = ['vendor', 'emergency', 'brand', 'local'];
 
 /**
- * Per-document/article visibility. `all_staff` (default) is readable by every
- * authenticated user on the property; `managers` restricts to canManageTeam
- * roles (admin / owner / general_manager). Enforced in search, list, AND
- * signed-URL minting — see core.ts canRoleSeeManagerOnly.
+ * Per-document/article visibility, three tiers:
+ *   - `all_staff` (default) — readable by every authenticated user on the property.
+ *   - `dept`      — readable by managers + staff whose own department matches the
+ *                   document's `visible_dept` (Documents only; gated via the shared
+ *                   Access checker canReachDeptContent).
+ *   - `managers`  — restricted to canManageTeam roles (admin / owner / general_manager).
+ * Enforced in search, list, AND signed-URL minting — see core.ts.
+ * SOPs (articles) only ever use `all_staff` / `managers` (no `dept`).
  */
-export type KnowledgeVisibility = 'all_staff' | 'managers';
-export const KNOWLEDGE_VISIBILITIES: readonly KnowledgeVisibility[] = ['all_staff', 'managers'];
+export type KnowledgeVisibility = 'all_staff' | 'dept' | 'managers';
+export const KNOWLEDGE_VISIBILITIES: readonly KnowledgeVisibility[] = ['all_staff', 'dept', 'managers'];
 
 /**
  * Document extraction lifecycle (the state machine). Source of truth for the
@@ -61,11 +73,25 @@ export interface KnowledgeDocumentDTO {
   extractionStatus: ExtractionStatus;
   /** Who may read this document. Defaults 'all_staff'. */
   visibility: KnowledgeVisibility;
+  /** The department a `visibility==='dept'` document is scoped to; null otherwise. */
+  visibleDept: Dept | null;
+  /** Folder this document lives in (knowledge_folders.id), or null when unfiled. */
+  folderId: string | null;
   uploadedByName: string | null;
   createdAt: string;
   /** Short-lived signed download URL, minted server-side. Null if the file
    *  couldn't be signed OR the caller's role can't see this document. */
   downloadUrl: string | null;
+}
+
+/** A document folder as returned to the client. */
+export interface KnowledgeFolderDTO {
+  id: string;
+  name: string;
+  /** Parent folder (knowledge_folders.id) for nesting, or null at the root. */
+  parentId: string | null;
+  createdByName: string | null;
+  createdAt: string;
 }
 
 /** A directory contact as returned to the client. */
@@ -103,6 +129,7 @@ export const KNOWLEDGE_LIMITS = {
   PHONE_MAX: 40,
   NOTES_MAX: 2_000,
   DOC_FILENAME_MAX: 200,
+  FOLDER_NAME_MAX: 80,
   /** Cap on how much extracted text we store per document (keeps the row + ILIKE cheap). */
   EXTRACTED_TEXT_MAX: 100_000,
 } as const;

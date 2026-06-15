@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { canManageTeam, type AppRole } from '@/lib/roles';
+import { canReachDeptContent, isManagerRole, normalizeDept, type Dept } from '@/lib/capabilities/dept-scope';
 import type { KnowledgeVisibility } from './types';
 
 /**
@@ -21,6 +22,48 @@ export function canRoleSeeManagerOnly(role: AppRole): boolean {
 /** Whether a role may see a row of the given visibility. */
 export function roleCanSeeVisibility(role: AppRole, visibility: KnowledgeVisibility): boolean {
   return visibility === 'all_staff' || canRoleSeeManagerOnly(role);
+}
+
+// ── Per-department document access (reuses the shared Access checker) ─────────
+//
+// Documents add a third visibility tier, 'dept', scoped to one of the three
+// real departments. The gate is the SAME shared checker comms channels use
+// (capabilities/dept-scope.ts), so Documents behaves identically to channels:
+// managers reach every department; other staff reach all_staff + their own.
+// SOPs (articles) never use 'dept' — they stay binary via roleCanSeeVisibility.
+
+/** Which DOCUMENTS a caller may read, as a query-layer scope. */
+export type DocVisibilityScope =
+  | { kind: 'all' }                          // manager — every document
+  | { kind: 'allStaffOnly' }                 // staff with no recognized department
+  | { kind: 'allStaffOrDept'; dept: Dept };  // staff scoped to one department
+
+/**
+ * Project the shared dept checker onto a list/search query. A non-manager has
+ * at most one reachable department (their own), so this collapses to a single
+ * dept value the caller's queries filter on. Managers → no filter.
+ */
+export function docVisibilityScope(role: AppRole, dept: string | null | undefined): DocVisibilityScope {
+  if (isManagerRole(role)) return { kind: 'all' };
+  const d = normalizeDept(dept);
+  return d ? { kind: 'allStaffOrDept', dept: d } : { kind: 'allStaffOnly' };
+}
+
+/**
+ * Per-ROW document gate (used by fetch_document_section, where we already hold
+ * the row). Built directly on canReachDeptContent so it can never drift from
+ * docVisibilityScope — a unit test pins the two in agreement.
+ */
+export function canReadDocVisibility(
+  actor: { role: AppRole; dept: string | null | undefined },
+  visibility: KnowledgeVisibility,
+  visibleDept: string | null | undefined,
+): boolean {
+  if (visibility === 'all_staff') return true;
+  if (isManagerRole(actor.role)) return true;     // managers reach everything
+  if (visibility === 'managers') return false;    // non-manager, managers-only row
+  // visibility === 'dept' → defer to the shared checker on the row's department.
+  return canReachDeptContent({ role: actor.role, staffDept: actor.dept }, visibleDept ?? null);
 }
 
 /**

@@ -129,22 +129,26 @@ export async function POST(req: NextRequest): Promise<Response> {
     displayName: (account.display_name as string) ?? (account.username as string),
     role: (account.role as AppRole) ?? 'staff',
     propertyAccess: (account.property_access as string[]) ?? [],
+    dept: null as string | null,
   };
 
-  // ── Resolve staff.id for floor-level roles ───────────────────────────
+  // ── Resolve staff.id + department for floor-level roles ──────────────
   // `rooms.assigned_to` references `staff.id`, not `accounts.id` — Codex
-  // review fix #4. Look it up by `staff.auth_user_id = user.uid` (only
-  // relevant for housekeeping / maintenance roles; managers + owners
-  // typically don't have a staff row and don't need scoping).
+  // review fix #4. Look it up by `staff.auth_user_id = user.uid`. We also
+  // pull `department` here to gate 'dept'-scoped knowledge documents in the
+  // search_knowledge tool (managers don't need it — role short-circuits the
+  // gate). front_desk is included for the department only; its staffId stays
+  // null to preserve the prior rooms.assigned_to scoping behaviour.
   let staffId: string | null = null;
-  if (userCtx.role === 'housekeeping' || userCtx.role === 'maintenance') {
+  if (userCtx.role === 'housekeeping' || userCtx.role === 'maintenance' || userCtx.role === 'front_desk') {
     const { data: staffRow } = await supabaseAdmin
       .from('staff')
-      .select('id')
+      .select('id, department')
       .eq('auth_user_id', userCtx.uid)
       .eq('property_id', body.propertyId)
       .maybeSingle();
-    staffId = (staffRow?.id as string) ?? null;
+    if (userCtx.role === 'housekeeping' || userCtx.role === 'maintenance') staffId = (staffRow?.id as string) ?? null;
+    userCtx.dept = (staffRow?.department as string | null) ?? null;
   }
 
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
