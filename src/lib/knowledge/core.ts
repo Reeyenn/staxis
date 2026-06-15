@@ -522,12 +522,20 @@ export async function updateDocumentAccess(
   if (!data) return { ok: false };
   // SECURITY: synchronously mirror the new scope onto this doc's chunks before
   // returning, so AI search can never surface the doc via stale-scoped chunks.
+  // Unlike updateArticle, documents NEVER re-embed, so there is no async pass to
+  // self-heal a failed flip — a swallowed error here would leak the doc's content
+  // through its stale chunks indefinitely. Fail loudly so the route returns
+  // non-200 and the manager retries (the doc row is already tightened, and the
+  // retry re-runs this idempotent sync). Codex + Claude review HIGH-1.
   const { error: visErr } = await supabaseAdmin
     .from('knowledge_chunks')
     .update({ visibility: access.visibility, visible_dept: access.visibleDept })
     .eq('document_id', id)
     .eq('property_id', pid);
-  if (visErr) log.warn('knowledge.updateDocumentAccess chunk-scope sync failed', { err: visErr.message });
+  if (visErr) {
+    log.error('knowledge.updateDocumentAccess chunk-scope sync failed', { err: visErr.message });
+    return { error: 'Saved who can see it, but search may lag a moment — please try again.' };
+  }
   return { ok: true };
 }
 
