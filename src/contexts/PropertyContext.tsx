@@ -1,7 +1,9 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
+import { fetchWithAuth } from '@/lib/api-fetch';
+import type { CapabilityOverrideMap } from '@/lib/capabilities/can';
 import {
   getProperties,
   getProperty,
@@ -24,12 +26,16 @@ interface PropertyContextType {
   staffLoaded: boolean;
   publicAreas: PublicArea[];
   laundryConfig: LaundryCategory[];
+  /** The active hotel's capability restrictions (admin's Access-tab toggles).
+   *  Empty = everyone-everything (the default). Drives useCan(). */
+  capabilityOverrides: CapabilityOverrideMap;
   loading: boolean;
   setActivePropertyId: (id: string) => void;
   refreshProperty: () => Promise<void>;
   refreshStaff: () => Promise<void>;
   refreshPublicAreas: () => Promise<void>;
   refreshLaundryConfig: () => Promise<void>;
+  refreshCapabilities: () => Promise<void>;
 }
 
 const PropertyContext = createContext<PropertyContextType>({
@@ -40,13 +46,25 @@ const PropertyContext = createContext<PropertyContextType>({
   staffLoaded: false,
   publicAreas: [],
   laundryConfig: [],
+  capabilityOverrides: {},
   loading: true,
   setActivePropertyId: () => {},
   refreshProperty: async () => {},
   refreshStaff: async () => {},
   refreshPublicAreas: async () => {},
   refreshLaundryConfig: async () => {},
+  refreshCapabilities: async () => {},
 });
+
+/** Read one hotel's capability override map via the service-role-backed route
+ *  (the table is deny-all RLS, so a direct browser read would return []). Any
+ *  failure falls back to {} = everyone-everything; the server re-checks anyway. */
+async function fetchOverridesFor(pid: string): Promise<CapabilityOverrideMap> {
+  const res = await fetchWithAuth(`/api/capabilities/overrides?propertyId=${encodeURIComponent(pid)}`);
+  if (!res.ok) return {};
+  const json = await res.json().catch(() => null);
+  return (json?.data?.overrides ?? {}) as CapabilityOverrideMap;
+}
 
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
@@ -59,6 +77,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const [staffLoaded, setStaffLoaded] = useState(false);
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
   const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
+  const [capabilityOverrides, setCapabilityOverrides] = useState<CapabilityOverrideMap>({});
   const [loading, setLoading] = useState(true);
 
   // Derived from properties list - no async needed, always in sync
@@ -257,6 +276,34 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userUid, activePropertyId]);
 
+  // Load the active hotel's capability overrides whenever the hotel (or the
+  // signed-in user) changes, so useCan() resolves from the same restrictions the
+  // server enforces. Same identity-primitive dependency reasoning as above — we
+  // don't want a token refresh to re-fetch.
+  useEffect(() => {
+    if (!user || !activePropertyId) {
+      setCapabilityOverrides({});
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const map = await fetchOverridesFor(activePropertyId);
+        if (!cancelled) setCapabilityOverrides(map);
+      } catch {
+        if (!cancelled) setCapabilityOverrides({});
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userUid, activePropertyId]);
+
+  const refreshCapabilities = useCallback(async () => {
+    if (!activePropertyId) { setCapabilityOverrides({}); return; }
+    try { setCapabilityOverrides(await fetchOverridesFor(activePropertyId)); }
+    catch { setCapabilityOverrides({}); }
+  }, [activePropertyId]);
+
   const refreshProperty = async () => {
     if (!user || !activePropertyId) return;
     const prop = await getProperty(user.uid, activePropertyId);
@@ -293,12 +340,14 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         staffLoaded,
         publicAreas,
         laundryConfig,
+        capabilityOverrides,
         loading,
         setActivePropertyId,
         refreshProperty,
         refreshStaff,
         refreshPublicAreas,
         refreshLaundryConfig,
+        refreshCapabilities,
       }}
     >
       {children}

@@ -24,8 +24,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid, validateInt } from '@/lib/api-validate';
+import { canForProperty } from '@/lib/capabilities/server';
 import {
-  canViewLaborCost,
   isLaborRole,
   LABOR_ROLE_DEPARTMENTS,
   DEFAULT_HOURLY_WAGE_CENTS,
@@ -90,7 +90,7 @@ async function authorize(
     log.error('wages: accounts lookup failed', { requestId, msg: accountErr.message });
     return { ok: false, response: err('account lookup failed', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure }) };
   }
-  if (!canViewLaborCost((accountRow?.role as string | undefined) ?? '')) {
+  if (!(await canForProperty({ role: (accountRow?.role as string | undefined) ?? null }, 'view_wages', propertyId))) {
     return { ok: false, response: err('forbidden — role does not have wage access', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   return { ok: true, propertyId };

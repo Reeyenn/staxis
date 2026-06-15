@@ -17,25 +17,27 @@ import type {
   AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO,
 } from './types';
 import { CHANNEL_LABELS } from './types';
+import {
+  canReachDeptContent,
+  isManagerRole as deptIsManagerRole,
+  normalizeDept,
+} from '@/lib/capabilities/dept-scope';
 
 const ATTACHMENT_BUCKET = 'housekeeping-issue-photos'; // reuse existing private bucket
 const SIGNED_URL_TTL = 60 * 60; // 1h read URLs
 
 // ── Roles / departments ────────────────────────────────────────────────────
 
-const MANAGER_ROLES = new Set(['admin', 'owner', 'general_manager']);
+// Manager detection lives in dept-scope (single source of truth); re-exported
+// here so the many comms callers keep importing it from comms/core unchanged.
 export function isManagerRole(role: string | null | undefined): boolean {
-  return !!role && MANAGER_ROLES.has(role);
+  return deptIsManagerRole(role);
 }
 
-/** Map a staff.department value to its department channel (null = no dept channel). */
+/** Map a staff.department value to its department channel (null = no dept channel).
+ *  Reuses the canonical dept normalization in dept-scope. */
 export function deptChannel(dept: string | null | undefined): ChannelKey | null {
-  switch ((dept ?? '').toLowerCase()) {
-    case 'front_desk': return 'front_desk';
-    case 'maintenance': return 'maintenance';
-    case 'housekeeping': return 'housekeeping';
-    default: return null; // 'other' / unknown → all-staff only
-  }
+  return normalizeDept(dept);
 }
 
 /** Map a staff.department to a colour bucket for the Slack-style UI (dept dots / channel tints). */
@@ -73,12 +75,14 @@ function staffInChannel(channelKey: ChannelKey, dept: CommsDept): boolean {
 /** Online if the activity heartbeat landed within this window. */
 const PRESENCE_WINDOW_MS = 150_000; // 2.5 min — generous vs the ~8s client poll
 
-/** Channels a person can see. Managers see them all; staff see all-staff + their dept. */
+/** Channels a person can see. Managers see them all; staff see all-staff + their
+ *  dept. Re-expressed on the shared dept-scope checker so channel visibility and
+ *  future per-dept content access can never diverge. */
 export function channelsVisibleTo(opts: { dept: string | null; isManager: boolean }): ChannelKey[] {
-  if (opts.isManager) return ['all_staff', 'front_desk', 'housekeeping', 'maintenance'];
   const out: ChannelKey[] = ['all_staff'];
-  const dc = deptChannel(opts.dept);
-  if (dc) out.push(dc);
+  for (const ch of ['front_desk', 'housekeeping', 'maintenance'] as const) {
+    if (canReachDeptContent({ isManager: opts.isManager, staffDept: opts.dept }, ch)) out.push(ch);
+  }
   return out;
 }
 

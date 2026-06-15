@@ -22,7 +22,8 @@ import { requireSession } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { canViewFinancials, type AppRole } from '@/lib/roles';
+import { type AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -82,11 +83,13 @@ export async function requireFinanceAccess(
   }
   const role = ((account.role as string) ?? 'staff') as AppRole;
 
-  // 4) Role gate — owner / GM / admin only.
-  if (!canViewFinancials(role)) {
+  // 4) Capability gate — view_financials, honoring this hotel's Access-tab
+  //    restrictions (default: every role; an admin can switch a role OFF per
+  //    hotel). Admin always passes; admin-only caps are unaffected here.
+  if (!(await canForProperty({ role }, 'view_financials', pid))) {
     return {
       ok: false,
-      response: err('forbidden: financials are restricted to owner / general manager / admin', {
+      response: err('forbidden: financials are restricted for your role at this property', {
         requestId,
         status: 403,
         code: 'forbidden_role',
@@ -155,16 +158,6 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
     return { ok: false, response: err('account not found for session', { requestId, status: 403, code: 'no_account' }) };
   }
   const role = ((account.role as string) ?? 'staff') as AppRole;
-  if (!canViewFinancials(role)) {
-    return {
-      ok: false,
-      response: err('forbidden: financials are restricted to owner / general manager / admin', {
-        requestId,
-        status: 403,
-        code: 'forbidden_role',
-      }),
-    };
-  }
 
   const access = (account.property_access ?? []) as string[];
   let propertyIds: string[];
@@ -173,6 +166,18 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
     propertyIds = (all ?? []).map((r) => (r as { id: string }).id);
   } else {
     propertyIds = access.filter((p) => isUuid(p));
+  }
+
+  // Per-hotel capability filter: the rollup only includes hotels where this role
+  // is allowed Financials — admins always; everyone else honors each hotel's
+  // Access-tab restriction. A role switched OFF for Financials at a hotel can't
+  // see that hotel's money in the rollup either (no leak via aggregation).
+  if (role !== 'admin') {
+    const allowed: string[] = [];
+    for (const p of propertyIds) {
+      if (await canForProperty({ role }, 'view_financials', p)) allowed.push(p);
+    }
+    propertyIds = allowed;
   }
 
   return {

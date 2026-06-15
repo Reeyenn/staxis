@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { canViewFinancials } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LogOut, Globe, Settings } from 'lucide-react';
@@ -33,6 +33,7 @@ function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: 
 export function Header() {
   const { user, signOut } = useAuth();
   const { properties, activeProperty, setActivePropertyId } = useProperty();
+  const can = useCan();
   const { lang, setLang } = useLang();
   const router = useRouter();
   const pathname = usePathname();
@@ -54,7 +55,7 @@ export function Header() {
   const isAdmin = user?.role === 'admin';
   // Financials is owner/GM/admin only (sensitive). The /financials page +
   // every /api/financials/* route enforce the same gate server-side.
-  const showFinancials = !!user && canViewFinancials(user.role);
+  const showFinancials = !!user && can('view_financials');
   const navLinks = [
     ...baseNavLinks,
     ...(showFinancials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),

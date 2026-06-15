@@ -18,7 +18,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { canViewLaborCost, LABOR_ROLE_DEPARTMENTS, MAX_HOURLY_WAGE_CENTS, type LaborRole } from '@/lib/labor-cost';
+import { LABOR_ROLE_DEPARTMENTS, MAX_HOURLY_WAGE_CENTS, type LaborRole } from '@/lib/labor-cost';
+import { useCan } from '@/lib/capabilities/useCan';
 import { parseDollarsToCents, formatCents } from '@/lib/financials/shared';
 import {
   fetchWageSettings, saveWageSettings,
@@ -30,9 +31,11 @@ export default function WagesSettingsPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
-  // Manager-only — sensitive pay data.
-  if (!user || !canViewLaborCost(user.role)) {
+  // Sensitive pay data — gated by view_wages (default: every role; an admin can
+  // switch a role OFF per hotel from the Access tab).
+  if (!user || !can('view_wages')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>

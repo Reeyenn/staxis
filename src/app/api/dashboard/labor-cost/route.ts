@@ -45,8 +45,8 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid } from '@/lib/api-validate';
 import { todayInTz, addDays } from '@/lib/forecast';
+import { canForProperty } from '@/lib/capabilities/server';
 import {
-  canViewLaborCost,
   shiftMinutes,
   resolveWageCents,
   totalLaborCents,
@@ -112,7 +112,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       log.error('labor-cost: accounts lookup failed', { requestId, msg: accountErr.message });
       return err('account lookup failed', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
     }
-    if (!canViewLaborCost((accountRow?.role as string | undefined) ?? '')) {
+    if (!(await canForProperty({ role: (accountRow?.role as string | undefined) ?? null }, 'view_wages', propertyId))) {
       return err('forbidden — role does not have labor cost access', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });

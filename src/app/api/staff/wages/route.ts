@@ -34,7 +34,8 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { canManageTeam, type AppRole } from '@/lib/roles';
+import { type AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,13 +94,13 @@ export async function GET(req: NextRequest) {
 
   const caller = await loadCaller(session.userId);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!canManageTeam(caller.role)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
 
   const pidV = validateUuid(new URL(req.url).searchParams.get('propertyId'), 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   if (!callerManagesProperty(caller, pidV.value!)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+  if (!(await canForProperty({ role: caller.role }, 'view_wages', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -135,13 +136,13 @@ export async function PUT(req: NextRequest) {
 
   const caller = await loadCaller(session.userId);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!canManageTeam(caller.role)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
 
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   if (!callerManagesProperty(caller, pidV.value!)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+  if (!(await canForProperty({ role: caller.role }, 'view_wages', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
