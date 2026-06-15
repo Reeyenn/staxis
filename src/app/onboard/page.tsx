@@ -408,59 +408,19 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         setErr(json.error || `Sign-up failed (${res.status})`);
         return;
       }
-      // Sign the user in immediately with the password they just set — no
-      // email round-trip — then trust this device, exactly the handshake Step 3
-      // does after an OTP. This lands them on Step 4 already signed in, instead
-      // of bouncing to /signin (or stranding them on an email-code step that
-      // depends on inbox delivery). use-join-code already wrote a
-      // password_signin_proof, so trust-device can claim it. The account was
-      // created with email_confirm:true, so no email verification is owed.
-      const { data: signInData, error: signInErr } =
-        await supabase.auth.signInWithPassword({ email, password });
-
-      if (signInErr || !signInData.session) {
-        // FALLBACK: if password sign-in unexpectedly fails, fall back to the
-        // original OTP-email verification path (Step 3). No regression.
-        await supabase.auth.signInWithOtp({ email });
-        await fetch('/api/onboard/wizard', {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            code,
-            partialState: { accountCreatedAt: new Date().toISOString() },
-          }),
-        });
-        sessionStorage.setItem('onboard:pendingEmail', email);
-        await onNext();
-        return;
-      }
-
-      // Trust this device so the server's 2FA layer (requireSession) is
-      // satisfied on Step 4's first authenticated save — same as Step 3.
-      // Non-fatal if it flakes: the user would hit a recoverable 2FA prompt,
-      // which is still better than being bounced to the login page.
-      try {
-        await fetch('/api/auth/trust-device', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${signInData.session.access_token}` },
-          credentials: 'include',
-        });
-      } catch {
-        /* non-fatal — see above */
-      }
-
-      // Mark BOTH account-created and email-verified so deriveCurrentStep
-      // advances straight to Step 4 (Hotel Details) instead of the now-skipped
-      // email-OTP step.
-      const nowIso = new Date().toISOString();
+      // Trigger the OTP email send.
+      await supabase.auth.signInWithOtp({ email });
+      // PATCH wizard state
       await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           code,
-          partialState: { accountCreatedAt: nowIso, emailVerifiedAt: nowIso },
+          partialState: { accountCreatedAt: new Date().toISOString() },
         }),
       });
+      // Stash email so step 3 can verify it
+      sessionStorage.setItem('onboard:pendingEmail', email);
       await onNext();
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Network error');
