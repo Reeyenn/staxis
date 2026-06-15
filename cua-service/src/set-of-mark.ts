@@ -415,7 +415,17 @@ export async function applyHeaderMark(page: Page): Promise<Map<number, HeaderMar
           const isHeaderRole =
             c.getAttribute('role') === 'columnheader' || c.tagName.toLowerCase() === 'th';
           const role = isHeaderRole ? 'columnheader' : 'cell';
-          const headerText = (c.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          // Visible text, then accessible name (aria-label/title) for icon headers.
+          let headerText = (c.textContent || '').replace(/\s+/g, ' ').trim();
+          if (headerText === '') {
+            const al = c.getAttribute('aria-label');
+            if (al && al.trim()) headerText = al.replace(/\s+/g, ' ').trim();
+          }
+          if (headerText === '') {
+            const ti = c.getAttribute('title');
+            if (ti && ti.trim()) headerText = ti.replace(/\s+/g, ' ').trim();
+          }
+          headerText = headerText.slice(0, 60);
           const cx = Math.round(rect.left + Math.min(rect.width / 2, 40));
           const cy = Math.round(rect.top + rect.height / 2);
           const id = nextId++;

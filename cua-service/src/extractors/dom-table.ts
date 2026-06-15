@@ -90,10 +90,30 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
 
   if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
 
+  // feature/cua-semantic-columns — the durable per-column header anchors (and an
+  // optional rowSelector xpath fallback) ride feedSpec.extra: the runtime
+  // FeedSpec / template-runner bridge forwards only `extra` verbatim, so
+  // recipe-adapter mirrors source.columnsTiered/rowSelectorTiered there. Absent
+  // ⟹ the reader takes its byte-identical legacy path.
+  const columnsTiered = feedSpec.extra?.columnsTiered as Record<string, TieredSelector> | undefined;
+  const rowSelectorTiered = feedSpec.extra?.rowSelectorTiered as TieredSelector | undefined;
+
+  // Wait for the rows to materialize. The css rowSelector is primary; if it
+  // never appears AND an xpath tier exists, wait on the xpath instead — without
+  // this pre-wait fallback the reader's own row-xpath tier could never engage on
+  // a broken css selector (it returns early here first).
   try {
     await page.waitForSelector(rowSelector, { timeout: WAIT_TIMEOUT_MS });
   } catch (err) {
-    return { ok: false, rows: [], reason: `row selector did not appear: ${(err as Error).message}` };
+    if (rowSelectorTiered?.xpath) {
+      try {
+        await page.waitForSelector(`xpath=${rowSelectorTiered.xpath}`, { timeout: WAIT_TIMEOUT_MS });
+      } catch {
+        return { ok: false, rows: [], reason: `row selector did not appear (css + xpath): ${(err as Error).message}` };
+      }
+    } else {
+      return { ok: false, rows: [], reason: `row selector did not appear: ${(err as Error).message}` };
+    }
   }
 
   if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
@@ -102,14 +122,6 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
     // Shared reader (extractors/dom-rows.ts) — the SAME implementation the
     // mapper verifies selectors with, including the '@attr' convention. Any
     // fork here re-opens the "verified at mapping, blank at poll" bug class.
-    //
-    // feature/cua-semantic-columns — the durable per-column header anchors (and
-    // an optional rowSelector xpath fallback) ride feedSpec.extra: the runtime
-    // FeedSpec / template-runner bridge forwards only `extra` verbatim, so
-    // recipe-adapter mirrors source.columnsTiered/rowSelectorTiered there. Absent
-    // ⟹ the reader takes its byte-identical legacy path.
-    const columnsTiered = feedSpec.extra?.columnsTiered as Record<string, TieredSelector> | undefined;
-    const rowSelectorTiered = feedSpec.extra?.rowSelectorTiered as TieredSelector | undefined;
     const extraction = await extractDomRows(page, rowSelector, columns, {
       cap: maxRows,
       ...(columnsTiered ? { columnsTiered } : {}),

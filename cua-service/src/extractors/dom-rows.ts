@@ -64,21 +64,29 @@ export function normalizeHeaderText(s: string): string {
   return (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-/** First positional pseudo-class integer in a column selector, or null when the
- *  selector is non-positional (class/attr/'.'/row-attribute based). Only a bare
- *  integer arg counts — `:nth-child(2n+1)` is intentionally NOT rebaseable. */
-const FIRST_NTH_RE = /:nth-(child|of-type)\(\s*(\d+)\s*\)/;
+/** First `:nth-child(K)` integer in a column selector, or null when the selector
+ *  is non-positional (class/attr/'.'/row-attribute based). Only a bare integer
+ *  arg counts — `:nth-child(2n+1)` is intentionally NOT rebaseable.
+ *
+ *  Deliberately `:nth-child` ONLY — NOT `:nth-of-type`. We rebase against header
+ *  positions counted among ALL element children (readTableHeaders), which is the
+ *  `:nth-child` basis. `:nth-of-type` counts among same-TAG siblings, so on a row
+ *  that mixes element types (e.g. a leading `<th scope=row>` + `<td>`s) the two
+ *  index spaces diverge and a rebase would read the wrong/blank cell. The mapper
+ *  prompts only ever emit `:nth-child`; an `:nth-of-type` column simply isn't
+ *  header-anchored (it stays on the positional css tier — exactly as today). */
+const FIRST_NTH_RE = /:nth-child\(\s*(\d+)\s*\)/;
 export function parseFirstNthIndex(selector: string): number | null {
   const m = FIRST_NTH_RE.exec(selector);
-  return m ? parseInt(m[2]!, 10) : null;
+  return m ? parseInt(m[1]!, 10) : null;
 }
 
 /** Rebase a positional column selector onto a NEW column index — replaces ONLY
- *  the first `:nth-child(K)` / `:nth-of-type(K)` integer, leaving any within-cell
- *  refinement and the trailing `@attr` convention untouched. Returns the input
- *  unchanged when there is no rebaseable integer. */
+ *  the first `:nth-child(K)` integer, leaving any within-cell refinement and the
+ *  trailing `@attr` convention untouched. Returns the input unchanged when there
+ *  is no rebaseable `:nth-child` integer. */
 export function rebaseNthIndex(selector: string, index: number): string {
-  return selector.replace(FIRST_NTH_RE, (_full, kind: string) => `:nth-${kind}(${index})`);
+  return selector.replace(FIRST_NTH_RE, `:nth-child(${index})`);
 }
 
 /** A table's header row as read from the live DOM — shared by the mapper's
@@ -178,7 +186,19 @@ export async function readTableHeaders(
             let i = 0;
             for (const ch of Array.from(parent.children)) { i++; if (ch === c) { index = i; break; } }
           }
-          const raw = (c.textContent || '').replace(/\s+/g, ' ').trim();
+          // Header text: visible text, then aria-label, then title — so an
+          // icon-only header (no textContent) still anchors via its accessible
+          // name. Authoring (finalize) and poll both read this same way, so the
+          // match is apples-to-apples.
+          let raw = (c.textContent || '').replace(/\s+/g, ' ').trim();
+          if (raw === '') {
+            const al = c.getAttribute('aria-label');
+            if (al && al.trim()) raw = al.replace(/\s+/g, ' ').trim();
+          }
+          if (raw === '') {
+            const ti = c.getAttribute('title');
+            if (ti && ti.trim()) raw = ti.replace(/\s+/g, ' ').trim();
+          }
           const text = raw.toLowerCase();
           cells.push({ index, text, raw });
         }
@@ -400,8 +420,12 @@ async function extractDomRowsTiered(
   }
 
   // 2. Header analysis — ONCE per scrape, only if some column carries a roleName.
+  //    readTableHeaders evaluates the selector inside the page with
+  //    document.evaluate (xpath) or querySelector (css), so it needs the RAW
+  //    xpath, NOT Playwright's `xpath=`-prefixed form.
   const anyRoleName = !!opts.columnsTiered && Object.values(opts.columnsTiered).some((t) => !!t?.roleName);
-  const headers = anyRoleName ? await readTableHeaders(page, effectiveRowSelector, { isXpath: rowIsXpath }) : null;
+  const headerSelector = rowIsXpath ? opts.rowSelectorTiered!.xpath! : effectiveRowSelector;
+  const headers = anyRoleName ? await readTableHeaders(page, headerSelector, { isXpath: rowIsXpath }) : null;
   const gateOk = headerGateOk(headers);
   const headerIndexByText = new Map<string, number[]>();
   if (gateOk && headers) {
@@ -426,17 +450,18 @@ async function extractDomRowsTiered(
       continue;
     }
 
-    // roleName tier — resolve header text → live index, rebase the css.
+    // roleName tier — resolve header text → live index, rebase the css. We
+    // self-heal ONLY on a UNIQUE header match. Duplicate headers (two "Date"
+    // columns) and a missing/renamed header fall through to the positional css
+    // tier — i.e. exactly today's behavior. Crucially we do NOT claim a roleName
+    // resolution we didn't actually make: header anchoring can't distinguish two
+    // identical headers, so reporting a self-heal there would be a telemetry lie
+    // AND could silently read the wrong cell if those duplicates were reordered.
     const origIdx = parseFirstNthIndex(flatCss);
     if (tiered.roleName && gateOk && origIdx != null) {
       const matches = headerIndexByText.get(normalizeHeaderText(tiered.roleName.name)) ?? [];
-      let targetIdx: number | null = null;
-      if (matches.length === 1) targetIdx = matches[0]!;
-      // Duplicate/ambiguous header (two "Date" columns): disambiguate by the
-      // original css index — never guess. If origIdx isn't among the matches,
-      // fall through to css verbatim.
-      else if (matches.length > 1 && matches.includes(origIdx)) targetIdx = origIdx;
-      if (targetIdx != null) {
+      if (matches.length === 1) {
+        const targetIdx = matches[0]!;
         cssEffective[field] = rebaseNthIndex(flatCss, targetIdx);
         resolution.push({ field, tier: 'roleName', drift: targetIdx !== origIdx, fromIndex: origIdx, toIndex: targetIdx });
         continue;

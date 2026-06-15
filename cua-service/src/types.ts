@@ -465,10 +465,15 @@ export interface TableTemplateSource {
    *  Backward-compat: legacy templates without this field replay using
    *  the existing single-string rowSelector exactly as before. */
   selectorsTiered?: Record<string, TieredSelector>;
-  /** Plan v9 F2 — tiered per-column alternatives. Keyed by the same
-   *  column name as `columns`. Runtime checks columnsTiered first; if
-   *  the column has tiered selectors AND any tier resolves on the row,
-   *  uses that. Else falls through to `columns[col]` (CSS). Optional. */
+  /** Plan v9 F2 / feature/cua-semantic-columns — tiered per-column alternatives,
+   *  keyed by the same column name as `columns`. Populated by recipe-adapter from
+   *  the learned header anchors. NOTE: at RUNTIME the dom_table reader consumes
+   *  these from `extra.columnsTiered` (recipe-adapter mirrors them there), because
+   *  template-runner's sourceToFeedSpec forwards only mode/url/selectors/columns/
+   *  EXTRA to the FeedSpec — this typed field is the canonical shape for typed
+   *  consumers but is not itself read by the worker. Per column the reader resolves
+   *  roleName (header text → live index) → css → xpath, falling back to
+   *  `columns[col]` when a column has no anchor. Optional (legacy = absent). */
   columnsTiered?: Record<string, TieredSelector>;
 }
 

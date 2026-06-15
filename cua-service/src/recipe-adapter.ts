@@ -558,12 +558,19 @@ export function actionRecipeToTableTemplate(
   // selector-fallback test pins source.{columnsTiered,selectorsTiered}===undefined).
   if (tieredColumns && Object.keys(tieredColumns).length > 0) {
     const primary = sources[0]!;
+    // Keep rowSelectorTiered.css in sync with the EFFECTIVE row selector — the
+    // drill-down branch above swaps source.selectors.rowSelector to the list-row
+    // selector, which can differ from the authored hint.rowSelector. (The reader
+    // only consults .xpath today, but a stale .css would be a latent landmine.)
+    const effectiveRowTiered: TieredSelector | undefined = tieredRowSelector
+      ? { ...tieredRowSelector, ...(primary.selectors?.rowSelector ? { css: primary.selectors.rowSelector } : {}) }
+      : undefined;
     primary.columnsTiered = tieredColumns;
-    if (tieredRowSelector) primary.selectorsTiered = { rowSelector: tieredRowSelector };
+    if (effectiveRowTiered) primary.selectorsTiered = { rowSelector: effectiveRowTiered };
     primary.extra = {
       ...(primary.extra ?? {}),
       columnsTiered: tieredColumns,
-      ...(tieredRowSelector ? { rowSelectorTiered: tieredRowSelector } : {}),
+      ...(effectiveRowTiered ? { rowSelectorTiered: effectiveRowTiered } : {}),
     };
   }
 

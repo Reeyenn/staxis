@@ -205,8 +205,72 @@ describe('feature/cua-semantic-columns — runtime reader self-heal', () => {
     assert.equal(r.rows[0]!.arrival, '2026-06-14');
     assert.equal(r.rows[0]!.departure, '2026-06-16');
     assert.equal(r.rows[0]!.guest, 'Dave');
-    // Both Date columns resolved (by index), no fallthrough, no throw.
-    assert.ok(r.resolution!.filter((x) => x.field === 'arrival' || x.field === 'departure').every((x) => x.tier === 'roleName' && !x.drift));
+    // The unique header ("Guest") self-heals via roleName; the DUPLICATE "Date"
+    // columns CANNOT be disambiguated by header text, so they honestly fall
+    // through to the positional css tier (no false roleName/self-heal claim) and
+    // still read correctly because nothing moved. No Playwright strict-mode throw.
+    const byField = new Map(r.resolution!.map((x) => [x.field, x.tier]));
+    assert.equal(byField.get('guest'), 'roleName');
+    assert.equal(byField.get('arrival'), 'css', 'duplicate header → positional css, not a false self-heal');
+    assert.equal(byField.get('departure'), 'css');
+  });
+
+  test('nth-of-type column is NOT header-anchored even with a unique header (index-space guard)', async () => {
+    // A leading <th scope=row> makes the body mix element types: td:nth-of-type
+    // counts among <td> only, while header positions count among ALL children.
+    // The resolver must REFUSE to rebase nth-of-type (→ positional css), never
+    // silently read the wrong/blank cell.
+    const html = `<!DOCTYPE html><html><body><table><thead><tr>
+      <th>Room</th><th>Guest</th><th>Status</th></tr></thead><tbody>
+      <tr><th scope="row">701</th><td>Grace</td><td>Clean</td></tr>
+      </tbody></table></body></html>`;
+    await page!.goto(dataUrl(html));
+    const columns = { guest: 'td:nth-of-type(1)', status: 'td:nth-of-type(2)' };
+    const tiered: Record<string, TieredSelector> = {
+      guest: { roleName: { role: 'cell', name: 'Guest' }, css: 'td:nth-of-type(1)' },
+      status: { roleName: { role: 'cell', name: 'Status' }, css: 'td:nth-of-type(2)' },
+    };
+    const r = await extractDomRows(page!, 'tbody tr', columns, { cap: 50, columnsTiered: tiered });
+    assert.equal(r.rows[0]!.guest, 'Grace');
+    assert.equal(r.rows[0]!.status, 'Clean');
+    assert.ok(r.resolution!.every((x) => x.tier === 'css'), 'nth-of-type stays positional');
+  });
+
+  test('icon-only header (aria-label) still anchors and self-heals on reorder', async () => {
+    const v1 = `<!DOCTYPE html><html><body><table><thead><tr>
+      <th aria-label="Status"><span class="i-status"></span></th><th>Room</th></tr></thead><tbody>
+      <tr><td>Clean</td><td>801</td></tr></tbody></table></body></html>`;
+    const v2 = `<!DOCTYPE html><html><body><table><thead><tr>
+      <th>Room</th><th aria-label="Status"><span class="i-status"></span></th></tr></thead><tbody>
+      <tr><td>801</td><td>Clean</td></tr></tbody></table></body></html>`;
+    const columns = { status: 'td:nth-child(1)', room: 'td:nth-child(2)' };
+    await page!.goto(dataUrl(v1));
+    const tiered = await authorAnchors(page!, 'tbody tr', columns);
+    assert.ok(tiered.status?.roleName, 'icon header anchored via aria-label');
+    await page!.goto(dataUrl(v2));
+    const r = await extractDomRows(page!, 'tbody tr', columns, { cap: 50, columnsTiered: tiered });
+    assert.equal(r.rows[0]!.status, 'Clean');
+    assert.equal(r.rows[0]!.room, '801');
+    assert.equal(r.resolution!.find((x) => x.field === 'status')!.drift, true);
+  });
+
+  test('header self-heal works on the row-xpath path (raw xpath into readTableHeaders)', async () => {
+    // css rowSelector is broken; xpath finds the rows. Columns are also reordered
+    // vs what was learned — proving readTableHeaders receives the RAW xpath (not
+    // the `xpath=`-prefixed form) and the anchors still resolve.
+    await page!.goto(dataUrl(TABLE_V1));
+    const tiered = await authorAnchors(page!, 'tbody tr', LEARNED_COLUMNS);
+    await page!.goto(dataUrl(TABLE_V2_REORDER));
+    const r = await extractDomRows(page!, 'tr.broken', LEARNED_COLUMNS, {
+      cap: 50,
+      columnsTiered: tiered,
+      rowSelectorTiered: { css: 'tr.broken', xpath: '//tbody/tr' },
+    });
+    assert.equal(r.rowSelectorTier, 'xpath');
+    assert.deepEqual(r.rows, [
+      { room: '101', guest: 'Alice', status: 'Clean' },
+      { room: '102', guest: 'Bob', status: 'Dirty' },
+    ], 'columns self-heal even when rows came via the xpath tier');
   });
 
   test('@attr + within-cell refinement survive the rebase on a reorder', async () => {
@@ -259,20 +323,20 @@ describe('feature/cua-semantic-columns — runtime reader self-heal', () => {
 });
 
 describe('feature/cua-semantic-columns — pure helpers', () => {
-  test('parseFirstNthIndex reads the first bare nth integer, else null', () => {
+  test('parseFirstNthIndex reads the first bare nth-child integer, else null', () => {
     assert.equal(parseFirstNthIndex('td:nth-child(3)'), 3);
-    assert.equal(parseFirstNthIndex('td:nth-of-type(5) a@href'), 5);
     assert.equal(parseFirstNthIndex(':nth-child( 7 )'), 7);
+    assert.equal(parseFirstNthIndex('td:nth-of-type(5) a@href'), null, 'nth-of-type is intentionally NOT rebaseable (index-space mismatch)');
     assert.equal(parseFirstNthIndex('.status-cell'), null);
     assert.equal(parseFirstNthIndex('@data-room'), null);
     assert.equal(parseFirstNthIndex('td:nth-child(2n+1)'), null, 'formula args are not rebaseable');
   });
 
-  test('rebaseNthIndex swaps ONLY the first index, preserving @attr and refinement', () => {
+  test('rebaseNthIndex swaps ONLY the first nth-child index, preserving @attr and refinement', () => {
     assert.equal(rebaseNthIndex('td:nth-child(3)', 5), 'td:nth-child(5)');
     assert.equal(rebaseNthIndex('td:nth-child(3) a@href', 5), 'td:nth-child(5) a@href');
-    assert.equal(rebaseNthIndex('td:nth-of-type(2) .badge', 4), 'td:nth-of-type(4) .badge');
-    assert.equal(rebaseNthIndex('.no-index', 9), '.no-index', 'no nth → unchanged');
+    assert.equal(rebaseNthIndex('td:nth-of-type(2) .badge', 4), 'td:nth-of-type(2) .badge', 'nth-of-type left untouched');
+    assert.equal(rebaseNthIndex('.no-index', 9), '.no-index', 'no nth-child → unchanged');
   });
 
   test('normalizeHeaderText collapses whitespace, trims, lowercases', () => {
