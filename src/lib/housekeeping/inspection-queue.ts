@@ -13,7 +13,7 @@
 
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { fromInspectionRow, lookupStaffNames } from '@/lib/db/inspections';
+import { fromInspectionRow } from '@/lib/db/inspections';
 import type { InspectionQueueRoom } from '@/types/inspections';
 
 export async function buildInspectionQueue(pid: string, date: string): Promise<InspectionQueueRoom[]> {
@@ -49,13 +49,22 @@ export async function buildInspectionQueue(pid: string, date: string): Promise<I
     if (!latestByRoom.has(insp.roomNumber)) latestByRoom.set(insp.roomNumber, insp);
   }
 
-  // Pre-compute the housekeeper name lookup so the queue rows can show it.
+  // Pre-compute the housekeeper name lookup so the queue rows can show it. The
+  // read is property-scoped (defense-in-depth — the ids come from this
+  // property's rooms, but the lookup stays scoped so it can never surface a
+  // foreign-property name).
   const staffIds = new Set<string>();
   for (const r of cleanRooms) {
     const assignedToId = r.assignedTo;
     if (assignedToId) staffIds.add(assignedToId);
   }
-  const staffNames = await lookupStaffNames(Array.from(staffIds));
+  const staffNames = new Map<string, string>();
+  const staffIdList = Array.from(staffIds);
+  if (staffIdList.length > 0) {
+    const { data: staffRows } = await supabaseAdmin
+      .from('staff').select('id, name').eq('property_id', pid).in('id', staffIdList);
+    for (const s of (staffRows ?? []) as { id: string; name: string }[]) staffNames.set(s.id, s.name);
+  }
 
   const out: InspectionQueueRoom[] = [];
 
@@ -90,7 +99,7 @@ export async function buildInspectionQueue(pid: string, date: string): Promise<I
       if (latest.completedAt && completedAt && completedAt > latest.completedAt) {
         // Count prior fails on the chain (this one + any earlier in the
         // parent chain) — used to surface "this is failing repeatedly".
-        const priorFailCount = await countFailsInChain(latest.id);
+        const priorFailCount = await countFailsInChain(latest.id, pid);
         out.push({
           roomId: r.id,
           roomNumber: r.number,
@@ -123,15 +132,18 @@ export async function buildInspectionQueue(pid: string, date: string): Promise<I
   return out;
 }
 
-async function countFailsInChain(inspectionId: string): Promise<number> {
+async function countFailsInChain(inspectionId: string, pid: string): Promise<number> {
   let count = 0;
   let cursor: string | null = inspectionId;
   for (let i = 0; i < 20 && cursor; i++) {
+    // Scope each hop by property_id so the chain can never cross into another
+    // hotel's inspections (parent_inspection_id is server-set, but stay scoped).
     const { data, error }: { data: { result: string; parent_inspection_id: string | null } | null; error: unknown } =
       await supabaseAdmin
         .from('inspections')
         .select('result, parent_inspection_id')
         .eq('id', cursor)
+        .eq('property_id', pid)
         .maybeSingle();
     if (error || !data) break;
     if (data.result === 'fail') count += 1;

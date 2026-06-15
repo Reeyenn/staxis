@@ -555,10 +555,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // announcement. 200/hr per (pid,staffId) absorbs catching up on a backlog of
   // mandatory reads + accidental double-taps, well above realistic use.
   'comms-acknowledge':          200,
-  // Unified Worklist — read is the aggregated GET (To-do view polls it while
-  // open + on focus); 1200/hr per property is wide headroom for several
-  // terminals. Writes (assign/complete) are deliberate taps; 300/hr each.
-  'worklist-read':             1200,
+  // Unified Worklist — read is the aggregated GET (the To-do view polls it ~every
+  // 15s while open). 3600/hr per property = ~15 simultaneously-open terminals
+  // before a 429, matching the housekeeper-rooms / lost-found-read poll
+  // precedent (a single open tab is ~240/hr). Writes (assign/complete) are
+  // deliberate taps; 300/hr per property is far above real completion volume.
+  'worklist-read':             3600,
   'worklist-assign':            300,
   'worklist-complete':          300,
   // Inventory Ordering — per-property (raw pid). order-create/approve/receive
