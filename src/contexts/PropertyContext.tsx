@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { supabase } from '@/lib/supabase';
 import type { CapabilityOverrideMap } from '@/lib/capabilities/can';
 import {
   getProperties,
@@ -59,12 +60,37 @@ const PropertyContext = createContext<PropertyContextType>({
 
 /** Read one hotel's capability override map via the service-role-backed route
  *  (the table is deny-all RLS, so a direct browser read would return []). Any
- *  failure falls back to {} = everyone-everything; the server re-checks anyway. */
+ *  failure falls back to {} = everyone-everything; the server re-checks anyway.
+ *
+ *  CRITICAL — this MUST fail soft, never force a logout. We pass our OWN
+ *  Authorization header, which makes fetchWithAuth treat the call as "caller
+ *  opted out of 401 recovery" and RETURN the 401 instead of running its
+ *  signOut + redirect-to-/signin path (see api-fetch.ts). Reason: this is a
+ *  non-critical UI hint that auto-fires the instant a single-property owner is
+ *  authenticated — including the 2FA-trust window during onboarding / a fresh
+ *  login, where it transiently 401s `requires_2fa`. With the default
+ *  fetchWithAuth recovery, that 401 nuked the session and bounced the owner to
+ *  /signin the moment they entered their 2FA code (the access-control feature,
+ *  2026-06-14, introduced this call and the regression). Now it just yields {}.
+ */
 async function fetchOverridesFor(pid: string): Promise<CapabilityOverrideMap> {
-  const res = await fetchWithAuth(`/api/capabilities/overrides?propertyId=${encodeURIComponent(pid)}`);
-  if (!res.ok) return {};
-  const json = await res.json().catch(() => null);
-  return (json?.data?.overrides ?? {}) as CapabilityOverrideMap;
+  let token: string | null = null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    token = data.session?.access_token ?? null;
+  } catch { /* no session → fall through to {} */ }
+  if (!token) return {};
+  try {
+    const res = await fetchWithAuth(`/api/capabilities/overrides?propertyId=${encodeURIComponent(pid)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return {};
+    const json = await res.json().catch(() => null);
+    return (json?.data?.overrides ?? {}) as CapabilityOverrideMap;
+  } catch {
+    // SessionEndedError or network — never propagate into a logout.
+    return {};
+  }
 }
 
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
