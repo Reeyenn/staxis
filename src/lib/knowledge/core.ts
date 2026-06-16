@@ -819,16 +819,18 @@ export async function searchKnowledge(
 
   // Contacts: select the full directory shape (incl. local address/hours) so the
   // assistant can answer "what's the nearest pharmacy / their address / hours".
-  // Three keyword arms — name, company, AND address — so "pharmacy on Main St"
-  // matches a local contact even when the street is what the user typed.
+  // Four keyword arms — name, company, address, AND local_category — so "nearest
+  // pharmacy" matches a Pharmacy-typed local contact ("Walgreens") whose name
+  // never contains the word, and "pharmacy on Main St" matches by street too.
   const CONTACT_SELECT = 'id, name, company, phone, email, category, address, city_state_zip, hours, local_category, notes';
-  const [chunkKwRes, artTitle, docTitle, conName, conCompany, conAddress, evtTitle, evtNotes] = await Promise.all([
+  const [chunkKwRes, artTitle, docTitle, conName, conCompany, conAddress, conLocalCat, evtTitle, evtNotes] = await Promise.all([
     chunkKw.limit(8),
     artTitleQ.limit(5),
     docTitleQ.limit(5),
     supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('name', pattern).limit(5),
     supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('company', pattern).limit(5),
     supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('address', pattern).limit(5),
+    supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('local_category', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('title', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('notes', pattern).limit(5),
   ]);
@@ -869,11 +871,15 @@ export async function searchKnowledge(
   const docRows = ((docTitle.data ?? []) as Record<string, unknown>[]);
   const contactRows = mergeById(
     mergeById(
-      (conName.data ?? []) as Record<string, unknown>[],
-      (conCompany.data ?? []) as Record<string, unknown>[],
+      mergeById(
+        (conName.data ?? []) as Record<string, unknown>[],
+        (conCompany.data ?? []) as Record<string, unknown>[],
+        8,
+      ),
+      (conAddress.data ?? []) as Record<string, unknown>[],
       8,
     ),
-    (conAddress.data ?? []) as Record<string, unknown>[],
+    (conLocalCat.data ?? []) as Record<string, unknown>[],
     8,
   );
   const eventRows = mergeById(
