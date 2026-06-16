@@ -55,7 +55,8 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
-  deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, prettifyTargetKey, type FeedRow,
+  deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, prettifyTargetKey,
+  parseCurrentActivity, phaseLabel, isInProgressPhase, type FeedRow,
 } from '@/lib/pms/learning-board';
 import {
   ArrowLeft, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight,
@@ -589,6 +590,24 @@ export default function LiveMappingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, job?.status]);
 
+  // feature/cua-admin-mapper-visibility — keep the live PHASE line moving.
+  // currentActivity is durable (workflow_jobs.result), so load() on mount
+  // already makes it survive a reload; broadcasts refresh it on every robot
+  // step. This adds a gentle 5s poll WHILE the run is live so the phase + pct
+  // also advance during long think-gaps that emit no broadcast. Strictly
+  // bounded: paused when the tab is hidden (so a forgotten background tab adds
+  // no DB load), skipped during a takeover (its own 2.5s poll owns the page),
+  // and stopped the instant the job is terminal. The coarse 30s safety poll
+  // above remains the floor for the hidden-tab / RLS-silent-channel cases.
+  useEffect(() => {
+    if (!jobId || job?.status !== 'running') return;
+    if (takeover && takeover.status !== 'ended') return;
+    const tick = () => { if (document.visibilityState === 'visible') void load(); };
+    const t = setInterval(tick, 5_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, job?.status, takeover?.status]);
+
   // feature/cua-live-assist — fast poll WHILE a takeover is open. Takeover is
   // turn-based (the founder clicks, the robot acts ~2-3s, publishes a fresh
   // frame); a 2.5s poll keeps the click-target frame + ack state snappy even if
@@ -795,6 +814,19 @@ export default function LiveMappingPage() {
   }), [job, pendingHelp]);
   const summary = useMemo(() => summarizeFeedRows(feedRows), [feedRows]);
   const searchingRow = feedRows.find((r) => r.glyph === 'searching');
+
+  // feature/cua-admin-mapper-visibility — the single live phase line: what the
+  // robot is doing RIGHT NOW, from the durable result.currentActivity. It's
+  // fetched by load() (so it survives a page reload) and refreshed by every
+  // broadcast + the short poll below. Older jobs never wrote it → livePhase is
+  // null and the indicator is simply absent (graceful degradation).
+  const currentActivity = useMemo(() => parseCurrentActivity(job?.result), [job]);
+  const livePhase = useMemo(() => {
+    if (!currentActivity?.phase) return null;
+    const noun = currentActivity.feedKey ? prettifyTargetKey(currentActivity.feedKey) : '';
+    const text = phaseLabel(currentActivity.phase, noun);
+    return text ? { text, phase: currentActivity.phase, pct: currentActivity.pct } : null;
+  }, [currentActivity]);
   // INVARIANT guard for the panel too: a pending row whose target is
   // already found (stale after a worker restart) must not show a live
   // clickable panel — the robot is not listening on it.
@@ -1043,6 +1075,16 @@ export default function LiveMappingPage() {
                           {row.glyph === 'failed' && row.reason && (
                             <span style={{ fontSize: 11.5, color: dimWhite(.5), marginLeft: 8 }} title={row.reason}>
                               — {row.reason.length > 90 ? `${row.reason.slice(0, 89)}…` : row.reason}
+                            </span>
+                          )}
+                          {/* feature/cua-admin-mapper-visibility — finer live
+                              phase on the feed the robot is on now (the glyph
+                              stays the coarse "Searching…"; this is the detail).
+                              In-progress phases only — never contradict the
+                              "Searching…" pill with a terminal-ish label. */}
+                          {row.glyph === 'searching' && isInProgressPhase(row.phase) && (
+                            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: 'var(--gold)', marginLeft: 8 }}>
+                              · {phaseLabel(row.phase!)}
                             </span>
                           )}
                         </div>
@@ -1364,6 +1406,34 @@ export default function LiveMappingPage() {
                   {liveFrame && frameIsFresh && frameAgeLabel && (
                     <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>
                       updated {frameAgeLabel}
+                    </span>
+                  )}
+                  {/* feature/cua-admin-mapper-visibility — the live phase line.
+                      No auto-margin of its own: it flows at the end of the left
+                      cluster, and the Take over button's marginLeft:auto pushes
+                      itself to the far right, leaving this to its LEFT. Absent
+                      for older jobs that never wrote currentActivity. */}
+                  {livePhase && (
+                    <span
+                      title="What the robot is doing right now"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center',
+                        gap: 6, minWidth: 0, maxWidth: 380,
+                        fontFamily: FONT_MONO, fontSize: 11,
+                        color: isInProgressPhase(livePhase.phase) ? 'var(--gold)' : dimWhite(.66),
+                        background: isInProgressPhase(livePhase.phase) ? 'rgba(201,154,46,.12)' : 'rgba(255,255,255,.05)',
+                        border: `1px solid ${isInProgressPhase(livePhase.phase) ? 'rgba(201,154,46,.4)' : dimWhite(.16)}`,
+                        borderRadius: 999, padding: '3px 11px',
+                      }}
+                    >
+                      {isInProgressPhase(livePhase.phase)
+                        ? <Loader2 size={11} style={{ animation: 'spin 1.5s linear infinite', flexShrink: 0 }} />
+                        : livePhase.phase === 'found'
+                          ? <CheckCircle2 size={11} color="var(--forest)" style={{ flexShrink: 0 }} />
+                          : <CircleSlash size={11} style={{ flexShrink: 0 }} />}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {livePhase.text}{typeof livePhase.pct === 'number' ? ` · ${livePhase.pct}%` : ''}
+                      </span>
                     </span>
                   )}
                   {/* feature/cua-live-assist — pause the robot and drive it
