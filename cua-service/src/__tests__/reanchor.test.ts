@@ -47,9 +47,14 @@ const SELECTORS: Record<string, string> = {
 const REQUIRED = ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date'];
 
 describe('requiredColumnsForTarget', () => {
-  test('core target returns its contract-required columns', () => {
+  test('core target returns its ESSENTIAL columns (feature/cua-tolerant-mapper)', () => {
+    // Re-anchor health now certifies only the essentials, so a healthy arrivals
+    // feed whose arrival_date is page-context/blank isn't judged "uncertified"
+    // → no spurious paid re-learn. The fuller {…, arrival_date, departure_date}
+    // set (REQUIRED below) is still passed EXPLICITLY by the certify tests to
+    // prove the certification logic itself on the value vectors.
     const req = requiredColumnsForTarget('getArrivals');
-    assert.deepEqual(new Set(req), new Set(REQUIRED));
+    assert.deepEqual(new Set(req), new Set(['pms_reservation_id', 'guest_name']));
   });
   test('non-core target → no required columns (re-anchor abstains on it)', () => {
     assert.deepEqual(requiredColumnsForTarget('getPaymentsDaily'), []);

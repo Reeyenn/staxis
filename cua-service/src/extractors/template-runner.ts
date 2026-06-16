@@ -23,7 +23,7 @@ import { safeGoto } from '../browser-utils/navigate.js';
 import { substituteTemplate, templatePlaceholders } from '../url-template.js';
 import type { LearnedDateFormat } from '../types.js';
 import { applyParser } from '../parsers/registry.js';
-import { requiredLearnedFor } from '../target-contract.js';
+import { requiredLearnedFor, deriveContextColumns } from '../target-contract.js';
 import { DETAIL_PER_POLL_MAX } from '../column-recovery.js';
 // Side-effect imports — register the value parsers at module load.
 //   generic.js: the PMS-AGNOSTIC default parsers (generic_date/currency/enum…)
@@ -197,6 +197,43 @@ export function findBlankContractColumns(
   const isBlank = (v: unknown) =>
     v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
   return required.filter((col) => rows.every((r) => isBlank(r[col])));
+}
+
+/** ISO yyyy-mm-dd "today" in UTC. The default run/view date when a caller does
+ *  not thread a PMS-timezone date (tests / ad-hoc). session-driver passes the
+ *  PMS-local date explicitly so a poll straddling midnight stamps the hotel's
+ *  calendar day, matching how captured_at/changed_at and the {today} URL render
+ *  already behave. */
+export function defaultRunDateIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * GENERIC contextual derivation at poll time (feature/cua-tolerant-mapper).
+ * MUTATES `rows`: for every contextual column of this feed (deriveContextColumns
+ * — e.g. arrivals' arrival_date, departures' departure_date) whose extracted
+ * value is blank/null on a row, supply the run/view date. This lands a REAL,
+ * type-valid ISO date on each row BEFORE the writer validates, exactly mirroring
+ * how the writer synthesizes captured_at/changed_at with now(). Fill-when-blank
+ * ONLY: a page that genuinely prints a per-row date keeps its extracted value.
+ * No-op for non-core feeds (deriveContextColumns returns {}).
+ */
+export function applyDerivedContextColumns(
+  template: TableTemplate,
+  rows: Array<Record<string, unknown>>,
+  runDateIso: string,
+): void {
+  if (!template.sourceActionKey || rows.length === 0) return;
+  const derived = deriveContextColumns(template.sourceActionKey, runDateIso);
+  const cols = Object.keys(derived);
+  if (cols.length === 0) return;
+  const isBlank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  for (const row of rows) {
+    for (const col of cols) {
+      if (isBlank(row[col])) row[col] = derived[col]!;
+    }
+  }
 }
 
 // ─── Per-row detail enrichment (feature/cua-column-recovery) ─────────────────
@@ -403,6 +440,10 @@ export async function runSingleSourceTemplate(args: {
    *  isolation + selector-change invalidation in one key. Absent → caching
    *  disabled. */
   detailCacheScope?: string;
+  /** ISO yyyy-mm-dd run/view date for contextual derivation
+   *  (feature/cua-tolerant-mapper). session-driver passes the PMS-local date;
+   *  absent → UTC today (defaultRunDateIso). */
+  runDateIso?: string;
 }): Promise<TemplateRunResult> {
   const { template, page, allowedHost, signal } = args;
   if (template.sources.length !== 1) {
@@ -487,6 +528,12 @@ export async function runSingleSourceTemplate(args: {
     ...applyTemplateParsers(r, template, 'list_row'),
     ...applyTemplateParsers(r, template, 'detail_page'),
   }));
+
+  // feature/cua-tolerant-mapper — fill blank contextual columns (arrivals'
+  // arrival_date / departures' departure_date) from the run/view date BEFORE the
+  // contract guard + writer see the rows, so a page that prints the date only as
+  // page-context never looks like a broken/dead feed.
+  applyDerivedContextColumns(template, parsedRows, args.runDateIso ?? defaultRunDateIso());
 
   const blankCols = findBlankContractColumns(template, parsedRows);
   if (blankCols.length > 0) {
