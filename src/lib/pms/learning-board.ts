@@ -38,6 +38,9 @@ export interface BoardPreview {
 
 export interface BoardTargetState {
   status?: string;
+  /** Additive to `status` (feature/cua-admin-mapper-visibility): the finer
+   *  live phase the robot is in. Optional — older jobs persist only `status`. */
+  phase?: string;
   startedAt?: string;
   finishedAt?: string;
   carried?: boolean;
@@ -57,17 +60,63 @@ export type FeedGlyph =
   | 'didnt_finish' // ◐ was searching when the run died (terminal coercion)
   | 'not_reached'; // — never reached before the run ended
 
+/**
+ * The finer live PHASE within (mostly) the 'searching' glyph — a separate,
+ * additive contract from the glyph above. The robot writes it onto
+ * boardTargets[key].phase and onto result.currentActivity.phase
+ * (feature/cua-admin-mapper-visibility). Display-only; degrades to absent.
+ */
+export type FeedPhase =
+  | 'queued'
+  | 'navigating'
+  | 'extracting'
+  | 'certifying'
+  | 'drilling'
+  | 'rechecking'
+  | 'found'
+  | 'unavailable'
+  | 'failed'
+  | 'cost_capped';
+
+const FEED_PHASES: ReadonlySet<string> = new Set<FeedPhase>([
+  'queued', 'navigating', 'extracting', 'certifying', 'drilling',
+  'rechecking', 'found', 'unavailable', 'failed', 'cost_capped',
+]);
+
+/** Phases that mean "actively working" — a spinner is appropriate. */
+const IN_PROGRESS_PHASES: ReadonlySet<string> = new Set<FeedPhase>([
+  'queued', 'navigating', 'extracting', 'certifying', 'drilling', 'rechecking',
+]);
+
+export function isInProgressPhase(phase: FeedPhase | null | undefined): boolean {
+  return typeof phase === 'string' && IN_PROGRESS_PHASES.has(phase);
+}
+
 export interface FeedRow {
   key: string;
   label: string;
   goal: string;
   optional: boolean;
   glyph: FeedGlyph;
+  /** Finer live phase (mostly while glyph==='searching'). Additive; absent on
+   *  older jobs. Drives the per-feed phase detail without touching the glyph. */
+  phase?: FeedPhase;
   rowCount?: number;
   sample?: Array<Record<string, string>>;
   sampleKind?: 'rows' | 'records';
   reason?: string;
   carried?: boolean;
+}
+
+/**
+ * The single live line: what the robot is doing RIGHT NOW, from
+ * result.currentActivity. Display-only mirror of the worker's writer.
+ */
+export interface CurrentActivity {
+  feedKey: string | null;
+  phase: FeedPhase | null;
+  pct: number | null;
+  at: string | null;
 }
 
 export interface FeedSummary {
@@ -153,6 +202,10 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
     const preview = state.preview && typeof state.preview === 'object' ? state.preview : undefined;
     const foundViaBoard = state.status === 'found';
     const foundViaActions = d.key in actionsSoFar;
+    // Additive finer phase — never affects the glyph below.
+    const phase = typeof state.phase === 'string' && FEED_PHASES.has(state.phase)
+      ? (state.phase as FeedPhase)
+      : undefined;
 
     let glyph: FeedGlyph;
     if (foundViaBoard || foundViaActions) {
@@ -177,6 +230,7 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
       goal: d.goal,
       optional: d.optional,
       glyph,
+      ...(phase ? { phase } : {}),
       ...(typeof preview?.rowCount === 'number' ? { rowCount: preview.rowCount } : {}),
       ...(Array.isArray(preview?.sample) && preview.sample.length > 0 ? { sample: preview.sample } : {}),
       ...(preview?.sampleKind === 'rows' || preview?.sampleKind === 'records'
@@ -202,4 +256,51 @@ export function summarizeFeedRows(rows: FeedRow[]): FeedSummary {
     else summary.waiting++;
   }
   return summary;
+}
+
+/**
+ * Parse result.currentActivity into the single live-line shape. Pure +
+ * defensive: any non-conforming shape (or a pre-ship job that never wrote it)
+ * yields null so the board degrades to no phase line. Returns null unless at
+ * least a recognized phase OR a feed key is present.
+ */
+export function parseCurrentActivity(result: unknown): CurrentActivity | null {
+  const raw = asRecord(result).currentActivity;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const ca = raw as Record<string, unknown>;
+  const phase = typeof ca.phase === 'string' && FEED_PHASES.has(ca.phase)
+    ? (ca.phase as FeedPhase)
+    : null;
+  const feedKey = typeof ca.feedKey === 'string' && ca.feedKey.length > 0 ? ca.feedKey : null;
+  const pct = typeof ca.pct === 'number' && Number.isFinite(ca.pct)
+    ? Math.max(0, Math.min(100, Math.round(ca.pct)))
+    : null;
+  const at = typeof ca.at === 'string' && ca.at.length > 0 ? ca.at : null;
+  if (!phase && !feedKey) return null;
+  return { feedKey, phase, pct, at };
+}
+
+/**
+ * Human, founder-facing phase label. `feedNoun` is a prettified feed name
+ * (e.g. "Room status") that interpolates into the navigating/extracting
+ * phrasings; an empty string falls back to feed-less wording. English — the
+ * admin studio (this board + the coverage editor) is English-only by
+ * convention, like every other screen under /admin.
+ */
+export function phaseLabel(phase: FeedPhase, feedNoun = ''): string {
+  // Lower-case the feed for natural mid-sentence flow ("the room status screen").
+  const feed = feedNoun ? feedNoun.charAt(0).toLowerCase() + feedNoun.slice(1) : '';
+  switch (phase) {
+    case 'navigating':  return feed ? `Finding the ${feed} screen…` : 'Finding the screen…';
+    case 'extracting':  return feed ? `Reading the ${feed} data…` : 'Reading the data…';
+    case 'certifying':  return 'Double-checking the columns…';
+    case 'drilling':    return 'Digging into the details…';
+    case 'rechecking':  return 'Re-checking…';
+    case 'queued':      return 'Waiting in line…';
+    case 'found':       return 'Found ✓';
+    case 'unavailable': return 'Not in this PMS';
+    case 'failed':      return "Couldn't find it";
+    case 'cost_capped': return 'Stopped (budget)';
+    default:            return '';
+  }
 }
