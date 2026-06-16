@@ -568,17 +568,30 @@ export async function runMappingJob(
     // feature/cua-live-assist — founder takeover controller (gate polled at
     // the top of each mapActionCore step).
     takeover,
-    onProgress: (label, pct) => {
-      log.info('mapping-driver: progress', { jobId, label, pct });
+    onProgress: (label, pct, meta) => {
+      log.info('mapping-driver: progress', {
+        jobId, label, pct,
+        ...(meta?.feedKey ? { feedKey: meta.feedKey } : {}),
+        ...(meta?.phase ? { phase: meta.phase } : {}),
+      });
       // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
       // Mapping admin UI. mapper.ts emits these from mapPMS at:
       // login start/done, each target start, each target done. Fire-
       // and-forget; broadcastMappingEvent never throws.
+      // feature/cua-mapper-phases-captures — when the tick carries structured
+      // feedKey/phase (per-target ticks do; login/setup ticks don't), ride them
+      // on the event's existing `detail` escape hatch so the realtime live
+      // ticker can show the phase without polling the job result. The durable
+      // currentActivity write itself lives in mapper.ts (where mergeJobResult
+      // and the feedKey/phase actually are); this is purely the live broadcast.
       void broadcastMappingEvent(channel, {
         type: 'mapping_in_progress',
         jobId,
         label,
         pct,
+        ...(meta?.feedKey || meta?.phase
+          ? { detail: { feedKey: meta?.feedKey, phase: meta?.phase } }
+          : {}),
         at: new Date().toISOString(),
       });
     },

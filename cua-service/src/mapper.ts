@@ -42,7 +42,8 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, CsvHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, CsvHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState, BoardTargetPhase, BoardCurrentActivity } from './types.js';
+import { captureFeedProvenanceScreenshot } from './feed-capture.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns, templateFromSample, substituteTemplate } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS, coreTargetSharesRequiredSchema } from './target-contract.js';
 import { shouldNudgeCommit, buildCommitNudge, COMMIT_DITHER_TURNS, type TabularSummary } from './commit-signal.js';
@@ -476,7 +477,14 @@ let TARGETS: MapperTarget[];
 interface MapperOptions {
   pmsType: PMSType;
   credentials: PMSCredentials;
-  onProgress?: (step: string, pct: number) => void;
+  /** feature/cua-mapper-phases-captures — the optional `meta` carries the
+   *  structured feedKey + live phase for the per-target ticks (login/setup
+   *  ticks omit it). Back-compat: existing 2-arg callers still satisfy this. */
+  onProgress?: (
+    step: string,
+    pct: number,
+    meta?: { feedKey?: string; phase?: BoardTargetPhase },
+  ) => void;
   /**
    * feature/cua-live-view — continuous Learning Board live view. Called
    * with each vision screenshot the agent takes (`exec.screenshotB64` —
@@ -619,6 +627,48 @@ async function mergeJobResult(
   const existingResult = (row.result as Record<string, unknown>) ?? {};
   const newResult = { ...existingResult, ...patch };
   await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
+}
+
+// ─── feature/cua-mapper-phases-captures — live phase + activity ─────────────
+// CONCURRENCY NOTE: every currentActivity write below goes through the SAME
+// mergeJobResult (select-then-merge) and is ALWAYS awaited on the mapper's
+// single per-job await chain (mapPMS → mapAction → mapActionCore → here). No
+// currentActivity write is ever fire-and-forget, so it can never interleave
+// with — and clobber — a boardTargets write. This preserves mergeJobResult's
+// "sole sequential mid-run writer" invariant (see its doc above); we observe
+// and emit, we do not change that invariant.
+
+/** Build the run-level activity object with a fresh ISO timestamp. */
+function currentActivityObj(
+  feedKey: string,
+  phase: BoardTargetPhase,
+  label: string,
+  pct: number,
+): BoardCurrentActivity {
+  return { feedKey, phase, label, pct, at: new Date().toISOString() };
+}
+
+/** Best-effort run-level activity write. Awaited by callers (see note above) so
+ *  it never races the per-feed boardTargets writes. No-op without a jobId. */
+async function recordCurrentActivity(
+  jobId: string | null | undefined,
+  feedKey: string,
+  phase: BoardTargetPhase,
+  label: string,
+  pct: number,
+): Promise<void> {
+  if (!jobId || !feedKey) return;
+  await mergeJobResult(jobId, {
+    currentActivity: currentActivityObj(feedKey, phase, label, pct),
+  }).catch(() => {});
+}
+
+/** A terminal failure whose reason came from a cost-cap soft-abort (per-target
+ *  or cumulative). Used ONLY to pick the finer 'cost_capped' board phase — the
+ *  persisted `status` stays 'failed', unchanged. result.unavailable is still
+ *  the only structured terminal flag; this is a narrow reason-text read. */
+export function isCostCapReason(reason: string | null | undefined): boolean {
+  return !!reason && /cost cap/i.test(reason);
 }
 
 /**
@@ -938,7 +988,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       if (onlyTargets && !onlyTargets.has(target.key)) {
         continue;
       }
-      opts.onProgress?.(target.progressLabel, target.progressPct);
+      opts.onProgress?.(target.progressLabel, target.progressPct, {
+        feedKey: target.key,
+        phase: 'navigating',
+      });
       const overBudget = await checkBudget();
       if (overBudget) {
         log.warn('mapper: global cost cap hit — stopping target loop', {
@@ -953,12 +1006,24 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       // Learning Board — mark searching only AFTER the budget check above:
       // a budget break must leave unreached feeds as "waiting in line",
       // never strand a phantom spinner.
-      boardTargets[target.key] = { status: 'searching', startedAt: new Date().toISOString() };
-      await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
+      boardTargets[target.key] = { status: 'searching', phase: 'navigating', startedAt: new Date().toISOString() };
+      // feature/cua-mapper-phases-captures — per-feed phase rides the existing
+      // boardTargets write; the run-level currentActivity rides the SAME merge
+      // (one UPDATE, no extra write, no clobber risk).
+      await mergeJobResult(opts.jobId, {
+        boardTargets,
+        currentActivity: currentActivityObj(target.key, 'navigating', target.progressLabel, target.progressPct),
+      }).catch(() => {});
       // Plan v7 — dispatch on target classification. Drill-down targets
       // use mapDrillDownAction (different agent loop, different output
       // shape — captures URL templates + per-field coverage). List/report
       // targets use the original mapAction.
+      // feature/cua-mapper-phases-captures — only the mapAction path takes a
+      // durable provenance screenshot. drilldown_sample feeds INTENTIONALLY get
+      // none: their "page" is a single guest DETAIL record, which exposes more
+      // un-masked guest text (names/emails/addresses are policy-visible — only
+      // credentials/SSN/CC are masked) than a list page, so we withhold by
+      // default. The board treats "a found feed with no capture row" as normal.
       const result = target.classification === 'drilldown_sample'
         ? await mapDrillDownAction({
             page,
@@ -989,6 +1054,11 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             signal: opts.signal,
             model,
             jobCostCapMicros: opts.jobCostCapMicros,
+            // feature/cua-mapper-phases-captures — pmsFamily stamps the durable
+            // per-feed provenance capture row; progressPct carries the overall
+            // pct onto in-mapAction sub-phase activity ticks.
+            pmsFamily: opts.pmsType,
+            progressPct: target.progressPct,
             // feature/cua-column-recovery — the date order learned from
             // earlier targets this run (plus any repair seed), so the
             // recovery value-gate parses candidate dates exactly like the
@@ -1008,6 +1078,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         const startedAt = boardTargets[target.key]?.startedAt;
         boardTargets[target.key] = {
           status: 'found',
+          phase: 'found',
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
           ...(result.boardPreview ? { preview: result.boardPreview } : {}),
@@ -1016,7 +1087,13 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // doesn't lose the work. Board state rides the same single UPDATE.
         // Best-effort: on persist failure, keep running (the next target
         // will retry the persist with both).
-        await mergeJobResult(opts.jobId, { actionsSoFar: actions, boardTargets }).catch((err) => {
+        // feature/cua-mapper-phases-captures — terminal phase + currentActivity
+        // ride this same single UPDATE.
+        await mergeJobResult(opts.jobId, {
+          actionsSoFar: actions,
+          boardTargets,
+          currentActivity: currentActivityObj(target.key, 'found', target.progressLabel, target.progressPct),
+        }).catch((err) => {
           log.warn('mapper: target progress persist failed (non-fatal)', {
             jobId: opts.jobId ?? undefined, actionName: target.key, err: (err as Error).message,
           });
@@ -1032,16 +1109,29 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           finalUrl: result.finalUrl,
         });
         const startedAt = boardTargets[target.key]?.startedAt;
+        // feature/cua-mapper-phases-captures — the persisted `status` is
+        // UNCHANGED (unavailable vs failed, no reason-text matching). The
+        // finer `phase` additionally splits a cost-cap soft-abort out of the
+        // generic 'failed' bucket for the board, purely observational.
+        const terminalPhase: BoardTargetPhase = result.unavailable
+          ? 'unavailable'
+          : isCostCapReason(result.reason)
+            ? 'cost_capped'
+            : 'failed';
         boardTargets[target.key] = {
           // `unavailable` is the structured agent/admin declaration — the
           // board renders it "not available in this PMS" vs plain "couldn't
           // find it". No string matching on reason text.
           status: result.unavailable ? 'unavailable' : 'failed',
+          phase: terminalPhase,
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
           reason: result.reason.slice(0, 300),
         };
-        await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
+        await mergeJobResult(opts.jobId, {
+          boardTargets,
+          currentActivity: currentActivityObj(target.key, terminalPhase, target.progressLabel, target.progressPct),
+        }).catch(() => {});
       }
     }
 
@@ -1767,6 +1857,14 @@ interface MapActionArgs {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
+  /** feature/cua-mapper-phases-captures — the PMS family (opts.pmsType),
+   *  threaded so the durable per-feed provenance capture can stamp its
+   *  mapping_feed_captures row. Optional/back-compat. */
+  pmsFamily?: string;
+  /** feature/cua-mapper-phases-captures — this target's progressPct, threaded
+   *  so the in-mapAction sub-phase currentActivity ticks (extracting/
+   *  certifying/rechecking/drilling/cost_capped) carry an overall pct. */
+  progressPct?: number;
   /** Plan v9 — true for the promotion-gating feeds (optional:false). Used by the
    *  agent prompt to tell the model this feed is ESSENTIAL (so it persists +
    *  backtracks instead of giving up early). Plan v10 (FIX 2): `required === false`
@@ -2086,6 +2184,24 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     // and a wrong-page preview would be presented as "what it captured".
     if (result.ok && !result.viaBail && result.action.parse.mode === 'table') {
       result.boardPreview = await captureBoardPreview(args.page, result.action);
+    }
+    // feature/cua-mapper-phases-captures — durable per-feed PROVENANCE
+    // screenshot, taken on the SAME verified-on-feed-page moment as the board
+    // preview, BEFORE structured discovery (or anything else) can navigate the
+    // page away. Gated on `!viaBail` (the page-wandered signal) like the
+    // preview, but NOT on table mode — a picture is meaningful for non-table
+    // feeds too. Best-effort, fully self-contained (never throws); withholds
+    // when a reliably-masked capture can't be produced. Drill-recovered feeds
+    // are already navigated back to the feed page before mapActionCore returns,
+    // so this still captures the feed (not a drill detail).
+    if (result.ok && !result.viaBail) {
+      await captureFeedProvenanceScreenshot({
+        page: args.page,
+        jobId: args.jobId,
+        propertyId: args.propertyId,
+        pmsFamily: args.pmsFamily ?? null,
+        feedKey: args.actionName,
+      });
     }
     // feature/cua-column-recovery — an action that gained a drillDown block
     // (stage-2 recovery) skips structured discovery: a mode:'api' upgrade
@@ -2547,6 +2663,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
       });
       // Fall through to the end-of-loop "no usable JSON" branch with a
       // clearer reason. mapPMS treats this as a non-fatal partial.
+      // feature/cua-mapper-phases-captures — surface the soft-abort live.
+      await recordCurrentActivity(args.jobId, args.actionName, 'cost_capped', "Reached this feed's budget", args.progressPct ?? 0);
       return bail(`per-target cost cap exceeded for ${classification} ($${(targetCostCapMicros / 1_000_000).toFixed(2)})`);
     }
 
@@ -2688,6 +2806,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // off-page fields like a forecast run-date the model genuinely can't
         // supply). This keeps recovery symmetric with the promotion gate,
         // which is also REQUIRED_TARGETS-only.
+        // feature/cua-mapper-phases-captures — about to read rows off the live
+        // DOM and certify the required columns against them.
+        await recordCurrentActivity(args.jobId, args.actionName, 'extracting', 'Gathering rows', args.progressPct ?? 0);
         const audit = await auditLearnedColumnsOnPage({
           page: args.page,
           actionKey: args.actionName as keyof Recipe['actions'],
@@ -2700,6 +2821,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           pendingRecovery,
         });
         for (const col of audit.outstanding.keys()) pendingRecovery.add(col);
+        // feature/cua-mapper-phases-captures — columns audited / value-certified.
+        await recordCurrentActivity(args.jobId, args.actionName, 'certifying', 'Verifying columns', args.progressPct ?? 0);
 
         // Best-candidate tracking: an abort (or a re-ask that breaks a
         // previously-good column) must never ship a WORSE map than one we
@@ -2784,6 +2907,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // re-enters the same capped for-loop).
         if (completenessReasks < MAX_COMPLETENESS_REASKS) {
           completenessReasks++;
+          // feature/cua-mapper-phases-captures — a required column was blank/dead;
+          // re-asking the model on-page.
+          await recordCurrentActivity(args.jobId, args.actionName, 'rechecking', 'Re-checking the page', args.progressPct ?? 0);
           log.warn('mapper: required columns blank/dead — focused recovery re-ask', {
             actionName: args.actionName,
             outstanding: Object.fromEntries(audit.outstanding),
@@ -2835,6 +2961,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           recoveryDrillAttempted = true;
           const pre = drillPreconditions(args.actionName as keyof Recipe['actions'], best.audit);
           if (pre.ok) {
+            // feature/cua-mapper-phases-captures — opening a sample record to
+            // recover the missing column from its detail page.
+            await recordCurrentActivity(args.jobId, args.actionName, 'drilling', 'Opening a record for details', args.progressPct ?? 0);
             // The drill MUST run against the page the best candidate was
             // VERIFIED on — its rowSelector/probeRows/sampleKey describe that
             // page, and drillDown.listUrl is persisted from it. The model may
