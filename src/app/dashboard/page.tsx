@@ -31,6 +31,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
 import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
 import { LogBookCard } from './_components/LogBookCard';
+import { CalendarCard } from './_components/CalendarCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
@@ -832,6 +833,9 @@ export default function DashboardPage() {
 
           {/* Shift Log Book — latest recaps; renders only once there's at least one */}
           <LogBookCard />
+
+          {/* Upcoming team calendar events; renders only once there's at least one upcoming */}
+          <CalendarCard />
 
           {/* What Staxis learned — self-learning Move #2; renders only once populated */}
           <MemoryRecapCard />

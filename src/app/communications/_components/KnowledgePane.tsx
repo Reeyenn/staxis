@@ -2,7 +2,7 @@
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Knowledge hub — the third Communications view (Chats · Tasks · Knowledge).
-// Sub-tabs: SOPs · Documents · Contacts · Calendar. ALL STAFF read; MANAGERS
+// Sub-tabs: SOPs · Documents · Contacts. ALL STAFF read; MANAGERS
 // publish/edit. All data flows through /api/knowledge/* (service-role); this
 // component never touches the browser DB client. The real Q&A happens through
 // the existing bottom-right assistant (search_knowledge tool) — the banner at
@@ -11,13 +11,13 @@
 
 import React from 'react';
 import {
-  BookOpen, FileText, Phone, CalendarDays, Plus, Pencil, Trash2, Sparkles,
+  BookOpen, FileText, Phone, Plus, Pencil, Trash2, Sparkles,
   Download, Loader2, ChevronLeft, Mail, Search, Lock, AlertTriangle,
   Folder, FolderPlus, Users,
 } from 'lucide-react';
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
 import type {
-  KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO, KnowledgeContactDTO, KnowledgeEventDTO,
+  KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO, KnowledgeContactDTO,
   KnowledgeSection, ContactCategory, KnowledgeVisibility, ExtractionStatus, Dept,
 } from '@/lib/knowledge/types';
 import { CONTACT_CATEGORIES, KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
@@ -83,7 +83,6 @@ const SECTIONS: { key: KnowledgeSection; icon: React.ReactNode; en: string; es: 
   { key: 'sops', icon: <BookOpen size={15} />, en: 'SOPs', es: 'Procedimientos' },
   { key: 'documents', icon: <FileText size={15} />, en: 'Documents', es: 'Documentos' },
   { key: 'contacts', icon: <Phone size={15} />, en: 'Contacts', es: 'Contactos' },
-  { key: 'calendar', icon: <CalendarDays size={15} />, en: 'Calendar', es: 'Calendario' },
 ];
 
 export function KnowledgePane({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
@@ -122,7 +121,6 @@ export function KnowledgePane({ pid, isManager, L }: { pid: string; isManager: b
         {section === 'sops' && <SopsSection pid={pid} isManager={isManager} L={L} />}
         {section === 'documents' && <DocumentsSection pid={pid} isManager={isManager} L={L} />}
         {section === 'contacts' && <ContactsSection pid={pid} isManager={isManager} L={L} />}
-        {section === 'calendar' && <CalendarSection pid={pid} isManager={isManager} L={L} />}
       </div>
     </div>
   );
@@ -762,124 +760,6 @@ function ContactEditor({ pid, contact, L, onDone, onCancel }: { pid: string; con
           <button onClick={save} disabled={busy || !name.trim()} style={{ ...primaryBtn, opacity: busy || !name.trim() ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
           <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════ Calendar ════════════════════════════════════
-
-function CalendarSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
-  const [items, setItems] = React.useState<KnowledgeEventDTO[] | null>(null);
-  const [adding, setAdding] = React.useState(false);
-
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ events: KnowledgeEventDTO[] }>(`/api/knowledge/events?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setItems(r.data.events);
-    else setItems([]);
-  }, [pid]);
-  React.useEffect(() => { void load(); }, [load]);
-
-  const remove = async (ev: KnowledgeEventDTO) => {
-    if (!window.confirm(L(`Delete "${ev.title}"?`, `¿Eliminar "${ev.title}"?`))) return;
-    await apiDelete(`/api/knowledge/events?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(ev.id)}`);
-    await load();
-  };
-
-  // Split upcoming vs past (today inclusive in upcoming).
-  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD local
-  const upcoming = (items ?? []).filter((e) => (e.endDate ?? e.eventDate) >= todayStr);
-  const past = (items ?? []).filter((e) => (e.endDate ?? e.eventDate) < todayStr).reverse();
-
-  return (
-    <div>
-      <SectionHeader
-        title={L('Team calendar', 'Calendario del equipo')}
-        action={isManager ? <button onClick={() => setAdding((v) => !v)} style={primaryBtn}><Plus size={15} /> {L('Add event', 'Agregar')}</button> : undefined}
-      />
-      {adding && isManager && <EventEditor pid={pid} L={L} onDone={async () => { setAdding(false); await load(); }} onCancel={() => setAdding(false)} />}
-      {items === null ? <Loading L={L} /> : items.length === 0 ? (
-        <Empty text={L('No events yet. Add training days, vendor visits, or brand audits.', 'Aún no hay eventos. Agrega días de capacitación, visitas de proveedores o auditorías.')} />
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {upcoming.length > 0 && <EventList title={L('Upcoming', 'Próximos')} events={upcoming} isManager={isManager} onRemove={remove} L={L} />}
-          {past.length > 0 && <EventList title={L('Past', 'Pasados')} events={past} isManager={isManager} onRemove={remove} L={L} dim />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EventList({ title, events, isManager, onRemove, L, dim }: { title: string; events: KnowledgeEventDTO[]; isManager: boolean; onRemove: (e: KnowledgeEventDTO) => void; L: LFn; dim?: boolean }) {
-  return (
-    <div style={{ opacity: dim ? 0.7 : 1 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 6 }}>{title}</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {events.map((ev) => (
-          <div key={ev.id} style={{ ...card, padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-            <div style={{ flexShrink: 0, textAlign: 'center', minWidth: 46 }}>
-              <CalendarDays size={16} color="var(--snow-sage-deep)" />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{ev.title}</div>
-              <div style={{ fontSize: 12.5, color: 'var(--snow-ink2)' }}>{fmtRange(ev.eventDate, ev.endDate, L)}</div>
-              {ev.notes && <div style={{ fontSize: 12.5, color: 'var(--snow-ink3)', marginTop: 3, whiteSpace: 'pre-wrap' }}>{ev.notes}</div>}
-            </div>
-            {isManager && <button onClick={() => onRemove(ev)} title={L('Delete', 'Eliminar')} style={iconBtn}><Trash2 size={14} /></button>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function fmtRange(start: string, end: string | null, L: LFn): string {
-  const fmt = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  if (!end || end === start) return fmt(start);
-  return `${fmt(start)} → ${fmt(end)}`;
-}
-
-function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: LFn; onDone: () => void; onCancel: () => void }) {
-  const [title, setTitle] = React.useState('');
-  const [eventDate, setEventDate] = React.useState('');
-  const [endDate, setEndDate] = React.useState('');
-  const [notes, setNotes] = React.useState('');
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const save = async () => {
-    if (!title.trim() || !eventDate || busy) return;
-    setBusy(true); setError(null);
-    const r = await apiPost('/api/knowledge/events', { pid, title: title.trim(), eventDate, endDate: endDate || null, notes: notes.trim() || null });
-    setBusy(false);
-    if (r.ok) onDone();
-    else setError(r.error || L('Could not save. Try again.', 'No se pudo guardar. Inténtalo de nuevo.'));
-  };
-
-  return (
-    <div style={{ ...card, padding: 16, display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16, maxWidth: 520 }}>
-      <div>
-        <label style={labelStyle}>{L('Title', 'Título')}</label>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={KNOWLEDGE_LIMITS.TITLE_MAX} placeholder={L('e.g. Fire safety training', 'ej. Capacitación contra incendios')} style={inputStyle} autoFocus />
-      </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={labelStyle}>{L('Date', 'Fecha')}</label>
-          <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} style={inputStyle} />
-        </div>
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={labelStyle}>{L('End date (optional)', 'Fecha fin (opcional)')}</label>
-          <input type="date" value={endDate} min={eventDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-        </div>
-      </div>
-      <div>
-        <label style={labelStyle}>{L('Notes (optional)', 'Notas (opcional)')}</label>
-        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={KNOWLEDGE_LIMITS.NOTES_MAX} rows={2} style={{ ...inputStyle, resize: 'vertical' }} />
-      </div>
-      {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={save} disabled={busy || !title.trim() || !eventDate} style={{ ...primaryBtn, opacity: busy || !title.trim() || !eventDate ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
-        <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
       </div>
     </div>
   );
