@@ -34,8 +34,18 @@ export async function GET(req: NextRequest) {
 
   const session = await requireSession(req);
   if (!session.ok) {
-    // Hit via a browser navigation, so send them to sign-in (not a JSON 401).
-    return to('/signin');
+    // Fail SOFT to the funnel — NEVER a hard /signin from here. The login gate
+    // only sends an ALREADY-authenticated owner to this route (via a full-page
+    // window.location.href), so a requireSession miss here is almost always a
+    // transient full-page-nav cookie / device-trust read race — and ejecting
+    // the owner to /signin the instant after they entered their 2FA code is
+    // exactly the bounce this whole fix exists to kill. /property-selector
+    // handles the genuinely-unauthenticated visitor itself (its own guard →
+    // /signin), and for our authenticated-but-racing caller the one-shot
+    // RESUME_GUARD_KEY makes the selector fall through to the dashboard instead
+    // of looping back here. The dashboard's own gate then re-resumes once the
+    // session read settles. Either way: no /signin bounce out of onboarding.
+    return to('/property-selector');
   }
 
   // Who is this, and which hotels do they own?
