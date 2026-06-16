@@ -713,7 +713,16 @@ async function writeReconcile(
         .from(tableName)
         .select(selectCols)
         .eq('property_id', propertyId)
-        .neq(onMissing.column, onMissing.value);  // skip already-resolved rows
+        // Skip already-resolved rows, but KEEP rows whose status column is NULL.
+        // feature/cua-tolerant-mapper made pms_work_orders_v2.status nullable
+        // (0284), so a work order whose status came back blank now writes NULL.
+        // PostgREST `.neq` silently EXCLUDES NULLs (SQL `status <> 'resolved'` is
+        // UNKNOWN for NULL), so a disappeared null-status row would never
+        // auto-resolve and would linger as open forever. `(is.null OR neq)` keeps
+        // it a candidate. No-op for the pre-0284 data (no NULLs existed).
+        // onMissing.value is a controlled enum ('resolved'/'disposed') — safe to
+        // interpolate into the PostgREST or-filter.
+        .or(`${onMissing.column}.is.null,${onMissing.column}.neq.${onMissing.value}`);
 
       // Migration 0225 / feature #11 follow-up: scope auto-resolve to rows
       // produced by the PMS feed. Without this, a voice-issue ticket
