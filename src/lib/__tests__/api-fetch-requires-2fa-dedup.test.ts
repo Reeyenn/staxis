@@ -105,8 +105,15 @@ beforeEach(() => {
     signOutCalls += 1;
     return { error: null };
   }) as typeof supabase.auth.signOut;
+  // Refresh succeeds and yields a token. The default fetch mock still 401s on
+  // the retry (the device is genuinely untrusted in these cases), so the
+  // requires_2fa branch refreshes, retries, sees another 401, and falls
+  // through to the logout — exactly the "JWT valid, device not trusted" model.
   authMock.refreshSession = (async () => ({
-    data: { session: null, user: null },
+    data: {
+      session: { access_token: 'refreshed-tok', expires_at: Math.floor(Date.now() / 1000) + 3600 },
+      user: null,
+    },
     error: null,
   })) as typeof supabase.auth.refreshSession;
 });
@@ -187,6 +194,44 @@ describe('fetchWithAuth — requires_2fa dedup', () => {
     assert.equal(location.assignCalls.length, 1);
     const qs = new URLSearchParams(location.assignCalls[0].split('?')[1]);
     assert.equal(qs.get('reason'), 'session-ended');
+  });
+
+  test('requires_2fa RECOVERS via refresh+retry → returns response, NO logout (trust-establishment race)', async () => {
+    // The fix: a requires_2fa 401 during the trust window (e.g. onboarding's
+    // capabilities/overrides firing the instant a 1-property owner verifies,
+    // racing ahead of trust-device's Set-Cookie) must NOT force-logout. The
+    // RETRY is the real fix: by the time the awaited refresh resolves, the
+    // staxis_device cookie has landed and the same-origin retry re-sends it, so
+    // the server now sees a trusted device → 200. (Modeled here as: first call
+    // 401s, retry 200; the refresh just gates the retry.)
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(
+          JSON.stringify({ ok: false, code: 'requires_2fa' }),
+          { status: 401, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    // Refresh now yields a token (the post-trust-device JWT carrying mfa).
+    (supabase.auth as unknown as { refreshSession: typeof supabase.auth.refreshSession }).refreshSession =
+      (async () => ({
+        data: {
+          session: { access_token: 'fresh-mfa-tok', expires_at: Math.floor(Date.now() / 1000) + 3600 },
+          user: null,
+        },
+        error: null,
+      })) as typeof supabase.auth.refreshSession;
+
+    const res = await fetchWithAuth('/api/capabilities/overrides?propertyId=p1');
+    assert.equal(res.status, 200, 'retry after refresh should return the 200');
+    assert.equal(calls, 2, 'should retry exactly once after refresh');
+    assert.equal(signOutCalls, 0, 'must NOT sign out when the retry recovers');
+    assert.equal(location.assignCalls.length, 0, 'must NOT redirect to /signin');
   });
 });
 

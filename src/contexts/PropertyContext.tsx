@@ -15,6 +15,7 @@ import {
   subscribeToStaff,
 } from '@/lib/db';
 import { getDefaultPublicAreas, getDefaultLaundryCategories } from '@/lib/defaults';
+import { isOnboardingInProgress } from '@/lib/onboarding/state';
 import type { Property, StaffMember, PublicArea, LaundryCategory } from '@/types';
 import { generateId } from '@/lib/utils';
 
@@ -85,6 +86,15 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     () => properties.find(p => p.id === activePropertyId) ?? null,
     [properties, activePropertyId]
   );
+
+  // Is the active property still mid-onboarding? A primitive (not the property
+  // object) so the capabilities effect below can depend on it WITHOUT re-firing
+  // on every unrelated property-data update — but still re-evaluate once the
+  // properties list hydrates after a hard reload (where activePropertyId loads
+  // from localStorage before the list arrives).
+  const activeOnboardingInProgress = activeProperty
+    ? isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState)
+    : false;
 
   const setActivePropertyId = (id: string) => {
     setActivePropertyIdState(id);
@@ -285,6 +295,15 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       setCapabilityOverrides({});
       return;
     }
+    // Don't fire this protected call while the property is still mid-onboarding.
+    // The owner belongs in the signup wizard (not the app), their 2FA device-
+    // trust may still be settling, and overrides default to everyone-everything
+    // anyway. Firing it the instant a freshly-created 1-property owner verifies
+    // is exactly what raced a `requires_2fa` 401 into a forced logout → /signin.
+    if (activeOnboardingInProgress) {
+      setCapabilityOverrides({});
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -296,7 +315,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, activePropertyId]);
+  }, [userUid, activePropertyId, activeOnboardingInProgress]);
 
   const refreshCapabilities = useCallback(async () => {
     if (!activePropertyId) { setCapabilityOverrides({}); return; }
