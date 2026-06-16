@@ -2,9 +2,15 @@
  * /api/knowledge/contacts — vendor / emergency / brand / local directory.
  *
  *   GET    ?pid=                                       → list (ALL STAFF)
- *   POST   { pid, name, company?, phone?, email?, notes?, category? }  → create (MANAGERS)
+ *   POST   { pid, name, company?, phone?, email?, notes?, category?,
+ *           address?, cityStateZip?, hours?, localCategory? }  → create (MANAGERS)
  *   PATCH  { pid, id, ...same fields }                 → edit   (MANAGERS)
  *   DELETE ?pid=&id=                                    → delete (MANAGERS)
+ *
+ * `category` is validated against CONTACT_CATEGORIES here (the DB check was
+ * dropped in 0284 so new buckets need no migration). The local-only fields
+ * (address / city_state_zip / hours / local_category) are optional; local_category
+ * is validated against LOCAL_CATEGORIES and only kept when category === 'local'.
  *
  * Auth: commsContext; writes require the manage_knowledge capability
  * (default: every role; restricted per hotel from the Access tab). Service-role via core.
@@ -15,7 +21,7 @@ import { validateUuid, validateString, validateEnum, validatePhone, isValidEmail
 import { canForUserId } from '@/lib/capabilities/server';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { listContacts, createContact, updateContact, deleteContact, type ContactInput } from '@/lib/knowledge/core';
-import { KNOWLEDGE_LIMITS, CONTACT_CATEGORIES } from '@/lib/knowledge/types';
+import { KNOWLEDGE_LIMITS, CONTACT_CATEGORIES, LOCAL_CATEGORIES } from '@/lib/knowledge/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,6 +41,13 @@ function validateContactFields(raw: Record<string, unknown>): { error?: string; 
   if (companyV.error) return { error: companyV.error };
   const notesV = optionalString(raw.notes, KNOWLEDGE_LIMITS.NOTES_MAX, 'notes');
   if (notesV.error) return { error: notesV.error };
+
+  const addressV = optionalString(raw.address, KNOWLEDGE_LIMITS.ADDRESS_MAX, 'address');
+  if (addressV.error) return { error: addressV.error };
+  const cityStateZipV = optionalString(raw.cityStateZip, KNOWLEDGE_LIMITS.ADDRESS_MAX, 'cityStateZip');
+  if (cityStateZipV.error) return { error: cityStateZipV.error };
+  const hoursV = optionalString(raw.hours, KNOWLEDGE_LIMITS.HOURS_MAX, 'hours');
+  if (hoursV.error) return { error: hoursV.error };
 
   let phone: string | null = null;
   if (raw.phone !== undefined && raw.phone !== null && raw.phone !== '') {
@@ -58,7 +71,22 @@ function validateContactFields(raw: Record<string, unknown>): { error?: string; 
     category = catV.value!;
   }
 
-  return { value: { name: nameV.value!, company: companyV.value!, phone, email, notes: notesV.value!, category } };
+  // local_category is a sub-type of the 'local' bucket only. Validate it against
+  // LOCAL_CATEGORIES when present, and drop it entirely unless category==='local'
+  // so a contact that's re-categorised away from Local can't keep a stale sub-type.
+  let localCategory: string | null = null;
+  if (category === 'local' && raw.localCategory !== undefined && raw.localCategory !== null && raw.localCategory !== '') {
+    const lcV = validateEnum(raw.localCategory, LOCAL_CATEGORIES, 'localCategory');
+    if (lcV.error) return { error: lcV.error };
+    localCategory = lcV.value!;
+  }
+
+  return {
+    value: {
+      name: nameV.value!, company: companyV.value!, phone, email, notes: notesV.value!, category,
+      address: addressV.value!, cityStateZip: cityStateZipV.value!, hours: hoursV.value!, localCategory,
+    },
+  };
 }
 
 export async function GET(req: NextRequest): Promise<Response> {

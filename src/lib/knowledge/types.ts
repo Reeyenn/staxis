@@ -22,6 +22,30 @@ export type ContactCategory = 'vendor' | 'emergency' | 'brand' | 'local';
 export const CONTACT_CATEGORIES: readonly ContactCategory[] = ['vendor', 'emergency', 'brand', 'local'];
 
 /**
+ * Local-contact sub-types (only meaningful when category === 'local').
+ * Mirrors QUORE's "Local" directory list so a hotel switching over finds the
+ * same buckets. Stored free-text in `local_category` (no DB check — the API
+ * validates this set so adding a bucket later needs no migration).
+ */
+export const LOCAL_CATEGORIES = [
+  'Accommodations',
+  'Attractions',
+  'Bar/Nightlife',
+  'Government Service',
+  'Grocery Store',
+  'Hospitals/Clinics',
+  'Mail/Shipping',
+  'Movie Theaters',
+  'Pharmacy',
+  'Place of Worship',
+  'Recreation',
+  'Restaurants',
+  'Shopping',
+  'Travel',
+] as const;
+export type LocalCategory = (typeof LOCAL_CATEGORIES)[number];
+
+/**
  * Per-document/article visibility, three tiers:
  *   - `all_staff` (default) — readable by every authenticated user on the property.
  *   - `dept`      — readable by managers + staff whose own department matches the
@@ -103,6 +127,14 @@ export interface KnowledgeContactDTO {
   email: string | null;
   notes: string | null;
   category: ContactCategory | null;
+  /** Street address (local contacts — e.g. a nearby pharmacy). Free text. */
+  address: string | null;
+  /** City, state & ZIP on one line. Free text. */
+  cityStateZip: string | null;
+  /** Hours as one free-text line ("Mon–Fri 8a–9p, Sat 9a–6p"). */
+  hours: string | null;
+  /** Local sub-type (one of LOCAL_CATEGORIES); only set when category === 'local'. */
+  localCategory: string | null;
   createdByName: string | null;
   createdAt: string;
 }
@@ -128,6 +160,8 @@ export const KNOWLEDGE_LIMITS = {
   EMAIL_MAX: 254,
   PHONE_MAX: 40,
   NOTES_MAX: 2_000,
+  ADDRESS_MAX: 200,
+  HOURS_MAX: 200,
   DOC_FILENAME_MAX: 200,
   FOLDER_NAME_MAX: 80,
   /** Cap on how much extracted text we store per document (keeps the row + ILIKE cheap). */

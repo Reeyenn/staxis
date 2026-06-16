@@ -124,6 +124,10 @@ function toContactDTO(r: Record<string, unknown>): KnowledgeContactDTO {
     email: (r.email as string | null) ?? null,
     notes: (r.notes as string | null) ?? null,
     category: (r.category as ContactCategory | null) ?? null,
+    address: (r.address as string | null) ?? null,
+    cityStateZip: (r.city_state_zip as string | null) ?? null,
+    hours: (r.hours as string | null) ?? null,
+    localCategory: (r.local_category as string | null) ?? null,
     createdByName: (r.created_by_name as string | null) ?? null,
     createdAt: r.created_at as string,
   };
@@ -555,7 +559,7 @@ export async function moveDocument(pid: string, id: string, folderId: string | n
 
 // ── Contacts ───────────────────────────────────────────────────────────────────
 
-const CONTACT_COLS = 'id, name, company, phone, email, notes, category, created_by_name, created_at';
+const CONTACT_COLS = 'id, name, company, phone, email, notes, category, address, city_state_zip, hours, local_category, created_by_name, created_at';
 
 export async function listContacts(pid: string): Promise<KnowledgeContactDTO[]> {
   const { data, error } = await supabaseAdmin
@@ -572,6 +576,7 @@ export async function listContacts(pid: string): Promise<KnowledgeContactDTO[]> 
 export interface ContactInput {
   name: string; company: string | null; phone: string | null;
   email: string | null; notes: string | null; category: ContactCategory | null;
+  address: string | null; cityStateZip: string | null; hours: string | null; localCategory: string | null;
 }
 
 export async function createContact(pid: string, input: ContactInput, actor: KnowledgeActor): Promise<{ id: string }> {
@@ -581,6 +586,10 @@ export async function createContact(pid: string, input: ContactInput, actor: Kno
       property_id: pid,
       name: clean(input.name), company: input.company ? clean(input.company) : null, phone: input.phone,
       email: input.email, notes: input.notes ? clean(input.notes) : null, category: input.category,
+      address: input.address ? clean(input.address) : null,
+      city_state_zip: input.cityStateZip ? clean(input.cityStateZip) : null,
+      hours: input.hours ? clean(input.hours) : null,
+      local_category: input.localCategory,
       created_by: actor.accountId, created_by_name: actor.name,
     })
     .select('id')
@@ -595,6 +604,10 @@ export async function updateContact(pid: string, id: string, input: ContactInput
     .update({
       name: clean(input.name), company: input.company ? clean(input.company) : null, phone: input.phone,
       email: input.email, notes: input.notes ? clean(input.notes) : null, category: input.category,
+      address: input.address ? clean(input.address) : null,
+      city_state_zip: input.cityStateZip ? clean(input.cityStateZip) : null,
+      hours: input.hours ? clean(input.hours) : null,
+      local_category: input.localCategory,
     })
     .eq('id', id)
     .eq('property_id', pid)
@@ -687,7 +700,7 @@ export interface KnowledgeSearchResult {
   passages: KnowledgePassage[];
   articles: { id: string; title: string; category: string | null; snippet: string }[];
   documents: { id: string; title: string; snippet: string | null; hasText: boolean }[];
-  contacts: { id: string; name: string; company: string | null; phone: string | null; email: string | null; category: string | null; notes: string | null }[];
+  contacts: { id: string; name: string; company: string | null; phone: string | null; email: string | null; category: string | null; address: string | null; cityStateZip: string | null; hours: string | null; localCategory: string | null; notes: string | null }[];
   events: { id: string; title: string; eventDate: string; endDate: string | null; notes: string | null }[];
   note: string;
 }
@@ -804,12 +817,18 @@ export async function searchKnowledge(
     docTitleQ = docTitleQ.or(docFilter.orFilter);
   }
 
-  const [chunkKwRes, artTitle, docTitle, conName, conCompany, evtTitle, evtNotes] = await Promise.all([
+  // Contacts: select the full directory shape (incl. local address/hours) so the
+  // assistant can answer "what's the nearest pharmacy / their address / hours".
+  // Three keyword arms — name, company, AND address — so "pharmacy on Main St"
+  // matches a local contact even when the street is what the user typed.
+  const CONTACT_SELECT = 'id, name, company, phone, email, category, address, city_state_zip, hours, local_category, notes';
+  const [chunkKwRes, artTitle, docTitle, conName, conCompany, conAddress, evtTitle, evtNotes] = await Promise.all([
     chunkKw.limit(8),
     artTitleQ.limit(5),
     docTitleQ.limit(5),
-    supabaseAdmin.from(C).select('id, name, company, phone, email, category, notes').eq('property_id', pid).ilike('name', pattern).limit(5),
-    supabaseAdmin.from(C).select('id, name, company, phone, email, category, notes').eq('property_id', pid).ilike('company', pattern).limit(5),
+    supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('name', pattern).limit(5),
+    supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('company', pattern).limit(5),
+    supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('address', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('title', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('notes', pattern).limit(5),
   ]);
@@ -849,8 +868,12 @@ export async function searchKnowledge(
   const articleRows = ((artTitle.data ?? []) as Record<string, unknown>[]);
   const docRows = ((docTitle.data ?? []) as Record<string, unknown>[]);
   const contactRows = mergeById(
-    (conName.data ?? []) as Record<string, unknown>[],
-    (conCompany.data ?? []) as Record<string, unknown>[],
+    mergeById(
+      (conName.data ?? []) as Record<string, unknown>[],
+      (conCompany.data ?? []) as Record<string, unknown>[],
+      8,
+    ),
+    (conAddress.data ?? []) as Record<string, unknown>[],
     8,
   );
   const eventRows = mergeById(
@@ -888,6 +911,10 @@ export async function searchKnowledge(
       phone: (r.phone as string | null) ?? null,
       email: (r.email as string | null) ?? null,
       category: (r.category as string | null) ?? null,
+      address: (r.address as string | null) ?? null,
+      cityStateZip: (r.city_state_zip as string | null) ?? null,
+      hours: (r.hours as string | null) ?? null,
+      localCategory: (r.local_category as string | null) ?? null,
       notes: makeSnippet(r.notes as string | null, term, 200),
     })),
     events: eventRows.map((r) => ({
