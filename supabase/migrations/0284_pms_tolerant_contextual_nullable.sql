@@ -70,6 +70,12 @@ set columns = (
 )
 where table_name = 'pms_work_orders_v2';
 
+-- Self-register (migration-bookkeeping convention): record this version so the
+-- doctor's supabase_migrations_applied check and any fresh apply both track it.
+insert into public.applied_migrations (version, description)
+values ('0284', 'feature/cua-tolerant-mapper: tiered PMS contract — drop NOT NULL on pms_work_orders_v2.status + relax demoted-column descriptors for blank/derived page-context dates.')
+on conflict (version) do nothing;
+
 commit;
 
 -- PostgREST caches the schema; reload so the relaxed descriptor + dropped
