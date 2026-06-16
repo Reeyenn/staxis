@@ -41,7 +41,7 @@ export const dynamic = 'force-dynamic';
  * Poll fallback (10s) only while the realtime channel is down.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -59,7 +59,7 @@ import {
   parseCurrentActivity, phaseLabel, isInProgressPhase, type FeedRow,
 } from '@/lib/pms/learning-board';
 import {
-  ArrowLeft, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight,
+  ArrowLeft, AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronRight,
   CircleSlash, Loader2, MousePointerClick, ShieldAlert, Send, XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -202,6 +202,56 @@ function DarkScope({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Per-feed source-screenshot fetch state (lazy — populated on first expand). */
+interface CaptureState { loading: boolean; url: string | null }
+
+/**
+ * feature/cua-admin-mapper-visibility — the SOURCE screen the robot read a feed
+ * from, shown inside an expanded feed on the LIVE board (mirrors the Coverage
+ * Editor's FeedCaptureView). Lets the founder confirm the robot pulled each feed
+ * off the RIGHT PMS page. Lazily fetched (only when a feed is opened), job-scoped
+ * to THIS run. Degrades to a calm empty state until the worker has captured one.
+ */
+function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{
+        fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5),
+        letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6,
+        display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <Camera size={11} /> Source screen the robot read
+      </div>
+      {!state || state.loading ? (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Loading the screenshot…
+        </div>
+      ) : state.url ? (
+        <div style={{
+          width: '100%', maxWidth: 760, border: `1px solid ${dimWhite(.14)}`,
+          borderRadius: 8, overflow: 'hidden', lineHeight: 0,
+        }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={state.url}
+            alt="The PMS screen the robot captured this feed from (sensitive fields redacted)"
+            loading="lazy"
+            // A signed URL that's gone stale (1h signature lapsed, or the object
+            // was swept) degrades to the empty state and clears the cache so
+            // re-expanding refetches a fresh URL.
+            onError={onError}
+            style={{ width: '100%', height: 'auto', display: 'block' }}
+          />
+        </div>
+      ) : (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
+          No screenshot captured for this feed yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * 2FA code box on the live watch page (feature/cua-polish).
  *
@@ -318,6 +368,12 @@ export default function LiveMappingPage() {
   // Guards the takeover-frame preload (latest-wins; never commit an older seq).
   const takeoverFrameSeqRef = useRef(0);
   const takeoverFrameBusyRef = useRef(false);
+
+  // feature/cua-admin-mapper-visibility — per-feed SOURCE screenshots on the
+  // live board, lazily fetched when a found feed is expanded (mirrors the
+  // Coverage Editor). Job-scoped: the capture from THIS run.
+  const [captures, setCaptures] = useState<Record<string, CaptureState>>({});
+  const captureReqRef = useRef<Set<string>>(new Set());
 
   const activityRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -805,6 +861,34 @@ export default function LiveMappingPage() {
     });
   };
 
+  // Lazy-fetch the source screenshot for one feed (called when it's expanded).
+  // Job-scoped → the capture from THIS run. Failures land as url:null (the empty
+  // state) and stay retryable.
+  const ensureCapture = useCallback(async (capKey: string) => {
+    if (captureReqRef.current.has(capKey)) return;
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: true, url: null } }));
+    let url: string | null = null;
+    try {
+      const res = await fetchWithAuth(
+        `/api/admin/mapper/feed-capture?jobId=${encodeURIComponent(jobId)}&feedKey=${encodeURIComponent(capKey)}`,
+      );
+      const json = await res.json();
+      if (res.ok && json.ok && typeof json.data?.url === 'string') url = json.data.url;
+    } catch {
+      url = null;
+    }
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url } }));
+    if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
+  }, [jobId]);
+
+  // A stale/broken signed URL falls back to the empty state and frees the key
+  // so a re-expand refetches a fresh URL.
+  const handleCaptureError = useCallback((capKey: string) => {
+    captureReqRef.current.delete(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url: null } }));
+  }, []);
+
   const feedRows = useMemo(() => deriveFeedRows({
     catalog: job?.result?.targetCatalog,
     boardTargets: job?.result?.boardTargets,
@@ -1047,9 +1131,13 @@ export default function LiveMappingPage() {
                 </div>
                 {feedRows.map((row) => {
                   const meta = GLYPH_META[row.glyph];
-                  const expandable = row.glyph === 'found' && Array.isArray(row.sample) && row.sample.length > 0;
+                  // Any found feed is expandable so the founder can open it to
+                  // see the SOURCE screenshot under it — even when the row sample
+                  // is empty (an empty departures page is still worth proving).
+                  const hasSample = Array.isArray(row.sample) && row.sample.length > 0;
+                  const expandable = row.glyph === 'found';
                   const expanded = expandedFeeds.has(row.key);
-                  const sampleCols = expandable ? Object.keys(row.sample![0] ?? {}) : [];
+                  const sampleCols = hasSample ? Object.keys(row.sample![0] ?? {}) : [];
                   return (
                     <div key={row.key} style={{
                       borderTop: `1px solid ${dimWhite(.08)}`,
@@ -1058,7 +1146,10 @@ export default function LiveMappingPage() {
                       padding: row.glyph === 'stuck' ? '0 24px' : 0,
                     }}>
                       <div
-                        onClick={expandable ? () => toggleFeed(row.key) : undefined}
+                        onClick={expandable ? () => {
+                          if (!expandedFeeds.has(row.key)) void ensureCapture(row.key);
+                          toggleFeed(row.key);
+                        } : undefined}
                         style={{
                           display: 'flex', alignItems: 'center', gap: 10,
                           padding: '9px 0', cursor: expandable ? 'pointer' : 'default',
@@ -1117,34 +1208,43 @@ export default function LiveMappingPage() {
                       </div>
                       {expandable && expanded && (
                         <div style={{ padding: '2px 0 12px 26px', overflowX: 'auto' }}>
-                          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5), marginBottom: 6, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-                            {row.sampleKind === 'records' ? 'Sample records it captured' : 'First rows it captured'}
-                          </div>
-                          <table style={{ borderCollapse: 'collapse', fontFamily: FONT_MONO, fontSize: 11 }}>
-                            <thead>
-                              <tr>
-                                {sampleCols.map((c) => (
-                                  <th key={c} style={{
-                                    textAlign: 'left', padding: '3px 14px 3px 0', color: dimWhite(.5),
-                                    fontWeight: 500, borderBottom: `1px solid ${dimWhite(.14)}`,
-                                  }}>{c}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {row.sample!.map((r, i) => (
-                                <tr key={i}>
-                                  {sampleCols.map((c) => (
-                                    <td key={c} style={{
-                                      padding: '3px 14px 3px 0', color: dimWhite(.66),
-                                      borderBottom: `1px solid ${dimWhite(.08)}`,
-                                      maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}>{r[c] ?? ''}</td>
+                          {hasSample && (
+                            <>
+                              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5), marginBottom: 6, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                                {row.sampleKind === 'records' ? 'Sample records it captured' : 'First rows it captured'}
+                              </div>
+                              <table style={{ borderCollapse: 'collapse', fontFamily: FONT_MONO, fontSize: 11 }}>
+                                <thead>
+                                  <tr>
+                                    {sampleCols.map((c) => (
+                                      <th key={c} style={{
+                                        textAlign: 'left', padding: '3px 14px 3px 0', color: dimWhite(.5),
+                                        fontWeight: 500, borderBottom: `1px solid ${dimWhite(.14)}`,
+                                      }}>{c}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {row.sample!.map((r, i) => (
+                                    <tr key={i}>
+                                      {sampleCols.map((c) => (
+                                        <td key={c} style={{
+                                          padding: '3px 14px 3px 0', color: dimWhite(.66),
+                                          borderBottom: `1px solid ${dimWhite(.08)}`,
+                                          maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                        }}>{r[c] ?? ''}</td>
+                                      ))}
+                                    </tr>
                                   ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                                </tbody>
+                              </table>
+                            </>
+                          )}
+                          {/* feature/cua-admin-mapper-visibility — the SOURCE
+                              screen the robot read this feed from, UNDER the row
+                              sample so the founder can verify WHERE on the PMS
+                              the data came from. */}
+                          <FeedCaptureView state={captures[row.key]} onError={() => handleCaptureError(row.key)} />
                         </div>
                       )}
                     </div>
