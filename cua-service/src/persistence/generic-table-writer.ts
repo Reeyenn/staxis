@@ -136,6 +136,18 @@ export function validateRows(
         });
         return;
       }
+      // feature/cua-tolerant-mapper — a blank string on a NON-required, TYPED
+      // column is missing data wearing a string costume, not a value: '' can
+      // never satisfy a date/number/boolean type check, so before this it
+      // rejected the WHOLE row (the exact failure for a page-context/
+      // derivation-pending contextual date). Coerce '' → null so the row writes
+      // (Postgres gets null, never the invalid '') and only its own blank cell is
+      // dropped. text/jsonb are unaffected ('' is a valid string there). Required
+      // blanks already rejected above; this only loosens the OPTIONAL path.
+      if (blank && col.type !== 'text' && col.type !== 'jsonb') {
+        row[col.name] = null;
+        continue;
+      }
       if (!present) continue;  // optional + missing = fine
 
       // Type check.

@@ -23,7 +23,10 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
-import { runSource, applyTemplateParsers, findBlankContractColumns } from './template-runner.js';
+import {
+  runSource, applyTemplateParsers, findBlankContractColumns,
+  applyDerivedContextColumns, defaultRunDateIso,
+} from './template-runner.js';
 import type { TableTemplate } from '../types.js';
 import type { TemplateRunResult } from './template-runner.js';
 
@@ -32,6 +35,9 @@ export async function runMultiSourceTemplate(args: {
   template: TableTemplate;
   allowedHost: string;
   signal: AbortSignal;
+  /** ISO yyyy-mm-dd run/view date for contextual derivation
+   *  (feature/cua-tolerant-mapper). Absent → UTC today. */
+  runDateIso?: string;
 }): Promise<TemplateRunResult> {
   const { template, page, allowedHost, signal } = args;
   if (template.sources.length < 2) {
@@ -134,6 +140,11 @@ export async function runMultiSourceTemplate(args: {
       reason: `unknown aggregate strategy: ${strategy}`,
     };
   }
+
+  // feature/cua-tolerant-mapper — fill blank contextual columns from the
+  // run/view date AFTER aggregation, BEFORE the contract guard (mirrors the
+  // single-source path). Relevant for a concat_rows reservations feed.
+  applyDerivedContextColumns(template, rows, args.runDateIso ?? defaultRunDateIso());
 
   // Same contract-integrity guard as the single-source path (see
   // findBlankContractColumns) — applied AFTER aggregation so merge/concat

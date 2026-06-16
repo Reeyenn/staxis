@@ -929,6 +929,10 @@ export function evaluatePromotionGate(
   // is read STRUCTURALLY (ActionRecipe is owned by types.ts, out of scope here)
   // and is ABSENT ⟹ proven: legacy live recipes have no field and stay trusted,
   // so a backfill/promote re-check never mass-reparks the fleet (monotonic).
+  //
+  // feature/cua-tolerant-mapper — `unprovenRequiredColumns` is stamped only from
+  // ESSENTIALS (finalizeRecoveredSuccess), so a blank/derived contextual date
+  // never lands here and never holds a feed for review. No change needed.
   const unprovenByTarget = new Map<string, string[]>();
   for (const t of REQUIRED_TARGETS) {
     const action = recipe.actions[t];

@@ -1056,18 +1056,25 @@ export class SessionDriver {
     for (const template of sorted) {
       if (signal.aborted) break;
       try {
+        // feature/cua-tolerant-mapper — PMS-local view date for contextual
+        // derivation (arrivals' arrival_date / departures' departure_date filled
+        // from the day the page represents). Same tz the re-anchor + date
+        // templating use, so a poll across midnight stamps the hotel's day.
+        const runDateIso = reanchorTodayIso();
         const runResult = template.sources.length > 1
           ? await runMultiSourceTemplate({
               page: this.page,
               template,
               allowedHost: this.allowedHost,
               signal,
+              runDateIso,
             })
           : await runSingleSourceTemplate({
               page: this.page,
               template,
               allowedHost: this.allowedHost,
               signal,
+              runDateIso,
               // feature/cua-column-recovery — scope the per-row detail cache
               // by tenant AND knowledge-file version (a promoted repair's new
               // selectors must not consume extractions cached under the old).

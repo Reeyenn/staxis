@@ -3676,6 +3676,15 @@ export function finalizeRecoveredSuccess(
   // A column the drill recovered on the detail page is proven-by-drill → excluded.
   // Filtered to columns still non-blank in the finalized map. Empty/absent ⟹
   // proven, so legacy recipes and fully-certified feeds keep their exact shape.
+  //
+  // feature/cua-tolerant-mapper — CONTEXTUAL/OPTIONAL columns can never reach
+  // here: `audit.outstanding` and `audit.uncertain` are populated EXCLUSIVELY
+  // from requiredLearnedFor()/missingRequiredColumns()/auditRequiredColumns()/
+  // pendingRecovery — all now ESSENTIALS-keyed. So a blank contextual date
+  // (arrival_date/departure_date) is neither force-blanked above nor stamped
+  // unproven below; it keeps any learned selector and is filled at poll time by
+  // applyDerivedContextColumns. No explicit exclusion needed (would require
+  // threading actionKey here) — the essentials-only contract propagates it.
   const drilledColumns = new Set(
     drill?.ok && drill.drillDown ? Object.keys(drill.drillDown.detailColumns) : [],
   );
