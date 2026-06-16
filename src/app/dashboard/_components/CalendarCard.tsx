@@ -69,6 +69,9 @@ export function CalendarCard() {
     if (!canSee || !activePropertyId) return;
     let alive = true;
     setLoaded(false);
+    // Clear any prior property's events up-front so a slow OR failed reload can
+    // never flash the wrong hotel's calendar after a property switch.
+    setEvents([]);
     fetchWithAuth(`/api/knowledge/events?pid=${encodeURIComponent(activePropertyId)}`)
       .then((r) => r.json())
       .then((j) => {
