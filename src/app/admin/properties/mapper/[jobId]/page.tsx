@@ -56,7 +56,8 @@ import {
 import '@/app/admin/_components/studio/studio.css';
 import {
   deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, prettifyTargetKey,
-  parseCurrentActivity, phaseLabel, isInProgressPhase, type FeedRow,
+  parseCurrentActivity, phaseLabel, isInProgressPhase, parseThoughts,
+  type FeedRow, type AgentThought,
 } from '@/lib/pms/learning-board';
 import {
   ArrowLeft, AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronRight,
@@ -376,6 +377,7 @@ export default function LiveMappingPage() {
   const captureReqRef = useRef<Set<string>>(new Set());
 
   const activityRef = useRef<HTMLDivElement>(null);
+  const thoughtsRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameFetchBusyRef = useRef(false);
   // A live_frame event landing while a fetch is in flight must not be
@@ -905,6 +907,15 @@ export default function LiveMappingPage() {
   // broadcast + the short poll below. Older jobs never wrote it → livePhase is
   // null and the indicator is simply absent (graceful degradation).
   const currentActivity = useMemo(() => parseCurrentActivity(job?.result), [job]);
+  // feature/cua-operator-notes — the robot's live reasoning log.
+  const thoughts = useMemo<AgentThought[]>(() => parseThoughts(job?.result), [job]);
+  // Auto-scroll the thinking log to the newest line (declared here so `thoughts`
+  // is in scope before the effect references it — runs before the early returns).
+  useEffect(() => {
+    if (thoughtsRef.current) {
+      thoughtsRef.current.scrollTop = thoughtsRef.current.scrollHeight;
+    }
+  }, [thoughts.length]);
   const livePhase = useMemo(() => {
     if (!currentActivity?.phase) return null;
     const noun = currentActivity.feedKey ? prettifyTargetKey(currentActivity.feedKey) : '';
@@ -1606,6 +1617,31 @@ export default function LiveMappingPage() {
                 </div>
               </DarkCard>
             )}
+
+            {/* feature/cua-operator-notes — the robot's live reasoning */}
+            <DarkCard style={{ padding: '16px 20px', marginBottom: 16 }}>
+              <Caps c={dimWhite(.5)}>What it&rsquo;s thinking</Caps>
+              <div
+                ref={thoughtsRef}
+                style={{
+                  fontFamily: FONT_SANS, fontSize: 12.5, color: dimWhite(.8),
+                  lineHeight: 1.55, marginTop: 8, maxHeight: 340,
+                  overflowY: 'auto', background: 'rgba(0,0,0,.3)',
+                  padding: 12, borderRadius: 4,
+                }}
+              >
+                {thoughts.length === 0
+                  ? <div style={{ color: dimWhite(.45), fontFamily: FONT_MONO, fontSize: 11 }}>Its reasoning streams here as it works…</div>
+                  : thoughts.map((th, i) => (
+                      <div key={i} style={{ padding: '6px 0', borderTop: i === 0 ? 'none' : `1px solid ${dimWhite(.08)}` }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.4) }}>
+                          {th.at ? new Date(th.at).toLocaleTimeString() : ''}{th.feedKey ? ` · ${prettifyTargetKey(th.feedKey)}` : ''}
+                        </span>
+                        <div style={{ marginTop: 2 }}>{th.text}</div>
+                      </div>
+                    ))}
+              </div>
+            </DarkCard>
 
             {/* Activity feed */}
             <DarkCard style={{ padding: '16px 20px' }}>

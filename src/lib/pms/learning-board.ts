@@ -298,6 +298,36 @@ export function parseCurrentActivity(result: unknown): CurrentActivity | null {
 }
 
 /**
+ * feature/cua-operator-notes — one line of the robot's reasoning, persisted to
+ * a capped result.thoughts log by the worker (newest last). Display-only reader.
+ */
+export interface AgentThought {
+  at: string | null;
+  feedKey: string | null;
+  text: string;
+}
+
+/** Parse result.thoughts into a clean, bounded list. Pure + defensive: any
+ *  non-conforming entry is dropped; missing/garbage yields []. */
+export function parseThoughts(result: unknown): AgentThought[] {
+  const raw = asRecord(result).thoughts;
+  if (!Array.isArray(raw)) return [];
+  const out: AgentThought[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const text = typeof o.text === 'string' ? o.text.trim() : '';
+    if (!text) continue;
+    out.push({
+      at: typeof o.at === 'string' && o.at.length > 0 ? o.at : null,
+      feedKey: typeof o.feedKey === 'string' && o.feedKey.length > 0 ? o.feedKey : null,
+      text,
+    });
+  }
+  return out.slice(-60);
+}
+
+/**
  * Human, founder-facing phase label. `feedNoun` is a prettified feed name
  * (e.g. "Room status") that interpolates into the navigating/extracting
  * phrasings; an empty string falls back to feed-less wording. English — the

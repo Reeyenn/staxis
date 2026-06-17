@@ -671,6 +671,57 @@ async function recordCurrentActivity(
   }).catch(() => {});
 }
 
+// ─── feature/cua-operator-notes — thought log (the "what it's thinking" panel) ──
+// Pull a short, founder-readable line out of the model's reply: its narration
+// text if it wrote any, else a snippet of its adaptive-thinking. Pure tool-call
+// turns (no prose) yield '' and are skipped. Display-only.
+function summarizeThought(content: Anthropic.Messages.ContentBlock[]): string {
+  const texts: string[] = [];
+  let thinking = '';
+  for (const c of content) {
+    const t = (c as { type?: string }).type;
+    if (t === 'text' && typeof (c as { text?: string }).text === 'string' && (c as { text: string }).text.trim()) {
+      texts.push((c as { text: string }).text.trim());
+    } else if (t === 'thinking' && !thinking && typeof (c as { thinking?: string }).thinking === 'string') {
+      thinking = (c as { thinking: string }).thinking.trim();
+    }
+  }
+  return (texts.join(' ') || thinking).replace(/\s+/g, ' ').trim().slice(0, 320);
+}
+
+/** Append one reasoning line to a capped result.thoughts log AND refresh the
+ *  live total spend on currentActivity (job.claude_cost_micros is only written
+ *  at completion — getJobCostMicros is the live in-process total, so stamping it
+ *  here makes the board's cost tick every step, including during navigating).
+ *  Best-effort; awaited on the mapper's single per-job chain so it never races a
+ *  boardTargets / currentActivity write. */
+async function recordThought(
+  jobId: string | null | undefined,
+  feedKey: string,
+  text: string,
+): Promise<void> {
+  if (!jobId) return;
+  try {
+    const totalCostMicros = await getJobCostMicros(jobId);
+    const { data: row } = await supabase.from('workflow_jobs').select('result').eq('id', jobId).maybeSingle();
+    if (!row) return;
+    const result = (row.result as Record<string, unknown>) ?? {};
+    const prev = Array.isArray(result.thoughts) ? (result.thoughts as unknown[]) : [];
+    const trimmed = text.trim();
+    const next = trimmed
+      ? [...prev, { at: new Date().toISOString(), feedKey, text: trimmed.slice(0, 400) }].slice(-40)
+      : prev;
+    const ca = (result.currentActivity && typeof result.currentActivity === 'object')
+      ? (result.currentActivity as Record<string, unknown>)
+      : null;
+    await supabase.from('workflow_jobs').update({
+      result: { ...result, thoughts: next, ...(ca ? { currentActivity: { ...ca, totalCostMicros } } : {}) },
+    }).eq('id', jobId);
+  } catch {
+    /* telemetry — never block the run */
+  }
+}
+
 /** A terminal failure whose reason came from a cost-cap soft-abort (per-target
  *  or cumulative). Used ONLY to pick the finer 'cost_capped' board phase — the
  *  persisted `status` stays 'failed', unchanged. result.unavailable is still
@@ -1569,6 +1620,8 @@ async function mapLogin(
     // the rest of the code working with the regular Messages types.
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(ctx.jobId, 'login', summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
@@ -2789,6 +2842,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(args.jobId, args.actionName, summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
@@ -5761,6 +5816,8 @@ async function mapDrillDownAction(args: {
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(args.jobId, args.actionName, summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
