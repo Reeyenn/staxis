@@ -987,7 +987,13 @@ export default function LiveMappingPage() {
     );
   }
 
-  const costDollars = job ? (job.claude_cost_micros / 1_000_000).toFixed(2) : '0.00';
+  // feature/cua-mapper-cost — live spend: currentActivity.totalCostMicros ticks
+  // during the run (job.claude_cost_micros is only written at completion); fall
+  // back to the job's final total once the run ends and currentActivity clears.
+  const liveCostMicros = currentActivity?.totalCostMicros ?? (job ? job.claude_cost_micros : null);
+  const costDollars = liveCostMicros != null ? (liveCostMicros / 1_000_000).toFixed(2) : '0.00';
+  const feedsCostMicros = feedRows.reduce((acc, r) => acc + (r.costMicros ?? 0), 0);
+  const overheadCostMicros = liveCostMicros != null ? Math.max(0, liveCostMicros - feedsCostMicros) : null;
   const hotelName = property?.display_name ?? null;
 
   return (
@@ -1065,6 +1071,14 @@ export default function LiveMappingPage() {
                     {summary.waiting > 0 && !jobTerminal && <Pill tone="neutral">{summary.waiting} waiting</Pill>}
                   </div>
                 </div>
+                {/* feature/cua-mapper-cost — spend breakdown (live during the run) */}
+                {liveCostMicros != null && (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.55), marginTop: 12 }}>
+                    Spent <span style={{ color: '#fff' }}>${(liveCostMicros / 1_000_000).toFixed(2)}</span> total
+                    {' · '}${(feedsCostMicros / 1_000_000).toFixed(2)} on feeds
+                    {overheadCostMicros != null && <>{' · '}${(overheadCostMicros / 1_000_000).toFixed(2)} setup &amp; navigation</>}
+                  </div>
+                )}
               </DarkCard>
             )}
 
@@ -1138,6 +1152,13 @@ export default function LiveMappingPage() {
                   const expandable = row.glyph === 'found';
                   const expanded = expandedFeeds.has(row.key);
                   const sampleCols = hasSample ? Object.keys(row.sample![0] ?? {}) : [];
+                  // feature/cua-mapper-cost — per-feed spend: final once done, or
+                  // the active feed's running cost (live total − its start).
+                  const rowCostMicros = row.costMicros != null
+                    ? row.costMicros
+                    : (row.glyph === 'searching' && row.startCostMicros != null && liveCostMicros != null
+                        ? Math.max(0, liveCostMicros - row.startCostMicros)
+                        : null);
                   return (
                     <div key={row.key} style={{
                       borderTop: `1px solid ${dimWhite(.08)}`,
@@ -1182,6 +1203,15 @@ export default function LiveMappingPage() {
                         {row.glyph === 'found' && typeof row.rowCount === 'number' && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: 'var(--forest-deep)' }}>
                             {row.rowCount} {row.rowCount === 1 ? 'row' : 'rows'} seen
+                          </span>
+                        )}
+                        {/* feature/cua-mapper-cost — per-feed spend, on the side */}
+                        {rowCostMicros != null && (
+                          <span
+                            style={{ fontFamily: FONT_MONO, fontSize: 11, color: row.glyph === 'searching' ? 'var(--gold)' : dimWhite(.55) }}
+                            title={row.glyph === 'searching' ? 'Spent on this feed so far' : 'Spent learning this feed'}
+                          >
+                            ${(rowCostMicros / 1_000_000).toFixed(2)}{row.glyph === 'searching' ? '…' : ''}
                           </span>
                         )}
                         {row.glyph === 'found' && row.carried && (

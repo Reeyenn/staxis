@@ -662,8 +662,12 @@ async function recordCurrentActivity(
   pct: number,
 ): Promise<void> {
   if (!jobId || !feedKey) return;
+  // feature/cua-mapper-cost — stamp the LIVE total spend (in-process, ~free) so
+  // the board can show a ticking per-feed cost. job.claude_cost_micros is only
+  // written at completion, so this is the live running total during the run.
+  const totalCostMicros = await getJobCostMicros(jobId);
   await mergeJobResult(jobId, {
-    currentActivity: currentActivityObj(feedKey, phase, label, pct),
+    currentActivity: { ...currentActivityObj(feedKey, phase, label, pct), totalCostMicros },
   }).catch(() => {});
 }
 
@@ -1010,7 +1014,11 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       // Learning Board — mark searching only AFTER the budget check above:
       // a budget break must leave unreached feeds as "waiting in line",
       // never strand a phantom spinner.
-      boardTargets[target.key] = { status: 'searching', phase: 'navigating', startedAt: new Date().toISOString() };
+      // feature/cua-mapper-cost — capture cost-so-far at feed start (in-process,
+      // ~free). The live active-feed cost = currentActivity.totalCostMicros −
+      // this; the final per-feed cost is stamped at feed end below.
+      const targetStartCostMicros = opts.jobId ? await getJobCostMicros(opts.jobId) : 0;
+      boardTargets[target.key] = { status: 'searching', phase: 'navigating', startedAt: new Date().toISOString(), startCostMicros: targetStartCostMicros };
       // feature/cua-mapper-phases-captures — per-feed phase rides the existing
       // boardTargets write; the run-level currentActivity rides the SAME merge
       // (one UPDATE, no extra write, no clobber risk).
@@ -1080,11 +1088,16 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // the descriptor's canonical sets).
         accumulateLearnedValues(target.key, result, learnedValueTranslations, learnedDateSamples);
         const startedAt = boardTargets[target.key]?.startedAt;
+        const feedCostMicros = opts.jobId
+          ? Math.max(0, (await getJobCostMicros(opts.jobId)) - targetStartCostMicros)
+          : undefined;
         boardTargets[target.key] = {
           status: 'found',
           phase: 'found',
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           ...(result.boardPreview ? { preview: result.boardPreview } : {}),
         };
         // Plan v8 B6 — persist after each successful target so a crash
@@ -1113,6 +1126,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           finalUrl: result.finalUrl,
         });
         const startedAt = boardTargets[target.key]?.startedAt;
+        const feedCostMicros = opts.jobId
+          ? Math.max(0, (await getJobCostMicros(opts.jobId)) - targetStartCostMicros)
+          : undefined;
         // feature/cua-mapper-phases-captures — the persisted `status` is
         // UNCHANGED (unavailable vs failed, no reason-text matching). The
         // finer `phase` additionally splits a cost-cap soft-abort out of the
@@ -1130,6 +1146,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           phase: terminalPhase,
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           reason: result.reason.slice(0, 300),
         };
         await mergeJobResult(opts.jobId, {

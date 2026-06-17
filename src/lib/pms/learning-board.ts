@@ -46,6 +46,11 @@ export interface BoardTargetState {
   carried?: boolean;
   reason?: string;
   preview?: BoardPreview;
+  /** feature/cua-mapper-cost — per-feed Claude spend (micros). startCostMicros =
+   *  total spend when the feed started (active-feed live cost = live total −
+   *  this); costMicros = final spend once the feed finishes. Optional. */
+  startCostMicros?: number;
+  costMicros?: number;
 }
 
 // ─── Derived row ───────────────────────────────────────────────────────────
@@ -106,6 +111,10 @@ export interface FeedRow {
   sampleKind?: 'rows' | 'records';
   reason?: string;
   carried?: boolean;
+  /** feature/cua-mapper-cost — per-feed Claude spend (micros). costMicros once
+   *  finished; startCostMicros to compute the active feed's live running cost. */
+  costMicros?: number;
+  startCostMicros?: number;
 }
 
 /**
@@ -117,6 +126,9 @@ export interface CurrentActivity {
   phase: FeedPhase | null;
   pct: number | null;
   at: string | null;
+  /** feature/cua-mapper-cost — live total spend (micros) at this tick; null on
+   *  older jobs. Drives the board's live total + the active feed's running cost. */
+  totalCostMicros?: number | null;
 }
 
 export interface FeedSummary {
@@ -238,6 +250,8 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
         : {}),
       ...(typeof state.reason === 'string' && state.reason.length > 0 ? { reason: state.reason } : {}),
       ...(state.carried === true ? { carried: true } : {}),
+      ...(typeof state.costMicros === 'number' ? { costMicros: state.costMicros } : {}),
+      ...(typeof state.startCostMicros === 'number' ? { startCostMicros: state.startCostMicros } : {}),
     };
   });
 }
@@ -276,8 +290,11 @@ export function parseCurrentActivity(result: unknown): CurrentActivity | null {
     ? Math.max(0, Math.min(100, Math.round(ca.pct)))
     : null;
   const at = typeof ca.at === 'string' && ca.at.length > 0 ? ca.at : null;
+  const totalCostMicros = typeof ca.totalCostMicros === 'number' && Number.isFinite(ca.totalCostMicros)
+    ? ca.totalCostMicros
+    : null;
   if (!phase && !feedKey) return null;
-  return { feedKey, phase, pct, at };
+  return { feedKey, phase, pct, at, totalCostMicros };
 }
 
 /**
