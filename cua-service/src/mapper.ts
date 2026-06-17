@@ -395,9 +395,13 @@ async function executeSupervisorClick(args: {
 //   drilldown_sample  — needs to drill into N=3 sample records to learn
 //                       the per-record detail page selectors
 const TARGET_BUDGET_MICROS: Record<string, number> = {
-  list_page:        500_000,    // $0.50
-  report_menu:    1_000_000,    // $1.00
-  drilldown_sample: 1_200_000,  // $1.20 (drills 3 records)
+  // Plan v7 base +20% (2026-06-16): a live CA run cost-capped Departures + the
+  // buried report-menu money feeds before they finished. The per-target cap (not
+  // the $40 job cap) was binding, so bump each tier 20% to let buried feeds
+  // finish. Still well under the per-job + daily caps.
+  list_page:        600_000,    // $0.60
+  report_menu:    1_200_000,    // $1.20
+  drilldown_sample: 1_440_000,  // $1.44 (drills 3 records)
 };
 const TARGET_STEP_CAPS: Record<string, number> = {
   list_page:        80,
