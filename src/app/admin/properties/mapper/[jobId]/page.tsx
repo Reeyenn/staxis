@@ -353,6 +353,10 @@ export default function LiveMappingPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [guidanceText, setGuidanceText] = useState('');
+  // feature/cua-operator-notes — leave the running robot a nudge.
+  const [noteText, setNoteText] = useState('');
+  const [noteSending, setNoteSending] = useState(false);
+  const [sentNotes, setSentNotes] = useState<Array<{ at: string; text: string }>>([]);
   const [marker, setMarker] = useState<ClickMarker | null>(null);
   const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
   // feature/cua-live-view — the robot's latest screen (continuous live view).
@@ -702,6 +706,32 @@ export default function LiveMappingPage() {
   useEffect(() => {
     setMarker(null);
   }, [pendingHelp?.id, pendingHelp?.screenshot_storage_path]);
+
+  // feature/cua-operator-notes — POST a note; the worker folds it into the
+  // robot's next step. Optimistically echo it so the founder sees it landed.
+  const sendNote = async () => {
+    const text = noteText.trim();
+    if (!text || noteSending) return;
+    setNoteSending(true);
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, note: text }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setSentNotes((prev) => [...prev, { at: new Date().toISOString(), text }].slice(-20));
+        setNoteText('');
+      } else {
+        alert(`Couldn’t send the note: ${json.error ?? 'unknown'}`);
+      }
+    } catch (e) {
+      alert(`Couldn’t send the note: ${(e as Error).message}`);
+    } finally {
+      setNoteSending(false);
+    }
+  };
 
   const submitAssist = async (
     actionType: 'guidance' | 'unavailable' | 'takeover' | 'abort',
@@ -1641,6 +1671,41 @@ export default function LiveMappingPage() {
                       </div>
                     ))}
               </div>
+              {/* feature/cua-operator-notes — leave the robot a note (live runs only) */}
+              {!jobTerminal && (
+                <div style={{ marginTop: 14 }}>
+                  <Caps c={dimWhite(.5)}>Leave it a note</Caps>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <input
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !noteSending) void sendNote(); }}
+                      placeholder="e.g. “try the Reports menu” or “wrong page, go back”"
+                      maxLength={500}
+                      style={{
+                        flex: 1, minWidth: 0, fontFamily: FONT_SANS, fontSize: 13,
+                        padding: '9px 12px', background: dimWhite(.06), color: '#fff',
+                        border: `1px solid ${dimWhite(.18)}`, borderRadius: 8, outline: 'none',
+                      }}
+                    />
+                    <Btn variant="forest" onClick={() => void sendNote()} disabled={noteSending || noteText.trim() === ''}>
+                      <Send size={12} /> {noteSending ? 'Sending…' : 'Send note'}
+                    </Btn>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45), marginTop: 6 }}>
+                    It reads your note on its next step (a few seconds) and adjusts.
+                  </div>
+                  {sentNotes.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      {sentNotes.map((n, i) => (
+                        <div key={i} style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.62), padding: '2px 0' }}>
+                          <span style={{ color: dimWhite(.4) }}>{new Date(n.at).toLocaleTimeString()}</span> · sent: {n.text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </DarkCard>
 
             {/* Activity feed */}

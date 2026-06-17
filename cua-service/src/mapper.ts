@@ -722,6 +722,37 @@ async function recordThought(
   }
 }
 
+/** feature/cua-operator-notes — drain the founder's unconsumed notes for this
+ *  job (oldest first) and mark them consumed, so each is injected exactly once.
+ *  Best-effort: any failure yields [] (the run never blocks on a note read). */
+async function consumePendingNotes(jobId: string | null | undefined): Promise<string[]> {
+  if (!jobId) return [];
+  try {
+    const { data, error } = await supabase
+      .from('mapping_notes')
+      .select('id, note')
+      .eq('job_id', jobId)
+      .is('consumed_at', null)
+      .order('created_at', { ascending: true })
+      .limit(10);
+    if (error || !data || data.length === 0) return [];
+    const ids = data.map((r) => (r as { id: string }).id);
+    const { error: upErr } = await supabase
+      .from('mapping_notes')
+      .update({ consumed_at: new Date().toISOString() })
+      .in('id', ids);
+    // If we couldn't mark them consumed, skip delivery this step rather than
+    // risk re-injecting the same note every step (it'll deliver once the mark
+    // succeeds on a later step).
+    if (upErr) return [];
+    return data
+      .map((r) => String((r as { note?: unknown }).note ?? '').trim())
+      .filter((n) => n.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 /** A terminal failure whose reason came from a cost-cap soft-abort (per-target
  *  or cumulative). Used ONLY to pick the finer 'cost_capped' board phase — the
  *  persisted `status` stays 'failed', unchanged. result.unavailable is still
@@ -2763,6 +2794,27 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     // page state matches what Claude sees in the screenshot it's about
     // to act on. Best-effort: errors fall back to a URL-only fingerprint
     // inside the helper.
+    // feature/cua-operator-notes — fold any operator notes into the trailing
+    // user turn so the model reads them THIS turn. Same safe pattern as the
+    // takeover finish-hint above: loop-top is always a user turn, so a standalone
+    // push would be consecutive-user (API-invalid) — append to it instead.
+    {
+      const operatorNotes = await consumePendingNotes(args.jobId);
+      if (operatorNotes.length > 0) {
+        const noteBlock = {
+          type: 'text' as const,
+          text:
+            'NOTE FROM THE OPERATOR (a human is watching you map this PMS): ' +
+            operatorNotes.join(' | ') +
+            '\nTake this guidance into account for your next action.',
+        };
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(noteBlock);
+        else messages.push({ role: 'user', content: [noteBlock] });
+        await recordThought(args.jobId, args.actionName, '📝 operator note: ' + operatorNotes.join(' | '));
+      }
+    }
+
     const turnPageFingerprint = await pageFingerprint(args.page);
 
     // fix/cua-mapper-commit — dither tracking for the commit-nudge. Same-page
