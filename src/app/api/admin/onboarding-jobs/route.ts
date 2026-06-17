@@ -130,6 +130,7 @@ export async function GET(req: NextRequest) {
   const sessionPropIds = sessions.map((s) => s.property_id);
   const mapperPropIds = (mapperJobsRaw ?? []).map((j) => j.property_id as string);
   const propIds = Array.from(new Set([...sessionPropIds, ...mapperPropIds])).filter(Boolean);
+  const mapperActivePropIds = new Set(mapperPropIds.filter(Boolean));
   const nameByPid = new Map<string, string>();
   if (propIds.length > 0) {
     const { data: props } = await supabaseAdmin
@@ -140,7 +141,17 @@ export async function GET(req: NextRequest) {
   }
 
   const now = Date.now();
-  const allRows: JobRow[] = sessions.map((s) => {
+  // Dedupe the in-flight list: a property mid-mapping has BOTH a session row
+  // ("Awaiting mapper") and an active mapper.* job ("Mapper learning"). The
+  // mapper card is the meaningful one (it deep-links to the live console), so
+  // suppress the redundant in-flight session card for those properties. Only
+  // in-flight session statuses are suppressed — an alive/failed session still
+  // shows in its own view (those don't collide with the mapper card).
+  const visibleSessions = sessions.filter((s) => !(
+    mapperActivePropIds.has(s.property_id) &&
+    IN_FLIGHT_LEGACY_STATUSES.has(mapPropertySessionStatusToJobShape(s.status).status)
+  ));
+  const allRows: JobRow[] = visibleSessions.map((s) => {
     const mapped = mapPropertySessionStatusToJobShape(s.status);
     const startedMs = Date.parse(s.created_at);
     const completedMs = s.status === 'alive' && s.last_alive_at
