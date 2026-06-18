@@ -252,3 +252,17 @@ today's scale** (shard_count=1). tsc 0 errors, eslint clean.
 > ⚠️ **Needs human (go-live):** the GitHub workflow shard-matrix + re-enabling
 > the ML cron schedule (currently disabled) is the operator step — and depends
 > on the occupancy data bridge. The routes are now *ready* for it.
+
+### [9] Days-left shown consistently on the card and the reorder panel
+
+The item card computed days-left from `max(perCheckout, perStayover) ×
+(checkouts + stayovers)` while the reorder panel used `checkouts·perCheckout +
+stayovers·perStayover`. The same item could read "12d left" on the card and
+"15d" in the panel — and the gap widened with occupancy (worst on busy hotels).
+The panel formula is the physically-correct one (each room type at its own
+rate). Extracted it into one shared `ruleOccupancyBurnPerDay` helper used by
+BOTH `predictReorder` and the adapter card, so they can't disagree. Surgical:
+`selectBurnRate` (the source badge) is untouched, and the override path still
+bypasses the helper so the <7-day honesty gate is preserved. **Tests:** +4 in
+`inventory-predictions.test.ts` (incl. a card==panel days-left assertion); 25
+inventory src tests pass; tsc 0 errors; eslint clean.

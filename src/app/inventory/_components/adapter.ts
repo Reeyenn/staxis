@@ -6,6 +6,7 @@ import type { OccupancyBundle, OccupancySinceLastCount } from '@/lib/inventory-e
 import { calculateEstimatedStock, computeOccupancyForItem } from '@/lib/inventory-estimate';
 import {
   predictReorder,
+  ruleOccupancyBurnPerDay,
   selectBurnRate,
   type DailyAverages,
   type PredictionResult,
@@ -56,7 +57,20 @@ export function toDisplayItem(
     ml,
     occRoomsToday,
   );
-  const daysLeft = selected.burnPerDay > 0 ? estimated / selected.burnPerDay : 90;
+  // For the days-left NUMBER, use the same occupancy-weighted formula the
+  // reorder panel (predictReorder) uses, so the card and the panel can't show
+  // contradictory days-left for the same item. selectBurnRate is still the
+  // source-of-truth for the badge (ml / rule-occupancy / fallback-60d / no-data).
+  const burnForDays =
+    selected.burnSource === 'rule-occupancy' && opts.dailyAverages
+      ? ruleOccupancyBurnPerDay(
+          item.usagePerCheckout,
+          item.usagePerStayover,
+          opts.dailyAverages.avgDailyCheckouts,
+          opts.dailyAverages.avgDailyStayovers,
+        )
+      : selected.burnPerDay;
+  const daysLeft = burnForDays > 0 ? estimated / burnForDays : 90;
 
   return {
     raw: item,
