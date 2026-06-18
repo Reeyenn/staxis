@@ -407,8 +407,18 @@ def _train_single_item(
         X_train, X_test = X, X.iloc[:0]
         y_train, y_test = y, y.iloc[:0]
 
-    # Choose algorithm based on row count
-    use_xgboost = len(X_train) >= settings.inventory_xgboost_activation_events
+    # Choose algorithm based on row count.
+    # Gate on XGBOOST_INFERENCE_READY: inventory inference can't deserialize an
+    # XGBoost artifact yet, so a graduated XGBoost run is force-deactivated and
+    # the item would lose its active model the moment it crosses the 100-event
+    # threshold (the "XGBoost cliff" — items going dark at scale). While the
+    # flag is False, keep training the Bayesian model, which serves correctly.
+    # When inventory XGBoost inference is wired up (and the shared layer gains
+    # regularization/subsample to avoid overfitting at ~100 rows), flip the flag.
+    use_xgboost = (
+        XGBOOST_INFERENCE_READY
+        and len(X_train) >= settings.inventory_xgboost_activation_events
+    )
 
     if use_xgboost:
         model = XGBoostQuantile(quantiles=[0.1, 0.25, 0.5, 0.75, 0.9])

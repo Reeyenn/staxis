@@ -216,3 +216,22 @@ days-left/reorder calc. Added `_is_finite_nonneg` and a guard that skips + logs
 a non-finite prediction (`predicted=False`), plus a defensive clamp on
 `predicted_current_stock`. **Tests:** +3 (`test_inventory_inference_robustness.py`);
 suite 326 → **329 passed**.
+
+### [10] Safety verified + XGBoost cliff closed + shadow tag explicit
+
+- **Safety intact:** all 30 shadow-mode / auto-rollback / cold-start / gate
+  tests stay green after the changes above — graduation, shadow soak, and
+  auto-rollback are untouched and working.
+- **XGBoost cliff:** inventory trained an XGBoost model at 100 events, but
+  inference can't deserialize XGBoost, so the run was force-deactivated — an
+  item could **lose its active model and go dark** the moment it crossed 100
+  events at scale. Gated the XGBoost switch on `XGBOOST_INFERENCE_READY` (still
+  False) so items keep using the working Bayesian model. The shared XGBoost
+  layer also lacks regularization/subsample (overfit-prone at ~100 rows) — left
+  untouched (it's shared with Housekeeping ML, out of lane) and flagged for when
+  the flag is flipped.
+- **Shadow tag:** inference now writes `is_shadow` explicitly so the
+  consumer-side `is_shadow=false` filter is load-bearing by design, not by the
+  accident that active runs happen never to be shadow.
+
+Suite **329 passed**.

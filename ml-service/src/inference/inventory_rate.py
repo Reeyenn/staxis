@@ -356,6 +356,12 @@ def _predict_single_item(
         "predicted_daily_rate_p90": float(quantiles["p90"]),
         "predicted_current_stock": predicted_current_stock,
         "model_run_id": run["id"],
+        # Tag the prediction with its model's shadow state. Active runs are
+        # never shadow today (is_active ⊥ is_shadow), so this is always false —
+        # but making it explicit keeps the consumer-side is_shadow=false filter
+        # load-bearing-by-design rather than by accident, so a future change
+        # that serves shadow runs can't silently leak them to the reorder list.
+        "is_shadow": bool(run.get("is_shadow", False)),
         "predicted_at": datetime.utcnow().isoformat(),
     })
     return {"predicted": True}
