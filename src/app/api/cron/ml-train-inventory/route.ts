@@ -15,7 +15,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { runWithConcurrency } from '@/lib/parallel';
+import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { triggerMlTraining } from '@/lib/ml-invoke';
@@ -27,7 +27,14 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 90;
+// 300s (Vercel Pro cap) to match the sibling ML crons — inventory training is
+// the heaviest stage (one call iterates every item in the property). Sharding
+// is PLUMBED but DORMANT: applyShardFilter (below) is ready, but the GitHub
+// workflow calls this route with a bare URL, so shard_count defaults to 1 and
+// one invocation trains the whole fleet within 300s. To split the fleet at
+// scale, add a strategy.matrix to the train-inventory job in ml-cron.yml and
+// append the shard params to the curl (matrix length and shard_count in lockstep).
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
@@ -53,16 +60,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, inventory_ai_mode');
+    .select('id, name, inventory_ai_mode')
+    .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
   }
+
+  // Shard filter: the GitHub workflow can dispatch N parallel jobs with
+  // ?shard_offset=K&shard_count=N to split the fan-out. Defaults to no
+  // sharding. Applied to the raw ordered list BEFORE the ai_off partition so
+  // the modulo math is consistent across shards.
+  const sharded = applyShardFilter((properties ?? []) as Array<Record<string, unknown>>, new URL(req.url).searchParams);
+  log.info('ml-train-inventory: start', { requestId, shardHeader: sharded.header });
 
   // Skip ai_off properties before fan-out so they don't take a parallel slot.
   type PropertyRow = { id: string; name: string; inventory_ai_mode?: string };
   const eligible: PropertyRow[] = [];
   const skipped: Array<{ property_id: string; status: string }> = [];
-  for (const property of (properties ?? []) as PropertyRow[]) {
+  for (const property of (sharded.items as unknown as PropertyRow[])) {
     if (property.inventory_ai_mode === 'off') {
       skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
     } else {
