@@ -52,6 +52,7 @@ import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
 import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
 import { apiGetMode } from './ordering-api';
+import { t, invLang, dateLocale } from './inv-i18n';
 
 type AiMode = 'off' | 'auto' | 'always-on';
 type OverlayKey =
@@ -77,6 +78,8 @@ export function InventoryShell() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const L = invLang(lang);
+  const tx = t(L);
   const can = useCan();
   const canManage = !!user && can('manage_inventory_orders');
 
@@ -313,7 +316,7 @@ export function InventoryShell() {
           color: T.ink2,
         }}
       >
-        Loading…
+        {tx.loading}
       </div>
     );
   }
@@ -346,13 +349,13 @@ export function InventoryShell() {
             justifyContent: 'center',
           }}
         >
-          <HStat eyebrow="Stock health" big={`${stockHealth}%`} dot="good" />
-          <HStat eyebrow="Order now" big={String(statusCounts.critical)} dot="critical" />
-          <HStat eyebrow="On the shelf" big={fmtMoney(shelfValue)} />
+          <HStat eyebrow={tx.stockHealth} big={`${stockHealth}%`} dot="good" />
+          <HStat eyebrow={tx.orderNow} big={String(statusCounts.critical)} dot="critical" />
+          <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />
           <div style={{ paddingTop: 2 }}>
-            <Caps size={9}>{todayLabel()}</Caps>
+            <Caps size={9}>{todayLabel(L)}</Caps>
             <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim, marginTop: 2 }}>
-              {todayDow()}
+              {todayDow(L)}
             </div>
           </div>
         </div>
@@ -360,6 +363,7 @@ export function InventoryShell() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '224px 1fr', gap: 18, alignItems: 'start' }}>
         <Sidebar
+          lang={L}
           totalItems={totalItems}
           reorderCount={reorderCount}
           historyCount={historyCount}
@@ -371,6 +375,7 @@ export function InventoryShell() {
         <div>
           <div style={{ marginBottom: 16 }}>
             <FilterBar
+              lang={L}
               bucket={bucket}
               onBucket={setBucket}
               query={query}
@@ -382,6 +387,7 @@ export function InventoryShell() {
             />
           </div>
           <StockList
+            lang={L}
             items={display}
             bucket={bucket}
             query={query}
@@ -393,6 +399,7 @@ export function InventoryShell() {
       </div>
 
       <CountSheet
+        lang={L}
         open={overlay === 'count'}
         onClose={() => { closeOverlay(); void refreshData(); }}
         items={items}
@@ -433,12 +440,14 @@ export function InventoryShell() {
       />
 
       <ReportsPanel
+        lang={L}
         open={overlay === 'reports'}
         onClose={closeOverlay}
         display={display}
       />
 
       <HistoryPanel
+        lang={L}
         open={overlay === 'history'}
         onClose={closeOverlay}
         counts={counts}
@@ -446,12 +455,14 @@ export function InventoryShell() {
       />
 
       <BudgetsPanel
+        lang={L}
         open={overlay === 'budgets'}
         onClose={() => { closeOverlay(); void refreshData(); }}
         budgets={budgets}
       />
 
       <SimpleSheet
+        lang={L}
         open={overlay === 'scan' || overlay === 'ai'}
         kind={overlay === 'scan' ? 'scan' : 'ai'}
         onClose={() => { closeOverlay(); void refreshData(); }}
@@ -461,6 +472,7 @@ export function InventoryShell() {
       />
 
       <AddItemSheet
+        lang={L}
         open={overlay === 'add'}
         onClose={() => { closeOverlay(); }}
         item={editItem}
@@ -482,15 +494,15 @@ function HStat({ eyebrow, big, dot }: { eyebrow: string; big: string; dot?: Stoc
   );
 }
 
-function todayLabel(): string {
+function todayLabel(lang: 'en' | 'es'): string {
   const d = new Date();
   return d
-    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    .toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric', year: 'numeric' })
     .toUpperCase();
 }
-function todayDow(): string {
+function todayDow(lang: 'en' | 'es'): string {
   const d = new Date();
-  return d.toLocaleDateString('en-US', { weekday: 'long' });
+  return d.toLocaleDateString(dateLocale(lang), { weekday: 'long' });
 }
 function startOfMonth(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));

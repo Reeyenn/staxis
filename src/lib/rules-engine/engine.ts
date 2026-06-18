@@ -27,6 +27,7 @@
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { runWithConcurrency } from '@/lib/parallel';
 import { log } from '@/lib/log';
 import { fetchCleanTimeStandardsIndex } from '@/lib/clean-time-standards-server';
 
@@ -366,28 +367,36 @@ export async function runRulesEngineForAllProperties(
 ): Promise<PropertyRunResult[]> {
   const { data, error } = await supabaseAdmin.from('properties').select('id');
   if (error) throw error;
+  const rows = ((data ?? []) as Array<{ id: string }>).filter((r) => r.id);
 
-  const results: PropertyRunResult[] = [];
-  for (const row of (data ?? []) as Array<{ id: string }>) {
-    if (!row.id) continue;
-    try {
-      results.push(await runRulesEngineForProperty(row.id, opts));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      results.push({
-        property_id: row.id,
-        business_date: '',
-        engine_run_id: '',
-        rooms_evaluated: 0,
-        tasks_upserted: 0,
-        tasks_skipped_in_progress: 0,
-        rooms_no_task: 0,
-        errors: [{ room_number: '*', error: msg }],
-        duration_ms: 0,
-        outcomes: [],
-        dry_run: opts.dryRun === true,
-      });
-    }
-  }
-  return results;
+  // Bounded concurrency (cap 5) instead of a serial for-await. At fleet scale a
+  // strictly-serial loop (~5 DB round-trips/property) exceeds the 60s function
+  // cap and, because the order is stable, silently starves the SAME tail hotels
+  // every tick (their cleaning tasks never generate). Each per-property run is
+  // independent + idempotent + property-scoped, so running ~5 at a time is safe
+  // and finishes the fleet well inside the budget (most properties early-return).
+  // (Audit fix 2026-06-18; full sharding across cron invocations remains a
+  // follow-up for very large fleets.)
+  const outcomes = await runWithConcurrency(
+    rows,
+    (row) => runRulesEngineForProperty(row.id, opts),
+    5,
+  );
+  return outcomes.map((o) =>
+    o.ok
+      ? o.value
+      : {
+          property_id: o.input.id,
+          business_date: '',
+          engine_run_id: '',
+          rooms_evaluated: 0,
+          tasks_upserted: 0,
+          tasks_skipped_in_progress: 0,
+          rooms_no_task: 0,
+          errors: [{ room_number: '*', error: o.error instanceof Error ? o.error.message : String(o.error) }],
+          duration_ms: 0,
+          outcomes: [],
+          dry_run: opts.dryRun === true,
+        },
+  );
 }

@@ -145,6 +145,41 @@ export async function PUT(req: NextRequest) {
     });
   }
 
+  // Privilege-escalation matrix (mirrors /api/settings/users denyRoleChange).
+  // Applies to EVERY mutation here — password reset, role change, staff link.
+  // Without it a General Manager could reset the OWNER's password (account
+  // takeover) since owner is not an admin. A manager may only act on accounts
+  // at or below their own tier.
+  const isSelf = accountId === caller.accountId;
+  if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+    return err('Only an admin or another owner can modify an owner account', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+  if (target.role === 'general_manager' && caller.role === 'general_manager' && !isSelf) {
+    return err('Only an owner or admin can modify another General Manager', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+
+  // Multi-hotel credential protection (audit #12; confirmed policy 2026-06-18).
+  // A password reset is a GLOBAL credential change: it logs the person out of
+  // EVERY hotel they work at, not just this one. So a non-admin manager may only
+  // reset the password of someone whose hotel access is fully within the
+  // manager's own control — a manager/owner of N hotels can reset anyone across
+  // those N, but not someone who also works at a hotel they don't run (that
+  // needs an admin). (Self-service is unaffected; '*'/admin callers bypass.)
+  if (password && !isSelf && caller.role !== 'admin' && !caller.propertyAccess.includes('*')) {
+    const outsideCallerControl = targetAccess.filter(
+      (h) => h !== '*' && !caller.propertyAccess.includes(h),
+    );
+    if (outsideCallerControl.length > 0) {
+      return err('This person also has access to another hotel — only an admin can reset their password.', {
+        requestId, status: 403, code: ApiErrorCode.Unauthorized,
+      });
+    }
+  }
+
   // Build updates. Role changes must stay in the assignable set (no
   // self-promotion to admin via this route).
   const updates: Record<string, unknown> = {};
@@ -156,6 +191,17 @@ export async function PUT(req: NextRequest) {
     if (!isAssignableRole(role)) {
       return err('Invalid role (admin not allowed here)', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    // Privilege-escalation: a manager can't grant a role above their own tier.
+    if (role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+      return err('Only an existing owner can promote someone to owner (use Transfer Ownership)', {
+        requestId, status: 403, code: ApiErrorCode.Unauthorized,
+      });
+    }
+    if (role === 'general_manager' && caller.role !== 'admin' && caller.role !== 'owner') {
+      return err('Only an owner or admin can promote someone to General Manager', {
+        requestId, status: 403, code: ApiErrorCode.Unauthorized,
       });
     }
     // Block self-demotion through this path — owners shouldn't accidentally
@@ -317,6 +363,18 @@ export async function DELETE(req: NextRequest) {
   }
   if (target.role === 'admin') {
     return err('Cannot remove admin accounts from this view', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+  // Same owner/GM privilege matrix as PUT — a GM must not be able to detach an
+  // owner (or another GM) from a hotel. (Audit review fix 2026-06-18.)
+  if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+    return err('Only an admin or another owner can remove an owner', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+  if (target.role === 'general_manager' && caller.role === 'general_manager') {
+    return err('Only an owner or admin can remove another General Manager', {
       requestId, status: 403, code: ApiErrorCode.Unauthorized,
     });
   }

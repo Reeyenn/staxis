@@ -297,6 +297,20 @@ export async function PUT(req: NextRequest) {
       if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
         return err('Only an owner or admin can deactivate an owner account', { requestId, status: 403, code: ApiErrorCode.Forbidden });
       }
+      // Multi-hotel protection (audit #12): deactivating BANS the auth user
+      // globally — it locks them out of EVERY hotel they work at, not just this
+      // one. A non-admin manager may only deactivate someone whose hotel access
+      // is fully within the manager's own control (same rule as the team-route
+      // password reset). (2026-06-18.)
+      if (caller.role !== 'admin' && !caller.propertyAccess.includes('*')) {
+        const targetHotels = Array.isArray(target.property_access) ? (target.property_access as string[]) : [];
+        const outside = targetHotels.filter((h) => h !== '*' && !caller.propertyAccess.includes(h));
+        if (outside.length > 0) {
+          return err('This person also has access to another hotel — only an admin can deactivate them.', {
+            requestId, status: 403, code: ApiErrorCode.Forbidden,
+          });
+        }
+      }
       if (target.active === false) return ok({ noop: true }, { requestId });
 
       // Block sign-in FIRST via Supabase Auth's ban_duration. If this

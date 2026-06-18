@@ -25,7 +25,7 @@ import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { env } from '@/lib/env';
 import { err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
@@ -90,8 +90,9 @@ export async function POST(req: NextRequest) {
     .eq('id', pid)
     .maybeSingle();
   if (propErr || !prop) {
+    if (propErr) log.error('[inventory/check-alerts] property read failed', { err: errToString(propErr) });
     return NextResponse.json(
-      { ok: false, error: 'property_not_found', detail: errToString(propErr) },
+      { ok: false, error: 'property_not_found' },
       { status: 404 },
     );
   }
@@ -118,8 +119,9 @@ export async function POST(req: NextRequest) {
     .in('id', criticalItemIds);
 
   if (itemsErr) {
+    log.error('[inventory/check-alerts] inventory read failed', { err: errToString(itemsErr) });
     return NextResponse.json(
-      { ok: false, error: 'inventory_read_failed', detail: errToString(itemsErr) },
+      { ok: false, error: 'inventory_read_failed' },
       { status: 500 },
     );
   }

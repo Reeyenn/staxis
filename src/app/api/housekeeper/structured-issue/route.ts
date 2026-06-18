@@ -87,6 +87,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const note = (body.note ?? '').trim().slice(0, 500);
 
+  // Harden the optional photoPath: it must point into THIS hotel's storage
+  // folder and contain no '..' traversal. The path is produced by
+  // /api/housekeeper/photo-presign as `<pid>/<scopeKey>/<uuid>.<ext>`; reject
+  // anything else so a forged path can't reference another hotel's storage.
+  // (Audit hardening 2026-06-18.)
+  if (body.photoPath !== undefined && body.photoPath !== null && body.photoPath !== '') {
+    if (typeof body.photoPath !== 'string' || !body.photoPath.startsWith(`${gate.pid}/`) || body.photoPath.includes('..')) {
+      return err('invalid photoPath', {
+        requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers,
+      });
+    }
+  }
+
   // ── Idempotency: try to claim the action_id first. ───────────────────
   // Race-safe insert-first pattern: two concurrent replays of the same
   // actionId would have raced a SELECT-then-INSERT (one passes the
@@ -122,6 +135,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
+  // Release the idempotency claim on failure so the offline queue's retry can
+  // re-file the issue instead of hitting the dedup branch and falsely reporting
+  // success with an empty payload (silent data loss). (Audit fix 2026-06-18.)
+  const releaseClaim = async () => {
+    if (!body.actionId) return;
+    try { await supabaseAdmin.from('offline_action_replays').delete().eq('action_id', body.actionId); }
+    catch { /* best-effort */ }
+  };
+
   try {
     const { data: workOrderId, error: rpcErr } = await supabaseAdmin.rpc(
       'staxis_create_structured_issue',
@@ -141,6 +163,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         requestId: gate.requestId,
         err: errToString(rpcErr ?? 'no work_order_id'),
       });
+      await releaseClaim();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -230,6 +253,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
+    await releaseClaim();
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,

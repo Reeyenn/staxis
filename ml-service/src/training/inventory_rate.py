@@ -33,7 +33,11 @@ import pandas as pd
 import psycopg2
 
 from src.advisory_lock import advisory_lock
-from src.config import get_settings
+from src.config import (
+    INVENTORY_FEATURE_SET_VERSION,
+    INVENTORY_OCC_BASELINE_PCT,
+    get_settings,
+)
 from src.errors import PropertyMisconfiguredError, require_total_rooms
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
@@ -250,6 +254,16 @@ def _train_inventory_inner(
     }
 
 
+def _center_occupancy(X: pd.DataFrame) -> pd.DataFrame:
+    """Center the occupancy feature on the shared baseline (single source of
+    truth for the train-side transform). The Bayesian posterior is therefore
+    learned in centered space; inference MUST center on the same constant in
+    `_predict_bayesian_quantiles` or train/serve will skew. Mutates + returns X.
+    """
+    X["occupancy_pct"] = X["occupancy_pct"] - INVENTORY_OCC_BASELINE_PCT
+    return X
+
+
 def _build_cohort_key(prop: Dict[str, Any]) -> str:
     """Build the cohort_key string used to look up cohort priors.
 
@@ -360,15 +374,22 @@ def _train_single_item(
         limit=400,
     )
 
+    # Total rooms: converts daily_logs.occupied → occupancy %, and scales the
+    # cohort prior / baseline from per-room to absolute units. Validated
+    # upstream in _train_inventory_inner (require_total_rooms at the property
+    # level) so this re-read won't newly raise; hoisted here so it's available
+    # to both the row builder and the Bayesian seed below.
+    total_rooms = require_total_rooms(property_meta, property_id)
+
     # Build training rows: one per CONSECUTIVE pair of counts.
-    rows = _build_training_rows(counts, orders, discards, daily_logs)
+    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms)
     if len(rows) < settings.inventory_min_events_per_item - 1:
         return {"skipped": True, "reason": "insufficient_consecutive_pairs",
                 "pairs": len(rows)}
 
     df = pd.DataFrame(rows)
     df["daily_rate"] = pd.to_numeric(df["daily_rate"], errors="coerce")
-    df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(50.0)
+    df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(INVENTORY_OCC_BASELINE_PCT)
     df = df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
     if len(df) < settings.inventory_min_events_per_item - 1:
         return {"skipped": True, "reason": "insufficient_clean_rows",
@@ -381,8 +402,14 @@ def _train_single_item(
     #   50+        → 5.0  (strong — cohort dominates new-hotel cold-start)
     prior_rate, prior_strength = _lookup_prior(client, cohort_key, item, item_name)
 
-    # Features + target
-    X = df[INVENTORY_FEATURE_COLS].copy()
+    # Features + target.
+    # Center occupancy on the shared baseline so the intercept means "rate at
+    # baseline occupancy" (well-identified, in-range) and decouples from the
+    # slope. Feeding raw 0-100 occupancy — never near 0 — makes intercept and
+    # slope collinear and the slope unstable at the small N a real hotel has.
+    # _center_occupancy is the single source of truth for this transform;
+    # inference centers identically in _predict_bayesian_quantiles.
+    X = _center_occupancy(df[INVENTORY_FEATURE_COLS].copy())
     X.insert(0, "intercept", 1.0)
     y = df["daily_rate"].astype(float)
 
@@ -395,8 +422,18 @@ def _train_single_item(
         X_train, X_test = X, X.iloc[:0]
         y_train, y_test = y, y.iloc[:0]
 
-    # Choose algorithm based on row count
-    use_xgboost = len(X_train) >= settings.inventory_xgboost_activation_events
+    # Choose algorithm based on row count.
+    # Gate on XGBOOST_INFERENCE_READY: inventory inference can't deserialize an
+    # XGBoost artifact yet, so a graduated XGBoost run is force-deactivated and
+    # the item would lose its active model the moment it crosses the 100-event
+    # threshold (the "XGBoost cliff" — items going dark at scale). While the
+    # flag is False, keep training the Bayesian model, which serves correctly.
+    # When inventory XGBoost inference is wired up (and the shared layer gains
+    # regularization/subsample to avoid overfitting at ~100 rows), flip the flag.
+    use_xgboost = (
+        XGBOOST_INFERENCE_READY
+        and len(X_train) >= settings.inventory_xgboost_activation_events
+    )
 
     if use_xgboost:
         model = XGBoostQuantile(quantiles=[0.1, 0.25, 0.5, 0.75, 0.9])
@@ -412,9 +449,9 @@ def _train_single_item(
         # shampoo as a 60-room hotel at the same per-room rate.
         # Phase 3.3 (2026-05-13): require_total_rooms raises
         # PropertyMisconfiguredError instead of silently falling back to
-        # 60 — the cron boundary catches + logs the skip.
-        room_count = require_total_rooms(property_meta, property_id)
-        _seed_bayesian_intercept(model, prior_rate, room_count)
+        # 60 — the cron boundary catches + logs the skip. Hoisted above as
+        # `total_rooms`.
+        _seed_bayesian_intercept(model, prior_rate, total_rooms)
         model_version = f"inventory-bayesian-v1-{item_id}-{datetime.utcnow().isoformat()}"
         algorithm = "bayesian"
 
@@ -429,8 +466,13 @@ def _train_single_item(
         validation_mae = 0.0  # Can't evaluate; mark zero, gate this case below.
     training_mae = float(np.mean(np.abs(model.predict(X_train) - y_train.values)))
 
-    # Baseline = predicting the cohort-prior rate everywhere.
-    baseline_pred = np.full(len(y_test) if len(X_test) > 0 else len(y_train), prior_rate)
+    # Baseline = predicting the cohort-prior rate everywhere. The target y is
+    # ABSOLUTE units/day, but prior_rate is per-room-per-day, so scale by
+    # total_rooms to match units — otherwise baseline_mae compared ~0.4 against
+    # ~24 and the model "beat baseline" by ~98% on every item regardless of
+    # real quality, making beats_baseline_pct meaningless.
+    baseline_rate_abs = prior_rate * float(max(total_rooms, 1))
+    baseline_pred = np.full(len(y_test) if len(X_test) > 0 else len(y_train), baseline_rate_abs)
     if len(X_test) > 0:
         baseline_mae = float(np.mean(np.abs(baseline_pred - y_test.values)))
     else:
@@ -469,11 +511,17 @@ def _train_single_item(
         limit=10,
     )
     this_run_passes = gate_events and gate_mae
+    # Single timestamp for this run — used both as the streak distinctness
+    # anchor and as the persisted trained_at, so they can't drift apart.
+    trained_at_iso = datetime.utcnow().isoformat()
     # Codex round-5 META J1.3: streak counting extracted to a pure
     # function so behavior tests can exercise it directly. The whole
     # F2/D4/Option-B saga is a demonstration that this logic was
     # untestable in-place — every fix had to be caught by Codex
     # because no in-suite test could detect the regression.
+    # Phase M3.4 parity: enable the time-spacing distinctness gate so 5 rapid
+    # retrains on identical data can't fake 5 weekly windows of stability
+    # (demand/supply already do this; inventory was missed).
     consecutive_passes = compute_consecutive_passes(
         this_run_passes=this_run_passes,
         prior_runs=prior_runs or [],
@@ -481,6 +529,8 @@ def _train_single_item(
         mae_ratio_threshold=settings.inventory_graduation_mae_ratio,
         cap=settings.inventory_graduation_consecutive_passes,
         current_mean_observed_rate=mean_observed_rate,
+        current_trained_at=trained_at_iso,
+        min_gap_seconds=settings.min_hours_between_passing_runs * 3600,
     )
 
     auto_fill_enabled = (
@@ -563,9 +613,9 @@ def _train_single_item(
     # the inventory regular-path was missed. The RPC mirrors 0107 with
     # added p_item_id (per-item models) + p_should_shadow path.
     fields = {
-        "trained_at": datetime.utcnow().isoformat(),
+        "trained_at": trained_at_iso,
         "training_row_count": len(df),
-        "feature_set_version": "v1",
+        "feature_set_version": INVENTORY_FEATURE_SET_VERSION,
         "model_version": model_version,
         "algorithm": algorithm,
         "training_mae": training_mae,
@@ -634,10 +684,14 @@ def _build_training_rows(
     orders: List[Dict[str, Any]],
     discards: List[Dict[str, Any]],
     daily_logs: List[Dict[str, Any]],
+    total_rooms: int,
 ) -> List[Dict[str, Any]]:
     """Compute (daily_rate, occupancy_pct) for each consecutive pair of counts.
 
     daily_rate = (prev.counted + orders_between - discards_between - this.counted) / days_elapsed
+
+    ``total_rooms`` converts each daily_logs ``occupied`` room count into an
+    occupancy percentage for the window-average feature.
     """
     if len(counts) < 2:
         return []
@@ -652,7 +706,19 @@ def _build_training_rows(
             t_curr = pd.to_datetime(curr["counted_at"]).tz_localize(None)
         except Exception:
             continue
-        days_elapsed = max((t_curr - t_prev).total_seconds() / 86400.0, 0.5)
+        days_elapsed = (t_curr - t_prev).total_seconds() / 86400.0
+        # Skip sub-day pairs (same-day recounts / double-saves). The old
+        # 0.5-day floor turned a 30-second recount into a 2x-inflated rate row.
+        # The realized-rate view inventory_observed_rate_v (migration 0096) also
+        # drops pairs with raw_days_elapsed < 1.0, so trainer + view agree on
+        # the sub-day rule. NOTE: they do NOT yet fully agree — the view still
+        # CLAMPS count-up / idle / restock windows to a 0 rate (greatest(...,0))
+        # whereas the trainer now DROPS them. STAGED_INVENTORY_MIGRATIONS.md
+        # migration A redefines the view to match (drop consumption <= 0 except
+        # genuine zeros); until it is applied, the view over-feeds 0s into
+        # prediction_log / shadow MAE.
+        if days_elapsed < 1.0:
+            continue
 
         # Codex post-merge review 2026-05-13 (N1): use `received_at` (NOT NULL,
         # defaults now() per migration 0026:96), NOT `ordered_at` (nullable —
@@ -681,19 +747,29 @@ def _build_training_rows(
             and pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) <= t_curr
         )
 
-        consumption = (
-            float(prev.get("counted_stock") or 0)
-            + orders_between
-            - discards_between
-            - float(curr.get("counted_stock") or 0)
-        )
-        # Allow negative consumption (overcounting / inventory found) but cap at 0
-        # so downstream stats aren't skewed by data-entry errors.
-        consumption = max(consumption, 0.0)
-        daily_rate = consumption / days_elapsed
+        prev_stock = float(prev.get("counted_stock") or 0)
+        curr_stock = float(curr.get("counted_stock") or 0)
+        raw_consumption = prev_stock + orders_between - discards_between - curr_stock
+        # Keep windows with real consumption AND genuine zero-usage windows;
+        # drop only the two contamination classes (instead of clamping them to
+        # a fake 0-rate row that dilutes the fit):
+        #   • raw_consumption < 0  → an unexplained stock INCREASE (a restock
+        #     made outside the app, never logged as an order). Corrupt signal.
+        #   • raw_consumption == 0 AND the count ROSE → the auto-logged
+        #     "stock-up" order CountSheet writes on a surprise-high count
+        #     (received_at == counted_at) forces prev + (curr−prev) − curr = 0.
+        #     That window's real usage is masked by the restock.
+        # A raw_consumption == 0 window where the count did NOT rise is GENUINE
+        # zero usage (nothing used that period) — we KEEP it, otherwise
+        # intermittently-used items (e.g. used 3 days a week) would be
+        # over-estimated ~2x by learning burn-when-used instead of average burn.
+        rose = curr_stock > prev_stock + 1e-9
+        if raw_consumption < -1e-9 or (raw_consumption <= 1e-9 and rose):
+            continue
+        daily_rate = max(raw_consumption, 0.0) / days_elapsed
 
         # Average occupancy over the window (best-effort)
-        occ_pct = _avg_occupancy_in_window(daily_logs, t_prev, t_curr)
+        occ_pct = _avg_occupancy_in_window(daily_logs, t_prev, t_curr, total_rooms)
 
         rows.append({
             "date": t_curr.date().isoformat(),
@@ -704,15 +780,59 @@ def _build_training_rows(
     return rows
 
 
+def _occ_pct_from_log(log: Dict[str, Any], total_rooms_denom: float) -> Optional[float]:
+    """Occupancy percentage (0-100) for one daily_logs row.
+
+    The deployed ``daily_logs`` table has NO ``occupancy_pct`` column — only a
+    raw ``occupied`` room count (migration 0001). Occupancy is therefore
+    derived as ``100 * occupied / total_rooms``. A pre-computed
+    ``occupancy_pct`` (should a future schema add one) takes precedence.
+    Returns None when neither is usable so the caller can skip the row rather
+    than fold a bogus value into the window average.
+    """
+    pct = log.get("occupancy_pct")
+    if pct is not None:
+        try:
+            return max(0.0, min(100.0, float(pct)))
+        except (TypeError, ValueError):
+            pass
+    occ = log.get("occupied")
+    if occ is None:
+        return None
+    try:
+        return max(0.0, min(100.0, 100.0 * float(occ) / total_rooms_denom))
+    except (TypeError, ValueError):
+        return None
+
+
 def _avg_occupancy_in_window(
     daily_logs: List[Dict[str, Any]],
     t_start: pd.Timestamp,
     t_end: pd.Timestamp,
+    total_rooms: int,
 ) -> float:
-    """Average occupancy_pct from daily_logs between two timestamps. Defaults to 50.0
-    if no logs match (the model handles a constant-feature column gracefully)."""
+    """Average occupancy % from daily_logs over a count window.
+
+    Occupancy is derived per row from ``occupied`` / ``total_rooms`` (see
+    ``_occ_pct_from_log``). When NO usable log overlaps the window we return the
+    centering BASELINE (``INVENTORY_OCC_BASELINE_PCT``), not 50.0: the feature is
+    centered on the baseline before the fit, so an unknown-occupancy window must
+    map to a centered value of 0 (contributing nothing to the slope). Returning
+    50 here would feed the model a constant ``50 − 60 = −10`` and re-introduce
+    the intercept/slope collinearity the centering removes.
+
+    Day-window note: ``daily_logs.date`` is a DATE (operational-day bucket)
+    while t_start/t_end are wall-clock count timestamps. We use the disjoint
+    half-open day rule ``(start_d, end_d]`` so adjacent windows don't double-
+    count a boundary day. Which boundary day a window claims is a ~1-day
+    smoothing approximation that depends on the hotel's count time-of-day
+    (morning vs end-of-shift); occupancy is autocorrelated so the effect is
+    small either way. The old code read a non-existent ``occupancy_pct`` column,
+    so every window collapsed to the default and occupancy was a dead feature.
+    """
     if not daily_logs:
-        return 50.0
+        return INVENTORY_OCC_BASELINE_PCT
+    denom = float(max(int(total_rooms or 0), 1))
     matched: List[float] = []
     start_d = t_start.date()
     end_d = t_end.date()
@@ -724,11 +844,12 @@ def _avg_occupancy_in_window(
             ld_parsed = pd.to_datetime(ld).date()
         except Exception:
             continue
-        if start_d <= ld_parsed <= end_d:
-            occ = log.get("occupancy_pct")
-            if occ is not None:
-                matched.append(float(occ))
-    return sum(matched) / len(matched) if matched else 50.0
+        if not (start_d < ld_parsed <= end_d):
+            continue
+        occ = _occ_pct_from_log(log, denom)
+        if occ is not None:
+            matched.append(occ)
+    return sum(matched) / len(matched) if matched else INVENTORY_OCC_BASELINE_PCT
 
 
 def _lookup_prior(client, cohort_key: str, item: Dict[str, Any], item_name: str) -> tuple:

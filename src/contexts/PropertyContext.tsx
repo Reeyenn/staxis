@@ -235,55 +235,61 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // Staff is loaded via onSnapshot (real-time) so it updates when the network
   // response arrives after a cache miss - preventing the intermittent "no staff"
   // bug caused by getDocs returning an empty cached snapshot.
+  // ── Real-time staff listener ─────────────────────────────────────────────
+  // Keyed on the raw activePropertyId so staff load immediately (responsiveness).
+  // Fires with the local cache first (possibly empty), then again when the
+  // server response arrives — eliminating the cache-vs-server "no staff" race.
   useEffect(() => {
     if (!user || !activePropertyId) {
       setStaff([]);
       setStaffLoaded(false);
       return;
     }
-
     let cancelled = false;
-
-    // ── Real-time staff listener ───────────────────────────────────────────
-    // Fires immediately with whatever is in the local cache (possibly empty),
-    // then fires again when the server response arrives. This eliminates the
-    // race where getDocs resolves from cache before data is on the server.
     const unsubStaff = subscribeToStaff(user.uid, activePropertyId, staffList => {
       if (!cancelled) {
         setStaff(staffList);
         setStaffLoaded(true);
       }
     });
+    return () => {
+      cancelled = true;
+      unsubStaff();
+    };
+    // Depend on the stable uid (not the object ref) so a token refresh doesn't
+    // tear down + recreate the subscription every hour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userUid, activePropertyId]);
 
-    // ── Rest of property data (one-time fetch) ─────────────────────────────
+  // ── Areas + laundry config (with first-time seed) ────────────────────────
+  // Keyed on the RESOLVED active property — i.e. only once the active id is
+  // confirmed to exist in the user's loaded `properties` list — NOT the raw
+  // remembered id. Why: `activePropertyId` initializes straight from
+  // localStorage, so on first paint (before the properties list re-validates it)
+  // it can be a STALE/deleted property id. The zero-rows seed path below would
+  // then try to INSERT public_areas for a property that no longer exists and
+  // FK-violate (`public_areas_property_id_fkey`, 23503) — a harmless-but-noisy
+  // console error. Gating on the resolved property means a seed only ever fires
+  // for a real property the user has access to, and it still re-runs (and seeds)
+  // the moment a genuinely new property resolves. (Fix 2026-06-18.)
+  const resolvedPropertyId = activeProperty?.id ?? null;
+  useEffect(() => {
+    if (!user || !resolvedPropertyId) return;
+    let cancelled = false;
     void (async () => {
-      // Load areas + laundry config in a separate try/catch so a load
-      // failure never affects staff loading.
       try {
         const [areas, laundry] = await Promise.all([
-          getPublicAreas(user.uid, activePropertyId),
-          getLaundryConfig(user.uid, activePropertyId),
+          getPublicAreas(user.uid, resolvedPropertyId),
+          getLaundryConfig(user.uid, resolvedPropertyId),
         ]);
-
         if (cancelled) return;
 
-        // First-time seed only. If the property has zero rows of either kind,
-        // we treat it as a brand-new property and lay down the defaults once.
-        // Otherwise we trust whatever's in the DB — the user owns their data.
-        //
-        // History: there used to be auto-"migration" passes here that
-        // re-seeded defaults if a row's minutesPerLoad >= 60 or if all
-        // non-daily areas had today as startDate. Both used `generateId()`
-        // for every default and called `setLaundryCategory` /
-        // `bulkSetPublicAreas` (both upserts on `id`). Because the IDs were
-        // fresh on every load, the upserts were effectively INSERTs and
-        // every page load duplicated the seed. Result: a property with 3
-        // canonical laundry rows had grown to 196 (and 23 areas to 48).
-        // The fix is to never auto-write here — initial seeding already
-        // happens in scripts/seed-supabase.js.
+        // First-time seed only (brand-new property with zero rows). Otherwise we
+        // trust the DB. (Initial seeding normally happens server-side in
+        // scripts/seed-supabase.js / onboarding; this is the client fallback.)
         if (areas.length === 0) {
           const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
-          await bulkSetPublicAreas(user.uid, activePropertyId!, defaults);
+          await bulkSetPublicAreas(user.uid, resolvedPropertyId, defaults);
           if (!cancelled) setPublicAreas(defaults);
         } else {
           if (!cancelled) setPublicAreas(areas);
@@ -291,7 +297,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
         if (laundry.length === 0) {
           const defaults = getDefaultLaundryCategories().map(c => ({ ...c, id: generateId() }));
-          await Promise.all(defaults.map(c => setLaundryCategory(user.uid, activePropertyId!, c)));
+          await Promise.all(defaults.map(c => setLaundryCategory(user.uid, resolvedPropertyId, c)));
           if (!cancelled) setLaundryConfig(defaults);
         } else {
           if (!cancelled) setLaundryConfig(laundry);
@@ -300,17 +306,9 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         console.error('PropertyContext: failed to load areas/laundry config', err);
       }
     })();
-
-    return () => {
-      cancelled = true;
-      unsubStaff();
-    };
-    // Same reasoning as the properties-list effect above: depend on the
-    // user's stable identity (uid) rather than the object reference, so a
-    // Supabase token refresh doesn't tear down + recreate the staff
-    // subscription and re-fetch areas/laundry every hour.
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, activePropertyId]);
+  }, [userUid, resolvedPropertyId]);
 
   // Load the active hotel's capability overrides whenever the hotel (or the
   // signed-in user) changes, so useCan() resolves from the same restrictions the

@@ -12,22 +12,24 @@
 import React, { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { MessageSquare, X, Send, CheckCircle2 } from 'lucide-react';
 
 type Category = 'bug' | 'feature_request' | 'general' | 'complaint' | 'love';
 
-const CATEGORIES: { value: Category; label: string; emoji: string }[] = [
-  { value: 'bug',             label: 'Something broken',  emoji: '🐛' },
-  { value: 'feature_request', label: 'Feature request',   emoji: '✨' },
-  { value: 'general',         label: 'General comment',   emoji: '💬' },
-  { value: 'complaint',       label: 'Complaint',         emoji: '😠' },
-  { value: 'love',            label: 'Love note',         emoji: '❤️' },
+const CATEGORIES: { value: Category; label: string; labelEs: string; emoji: string }[] = [
+  { value: 'bug',             label: 'Something broken',  labelEs: 'Algo está roto',     emoji: '🐛' },
+  { value: 'feature_request', label: 'Feature request',   labelEs: 'Solicitar función',  emoji: '✨' },
+  { value: 'general',         label: 'General comment',   labelEs: 'Comentario general', emoji: '💬' },
+  { value: 'complaint',       label: 'Complaint',         labelEs: 'Queja',              emoji: '😠' },
+  { value: 'love',            label: 'Love note',         labelEs: 'Nota de cariño',     emoji: '❤️' },
 ];
 
 export function FeedbackButton() {
   const { user } = useAuth();
   const { activeProperty } = useProperty();
+  const { lang } = useLang();
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState<Category>('general');
   const [message, setMessage] = useState('');
@@ -70,7 +72,7 @@ export function FeedbackButton() {
       {!open && (
         <button
           onClick={() => setOpen(true)}
-          aria-label="Send feedback"
+          aria-label={lang === 'es' ? 'Enviar comentarios' : 'Send feedback'}
           style={{
             position: 'fixed',
             bottom: '20px',
@@ -115,10 +117,10 @@ export function FeedbackButton() {
             alignItems: 'center',
             justifyContent: 'space-between',
           }}>
-            <strong style={{ fontSize: '14px' }}>Tell Reeyen something</strong>
+            <strong style={{ fontSize: '14px' }}>{lang === 'es' ? 'Dile algo a Reeyen' : 'Tell Reeyen something'}</strong>
             <button
               onClick={() => { setOpen(false); setSubmitted(false); setMessage(''); }}
-              aria-label="Close"
+              aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
               style={{ background: 'transparent', border: 'none', color: 'white', cursor: 'pointer', display: 'flex', padding: '4px' }}
             >
               <X size={16} />
@@ -128,12 +130,14 @@ export function FeedbackButton() {
           {submitted ? (
             <div style={{ padding: '24px', textAlign: 'center' }}>
               <CheckCircle2 size={32} color="var(--green)" style={{ marginBottom: '8px' }} />
-              <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>Sent — thanks!</p>
+              <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{lang === 'es' ? '¡Enviado, gracias!' : 'Sent — thanks!'}</p>
             </div>
           ) : (
             <div style={{ padding: '14px' }}>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px', lineHeight: 1.5 }}>
-                Anything broken, anything you want, anything you love. Goes straight to Reeyen.
+                {lang === 'es'
+                  ? 'Lo que esté roto, lo que quieras, lo que te encante. Va directo a Reeyen.'
+                  : 'Anything broken, anything you want, anything you love. Goes straight to Reeyen.'}
               </p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '10px' }}>
                 {CATEGORIES.map((c) => (
@@ -151,12 +155,12 @@ export function FeedbackButton() {
                       fontWeight: category === c.value ? 600 : 400,
                     }}
                   >
-                    {c.emoji} {c.label}
+                    {c.emoji} {lang === 'es' ? c.labelEs : c.label}
                   </button>
                 ))}
               </div>
               <textarea
-                placeholder="What's on your mind?"
+                placeholder={lang === 'es' ? '¿Qué tienes en mente?' : "What's on your mind?"}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 rows={4}
@@ -169,7 +173,7 @@ export function FeedbackButton() {
                 className="btn btn-primary"
                 style={{ marginTop: '10px', width: '100%', justifyContent: 'center', fontSize: '13px' }}
               >
-                <Send size={14} /> {submitting ? 'Sending…' : 'Send'}
+                <Send size={14} /> {submitting ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar' : 'Send')}
               </button>
             </div>
           )}

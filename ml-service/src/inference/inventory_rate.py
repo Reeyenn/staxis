@@ -34,9 +34,22 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.config import get_settings
+from src.config import (
+    INVENTORY_FEATURE_SET_VERSION,
+    INVENTORY_OCC_BASELINE_PCT,
+    get_settings,
+)
 from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.supabase_client import get_supabase_client
+
+
+def _is_finite_nonneg(v: Any) -> bool:
+    """True iff v is a real, finite, non-negative number (not NaN / inf)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(f) and f >= 0.0)
 
 
 def _validate_property_id(property_id: str) -> Optional[str]:
@@ -140,7 +153,11 @@ async def predict_inventory_rates(
             descending=True,
             limit=14,
         )
-        occ_pct = _recent_avg_occupancy(daily_logs)
+        # daily_logs stores a raw `occupied` room count, so we need the
+        # property's room count to convert it to an occupancy %.
+        prop_row = client.fetch_one("properties", filters={"id": property_id})
+        total_rooms = (prop_row or {}).get("total_rooms")
+        occ_pct = _recent_avg_occupancy(daily_logs, total_rooms)
 
     predicted = 0
     skipped_no_active = 0
@@ -179,18 +196,40 @@ async def predict_inventory_rates(
     }
 
 
-def _recent_avg_occupancy(daily_logs: List[Dict[str, Any]]) -> float:
+def _recent_avg_occupancy(daily_logs: List[Dict[str, Any]], total_rooms: Optional[int]) -> float:
+    """Recent mean occupancy % from daily_logs.
+
+    daily_logs has no occupancy_pct column — only a raw `occupied` count — so
+    occupancy is derived as 100·occupied/total_rooms (must match the trainer's
+    `_avg_occupancy_in_window`). Returns the centering BASELINE
+    (INVENTORY_OCC_BASELINE_PCT), not 50, when there are no logs or total_rooms
+    is unusable — so an unknown-occupancy day centers to 0 at serve time exactly
+    as it does at train time. This is the cold-start / PMS-outage fallback; the
+    primary path is tomorrow's projected occupancy from plan_snapshots.
+    """
     if not daily_logs:
-        return 50.0
+        return INVENTORY_OCC_BASELINE_PCT
+    try:
+        denom = float(int(total_rooms or 0))
+    except (ValueError, TypeError):
+        denom = 0.0
     vals: List[float] = []
     for log in daily_logs:
-        v = log.get("occupancy_pct")
-        if v is not None:
+        pct = log.get("occupancy_pct")
+        if pct is None:
+            occ = log.get("occupied")
+            if occ is None or denom <= 0:
+                # No usable room count → can't convert occupied → %; skip row.
+                continue
             try:
-                vals.append(float(v))
+                pct = 100.0 * float(occ) / denom
             except (ValueError, TypeError):
                 continue
-    return sum(vals) / len(vals) if vals else 50.0
+        try:
+            vals.append(max(0.0, min(100.0, float(pct))))
+        except (ValueError, TypeError):
+            continue
+    return sum(vals) / len(vals) if vals else INVENTORY_OCC_BASELINE_PCT
 
 
 def _occupancy_for_target_date(plan: Optional[Dict[str, Any]]) -> Optional[float]:
@@ -232,6 +271,20 @@ def _predict_single_item(
     posterior_params_json = run.get("posterior_params")
 
     if algorithm == "bayesian" and posterior_params_json:
+        # Refuse to serve a posterior trained before occupancy became a
+        # CENTERED feature: its coefficients live in raw-occupancy space, so
+        # feeding them the centered vector [1, occ-baseline] would bias every
+        # prediction. Skip → the model gets retrained into the current feature
+        # set rather than served wrong. (Cold-start cohort runs don't use the
+        # posterior, so they're exempt.)
+        if run.get("feature_set_version") != INVENTORY_FEATURE_SET_VERSION:
+            print(json.dumps({
+                "evt": "inventory_predict_stale_feature_set_skipped",
+                "item_id": item_id,
+                "feature_set_version": run.get("feature_set_version"),
+                "expected": INVENTORY_FEATURE_SET_VERSION,
+            }))
+            return {"predicted": False, "reason": "stale_feature_set"}
         # Rebuild posterior in-memory and predict
         try:
             params = json.loads(posterior_params_json) if isinstance(posterior_params_json, str) else posterior_params_json
@@ -266,6 +319,38 @@ def _predict_single_item(
 
     daily_rate = float(quantiles["p50"])
 
+    # Robustness gate: never let a NaN / inf / negative reach the NOT NULL
+    # numeric prediction columns. A degenerate posterior (near-singular
+    # covariance, bad serialized params) can produce NaN quantiles —
+    # `max(nan, 0.0)` returns nan in Python, so the existing non-negative clip
+    # does NOT catch them. Writing one would either fail the insert or poison
+    # every downstream days-left / reorder calc with NaN. Skip + log instead.
+    quantile_values = [quantiles.get(k) for k in ("p10", "p25", "p50", "p75", "p90")]
+    if not all(_is_finite_nonneg(v) for v in [daily_rate, *quantile_values]):
+        print(json.dumps({
+            "evt": "inventory_predict_nonfinite_skipped",
+            "property_id": property_id,
+            "item_id": item_id,
+            "algorithm": algorithm,
+            "p50": str(quantiles.get("p50")),
+        }))
+        return {"predicted": False, "reason": "non_finite_prediction"}
+
+    # A COLD-START cohort prediction of exactly 0/day means the occupancy input
+    # was 0 (a closed / zero-occupancy target date: _occupancy_for_target_date
+    # returns 0.0, not None, when stayovers+arrivals=0). An all-zero rate isn't
+    # actionable and the card vs reorder-panel consumers disagree on what a 0 ML
+    # rate means — so don't write it. Scoped to cold-start ONLY: a FITTED
+    # Bayesian model can legitimately predict ~0 for a genuinely-unused item, and
+    # dropping those would lose real signal.
+    if algorithm == "cold-start-cohort-prior" and daily_rate <= 0.0:
+        print(json.dumps({
+            "evt": "inventory_predict_zero_cohort_skipped",
+            "property_id": property_id,
+            "item_id": item_id,
+        }))
+        return {"predicted": False, "reason": "zero_occupancy_cohort"}
+
     # Compute predicted_current_stock for auto-fill
     item = client.fetch_one("inventory", filters={"id": item_id})
     item_name = (item or {}).get("name", "")
@@ -275,6 +360,20 @@ def _predict_single_item(
         daily_rate=daily_rate,
         client=client,
     )
+    # _compute_predicted_current_stock already clamps to >= 0, but if a
+    # non-finite anchor stock ever leaks in, write SQL NULL ("no estimate")
+    # rather than 0.0 — a 0 here reads downstream as "you have nothing, reorder
+    # now" / auto-fills 0 into the count input, laundering a data-quality
+    # failure into a confident-but-wrong signal. NULL makes the cockpit drop the
+    # item from auto-fill (manager counts it manually). The finite daily_rate +
+    # quantiles are still written, so the rate prediction is preserved.
+    if not _is_finite_nonneg(predicted_current_stock):
+        print(json.dumps({
+            "evt": "inventory_stock_anchor_nonfinite",
+            "property_id": property_id,
+            "item_id": item_id,
+        }))
+        predicted_current_stock = None
 
     # Delete any earlier prediction we made for this exact (property, item, target_date)
     # so the cockpit shows the freshest one. Best-effort.
@@ -301,6 +400,12 @@ def _predict_single_item(
         "predicted_daily_rate_p90": float(quantiles["p90"]),
         "predicted_current_stock": predicted_current_stock,
         "model_run_id": run["id"],
+        # Tag the prediction with its model's shadow state. Active runs are
+        # never shadow today (is_active ⊥ is_shadow), so this is always false —
+        # but making it explicit keeps the consumer-side is_shadow=false filter
+        # load-bearing-by-design rather than by accident, so a future change
+        # that serves shadow runs can't silently leak them to the reorder list.
+        "is_shadow": bool(run.get("is_shadow", False)),
         "predicted_at": datetime.utcnow().isoformat(),
     })
     return {"predicted": True}
@@ -313,8 +418,11 @@ def _predict_bayesian_quantiles(params: Dict[str, Any], occ_pct: float) -> Dict[
     alpha_n = float(params["alpha_n"])
     beta_n = float(params["beta_n"])
 
-    # Feature vector: [intercept, occupancy_pct]
-    x = np.array([1.0, occ_pct])
+    # Feature vector: [intercept, occupancy_pct − baseline]. The trainer
+    # centers occupancy on INVENTORY_OCC_BASELINE_PCT before fitting, so the
+    # posterior coefficients live in centered space; serve at the same center
+    # or every prediction is biased by slope·baseline.
+    x = np.array([1.0, occ_pct - INVENTORY_OCC_BASELINE_PCT])
     # ── Strict shape match (May 2026 audit pass-4) ─────────────────────
     # Previously: silently pad with zeros or truncate. Pad is dangerous
     # — adding a third feature to training (e.g. day_of_week) would
@@ -357,7 +465,27 @@ def _predict_from_cohort_prior(params: Dict[str, Any], occ_pct: float) -> Dict[s
     Math:
         rate_hotel_today = prior_rate_per_room_per_day
                          * room_count
-                         * (occ_pct / 50.0)   # 50% occupancy is the cohort baseline
+                         * (occ_pct / baseline)   # baseline = cohort reference occ
+
+    APPROXIMATIONS (intentional — don't "fix" without reading):
+    1. Occupancy reference. inventory_priors.py produces prior_rate as the
+       median per-room rate over the contributing hotels' windows AT THEIR
+       ACTUAL occupancy — it is NOT per-window normalized to the baseline. Here
+       we consume it as if it were the rate at baseline occupancy. For the
+       limited-service target market (typical occupancy ≈ 60%) the error is
+       small; it grows for cohorts running well off 60%. The faithful fix
+       (normalize each window's rate by occ/baseline in the producer SQL) is
+       staged in STAGED_INVENTORY_MIGRATIONS.md as a follow-up — it needs
+       daily_logs occupancy data flowing and can't be validated without a DB.
+    2. Shape. This cold-start response is purely PROPORTIONAL through the origin
+       (usage → 0 at 0% occupancy), whereas the fitted Bayesian path is AFFINE
+       (intercept + slope·(occ−baseline), non-zero baseline usage). So an item's
+       days-left can visibly SHIFT when it graduates from this placeholder to a
+       fitted model — that is expected (placeholder → real data), not a bug.
+
+    The baseline is the shared INVENTORY_OCC_BASELINE_PCT the trainer/inference
+    Bayesian path centers on (was a hard-coded 50.0).
+
     Uncertainty band: ±50% around p50 for p10/p90 (vs the trained model's
     posterior which typically converges to <±20% once mature). The band is
     deliberately wide — auto-fill won't fire for cold-start models anyway
@@ -367,7 +495,7 @@ def _predict_from_cohort_prior(params: Dict[str, Any], occ_pct: float) -> Dict[s
     prior_rate = float(params.get("cohort_prior_rate", 0.0))
     room_count = int(params.get("room_count", 60))
     base = max(prior_rate * room_count, 0.0)
-    occ_factor = max(occ_pct, 0.0) / 50.0   # 50% = cohort baseline
+    occ_factor = max(occ_pct, 0.0) / INVENTORY_OCC_BASELINE_PCT   # cohort baseline
     p50 = base * occ_factor
     spread = p50 * 0.5
     return {

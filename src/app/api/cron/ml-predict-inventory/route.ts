@@ -15,7 +15,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { runWithConcurrency } from '@/lib/parallel';
+import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
@@ -27,7 +27,15 @@ import { predictInventoryRates } from '@/lib/ml-predict-invoke';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 90;
+// 300s (Vercel Pro cap) to match the sibling ML crons — the real per-run
+// ceiling. Sharding is PLUMBED but DORMANT: applyShardFilter (below) reads
+// ?shard_offset/&shard_count, but the GitHub workflow currently calls this
+// route with a bare URL, so shard_count defaults to 1 and one invocation
+// carries the whole fleet within the 300s budget. To actually split the fleet
+// at scale, add a strategy.matrix to the predict-inventory job in ml-cron.yml
+// and append the shard params to the curl (keep the matrix length and
+// shard_count in lockstep). The 90s cap this replaced killed the run mid-fleet.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
@@ -55,10 +63,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // own local clock (a Florida hotel must not predict a Texas-timed date).
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone, inventory_ai_mode');
+    .select('id, name, timezone, inventory_ai_mode')
+    .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
   }
+
+  // Shard filter: the GitHub workflow can dispatch N parallel jobs with
+  // ?shard_offset=K&shard_count=N to split the fan-out across the fleet.
+  // Defaults to no sharding. MUST be applied to the raw ordered list BEFORE
+  // the eligible/skipped partition — the modulo math assumes every shard sees
+  // the same ordered list, so partitioning first would skip/double-process.
+  const sharded = applyShardFilter((properties ?? []) as Array<Record<string, unknown>>, new URL(req.url).searchParams);
+  log.info('ml-predict-inventory: start', { requestId, shardHeader: sharded.header });
 
   // Partition into "skipped" and "eligible" before fan-out so ai_off rows
   // don't occupy parallel slots. Codex follow-up 2026-05-13 (A1):
@@ -69,7 +86,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string };
   const eligible: PropertyRow[] = [];
   const skipped: Array<{ property_id: string; status: string; detail?: string }> = [];
-  for (const property of (properties ?? []) as PropertyRow[]) {
+  for (const property of (sharded.items as unknown as PropertyRow[])) {
     if (property.inventory_ai_mode === 'off') {
       skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
     } else if (!property.timezone) {

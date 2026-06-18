@@ -18,7 +18,7 @@ import { isCapabilityKey, isHotelRole } from '@/lib/capabilities/registry';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-interface Body { propertyId?: unknown }
+interface Body { propertyId?: unknown; confirmClearAll?: unknown }
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -35,6 +35,15 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const source = idCheck.value;
 
+  // Guard: the source hotel must EXIST. validateUuid only checks shape — a
+  // typo'd or deleted UUID would read 0 restriction rows below and (without this)
+  // blank EVERY other hotel's access restrictions. (Audit fix 2026-06-18.)
+  const { data: srcProp } = await supabaseAdmin
+    .from('properties').select('id').eq('id', source).maybeSingle();
+  if (!srcProp) {
+    return err('Source hotel not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  }
+
   // Source hotel's restrictions (defensively filtered to known caps/roles).
   const { data: sourceRows, error: srcErr } = await supabaseAdmin
     .from('capability_overrides')
@@ -44,6 +53,18 @@ export async function POST(req: NextRequest): Promise<Response> {
   const rows = (sourceRows ?? []).filter(
     (r) => isCapabilityKey(r.capability) && isHotelRole(r.role),
   );
+
+  // Refuse to clear the whole fleet's restrictions unless the caller explicitly
+  // opts in. A source hotel with zero restrictions would otherwise silently blank
+  // every other hotel's Access settings — a destructive, easy-to-trigger mistake.
+  // (Audit fix 2026-06-18.)
+  const confirmClearAll = body.confirmClearAll === true;
+  if (rows.length === 0 && !confirmClearAll) {
+    return err(
+      'The source hotel has no access restrictions. To CLEAR restrictions on every other hotel, resend with confirmClearAll: true.',
+      { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+    );
+  }
 
   // Every other hotel.
   const { data: props, error: propErr } = await supabaseAdmin.from('properties').select('id');

@@ -326,6 +326,31 @@ export function selectBurnRate(
   };
 }
 
+/**
+ * Physically-correct rule-based daily burn: each room type consumes THIS item
+ * at its own configured rate. This is the SINGLE definition shared by the
+ * reorder panel (predictReorder) and the item card (adapter.toDisplayItem), so
+ * the two surfaces can never show contradictory days-left for the same item.
+ *
+ * The item card historically computed `max(perCheckout, perStayover) ×
+ * (checkouts + stayovers)`, which applies the larger rate to BOTH room types
+ * and over-counts — and disagreed with the panel's `co·pc + so·ps`. The gap
+ * grows with occupancy, so the busiest hotels (where reorder accuracy matters
+ * most) saw the widest card-vs-panel contradiction. Both now use this helper.
+ */
+export function ruleOccupancyBurnPerDay(
+  perCheckout: number | null | undefined,
+  perStayover: number | null | undefined,
+  avgDailyCheckouts: number | null | undefined,
+  avgDailyStayovers: number | null | undefined,
+): number {
+  const pc = Math.max(0, perCheckout ?? 0);
+  const ps = Math.max(0, perStayover ?? 0);
+  const co = Math.max(0, avgDailyCheckouts ?? 0);
+  const so = Math.max(0, avgDailyStayovers ?? 0);
+  return pc * co + ps * so;
+}
+
 // ─── Single-item prediction ────────────────────────────────────────────────
 
 export function predictReorder(
@@ -340,7 +365,7 @@ export function predictReorder(
   // predicts as zero usage). Otherwise fall back to rule-based math.
   const dailyBurnRate = overrideDailyRate !== undefined && overrideDailyRate >= 0
     ? overrideDailyRate
-    : averages.avgDailyCheckouts * perCheckout + averages.avgDailyStayovers * perStayover;
+    : ruleOccupancyBurnPerDay(perCheckout, perStayover, averages.avgDailyCheckouts, averages.avgDailyStayovers);
 
   // ML-learned rates are honest at any sample size — the Bayesian posterior
   // already encodes uncertainty. Only the rule-based path needs the

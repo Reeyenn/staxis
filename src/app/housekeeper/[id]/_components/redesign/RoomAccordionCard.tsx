@@ -18,7 +18,7 @@ import type { Room, RoomReservationContext } from '@/types';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { t } from '@/lib/translations';
 import { floorFromRoomNumber } from '@/lib/housekeeper-workflow/state-machine';
-import { TOK, bigBtn, FALLBACK_TASKS } from './tokens';
+import { TOK, bigBtn, fallbackTasks } from './tokens';
 
 /**
  * RoomAccordionCard — the redesigned room tile (Claude Design handoff).
@@ -113,7 +113,7 @@ export function RoomAccordionCard(props: RoomAccordionCardProps) {
   const tasks =
     checklistLabels && checklistLabels.length > 0
       ? checklistLabels
-      : (FALLBACK_TASKS[room.type] || FALLBACK_TASKS.checkout).slice(0, checklistTotal || 6);
+      : fallbackTasks(room.type, lang).slice(0, checklistTotal || 6);
 
   const subline = done
     ? completedTime

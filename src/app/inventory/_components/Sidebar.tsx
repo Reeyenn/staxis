@@ -1,13 +1,13 @@
 'use client';
 
 import React, { useRef } from 'react';
-import { useLang } from '@/contexts/LanguageContext';
 import { T, fonts, statusColor } from './tokens';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
 import { Motion } from './motion';
 import { fmtMoney } from './format';
+import { t, type Lang } from './inv-i18n';
 
 export type SidebarAction =
   | 'count'
@@ -21,6 +21,7 @@ export type SidebarAction =
   | 'budgets';
 
 interface SidebarProps {
+  lang: Lang;
   totalItems: number;
   reorderCount: number;
   historyCount: number;
@@ -34,6 +35,7 @@ interface SidebarProps {
 // The Triage left action rail (224px, sticky). Full action set; Orders +
 // Ordering settings are management-only.
 export function Sidebar({
+  lang,
   totalItems,
   reorderCount,
   historyCount,
@@ -42,10 +44,7 @@ export function Sidebar({
   canManage,
   onAction,
 }: SidebarProps) {
-  const { lang } = useLang();
-  const L = lang === 'es' ? 'es' : 'en';
-  const ordersLabel = { en: 'Orders', es: 'Órdenes' }[L];
-  const settingsLabel = { en: 'Ordering settings', es: 'Ajustes de pedidos' }[L];
+  const tx = t(lang);
 
   return (
     <aside
@@ -61,24 +60,24 @@ export function Sidebar({
         top: 16,
       }}
     >
-      <Caps size={9} style={{ padding: '4px 8px 7px' }}>Do</Caps>
-      <RailBtn label="Start count" badge={totalItems} primary onClick={() => onAction('count')} />
-      <RailBtn label="Scan invoice" tone="teal" onClick={() => onAction('scan')} />
+      <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.do}</Caps>
+      <RailBtn label={tx.startCount} badge={totalItems} primary onClick={() => onAction('count')} />
+      <RailBtn label={tx.scanInvoice} tone="teal" onClick={() => onAction('scan')} />
       <Divider />
-      <RailBtn label="Reorder list" badge={reorderCount} accent onClick={() => onAction('reorder')} />
-      {canManage && <RailBtn label={ordersLabel} onClick={() => onAction('orders')} />}
+      <RailBtn label={tx.reorderList} badge={reorderCount} accent onClick={() => onAction('reorder')} />
+      {canManage && <RailBtn label={tx.orders} onClick={() => onAction('orders')} />}
       <Divider />
-      <Caps size={9} style={{ padding: '4px 8px 7px' }}>Look</Caps>
-      <RailBtn label="Reports" onClick={() => onAction('reports')} />
-      <RailBtn label="History" badge={historyCount} onClick={() => onAction('history')} />
-      <RailBtn label="AI Helper" onClick={() => onAction('ai')} />
-      <RailBtn label="Budgets" onClick={() => onAction('budgets')} />
-      {canManage && <RailBtn label={settingsLabel} onClick={() => onAction('ordersettings')} />}
+      <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>
+      <RailBtn label={tx.reports} onClick={() => onAction('reports')} />
+      <RailBtn label={tx.history} badge={historyCount} onClick={() => onAction('history')} />
+      <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
+      <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />
+      {canManage && <RailBtn label={tx.orderingSettings} onClick={() => onAction('ordersettings')} />}
 
       <div style={{ height: 1, background: T.rule, margin: '10px 8px 6px' }} />
       <div style={{ padding: '4px 10px 6px' }}>
-        <Caps size={9}>This month</Caps>
-        <SpendStrip spent={spendSpent} cap={spendCap} />
+        <Caps size={9}>{tx.thisMonth}</Caps>
+        <SpendStrip spent={spendSpent} cap={spendCap} lang={lang} />
       </div>
     </aside>
   );
@@ -151,14 +150,15 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
   );
 }
 
-function SpendStrip({ spent, cap }: { spent: number; cap: number }) {
+function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: Lang }) {
+  const tx = t(lang);
   const pct = cap > 0 ? Math.min(1, spent / cap) : 0;
   const remaining = Math.max(0, cap - spent);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginTop: 6 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 }}>
         <Serif size={22}>{fmtMoney(spent)}</Serif>
-        <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>of {fmtMoney(cap)}</span>
+        <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>{tx.of} {fmtMoney(cap)}</span>
       </div>
       <span
         style={{
@@ -181,7 +181,7 @@ function SpendStrip({ spent, cap }: { spent: number; cap: number }) {
         />
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink2 }}>
-        {cap > 0 ? `${fmtMoney(remaining)} still to spend` : 'No budget set'}
+        {cap > 0 ? `${fmtMoney(remaining)} ${tx.stillToSpend}` : tx.noBudgetSet}
       </span>
     </div>
   );

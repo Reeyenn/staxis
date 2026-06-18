@@ -247,7 +247,12 @@ export async function resolveVoiceSession(
   //    caller never has to guard against typos. The CHECK constraint on the
   //    column means a fresh insert can only be one of the union members.
   const rawMode = (session.mode as string | null) ?? 'general';
-  const mode: VoiceMode = rawMode === 'housekeeper_issue' ? 'housekeeper_issue' : 'general';
+  // Preserve ALL valid modes. The old ternary collapsed a persisted 'compliance'
+  // mode to 'general', which made voice-brain load the general toolset and drop
+  // log_reading/log_pm_check/get_compliance_status — so a spoken compliance
+  // reading was silently never logged. (Audit fix 2026-06-18.)
+  const mode: VoiceMode =
+    rawMode === 'housekeeper_issue' || rawMode === 'compliance' ? rawMode : 'general';
   const currentRoomNumber = (session.current_room_number as string | null) ?? null;
 
   return {

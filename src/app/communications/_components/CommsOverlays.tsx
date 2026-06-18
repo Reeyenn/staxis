@@ -258,7 +258,7 @@ function TodoComposer({ pid, staff, L, onAdded }: { pid: string; staff: StaffLit
           <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
             <DeptDot dept={curDept} />
             <select value={dept} onChange={(e) => setDept(e.target.value)} style={{ appearance: 'none', border: `1px solid ${T.hair}`, borderRadius: 8, background: T.paper, fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink, padding: '5px 26px 5px 9px', marginLeft: 7, cursor: 'pointer' }}>
-              {DEPT_OPTIONS.map((d) => <option key={d.key} value={d.key}>{d.key === 'all_staff' ? L('All Staff', 'Todos') : deptLabel(d.dept)}</option>)}
+              {DEPT_OPTIONS.map((d) => <option key={d.key} value={d.key}>{d.key === 'all_staff' ? L('All Staff', 'Todos') : L(deptLabel(d.dept), deptLabel(d.dept, 'es'))}</option>)}
             </select>
             <span style={{ position: 'absolute', right: 8, color: T.dim, pointerEvents: 'none', display: 'flex' }}><ChevronDown size={12} /></span>
           </span>

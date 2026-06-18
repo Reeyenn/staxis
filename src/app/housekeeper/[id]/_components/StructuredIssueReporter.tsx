@@ -222,7 +222,7 @@ export function StructuredIssueReporter(props: Props) {
           </div>
           <button
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('hkClose', lang)}
             style={{
               minHeight: 44,
               minWidth: 44,
@@ -365,7 +365,7 @@ export function StructuredIssueReporter(props: Props) {
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={photoPreview}
-                    alt="Issue preview"
+                    alt={lang === 'es' ? 'Vista previa del problema' : 'Issue preview'}
                     style={{
                       maxWidth: 200,
                       maxHeight: 200,

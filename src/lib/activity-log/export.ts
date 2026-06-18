@@ -302,5 +302,13 @@ export function escapePdfString(s: string): string {
   return s
     .replace(/\\/g, '\\\\')
     .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)');
+    .replace(/\)/g, '\\)')
+    // The content stream is latin1-encoded, so any code point above U+00FF would
+    // be truncated to one byte and render as garbage — corrupting the audit/
+    // compliance paper trail. The activity_log trigger writes em/en-dashes into
+    // routine English descriptions; map those to a hyphen, and any other
+    // non-Latin-1 char to '?', so output stays valid Latin-1 and /Length
+    // self-consistent. (Audit fix 2026-06-18.)
+    .replace(/[–—]/g, '-')
+    .replace(/[Ā-￿]/g, '?');
 }

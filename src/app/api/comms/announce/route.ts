@@ -58,12 +58,24 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // ── Org-wide mandatory-read campaign ──────────────────────────────────────
   if (orgWide) {
-    // Derive the targets FROM the caller's property scope — this is itself the
-    // access check, so a campaign can never write into a hotel they can't reach.
-    const targetsRaw = await listAccessiblePropertyIds(ctx.role, ctx.propertyAccess);
-    const targets = targetsRaw.includes(ctx.pid) ? targetsRaw : [ctx.pid, ...targetsRaw];
-    if (targets.length === 0) {
+    // Derive the candidate targets FROM the caller's property scope — this is
+    // the access check, so a campaign can never write into a hotel they can't reach.
+    const candidatesRaw = await listAccessiblePropertyIds(ctx.role, ctx.propertyAccess);
+    const candidates = candidatesRaw.includes(ctx.pid) ? candidatesRaw : [ctx.pid, ...candidatesRaw];
+    if (candidates.length === 0) {
       return err('no properties to broadcast to', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
+    // Re-check post_announcements PER target. property_access membership alone is
+    // NOT enough — an admin may have switched this role OFF at some hotels via the
+    // Access tab, and an org-wide mandatory-read blast must honor that per-hotel
+    // restriction instead of forcing a notice into a hotel where it's revoked.
+    // (Security audit 2026-06-18: org-wide fan-out previously skipped this.)
+    const allowChecks = await Promise.all(
+      candidates.map((p) => canForUserId(ctx.userId, 'post_announcements', p)),
+    );
+    const targets = candidates.filter((_, i) => allowChecks[i]);
+    if (targets.length === 0) {
+      return err('posting announcements is restricted for your role at the selected properties', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
     }
 
     const campaignId = await createAckCampaign(ctx.accountId, text.slice(0, 120));

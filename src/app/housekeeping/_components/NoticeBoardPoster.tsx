@@ -263,7 +263,7 @@ export function NoticeBoardPoster() {
               </div>
               <button
                 onClick={() => handleDelete(n.id)}
-                aria-label="Delete notice"
+                aria-label={lang === 'es' ? 'Eliminar aviso' : 'Delete notice'}
                 style={{
                   minHeight: 32,
                   minWidth: 32,

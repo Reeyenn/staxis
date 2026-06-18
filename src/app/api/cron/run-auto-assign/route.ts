@@ -56,6 +56,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { runWithConcurrency } from '@/lib/parallel';
 import {
   runAutoAssignForProperty,
   type PropertyRunResult,
@@ -90,24 +91,27 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     const properties = (propsRows ?? []) as Array<{ id: string; timezone: string | null }>;
 
-    const results: PropertyRunResult[] = [];
-    for (const p of properties) {
-      try {
-        // Cron defaults: respectScheduledToday=true, respectPriority=false,
-        // businessDate=today-in-tz, assignedBy='auto'. Unchanged from the
-        // pre-extraction behaviour.
-        const r = await runAutoAssignForProperty(p.id, p.timezone);
-        results.push(r);
-      } catch (e) {
-        log.error('run-auto-assign: property failed', {
-          requestId, propertyId: p.id, msg: errToString(e),
-        });
-        results.push({
-          propertyId: p.id, assigned: 0, unassigned: 0, skippedAlreadyAssigned: 0,
-          reason: `error: ${errToString(e)}`,
-        });
-      }
-    }
+    // Bounded concurrency (cap 5) instead of a serial for-await. A strictly
+    // serial loop exceeds the 60s function cap at fleet scale and, because the
+    // order is stable, silently starves the SAME tail hotels each tick. The
+    // per-property runner is idempotent (only touches tasks without an active
+    // assignment) and concurrency-safe (it catches the 23505 unique-violation),
+    // so running ~5 at a time is safe. (Audit fix 2026-06-18.)
+    const outcomes = await runWithConcurrency(
+      properties,
+      (p) => runAutoAssignForProperty(p.id, p.timezone),
+      5,
+    );
+    const results: PropertyRunResult[] = outcomes.map((o) => {
+      if (o.ok) return o.value;
+      log.error('run-auto-assign: property failed', {
+        requestId, propertyId: o.input.id, msg: errToString(o.error),
+      });
+      return {
+        propertyId: o.input.id, assigned: 0, unassigned: 0, skippedAlreadyAssigned: 0,
+        reason: `error: ${errToString(o.error)}`,
+      };
+    });
 
     const totals = results.reduce(
       (acc, r) => ({
