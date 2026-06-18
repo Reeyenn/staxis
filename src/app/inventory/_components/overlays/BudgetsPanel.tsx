@@ -6,14 +6,16 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { upsertInventoryBudget } from '@/lib/db';
 import type { InventoryBudget, InventoryCategory } from '@/types';
 
-import { T, fonts, catLabel, type InvCat } from '../tokens';
+import { T, fonts, type InvCat } from '../tokens';
 import { CatIcon } from '../CatIcon';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
+import { catLabelFor, monthsFor, type Lang } from '../inv-i18n';
 
 interface BudgetsPanelProps {
+  lang: Lang;
   open: boolean;
   onClose: () => void;
   budgets: InventoryBudget[];
@@ -21,12 +23,56 @@ interface BudgetsPanelProps {
 
 type Mode = 'same' | 'months';
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
+function bpStrings(lang: Lang) {
+  return {
+    en: {
+      eyebrow: 'Budgets',
+      italic: 'How much you have to spend',
+      everyMonth: 'every month',
+      cancel: 'Cancel',
+      saving: 'Saving…',
+      save: 'Save',
+      howBudgetsWork: 'How budgets work',
+      sameTitle: 'Same every month',
+      sameSub: 'One number per category, used all year.',
+      monthsTitle: 'Different each month',
+      monthsSub: 'Set a different amount per month (busy season, etc).',
+      month: 'Month',
+      usedEveryMonth: 'used every month',
+      forMonth: (m: string) => `for ${m}`,
+      totalThisMonth: 'Total this month',
+      copyToYear: (m: string) => `Copy ${m} to the whole year`,
+      saveFailed: 'Saving the budgets failed. Please try again.',
+    },
+    es: {
+      eyebrow: 'Presupuestos',
+      italic: 'Cuánto tienes para gastar',
+      everyMonth: 'cada mes',
+      cancel: 'Cancelar',
+      saving: 'Guardando…',
+      save: 'Guardar',
+      howBudgetsWork: 'Cómo funcionan los presupuestos',
+      sameTitle: 'Igual cada mes',
+      sameSub: 'Un número por categoría, usado todo el año.',
+      monthsTitle: 'Diferente cada mes',
+      monthsSub: 'Define un monto distinto por mes (temporada alta, etc).',
+      month: 'Mes',
+      usedEveryMonth: 'usado cada mes',
+      forMonth: (m: string) => `para ${m}`,
+      totalThisMonth: 'Total este mes',
+      copyToYear: (m: string) => `Copiar ${m} a todo el año`,
+      saveFailed: 'No se pudieron guardar los presupuestos. Inténtalo de nuevo.',
+    },
+  }[lang];
+}
+
+export function BudgetsPanel({ lang, open, onClose, budgets }: BudgetsPanelProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const bp = bpStrings(lang);
+  const MONTHS = monthsFor(lang);
 
   // sameVals[cat] holds a single annual cap (when mode='same').
   // monthVals[cat][m] holds per-month caps for months 0..11 in the current year.
@@ -131,7 +177,7 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
       onClose();
     } catch (err) {
       console.error('[budgets] save failed', err);
-      alert('Saving the budgets failed. Please try again.');
+      alert(bp.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -141,17 +187,17 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow="Budgets"
-      italic="How much you have to spend"
-      suffix={mode === 'same' ? 'every month' : `· ${MONTHS[month]}`}
+      eyebrow={bp.eyebrow}
+      italic={bp.italic}
+      suffix={mode === 'same' ? bp.everyMonth : `· ${MONTHS[month]}`}
       width={720}
       footer={
         <>
           <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
-            Cancel
+            {bp.cancel}
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? bp.saving : bp.save}
           </Btn>
         </>
       }
@@ -159,19 +205,19 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         {/* Mode toggle */}
         <div>
-          <Caps>How budgets work</Caps>
+          <Caps>{bp.howBudgetsWork}</Caps>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <ModeBtn
               active={mode === 'same'}
               onClick={() => setMode('same')}
-              title="Same every month"
-              sub="One number per category, used all year."
+              title={bp.sameTitle}
+              sub={bp.sameSub}
             />
             <ModeBtn
               active={mode === 'months'}
               onClick={() => setMode('months')}
-              title="Different each month"
-              sub="Set a different amount per month (busy season, etc)."
+              title={bp.monthsTitle}
+              sub={bp.monthsSub}
             />
           </div>
         </div>
@@ -179,7 +225,7 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
         {/* Month picker (per-month mode only) */}
         {mode === 'months' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <Caps>Month</Caps>
+            <Caps>{bp.month}</Caps>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {MONTHS.map((m, i) => {
                 const active = i === month;
@@ -230,10 +276,10 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
                 <CatIcon cat={cat} size={32} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink, fontWeight: 600 }}>
-                    {catLabel[cat]}
+                    {catLabelFor(lang, cat)}
                   </span>
                   <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3 }}>
-                    {mode === 'same' ? 'used every month' : `for ${MONTHS[month]}`}
+                    {mode === 'same' ? bp.usedEveryMonth : bp.forMonth(MONTHS[month])}
                   </span>
                 </div>
                 <div style={{ position: 'relative' }}>
@@ -293,7 +339,7 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
           }}
         >
           <div>
-            <Caps>Total this month</Caps>
+            <Caps>{bp.totalThisMonth}</Caps>
             <div
               style={{
                 fontFamily: fonts.serif,
@@ -311,7 +357,7 @@ export function BudgetsPanel({ open, onClose, budgets }: BudgetsPanelProps) {
           </div>
           {mode === 'months' && (
             <Btn variant="ghost" size="md" onClick={copyToYear}>
-              Copy {MONTHS[month]} to the whole year
+              {bp.copyToYear(MONTHS[month])}
             </Btn>
           )}
         </div>

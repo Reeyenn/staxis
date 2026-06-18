@@ -1,7 +1,8 @@
 'use client';
 
 import React from 'react';
-import { fonts, statusColor, statusTint, statusLabel, type StockStatus } from './tokens';
+import { fonts, statusColor, statusTint, type StockStatus } from './tokens';
+import { statusLabelFor, type Lang } from './inv-i18n';
 
 export function StatusDot({
   s,
@@ -37,10 +38,12 @@ export function StatusPill({
   s,
   filled = false,
   style,
+  lang = 'en',
 }: {
   s: StockStatus;
   filled?: boolean;
   style?: React.CSSProperties;
+  lang?: Lang;
 }) {
   const c = statusColor[s];
   return (
@@ -64,7 +67,7 @@ export function StatusPill({
       }}
     >
       {!filled && <StatusDot s={s} size={6} />}
-      {statusLabel[s]}
+      {statusLabelFor(lang, s)}
     </span>
   );
 }

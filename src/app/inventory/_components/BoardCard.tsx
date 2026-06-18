@@ -8,8 +8,10 @@ import { Serif } from './Serif';
 import { Motion } from './motion';
 import { fmtMoney, fmtInt } from './format';
 import type { DisplayItem } from './types';
+import { t, type Lang } from './inv-i18n';
 
 interface BoardCardProps {
+  lang: Lang;
   it: DisplayItem;
   /** Open the Add/Edit sheet for this item. */
   onEdit?: (item: DisplayItem) => void;
@@ -22,15 +24,17 @@ interface BoardCardProps {
 // Honesty rule: a burn rate from the par/60 fallback (or no data at all) is not
 // a forecast, so render the days-left as an em-dash — only ml / rule-occupancy
 // items show a real number. Mirrors ItemRow's behaviour + selectBurnRate.
-function daysLeftLabel(it: DisplayItem): string {
+function daysLeftLabel(it: DisplayItem, lang: Lang): string {
   if (it.burnSource === 'fallback-60d' || it.burnSource === 'no-data') return '—';
-  if (it.daysLeft >= 90) return '90+d left';
-  return `${it.daysLeft}d left`;
+  const tx = t(lang);
+  if (it.daysLeft >= 90) return tx.daysLeft90;
+  return `${it.daysLeft}${tx.daysLeft}`;
 }
 
 // The flip unit on the Triage board. Front = at-a-glance stock; tapping the
 // card flips it (physical Y-axis turn) to a back face with row actions.
-export function BoardCard({ it, onEdit, onCount, onReorder }: BoardCardProps) {
+export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardProps) {
+  const tx = t(lang);
   const [flipped, setFlipped] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const c = statusColor[it.status];
@@ -96,7 +100,7 @@ export function BoardCard({ it, onEdit, onCount, onReorder }: BoardCardProps) {
                 </span>
               </span>
               <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: c, fontWeight: 600 }}>
-                {daysLeftLabel(it)}
+                {daysLeftLabel(it, lang)}
               </span>
             </div>
           </div>
@@ -119,7 +123,7 @@ export function BoardCard({ it, onEdit, onCount, onReorder }: BoardCardProps) {
               <button
                 type="button"
                 onClick={flip}
-                aria-label="Flip back"
+                aria-label={tx.flipBack}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -142,16 +146,16 @@ export function BoardCard({ it, onEdit, onCount, onReorder }: BoardCardProps) {
                 letterSpacing: '0.02em',
               }}
             >
-              value {fmtMoney(it.value)} · lead {it.leadDays}d{it.graduated ? ' · ai-tracked' : ''}
+              {tx.value} {fmtMoney(it.value)} · {tx.lead} {it.leadDays}d{it.graduated ? ` · ${tx.aiTracked}` : ''}
             </div>
             <div style={{ marginTop: 'auto', display: 'flex', gap: 6 }}>
-              <CardAct label="Count" onClick={() => onCount?.()} />
+              <CardAct label={tx.count} onClick={() => onCount?.()} />
               <CardAct
-                label="Reorder"
+                label={tx.reorder}
                 tone={it.status === 'critical' ? 'terra' : undefined}
                 onClick={() => onReorder?.()}
               />
-              <CardAct label="Edit" onClick={() => onEdit?.(it)} />
+              <CardAct label={tx.edit} onClick={() => onEdit?.(it)} />
             </div>
           </div>
         )}
