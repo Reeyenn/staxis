@@ -816,6 +816,20 @@ export class SessionDriver {
       case 'type_text':
         await this.page.keyboard.type(resolve(step.value as string));
         return;
+      case 'click_at': {
+        // Coordinate click recorded by the vision login (Set-of-Mark). The
+        // session-driver page uses the SAME VIEWPORT (1280×800) as the mapper,
+        // so the recorded x/y land on the same element. Mirrors the extractor
+        // pre-step executor (extractors/pre-steps.ts). No credential exposure —
+        // a click carries no value; the secrets ride the type_text steps.
+        const cx = step.x;
+        const cy = step.y;
+        if (typeof cx !== 'number' || typeof cy !== 'number') {
+          throw new Error('click_at login step missing numeric x/y');
+        }
+        await this.page.mouse.click(cx, cy);
+        return;
+      }
       default:
         throw new Error(`unsupported login step kind: ${kind}`);
     }
