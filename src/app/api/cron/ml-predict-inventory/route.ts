@@ -27,10 +27,14 @@ import { predictInventoryRates } from '@/lib/ml-predict-invoke';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-// 300s (Vercel Pro cap) to match the sibling ML crons. At fleet scale the
-// GitHub workflow dispatches N sharded jobs (see applyShardFilter below) so a
-// single invocation only handles its slice; the 90s cap here used to kill the
-// run mid-fleet (the back half of hotels silently got no predictions).
+// 300s (Vercel Pro cap) to match the sibling ML crons — the real per-run
+// ceiling. Sharding is PLUMBED but DORMANT: applyShardFilter (below) reads
+// ?shard_offset/&shard_count, but the GitHub workflow currently calls this
+// route with a bare URL, so shard_count defaults to 1 and one invocation
+// carries the whole fleet within the 300s budget. To actually split the fleet
+// at scale, add a strategy.matrix to the predict-inventory job in ml-cron.yml
+// and append the shard params to the curl (keep the matrix length and
+// shard_count in lockstep). The 90s cap this replaced killed the run mid-fleet.
 export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {

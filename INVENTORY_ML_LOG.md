@@ -336,3 +336,69 @@ inventory src tests pass; tsc 0 errors; eslint clean.
 Python **335 passed** · inventory web tests **25 passed** · `tsc` 0 errors ·
 eslint clean · offline harness: occupancy MAE −45% vs mean baseline,
 contaminated-data MAE-vs-truth −95%. 17 files changed (+1475/−67).
+
+---
+
+## Adversarial review pass (Codex + Claude senior-engineer) + fixes
+
+Ran TWO independent adversarial reviews of the whole branch: the **Codex CLI**
+over the diff, and a **6-lens Claude senior-engineer workflow** (each finding
+independently re-verified). Codex confirmed 7 findings; Claude confirmed 20.
+Several overlapped. All real ones are now fixed (Python **340 passed**, tsc 0,
+eslint clean):
+
+**Fixed**
+- **Window hygiene was too aggressive (Codex+Claude HIGH).** My first pass
+  dropped ALL consumption≤0 windows → over-estimated intermittent items ~2×.
+  Refined: drop only the contamination — unexplained increases (raw<0) and
+  auto-stock-up zeros (raw=0 on a count that ROSE) — and KEEP genuine
+  zero-usage windows (count flat/down). Mirrored in the priors SQL + staged
+  view migration. +2 tests.
+- **Stale-model centering mismatch (Codex HIGH).** Bumped `feature_set_version`
+  → `v2-centered`; inference now REFUSES to serve a Bayesian posterior trained
+  before occupancy was centered (skips → retrain) instead of serving it wrong.
+- **Neutral occupancy default 50 vs centering baseline 60 (Claude HIGH).** A
+  data-missing window fed the model `50−60 = −10` (a constant non-zero feature →
+  re-introduced collinearity) — and this is the CURRENT path since occupancy
+  data isn't flowing. Changed the neutral default to the baseline in all 5 sites
+  so unknown occupancy centers to exactly 0. Updated the pinned test.
+- **Streak over-count (Codex+Claude).** A failing run within 24h was skipped as
+  "non-distinct" → a broken model kept its streak. Reordered: pass/fail is
+  evaluated first (failure breaks regardless of timing); only PASSING retries
+  are skipped. +1 test.
+- **Cold-start 0%-occupancy emitted a meaningless 0 prediction (Claude).** Now
+  skipped (scoped to cohort path; fitted models that predict ~0 are kept).
+- **Non-finite predicted_current_stock → 0.0 read as "reorder now" (Claude).**
+  Now writes SQL NULL (cockpit drops it) instead of a fake 0.
+- **Train-side centering had no test (Claude).** Extracted `_center_occupancy`
+  (single source of truth) + a fit→serve round-trip test that fails on any
+  train/serve baseline mismatch.
+- **Tautological / wrong-key hydrate tests (Claude).** Tightened the
+  `or "predicted" in result` escape hatch to `is True`; fixed the cold-start
+  fixture key (`cohort_prior_rate`).
+- **`parse_iso_datetime` UTC normalization (Claude LOW).** Convert to UTC before
+  dropping tzinfo so the streak gap math is TZ-robust.
+- **Comments/docs corrected:** the trainer↔view "agree" claim, the cron
+  "workflow dispatches shards" claim (plumbed-but-dormant), the cohort-prior
+  "rate at typical occupancy" claim, and the cold-start proportional-vs-affine
+  shape note. Staged migration B `paper cup` arm guarded against stealing coffee
+  cups; `%batter%`→`%battery%`.
+
+**Deferred — with reasons (not silently dropped):**
+- **Cohort prior occupancy-reference (HIGH).** The cohort prior is produced at
+  contributing hotels' actual occupancy but consumed as the rate at baseline
+  60%. Bias is small for the ~60% limited-service market; the exact fix
+  (normalize each window by occ/60 in the producer SQL) needs daily_logs
+  occupancy data flowing AND can't be validated without a DB — staged in
+  `STAGED_INVENTORY_MIGRATIONS.md` + an honest docstring, not shipped untested.
+- **Days-left honesty gate <7 days (MED).** The [9] fix unified the FORMULA;
+  the card still shows a number where the panel says "not enough data" for
+  <7-day-old hotels. Fixing it changes burnSource→sort/suffix side effects I
+  can't visually QA tonight — documented as a follow-up; the formula (the actual
+  bug) is fixed.
+- **Occupancy-window boundary day (MED).** Which boundary day a window claims is
+  count-time-of-day dependent (morning vs end-of-shift); kept the disjoint rule
+  and made the comment honest rather than flip it (flipping just moves the
+  ~1-day smoothing error to evening-count hotels).
+- **demand.py/supply.py streak parity, stale-row doctor counter** — Housekeeping
+  ML / observability, out of this branch's lane; noted for their owners.

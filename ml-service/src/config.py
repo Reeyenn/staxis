@@ -19,6 +19,15 @@ from pydantic_settings import BaseSettings
 # limited-service occupancy. Changing it requires a full retrain.
 INVENTORY_OCC_BASELINE_PCT: float = 60.0
 
+# Feature-set version stamped on every inventory_rate model_run and checked at
+# serve time. Bumped to "v2-centered" when occupancy became a live, CENTERED
+# feature: a posterior trained BEFORE that change learned coefficients in raw
+# (uncentered) occupancy space, so serving it with the centered feature vector
+# would bias every prediction. Inference refuses to serve a Bayesian run whose
+# feature_set_version != this, so a stale model is skipped (and retrained) rather
+# than served wrong. Bump again whenever the feature vector's MEANING changes.
+INVENTORY_FEATURE_SET_VERSION: str = "v2-centered"
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""

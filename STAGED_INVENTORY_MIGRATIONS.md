@@ -70,17 +70,24 @@ select
   w.older_counted_at, w.newer_counted_at, w.older_stock, w.newer_stock,
   w.orders_in_window, w.discards_in_window,
   w.raw_days_elapsed::numeric as days_elapsed,
-  -- No greatest(...,0) clamp: only windows with observed consumption > 0
-  -- survive the WHERE below, matching training/inventory_rate.py and
-  -- inventory_priors.py (drop auto-stock-up / unexplained-increase windows).
+  -- No greatest(...,0) clamp: only kept windows reach here. Mirrors
+  -- training/inventory_rate.py + inventory_priors.py — keep positive
+  -- consumption AND genuine zero-usage windows (count flat/down), drop only
+  -- unexplained increases (<0) and auto-stock-up zeros (=0 on a count that ROSE).
   ((w.older_stock + w.orders_in_window - w.discards_in_window - w.newer_stock)
     / w.raw_days_elapsed)::numeric as observed_rate
 from windowed_movements w
 where w.raw_days_elapsed >= 1.0
-  and (w.older_stock + w.orders_in_window - w.discards_in_window - w.newer_stock) > 0;
+  and (
+    (w.older_stock + w.orders_in_window - w.discards_in_window - w.newer_stock) > 0
+    or (
+      (w.older_stock + w.orders_in_window - w.discards_in_window - w.newer_stock) = 0
+      and w.newer_stock <= w.older_stock
+    )
+  );
 
 comment on view public.inventory_observed_rate_v is
-  'Per-item observed daily consumption rate between consecutive counts. Mirrors the Python trainer + cohort-prior SQL: drops sub-day pairs and windows with consumption <= 0 (auto-stock-up / unexplained increase).';
+  'Per-item observed daily consumption rate between consecutive counts. Mirrors the Python trainer + cohort-prior SQL: drops sub-day pairs, unexplained-increase (<0) and auto-stock-up (=0 on a count-up) windows; keeps genuine zero-usage windows.';
 
 grant select on public.inventory_observed_rate_v to service_role;
 ```
@@ -93,9 +100,18 @@ grant select on public.inventory_observed_rate_v to service_role;
 recognise resolves to `'unknown'`, gets **no cohort prior**, and falls to the
 flat `DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY = 0.20`. At 300 hotels with varied
 naming, a lot of real items (amenity kits, mouthwash, q-tips, coffee filters,
-napkins, water bottles, etc.) get no network signal on day 1. This is purely
+napkins, water bottles, etc.) get no network signal on day 1. This is mostly
 additive synonym coverage + a coarse `item_category` column for the optional
 phase-2 category-tier fallback (below).
+
+⚠️ **Not 100% additive — review before applying.** New CASE arms that sit
+*before* existing ones can re-route an already-recognized item to a new
+canonical, which moves it to a different `inventory_rate_priors` bucket on the
+next nightly aggregation (one-night cold-start degradation). The `paper cup`
+arm is guarded with `not like '%coffee%'` so true coffee cups keep their
+`coffee pod` mapping, but you should still diff the resolved canonical for the
+real catalog before applying, and run the priors aggregation immediately after
+to close the re-bucketing window.
 
 ```sql
 create or replace view item_canonical_name_view as
@@ -128,7 +144,8 @@ select
     when lower(inv.name) like '%paper towel%'                          then 'paper towel'
     when lower(inv.name) like '%napkin%'                               then 'napkin'
     when lower(inv.name) like '%tissue%' or lower(inv.name) like '%kleenex%' then 'tissues'
-    when lower(inv.name) like '%cup%' and (lower(inv.name) like '%paper%' or lower(inv.name) like '%plastic%') then 'paper cup'
+    when lower(inv.name) like '%cup%' and (lower(inv.name) like '%paper%' or lower(inv.name) like '%plastic%')
+         and lower(inv.name) not like '%coffee%' and lower(inv.name) not like '%k-cup%' then 'paper cup'
     when lower(inv.name) like '%coffee%pod%' or lower(inv.name) like '%k-cup%' or lower(inv.name) like '%coffee%cup%' then 'coffee pod'
     when lower(inv.name) like '%coffee filter%'                        then 'coffee filter'
     when lower(inv.name) like '%stir%'                                 then 'coffee stirrer'
@@ -149,7 +166,7 @@ select
     when lower(inv.name) like '%cleaner%' or lower(inv.name) like '%multi%surface%' or lower(inv.name) like '%all%purpose%' then 'all-purpose cleaner'
     when lower(inv.name) like '%disinfect%' or lower(inv.name) like '%sanitiz%wipe%' then 'disinfectant'
     when lower(inv.name) like '%light bulb%' or lower(inv.name) like '%lightbulb%' then 'light bulb'
-    when lower(inv.name) like '%batter%'                               then 'battery'
+    when lower(inv.name) like '%battery%','%batteries%'                               then 'battery'
     else 'unknown'
   end as item_canonical_name,
   -- Coarse category for the optional phase-2 category-tier prior fallback.
@@ -158,7 +175,7 @@ select
     when lower(inv.name) like any (array['%toilet%paper%','%paper towel%','%napkin%','%tissue%','%kleenex%','%tp %','%cup%']) then 'paper'
     when lower(inv.name) like any (array['%towel%','%sheet%','%pillow%','%blanket%','%comforter%','%duvet%','%mattress%','%robe%','%bath mat%','%floor mat%']) then 'linen'
     when lower(inv.name) like any (array['%coffee%','%k-cup%','%tea%','%sugar%','%sweetener%','%creamer%','%stir%','%water%bottle%','%bottled water%']) then 'breakfast'
-    when lower(inv.name) like any (array['%cleaner%','%multi%surface%','%all%purpose%','%disinfect%','%garbage%bag%','%trash%bag%','%bin%liner%','%laundry bag%','%light bulb%','%lightbulb%','%batter%']) then 'cleaning'
+    when lower(inv.name) like any (array['%cleaner%','%multi%surface%','%all%purpose%','%disinfect%','%garbage%bag%','%trash%bag%','%bin%liner%','%laundry bag%','%light bulb%','%lightbulb%','%battery%','%batteries%']) then 'cleaning'
     else 'misc'
   end as item_category
 from inventory inv;

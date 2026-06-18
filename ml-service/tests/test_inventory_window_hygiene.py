@@ -32,12 +32,32 @@ def test_normal_depletion_window_kept_with_correct_rate():
     assert abs(rows[0]["daily_rate"] - 10.0) < 1e-6
 
 
-def test_zero_consumption_window_dropped():
-    """Count rose and an offsetting order makes raw consumption exactly 0
-    (the CountSheet auto-stock-up signature) → window dropped, not kept at 0."""
+def test_auto_stock_up_zero_window_dropped():
+    """Count ROSE and an offsetting order makes raw consumption exactly 0
+    (the CountSheet auto-stock-up signature) → window dropped (usage masked)."""
     counts = [_count(1, 100), _count(5, 130)]
     orders = [{"received_at": "2026-01-05T12:00:00", "quantity": 30}]  # 100+30-130=0
     assert _build_training_rows(counts, orders, [], LOGS, ROOMS) == []
+
+
+def test_genuine_zero_usage_window_kept():
+    """Count FLAT, no restock → genuine zero-usage window is KEPT at rate 0.
+    Dropping these (the prior, too-aggressive rule) over-estimates items that
+    are only used some days (learns burn-when-used, not average burn)."""
+    counts = [_count(1, 100), _count(5, 100)]  # nothing used, no orders
+    rows = _build_training_rows(counts, [], [], LOGS, ROOMS)
+    assert len(rows) == 1
+    assert rows[0]["daily_rate"] == 0.0
+
+
+def test_zero_via_discard_on_count_down_kept():
+    """Count went DOWN but the drop is fully explained by a discard → zero real
+    usage, count did not rise → KEPT at rate 0 (genuine zero usage)."""
+    counts = [_count(1, 100), _count(5, 90)]
+    discards = [{"discarded_at": "2026-01-03T12:00:00", "quantity": 10}]  # 100+0-10-90=0
+    rows = _build_training_rows(counts, [], discards, LOGS, ROOMS)
+    assert len(rows) == 1
+    assert rows[0]["daily_rate"] == 0.0
 
 
 def test_unexplained_increase_window_dropped():

@@ -27,10 +27,13 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-// 300s (Vercel Pro cap) to match the sibling ML crons. Inventory training is
-// the heaviest stage (one call iterates every item in the property); at fleet
-// scale the GitHub workflow dispatches N sharded jobs (applyShardFilter below)
-// so a single invocation only handles its slice instead of timing out mid-fleet.
+// 300s (Vercel Pro cap) to match the sibling ML crons — inventory training is
+// the heaviest stage (one call iterates every item in the property). Sharding
+// is PLUMBED but DORMANT: applyShardFilter (below) is ready, but the GitHub
+// workflow calls this route with a bare URL, so shard_count defaults to 1 and
+// one invocation trains the whole fleet within 300s. To split the fleet at
+// scale, add a strategy.matrix to the train-inventory job in ml-cron.yml and
+// append the shard params to the curl (matrix length and shard_count in lockstep).
 export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {

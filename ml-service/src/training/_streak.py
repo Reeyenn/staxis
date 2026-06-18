@@ -95,17 +95,10 @@ def compute_consecutive_passes(
     last_counted_dt = parse_iso_datetime(current_trained_at) if spacing_on else None
 
     for pr in prior_runs:
-        pr_dt = None
-        if spacing_on:
-            pr_dt = parse_iso_datetime(pr.get("trained_at"))
-            if pr_dt is None:
-                # Can't prove this run is a distinct window → stop counting.
-                break
-            if last_counted_dt is not None:
-                gap = (last_counted_dt - pr_dt).total_seconds()
-                if gap < min_gap_seconds:
-                    continue  # same training window → skip, don't break
-
+        # Evaluate pass/fail FIRST so a genuine failure breaks the streak no
+        # matter WHEN it was trained. (A failing retry that happened to be
+        # within min_gap of the last counted run must NOT be silently skipped —
+        # that would let a broken model keep an accumulating streak.)
         prior_denom = max(_prior_mean_observed_rate(pr, current_mean_floor), 1e-9)
         prior_mae_ratio = (pr.get("validation_mae") or float("inf")) / prior_denom
         prior_passes = (
@@ -115,9 +108,20 @@ def compute_consecutive_passes(
         if not prior_passes:
             break
 
-        consecutive_passes += 1
+        # Distinctness applies ONLY to passing runs: a PASSING retry within
+        # min_gap of the last counted window is the same window retried, not new
+        # evidence of stability — skip it (continue) without breaking.
         if spacing_on:
+            pr_dt = parse_iso_datetime(pr.get("trained_at"))
+            if pr_dt is None:
+                break  # can't prove this is a distinct window → stop counting
+            if last_counted_dt is not None and (
+                last_counted_dt - pr_dt
+            ).total_seconds() < min_gap_seconds:
+                continue
             last_counted_dt = pr_dt
+
+        consecutive_passes += 1
         if consecutive_passes >= cap:
             return cap
     return consecutive_passes

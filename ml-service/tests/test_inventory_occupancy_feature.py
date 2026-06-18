@@ -10,14 +10,18 @@ import numpy as np
 import pandas as pd
 
 from src.config import INVENTORY_OCC_BASELINE_PCT
+from src.layers.bayesian_regression import BayesianRegression
 from src.inference.inventory_rate import (
     _predict_bayesian_quantiles,
     _recent_avg_occupancy,
 )
 from src.training.inventory_rate import (
+    INVENTORY_FEATURE_COLS,
     _avg_occupancy_in_window,
     _build_training_rows,
+    _center_occupancy,
     _occ_pct_from_log,
+    _seed_bayesian_intercept,
 )
 
 
@@ -56,12 +60,14 @@ def test_avg_occupancy_window_derives_and_varies():
     assert avg == (50.0 + 90.0 + 70.0) / 3.0  # 70.0 — not the dead 50.0 default
 
 
-def test_avg_occupancy_window_defaults_50_when_no_overlap():
+def test_avg_occupancy_window_defaults_to_baseline_when_no_overlap():
+    # Unknown occupancy must default to the centering baseline (so it centers to
+    # 0), NOT 50 (which would center to -10 and bias the slope).
     logs = [{"date": "2025-12-01", "occupied": 40}]
     avg = _avg_occupancy_in_window(
         logs, pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-04"), total_rooms=80
     )
-    assert avg == 50.0
+    assert avg == INVENTORY_OCC_BASELINE_PCT
 
 
 def test_build_training_rows_occupancy_not_constant():
@@ -103,8 +109,44 @@ def test_recent_avg_occupancy_derives_from_occupied():
 
 def test_recent_avg_occupancy_neutral_without_total_rooms():
     logs = [{"occupied": 40}, {"occupied": 60}]
-    assert _recent_avg_occupancy(logs, total_rooms=None) == 50.0
-    assert _recent_avg_occupancy(logs, total_rooms=0) == 50.0
+    assert _recent_avg_occupancy(logs, total_rooms=None) == INVENTORY_OCC_BASELINE_PCT
+    assert _recent_avg_occupancy(logs, total_rooms=0) == INVENTORY_OCC_BASELINE_PCT
+
+
+def test_center_occupancy_subtracts_baseline():
+    X = pd.DataFrame({"occupancy_pct": [60.0, 70.0, 50.0]})
+    out = _center_occupancy(X.copy())
+    assert list(out["occupancy_pct"]) == [0.0, 10.0, -10.0]
+
+
+def test_train_serve_centering_round_trip():
+    """End-to-end: fit through the REAL train-side centering helper, serve
+    through the REAL inference quantile fn, and recover the true intercept +
+    slope. This FAILS if train and serve don't center on the same baseline
+    (e.g. if _center_occupancy became a no-op: the intercept would be learned in
+    raw-occupancy space and served centered, so p50 at baseline ≠ a)."""
+    base = INVENTORY_OCC_BASELINE_PCT
+    a, b = 20.0, 0.5                       # true rate = a + b*(occ - baseline)
+    occ = np.linspace(40.0, 95.0, 60)
+    rate = a + b * (occ - base)
+    df = pd.DataFrame({"occupancy_pct": occ, "daily_rate": rate})
+
+    X = _center_occupancy(df[INVENTORY_FEATURE_COLS].copy())
+    X.insert(0, "intercept", 1.0)
+    model = BayesianRegression(prior_strength=0.5)
+    _seed_bayesian_intercept(model, 0.1, 60)   # prior intercept = 6, FAR from a=20
+    model.fit(X, df["daily_rate"].astype(float))
+
+    params = {
+        "mu_n": model.mu_n.tolist(),
+        "sigma_n": model.sigma_n.tolist(),
+        "alpha_n": float(model.alpha_n),
+        "beta_n": float(model.beta_n),
+    }
+    at_base = _predict_bayesian_quantiles(params, base)["p50"]
+    at_plus10 = _predict_bayesian_quantiles(params, base + 10.0)["p50"]
+    assert abs(at_base - a) < 1.5                       # intercept == rate at baseline
+    assert abs((at_plus10 - at_base) - 10.0 * b) < 0.5  # slope recovered from data
 
 
 def test_bayesian_quantiles_are_occupancy_centered():

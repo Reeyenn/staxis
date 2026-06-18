@@ -151,15 +151,23 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                     / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
             from with_window w
             join public.properties p on p.id = w.property_id
-            -- Window hygiene — mirror training/inventory_rate._build_training_rows
-            -- and inventory_observed_rate_v (migration 0096): drop sub-day pairs
-            -- (require >= 1.0 day) and keep ONLY windows with observed
-            -- consumption > 0. The old `greatest(..., 0)` clamped count-up /
-            -- auto-stock-up windows to a fake 0-rate row, flooding the network
-            -- prior with zeros and biasing every new hotel's cold-start LOW.
+            -- Window hygiene — mirror training/inventory_rate._build_training_rows:
+            -- drop sub-day pairs (require >= 1.0 day); keep windows with real
+            -- positive consumption AND genuine zero-usage windows (count flat or
+            -- down, nothing used); drop only the contamination — unexplained
+            -- increases (consumption < 0) and auto-stock-up zeros (consumption
+            -- = 0 on a count that ROSE). The old `greatest(..., 0)` clamped
+            -- count-up windows to a fake 0, biasing new-hotel cold-start LOW;
+            -- dropping ALL zeros instead would over-estimate intermittent items.
             where w.days >= 1.0
               and p.total_rooms > 0
-              and (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) > 0
+              and (
+                (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) > 0
+                or (
+                  (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) = 0
+                  and w.curr_stock <= w.prev_stock
+                )
+              )
               -- Don't let a hotel that turned inventory AI OFF shape the
               -- network cold-start prior every NEW hotel inherits. coalesce so
               -- legacy/NULL rows (default = on) are kept. Mirrors the cron

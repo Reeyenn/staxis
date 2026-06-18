@@ -39,6 +39,7 @@ from src.layers.bayesian_regression import BayesianRegression
 from src.training.inventory_rate import (
     INVENTORY_FEATURE_COLS,
     _build_training_rows,
+    _center_occupancy,
     _seed_bayesian_intercept,
 )
 
@@ -185,8 +186,7 @@ def evaluate(scn: Scenario, *, prior_strength: float = 0.5) -> EvalResult:
     df = df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
 
     occ_raw = df["occupancy_pct"].astype(float).values  # raw 0-100 for the oracle
-    X = df[INVENTORY_FEATURE_COLS].copy()
-    X["occupancy_pct"] = X["occupancy_pct"] - INVENTORY_OCC_BASELINE_PCT  # mirror trainer centering
+    X = _center_occupancy(df[INVENTORY_FEATURE_COLS].copy())  # the REAL trainer transform
     y = df["daily_rate"].astype(float)
     X.insert(0, "intercept", 1.0)
 
@@ -263,8 +263,7 @@ def _eval_with_builder(scn, builder, *, prior_strength=0.5):
     df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(50.0)
     df = df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
     occ_raw = df["occupancy_pct"].astype(float).values
-    X = df[INVENTORY_FEATURE_COLS].copy()
-    X["occupancy_pct"] = X["occupancy_pct"] - INVENTORY_OCC_BASELINE_PCT
+    X = _center_occupancy(df[INVENTORY_FEATURE_COLS].copy())
     y = df["daily_rate"].astype(float)
     X.insert(0, "intercept", 1.0)
     if len(X) < 5:

@@ -277,6 +277,21 @@ def test_distinct_weekly_priors_count_toward_streak():
     assert streak == CAP
 
 
+def test_too_close_failing_prior_still_breaks_streak():
+    """A FAILING run minutes after the current run must BREAK the streak, not be
+    skipped as 'non-distinct' (Codex MED-1). Otherwise a broken model keeps an
+    accumulating streak."""
+    bad_recent = {**_bad_run(), "trained_at": (_BASE - timedelta(minutes=5)).isoformat()}
+    good_old = {**_good_run(), "trained_at": (_BASE - timedelta(days=8)).isoformat()}
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=[bad_recent, good_old],
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=CURRENT_MEAN,
+        current_trained_at=_BASE.isoformat(), min_gap_seconds=24 * 3600,
+    )
+    assert streak == 1  # the recent failure breaks it; the older good run never counts
+
+
 def test_spacing_on_breaks_on_missing_trained_at():
     """With spacing on, a prior with no parseable trained_at can't be proven
     distinct → stop counting (don't silently count it)."""
