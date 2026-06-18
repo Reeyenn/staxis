@@ -159,3 +159,24 @@ windows). **Tests:** +6 (`test_inventory_window_hygiene.py`); suite 318 passed.
 > CREATE-OR-REPLACE migration to match (drop `raw <= 0` windows) is staged in
 > `supabase/migrations/` but left for manual apply + review (no DB writes
 > autonomously).
+
+### [3] Cohort-prior quality — every same-canonical SKU counts; AI-off excluded
+
+**Problem (cold-start, the #1 priority):** the prior every new hotel inherits
+was being corrupted two ways.
+1. **Dict overwrite:** the canonical map is coarse (~20 buckets), so one hotel
+   commonly has several SKUs collapse to one canonical (e.g. "Bath Towel" +
+   "Pool Towel" → "towel"). The aggregator keyed by `property|canonical` with
+   `=`, so only the LAST item's rate survived — silently dropping the rest and
+   under-representing high-volume hotels in the network prior.
+2. **AI-off contamination:** a hotel that turned inventory AI OFF still fed its
+   rates into the cohort/global priors, even though the cron skips it.
+
+**Fix (commit pending):**
+- `per_property_item_rates.setdefault(key, []).append(...)` — every SKU's
+  per-room rate is a legitimate cohort data point.
+- Added `coalesce(p.inventory_ai_mode,'on') <> 'off'` to the contributor SQL.
+
+**Tests:** +3 (`test_inventory_priors_aggregate.py`) — verifies two same-canonical
+SKUs (0.2, 0.4) now median to 0.3 (was 0.4, last-wins), plus SQL filter
+assertions. Suite 318 → **321 passed**.

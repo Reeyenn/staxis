@@ -160,6 +160,11 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
             where w.days >= 1.0
               and p.total_rooms > 0
               and (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) > 0
+              -- Don't let a hotel that turned inventory AI OFF shape the
+              -- network cold-start prior every NEW hotel inherits. coalesce so
+              -- legacy/NULL rows (default = on) are kept. Mirrors the cron
+              -- fan-out, which already skips inventory_ai_mode='off'.
+              and coalesce(p.inventory_ai_mode, 'on') <> 'off'
         )
         select
             property_id,
@@ -185,7 +190,17 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
         median = row.get("median_rate")
         if median is None:
             continue
-        per_property_item_rates[f"{row['property_id']}|{canonical}"] = [float(median)]
+        # APPEND, don't overwrite. The canonical map is coarse (~20 buckets),
+        # so a single hotel routinely has several SKUs collapsing to one
+        # canonical name (e.g. "Bath Towel" + "Pool Towel" → "towel"). The
+        # SQL returns one rate row per (property, item); keying by
+        # property|canonical with `=` kept only the LAST item's rate and
+        # silently dropped every other same-canonical SKU at that hotel —
+        # under-representing high-volume hotels in the network prior. Each
+        # SKU's per-room rate is a legitimate cohort data point.
+        per_property_item_rates.setdefault(
+            f"{row['property_id']}|{canonical}", []
+        ).append(float(median))
 
     # 5. Aggregate by cohort_key + canonical_name
     #    cohort_key = "<brand>-<region>-<size_tier>" (lowercased, slug-ified)
