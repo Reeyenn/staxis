@@ -122,6 +122,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
+  // Release the idempotency claim on failure so the offline queue's retry can
+  // re-file the issue instead of hitting the dedup branch and falsely reporting
+  // success with an empty payload (silent data loss). (Audit fix 2026-06-18.)
+  const releaseClaim = async () => {
+    if (!body.actionId) return;
+    try { await supabaseAdmin.from('offline_action_replays').delete().eq('action_id', body.actionId); }
+    catch { /* best-effort */ }
+  };
+
   try {
     const { data: workOrderId, error: rpcErr } = await supabaseAdmin.rpc(
       'staxis_create_structured_issue',
@@ -141,6 +150,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         requestId: gate.requestId,
         err: errToString(rpcErr ?? 'no work_order_id'),
       });
+      await releaseClaim();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -230,6 +240,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
+    await releaseClaim();
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,

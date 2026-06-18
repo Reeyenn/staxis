@@ -71,7 +71,13 @@ export async function POST(req: NextRequest) {
 
   if (upErr) {
     log.error('[pickup:POST] update failed', { requestId, msg: errToString(upErr) });
-    return err(upErr.message || 'Failed to pick up', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    // 23P01 = exclusion_violation: the staffer already has an overlapping shift
+    // that day. Surface a friendly message + 409 instead of leaking the raw
+    // Postgres constraint text with a 500. (Audit fix 2026-06-18.)
+    if ((upErr as { code?: string }).code === '23P01') {
+      return err('You already have a shift that day', { requestId, status: 409, code: ApiErrorCode.ValidationFailed });
+    }
+    return err('Failed to pick up the shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!updated) {
     return err('That shift is already covered', { requestId, status: 409, code: ApiErrorCode.ValidationFailed });

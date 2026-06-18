@@ -31,6 +31,7 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
+import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -212,10 +213,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       const assignedStaffIds = room.assignedTo ? [room.assignedTo] : [];
       if (assignedStaffIds.length > 0) {
         smsQueued = true;
-        const origin = new URL(req.url).origin;
-        // Fan out asynchronously. void-ed promises let the request
-        // continue; the SMS rate limiter inside /api/sms-send caps any
-        // runaway send-loop separately.
+        // Fan out asynchronously. void-ed promise lets the request return
+        // immediately. We ENQUEUE durable SMS jobs (idempotent on the key) and
+        // drain promptly — the previous code POST-ed to /api/sms-send, which
+        // does not exist, so the housekeeper was NEVER notified while the UI
+        // said "Housekeeper notified". (Audit fix 2026-06-18.)
         void (async () => {
           try {
             type StaffRow = { id: string; phone: string | null };
@@ -223,22 +225,25 @@ export async function POST(req: NextRequest): Promise<Response> {
               .from('staff')
               .select('id, phone')
               .in('id', assignedStaffIds);
+            const recipients = ((staffRows ?? []) as StaffRow[]).filter((s) => s.phone);
             await Promise.allSettled(
-              ((staffRows ?? []) as StaffRow[])
-                .filter((s) => s.phone)
-                .map((s) =>
-                  fetch(`${origin}/api/sms-send`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      to: s.phone,
-                      message: `🚨 Rush: Room ${roomNumber} needs to be ready in ${body.due_label}.`,
-                      source: 'front-desk-rush',
-                      propertyId: pid,
-                    }),
-                  }),
-                ),
+              recipients.map((s) =>
+                enqueueSms({
+                  propertyId: pid,
+                  toPhone: s.phone!,
+                  body: `🚨 Rush: Room ${roomNumber} needs to be ready in ${body.due_label}.`,
+                  // One rush text per (room, staff, day, duration) — a double-tap
+                  // dedups; a genuinely new rush (different duration) re-sends.
+                  idempotencyKey: `rush:${pid}:${roomNumber}:${s.id}:${date}:${body.due_label}`,
+                  metadata: { source: 'front-desk-rush', roomNumber },
+                }),
+              ),
             );
+            // Drain promptly — a rush is time-sensitive; don't wait for the
+            // next process-sms-jobs cron tick. Failures stay queued for retry.
+            if (recipients.length > 0) {
+              try { await processSmsJobs(20); } catch { /* cron will retry */ }
+            }
           } catch (smsErr) {
             log.warn('front-desk/rush: async sms fan-out failed', {
               requestId, err: errToString(smsErr),

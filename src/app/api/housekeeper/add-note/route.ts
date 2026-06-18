@@ -67,6 +67,16 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
+  // Release the idempotency claim on any failure path below. Without this a
+  // failed write leaves a claim row with an empty payload; the offline queue's
+  // retry then hits the dedup branch and returns ok({deduped}) — reporting
+  // success while the note was never saved (silent data loss). (Audit fix 2026-06-18.)
+  const releaseClaim = async () => {
+    if (!body.actionId) return;
+    try { await supabaseAdmin.from('offline_action_replays').delete().eq('action_id', body.actionId); }
+    catch { /* best-effort */ }
+  };
+
   const roomR = await loadRoomForStaff({
     pid: gate.pid,
     staffId: gate.staffId,
@@ -74,7 +84,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     requestId: gate.requestId,
     headers: gate.headers,
   });
-  if (!roomR.ok) return roomR.response;
+  if (!roomR.ok) { await releaseClaim(); return roomR.response; }
   const room = roomR.room;
 
   const noteText = (body.noteText ?? '').trim().slice(0, 1000);
@@ -90,6 +100,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         requestId: gate.requestId,
         err: w.error,
       });
+      await releaseClaim();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -138,6 +149,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
+    await releaseClaim();
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,
