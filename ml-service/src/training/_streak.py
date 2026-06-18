@@ -5,13 +5,39 @@ Codex round-5 META J1.3 (2026-05-13): extracted from
 has been the source of regressions in rounds 2 (Phase 3.2),
 3 (Option B), 4 (D4 + F2) — is unit-testable in isolation.
 
-This module has NO ML deps (no numpy, no pandas, no supabase). That
-keeps the test suite import-time fast AND makes the function trivial
-to property-test going forward. If a future regression touches streak
-math, the test in `tests/test_inventory_streak_behavior.py` catches
-it BEFORE it ships.
+This module has NO ML deps (no numpy, no pandas, no supabase) beyond the
+dependency-light `_streak_utils` ISO-date parser. That keeps the test suite
+import-time fast AND makes the function trivial to property-test going forward.
+If a future regression touches streak math, the test in
+`tests/test_inventory_streak_behavior.py` catches it BEFORE it ships.
 """
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Optional
+
+from src.training._streak_utils import parse_iso_datetime
+
+
+def _prior_mean_observed_rate(pr: Dict[str, Any], fallback: float) -> float:
+    """The activation-gate denominator for a prior run.
+
+    The gate is `validation_mae / mean_observed_rate < threshold`. The trainer
+    persists `mean_observed_rate` in `hyperparameters` (honesty-audit Phase 2),
+    so use the prior run's OWN value when present. Older rows that predate that
+    field fall back to the current run's mean. We deliberately do NOT use the
+    prior's `training_mae` (a wholly different quantity) — doing so made the
+    streak gate mean nothing: an overfit prior (tiny train_mae) failed unfairly
+    and an underfit prior (large train_mae) sailed through.
+    """
+    hp = pr.get("hyperparameters")
+    if isinstance(hp, dict):
+        val = hp.get("mean_observed_rate")
+        if val is not None:
+            try:
+                v = float(val)
+                if v > 1e-9:
+                    return v
+            except (TypeError, ValueError):
+                pass
+    return fallback
 
 
 def compute_consecutive_passes(
@@ -22,17 +48,26 @@ def compute_consecutive_passes(
     mae_ratio_threshold: float,
     cap: int,
     current_mean_observed_rate: float,
+    current_trained_at: Optional[str] = None,
+    min_gap_seconds: float = 0.0,
 ) -> int:
     """Count consecutive passing model_runs ending with the current run.
 
     Each prior run "passes" when:
       • training_row_count >= min_events
-      • validation_mae / max(prior.training_mae, current_mean, 1e-9)
-        < mae_ratio_threshold
+      • validation_mae / mean_observed_rate < mae_ratio_threshold
+        (mean_observed_rate is the prior's persisted value, else the current
+        run's mean — NEVER training_mae)
 
-    Using the prior's own training_mae as denominator keeps the gate
-    stable across retrains. Falls back to the current mean for pre-F2
-    rows where training_mae was null.
+    Distinctness gate (Phase M3.4 parity with demand/supply): when
+    `min_gap_seconds > 0`, a prior run only counts toward the streak if its
+    `trained_at` is at least `min_gap_seconds` before the previously-counted
+    run. This stops 5 rapid retrains on identical data (manual cron dispatch,
+    onboarding script, dev verification) masquerading as 5 distinct weekly
+    windows of stability. A non-distinct run is SKIPPED (continue), not failed —
+    it is neither evidence for nor against stability. A genuinely failing run
+    still breaks the streak. With the default `min_gap_seconds=0.0` the gate is
+    off and behaviour is unchanged.
 
     Args:
       this_run_passes: did the current training run pass its gates?
@@ -43,7 +78,11 @@ def compute_consecutive_passes(
         (strict less-than).
       cap: maximum streak length to return.
       current_mean_observed_rate: current run's y_test.mean(), used as
-        a fallback denominator for prior rows missing training_mae.
+        the fallback denominator for prior rows missing mean_observed_rate.
+      current_trained_at: ISO timestamp of the current run, the anchor the
+        first prior run's distinctness is measured against.
+      min_gap_seconds: minimum spacing between counted runs. 0 disables the
+        distinctness gate.
 
     Returns:
       Streak count in [0, cap].
@@ -51,10 +90,23 @@ def compute_consecutive_passes(
     if not this_run_passes:
         return 0
     consecutive_passes = 1
-    fleet_mae_floor_for_prior = max(current_mean_observed_rate, 1e-9)
+    current_mean_floor = max(current_mean_observed_rate, 1e-9)
+    spacing_on = min_gap_seconds > 0.0
+    last_counted_dt = parse_iso_datetime(current_trained_at) if spacing_on else None
+
     for pr in prior_runs:
-        prior_train_mae = pr.get("training_mae") or 0.0
-        prior_denom = max(float(prior_train_mae), fleet_mae_floor_for_prior, 1e-9)
+        pr_dt = None
+        if spacing_on:
+            pr_dt = parse_iso_datetime(pr.get("trained_at"))
+            if pr_dt is None:
+                # Can't prove this run is a distinct window → stop counting.
+                break
+            if last_counted_dt is not None:
+                gap = (last_counted_dt - pr_dt).total_seconds()
+                if gap < min_gap_seconds:
+                    continue  # same training window → skip, don't break
+
+        prior_denom = max(_prior_mean_observed_rate(pr, current_mean_floor), 1e-9)
         prior_mae_ratio = (pr.get("validation_mae") or float("inf")) / prior_denom
         prior_passes = (
             (pr.get("training_row_count") or 0) >= min_events
@@ -62,7 +114,10 @@ def compute_consecutive_passes(
         )
         if not prior_passes:
             break
+
         consecutive_passes += 1
+        if spacing_on:
+            last_counted_dt = pr_dt
         if consecutive_passes >= cap:
             return cap
     return consecutive_passes

@@ -180,3 +180,28 @@ was being corrupted two ways.
 **Tests:** +3 (`test_inventory_priors_aggregate.py`) — verifies two same-canonical
 SKUs (0.2, 0.4) now median to 0.3 (was 0.4, last-wins), plus SQL filter
 assertions. Suite 318 → **321 passed**.
+
+### [6] Graduation-gate correctness (baseline units, streak denom, spacing)
+
+Three fixes to the gates that decide when a model is trusted enough to auto-fill
+counts (so a bad model can't reach staff, and a good one isn't blocked):
+
+- **[8] baseline units:** the "beats the simple baseline by X%" metric compared a
+  per-room prior (~0.4) against an absolute-units target (~24), so every item
+  "beat baseline" by ~98% regardless of quality. Scaled the baseline by
+  `total_rooms` so the comparison is apples-to-apples.
+- **[9] streak denominator:** the consecutive-passes gate judged prior runs by
+  `validation_mae / training_mae` — a meaningless ratio (training_mae is a
+  different quantity). Now uses each prior's persisted `mean_observed_rate` (the
+  real activation-gate denominator), falling back to the current mean for older
+  rows.
+- **[2] time-spacing distinctness:** ported the demand/supply gate so 5 rapid
+  retrains on identical data (manual dispatch, onboarding, dev) can't fake "5
+  weekly windows of stability" and graduate a model prematurely. Off by default
+  in the pure fn; enabled by the trainer with the 24h `min_hours_between_passing_runs`.
+
+**Tests:** +5 (in `test_inventory_streak_behavior.py`) distinguishing the
+mean-vs-train_mae denominator and the rapid-retrain vs distinct-weekly cases.
+Suite 321 → **326 passed**. All changes only TIGHTEN graduation (drop false
+passes / fix a vanity metric) — safe direction, and shadow-mode still gates any
+promotion to a live hotel.

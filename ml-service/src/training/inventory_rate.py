@@ -441,8 +441,13 @@ def _train_single_item(
         validation_mae = 0.0  # Can't evaluate; mark zero, gate this case below.
     training_mae = float(np.mean(np.abs(model.predict(X_train) - y_train.values)))
 
-    # Baseline = predicting the cohort-prior rate everywhere.
-    baseline_pred = np.full(len(y_test) if len(X_test) > 0 else len(y_train), prior_rate)
+    # Baseline = predicting the cohort-prior rate everywhere. The target y is
+    # ABSOLUTE units/day, but prior_rate is per-room-per-day, so scale by
+    # total_rooms to match units — otherwise baseline_mae compared ~0.4 against
+    # ~24 and the model "beat baseline" by ~98% on every item regardless of
+    # real quality, making beats_baseline_pct meaningless.
+    baseline_rate_abs = prior_rate * float(max(total_rooms, 1))
+    baseline_pred = np.full(len(y_test) if len(X_test) > 0 else len(y_train), baseline_rate_abs)
     if len(X_test) > 0:
         baseline_mae = float(np.mean(np.abs(baseline_pred - y_test.values)))
     else:
@@ -481,11 +486,17 @@ def _train_single_item(
         limit=10,
     )
     this_run_passes = gate_events and gate_mae
+    # Single timestamp for this run — used both as the streak distinctness
+    # anchor and as the persisted trained_at, so they can't drift apart.
+    trained_at_iso = datetime.utcnow().isoformat()
     # Codex round-5 META J1.3: streak counting extracted to a pure
     # function so behavior tests can exercise it directly. The whole
     # F2/D4/Option-B saga is a demonstration that this logic was
     # untestable in-place — every fix had to be caught by Codex
     # because no in-suite test could detect the regression.
+    # Phase M3.4 parity: enable the time-spacing distinctness gate so 5 rapid
+    # retrains on identical data can't fake 5 weekly windows of stability
+    # (demand/supply already do this; inventory was missed).
     consecutive_passes = compute_consecutive_passes(
         this_run_passes=this_run_passes,
         prior_runs=prior_runs or [],
@@ -493,6 +504,8 @@ def _train_single_item(
         mae_ratio_threshold=settings.inventory_graduation_mae_ratio,
         cap=settings.inventory_graduation_consecutive_passes,
         current_mean_observed_rate=mean_observed_rate,
+        current_trained_at=trained_at_iso,
+        min_gap_seconds=settings.min_hours_between_passing_runs * 3600,
     )
 
     auto_fill_enabled = (
@@ -575,7 +588,7 @@ def _train_single_item(
     # the inventory regular-path was missed. The RPC mirrors 0107 with
     # added p_item_id (per-item models) + p_should_shadow path.
     fields = {
-        "trained_at": datetime.utcnow().isoformat(),
+        "trained_at": trained_at_iso,
         "training_row_count": len(df),
         "feature_set_version": "v1",
         "model_version": model_version,
