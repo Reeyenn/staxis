@@ -11,6 +11,11 @@ import pandas as pd
 from src.config import get_settings
 from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.features.supply_matrix import build_supply_features
+from src.layers.static_baseline import (
+    CHECKOUT_MINUTES,
+    STAYOVER_DAY1_MINUTES,
+    STAYOVER_DAY2PLUS_MINUTES,
+)
 from src.supabase_client import get_supabase_client, safe_uuid, safe_iso_date
 
 
@@ -485,18 +490,43 @@ async def predict_supply(
     # next training run has ≥14 days of data.
     if cold_start_prior_minutes_per_event is not None:
         mu = float(cold_start_prior_minutes_per_event)
-        for row in pair_rows:
+        # 2026-06-18 — composition-aware cold-start supply. Previously EVERY
+        # room got the same flat cohort `mu` regardless of whether it was a
+        # checkout (full reset, ~2× a stayover) or a stayover refresh. We now
+        # distribute the cohort per-event level across rooms by their type,
+        # using the industry per-type minutes as the SHAPE and day-normalizing
+        # so the per-room average still equals the cohort mu (cohort level
+        # preserved exactly — sum of room minutes is unchanged). pair_rows
+        # already carry room_type/stayover_day from the plan snapshot.
+        def _type_minutes(r) -> float:
+            if r.get("room_type") == "checkout":
+                return float(CHECKOUT_MINUTES)
+            if int(r.get("stayover_day", 1) or 1) >= 2:
+                return float(STAYOVER_DAY2PLUS_MINUTES)
+            return float(STAYOVER_DAY1_MINUTES)
+
+        type_mins = [_type_minutes(r) for r in pair_rows]
+        avg_type = (sum(type_mins) / len(type_mins)) if type_mins else 1.0
+        cohort_key = (
+            (model_run.get("posterior_params") or {}).get("cohort_key", "unknown")
+            if isinstance(model_run.get("posterior_params"), dict) else "unknown"
+        )
+        for row, tmin in zip(pair_rows, type_mins):
+            room_mu = mu * (tmin / avg_type) if avg_type > 0 else mu
             predictions.append({
                 "room_number": row["room_number"],
                 "staff_id": row["staff_id"],
-                "predicted_minutes_p25": mu * 0.7,
-                "predicted_minutes_p50": mu,
-                "predicted_minutes_p75": mu * 1.3,
-                "predicted_minutes_p90": mu * 1.6,
+                "predicted_minutes_p25": room_mu * 0.7,
+                "predicted_minutes_p50": room_mu,
+                "predicted_minutes_p75": room_mu * 1.3,
+                "predicted_minutes_p90": room_mu * 1.6,
                 "features_snapshot": json.dumps({
                     "cold_start": True,
                     "prior_minutes_per_event": mu,
-                    "cohort_key": (model_run.get("posterior_params") or {}).get("cohort_key", "unknown") if isinstance(model_run.get("posterior_params"), dict) else "unknown",
+                    "room_minutes": room_mu,
+                    "room_type": row.get("room_type"),
+                    "stayover_day": row.get("stayover_day"),
+                    "cohort_key": cohort_key,
                 }),
             })
     else:

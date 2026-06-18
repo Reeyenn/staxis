@@ -215,6 +215,18 @@ path enforces non-negative + p95≥p50. Only fires on out-of-range/garbage input
 in-range predictions are byte-identical (harness unchanged). Suite 330 passed
 (+4 sanitizer tests).
 
+### 5. Composition-aware cold-start L2 supply (accuracy/cold-start)
+**Problem:** cold-start per-room (supply) predictions gave EVERY room the same
+flat cohort `prior_minutes_per_event`, ignoring that a checkout takes ~2× a
+stayover — even though the supply path already computes each room's type.
+**Fix:** `inference/supply.py` cold-start now distributes the cohort per-event
+level across rooms by type (checkout/vacant longer, stayover shorter), using the
+industry per-type minutes as the shape and **day-normalizing so the per-room
+average still equals the cohort mu** (total preserved exactly — zero level drift).
+Improves the optimizer's L2 path realism for cold-start hotels with a schedule,
+and the per-room display. Suite 334 passed (updated 1 test to verify
+checkout>stayover + total preservation).
+
 ## Competitor & methods research (Optii, Hotel Effectiveness/Actabl, UniFocus, Flexkeeping/Knowcross/ALICE, M5/OR literature)
 Full extract saved during the run. Convergent, actionable lessons:
 
