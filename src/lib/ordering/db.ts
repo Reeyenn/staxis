@@ -624,6 +624,7 @@ export async function receivePurchaseOrder(
     const { data: items } = await supabaseAdmin
       .from('inventory')
       .select('id, current_stock')
+      .eq('property_id', pid)
       .in('id', itemIds);
     const stockById = new Map(
       (items ?? []).map((r) => [String((r as { id: string }).id), Number((r as { current_stock: number }).current_stock ?? 0)]),
@@ -634,7 +635,11 @@ export async function receivePurchaseOrder(
         const { error } = await supabaseAdmin
           .from('inventory')
           .update({ current_stock: next, last_ordered_at: nowIso })
-          .eq('id', itemId);
+          // Scope by property — supabaseAdmin bypasses RLS, so a PO line carrying
+          // another hotel's inventory UUID must not write that hotel's stock.
+          // A foreign id matches 0 rows (no-op). (Security audit 2026-06-18.)
+          .eq('id', itemId)
+          .eq('property_id', pid);
         if (error) log.error('[ordering] receive: stock update failed', { itemId, err: error.message });
       }),
     );

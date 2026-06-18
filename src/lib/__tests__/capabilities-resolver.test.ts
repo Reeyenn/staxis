@@ -18,6 +18,7 @@ import {
   CAPABILITY_KEYS,
   HOTEL_ROLES,
   isAdminOnlyCapability,
+  type CapabilityKey,
 } from '@/lib/capabilities/registry';
 
 const ADMIN_CAPS = CAPABILITY_KEYS.filter(isAdminOnlyCapability);
@@ -54,7 +55,7 @@ describe('can() — admin-only capabilities are never grantable', () => {
 describe('can() — everyone-everything default', () => {
   // Account/credential-management caps are manager-only by default (security
   // audit 2026-06-18) — every OTHER hotel-facing cap keeps the everyone-default.
-  const MANAGER_ONLY_DEFAULT = new Set(['manage_team', 'manage_users']);
+  const MANAGER_ONLY_DEFAULT = new Set<CapabilityKey>(['manage_team', 'manage_users']);
   const LINE_STAFF_ROLES = ['front_desk', 'housekeeping', 'maintenance'];
 
   it('with no overrides, every hotel role has every hotel-facing cap (except account-management, which is manager-only)', () => {

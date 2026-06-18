@@ -30,7 +30,7 @@ Deep multi-agent audit (20 subsystem + cross-cutting auditors), each finding adv
 
 _(Updated continuously. Newest batch at top.)_
 
-### Status: audit in progress (20-area multi-agent pass). Manual passes logged below.
+### Status: COMPLETE. Deep audit done (35 findings); 19 fixed & shipped to `chat/app-audit`, 16 deferred with reasons (see below). Branch is green: `eslint src` + `next build` + 2319 tests pass. Not merged, not deployed — yours to review.
 
 #### P1 — multi-tenant isolation at the route layer: VERIFIED CLEAN (manual pass)
 Scanned all 356 API routes for the cross-hotel leak pattern (user-facing route that takes a client `property_id`/`pid` but skips the access check). Every candidate that my heuristic flagged turned out to be properly guarded via one of:
@@ -104,6 +104,15 @@ The full audit ran 79 agents (20 subsystem + cross-cutting finders, each finding
 17. **[LOW] Telemetry mis-tag** — `/api/events` only tags events to a property the caller can access.
 18. **[LOW] Inventory error leak** — accounting-summary/check-alerts no longer leak raw PostgREST detail.
 19. **[LOW] Unbounded compliance fan-out** — bounded to cap-5 concurrency.
+
+### Adversarial review of the fixes (Codex + Claude senior, round 2) — 6 follow-ups, all fixed
+Both reviewers re-attacked the security/correctness fixes above (especially the critical auth change). They confirmed the fixes correct but found 6 real gaps — all now fixed and re-verified:
+- **(blocker, would break the live build)** the manager floor lived only in `verifyTeamManager`, so a direct `canForProperty('manage_users')` caller (`/api/settings/users`) could be bypassed by a stale `allowed:true` override. Moved the floor into the shared resolver `can()` (step b.5) so it's universal — an override can never lift it. Added parity-test coverage that an override granting a team cap to line staff is ignored.
+- **(blocker)** a test `Set` needed `Set<CapabilityKey>` + a missing type import — `next build` does NOT typecheck test files, so it hid; `tsc --noEmit` caught it. (Now part of the gate.)
+- **(high)** `DELETE /api/auth/team` lacked the owner/GM privilege matrix (a GM could detach an owner) — added.
+- **(high)** `accept-invite` re-validated the inviter for role only; now also requires the inviter still has access to the invite's hotel and is admin/owner for an owner-role invite (closes a revoked-inviter / stale-owner-invite TOCTOU).
+- **(high)** the inventory **receive** path also wrote `current_stock` by id with no `property_id` (the stamp path was fixed but receive was missed) — now scoped.
+- **(med)** front-desk Rush returned `smsSent` before the enqueue committed — now awaits the durable enqueue and only backgrounds the Twilio dispatch.
 
 ## Deliberately left alone (needs Reeyen's call)
 

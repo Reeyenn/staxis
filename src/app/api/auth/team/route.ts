@@ -348,6 +348,18 @@ export async function DELETE(req: NextRequest) {
       requestId, status: 403, code: ApiErrorCode.Unauthorized,
     });
   }
+  // Same owner/GM privilege matrix as PUT — a GM must not be able to detach an
+  // owner (or another GM) from a hotel. (Audit review fix 2026-06-18.)
+  if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+    return err('Only an admin or another owner can remove an owner', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+  if (target.role === 'general_manager' && caller.role === 'general_manager') {
+    return err('Only an owner or admin can remove another General Manager', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
 
   // Concurrency audit #1: use the atomic RPC instead of read-filter-update.
   // Two concurrent removals on the same account from different hotels could

@@ -81,10 +81,22 @@ export async function POST(req: NextRequest) {
   // account row is guaranteed to still exist if the invite does.
   const { data: inviter } = await supabaseAdmin
     .from('accounts')
-    .select('role')
+    .select('role, property_access')
     .eq('id', invite.invited_by)
     .maybeSingle();
   if (!inviter || !canManageTeam(inviter.role as AppRole)) {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+  // Time-of-use re-checks (audit review 2026-06-18): the inviter must STILL have
+  // access to this invite's hotel (access may have been revoked since sending),
+  // and an owner-role invite requires an admin/owner inviter — a GM can never
+  // mint an owner, even via an invite created before the privilege matrix existed.
+  const inviterRole = inviter.role as AppRole;
+  const inviterAccess = (inviter.property_access ?? []) as string[];
+  if (inviterRole !== 'admin' && !inviterAccess.includes('*') && !inviterAccess.includes(invite.hotel_id)) {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+  if (invite.role === 'owner' && inviterRole !== 'admin' && inviterRole !== 'owner') {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 
