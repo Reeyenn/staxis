@@ -420,7 +420,7 @@ function DarkHealth({ label, n, tone }: { label: string; n: number; tone: DotTon
 
 // ── Hotel card — single-click flips front/back, double-click → detail ────
 function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; onAssign: () => void }) {
-  const ref = useRef<HTMLButtonElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
   const [back, setBack] = useState(false);
   const tone = cardTone(h);
   const unassigned = h.pmsType === null;
@@ -431,9 +431,12 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
     }
   }, []);
   return (
-    <button
+    <div
       ref={ref}
+      role="button"
+      tabIndex={0}
       onClick={() => flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 })}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 }); } }}
       onDoubleClick={onOpen}
       style={{
         textAlign: 'left', background: dimWhite(.06),
@@ -473,7 +476,7 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
           <div className="mono" style={{ fontSize: 9.5, color: dimWhite(.5), marginTop: 3 }}>double-click → detail</div>
         </div>
       )}
-    </button>
+    </div>
   );
 }
 
