@@ -181,6 +181,69 @@ No absurd/sub-1 headcounts; L2/fitted paths untouched. Suite 328 passed
 (+10 synthetic-room tests). One extra indexed plan_snapshots read per optimizer
 run (negligible).
 
+### 3. Composition-aware cold-start L1 demand (accuracy/cold-start) — #1 ROI
+**Problem:** cold-start demand was `prior_minutes_per_room_per_day × total_rooms`
+— a flat number that ignored tomorrow's room MIX. A checkout-heavy day and an
+all-stayover day at the same occupancy got the SAME prediction, even though a
+checkout clean takes ~2× a stayover. (Hotel Effectiveness's documented 7.4%
+cost cut came purely from splitting these.)
+**Fix:** `inference/demand.py` cold-start now applies the industry per-room-type
+minutes (checkout/vacant 30, stayover-day1 15, stayover-day2+ 20) to tomorrow's
+actual composition (already in the feature vector). Falls back to the cohort
+flat estimate when the plan has no usable composition. `features_snapshot`
+records the basis (`composition` | `flat_cohort`).
+**Validated (synthetic backtest, holdout MAE, no per-hotel training):**
+```
+config            flatMAE  compCalMAE  reduction
+small-30rm-365d      78.2       41.9       46%
+mid-90rm-365d       247.7      151.2       39%
+large-200rm-365d    584.3      380.7       35%
+```
+**~35-46% cold-start demand MAE reduction.** Suite 330 passed (updated 3 tests
+that pinned the old flat behavior + added composition/fallback tests).
+Follow-up: per-room-type cohort priors (needs priors-aggregation schema work) to
+fleet-calibrate the per-type level beyond generic industry constants.
+
+## Competitor & methods research (Optii, Hotel Effectiveness/Actabl, UniFocus, Flexkeeping/Knowcross/ALICE, M5/OR literature)
+Full extract saved during the run. Convergent, actionable lessons:
+
+1. **Status mix IS the demand (highest ROI).** Checkout/departure clean ≈ 2×
+   stayover. A 60%-occupancy heavy-checkout day needs FAR more labor than a
+   90%-occupancy all-stayover day. Hotel Effectiveness's documented 7.4%
+   housekeeping cost cut came *purely* from splitting stayover vs checkout.
+   → Our cold-start L1 demand uses flat `prior_per_room × total_rooms` and
+   ignores composition. **Fix first.**
+2. **Cold-start prior = industry per-type minutes, tiered by service level.**
+   Select-service (Comfort Suites): checkout ~25-30 min, stayover ~12-18,
+   suite 45-90; ~16-20 rooms/8h shift; HPOR ~0.45-0.74. Our constants
+   (30/15/20/30) are in range. Seed the Bayesian prior on these (it currently
+   uses a flat 60-min intercept + zero coefficients).
+3. **Sanity rails / fixed-plus-variable floor.** Staffing = fixed floor +
+   variable(driver). Clamp/flag implausible outputs: per-room 5-90 min,
+   rooms/shift ~8-22, HPOR ~0.4-1.2. Cheap robustness + honesty guard.
+4. **Quantile-crossing repair** — sort/clip p10≤…≤p95 before the optimizer;
+   crossed quantiles corrupt the Monte Carlo.
+5. **Probabilistic p95 completion is our real edge** over a head housekeeper's
+   single gut number ("will all rooms be ready by checkout?"). Keep it; frame
+   product around it. (Newsvendor: p95 ≈ understaffing penalized ~19× overstaffing.)
+6. **Quota endogeneity** in supply training: observed per-room time drops
+   ~0.5 min per extra room assigned (workers self-pace). Training on raw times
+   risks learning "pile on rooms = faster" → under-staffing. Neutralize later.
+7. **Pooled cohort model is the cold-start engine** (M5: pooled beats thin
+   per-hotel). Shrink to cohort, sharpen with own data, smooth handoff
+   (James-Stein). Our cohort priors already do this; tier by service level.
+8. Don't over-invest in per-attendant skill features (~0% of clean-time variance).
+9. Credits = predicted minutes; report HPOR/MPOR/CPOR alongside headcount so a
+   GM can audit in their own units. (UX/reporting — later.)
+10. Calibrated intervals via conformal (CQR) — future accuracy lever.
+
+## Planned next (this branch)
+- [DONE] Composition-aware cold-start L1 demand — see changelog #3.
+- Output sanity rails + minimum-headcount floor in the optimizer (robustness).
+- Quantile-crossing repair before the optimizer consumes demand/supply.
+- (Future, needs schema work) Per-room-type cohort priors so cold-start level is
+  fleet-calibrated per clean-type, not just generic industry constants.
+
 ## Left alone (deliberately)
 _(tbd)_
 

@@ -121,6 +121,42 @@ def evaluate(df: pd.DataFrame) -> dict:
     }
 
 
+def cold_start_eval(df: pd.DataFrame) -> dict:
+    """Compare cold-start demand methods (NO per-hotel training) on a holdout.
+
+    Models the day-1 situation for a brand-new hotel:
+      - flat:      prior_per_room × total_rooms — a constant (current behavior),
+                   best case = predict the cohort/long-run average every day.
+      - comp:      composition-aware static rules (checkout/stayover/vacant × min).
+      - comp_cal:  composition-aware, calibrated so its average matches the
+                   cohort level (the proposed cold-start demand v2).
+    Calibration + the flat constant are learned on TRAIN only (the cohort prior
+    is "known from history"); MAE measured on the TEST holdout (future days).
+    """
+    split = int(len(df) * 0.8)
+    tr, te = df.iloc[:split], df.iloc[split:]
+
+    def static_est(frame):
+        return (
+            frame["total_checkouts"] * 30
+            + frame["stayover_day_1_count"] * 15
+            + frame["stayover_day_2plus_count"] * 20
+            + frame["vacant_dirty_count"] * 30
+        ).astype(float)
+
+    flat_pred = float(tr["target_minutes"].mean())  # perfectly-calibrated flat
+    static_tr, static_te = static_est(tr), static_est(te)
+    c = flat_pred / (float(static_tr.mean()) or 1.0)  # cohort-level calibration
+
+    yte = te["target_minutes"].astype(float).values
+    return {
+        "flat_mae": mae(np.full(len(te), flat_pred), yte),
+        "comp_mae": mae(static_te.values, yte),
+        "comp_cal_mae": mae((c * static_te).values, yte),
+        "mean_actual": float(np.mean(np.abs(yte))) or 1.0,
+    }
+
+
 def main() -> int:
     configs = [
         ("small-30rm-180d", 30, 180, 1),
@@ -141,6 +177,20 @@ def main() -> int:
     print("-" * 92)
     print("staticR/bayesR = MAE / mean daily minutes (lower is better). "
           "Activation gate wants ratio < 0.10 and bayes beats static by >= 20%.")
+
+    print("\nCOLD-START demand methods (no per-hotel training; holdout MAE):")
+    print(f"{'config':<20} {'flatMAE':>8} {'compMAE':>8} {'compCalMAE':>11} "
+          f"{'compCal>flat%':>13}")
+    print("-" * 64)
+    for name, rooms, days, seed in configs:
+        df = generate_hotel(rooms, days, seed)
+        c = cold_start_eval(df)
+        improve = 100.0 * (c["flat_mae"] - c["comp_cal_mae"]) / c["flat_mae"] if c["flat_mae"] else 0.0
+        print(f"{name:<20} {c['flat_mae']:>8.1f} {c['comp_mae']:>8.1f} "
+              f"{c['comp_cal_mae']:>11.1f} {improve:>12.1f}%")
+    print("-" * 64)
+    print("flat = current cold-start (prior_per_room × rooms, ignores mix); "
+          "compCal = composition-aware calibrated to cohort level (proposed v2).")
     return 0
 
 
