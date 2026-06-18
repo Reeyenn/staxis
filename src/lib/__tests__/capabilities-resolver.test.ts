@@ -52,18 +52,33 @@ describe('can() — admin-only capabilities are never grantable', () => {
 });
 
 describe('can() — everyone-everything default', () => {
-  it('with no overrides, every hotel role has every hotel-facing cap', () => {
+  // Account/credential-management caps are manager-only by default (security
+  // audit 2026-06-18) — every OTHER hotel-facing cap keeps the everyone-default.
+  const MANAGER_ONLY_DEFAULT = new Set(['manage_team', 'manage_users']);
+  const LINE_STAFF_ROLES = ['front_desk', 'housekeeping', 'maintenance'];
+
+  it('with no overrides, every hotel role has every hotel-facing cap (except account-management, which is manager-only)', () => {
     for (const cap of HOTEL_CAPS) {
       for (const role of HOTEL_ROLES) {
-        assert.equal(can({ role }, cap), true, `${role} should default-have ${cap}`);
-        assert.equal(can({ role }, cap, undefined), true);
-        assert.equal(can({ role }, cap, {}), true);
+        const expected = !(MANAGER_ONLY_DEFAULT.has(cap) && LINE_STAFF_ROLES.includes(role));
+        assert.equal(can({ role }, cap), expected, `${role} default-have ${cap} should be ${expected}`);
+        assert.equal(can({ role }, cap, undefined), expected);
+        assert.equal(can({ role }, cap, {}), expected);
       }
     }
   });
-  it('legacy staff role also gets the everyone-default for hotel caps', () => {
+  it('account-management caps (manage_team/manage_users) are manager-only by default', () => {
+    for (const cap of MANAGER_ONLY_DEFAULT) {
+      for (const role of LINE_STAFF_ROLES) {
+        assert.equal(can({ role }, cap), false, `${role} must NOT default-have ${cap}`);
+      }
+      assert.equal(can({ role: 'owner' }, cap), true, `owner should default-have ${cap}`);
+      assert.equal(can({ role: 'general_manager' }, cap), true, `general_manager should default-have ${cap}`);
+    }
+  });
+  it('legacy staff role gets the everyone-default for hotel caps except account-management', () => {
     for (const cap of HOTEL_CAPS) {
-      assert.equal(can({ role: 'staff' }, cap), true);
+      assert.equal(can({ role: 'staff' }, cap), !MANAGER_ONLY_DEFAULT.has(cap));
     }
   });
   it('null / unknown role gets nothing', () => {

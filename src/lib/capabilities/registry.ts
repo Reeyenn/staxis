@@ -37,6 +37,12 @@ export function isHotelRole(s: unknown): s is HotelRole {
 // the legacy `staff` so a stray legacy account still gets the everyone-default.
 const DEFAULT_GRANTED_ROLES: readonly AppRole[] = [...HOTEL_ROLES, 'admin', 'staff'];
 
+// Manager tier. The default grant for account/credential-management capabilities
+// (manage_team, manage_users) that must NEVER fall to line staff even under the
+// everyone-everything default — otherwise a housekeeper could reset the owner's
+// password or promote a coworker to owner. (Security audit 2026-06-18.)
+const MANAGER_ROLES: readonly AppRole[] = ['owner', 'general_manager', 'admin'];
+
 // ── Capability keys ──────────────────────────────────────────────────────────
 
 export const CAPABILITY_KEYS = [
@@ -101,6 +107,11 @@ export interface CapabilityMeta {
   key: CapabilityKey;
   /** Staxis-internal. Defaults to admin only and is never grantable to a hotel role. */
   adminOnly: boolean;
+  /** Roles granted this capability BY DEFAULT (no override). Omit → everyone-default
+   *  (all hotel roles + admin). Set to the manager tier for dangerous account /
+   *  credential-management capabilities so the everyone-everything default never
+   *  hands them to line staff. */
+  defaultRoles?: readonly AppRole[];
   /** Honours dept-scope (managers reach all, staff reach own dept). Reserved for
    *  per-department content gating (e.g. Documents) — not used by the binary gates yet. */
   deptScoped: boolean;
@@ -166,11 +177,13 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   },
   {
     key: 'manage_team', adminOnly: false, deptScoped: false, group: 'team_settings',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Team & accounts', label_es: 'Equipo y cuentas',
     desc_en: 'Invite staff, join codes, account list', desc_es: 'Invitar personal, códigos de acceso, cuentas',
   },
   {
     key: 'manage_users', adminOnly: false, deptScoped: false, group: 'team_settings',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Users & roles', label_es: 'Usuarios y roles',
     desc_en: 'Change who has access and their role', desc_es: 'Cambiar quién tiene acceso y su rol',
   },
@@ -248,5 +261,5 @@ export function isLiveCapability(cap: CapabilityKey): boolean {
 // Admin-only caps → admin only. Computed from the metadata so it can never drift
 // from the adminOnly flags above.
 export const ROLE_DEFAULTS: Record<CapabilityKey, readonly AppRole[]> = Object.fromEntries(
-  CAPABILITY_LIST.map((m) => [m.key, m.adminOnly ? (['admin'] as const) : DEFAULT_GRANTED_ROLES]),
+  CAPABILITY_LIST.map((m) => [m.key, m.adminOnly ? (['admin'] as const) : (m.defaultRoles ?? DEFAULT_GRANTED_ROLES)]),
 ) as Record<CapabilityKey, readonly AppRole[]>;

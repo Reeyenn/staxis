@@ -79,6 +79,18 @@ export async function POST(req: NextRequest) {
       return err('Select at least one property to copy to.', { requestId, status: 400, code: 'validation_failed' });
     }
 
+    // Per-target capability: property access alone isn't enough — an admin may
+    // have switched manage_checklists OFF for this role at a specific target
+    // hotel via the Access tab. Honor that per-hotel restriction (partitionTargets
+    // only checks property access). One restricted target rejects the whole
+    // request, matching the no-partial-writes contract. (Security audit 2026-06-18.)
+    const capChecks = await Promise.all(authorized.map((p) => callerCan(caller, 'manage_checklists', p)));
+    if (capChecks.some((allowed) => !allowed)) {
+      return err('Checklist management is restricted for your role at one or more of the selected properties.', {
+        requestId, status: 403, code: 'property_access_denied',
+      });
+    }
+
     if (sourceType === 'cleaning') {
       const keyV = validateEnum(body.key, CLEANING_TYPES, 'key');
       if (keyV.error) return err(keyV.error, { requestId, status: 400, code: 'validation_failed' });

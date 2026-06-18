@@ -145,6 +145,23 @@ export async function PUT(req: NextRequest) {
     });
   }
 
+  // Privilege-escalation matrix (mirrors /api/settings/users denyRoleChange).
+  // Applies to EVERY mutation here — password reset, role change, staff link.
+  // Without it a General Manager could reset the OWNER's password (account
+  // takeover) since owner is not an admin. A manager may only act on accounts
+  // at or below their own tier.
+  const isSelf = accountId === caller.accountId;
+  if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+    return err('Only an admin or another owner can modify an owner account', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+  if (target.role === 'general_manager' && caller.role === 'general_manager' && !isSelf) {
+    return err('Only an owner or admin can modify another General Manager', {
+      requestId, status: 403, code: ApiErrorCode.Unauthorized,
+    });
+  }
+
   // Build updates. Role changes must stay in the assignable set (no
   // self-promotion to admin via this route).
   const updates: Record<string, unknown> = {};
@@ -156,6 +173,17 @@ export async function PUT(req: NextRequest) {
     if (!isAssignableRole(role)) {
       return err('Invalid role (admin not allowed here)', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    // Privilege-escalation: a manager can't grant a role above their own tier.
+    if (role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+      return err('Only an existing owner can promote someone to owner (use Transfer Ownership)', {
+        requestId, status: 403, code: ApiErrorCode.Unauthorized,
+      });
+    }
+    if (role === 'general_manager' && caller.role !== 'admin' && caller.role !== 'owner') {
+      return err('Only an owner or admin can promote someone to General Manager', {
+        requestId, status: 403, code: ApiErrorCode.Unauthorized,
       });
     }
     // Block self-demotion through this path — owners shouldn't accidentally
