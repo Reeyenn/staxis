@@ -11,7 +11,13 @@ import pandas as pd
 
 from src.config import get_settings
 from src.errors import PropertyMisconfiguredError, require_property_timezone
-from src.supabase_client import get_supabase_client
+from src.layers.static_baseline import (
+    CHECKOUT_MINUTES,
+    STAYOVER_DAY1_MINUTES,
+    STAYOVER_DAY2PLUS_MINUTES,
+    VACANT_DIRTY_MINUTES,
+)
+from src.supabase_client import get_supabase_client, safe_iso_date, safe_uuid
 
 
 # Phase 3.5 (2026-05-13): America/Chicago default removed; the optimizer
@@ -179,6 +185,93 @@ def _headcount_search_ceiling(workload_minutes: float, shift_cap: float) -> int:
     """
     safe_shift = float(shift_cap) or 1.0
     return max(10, min(50, int((workload_minutes / safe_shift) * 1.5) + 1))
+
+
+def _synthetic_room_weights(plan_counts: dict) -> np.ndarray:
+    """Per-room indivisible-job weights from plan-snapshot room composition.
+
+    Each cleanable room becomes one indivisible job whose RELATIVE size follows
+    the industry per-room-type minutes (checkout / vacant-dirty are full resets;
+    stayovers are lighter — same constants the static baseline + supply cold-start
+    use). The absolute magnitude is supplied later by the L1 demand draw — here
+    we only encode HOW MANY jobs there are and their ratios, so LPT bin-packing
+    reflects the real constraint that a room can't be split across housekeepers.
+
+    Returns an empty array when no cleanable rooms are present.
+    """
+    def _n(key: str) -> int:
+        try:
+            return max(0, int(plan_counts.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    weights = (
+        [float(CHECKOUT_MINUTES)] * _n("checkouts")
+        + [float(STAYOVER_DAY1_MINUTES)] * _n("stayover_day_1")
+        + [float(STAYOVER_DAY2PLUS_MINUTES)] * _n("stayover_day_2plus")
+        + [float(VACANT_DIRTY_MINUTES)] * _n("vacant_dirty")
+    )
+    return np.array(weights, dtype=float)
+
+
+def _synthetic_room_completion_prob(
+    sampled_demands: np.ndarray,
+    room_weights: np.ndarray,
+    headcount: int,
+    shift_cap: float,
+) -> float:
+    """Completion probability when total demand is distributed across indivisible
+    rooms whose RELATIVE sizes are `room_weights`.
+
+    Per draw the room times are `D * room_weights / sum(room_weights)`, so the
+    LPT makespan is `D * makespan(room_weights, H) / sum(room_weights)`. Because
+    that scale factor is constant across draws, we compute it once per headcount
+    (O(N log H)) instead of packing every draw (O(draws · N log H)) — same
+    result, far cheaper at fleet scale.
+    """
+    total_w = float(room_weights.sum())
+    if total_w <= 0 or headcount <= 0:
+        return 0.0
+    k_h = _lpt_makespan(room_weights, headcount) / total_w  # makespan per unit demand
+    if k_h <= 0:
+        return 1.0
+    draws = sampled_demands.shape[0]
+    if draws == 0:
+        return 0.0
+    completed = int((sampled_demands * k_h <= shift_cap).sum())
+    return float(completed / draws)
+
+
+def _fetch_plan_room_counts(client, property_id: str, prediction_date: date) -> dict:
+    """Read tomorrow's cleanable-room composition from the plan snapshot.
+
+    Mirrors the aggregation in inference/demand.py so the synthetic-room path
+    sees the same room states. Returns {} (→ infinite-divisibility fallback)
+    on any error or when no snapshot exists for the date.
+    """
+    query = f"""
+        select
+            coalesce(checkouts, 0) as checkouts,
+            coalesce(stayover_day1, 0) as stayover_day_1,
+            coalesce(stayover_day2, 0) + coalesce(stayover_arrival_day, 0)
+                + coalesce(stayover_unknown, 0) as stayover_day_2plus,
+            coalesce(vacant_dirty, 0) as vacant_dirty
+        from plan_snapshots
+        where property_id = '{safe_uuid(property_id)}'
+          and date = '{safe_iso_date(str(prediction_date))}'::date
+        order by pulled_at desc
+        limit 1
+    """
+    try:
+        rows = client.execute_sql(query)
+    except Exception as exc:
+        print(json.dumps({
+            "evt": "optimizer_plan_counts_fetch_failed",
+            "property_id": property_id, "date": str(prediction_date),
+            "error": str(exc)[:200],
+        }))
+        return {}
+    return rows[0] if rows else {}
 
 
 def _tomorrow_in_property_tz(tz_name: str) -> date:
@@ -435,21 +528,17 @@ async def optimize_headcount(
             lambda h: _lpt_completion_prob(sampled_times, h, shift_cap),
             max_headcount, target_prob,
         )
+        headcount_method = "l2_supply"
     else:
-        # L1 path: total demand only. Codex adversarial review 2026-05-13
-        # (M-C3): the prior code sampled uniform(p50, p95) which is biased
-        # *upward* (opposite direction of the L2 bias). Now we use the
-        # quantile-CDF inversion sampler. We have only two quantile points
-        # to work with on the L1 layer (p50 and p95), so the inversion is
-        # piecewise-linear with extrapolation in the tails.
+        # No usable L2 per-room predictions (the common case for brand-new
+        # hotels and any pre-schedule planning moment — L2 only predicts rooms
+        # that already have a staff assignment). Sample the total-demand
+        # distribution from L1's p50/p95 via the quantile-CDF inversion sampler
+        # (Codex M-C3: the old uniform(p50,p95) was biased upward).
         p50_minutes = float(demand.get("predicted_minutes_p50", 180.0) or 180.0)
         p95_minutes = float(demand.get("predicted_minutes_p95", 240.0) or 240.0)
-        # Build the quantile dict; keep min/max for fallback when degenerate.
         l1_quantiles = {0.5: p50_minutes, 0.95: p95_minutes}
         max_demand = max(p95_minutes, p50_minutes + 1.0)  # avoid zero-width range
-
-        # Codex audit pass-6 P1 — same rationale as the L2 path: derive
-        # the search ceiling from the actual demand instead of a hard 10.
         shift_cap_l1 = float(shift_cap_minutes) or 1.0
         max_headcount = _headcount_search_ceiling(max_demand, shift_cap_l1)
 
@@ -460,15 +549,35 @@ async def optimize_headcount(
             [_invert_quantile_cdf(l1_quantiles, float(u)) for u in u_l1]
         )
 
-        # Infinite-divisibility check: total demand vs H × shift capacity.
-        # This is the crudest path (no room granularity); it assumes work can
-        # be split perfectly across workers. Used only when neither L2 supply
-        # predictions nor a plan-snapshot room composition are available.
-        completion_curves, recommended_headcount, truncated_at_cap = _search_headcount(
-            lambda h: float((sampled_demands <= h * shift_cap_minutes).sum()
-                            / settings.monte_carlo_draws),
-            max_headcount, target_prob,
-        )
+        # Synthetic-room path (2026-06-18): if we know tomorrow's room
+        # composition from the plan snapshot, treat each cleanable room as an
+        # INDIVISIBLE job (relative size = industry per-room-type minutes) and
+        # LPT-pack them. This gives a realistic headcount day-1 with zero
+        # history AND zero schedule — without it, cold-start hotels fell to the
+        # infinite-divisibility fallback below, which assumes work can be split
+        # perfectly across people and so under-recommends on indivisibility.
+        room_weights = _synthetic_room_weights(_fetch_plan_room_counts(
+            client, property_id, prediction_date,
+        ))
+
+        if room_weights.size > 0:
+            headcount_method = "synthetic_room"
+            completion_curves, recommended_headcount, truncated_at_cap = _search_headcount(
+                lambda h: _synthetic_room_completion_prob(
+                    sampled_demands, room_weights, h, shift_cap_l1,
+                ),
+                max_headcount, target_prob,
+            )
+        else:
+            # Final fallback: infinite-divisibility check (total demand vs
+            # H × shift capacity). The crudest path; only when we have neither
+            # L2 predictions NOR a plan-snapshot room composition.
+            headcount_method = "l1_divisible"
+            completion_curves, recommended_headcount, truncated_at_cap = _search_headcount(
+                lambda h: float((sampled_demands <= h * shift_cap_minutes).sum()
+                                / settings.monte_carlo_draws),
+                max_headcount, target_prob,
+            )
 
     # Look up completion_prob by headcount value (not array index) so a
     # future change to the search range (e.g. range(2, 12)) doesn't
@@ -536,6 +645,12 @@ async def optimize_headcount(
             "l1_algorithm": l1_algorithm,
             "l2_algorithms": l2_algorithms,
             "both_layers_cold_start": both_layers_cold_start,
+            # Which simulation drove the headcount (observability):
+            #   l2_supply       — per-room supply predictions + LPT (richest)
+            #   synthetic_room  — L1 total split into indivisible rooms by plan
+            #                     composition + LPT (cold-start / pre-schedule)
+            #   l1_divisible    — infinite-divisibility fallback (no plan, no L2)
+            "headcount_method": headcount_method,
         }),
         "monte_carlo_draws": settings.monte_carlo_draws,
         "ran_at": datetime.utcnow().isoformat(),

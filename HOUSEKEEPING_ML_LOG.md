@@ -142,9 +142,44 @@ models activate (the never-activating XGBoost + the 20% gate). Caveat: real
 hotels likely have more nonlinearity (groups/events/day-types) a GBM would
 exploit more than this smooth synthetic shows.
 
+## Process note
+Deep-research workflow (competitor + methods) stalled on one slow web-research
+agent behind a parallel barrier. It auto-notifies if it completes; not blocking
+on it. Proceeding with code-grounded, validated improvements from my own deep
+read + the two harnesses; will fold in competitor research when/if it lands.
+
 ## Changelog (validated changes only)
 
-_(none yet — establishing green baseline first; committing validation infra)_
+### 1. Extract pure LPT/search helpers (refactor, no behavior change) — `49bd4d94`
+`_lpt_makespan`, `_lpt_completion_prob`, `_search_headcount`,
+`_headcount_search_ceiling` pulled out of `optimize_headcount`. L2 + L1 rewritten
+to call them; RNG draw order + capacity checks byte-preserved. Validated: harness
+output identical to baseline; suite 318 passed (+16 helper tests).
+
+### 2. Synthetic-room indivisible-job headcount for cold-start (accuracy/cold-start)
+**Problem:** the per-room (L2) headcount simulation only runs for rooms that
+already have a staff assignment in tomorrow's schedule — so brand-new hotels and
+any pre-schedule planning moment fell to the crude **infinite-divisibility** L1
+path, which assumes cleaning work can be split perfectly across people. That
+under-recommends on days you can't balance.
+**Fix:** when L2 is unavailable, read tomorrow's room composition from the plan
+snapshot, treat each cleanable room as an **indivisible job** (relative size =
+industry per-room-type minutes), scale to the calibrated L1 demand draw, and
+LPT-pack. Falls back to infinite-divisibility only when there's no plan snapshot.
+New `inputs_snapshot.headcount_method` ∈ {`l2_supply`,`synthetic_room`,
+`l1_divisible`} for observability. Honesty contract unchanged (curve still
+omitted when both layers cold-start).
+**Validated (sanity harness, before→after):** typical small-room days unchanged
+(indivisibility negligible), but the path correctly adds staff where balancing is
+hard:
+```
+parttime-240shift-90rm : divisible naive 7 → synthetic 8
+deepclean-fewbig-420   : divisible naive 3 → synthetic 4
+coldstart-noplan-90rm  : still l1_divisible (safe fallback)
+```
+No absurd/sub-1 headcounts; L2/fitted paths untouched. Suite 328 passed
+(+10 synthetic-room tests). One extra indexed plan_snapshots read per optimizer
+run (negligible).
 
 ## Left alone (deliberately)
 _(tbd)_
