@@ -106,6 +106,81 @@ def _invert_quantile_cdf(quantiles: Dict[float, float], u: float) -> float:
     return vs[-1]  # unreachable
 
 
+# ─── Simulation core (pure, testable) ──────────────────────────────────────
+# Extracted 2026-06-18 so the same LPT bin-packing + headcount search drives
+# the L2 (per-room supply), the new synthetic-room cold-start path, AND is
+# unit-testable in isolation. The L2 + L1 paths keep their exact prior behavior.
+
+
+def _lpt_makespan(job_times: np.ndarray, headcount: int) -> float:
+    """Makespan (max worker load) from LPT-packing `job_times` onto `headcount`
+    workers.
+
+    Longest Processing Time first: sort jobs descending, repeatedly assign the
+    next job to the currently-least-loaded worker (min-heap, O(log H) per job).
+    The classic greedy makespan-minimization approximation; models the real
+    constraint that a room is an indivisible job — it cannot be split across
+    two housekeepers.
+    """
+    if headcount <= 0:
+        return float("inf")
+    row = np.sort(np.asarray(job_times, dtype=float))[::-1]  # descending
+    heap: List[Tuple[float, int]] = [(0.0, i) for i in range(headcount)]
+    heapq.heapify(heap)
+    for t in row:
+        load, worker_idx = heapq.heappop(heap)
+        heapq.heappush(heap, (load + float(t), worker_idx))
+    return max(load for load, _ in heap) if heap else 0.0
+
+
+def _lpt_completion_prob(sampled_times: np.ndarray, headcount: int, shift_cap: float) -> float:
+    """Fraction of Monte Carlo draws whose LPT makespan fits within `shift_cap`.
+
+    sampled_times: ndarray [n_draws, n_rooms] of per-room job minutes.
+    """
+    if sampled_times.ndim != 2 or sampled_times.shape[0] == 0:
+        return 0.0
+    draws = sampled_times.shape[0]
+    completed = 0
+    for d in range(draws):
+        if _lpt_makespan(sampled_times[d], headcount) <= shift_cap:
+            completed += 1
+    return float(completed / draws)
+
+
+def _search_headcount(prob_fn, max_headcount: int, target_prob: float):
+    """Walk headcount 1..max, build the completion-probability curve, and pick
+    the smallest headcount that meets `target_prob`.
+
+    Returns (curve, recommended_headcount, truncated_at_cap). truncated_at_cap
+    is True when no headcount in the searched range met the target (we then
+    return the best-achieving headcount so the cockpit can flag it).
+    """
+    curve = []
+    recommended = None
+    for headcount in range(1, max_headcount + 1):
+        p = float(prob_fn(headcount))
+        curve.append({"headcount": headcount, "p": p})
+        if recommended is None and p >= target_prob:
+            recommended = headcount
+    truncated_at_cap = False
+    if recommended is None:
+        recommended = max(curve, key=lambda c: c["p"])["headcount"]
+        truncated_at_cap = True
+    return curve, recommended, truncated_at_cap
+
+
+def _headcount_search_ceiling(workload_minutes: float, shift_cap: float) -> int:
+    """Property-aware upper bound for the headcount search loop.
+
+    Derived from the actual workload so larger properties get a real answer
+    while the loop stays bounded. Preserves the historical
+    `max(10, min(50, int((workload/shift)*1.5)+1))`.
+    """
+    safe_shift = float(shift_cap) or 1.0
+    return max(10, min(50, int((workload_minutes / safe_shift) * 1.5) + 1))
+
+
 def _tomorrow_in_property_tz(tz_name: str) -> date:
     """Tomorrow as seen by a property in `tz_name` (matches demand.py).
 
@@ -317,32 +392,20 @@ async def optimize_headcount(
         # (assignment, not accumulation), so the same housekeeper's later rooms
         # overwrote earlier ones. Workload was massively underestimated and the
         # optimizer recommended too few housekeepers.
-        completion_curves = []
-        recommended_headcount = None  # decided below
-
-        # Codex audit pass-6 P1 — search range used to be hard-coded
-        # range(1, 11). For a hotel with enough rooms to need 12+
-        # housekeepers we'd cap at 10 and silently return an
-        # under-recommended headcount. Now we compute a property-aware
-        # upper bound from the actual workload (sum of median-time
-        # estimates × 1.5 buffer) so larger properties get a real answer,
-        # while still bounding the loop to keep the function fast.
+        # Codex audit pass-6 P1 — property-aware search ceiling from the
+        # actual workload (sum of median per-room estimates) so larger
+        # properties get a real answer while the loop stays bounded.
         median_total_minutes = sum(
             float(p.get("predicted_minutes_p50", 25)) for p in supply_preds
         )
         shift_cap = float(shift_cap_minutes) or 1.0
-        max_headcount = max(
-            10,
-            min(50, int((median_total_minutes / shift_cap) * 1.5) + 1),
-        )
+        max_headcount = _headcount_search_ceiling(median_total_minutes, shift_cap)
 
         # Codex post-merge review 2026-05-13 (F4 — common random numbers):
-        # Pre-generate the per-(draw, room) uniforms ONCE, outside the H
-        # loop. Every H value samples from the SAME u-matrix → adjacent H
-        # values differ ONLY in how the LPT bin-packing distributes the
-        # same set of job times → variance of the difference between
-        # adjacent H values drops dramatically. Without CRN, adjacent H
-        # could swap purely from MC noise (SE~0.69pp at p=0.95).
+        # Pre-generate the per-(draw, room) uniforms ONCE so every H value
+        # samples from the SAME u-matrix (CRN) — adjacent H values differ
+        # only in how LPT packs the same job times, not in MC noise
+        # (SE~0.69pp at p=0.95 without CRN).
         n_rooms = len(supply_preds)
         u_matrix = rng.uniform(size=(settings.monte_carlo_draws, n_rooms))
 
@@ -367,42 +430,11 @@ async def optimize_headcount(
                 for d in range(settings.monte_carlo_draws):
                     sampled_times[d, j] = _invert_quantile_cdf(quantile_dict, float(u_matrix[d, j]))
 
-        for headcount in range(1, max_headcount + 1):
-            total_completed = 0
-
-            for d in range(settings.monte_carlo_draws):
-                # Same draw d → same room_times across every H (CRN).
-                row = sampled_times[d].copy()
-                # LPT: longest jobs first → assign to the currently-least-loaded
-                # worker. Codex post-merge review F4a: use a min-heap so each
-                # assignment is O(log H) instead of O(H) np.argmin.
-                row[::-1].sort()  # descending in-place
-                heap: List[Tuple[float, int]] = [(0.0, i) for i in range(headcount)]
-                heapq.heapify(heap)
-                for t in row:
-                    load, worker_idx = heapq.heappop(heap)
-                    heapq.heappush(heap, (load + float(t), worker_idx))
-
-                # Max load = makespan = max(load for load, _ in heap)
-                makespan = max(load for load, _ in heap) if heap else 0.0
-                if makespan <= shift_cap:
-                    total_completed += 1
-
-            completion_prob = float(total_completed / settings.monte_carlo_draws)
-            completion_curves.append({"headcount": headcount, "p": completion_prob})
-
-            # First headcount that meets the target is the recommendation.
-            if recommended_headcount is None and completion_prob >= target_prob:
-                recommended_headcount = headcount
-
-        # Codex post-merge review F4b: track whether we hit the search
-        # ceiling without satisfying the target. If so, the cockpit should
-        # show "we couldn't find a headcount that meets 95% on-time" rather
-        # than treating the returned value as a confident recommendation.
-        truncated_at_cap = False
-        if recommended_headcount is None:
-            recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
-            truncated_at_cap = True
+        # LPT bin-packing across H workers (rooms are indivisible jobs).
+        completion_curves, recommended_headcount, truncated_at_cap = _search_headcount(
+            lambda h: _lpt_completion_prob(sampled_times, h, shift_cap),
+            max_headcount, target_prob,
+        )
     else:
         # L1 path: total demand only. Codex adversarial review 2026-05-13
         # (M-C3): the prior code sampled uniform(p50, p95) which is biased
@@ -416,16 +448,10 @@ async def optimize_headcount(
         l1_quantiles = {0.5: p50_minutes, 0.95: p95_minutes}
         max_demand = max(p95_minutes, p50_minutes + 1.0)  # avoid zero-width range
 
-        completion_curves = []
-        recommended_headcount = None
-
         # Codex audit pass-6 P1 — same rationale as the L2 path: derive
         # the search ceiling from the actual demand instead of a hard 10.
         shift_cap_l1 = float(shift_cap_minutes) or 1.0
-        max_headcount = max(
-            10,
-            min(50, int((max_demand / shift_cap_l1) * 1.5) + 1),
-        )
+        max_headcount = _headcount_search_ceiling(max_demand, shift_cap_l1)
 
         # Codex post-merge review F4 (CRN): pre-generate uniforms ONCE so
         # adjacent H values see the same demand samples.
@@ -434,22 +460,15 @@ async def optimize_headcount(
             [_invert_quantile_cdf(l1_quantiles, float(u)) for u in u_l1]
         )
 
-        for headcount in range(1, max_headcount + 1):
-            shift_capacity = headcount * shift_cap_minutes
-            # Same sampled_demands across every H → CRN.
-            total_completed = int((sampled_demands <= shift_capacity).sum())
-
-            completion_prob = float(total_completed / settings.monte_carlo_draws)
-            completion_curves.append({"headcount": headcount, "p": completion_prob})
-
-            if recommended_headcount is None and completion_prob >= target_prob:
-                recommended_headcount = headcount
-
-        # Same truncated_at_cap surfacing as the L2 path (F4b).
-        truncated_at_cap = False
-        if recommended_headcount is None:
-            recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
-            truncated_at_cap = True
+        # Infinite-divisibility check: total demand vs H × shift capacity.
+        # This is the crudest path (no room granularity); it assumes work can
+        # be split perfectly across workers. Used only when neither L2 supply
+        # predictions nor a plan-snapshot room composition are available.
+        completion_curves, recommended_headcount, truncated_at_cap = _search_headcount(
+            lambda h: float((sampled_demands <= h * shift_cap_minutes).sum()
+                            / settings.monte_carlo_draws),
+            max_headcount, target_prob,
+        )
 
     # Look up completion_prob by headcount value (not array index) so a
     # future change to the search range (e.g. range(2, 12)) doesn't
