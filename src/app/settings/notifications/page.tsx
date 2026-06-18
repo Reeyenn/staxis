@@ -57,14 +57,14 @@ export default function NotificationsPage() {
       const res = await fetchWithAuth(`/api/settings/notifications?propertyId=${propertyId}`);
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || 'Failed to load preferences');
+        setError(body.error || (lang === 'es' ? 'No se pudieron cargar las preferencias' : 'Failed to load preferences'));
         return;
       }
       setPrefs(body.data.preferences);
     } finally {
       setLoading(false);
     }
-  }, [propertyId]);
+  }, [propertyId, lang]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -80,7 +80,7 @@ export default function NotificationsPage() {
       });
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || 'Failed to save');
+        setError(body.error || (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
         return;
       }
       setPrefs(body.data.preferences);

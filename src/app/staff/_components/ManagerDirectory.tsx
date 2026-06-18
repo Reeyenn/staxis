@@ -388,9 +388,11 @@ export function ManagerDirectory() {
       `}</style>
 
       <PageHeader
-        title="The people"
-        eyebrow="Staff · Directory"
-        sub="Roster of everyone on the property — managers, housekeepers, front desk and maintenance."
+        title={lang === 'es' ? 'La gente' : 'The people'}
+        eyebrow={lang === 'es' ? 'Personal · Directorio' : 'Staff · Directory'}
+        sub={lang === 'es'
+          ? 'Lista de todo el personal de la propiedad — gerentes, camaristas, recepción y mantenimiento.'
+          : 'Roster of everyone on the property — managers, housekeepers, front desk and maintenance.'}
         right={
           <div>
             <Caps>{total} on roster · {onShift} on shift</Caps>

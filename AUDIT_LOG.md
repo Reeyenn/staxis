@@ -55,6 +55,23 @@ Dedicated sweep found the high-traffic Spanish surfaces (housekeeper, laundry, c
 
 ---
 
+### Fundamentals verified CLEAN (manual deep-reads, in addition to P1/P2 above)
+The app is genuinely mature and well-hardened on the highest-stakes axes — many prior audit passes are visible in the code. Verified by reading the real implementations:
+- **Auth account-creation (use-join-code, accept-invite):** per-IP rate limits, atomic CAS on join-code use (no double-redeem), owner/GM privilege-escalation + ownership-displacement protection, TOCTOU re-validation of inviter authority, orphan auth-user rollback with loud logging. Solid.
+- **Login / 2FA (api-auth.ts):** JWT validation + server-side device-trust (`trusted_devices`) enforced on every `requireSession`; skip-2FA gated behind env+allowlist+non-privileged; fail-closed on DB error. Solid.
+- **Money:** stored as integer `*_cents` throughout; `labor-cost.ts` uses `Math.round` + integer arithmetic. No float-dollar drift.
+- **Client multi-tenancy (PropertyContext):** `activeProperty` derives only from the user's accessible list; stale `localStorage` property is validated against it (falls back to the user's own first property), so a shared browser can't leak the prior account's hotel.
+
+#### Batch 2 — EN/ES bilingual (management/back-office quick wins) — FIXED
+A second sweep covered the management surfaces. Result: **Financials, Maintenance, Front-Desk, Dashboard, and the shared shell/nav are already fully bilingual.** Fixed the contained gaps:
+- Staff → Directory page header ("The people / Staff · Directory / roster…") — was English-only via `<PageHeader>`.
+- 7 Settings error toasts (accounts ×3, users ×2, notifications ×2) and 2 shift-preset validation messages — were English fallbacks; now `lang === 'es'` branched (added `lang` to the affected hook dep arrays).
+- `ComingSoonModal` (staff scheduling placeholders, 6 modals + "Got it") — added `useLang` + a Spanish COPY table.
+- `FeedbackButton` (floating widget on every page) — added `useLang`; translated title, blurb, category chips, placeholder, send/close labels.
+
+#### Known large gap — Inventory module is English-only (NOT yet fixed; tracked for a dedicated batch)
+The entire `src/app/inventory/_components/**` module renders hardcoded English: `InventoryShell` reads `lang` but never passes it to any child, so the language toggle is **silently dead** inside Inventory (~100 user-facing strings across Sidebar, FilterBar, StockList, HeroStats, tokens `statusLabel`, and the overlays CountSheet/ReportsPanel/HistoryPanel/BudgetsPanel/SimpleSheet/AddItemSheet). Spanish-speaking staff doing counts see English throughout. This is a real UX gap for the rollout but a sizeable, lower-risk mechanical change (plumb `lang` through ~15 components + add ES strings). Full line-by-line gap list with proposed translations was produced by the sweep. **Plan:** execute as a dedicated, carefully-verified batch (likely via an implementation agent) after the bug findings. Note: this is the inventory *UI module* (in scope) — distinct from the Inventory *ML* (out of scope).
+
 ## Deliberately left alone (needs Reeyen's call)
 
 _(Items where fixing changes product behavior or has a tradeoff a non-technical founder should decide.)_

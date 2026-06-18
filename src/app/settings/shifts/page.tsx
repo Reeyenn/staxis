@@ -88,10 +88,10 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       })
       .catch(err => {
         console.error('[shifts:settings] load failed', err);
-        if (active) { setError('Failed to load presets'); setLoading(false); }
+        if (active) { setError(lang === 'es' ? 'No se pudieron cargar los ajustes' : 'Failed to load presets'); setLoading(false); }
       });
     return () => { active = false; };
-  }, [pid]);
+  }, [pid, lang]);
 
   const groups = useMemo(() => {
     const map: Record<StaffDepartment, DraftPreset[]> = {
@@ -128,9 +128,9 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     if (!pid) return;
     // Validate.
     for (const d of drafts) {
-      if (!d.name.trim()) { setError(`"${d.department}" preset needs a name`); return; }
+      if (!d.name.trim()) { setError(lang === 'es' ? `El ajuste "${d.department}" necesita un nombre` : `"${d.department}" preset needs a name`); return; }
       if (!TIME_RE.test(d.startTime) || !TIME_RE.test(d.endTime)) {
-        setError(`"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
+        setError(lang === 'es' ? `"${d.name}" tiene una hora inválida (usa HH:MM, p. ej. 08:00)` : `"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
       }
     }
     setSaving(true);
