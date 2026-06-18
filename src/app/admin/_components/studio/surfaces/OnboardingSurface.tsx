@@ -63,12 +63,25 @@ interface JobRow {
   progressPct: number | null; error: string | null; createdAt: string;
   kind?: 'session' | 'mapper';
 }
+// One feed's live status on a learned PMS map. 'live' = captured & flowing,
+// 'learning' = mapped but still proving, 'unavailable' = this PMS doesn't
+// expose it. Drives the per-feed chips that replace the misleading single %.
+type FeedState = 'live' | 'learning' | 'unavailable';
+interface PerFeed { key: string; label: string; state: FeedState }
 interface PMSCoverage {
   pmsType: string; label: string; hint: string; tier: 1 | 2 | 3;
   recipe: { coveragePct: number; version: number; createdAt: string; actionKeys?: string[] } | null;
   propertyCount: number;
   representativePropertyId?: string | null;
   latestJob: { status: string; error: string | null; createdAt: string } | null;
+  /** Plan v9 coverage-mgmt — editable label (COALESCE(display_name, registry label)). */
+  displayName?: string;
+  /** Fixed coverage %: live feeds / available feeds (excludes 'unavailable'). */
+  coveragePct?: number;
+  /** Per-feed live status — replaces the single "% of actions captured". */
+  perFeed?: PerFeed[];
+  /** Hotels with no PMS detected (properties.pms_type IS NULL). */
+  unassignedHotelCount?: number;
 }
 type ProspectStatus = 'talking' | 'negotiating' | 'committed' | 'onboarded' | 'dropped';
 interface Prospect {
@@ -755,13 +768,14 @@ function BaySession({ job }: { job: JobRow }) {
 
 function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
   const st = pmsState(pms);
-  const repairable = pms.recipe?.actionKeys?.length && pms.representativePropertyId;
+  // The detail card now does more than repair (rename · view · use-for-all ·
+  // detach), so any learned PMS row is clickable.
   return (
-    <button onClick={onClick} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9, background: dim(.05), border: `1px solid ${dim(.12)}`, borderRadius: 10, padding: '9px 12px', cursor: repairable ? 'pointer' : 'default', color: '#fff', width: '100%' }}>
+    <button onClick={onClick} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9, background: dim(.05), border: `1px solid ${dim(.12)}`, borderRadius: 10, padding: '9px 12px', cursor: 'pointer', color: '#fff', width: '100%' }}>
       <Dot tone={st.tone} />
-      <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pms.label}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pms.displayName ?? pms.label}</span>
       <span style={{ fontSize: 11, color: st.tone === 'muted' ? dim(.5) : `var(--${st.tone})` }}>{st.label}</span>
-      {repairable ? <span className="mono" style={{ fontSize: 9, color: dim(.35) }}>repair ›</span> : null}
+      <span className="mono" style={{ fontSize: 9, color: dim(.35) }}>manage ›</span>
     </button>
   );
 }
@@ -781,16 +795,31 @@ function BayProspect({ p, onSaved }: { p: Prospect; onSaved: () => Promise<void>
   );
 }
 
-// ── PMS detail + repair-feed (~$2 re-learn) ─────────────────────────────
+// Per-feed chip tone: live = green, learning = teal, unavailable = muted.
+const FEED_STATE_TONE: Record<FeedState, DotTone> = { live: 'forest', learning: 'teal', unavailable: 'muted' };
+const FEED_STATE_WORD: Record<FeedState, string> = { live: 'live', learning: 'learning', unavailable: 'not provided' };
+
+// ── PMS detail · per-feed status · rename · view captures · bulk · detach ─
 function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: () => void; onRepaired: () => Promise<void> }) {
   const ref = useRef<HTMLDivElement>(null);
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Inline rename state.
+  const [editingName, setEditingName] = useState(false);
+  const [name, setName] = useState(pms.displayName ?? pms.label);
+  const [title, setTitle] = useState(pms.displayName ?? pms.label);
+  const [nameBusy, setNameBusy] = useState(false);
+  // Bulk / detach state — separate so a long-running action doesn't lock the others.
+  const [actionBusy, setActionBusy] = useState<'bulk' | 'detach' | null>(null);
   useEffect(() => { riseIn(ref.current, { dy: 30, dur: 440 }); }, []);
   const st = pmsState(pms);
   const keys = pms.recipe?.actionKeys ?? [];
   const propertyId = pms.representativePropertyId;
+  // Prefer the backend's fixed coveragePct (live / available feeds) over the
+  // recipe's raw captured/5 — only show it if the backend actually sent it.
+  const pct = typeof pms.coveragePct === 'number' ? pms.coveragePct : pms.recipe?.coveragePct;
+  const feeds = pms.perFeed ?? [];
 
   const fire = async () => {
     if (!key) { setMsg('Pick a feed first.'); return; }
@@ -806,18 +835,108 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
     finally { setBusy(false); }
   };
 
+  // Rename → POST /api/admin/coverage/rename. Optimistically updates the title.
+  const saveName = async () => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === title) { setEditingName(false); return; }
+    setNameBusy(true); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType, displayName: trimmed }) });
+      const json = await res.json();
+      if (json.ok) { setTitle(json.data?.displayName ?? trimmed); setEditingName(false); void onRepaired(); }
+      else setMsg(`Rename failed: ${json.error ?? 'unknown'}`);
+    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
+    finally { setNameBusy(false); }
+  };
+
+  // Use for all hotels on this PMS → POST /api/admin/coverage/bulk-assign.
+  const bulkAssign = async () => {
+    if (!confirm(`Use this map for every hotel on ${title}? Each one's robot reconnects with the saved map.`)) return;
+    setActionBusy('bulk'); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/bulk-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
+      const json = await res.json();
+      if (json.ok) { const n = json.data?.appliedCount ?? 0; setMsg(`Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}.`); void onRepaired(); }
+      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
+    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
+    finally { setActionBusy(null); }
+  };
+
+  // Detach → POST /api/admin/coverage/detach. Frees the hotels; keeps the map.
+  const detach = async () => {
+    if (!confirm("These hotels will show as 'No system detected' on Live Hotels. The map is kept and can be re-matched.")) return;
+    setActionBusy('detach'); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/detach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
+      const json = await res.json();
+      if (json.ok) { const n = json.data?.detachedCount ?? 0; setMsg(`Detached ${n} ${n === 1 ? 'hotel' : 'hotels'} — map kept.`); void onRepaired(); }
+      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
+    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
+    finally { setActionBusy(null); }
+  };
+
+  const anyBusy = busy || nameBusy || actionBusy !== null;
+
   return (
     <Backdrop onClose={onClose}>
-      <div ref={ref} onClick={(e) => e.stopPropagation()} style={modalCard}>
+      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...modalCard, width: 480 }}>
         <Caps>PMS coverage · {pms.tier ? `Tier ${pms.tier}` : ''}</Caps>
-        <h3 style={{ fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 4px' }}><span style={{ fontStyle: 'italic' }}>{pms.label}</span></h3>
-        <p style={{ fontSize: 13, color: 'var(--dim)', lineHeight: 1.5, marginBottom: 6 }}>{st.note}</p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <Pill tone={st.tone === 'muted' ? 'neutral' : st.tone}>{st.label}</Pill>
+
+        {/* Editable display name — pencil to edit, Save to commit. */}
+        {editingName ? (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '6px 0 4px' }}>
+            <input
+              autoFocus value={name} onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !nameBusy) void saveName(); if (e.key === 'Escape') { setName(title); setEditingName(false); } }}
+              maxLength={60}
+              style={{ flex: 1, minWidth: 0, fontFamily: 'var(--serif)', fontSize: 22, fontStyle: 'italic', padding: '4px 8px', border: '1px solid var(--rule)', borderRadius: 8, background: '#fff', color: 'var(--ink)', outline: 'none' }}
+            />
+            <Btn size="sm" variant="primary" onClick={() => void saveName()} disabled={nameBusy || !name.trim()}>{nameBusy ? '…' : 'Save'}</Btn>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '6px 0 4px' }}>
+            <h3 style={{ fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400, letterSpacing: '-0.02em', margin: 0, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ fontStyle: 'italic' }}>{title}</span></h3>
+            <button onClick={() => { setName(title); setEditingName(true); }} title="Rename this PMS"
+              style={{ flexShrink: 0, background: 'none', border: 'none', padding: 4, cursor: 'pointer', color: 'var(--dim)', fontSize: 13, lineHeight: 1 }}>✎</button>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 14px', flexWrap: 'wrap' }}>
+          {typeof pct === 'number' && <Pill tone={pct === 100 ? 'forest' : pct > 0 ? 'gold' : 'neutral'}>{pct}% live</Pill>}
           <span className="mono" style={{ fontSize: 11, color: 'var(--dim2)' }}>{pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · v{pms.recipe?.version ?? 0}</span>
         </div>
-        {keys.length > 0 && propertyId ? (
+
+        {/* ── Per-feed status — replaces the single "0% captured". ── */}
+        {feeds.length > 0 ? (
           <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14 }}>
+            <Caps size={9}>What the robot captures</Caps>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, margin: '8px 0 4px' }}>
+              {feeds.map((f) => {
+                const tone = FEED_STATE_TONE[f.state];
+                return (
+                  <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+                    <Dot tone={tone} size={6} />
+                    <span style={{ fontSize: 12.5, color: 'var(--ink)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.label}</span>
+                    <span className="mono" style={{ fontSize: 10, color: f.state === 'unavailable' ? 'var(--dim2)' : `var(--${tone})`, letterSpacing: '.04em' }}>{FEED_STATE_WORD[f.state]}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <p style={{ fontSize: 13, color: 'var(--dim)', lineHeight: 1.5, marginBottom: 6 }}>{st.note}</p>
+        )}
+
+        {/* ── View the rich coverage editor (reuses the existing page). ── */}
+        {propertyId && (
+          <div style={{ marginTop: 12 }}>
+            <Btn size="sm" variant="ghost" href={`/admin/properties/coverage/${propertyId}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>View what the robot captures →</Btn>
+          </div>
+        )}
+
+        {/* ── Repair a feed (kept) — re-learn one drifted action (~$2). ── */}
+        {keys.length > 0 && propertyId ? (
+          <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14, marginTop: 14 }}>
             <Caps size={9}>Repair a feed</Caps>
             <p style={{ fontSize: 12, color: 'var(--dim)', margin: '4px 0 8px', lineHeight: 1.4 }}>Re-learn one action if its extraction drifted. ~$2, ~few min.</p>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -828,10 +947,22 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
               </select>
               <Btn size="sm" variant="terracotta" onClick={fire} disabled={busy || !key}>{busy ? '…' : 'Fix'}</Btn>
             </div>
-            {msg && <p className="mono" style={{ fontSize: 10.5, color: 'var(--dim)', marginTop: 8, wordBreak: 'break-all' }}>{msg}</p>}
           </div>
         ) : null}
-        <div style={{ marginTop: 18 }}><Btn variant="ghost" onClick={onClose}>Close</Btn></div>
+
+        {msg && <p className="mono" style={{ fontSize: 10.5, color: 'var(--dim)', marginTop: 10, wordBreak: 'break-all' }}>{msg}</p>}
+
+        {/* ── Footer — bulk-assign · detach · close. ── */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 18, borderTop: '1px solid var(--rule)', paddingTop: 14, flexWrap: 'wrap' }}>
+          <button onClick={() => void detach()} disabled={anyBusy} title="Free every hotel on this PMS — the map is kept and can be re-matched"
+            style={{ background: 'var(--terracotta-dim)', color: 'var(--terracotta-deep)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 999, height: 28, padding: '0 12px', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, cursor: anyBusy ? 'not-allowed' : 'pointer', opacity: anyBusy ? 0.5 : 1 }}>
+            {actionBusy === 'detach' ? '…' : 'Detach (free the hotels)'}
+          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {pms.recipe && <Btn size="sm" variant="forest" onClick={() => void bulkAssign()} disabled={anyBusy}>{actionBusy === 'bulk' ? '…' : 'Use for all hotels'}</Btn>}
+            <Btn size="sm" variant="ghost" onClick={onClose} disabled={anyBusy}>Close</Btn>
+          </div>
+        </div>
       </div>
     </Backdrop>
   );
