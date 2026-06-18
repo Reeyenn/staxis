@@ -118,3 +118,44 @@ suite 312 passed (was 302).
 > was written by the now-removed scraper; CUA writes `pms_*`. Until that bridge
 > exists, inference uses the `daily_logs.occupied` fallback (now correct) or the
 > 50% neutral default. Wiring CUA→occupancy is another chat's lane.
+
+### [5] Training-window hygiene — stop contaminated windows poisoning the fit
+
+**Problem:** the trainer built one row per consecutive count pair, **floored
+sub-day gaps to 0.5 day** (a 30-second recount → 2× rate) and **clamped
+negative consumption to a fake 0-rate row**. Worse, when a manager restocks
+outside the app, CountSheet auto-logs a "stock-up" order equal to the surprise
+rise, forcing that window's consumption to exactly 0. The model was being fed a
+flood of fake 0-rate rows → every learned rate biased LOW → reorders fire late →
+**stockouts** (the worst outcome for a hotel). The synthesis called this the
+single biggest fleet-wide low-bias driver.
+
+**Fix (commit pending):**
+- Skip count pairs `< 1.0 day` apart (matches `inventory_observed_rate_v`,
+  migration 0096) instead of the 0.5-day floor.
+- Train only on windows with **observed consumption > 0**; drop the two
+  contamination classes (unexplained increase `raw < 0`; auto-stock-up /
+  surprise-rise `raw == 0`). Dropping rare genuine-zero windows nudges rates
+  slightly HIGH — the safe direction (reorder early, never run out).
+- Mirrored both rules in the cohort-prior SQL (`inventory_priors.py`) so new
+  hotels don't inherit contaminated priors.
+
+**Measured (offline harness, CONTAMINATED data = 70% unlogged restocks + auto
+stock-up). MAE is distance to the TRUE underlying rate:**
+
+| scenario | legacy MAE→truth | fixed MAE→truth | legacy slope | fixed slope (true_b) |
+|---|---|---|---|---|
+| amenity | 5.79 | **0.11** | 0.04 | 0.34 (0.35) |
+| coffee | 13.98 | **0.45** | −0.20 (wrong sign) | 0.58 (0.55) |
+| towels | 3.08 | **0.30** | 0.08 | 0.21 (0.22) |
+
+~95% MAE reduction on contaminated data; the legacy model even learned the
+**wrong sign** for coffee. Clean-data scenarios unchanged (all-positive
+windows). **Tests:** +6 (`test_inventory_window_hygiene.py`); suite 318 passed.
+
+> ⚠️ **Follow-up migration (NOT applied):** the realized-rate view
+> `inventory_observed_rate_v` (0096) still clamps these windows to 0, so the
+> backtest/`prediction_log` would score against contaminated actuals. A
+> CREATE-OR-REPLACE migration to match (drop `raw <= 0` windows) is staged in
+> `supabase/migrations/` but left for manual apply + review (no DB writes
+> autonomously).

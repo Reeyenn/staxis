@@ -87,6 +87,7 @@ def simulate_hotel(
     restock_threshold: int = 25,
     restock_to: int = 220,
     unlogged_restock_prob: float = 0.0,   # restocks NOT logged as orders (count-up windows)
+    auto_stock_up_on_rise: bool = False,  # reproduce CountSheet's phantom stock-up order
 ) -> Scenario:
     """Simulate counts/orders/daily_logs for one hotel under a known model."""
     rng = np.random.default_rng(seed)
@@ -116,29 +117,40 @@ def simulate_hotel(
     # logged BEFORE the count that already reflects it, so it lands in the
     # window ending at that count (not the next one). Getting this wrong
     # injects spurious rate noise that swamps the occupancy signal.
+    #
+    # `unlogged_restock_prob` + `auto_stock_up_on_rise` reproduce the live
+    # contamination: a manager restocks outside the app (no order), and at the
+    # next count CountSheet auto-logs a "stock-up" order for the surprise rise
+    # (received_at == counted_at) → that window's consumption is forced to 0.
     stock = float(restock_to)
+    system_stock = float(restock_to)   # what the app believes (orders + counts)
     for d in range(n_days):
         # consume today
         stock -= float(true_daily[d])
-        # restock when low (order logged at noon)
+        # restock when low (order logged at noon, unless done "outside the app")
         if stock < restock_threshold:
             qty = restock_to - stock
             if rng.random() < unlogged_restock_prob:
-                # Manager bought supplies outside the app — NO order logged.
-                # This produces a count-up window (the contamination case).
-                pass
+                pass  # outside the app — no order, app doesn't know
             else:
                 orders.append({
                     "received_at": (start + timedelta(days=d, hours=3)).isoformat(),  # 12:00
                     "quantity": round(float(qty), 2),
                 })
+                system_stock += qty
             stock = float(restock_to)
         # take a count every count_every_days, at 23:00 (after consume+restock)
         if d % count_every_days == 0:
-            counts.append({
-                "counted_at": (start + timedelta(days=d, hours=14)).isoformat(),  # 23:00
-                "counted_stock": round(max(stock, 0.0), 2),
-            })
+            count_ts = (start + timedelta(days=d, hours=14)).isoformat()  # 23:00
+            counted = round(max(stock, 0.0), 2)
+            if auto_stock_up_on_rise and counted > system_stock + 1e-9:
+                # CountSheet's auto stock-up: a surprise rise → phantom order.
+                orders.append({
+                    "received_at": count_ts,
+                    "quantity": round(counted - system_stock, 2),
+                })
+            system_stock = counted  # count overwrites the app's belief
+            counts.append({"counted_at": count_ts, "counted_stock": counted})
 
     return Scenario(
         name=name, counts=counts, orders=orders, discards=discards,
@@ -213,6 +225,85 @@ def evaluate(scn: Scenario, *, prior_strength: float = 0.5) -> EvalResult:
     )
 
 
+def _build_rows_legacy(counts, orders, discards, daily_logs, total_rooms):
+    """Replicates the PRE-fix `_build_training_rows`: 0.5-day floor, negative
+    consumption clamped to 0, every window kept. Used only to show the
+    before/after delta of the window-hygiene change in one run."""
+    if len(counts) < 2:
+        return []
+    rows = []
+    for i in range(1, len(counts)):
+        prev, curr = counts[i - 1], counts[i]
+        try:
+            t_prev = pd.to_datetime(prev["counted_at"]).tz_localize(None)
+            t_curr = pd.to_datetime(curr["counted_at"]).tz_localize(None)
+        except Exception:
+            continue
+        days = max((t_curr - t_prev).total_seconds() / 86400.0, 0.5)
+        ob = sum(float(o.get("quantity") or 0) for o in orders
+                 if t_prev < pd.to_datetime(o.get("received_at")).tz_localize(None) <= t_curr)
+        db = sum(float(d.get("quantity") or 0) for d in discards
+                 if t_prev < pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) <= t_curr)
+        cons = max(float(prev.get("counted_stock") or 0) + ob - db - float(curr.get("counted_stock") or 0), 0.0)
+        from src.training.inventory_rate import _avg_occupancy_in_window
+        rows.append({
+            "daily_rate": cons / days,
+            "occupancy_pct": _avg_occupancy_in_window(daily_logs, t_prev, t_curr, total_rooms),
+            "days_elapsed": days,
+        })
+    return rows
+
+
+def _eval_with_builder(scn, builder, *, prior_strength=0.5):
+    rows = builder(scn.counts, scn.orders, scn.discards, scn.daily_logs, scn.total_rooms)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return None
+    df["daily_rate"] = pd.to_numeric(df["daily_rate"], errors="coerce")
+    df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(50.0)
+    df = df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
+    occ_raw = df["occupancy_pct"].astype(float).values
+    X = df[INVENTORY_FEATURE_COLS].copy()
+    X["occupancy_pct"] = X["occupancy_pct"] - INVENTORY_OCC_BASELINE_PCT
+    y = df["daily_rate"].astype(float)
+    X.insert(0, "intercept", 1.0)
+    if len(X) < 5:
+        return None
+    split = int(len(X) * 0.8)
+    model = BayesianRegression(prior_strength=prior_strength)
+    _seed_bayesian_intercept(model, scn.prior_rate_per_room, scn.total_rooms)
+    model.fit(X.iloc[:split], y.iloc[:split])
+    # Score against the TRUE rate on the held-out occupancy (oracle target),
+    # so we measure how close the learned model is to ground truth — not to a
+    # contaminated observed rate.
+    occ_te = occ_raw[split:]
+    true_te = scn.true_a + scn.true_b * occ_te
+    pred = model.predict(X.iloc[split:])
+    return dict(n=len(df), slope=float(model.mu_n[1]),
+                mae_vs_true=float(np.mean(np.abs(pred - true_te))))
+
+
+def compare_window_hygiene() -> None:
+    """Contaminated data: legacy keep-all-zeros vs new drop-contaminated."""
+    print("\n── window hygiene on CONTAMINATED data (unlogged restocks + auto stock-up) ──")
+    print(f"{'scenario':22} {'metric':14} {'legacy':>9} {'fixed':>9} {'true_b':>7}")
+    print("-" * 64)
+    cfgs = [
+        dict(name="amenity", seed=11, true_a=1.0, true_b=0.35, total_rooms=80),
+        dict(name="coffee", seed=12, true_a=3.0, true_b=0.55, total_rooms=120),
+        dict(name="towels", seed=13, true_a=0.5, true_b=0.22, total_rooms=60),
+    ]
+    for cfg in cfgs:
+        scn = simulate_hotel(unlogged_restock_prob=0.7, auto_stock_up_on_rise=True, **cfg)
+        leg = _eval_with_builder(scn, _build_rows_legacy)
+        fix = _eval_with_builder(scn, _build_training_rows)
+        if not leg or not fix:
+            print(f"{cfg['name']:22} (insufficient rows)")
+            continue
+        print(f"{cfg['name']:22} {'MAE vs truth':14} {leg['mae_vs_true']:>9.3f} {fix['mae_vs_true']:>9.3f} {cfg['true_b']:>7.2f}")
+        print(f"{'':22} {'slope':14} {leg['slope']:>9.3f} {fix['slope']:>9.3f}")
+
+
 SCENARIOS = [
     dict(name="amenity-occ-driven", seed=1, true_a=1.0, true_b=0.35, total_rooms=80),
     dict(name="coffee-high-volume", seed=2, true_a=3.0, true_b=0.55, total_rooms=120),
@@ -239,8 +330,9 @@ def main() -> None:
           f"{'':>8} {np.mean(agg['val']):>8.3f} {np.mean(agg['base']):>9.3f} "
           f"{np.mean(agg['oracle']):>7.3f}")
     print(f"\nmean |slope - true_b| = {np.mean(agg['slope_err']):.3f}  "
-          f"(0 = perfectly recovers occupancy effect; ~true_b = occupancy is dead)\n")
+          f"(0 = perfectly recovers occupancy effect; ~true_b = occupancy is dead)")
 
 
 if __name__ == "__main__":
     main()
+    compare_window_hygiene()

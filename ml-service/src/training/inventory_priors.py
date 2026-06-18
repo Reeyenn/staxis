@@ -108,7 +108,7 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                 p.curr_stock,
                 p.prev_at,
                 p.curr_at,
-                greatest(extract(epoch from (p.curr_at - p.prev_at)) / 86400.0, 0.5) as days,
+                extract(epoch from (p.curr_at - p.prev_at)) / 86400.0 as days,
                 coalesce((
                     select sum(o.quantity)
                     from inventory_orders o
@@ -147,14 +147,19 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
             select
                 w.property_id,
                 w.item_id,
-                greatest(
-                    (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock),
-                    0
-                ) / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
+                (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock)
+                    / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
             from with_window w
             join public.properties p on p.id = w.property_id
-            where w.days > 0
+            -- Window hygiene — mirror training/inventory_rate._build_training_rows
+            -- and inventory_observed_rate_v (migration 0096): drop sub-day pairs
+            -- (require >= 1.0 day) and keep ONLY windows with observed
+            -- consumption > 0. The old `greatest(..., 0)` clamped count-up /
+            -- auto-stock-up windows to a fake 0-rate row, flooding the network
+            -- prior with zeros and biasing every new hotel's cold-start LOW.
+            where w.days >= 1.0
               and p.total_rooms > 0
+              and (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) > 0
         )
         select
             property_id,

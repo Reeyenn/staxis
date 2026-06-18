@@ -668,7 +668,14 @@ def _build_training_rows(
             t_curr = pd.to_datetime(curr["counted_at"]).tz_localize(None)
         except Exception:
             continue
-        days_elapsed = max((t_curr - t_prev).total_seconds() / 86400.0, 0.5)
+        days_elapsed = (t_curr - t_prev).total_seconds() / 86400.0
+        # Skip sub-day pairs (same-day recounts / double-saves). The old
+        # 0.5-day floor turned a 30-second recount into a 2x-inflated rate row.
+        # Matches inventory_observed_rate_v (migration 0096), which drops pairs
+        # with raw_days_elapsed < 1.0 — so training and the realized-rate view
+        # finally agree on which pairs count.
+        if days_elapsed < 1.0:
+            continue
 
         # Codex post-merge review 2026-05-13 (N1): use `received_at` (NOT NULL,
         # defaults now() per migration 0026:96), NOT `ordered_at` (nullable —
@@ -697,16 +704,29 @@ def _build_training_rows(
             and pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) <= t_curr
         )
 
-        consumption = (
+        raw_consumption = (
             float(prev.get("counted_stock") or 0)
             + orders_between
             - discards_between
             - float(curr.get("counted_stock") or 0)
         )
-        # Allow negative consumption (overcounting / inventory found) but cap at 0
-        # so downstream stats aren't skewed by data-entry errors.
-        consumption = max(consumption, 0.0)
-        daily_rate = consumption / days_elapsed
+        # Only train on windows where we actually OBSERVED consumption
+        # (raw_consumption > 0). Two contamination classes are excluded here
+        # instead of being clamped to a fake 0-rate row that dilutes the fit:
+        #   • raw < 0  → an unexplained stock INCREASE (a restock the manager
+        #     made outside the app, never logged as an order). The signal is
+        #     corrupt — it is NOT "zero usage".
+        #   • raw == 0 → almost always the auto-logged "stock-up" order
+        #     CountSheet writes when a count comes in higher than expected
+        #     (received_at == counted_at), which forces prev + (curr−prev) −
+        #     curr = 0. Keeping these floods the model with fake 0-rate rows
+        #     and biases every reorder LATE → stockouts.
+        # Genuine multi-day zero usage of a tracked consumable is rare;
+        # dropping these windows nudges the learned rate slightly HIGH, which
+        # is the safe direction for a hotel (reorder early, never run out).
+        if raw_consumption <= 1e-9:
+            continue
+        daily_rate = raw_consumption / days_elapsed
 
         # Average occupancy over the window (best-effort)
         occ_pct = _avg_occupancy_in_window(daily_logs, t_prev, t_curr, total_rooms)
