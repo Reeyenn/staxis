@@ -242,6 +242,30 @@ def _synthetic_room_completion_prob(
     return float(completed / draws)
 
 
+# Plausible per-room cleaning-time envelope from the housekeeping productivity
+# literature (Optii/UniFocus/JIEM: ~10-90 min typical, suites up to ~90). We use
+# a slightly wider [5, 120] so legitimate suites/deep-cleans aren't clipped while
+# still catching corrupt PMS scrapes (a 600-min "room", a 0-min room).
+SUPPLY_MIN_MINUTES = 5.0
+SUPPLY_MAX_MINUTES = 120.0
+
+
+def _sanitize_room_quantiles(p25, p50, p90):
+    """Clamp per-room minutes to the labor-standard envelope and repair quantile
+    crossing (sort ascending) before they reach the Monte Carlo.
+
+    A corrupt supply prediction — a 600-min room from a bad scrape, or crossed
+    quantiles where p50 > p90 — otherwise silently corrupts the makespan
+    distribution and produces absurd headcount. Clamp + sort makes the optimizer
+    robust to garbage inputs (priority: never output absurd numbers).
+    """
+    vals = sorted(
+        min(SUPPLY_MAX_MINUTES, max(SUPPLY_MIN_MINUTES, float(v)))
+        for v in (p25, p50, p90)
+    )
+    return vals[0], vals[1], vals[2]
+
+
 def _fetch_plan_room_counts(client, property_id: str, prediction_date: date) -> dict:
     """Read tomorrow's cleanable-room composition from the plan snapshot.
 
@@ -506,9 +530,13 @@ async def optimize_headcount(
         # doesn't re-parse predictions every draw.
         room_quantiles: List[Tuple[float, float, float, bool]] = []
         for pred in supply_preds:
-            p25 = float(pred.get("predicted_minutes_p25", 15))
-            p50 = float(pred.get("predicted_minutes_p50", 22))
-            p90 = float(pred.get("predicted_minutes_p90", 30))
+            # Clamp to the labor-standard envelope + repair quantile crossing so
+            # a corrupt prediction can't corrupt the makespan distribution.
+            p25, p50, p90 = _sanitize_room_quantiles(
+                pred.get("predicted_minutes_p25", 15),
+                pred.get("predicted_minutes_p50", 22),
+                pred.get("predicted_minutes_p90", 30),
+            )
             degenerate = p90 <= p25
             room_quantiles.append((p25, p50, p90, degenerate))
 
@@ -537,6 +565,13 @@ async def optimize_headcount(
         # (Codex M-C3: the old uniform(p50,p95) was biased upward).
         p50_minutes = float(demand.get("predicted_minutes_p50", 180.0) or 180.0)
         p95_minutes = float(demand.get("predicted_minutes_p95", 240.0) or 240.0)
+        # Robustness: non-negative + repair quantile crossing (p95 >= p50). A
+        # corrupt demand row with crossed/negative quantiles would otherwise
+        # feed a decreasing CDF into the inversion sampler.
+        p50_minutes = max(0.0, p50_minutes)
+        p95_minutes = max(0.0, p95_minutes)
+        if p95_minutes < p50_minutes:
+            p50_minutes, p95_minutes = p95_minutes, p50_minutes
         l1_quantiles = {0.5: p50_minutes, 0.95: p95_minutes}
         max_demand = max(p95_minutes, p50_minutes + 1.0)  # avoid zero-width range
         shift_cap_l1 = float(shift_cap_minutes) or 1.0

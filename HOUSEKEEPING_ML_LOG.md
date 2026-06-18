@@ -204,6 +204,17 @@ that pinned the old flat behavior + added composition/fallback tests).
 Follow-up: per-room-type cohort priors (needs priors-aggregation schema work) to
 fleet-calibrate the per-type level beyond generic industry constants.
 
+### 4. Robustness: sanity envelope + quantile-crossing repair (robustness)
+**Problem:** a corrupt PMS scrape (a 600-min "room", a 0-min room, or crossed
+quantiles where p50 > p90) silently corrupts the Monte Carlo makespan
+distribution → absurd headcount. Research (Optii/UniFocus/JIEM) recommends
+clamping per-room times to the labor-standard envelope.
+**Fix:** `optimizer/monte_carlo.py` now clamps each room's p25/p50/p90 to
+[5, 120] min and sorts them (repairs crossing) before sampling; the L1 demand
+path enforces non-negative + p95≥p50. Only fires on out-of-range/garbage inputs;
+in-range predictions are byte-identical (harness unchanged). Suite 330 passed
+(+4 sanitizer tests).
+
 ## Competitor & methods research (Optii, Hotel Effectiveness/Actabl, UniFocus, Flexkeeping/Knowcross/ALICE, M5/OR literature)
 Full extract saved during the run. Convergent, actionable lessons:
 
@@ -239,8 +250,7 @@ Full extract saved during the run. Convergent, actionable lessons:
 
 ## Planned next (this branch)
 - [DONE] Composition-aware cold-start L1 demand — see changelog #3.
-- Output sanity rails + minimum-headcount floor in the optimizer (robustness).
-- Quantile-crossing repair before the optimizer consumes demand/supply.
+- [DONE] Sanity envelope + quantile-crossing repair — see changelog #4.
 - (Future, needs schema work) Per-room-type cohort priors so cold-start level is
   fleet-calibrated per clean-type, not just generic industry constants.
 

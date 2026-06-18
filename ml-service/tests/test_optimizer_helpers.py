@@ -12,6 +12,9 @@ from src.optimizer.monte_carlo import (
     _lpt_completion_prob,
     _search_headcount,
     _headcount_search_ceiling,
+    _sanitize_room_quantiles,
+    SUPPLY_MIN_MINUTES,
+    SUPPLY_MAX_MINUTES,
 )
 
 
@@ -108,3 +111,27 @@ def test_ceiling_capped_at_50():
 def test_ceiling_zero_shift_safe():
     # No division-by-zero when shift cap is degenerate.
     assert _headcount_search_ceiling(500, 0) >= 10
+
+
+# ─── _sanitize_room_quantiles (robustness) ──────────────────────────────────
+
+def test_sanitize_in_range_passthrough_sorted():
+    assert _sanitize_room_quantiles(15, 22, 30) == (15.0, 22.0, 30.0)
+
+
+def test_sanitize_clamps_corrupt_high():
+    # A 600-min "room" from a bad scrape is clamped to the envelope ceiling.
+    p25, p50, p90 = _sanitize_room_quantiles(20, 30, 600)
+    assert p90 == SUPPLY_MAX_MINUTES
+
+
+def test_sanitize_clamps_zero_low():
+    p25, p50, p90 = _sanitize_room_quantiles(0, 0, 25)
+    assert p25 == SUPPLY_MIN_MINUTES and p50 == SUPPLY_MIN_MINUTES
+
+
+def test_sanitize_repairs_quantile_crossing():
+    # p50 > p90 (crossed) gets sorted back into order.
+    p25, p50, p90 = _sanitize_room_quantiles(20, 80, 40)
+    assert p25 <= p50 <= p90
+    assert (p25, p50, p90) == (20.0, 40.0, 80.0)
