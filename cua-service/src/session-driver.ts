@@ -630,21 +630,31 @@ export class SessionDriver {
     //   2. The username input to be gone (no re-render of login form)
     // Either failing → login failed.
     const loginTimeoutMs = login.timeoutMs ?? 30_000;
-    try {
-      await this.page!.waitForURL(
-        (url) => {
-          const s = url.toString();
-          return !s.includes('j_security_check') && !s.includes('sign_in');
-        },
-        { timeout: loginTimeoutMs },
-      );
-    } catch (err) {
-      log.error('session-driver: URL never left j_security_check', {
-        propertyId: this.propertyId,
-        url: safeUrl(this.page!),
-        err: err instanceof Error ? err : new Error(String(err)),
-      });
-      return false;
+    // PMS-agnostic: if the recipe learned this PMS's login-URL markers (the
+    // login page / form-POST endpoint — Choice Advantage's j_security_check /
+    // sign_in used to be HARDCODED here), wait for the URL to leave them.
+    // Absent → skip the URL check and rely on the PMS-agnostic login-form-gone
+    // signal below (the password field detaching), so no PMS-specific URL string
+    // lives in the worker code.
+    const loginUrlFragments = (login as { loginUrlFragments?: string[] }).loginUrlFragments ?? [];
+    if (loginUrlFragments.length > 0) {
+      try {
+        await this.page!.waitForURL(
+          (url) => {
+            const s = url.toString();
+            return !loginUrlFragments.some((f) => s.includes(f));
+          },
+          { timeout: loginTimeoutMs },
+        );
+      } catch (err) {
+        log.error('session-driver: URL never left the login-page markers', {
+          propertyId: this.propertyId,
+          url: safeUrl(this.page!),
+          loginUrlFragments,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+        return false;
+      }
     }
     // Reactive MFA can land mid-redirect: the URL leaves j_security_check
     // (positive signal) but an MFA challenge is actually rendering, and the
@@ -661,11 +671,13 @@ export class SessionDriver {
       });
       return false;
     }
-    // Now wait for the login form to be absent — catches the case where
-    // CA redirected back to the login page (still URL-distinct from
-    // j_security_check but with the form re-rendered).
+    // Now wait for the login form to be absent — the PMS-AGNOSTIC "did login
+    // succeed?" gate. A still-present password field means the login form is up
+    // (bad creds / form re-rendered → fail). The password field is the universal
+    // login signal (every PMS login form has one), so no PMS-specific field name
+    // is hardcoded here.
     try {
-      await this.page!.waitForSelector('input[name="j_username"], input[name="username"]', {
+      await this.page!.waitForSelector('input[type="password"]', {
         state: 'detached',
         timeout: 10_000,
       });
@@ -762,9 +774,11 @@ export class SessionDriver {
   private async detectLoggedOut(): Promise<boolean> {
     if (!this.page || !this.knowledgeFile) return false;
     try {
-      // Positive logged-out signal #1 — the login form is back.
+      // Positive logged-out signal #1 — the login form is back. PMS-agnostic:
+      // a visible password field is the universal "login screen is showing"
+      // signal (no PMS-specific field name hardcoded).
       const loginFormVisible = await this.page
-        .locator('input[name="j_username"], input[name="username"], input[type="password"]')
+        .locator('input[type="password"]')
         .first()
         .isVisible({ timeout: 1_000 })
         .catch(() => false);

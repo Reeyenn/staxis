@@ -162,6 +162,16 @@ export interface LoginSteps {
   steps: RecipeStep[];
   successSelectors: string[];
   timeoutMs?: number;
+  /** PMS-genericness — OPTIONAL learned URL markers of THIS PMS's login page /
+   *  form-POST endpoint (Choice Advantage: ['j_security_check','sign_in']). The
+   *  post-submit success check waits for the URL to leave these. Absent → that
+   *  URL check is skipped and login success relies on the PMS-agnostic signal
+   *  (the login form / password field being gone). Keeps per-PMS URL specifics
+   *  in the recipe, never hardcoded in the worker code. */
+  loginUrlFragments?: string[];
+  /** Recipe-configured post-login interstitials to dismiss (click-if-present),
+   *  e.g. CA's Okta-migration "Continue". PMS-specifics live here, not in code. */
+  postLoginDismiss?: Array<{ selector: string; label?: string }>;
 }
 
 export interface CsvHint {
