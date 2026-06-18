@@ -47,8 +47,6 @@ export async function extractDomInline(opts: DomInlineOptions): Promise<DomInlin
     } catch (err) {
       return { ok: false, data: {}, reason: `navigate failed: ${(err as Error).message}` };
     }
-    // Bounded settle for frameset / redirect-chain pages before reading.
-    await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
   }
 
   if (signal?.aborted) return { ok: false, data: {}, reason: 'aborted' };

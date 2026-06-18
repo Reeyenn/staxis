@@ -79,12 +79,26 @@ async function clickRecorded(
   timeoutMs: number,
 ): Promise<void> {
   if (target.roleName?.name) {
+    // EXACT role+name, and only when it resolves UNIQUELY. A substring match
+    // (exact:false) + .first() could silently click the wrong control — e.g.
+    // name "Report" matching "Report Builder", or "Housekeeping" matching a
+    // breadcrumb. On ambiguity (count !== 1) or any locator error, fall through
+    // to the css selector, then the recorded coordinate.
     try {
-      await page
-        .getByRole(target.roleName.role as Parameters<Page['getByRole']>[0], { name: target.roleName.name, exact: false })
-        .first()
-        .click({ timeout: timeoutMs });
-      return;
+      const loc = page.getByRole(
+        target.roleName.role as Parameters<Page['getByRole']>[0],
+        { name: target.roleName.name, exact: true },
+      );
+      const count = await loc.count();
+      if (count === 1) {
+        await loc.click({ timeout: timeoutMs });
+        return;
+      }
+      log.warn('pre-steps: roleName did not resolve uniquely — falling back to selector/coordinate', {
+        role: target.roleName.role,
+        name: target.roleName.name,
+        count,
+      });
     } catch {
       // fall through to selector / coordinate
     }
@@ -98,14 +112,6 @@ async function clickRecorded(
     return;
   }
   throw new Error('clickRecorded: no roleName, selector, or coordinate to click');
-}
-
-/** Best-effort settle after an interaction that may navigate. A menu click that
- *  swaps the page must finish loading before the next click/scrape; an in-page
- *  click leaves networkidle already satisfied so this returns fast. Bounded so a
- *  chatty page can't stall the poll. */
-async function settleAfterClick(page: Page): Promise<void> {
-  await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
 }
 
 /**
@@ -211,12 +217,14 @@ export async function replayPreSteps(
     try {
       switch (step.kind) {
         case 'click':
+          // No explicit post-click settle: a click that navigates is handled by
+          // the next action's auto-wait (clickRecorded's getByRole/click and the
+          // extractor's waitForSelector both wait for their target on the new
+          // page). networkidle settles hung ~8s each on CA's keep-alive pages.
           await clickRecorded(page, { roleName: step.roleName, selector: step.selector }, step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS);
-          await settleAfterClick(page);
           break;
         case 'click_at':
           await clickRecorded(page, { roleName: step.roleName, x: step.x, y: step.y }, DEFAULT_STEP_TIMEOUT_MS);
-          await settleAfterClick(page);
           break;
         case 'select':
           // Credential check on the RAW value first, render after — a

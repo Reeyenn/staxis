@@ -340,9 +340,18 @@ export async function safeGoto(
  * auto-resolves live rows from a 0-row read that was really a bounce.
  */
 export async function detectReauthBounce(page: Page): Promise<boolean> {
-  return page
-    .locator('input[type="password"], input[name="j_username"], input[name="username"]')
-    .first()
-    .isVisible({ timeout: 1_000 })
-    .catch(() => false);
+  // A VISIBLE password field is the strong, PMS-agnostic re-auth signal — feed
+  // and report pages don't show one. `j_username` is Choice Advantage's login
+  // field. We count ANY visible match (not `.first().isVisible()`, which a
+  // hidden duplicate input could mask → false negative), and deliberately do
+  // NOT key on a bare `username` field: a filter/profile/search page can have
+  // one, which would false-positive a healthy feed as `bounced_to_reauth`.
+  try {
+    const visibleLoginFields = await page
+      .locator('input[type="password"]:visible, input[name="j_username"]:visible')
+      .count();
+    return visibleLoginFields > 0;
+  } catch {
+    return false;
+  }
 }
