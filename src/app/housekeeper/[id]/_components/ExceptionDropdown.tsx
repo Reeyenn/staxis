@@ -104,7 +104,7 @@ export function ExceptionDropdown({
           </div>
           <button
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('hkClose', lang)}
             style={{
               minHeight: '44px',
               minWidth: '44px',
@@ -178,7 +178,7 @@ export function ExceptionDropdown({
                     {t(opt.labelKey as never, lang)}
                     {isCurrent && (
                       <span style={{ marginLeft: '6px', fontSize: '11px', color: '#6B7280', fontWeight: 600 }}>
-                        (current)
+                        {lang === 'es' ? '(actual)' : '(current)'}
                       </span>
                     )}
                   </div>

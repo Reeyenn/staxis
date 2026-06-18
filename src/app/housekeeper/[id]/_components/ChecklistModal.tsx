@@ -168,7 +168,7 @@ export function ChecklistModal(props: Props) {
           </div>
           <button
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t('hkClose', lang)}
             style={{
               minHeight: '44px',
               minWidth: '44px',

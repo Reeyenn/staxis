@@ -45,11 +45,19 @@ const DEPT_LABEL: Record<CommsDept, string> = {
   maintenance: 'Maintenance',
   laundry: 'Laundry',
 };
+const DEPT_LABEL_ES: Record<CommsDept, string> = {
+  management: 'Gerencia',
+  front_desk: 'Recepción',
+  housekeeping: 'Limpieza',
+  maintenance: 'Mantenimiento',
+  laundry: 'Lavandería',
+};
 export function deptColor(d: CommsDept | null | undefined): string {
   return DEPT_COLOR[(d ?? 'management') as CommsDept] ?? T.ink;
 }
-export function deptLabel(d: CommsDept | null | undefined): string {
-  return DEPT_LABEL[(d ?? 'management') as CommsDept] ?? 'Staff';
+export function deptLabel(d: CommsDept | null | undefined, lang: 'en' | 'es' = 'en'): string {
+  const map = lang === 'es' ? DEPT_LABEL_ES : DEPT_LABEL;
+  return map[(d ?? 'management') as CommsDept] ?? (lang === 'es' ? 'Personal' : 'Staff');
 }
 /** Darken forest for legible text on light tints (matches the handoff). */
 export function deptColorDark(c: string): string {

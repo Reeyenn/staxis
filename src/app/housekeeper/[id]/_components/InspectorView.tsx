@@ -262,7 +262,7 @@ export default function InspectorView({
               border: 'none', background: 'transparent', cursor: 'pointer',
               padding: 6, color: '#374151', display: 'inline-flex',
             }}
-            aria-label="Back"
+            aria-label={tr(lang, 'Back', 'Atrás')}
           >
             <ChevronLeft size={20} />
           </button>

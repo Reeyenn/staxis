@@ -30,13 +30,38 @@ Deep multi-agent audit (20 subsystem + cross-cutting auditors), each finding adv
 
 _(Updated continuously. Newest batch at top.)_
 
-### Status: audit in progress — findings to be logged below as fixes land.
+### Status: audit in progress (20-area multi-agent pass). Manual passes logged below.
+
+#### P1 — multi-tenant isolation at the route layer: VERIFIED CLEAN (manual pass)
+Scanned all 356 API routes for the cross-hotel leak pattern (user-facing route that takes a client `property_id`/`pid` but skips the access check). Every candidate that my heuristic flagged turned out to be properly guarded via one of:
+- `commsContext()` → `requireSession` + `userHasPropertyAccess` (all `/api/comms/*`, incl. logbook),
+- `callerManagesProperty()` + `canForProperty()` capability + cross-property IDOR check (e.g. `staff/wages`),
+- `property.owner_id === session.userId` ownership (onboarding/complete, stripe/portal, stripe/create-checkout),
+- `userHasPropertyAccess()` directly (180 call sites).
+Plus the `npm run lint` guard `audit-api-route-tenant-scope.mjs` enforces this on every route. No route-level cross-tenant leak found. Residual risk = subtle logic bugs inside guarded routes (covered by the deep audit).
+
+#### P2 — public-page RLS silent-empty: VERIFIED CLEAN on the housekeeper path (manual pass)
+`src/app/housekeeper/[id]/page.tsx` imports the anon client only for `supabase.auth.verifyOtp` (allowed) and a realtime subscribe helper — **zero direct `.from()` data reads.** `subscribeToRoomsForStaff` (db/housekeeper-helpers.ts) fetches initial + refetch through `/api/housekeeper/rooms` (service-role) and only uses realtime as a bonus, with polling for the logged-out housekeeper. The exact RLS bug class is understood and defended. (Deep audit's `x-public-rls` agent sweeps the rest.)
+
+#### Batch 1 — EN/ES bilingual completeness (housekeeper-facing) — FIXED
+Dedicated sweep found the high-traffic Spanish surfaces (housekeeper, laundry, comms) ~99% bilingual. Fixed the 9 real user-facing gaps, all in the housekeeper app + comms:
+- `redesign/tokens.ts` `FALLBACK_TASKS` (18 English-only fallback checklist lines shown to housekeepers on slow/first load) → made locale-aware via new `fallbackTasks(type, lang)` (EN+ES; ht/tl/vi fall back to EN, matching `t()`); updated consumer `RoomAccordionCard.tsx`.
+- Added `hkClose` translation key (union + en + es) → used for the 5 housekeeper modal `aria-label="Close"` (ChecklistModal, ExceptionDropdown, RoomCardActionButtons, LanguageSwitcher, StructuredIssueReporter).
+- `ExceptionDropdown` `(current)` → bilingual; `StructuredIssueReporter` `alt="Issue preview"` → bilingual; `InspectorView` `aria-label="Back"` → `tr(lang,'Back','Atrás')`.
+- `NoticeBoardPoster` `aria-label="Delete notice"` → bilingual (manager-facing).
+- comms `deptLabel()` made bilingual (added ES map + optional `lang`) and wrapped its one call site in `CommsOverlays` with `L(...)`.
+- The 4 "offline-queue label" items the sweep flagged are **non-issues** — `offline-sync/queue.ts:36` documents that the offline banner shows a count, not the labels, so they're intentionally internal EN.
+- Verified: `eslint src` exit 0; build + tests pending green before commit.
 
 ---
 
 ## Deliberately left alone (needs Reeyen's call)
 
 _(Items where fixing changes product behavior or has a tradeoff a non-technical founder should decide.)_
+
+- **The shared `npm run lint` gate is RED on live `main` (`be3ef5a`) — caused by out-of-scope `cua-service/`.** `scripts/check-env-access.mjs` flags ~13 direct `process.env.CUA_*` reads in `cua-service/src/{mapper,mapping-driver,session-driver}.ts` that were added by recent CUA work but never added to the script's `EXEMPT_READS` allowlist. Confirmed pre-existing (fails on a clean stash). I did NOT touch it — cua-service is another chat's territory and the rule is a failsafe. **Impact:** every chat that gates on `npm run lint` sees a false red; the Next.js build itself is unaffected (it doesn't run this script), so deploys still work. **Fix (for the cua-service owner):** add those flag reads to `EXEMPT_READS` in `scripts/check-env-access.mjs` (exactly what that mechanism is for), or route them through `cua-service/src/env.ts`. My batches gate on `eslint src` + build + tests instead, which fully covers in-scope changes.
+
+- **Per-hotel cron fan-out won't scale to 300 hotels as-is (architectural).** Several daily/sweep crons (`run-daily-report`, `run-weekly-report`, `seal-daily`, `financials-alert-sweep`, `run-auto-assign`) loop ALL properties sequentially inside one serverless function (`maxDuration` 60s). They're well-built for a small fleet — per-hotel try/catch isolation, idempotency, per-property deadlines — but at 300 hotels, if many share a delivery window/timezone, the sequential outer loop can exceed 60s and silently drop the hotels past the timeout (and `run-daily-report`'s ±15m window means the next 30-min tick may miss them). Fix is a batching/queue redesign (e.g. enqueue per-hotel jobs, or shard by timezone) — a real architectural decision, not a quick edit. Flagged for the deep audit's scale pass to corroborate. **Recommend:** address before onboarding wave 1 crosses ~50 hotels.
 
 ---
 

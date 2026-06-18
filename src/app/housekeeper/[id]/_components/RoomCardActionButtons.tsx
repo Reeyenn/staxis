@@ -87,7 +87,7 @@ export function AddNoteButton({
               </h3>
               <button
                 onClick={() => setOpen(false)}
-                aria-label="Close"
+                aria-label={t('hkClose', lang)}
                 style={closeBtnStyle}
               >
                 <X size={18} color="#374151" />
