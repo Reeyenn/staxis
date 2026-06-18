@@ -162,14 +162,13 @@ export async function PUT(req: NextRequest) {
     });
   }
 
-  // Multi-hotel credential protection (audit #12, CONSERVATIVE DEFAULT — relax
-  // if you want managers to have broader reach). A password reset is a GLOBAL
-  // credential change: it logs the person out of EVERY hotel they work at, not
-  // just this one. So a non-admin manager may only reset the password of someone
-  // whose hotel access is fully within the manager's own control. If the target
-  // also works at a hotel this manager doesn't manage, require an admin —
-  // otherwise a manager at hotel A could lock out (or hijack) a person who also
-  // works at hotel B. (Self-service is unaffected; '*'/admin callers bypass.)
+  // Multi-hotel credential protection (audit #12; confirmed policy 2026-06-18).
+  // A password reset is a GLOBAL credential change: it logs the person out of
+  // EVERY hotel they work at, not just this one. So a non-admin manager may only
+  // reset the password of someone whose hotel access is fully within the
+  // manager's own control — a manager/owner of N hotels can reset anyone across
+  // those N, but not someone who also works at a hotel they don't run (that
+  // needs an admin). (Self-service is unaffected; '*'/admin callers bypass.)
   if (password && !isSelf && caller.role !== 'admin' && !caller.propertyAccess.includes('*')) {
     const outsideCallerControl = targetAccess.filter(
       (h) => h !== '*' && !caller.propertyAccess.includes(h),
