@@ -415,6 +415,21 @@ async def predict_demand(
         predictions = model.predict_quantile(X, quantiles)
 
     # Write predictions
+    # Per-property shift length for the headcount bands. 2026-06-18: previously
+    # these divided by the GLOBAL settings.shift_cap_minutes (420 = 7h), so a
+    # hotel on an 8h shift saw a headcount ~14% too high in the forecast (these
+    # fields are manager-facing via /api/housekeeping/forecast +
+    # ml-schedule-helpers.getActiveDemandForTomorrow). The optimizer already
+    # uses properties.shift_minutes; match it here. Falls back to the global
+    # default for legacy seeds missing the field.
+    try:
+        _prop = client.fetch_one("properties", filters={"id": property_id}) or {}
+    except Exception:
+        _prop = {}
+    headcount_shift_cap = int(_prop.get("shift_minutes") or settings.shift_cap_minutes)
+    if headcount_shift_cap <= 0:
+        headcount_shift_cap = int(settings.shift_cap_minutes)
+
     prediction_row = {
         "property_id": property_id,
         "date": str(prediction_date),
@@ -434,17 +449,17 @@ async def predict_demand(
         "predicted_minutes_p90": float(predictions[0.9][0]),
         "predicted_minutes_p95": float(predictions[0.95][0]),
         "predicted_headcount_p50": float(
-            np.ceil(predictions[0.5][0] / settings.shift_cap_minutes)
+            np.ceil(predictions[0.5][0] / headcount_shift_cap)
         ),
         # Codex post-merge review 2026-05-13 (Phase 2.4): the Schedule tab
         # at src/lib/ml-schedule-helpers.ts:78 reads predicted_headcount_p80
         # for the confidence band but inference wasn't writing it →
         # silent null. Now written alongside p50 + p95.
         "predicted_headcount_p80": float(
-            np.ceil(predictions[0.8][0] / settings.shift_cap_minutes)
+            np.ceil(predictions[0.8][0] / headcount_shift_cap)
         ),
         "predicted_headcount_p95": float(
-            np.ceil(predictions[0.95][0] / settings.shift_cap_minutes)
+            np.ceil(predictions[0.95][0] / headcount_shift_cap)
         ),
         "features_snapshot": json.dumps(features_dict),
         "model_run_id": model_run_id,

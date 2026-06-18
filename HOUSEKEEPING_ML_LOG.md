@@ -227,6 +227,15 @@ Improves the optimizer's L2 path realism for cold-start hotels with a schedule,
 and the per-room display. Suite 334 passed (updated 1 test to verify
 checkout>stayover + total preservation).
 
+### 6. Per-property shift length for demand headcount bands (correctness)
+**Problem:** `inference/demand.py` computed `predicted_headcount_p50/p80/p95` by
+dividing by the GLOBAL `settings.shift_cap_minutes` (420 = 7h). These are
+manager-facing (read by `/api/housekeeping/forecast` and
+`ml-schedule-helpers.getActiveDemandForTomorrow`), so a hotel on an 8h shift saw
+a headcount band ~14% too high. The optimizer already used per-property
+`shift_minutes`; demand inference now matches it (fallback to global for legacy
+seeds). Suite 335 passed (+1 test).
+
 ## Competitor & methods research (Optii, Hotel Effectiveness/Actabl, UniFocus, Flexkeeping/Knowcross/ALICE, M5/OR literature)
 Full extract saved during the run. Convergent, actionable lessons:
 

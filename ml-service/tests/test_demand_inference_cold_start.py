@@ -203,3 +203,32 @@ def test_cold_start_flat_fallback_when_no_composition():
     # Flat fallback: prior 22 × 30 rooms = 660.
     assert result["predicted_minutes_p50"] == 660.0
     assert "flat_cohort" in fake.upserts[0]["data"]["features_snapshot"]
+
+
+def test_headcount_bands_use_per_property_shift_minutes():
+    """predicted_headcount_* must divide by the property's shift_minutes, not the
+    global 420 default — a hotel on an 8h shift should get a LOWER headcount band.
+    """
+    from src.inference.demand import predict_demand
+    import math
+
+    def headcounts_for(shift_minutes):
+        fake = make_fake_supabase(
+            fetch_one={"properties": {"id": PROPERTY_ID, "shift_minutes": shift_minutes}},
+            fetch_many={"model_runs": [make_demand_cold_start_model_run(
+                property_id=PROPERTY_ID, prior=20.0)]},
+            # 40 checkouts → mu = 40 × 30 = 1200; p95 = 1200 × 1.8 = 2160.
+            execute_sql={"plan_snapshots": [make_plan_snapshot(
+                total_rooms=60, checkouts=40, stayover_day1=0, stayover_day2=0,
+                vacant_dirty=0)]},
+        )
+        with patch("src.inference.demand.get_supabase_client", return_value=fake):
+            _run(predict_demand(PROPERTY_ID, date(2026, 5, 15)))
+        return fake.upserts[0]["data"]
+
+    eight_hr = headcounts_for(480)
+    seven_hr = headcounts_for(420)
+    # p95 minutes = 2160 → ceil(2160/480)=5 vs ceil(2160/420)=6.
+    assert eight_hr["predicted_headcount_p95"] == math.ceil(2160 / 480)  # 5
+    assert seven_hr["predicted_headcount_p95"] == math.ceil(2160 / 420)  # 6
+    assert eight_hr["predicted_headcount_p95"] < seven_hr["predicted_headcount_p95"]
