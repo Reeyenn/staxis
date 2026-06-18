@@ -39,6 +39,15 @@ from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.supabase_client import get_supabase_client
 
 
+def _is_finite_nonneg(v: Any) -> bool:
+    """True iff v is a real, finite, non-negative number (not NaN / inf)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(f) and f >= 0.0)
+
+
 def _validate_property_id(property_id: str) -> Optional[str]:
     try:
         uuid.UUID(str(property_id))
@@ -291,6 +300,23 @@ def _predict_single_item(
 
     daily_rate = float(quantiles["p50"])
 
+    # Robustness gate: never let a NaN / inf / negative reach the NOT NULL
+    # numeric prediction columns. A degenerate posterior (near-singular
+    # covariance, bad serialized params) can produce NaN quantiles —
+    # `max(nan, 0.0)` returns nan in Python, so the existing non-negative clip
+    # does NOT catch them. Writing one would either fail the insert or poison
+    # every downstream days-left / reorder calc with NaN. Skip + log instead.
+    quantile_values = [quantiles.get(k) for k in ("p10", "p25", "p50", "p75", "p90")]
+    if not all(_is_finite_nonneg(v) for v in [daily_rate, *quantile_values]):
+        print(json.dumps({
+            "evt": "inventory_predict_nonfinite_skipped",
+            "property_id": property_id,
+            "item_id": item_id,
+            "algorithm": algorithm,
+            "p50": str(quantiles.get("p50")),
+        }))
+        return {"predicted": False, "reason": "non_finite_prediction"}
+
     # Compute predicted_current_stock for auto-fill
     item = client.fetch_one("inventory", filters={"id": item_id})
     item_name = (item or {}).get("name", "")
@@ -300,6 +326,10 @@ def _predict_single_item(
         daily_rate=daily_rate,
         client=client,
     )
+    # _compute_predicted_current_stock already clamps to >= 0, but guard against
+    # a NaN leaking in from a non-finite anchor stock just in case.
+    if not _is_finite_nonneg(predicted_current_stock):
+        predicted_current_stock = 0.0
 
     # Delete any earlier prediction we made for this exact (property, item, target_date)
     # so the cockpit shows the freshest one. Best-effort.

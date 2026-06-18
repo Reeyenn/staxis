@@ -205,3 +205,14 @@ mean-vs-train_mae denominator and the rapid-retrain vs distinct-weekly cases.
 Suite 321 → **326 passed**. All changes only TIGHTEN graduation (drop false
 passes / fix a vanity metric) — safe direction, and shadow-mode still gates any
 promotion to a live hotel.
+
+### [7] Robustness — never write NaN/inf/negative predictions
+
+A degenerate posterior (near-singular covariance, corrupt serialized params)
+can yield NaN quantiles, and `max(nan, 0)` returns nan in Python — so the
+existing non-negative clip did NOT catch them. Writing one into the NOT NULL
+numeric prediction columns would fail the insert or poison every downstream
+days-left/reorder calc. Added `_is_finite_nonneg` and a guard that skips + logs
+a non-finite prediction (`predicted=False`), plus a defensive clamp on
+`predicted_current_stock`. **Tests:** +3 (`test_inventory_inference_robustness.py`);
+suite 326 → **329 passed**.
