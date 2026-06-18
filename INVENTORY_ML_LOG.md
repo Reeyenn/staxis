@@ -6,6 +6,56 @@ consumption → days-left → reorder) accurate, robust, and production-ready fo
 safety. Out of scope (other chats own): CUA/PMS data plumbing, Housekeeping ML,
 the broad app audit.
 
+---
+
+## ☀️ Morning summary — read me first
+
+**What I did:** a deep audit (10 subsystems, adversarially verified) found the
+inventory predictor was, in practice, **"predict the average" with a pile of
+contaminated data on top** — and I fixed the core of it, every change validated
+with tests + an offline accuracy harness, on branch `chat/inventory-ml`
+(**pushed, NOT merged** — say "merge it" when you want it live).
+
+**Accuracy gains (offline harness, real before/after numbers):**
+- **Occupancy now actually works.** It was a dead feature (always 50%), so the
+  model couldn't tell a full hotel from an empty one. Fixed → on clean data,
+  prediction error dropped **~45% below "just predict the average"** (it was 0%
+  better before — i.e. useless), and the model now recovers the true
+  occupancy effect almost exactly.
+- **Stopped the model being poisoned by restocks.** Every time a manager
+  restocks, the app was feeding the model a fake "0 used" day, dragging every
+  predicted usage rate **down → reorders fire late → stockouts**. On realistic
+  contaminated data, fixing this cut error-vs-truth by **~95%** (one item's
+  prediction was even pointing the *wrong direction* before).
+- Plus: better day-1 estimates for brand-new hotels, correct graduation gates,
+  no more NaN/garbage predictions, the nightly jobs can now scale to 300 hotels,
+  and the "days left" number is consistent between the item card and the
+  reorder list.
+- **Tests:** Python 302 → **335 passing**; inventory web tests **25 passing**;
+  types + lint clean. 10 clean commits.
+
+**What needs YOUR decision (I deliberately did NOT do these):**
+1. **🔌 Turn the data on (the #1 unlock).** The model now *uses* occupancy
+   correctly, but the occupancy *data* has to reach it. The old source
+   (`plan_snapshots`) was the deleted scraper's; the new CUA writes a different
+   place. **Until someone bridges CUA → occupancy, predictions run on a fallback,
+   not their full accuracy.** That bridge is another chat's lane (CUA/PMS) — it's
+   the single biggest remaining lever.
+2. **▶️ Re-enable the nightly ML jobs.** They're currently switched off. Once
+   the data above is flowing, flip them back on (the jobs are now scaled for 300
+   hotels). Don't flip them before the data, or they'll run on empty.
+3. **🗄️ Apply 2 database tweaks** — see `STAGED_INVENTORY_MIGRATIONS.md`. They're
+   written and ready; I can't safely apply DB changes myself. Low-risk, reversible.
+4. **🧾 Fix the restock double-entry at the source (optional, bigger).** I
+   protected the *model* from the fake-restock data, but the cleanest fix is to
+   change how a count is saved (so it can't create the phantom in the first
+   place). That touches the live counting screen, so it needs your QA — flagged,
+   not done.
+
+Everything below is the detailed engineering log.
+
+---
+
 How accuracy is measured offline (no DB): `ml-service/scripts/inventory_offline_eval.py`
 simulates hotels under a known ground-truth `usage = a + b·occupancy_pct (+noise)`,
 drives the REAL trainer (`_build_training_rows` + the same Bayesian fit/split),
@@ -266,3 +316,23 @@ BOTH `predictReorder` and the adapter card, so they can't disagree. Surgical:
 bypasses the helper so the <7-day honesty gate is preserved. **Tests:** +4 in
 `inventory-predictions.test.ts` (incl. a card==panel days-left assertion); 25
 inventory src tests pass; tsc 0 errors; eslint clean.
+
+### Cold-start day-1 validation + staged migrations
+
+- Added `test_inventory_cold_start_prediction.py` (+6) — proves a brand-new
+  hotel's cohort-prior prediction is sane: p50 at baseline occupancy ==
+  `rate × room_count`, scales proportionally with occupancy, band is ordered +
+  non-negative even at 0% occupancy, room_count defaults sensibly. Locks in the
+  occ/baseline calibration. Python suite **329 → 335 passed**.
+- Staged two DB migrations in `STAGED_INVENTORY_MIGRATIONS.md` (NOT applied —
+  can't run DDL safely autonomously; parallel sessions are taking migration
+  numbers): (A) align `inventory_observed_rate_v` with the trainer's window
+  hygiene so the accuracy scorecard scores the same windows training uses;
+  (B) broaden the canonical-name map (+~25 item synonyms) and add a coarse
+  `item_category` column for an optional category-tier cold-start fallback.
+
+### Final verification (whole branch)
+
+Python **335 passed** · inventory web tests **25 passed** · `tsc` 0 errors ·
+eslint clean · offline harness: occupancy MAE −45% vs mean baseline,
+contaminated-data MAE-vs-truth −95%. 17 files changed (+1475/−67).
