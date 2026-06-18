@@ -235,3 +235,20 @@ suite 326 → **329 passed**.
   accident that active runs happen never to be shadow.
 
 Suite **329 passed**.
+
+### [8] Inventory crons made fleet-scalable (sharding + maxDuration=300)
+
+The two inventory crons (`ml-predict-inventory`, `ml-train-inventory`) were the
+only ML crons stuck at `maxDuration=90` with **no sharding** — every sibling
+(demand/supply/inference/rollback) already had `applyShardFilter` + `.order('id')`
++ 300s. At 300 hotels the single 90s invocation dies partway through and the
+back of the fleet **silently gets no predictions** that day.
+
+**Fix:** added `.order('id')` (deterministic slices) + `applyShardFilter` on the
+raw list before the eligible/skipped partition, and raised `maxDuration` to 300,
+bringing both routes to parity with their siblings. Defaults to a **no-op at
+today's scale** (shard_count=1). tsc 0 errors, eslint clean.
+
+> ⚠️ **Needs human (go-live):** the GitHub workflow shard-matrix + re-enabling
+> the ML cron schedule (currently disabled) is the operator step — and depends
+> on the occupancy data bridge. The routes are now *ready* for it.
