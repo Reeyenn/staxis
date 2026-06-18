@@ -2311,7 +2311,13 @@ export async function saveDraftKnowledgeFile(
         created_by: 'mapper:mapping-driver',
         notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
           (gateNote ? ` Gate: ${gateNote}` : ''),
-        signature: signatureBytes,
+        // Store the HMAC as a PostgREST bytea HEX LITERAL ('\xDEADBEEF…').
+        // Passing the raw Buffer made supabase-js JSON-serialize it as
+        // {"type":"Buffer","data":[…]} and persist THAT TEXT into the bytea
+        // column — so every stored signature was ~138 bytes of JSON garbage and
+        // verifyRecipe (a 32-byte HMAC) could never match → enforce-mode refused
+        // to load the active recipe. decodeBytea() reads the '\x' hex back.
+        signature: signatureBytes ? '\\x' + signatureBytes.toString('hex') : null,
         signed_with_key_id: signedWithKeyId,
         signed_at: signedAt,
       })
