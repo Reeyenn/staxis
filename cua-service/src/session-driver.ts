@@ -1008,17 +1008,26 @@ export class SessionDriver {
     // so it adds no overhead on the healthy path.
     const hasZeroStreak = Array.from(this.consecutiveZeroRowsByAction.values()).some((c) => c > 0);
     if (hasZeroStreak) {
-      const loggedIn = await this.ensureLoggedIn().catch(() => false);
-      if (!loggedIn) {
-        log.warn('session-driver: zero-row streak + not logged in — skipping feeds, not firing self-repair (re-login/MFA pending)', {
-          propertyId: this.propertyId,
-          pmsFamily: this.pmsFamily,
-        });
-        return;
+      // Only do a full clearCookies + re-login if we are ACTUALLY logged out.
+      // A feed with a PERMANENT zero-row streak (e.g. a drifted column selector
+      // that extracts rows but yields no VALID ones) must NOT trigger a re-login
+      // every poll — that hammered the live PMS account, and during the churn a
+      // single transient login-button click timeout flipped the session to
+      // failed_restart and stuck it. detectLoggedOut is the cheap current-page
+      // probe (the poll top already ran it; re-check cheaply here in case the
+      // page state changed mid-poll). Logged-in → just clear the streak.
+      if (await this.detectLoggedOut()) {
+        const loggedIn = await this.ensureLoggedIn().catch(() => false);
+        if (!loggedIn) {
+          log.warn('session-driver: zero-row streak + logged-out + re-login failed — skipping feeds (re-login/MFA pending)', {
+            propertyId: this.propertyId,
+            pmsFamily: this.pmsFamily,
+          });
+          return;
+        }
       }
-      // Confirmed logged in (possibly just re-logged in). Clear the streak so
-      // login-caused zeros don't count toward self-repair; genuine selector
-      // drift rebuilds the streak across later confirmed-login polls.
+      // Confirmed logged in. Clear the streak so a persistent drifted feed's
+      // zeros don't fire paid self-repair; genuine drift rebuilds it later.
       this.consecutiveZeroRowsByAction.clear();
     }
 
@@ -1370,7 +1379,13 @@ export class SessionDriver {
         errors.push(`${selector}: ${(err as Error).message}`);
       }
       try {
-        await this.page.click(selector, { timeout: 3_000, force: true });
+        // Longer timeout on the force-click: a login-button click triggers the
+        // PMS login POST + redirect chain (15-30s on CA). Playwright's post-click
+        // "waiting for scheduled navigations to finish" was timing out at 3s on a
+        // slow login POST → the whole login failed → failed_restart + stuck.
+        // Give the navigation room (ensureLoggedIn's own waitForURL is the real
+        // success gate, so over-waiting here is harmless).
+        await this.page.click(selector, { timeout: 20_000, force: true });
         return;
       } catch (err) {
         errors.push(`${selector} (force): ${(err as Error).message}`);
