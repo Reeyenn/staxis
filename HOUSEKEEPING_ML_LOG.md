@@ -236,6 +236,15 @@ a headcount band ~14% too high. The optimizer already used per-property
 `shift_minutes`; demand inference now matches it (fallback to global for legacy
 seeds). Suite 335 passed (+1 test).
 
+### 7. Adversarial-review fixes (robustness/cold-start)
+Three fixes from the Codex + Claude reviews (see "Adversarial review" section):
+- Partial-composition coverage guard in cold-start demand (no under-staffing on
+  incomplete plan data; `flat_cohort_partial` basis).
+- L2 search ceiling now computed from sanitized per-room minutes (corrupt p50
+  can't distort the search bound).
+- Frozen-seed L2 golden test added (locks behavior-preservation vs drift).
+Suite 337 passed; sanity harness behavior unchanged for normal scenarios.
+
 ## Competitor & methods research (Optii, Hotel Effectiveness/Actabl, UniFocus, Flexkeeping/Knowcross/ALICE, M5/OR literature)
 Full extract saved during the run. Convergent, actionable lessons:
 
@@ -275,8 +284,46 @@ Full extract saved during the run. Convergent, actionable lessons:
 - (Future, needs schema work) Per-room-type cohort priors so cold-start level is
   fleet-calibrated per clean-type, not just generic industry constants.
 
+## Adversarial review (Codex + Claude senior-eng, 2026-06-18)
+Ran two independent adversarial reviews over the full branch diff. Both verdicts:
+**no blockers, safe to merge.** Both independently verified the refactor is
+behavior-preserving (Claude brute-forced max-diff 0.0 over 2000 trials), the
+synthetic-room shortcut is exactly equal to per-draw LPT packing, completion is
+monotonic in headcount, and no off-by-one. (Codex reported 2 test "failures" =
+its own read-only sandbox blocking `tempfile`, not real — full suite is green.)
+
+Findings fixed (changelog #7):
+- **A [both, priority]** partial-composition under-staffing: cold-start demand
+  only fell back to flat when composition was *exactly* zero, so a scrape that
+  captured checkouts but missed stayover columns would under-count → under-staff.
+  Added a coverage guard: trust composition only when it covers ≥60% of known
+  occupied rooms, else `max(composition, flat)`. (`flat_cohort_partial` basis.)
+- **#4 [Codex]** L2 search ceiling summed RAW p50 before the sanitizer → a
+  corrupt/NaN p50 could distort it. Reordered to sanitize first, ceiling from
+  sanitized values (RNG draw order preserved).
+- **C [Claude]** added a frozen-seed L2 golden test pinning the exact
+  recommended_headcount + curve monotonicity (locks behavior-preservation).
+
+Findings deferred (documented, not merge gates):
+- **Cohort per-type calibration [Codex HIGH→deferred]:** composition uses
+  industry per-type constants (already industry-calibrated), so it is NOT
+  uncalibrated — but the brand/region cohort's *learned* per-type level is not
+  applied on the complete-composition path. Proper fix = per-room-type cohort
+  priors, which needs priors-aggregation schema work (already in "Planned next").
+  The coverage guard means the cohort flat estimate still governs the
+  partial/missing-data cases, so there is no under-staffing exposure.
+- **B [both, LOW, pre-existing]:** `stayover_arrival` is classified as
+  stayover-day-2+ in demand/optimizer but day-1 in supply (5-min/room
+  discrepancy on rare rooms). Not introduced by this branch; demand + optimizer
+  synthetic path are mutually consistent. Follow-up: unify the mapping.
+- **properties fetch in demand inference [both, LOW]:** one extra PK-scoped read
+  per inference (~50/day at fleet scale) — negligible; acceptable.
+
 ## Left alone (deliberately)
-_(tbd)_
+- Inventory ML, cua-service, src/lib/pms — out of scope (other chats own them).
+- Shadow-mode + statistical auto-rollback — intact, untouched (kept per mandate).
+- Bayesian coefficient-prior seeding with per-type constants — shared by demand
+  + supply (different intercept meaning); data dominates at N≥200; low ROI.
 
 ## Needs Reeyen's decision
 _(tbd)_

@@ -83,7 +83,8 @@ def test_completion_prob_empty_weights_zero():
 
 # ─── end-to-end optimize_headcount ──────────────────────────────────────────
 
-def _run(monkeypatch, *, plan_counts, supply_n=0, p50=1800.0, p95=2400.0, shift=420):
+def _run(monkeypatch, *, plan_counts, supply_n=0, p50=1800.0, p95=2400.0, shift=420,
+         cold_start=True):
     demand_row = {"model_run_id": "demand-run",
                   "predicted_minutes_p50": p50, "predicted_minutes_p95": p95}
     supply_rows = [{"room_number": str(i), "staff_id": None, "model_run_id": "supply-run",
@@ -96,8 +97,8 @@ def _run(monkeypatch, *, plan_counts, supply_n=0, p50=1800.0, p95=2400.0, shift=
         if table == "ml_feature_flags":
             return {"target_completion_prob": 0.95}
         if table == "model_runs":
-            return {"id": (filters or {}).get("id"), "is_cold_start": True,
-                    "algorithm": "cold-start-cohort-prior"}
+            return {"id": (filters or {}).get("id"), "is_cold_start": cold_start,
+                    "algorithm": "cold-start-cohort-prior" if cold_start else "bayesian"}
         return None
 
     def fetch_many(table, **kw):
@@ -137,6 +138,27 @@ def test_e2e_falls_back_to_divisible_without_plan(monkeypatch):
 def test_e2e_uses_l2_when_supply_available(monkeypatch):
     result, method = _run(monkeypatch, plan_counts={"checkouts": 25}, supply_n=60)
     assert method == "l2_supply"
+
+
+def test_e2e_l2_path_is_deterministic_golden(monkeypatch):
+    """Frozen-seed golden for the L2 path: same (property, date) must always
+    give the SAME recommended_headcount, and the curve must be monotonic
+    non-decreasing. Locks the behavior-preservation of the helper refactor
+    against future drift (the optimizer seeds RNG from property_id+date).
+    """
+    # Fitted models so the completion curve is populated (cold-start omits it).
+    r1, _ = _run(monkeypatch, plan_counts={"checkouts": 25}, supply_n=60,
+                 p50=1800.0, p95=2400.0, cold_start=False)
+    r2, _ = _run(monkeypatch, plan_counts={"checkouts": 25}, supply_n=60,
+                 p50=1800.0, p95=2400.0, cold_start=False)
+    # Deterministic across runs (seeded RNG).
+    assert r1["recommended_headcount"] == r2["recommended_headcount"]
+    # Golden value — change this only with an intentional, reviewed model change.
+    assert r1["recommended_headcount"] == 5
+    curve = r1["completion_probability_curve"]
+    assert curve, "fitted L2 run must emit a completion curve"
+    ps = [c["p"] for c in curve]
+    assert ps == sorted(ps), "completion probability must be non-decreasing in headcount"
 
 
 def test_e2e_parttime_shift_needs_more_than_divisible(monkeypatch):

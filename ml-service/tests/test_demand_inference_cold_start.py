@@ -79,14 +79,16 @@ def test_cold_start_quantile_bands_use_expected_multipliers():
     """
     from src.inference.demand import predict_demand
 
-    # Explicit single-type composition (5 checkouts only) so the base mu is
-    # unambiguous: 5 × 30 = 150. The multiplier structure is what this test pins.
+    # Explicit single-type composition (5 checkouts) on a 10-room hotel whose
+    # 5 occupied rooms are all the checkouts → composition covers occupancy
+    # (passes the partial-data guard), base mu = 5 × 30 = 150. The multiplier
+    # structure is what this test pins.
     fake = make_fake_supabase(
         fetch_many={"model_runs": [make_demand_cold_start_model_run(
             property_id=PROPERTY_ID, prior=20.0, cohort_key="industry-default")]},
         execute_sql={"plan_snapshots": [make_plan_snapshot(
-            total_rooms=30, checkouts=5, stayover_day1=0, stayover_day2=0,
-            vacant_dirty=0)]},
+            total_rooms=10, checkouts=5, stayover_day1=0, stayover_day2=0,
+            vacant_dirty=0, vacant_clean=5, ooo=0)]},
     )
 
     with patch("src.inference.demand.get_supabase_client", return_value=fake):
@@ -203,6 +205,33 @@ def test_cold_start_flat_fallback_when_no_composition():
     # Flat fallback: prior 22 × 30 rooms = 660.
     assert result["predicted_minutes_p50"] == 660.0
     assert "flat_cohort" in fake.upserts[0]["data"]["features_snapshot"]
+
+
+def test_cold_start_partial_composition_does_not_underpredict():
+    """Incomplete plan data (only checkouts captured among many occupied rooms)
+    must NOT under-staff — the partial-data guard falls back to max(composition,
+    cohort flat) so a missing stayover column can't collapse the demand estimate.
+    """
+    from src.inference.demand import predict_demand
+
+    # 60-room hotel, 53 occupied, but only 10 checkouts captured (stayover
+    # columns missing/zero) → composition covers 12 of 53 occupied → suspected
+    # partial. composition minutes = 10·30 + 2·30(vacant) = 360; flat = 20·60 =
+    # 1200. Guard must take the max (1200), not the under-counted 360.
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [make_demand_cold_start_model_run(
+            property_id=PROPERTY_ID, prior=20.0)]},
+        execute_sql={"plan_snapshots": [make_plan_snapshot(
+            total_rooms=60, checkouts=10, stayover_day1=0, stayover_day2=0,
+            vacant_dirty=2, vacant_clean=3, ooo=2)]},
+    )
+
+    with patch("src.inference.demand.get_supabase_client", return_value=fake):
+        result = _run(predict_demand(PROPERTY_ID, date(2026, 5, 15)))
+
+    assert "error" not in result
+    assert result["predicted_minutes_p50"] == 1200.0  # flat, not 360
+    assert "flat_cohort_partial" in fake.upserts[0]["data"]["features_snapshot"]
 
 
 def test_headcount_bands_use_per_property_shift_minutes():

@@ -509,12 +509,26 @@ async def optimize_headcount(
         # (assignment, not accumulation), so the same housekeeper's later rooms
         # overwrote earlier ones. Workload was massively underestimated and the
         # optimizer recommended too few housekeepers.
-        # Codex audit pass-6 P1 — property-aware search ceiling from the
-        # actual workload (sum of median per-room estimates) so larger
+        # Pre-compute each room's quantile triple ONCE so the inner loop
+        # doesn't re-parse predictions every draw. SANITIZE FIRST (clamp to the
+        # labor-standard envelope + repair quantile crossing) so a corrupt
+        # prediction (a NaN/None/600-min p50) can't corrupt the makespan
+        # distribution OR the search ceiling below — Codex review 2026-06-18.
+        n_rooms = len(supply_preds)
+        room_quantiles: List[Tuple[float, float, float, bool]] = []
+        for pred in supply_preds:
+            p25, p50, p90 = _sanitize_room_quantiles(
+                pred.get("predicted_minutes_p25", 15),
+                pred.get("predicted_minutes_p50", 22),
+                pred.get("predicted_minutes_p90", 30),
+            )
+            degenerate = p90 <= p25
+            room_quantiles.append((p25, p50, p90, degenerate))
+
+        # Codex audit pass-6 P1 — property-aware search ceiling from the actual
+        # workload (sum of SANITIZED median per-room estimates) so larger
         # properties get a real answer while the loop stays bounded.
-        median_total_minutes = sum(
-            float(p.get("predicted_minutes_p50", 25)) for p in supply_preds
-        )
+        median_total_minutes = sum(rq[1] for rq in room_quantiles)
         shift_cap = float(shift_cap_minutes) or 1.0
         max_headcount = _headcount_search_ceiling(median_total_minutes, shift_cap)
 
@@ -523,22 +537,7 @@ async def optimize_headcount(
         # samples from the SAME u-matrix (CRN) — adjacent H values differ
         # only in how LPT packs the same job times, not in MC noise
         # (SE~0.69pp at p=0.95 without CRN).
-        n_rooms = len(supply_preds)
         u_matrix = rng.uniform(size=(settings.monte_carlo_draws, n_rooms))
-
-        # Pre-compute each room's quantile triple ONCE so the inner loop
-        # doesn't re-parse predictions every draw.
-        room_quantiles: List[Tuple[float, float, float, bool]] = []
-        for pred in supply_preds:
-            # Clamp to the labor-standard envelope + repair quantile crossing so
-            # a corrupt prediction can't corrupt the makespan distribution.
-            p25, p50, p90 = _sanitize_room_quantiles(
-                pred.get("predicted_minutes_p25", 15),
-                pred.get("predicted_minutes_p50", 22),
-                pred.get("predicted_minutes_p90", 30),
-            )
-            degenerate = p90 <= p25
-            room_quantiles.append((p25, p50, p90, degenerate))
 
         # Pre-compute the sampled room_times matrix ONCE — used by every H.
         # Shape: [monte_carlo_draws, n_rooms]

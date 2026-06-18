@@ -238,6 +238,12 @@ async def predict_demand(
         # usable composition (e.g. arrays not yet populated on a brand-new
         # property's first pull), we fall back to the cohort flat estimate so
         # the day-1 number is never blank.
+        composition_room_count = (
+            features_dict["total_checkouts"]
+            + features_dict["stayover_day_1_count"]
+            + features_dict["stayover_day_2plus_count"]
+            + features_dict["vacant_dirty_count"]
+        )
         composition_minutes = (
             features_dict["total_checkouts"] * float(CHECKOUT_MINUTES)
             + features_dict["stayover_day_1_count"] * float(STAYOVER_DAY1_MINUTES)
@@ -245,13 +251,34 @@ async def predict_demand(
             + features_dict["vacant_dirty_count"] * float(VACANT_DIRTY_MINUTES)
         )
         flat_minutes = float(prior_per_room) * float(total_rooms)
-        if composition_minutes > 0:
+
+        # Partial-data guard (both adversarial reviews, 2026-06-18): only trust
+        # the composition when it plausibly covers the rooms we KNOW are
+        # occupied. A scrape that captured only some room-state columns (e.g.
+        # checkouts but not the stayover columns) would under-count the workload
+        # and UNDER-STAFF — the failure mode we most want to avoid (newsvendor:
+        # under-staffing is ~19× worse than over-staffing). When the composition
+        # looks incomplete relative to occupancy, OR is zero, fall back to the
+        # cohort flat estimate. occupied_count = rooms with guests
+        # (= checkouts + stayovers on a complete scrape), so a complete scrape
+        # always clears the 0.6 bar; a single-column scrape fails it.
+        occupied = float(occupied_count or 0)
+        composition_covers_occupancy = (
+            occupied <= 0 or composition_room_count >= 0.6 * occupied
+        )
+        if composition_minutes > 0 and composition_covers_occupancy:
             mu = composition_minutes
             cold_start_basis = "composition"
+        elif composition_minutes > 0:
+            # Composition present but implausibly low vs occupancy → likely
+            # incomplete plan data. Take the MAX so we never under-staff below
+            # the cohort level on suspected-partial data.
+            mu = max(composition_minutes, flat_minutes)
+            cold_start_basis = "flat_cohort_partial"
         else:
-            # No cleanable-room composition available → cohort flat fallback
-            # (conservative: over-predicting a genuinely empty day is safer
-            # than under-staffing a day whose composition arrays were missing).
+            # No cleanable-room composition at all → cohort flat fallback
+            # (over-predicting a genuinely empty day is safer than under-staffing
+            # a day whose composition arrays were missing).
             mu = flat_minutes
             cold_start_basis = "flat_cohort"
         # Wide quantile bands reflect cold-start uncertainty. The
