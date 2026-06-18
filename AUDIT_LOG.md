@@ -72,6 +72,14 @@ A second sweep covered the management surfaces. Result: **Financials, Maintenanc
 #### Known large gap — Inventory module is English-only (NOT yet fixed; tracked for a dedicated batch)
 The entire `src/app/inventory/_components/**` module renders hardcoded English: `InventoryShell` reads `lang` but never passes it to any child, so the language toggle is **silently dead** inside Inventory (~100 user-facing strings across Sidebar, FilterBar, StockList, HeroStats, tokens `statusLabel`, and the overlays CountSheet/ReportsPanel/HistoryPanel/BudgetsPanel/SimpleSheet/AddItemSheet). Spanish-speaking staff doing counts see English throughout. This is a real UX gap for the rollout but a sizeable, lower-risk mechanical change (plumb `lang` through ~15 components + add ES strings). Full line-by-line gap list with proposed translations was produced by the sweep. **Plan:** execute as a dedicated, carefully-verified batch (likely via an implementation agent) after the bug findings. Note: this is the inventory *UI module* (in scope) — distinct from the Inventory *ML* (out of scope).
 
+#### Batch 3 — adversarial review fixes (Codex + Claude senior-engineer reviews of batches 1–2)
+Ran two independent adversarial reviews of the committed bilingual diff (`be3ef5a4..HEAD`). **Both verdicts: structurally sound — `tsc` clean, no rules-of-hooks violations, no missing translation keys, backward-compatible signatures, accurate Spanish.** Both surfaced the same small set of real issues; all fixed:
+- **(medium, real regression I introduced)** `settings/shifts/page.tsx` — I'd added `lang` to the load effect's dep array, so toggling language mid-edit refetched presets and clobbered unsaved draft edits. Fixed with a `langRef` (effect keeps the translated error string but no longer depends on `lang`; dep array back to `[pid]`). The 3 read-only Settings pages (accounts/users/notifications) keep `lang` in deps — both reviewers confirmed harmless there (no local form state to clobber).
+- **(low)** `ManagerDirectory.tsx` — `{total} on roster · {onShift} on shift` was left English in the header I translated → now bilingual; title `La gente` → `El equipo` (more idiomatic).
+- **(low)** `settings/accounts/page.tsx` — two more English error fallbacks (`Failed to create`, `An error occurred`) in the create-account form → now bilingual.
+- **Deprioritized (pre-existing, LOW):** the shift-preset validation message interpolates the raw `front_desk` enum — but the English version did the same before my change (not a regression); localizing it pulls in the shared `deptMeta` label scope. Noted, left.
+- Verified: eslint src clean; build + tests pending green before commit.
+
 ## Deliberately left alone (needs Reeyen's call)
 
 _(Items where fixing changes product behavior or has a tradeoff a non-technical founder should decide.)_

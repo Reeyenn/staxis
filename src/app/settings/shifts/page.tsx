@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 // removed from the array is deleted (cascade nulls out
 // scheduled_shifts.preset_id but doesn't remove the shift).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -64,6 +64,10 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Read latest lang inside the load effect without making it a dependency —
+  // otherwise toggling EN/ES would refetch and clobber unsaved draft edits.
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   // Initial load.
   useEffect(() => {
@@ -88,10 +92,10 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       })
       .catch(err => {
         console.error('[shifts:settings] load failed', err);
-        if (active) { setError(lang === 'es' ? 'No se pudieron cargar los ajustes' : 'Failed to load presets'); setLoading(false); }
+        if (active) { setError(langRef.current === 'es' ? 'No se pudieron cargar los ajustes' : 'Failed to load presets'); setLoading(false); }
       });
     return () => { active = false; };
-  }, [pid, lang]);
+  }, [pid]);
 
   const groups = useMemo(() => {
     const map: Record<StaffDepartment, DraftPreset[]> = {

@@ -310,7 +310,7 @@ export default function AccountsPage() {
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({})) as { error?: string };
-          setFormError(d?.error || 'Failed to create');
+          setFormError(d?.error || (lang === 'es' ? 'No se pudo crear' : 'Failed to create'));
           return;
         }
       }
@@ -319,7 +319,7 @@ export default function AccountsPage() {
       await loadAccounts();
     } catch (err) {
       console.error(err);
-      setFormError('An error occurred');
+      setFormError(lang === 'es' ? 'Ocurrió un error' : 'An error occurred');
     } finally {
       setSaving(false);
     }
