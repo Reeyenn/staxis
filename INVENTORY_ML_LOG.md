@@ -73,4 +73,48 @@ adds zero value over "predict the average"** because occupancy is dead.
 
 ## Changelog
 
-(entries appended as work lands)
+### [1] Dead occupancy feature → live, centered occupancy (train + serve)
+
+**Problem:** `daily_logs` has no `occupancy_pct` column, so both the trainer
+(`_avg_occupancy_in_window`) and inference (`_recent_avg_occupancy`) always
+read `None` → defaulted to 50.0. The model's one feature was a constant, so it
+collapsed to "predict the average" and could not respond to occupancy.
+
+**Fix (commit pending):**
+- Derive occupancy from `100·occupied/total_rooms` in the trainer
+  (`_occ_pct_from_log` + `_avg_occupancy_in_window`, total_rooms threaded
+  through `_build_training_rows`) and in inference (`_recent_avg_occupancy`,
+  property total_rooms fetched on the fallback path).
+- **Center** the occupancy feature on a shared `INVENTORY_OCC_BASELINE_PCT=60`
+  (new constant in `config.py`) in both training (`X['occupancy_pct'] -= 60`)
+  and serving (`_predict_bayesian_quantiles` builds `[1, occ-60]`). Raw 0-100
+  occupancy is never near 0, so intercept↔slope were collinear and the slope
+  was unidentifiable; centering decouples them and makes the per-room cohort
+  prior seed the intercept correctly ("rate at typical occupancy").
+- Aligned the cold-start cohort serve path from a hard-coded `occ/50` to
+  `occ/baseline` so cold-start and fitted predictions share one occupancy
+  reference.
+- Half-open occupancy window `(t_prev, t_curr]` to match the consumption window
+  (stops a boundary date being double-counted).
+
+**Measured (offline harness, 4 occupancy-driven scenarios, clean data):**
+
+| metric | before | after |
+|---|---|---|
+| mean val_MAE | 2.823 (== constant-mean baseline) | **1.547** |
+| improvement vs "predict the average" | ~0% | **~45%** |
+| mean \|recovered slope − true_b\| | 0.222 (dead) | **0.005** |
+| oracle (noise floor) | — | 1.412 |
+
+The model now tracks occupancy near-optimally on clean data. Real-data gains
+are gated on (a) the count-window contamination fix (next) and (b) occupancy
+DATA actually flowing — see "needs human" below.
+
+**Tests:** +10 regression tests (`test_inventory_occupancy_feature.py`); full
+suite 312 passed (was 302).
+
+> ⚠️ **Needs human / out of scope:** the occupancy numbers only help once
+> occupancy DATA reaches the tables inference reads. `plan_snapshots` (primary)
+> was written by the now-removed scraper; CUA writes `pms_*`. Until that bridge
+> exists, inference uses the `daily_logs.occupied` fallback (now correct) or the
+> 50% neutral default. Wiring CUA→occupancy is another chat's lane.

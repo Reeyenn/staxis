@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.config import get_settings
+from src.config import INVENTORY_OCC_BASELINE_PCT, get_settings
 from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.supabase_client import get_supabase_client
 
@@ -140,7 +140,11 @@ async def predict_inventory_rates(
             descending=True,
             limit=14,
         )
-        occ_pct = _recent_avg_occupancy(daily_logs)
+        # daily_logs stores a raw `occupied` room count, so we need the
+        # property's room count to convert it to an occupancy %.
+        prop_row = client.fetch_one("properties", filters={"id": property_id})
+        total_rooms = (prop_row or {}).get("total_rooms")
+        occ_pct = _recent_avg_occupancy(daily_logs, total_rooms)
 
     predicted = 0
     skipped_no_active = 0
@@ -179,17 +183,38 @@ async def predict_inventory_rates(
     }
 
 
-def _recent_avg_occupancy(daily_logs: List[Dict[str, Any]]) -> float:
+def _recent_avg_occupancy(daily_logs: List[Dict[str, Any]], total_rooms: Optional[int]) -> float:
+    """Recent mean occupancy % from daily_logs.
+
+    daily_logs has no occupancy_pct column — only a raw `occupied` count — so
+    occupancy is derived as 100·occupied/total_rooms (must match the trainer's
+    `_avg_occupancy_in_window`). Returns the 50.0 neutral default when there
+    are no logs or total_rooms is unusable. This is the cold-start / PMS-outage
+    fallback; the primary path is tomorrow's projected occupancy from
+    plan_snapshots.
+    """
     if not daily_logs:
         return 50.0
+    try:
+        denom = float(int(total_rooms or 0))
+    except (ValueError, TypeError):
+        denom = 0.0
     vals: List[float] = []
     for log in daily_logs:
-        v = log.get("occupancy_pct")
-        if v is not None:
+        pct = log.get("occupancy_pct")
+        if pct is None:
+            occ = log.get("occupied")
+            if occ is None or denom <= 0:
+                # No usable room count → can't convert occupied → %; skip row.
+                continue
             try:
-                vals.append(float(v))
+                pct = 100.0 * float(occ) / denom
             except (ValueError, TypeError):
                 continue
+        try:
+            vals.append(max(0.0, min(100.0, float(pct))))
+        except (ValueError, TypeError):
+            continue
     return sum(vals) / len(vals) if vals else 50.0
 
 
@@ -313,8 +338,11 @@ def _predict_bayesian_quantiles(params: Dict[str, Any], occ_pct: float) -> Dict[
     alpha_n = float(params["alpha_n"])
     beta_n = float(params["beta_n"])
 
-    # Feature vector: [intercept, occupancy_pct]
-    x = np.array([1.0, occ_pct])
+    # Feature vector: [intercept, occupancy_pct − baseline]. The trainer
+    # centers occupancy on INVENTORY_OCC_BASELINE_PCT before fitting, so the
+    # posterior coefficients live in centered space; serve at the same center
+    # or every prediction is biased by slope·baseline.
+    x = np.array([1.0, occ_pct - INVENTORY_OCC_BASELINE_PCT])
     # ── Strict shape match (May 2026 audit pass-4) ─────────────────────
     # Previously: silently pad with zeros or truncate. Pad is dangerous
     # — adding a third feature to training (e.g. day_of_week) would
@@ -357,7 +385,13 @@ def _predict_from_cohort_prior(params: Dict[str, Any], occ_pct: float) -> Dict[s
     Math:
         rate_hotel_today = prior_rate_per_room_per_day
                          * room_count
-                         * (occ_pct / 50.0)   # 50% occupancy is the cohort baseline
+                         * (occ_pct / baseline)   # baseline = cohort reference occ
+    The cohort prior_rate is a per-room rate at the network's typical
+    occupancy, so we scale proportionally by how today's occupancy compares to
+    that baseline. The baseline is the shared INVENTORY_OCC_BASELINE_PCT the
+    trainer/inference Bayesian path centers on, so cold-start and fitted
+    predictions speak the same occupancy language (was a hard-coded 50.0).
+
     Uncertainty band: ±50% around p50 for p10/p90 (vs the trained model's
     posterior which typically converges to <±20% once mature). The band is
     deliberately wide — auto-fill won't fire for cold-start models anyway
@@ -367,7 +401,7 @@ def _predict_from_cohort_prior(params: Dict[str, Any], occ_pct: float) -> Dict[s
     prior_rate = float(params.get("cohort_prior_rate", 0.0))
     room_count = int(params.get("room_count", 60))
     base = max(prior_rate * room_count, 0.0)
-    occ_factor = max(occ_pct, 0.0) / 50.0   # 50% = cohort baseline
+    occ_factor = max(occ_pct, 0.0) / INVENTORY_OCC_BASELINE_PCT   # cohort baseline
     p50 = base * occ_factor
     spread = p50 * 0.5
     return {

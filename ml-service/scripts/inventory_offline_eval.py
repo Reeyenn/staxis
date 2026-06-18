@@ -34,6 +34,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
+from src.config import INVENTORY_OCC_BASELINE_PCT
 from src.layers.bayesian_regression import BayesianRegression
 from src.training.inventory_rate import (
     INVENTORY_FEATURE_COLS,
@@ -110,11 +111,16 @@ def simulate_hotel(
     orders: List[Dict[str, Any]] = []
     discards: List[Dict[str, Any]] = []
 
+    # Timestamp discipline so a window's (prev + orders − curr)/days is EXACT:
+    # orders are logged at noon, counts at 23:00. A same-day restock is thus
+    # logged BEFORE the count that already reflects it, so it lands in the
+    # window ending at that count (not the next one). Getting this wrong
+    # injects spurious rate noise that swamps the occupancy signal.
     stock = float(restock_to)
     for d in range(n_days):
         # consume today
         stock -= float(true_daily[d])
-        # restock when low
+        # restock when low (order logged at noon)
         if stock < restock_threshold:
             qty = restock_to - stock
             if rng.random() < unlogged_restock_prob:
@@ -123,14 +129,14 @@ def simulate_hotel(
                 pass
             else:
                 orders.append({
-                    "received_at": (start + timedelta(days=d, hours=12)).isoformat(),
+                    "received_at": (start + timedelta(days=d, hours=3)).isoformat(),  # 12:00
                     "quantity": round(float(qty), 2),
                 })
             stock = float(restock_to)
-        # take a count every count_every_days
+        # take a count every count_every_days, at 23:00 (after consume+restock)
         if d % count_every_days == 0:
             counts.append({
-                "counted_at": (start + timedelta(days=d)).isoformat(),
+                "counted_at": (start + timedelta(days=d, hours=14)).isoformat(),  # 23:00
                 "counted_stock": round(max(stock, 0.0), 2),
             })
 
@@ -160,22 +166,26 @@ class EvalResult:
 def evaluate(scn: Scenario, *, prior_strength: float = 0.5) -> EvalResult:
     """Build training rows with the REAL trainer helper, fit the REAL Bayesian
     model the same way `_train_single_item` does, and score a held-out tail."""
-    rows = _build_training_rows(scn.counts, scn.orders, scn.discards, scn.daily_logs)
+    rows = _build_training_rows(scn.counts, scn.orders, scn.discards, scn.daily_logs, scn.total_rooms)
     df = pd.DataFrame(rows)
     df["daily_rate"] = pd.to_numeric(df["daily_rate"], errors="coerce")
     df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(50.0)
     df = df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
 
+    occ_raw = df["occupancy_pct"].astype(float).values  # raw 0-100 for the oracle
     X = df[INVENTORY_FEATURE_COLS].copy()
-    X.insert(0, "intercept", 1.0)
+    X["occupancy_pct"] = X["occupancy_pct"] - INVENTORY_OCC_BASELINE_PCT  # mirror trainer centering
     y = df["daily_rate"].astype(float)
+    X.insert(0, "intercept", 1.0)
 
     if len(X) >= 5:
         split = int(len(X) * 0.8)
         X_tr, X_te = X.iloc[:split], X.iloc[split:]
         y_tr, y_te = y.iloc[:split], y.iloc[split:]
+        occ_te_raw = occ_raw[split:]
     else:
         X_tr, X_te, y_tr, y_te = X, X.iloc[:0], y, y.iloc[:0]
+        occ_te_raw = occ_raw[:0]
 
     model = BayesianRegression(prior_strength=prior_strength)
     _seed_bayesian_intercept(model, scn.prior_rate_per_room, scn.total_rooms)
@@ -189,8 +199,7 @@ def evaluate(scn: Scenario, *, prior_strength: float = 0.5) -> EvalResult:
         val_mae = float(np.mean(np.abs(pred - y_te.values)))
         mean_rate = float(y_te.mean())
         baseline_mean_mae = float(np.mean(np.abs(y_tr.mean() - y_te.values)))
-        occ_te = X_te["occupancy_pct"].values
-        oracle = scn.true_a + scn.true_b * occ_te
+        oracle = scn.true_a + scn.true_b * occ_te_raw
         oracle_mae = float(np.mean(np.abs(oracle - y_te.values)))
     else:
         val_mae = float("nan"); mean_rate = float(y.mean())

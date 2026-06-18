@@ -33,7 +33,7 @@ import pandas as pd
 import psycopg2
 
 from src.advisory_lock import advisory_lock
-from src.config import get_settings
+from src.config import INVENTORY_OCC_BASELINE_PCT, get_settings
 from src.errors import PropertyMisconfiguredError, require_total_rooms
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
@@ -360,8 +360,15 @@ def _train_single_item(
         limit=400,
     )
 
+    # Total rooms: converts daily_logs.occupied → occupancy %, and scales the
+    # cohort prior / baseline from per-room to absolute units. Validated
+    # upstream in _train_inventory_inner (require_total_rooms at the property
+    # level) so this re-read won't newly raise; hoisted here so it's available
+    # to both the row builder and the Bayesian seed below.
+    total_rooms = require_total_rooms(property_meta, property_id)
+
     # Build training rows: one per CONSECUTIVE pair of counts.
-    rows = _build_training_rows(counts, orders, discards, daily_logs)
+    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms)
     if len(rows) < settings.inventory_min_events_per_item - 1:
         return {"skipped": True, "reason": "insufficient_consecutive_pairs",
                 "pairs": len(rows)}
@@ -381,8 +388,13 @@ def _train_single_item(
     #   50+        → 5.0  (strong — cohort dominates new-hotel cold-start)
     prior_rate, prior_strength = _lookup_prior(client, cohort_key, item, item_name)
 
-    # Features + target
+    # Features + target.
+    # Center occupancy on the shared baseline so the intercept means "rate at
+    # baseline occupancy" (well-identified, in-range) and decouples from the
+    # slope. Feeding raw 0-100 occupancy — never near 0 — makes intercept and
+    # slope collinear and the slope unstable at the small N a real hotel has.
     X = df[INVENTORY_FEATURE_COLS].copy()
+    X["occupancy_pct"] = X["occupancy_pct"] - INVENTORY_OCC_BASELINE_PCT
     X.insert(0, "intercept", 1.0)
     y = df["daily_rate"].astype(float)
 
@@ -412,9 +424,9 @@ def _train_single_item(
         # shampoo as a 60-room hotel at the same per-room rate.
         # Phase 3.3 (2026-05-13): require_total_rooms raises
         # PropertyMisconfiguredError instead of silently falling back to
-        # 60 — the cron boundary catches + logs the skip.
-        room_count = require_total_rooms(property_meta, property_id)
-        _seed_bayesian_intercept(model, prior_rate, room_count)
+        # 60 — the cron boundary catches + logs the skip. Hoisted above as
+        # `total_rooms`.
+        _seed_bayesian_intercept(model, prior_rate, total_rooms)
         model_version = f"inventory-bayesian-v1-{item_id}-{datetime.utcnow().isoformat()}"
         algorithm = "bayesian"
 
@@ -634,10 +646,14 @@ def _build_training_rows(
     orders: List[Dict[str, Any]],
     discards: List[Dict[str, Any]],
     daily_logs: List[Dict[str, Any]],
+    total_rooms: int,
 ) -> List[Dict[str, Any]]:
     """Compute (daily_rate, occupancy_pct) for each consecutive pair of counts.
 
     daily_rate = (prev.counted + orders_between - discards_between - this.counted) / days_elapsed
+
+    ``total_rooms`` converts each daily_logs ``occupied`` room count into an
+    occupancy percentage for the window-average feature.
     """
     if len(counts) < 2:
         return []
@@ -693,7 +709,7 @@ def _build_training_rows(
         daily_rate = consumption / days_elapsed
 
         # Average occupancy over the window (best-effort)
-        occ_pct = _avg_occupancy_in_window(daily_logs, t_prev, t_curr)
+        occ_pct = _avg_occupancy_in_window(daily_logs, t_prev, t_curr, total_rooms)
 
         rows.append({
             "date": t_curr.date().isoformat(),
@@ -704,15 +720,49 @@ def _build_training_rows(
     return rows
 
 
+def _occ_pct_from_log(log: Dict[str, Any], total_rooms_denom: float) -> Optional[float]:
+    """Occupancy percentage (0-100) for one daily_logs row.
+
+    The deployed ``daily_logs`` table has NO ``occupancy_pct`` column — only a
+    raw ``occupied`` room count (migration 0001). Occupancy is therefore
+    derived as ``100 * occupied / total_rooms``. A pre-computed
+    ``occupancy_pct`` (should a future schema add one) takes precedence.
+    Returns None when neither is usable so the caller can skip the row rather
+    than fold a bogus value into the window average.
+    """
+    pct = log.get("occupancy_pct")
+    if pct is not None:
+        try:
+            return max(0.0, min(100.0, float(pct)))
+        except (TypeError, ValueError):
+            pass
+    occ = log.get("occupied")
+    if occ is None:
+        return None
+    try:
+        return max(0.0, min(100.0, 100.0 * float(occ) / total_rooms_denom))
+    except (TypeError, ValueError):
+        return None
+
+
 def _avg_occupancy_in_window(
     daily_logs: List[Dict[str, Any]],
     t_start: pd.Timestamp,
     t_end: pd.Timestamp,
+    total_rooms: int,
 ) -> float:
-    """Average occupancy_pct from daily_logs between two timestamps. Defaults to 50.0
-    if no logs match (the model handles a constant-feature column gracefully)."""
+    """Average occupancy % from daily_logs over [t_start, t_end].
+
+    Occupancy is derived per row from ``occupied`` / ``total_rooms`` (see
+    ``_occ_pct_from_log``). The 50.0 neutral default is returned ONLY when no
+    usable log overlaps the window — NOT as a blanket constant. The old code
+    read a non-existent ``occupancy_pct`` column, so every window collapsed to
+    50.0 and occupancy became a dead feature (the model could not learn
+    ``rate = a + b·occupancy``). Proven by ``scripts/inventory_offline_eval.py``.
+    """
     if not daily_logs:
         return 50.0
+    denom = float(max(int(total_rooms or 0), 1))
     matched: List[float] = []
     start_d = t_start.date()
     end_d = t_end.date()
@@ -724,10 +774,16 @@ def _avg_occupancy_in_window(
             ld_parsed = pd.to_datetime(ld).date()
         except Exception:
             continue
-        if start_d <= ld_parsed <= end_d:
-            occ = log.get("occupancy_pct")
-            if occ is not None:
-                matched.append(float(occ))
+        # Half-open (t_start, t_end] to match the consumption window: orders
+        # are summed over `> t_prev and <= t_curr`, so the occupancy that drove
+        # that usage is the days AFTER the prior count through the current one.
+        # Exclusive start also stops a boundary date being counted in both
+        # adjacent windows.
+        if not (start_d < ld_parsed <= end_d):
+            continue
+        occ = _occ_pct_from_log(log, denom)
+        if occ is not None:
+            matched.append(occ)
     return sum(matched) / len(matched) if matched else 50.0
 
 

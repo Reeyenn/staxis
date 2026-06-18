@@ -6,6 +6,20 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
+# Reference occupancy (percentage points) that the inventory_rate model
+# centers its occupancy feature on. The Bayesian model learns
+# ``daily_rate = intercept + slope·(occupancy_pct − baseline)``; centering the
+# feature (rather than feeding raw 0-100 occupancy, which is never near 0)
+# decouples the intercept from the slope so the slope is estimable from the
+# handful of windows a real hotel produces. The intercept then means "expected
+# daily consumption at baseline occupancy", which is exactly what the per-room
+# cohort prior encodes — so the prior seeds the intercept correctly. Training
+# (training/inventory_rate.py) and serving (inference/inventory_rate.py) MUST
+# use this same constant or train/serve will skew. 60% is a representative
+# limited-service occupancy. Changing it requires a full retrain.
+INVENTORY_OCC_BASELINE_PCT: float = 60.0
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
