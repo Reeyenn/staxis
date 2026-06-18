@@ -331,7 +331,15 @@ export function LiveSurface() {
         </section>
       </div>
 
-      {sel && <MapDetail h={sel} sms={sms} onClose={() => setSel(null)} />}
+      {sel && (
+        <MapDetail
+          h={sel}
+          sms={sms}
+          onClose={() => setSel(null)}
+          onPickCoverage={() => setPickerHotel(sel)}
+          onDetached={() => { setSel(null); void load(); }}
+        />
+      )}
 
       {pickerHotel && (
         <CoveragePickerModal
@@ -481,10 +489,46 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
 }
 
 // ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, sms, onClose }: { h: EnrichedRow; sms: SmsHealthRow[]; onClose: () => void }) {
+function MapDetail({ h, sms, onClose, onPickCoverage, onDetached }: {
+  h: EnrichedRow;
+  sms: SmsHealthRow[];
+  onClose: () => void;
+  onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
+  onDetached: () => void;       // detach succeeded → refetch + close
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const row = sms.find((x) => x.propertyId === h.id);
+  const hasSystem = h.pmsType !== null;
+  const [detaching, setDetaching] = useState(false);
+  const [detachError, setDetachError] = useState<string | null>(null);
   useEffect(() => { riseIn(ref.current, { dy: 26, dur: 440 }); }, []);
+
+  // Detach this hotel from its current coverage. Mirrors the FeedbackRow
+  // fetch+envelope+busy pattern: POST through fetchWithAuth, read { ok }, and
+  // on success let the parent refetch (load()) and close the modal.
+  const detach = async () => {
+    if (detaching || !hasSystem) return;
+    setDetaching(true);
+    setDetachError(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/detach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pmsFamily: h.pmsType, propertyId: h.id }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setDetachError(json.error ?? 'Could not detach coverage. Please try again.');
+        return;
+      }
+      onDetached();
+    } catch (err) {
+      setDetachError(`Network error: ${(err as Error).message}`);
+    } finally {
+      setDetaching(false);
+    }
+  };
+
   return (
     <Backdrop onClose={onClose}>
       <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 460 }}>
@@ -498,11 +542,33 @@ function MapDetail({ h, sms, onClose }: { h: EnrichedRow; sms: SmsHealthRow[]; o
           <Stat label="SMS" v={row && row.deliveryPct !== null ? `${row.deliveryPct}%` : '—'} c={row && row.deliveryPct !== null && row.deliveryPct < 90 ? 'var(--terracotta)' : 'var(--forest-deep)'} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-          <Pill tone={subTone(h.subscriptionStatus)}>{(h.subscriptionStatus ?? 'unknown').toUpperCase()}</Pill>
+          <Pill tone={hasSystem ? subTone(h.subscriptionStatus) : 'gold'}>
+            {hasSystem ? (h.subscriptionStatus ?? 'unknown').toUpperCase() : 'NO SYSTEM DETECTED'}
+          </Pill>
           <span className="mono" style={{ fontSize: 11, color: syncColor(h) }}>
-            {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · synced ${freshLabel(h.syncFreshnessMin)} ago` : ''}` : 'PMS not connected'}
+            {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · synced ${freshLabel(h.syncFreshnessMin)} ago` : ''}` : hasSystem ? 'PMS not connected' : 'No coverage assigned'}
           </span>
         </div>
+
+        {/* Coverage actions — attach (no system) / switch + detach (has system) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: detachError ? 10 : 16, flexWrap: 'wrap' }}>
+          {hasSystem ? (
+            <>
+              <Btn variant="ghost" onClick={onPickCoverage} disabled={detaching}>Switch coverage</Btn>
+              <Btn variant="terracotta" onClick={detach} disabled={detaching}>
+                {detaching ? 'Detaching…' : 'Detach'}
+              </Btn>
+            </>
+          ) : (
+            <Btn variant="forest" onClick={onPickCoverage}>Assign coverage</Btn>
+          )}
+        </div>
+        {detachError && (
+          <div style={{ padding: '11px 13px', marginBottom: 16, background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.3)', borderRadius: 12, color: 'var(--terracotta-deep)', fontSize: 12.5, lineHeight: 1.45 }}>
+            {detachError}
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 8 }}>
           <Btn variant="primary" href={`/admin/properties/${h.id}`}>Property page →</Btn>
           <Btn variant="ghost" onClick={onClose}>Close</Btn>

@@ -230,7 +230,8 @@ export async function GET(req: NextRequest) {
   const { data: kfRowsRaw, error: kfErr } = await supabaseAdmin
     .from('pms_knowledge_files')
     .select('id, pms_family, version, learned_at, knowledge, display_name')
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .is('deleted_at', null); // 0288 — hide soft-deleted coverages from the studio
 
   if (kfErr) {
     return err(`Could not load knowledge files: ${kfErr.message}`, {

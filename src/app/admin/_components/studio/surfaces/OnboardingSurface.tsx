@@ -799,7 +799,11 @@ function BayProspect({ p, onSaved }: { p: Prospect; onSaved: () => Promise<void>
 const FEED_STATE_TONE: Record<FeedState, DotTone> = { live: 'forest', learning: 'teal', unavailable: 'muted' };
 const FEED_STATE_WORD: Record<FeedState, string> = { live: 'live', learning: 'learning', unavailable: 'not provided' };
 
-// ── PMS detail · per-feed status · rename · view captures · bulk · detach ─
+// One hotel as returned by /api/admin/coverage/hotels — attached = currently
+// reading through this map; otherwise it's an "Attach" candidate on the family.
+interface CoverageHotel { id: string; name: string | null; attached: boolean; pmsType: string | null; sessionStatus: string | null }
+
+// ── PMS detail · per-feed status · rename · view captures · hotels · bulk · detach · delete ─
 function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: () => void; onRepaired: () => Promise<void> }) {
   const ref = useRef<HTMLDivElement>(null);
   const [key, setKey] = useState('');
@@ -810,9 +814,26 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
   const [name, setName] = useState(pms.displayName ?? pms.label);
   const [title, setTitle] = useState(pms.displayName ?? pms.label);
   const [nameBusy, setNameBusy] = useState(false);
-  // Bulk / detach state — separate so a long-running action doesn't lock the others.
-  const [actionBusy, setActionBusy] = useState<'bulk' | 'detach' | null>(null);
+  // Bulk / detach / delete state — separate so a long-running action doesn't lock the others.
+  const [actionBusy, setActionBusy] = useState<'bulk' | 'detach' | 'delete' | null>(null);
+  // "Hotels on this coverage" list — fetched on mount.
+  const [hotels, setHotels] = useState<CoverageHotel[] | null>(null);
+  const [hotelsErr, setHotelsErr] = useState<string | null>(null);
+  // Per-row in-flight attach/detach — keyed by hotel id.
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
   useEffect(() => { riseIn(ref.current, { dy: 30, dur: 440 }); }, []);
+
+  // Load the hotels on this coverage family (attached + attach-candidates).
+  const loadHotels = React.useCallback(async () => {
+    try {
+      const res = await fetchWithAuth(`/api/admin/coverage/hotels?pmsFamily=${encodeURIComponent(pms.pmsType)}`);
+      const json = await res.json();
+      if (json.ok) { setHotels(json.data?.hotels ?? []); setHotelsErr(null); }
+      else setHotelsErr(json.error ?? 'Could not load hotels.');
+    } catch (err) { setHotelsErr(`Network error: ${(err as Error).message}`); }
+  }, [pms.pmsType]);
+  useEffect(() => { void loadHotels(); }, [loadHotels]);
+
   const st = pmsState(pms);
   const keys = pms.recipe?.actionKeys ?? [];
   const propertyId = pms.representativePropertyId;
@@ -856,7 +877,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
     try {
       const res = await fetchWithAuth('/api/admin/coverage/bulk-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
       const json = await res.json();
-      if (json.ok) { const n = json.data?.appliedCount ?? 0; setMsg(`Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}.`); void onRepaired(); }
+      if (json.ok) { const n = json.data?.appliedCount ?? 0; setMsg(`Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}.`); await loadHotels(); void onRepaired(); }
       else setMsg(`Failed: ${json.error ?? 'unknown'}`);
     } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
     finally { setActionBusy(null); }
@@ -869,10 +890,60 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
     try {
       const res = await fetchWithAuth('/api/admin/coverage/detach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
       const json = await res.json();
-      if (json.ok) { const n = json.data?.detachedCount ?? 0; setMsg(`Detached ${n} ${n === 1 ? 'hotel' : 'hotels'} — map kept.`); void onRepaired(); }
+      if (json.ok) { const n = json.data?.detachedCount ?? 0; setMsg(`Detached ${n} ${n === 1 ? 'hotel' : 'hotels'} — map kept.`); await loadHotels(); void onRepaired(); }
       else setMsg(`Failed: ${json.error ?? 'unknown'}`);
     } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
     finally { setActionBusy(null); }
+  };
+
+  // Detach one hotel → POST /api/admin/coverage/detach with its propertyId.
+  // The map stays; that hotel drops to "No system detected" until re-attached.
+  const detachOne = async (h: CoverageHotel) => {
+    setRowBusy(h.id); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/detach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType, propertyId: h.id }) });
+      const json = await res.json();
+      if (json.ok) { await loadHotels(); void onRepaired(); }
+      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
+    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
+    finally { setRowBusy(null); }
+  };
+
+  // Attach one hotel → POST /api/admin/coverage/assign. 409 'no_active_map'
+  // means this coverage has no live map yet to point the hotel at.
+  const attachOne = async (h: CoverageHotel) => {
+    setRowBusy(h.id); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ propertyId: h.id, pmsFamily: pms.pmsType }) });
+      const json = await res.json();
+      if (json.ok) { await loadHotels(); void onRepaired(); }
+      else if (json.code === 'no_active_map') setMsg('This coverage has no active map yet — learn or finish mapping first.');
+      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
+    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
+    finally { setRowBusy(null); }
+  };
+
+  // Delete the whole coverage → POST /api/admin/coverage/delete. Soft-deletes
+  // the map and detaches every hotel. A backup is kept and can be restored.
+  const deleteCoverage = async () => {
+    if (!confirm(`Delete this PMS coverage?\n\nThe robot will forget how to read "${title}", and every hotel on it drops to "No system detected".\n\nA backup is kept — this can be restored.`)) return;
+    setActionBusy('delete'); setMsg(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
+      const json = await res.json();
+      if (json.ok) {
+        // Success unmounts this modal — refetch the board, then close LAST so
+        // no state is written after unmount.
+        void onRepaired();
+        onClose();
+        return;
+      }
+      setMsg(`Failed: ${json.error ?? 'unknown'}`);
+      setActionBusy(null);
+    } catch (err) {
+      setMsg(`Network error: ${(err as Error).message}`);
+      setActionBusy(null);
+    }
   };
 
   const anyBusy = busy || nameBusy || actionBusy !== null;
@@ -934,6 +1005,38 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
           </div>
         )}
 
+        {/* ── Hotels on this coverage — per-hotel attach / detach. ── */}
+        <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14, marginTop: 14 }}>
+          <Caps size={9}>Hotels on this coverage</Caps>
+          {hotelsErr ? (
+            <p style={{ fontSize: 12, color: 'var(--terracotta)', margin: '8px 0 0' }}>{hotelsErr}</p>
+          ) : hotels === null ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 2px' }}>
+              <span className="spinner" style={{ width: 13, height: 13, display: 'inline-block' }} />
+              <span style={{ fontSize: 12, color: 'var(--dim)' }}>Loading hotels…</span>
+            </div>
+          ) : hotels.length === 0 ? (
+            <p style={{ fontSize: 12.5, color: 'var(--dim)', fontFamily: FONT_SERIF, fontStyle: 'italic', margin: '8px 0 2px' }}>No hotels yet.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '8px 0 2px' }}>
+              {hotels.map((h) => {
+                const rb = rowBusy === h.id;
+                return (
+                  <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
+                    <Dot tone={h.attached ? 'forest' : 'muted'} size={6} />
+                    <span style={{ fontSize: 12.5, color: 'var(--ink)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name ?? '(unnamed)'}</span>
+                    {h.attached ? (
+                      <Btn size="sm" variant="terracotta" onClick={() => void detachOne(h)} disabled={rb || anyBusy}>{rb ? '…' : 'Detach'}</Btn>
+                    ) : (
+                      <Btn size="sm" variant="forest" onClick={() => void attachOne(h)} disabled={rb || anyBusy}>{rb ? '…' : 'Attach'}</Btn>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {/* ── Repair a feed (kept) — re-learn one drifted action (~$2). ── */}
         {keys.length > 0 && propertyId ? (
           <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14, marginTop: 14 }}>
@@ -952,16 +1055,24 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
 
         {msg && <p className="mono" style={{ fontSize: 10.5, color: 'var(--dim)', marginTop: 10, wordBreak: 'break-all' }}>{msg}</p>}
 
-        {/* ── Footer — bulk-assign · detach · close. ── */}
+        {/* ── Footer — detach-all · bulk-assign · close. ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 18, borderTop: '1px solid var(--rule)', paddingTop: 14, flexWrap: 'wrap' }}>
           <button onClick={() => void detach()} disabled={anyBusy} title="Free every hotel on this PMS — the map is kept and can be re-matched"
             style={{ background: 'var(--terracotta-dim)', color: 'var(--terracotta-deep)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 999, height: 28, padding: '0 12px', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, cursor: anyBusy ? 'not-allowed' : 'pointer', opacity: anyBusy ? 0.5 : 1 }}>
-            {actionBusy === 'detach' ? '…' : 'Detach (free the hotels)'}
+            {actionBusy === 'detach' ? '…' : 'Detach all'}
           </button>
           <div style={{ display: 'flex', gap: 8 }}>
             {pms.recipe && <Btn size="sm" variant="forest" onClick={() => void bulkAssign()} disabled={anyBusy}>{actionBusy === 'bulk' ? '…' : 'Use for all hotels'}</Btn>}
             <Btn size="sm" variant="ghost" onClick={onClose} disabled={anyBusy}>Close</Btn>
           </div>
+        </div>
+
+        {/* ── Danger zone — soft-delete the whole coverage (backup kept). ── */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 12, borderTop: '1px solid var(--rule)', paddingTop: 12, flexWrap: 'wrap' }}>
+          <Caps size={9} c="var(--terracotta-deep)">Danger zone</Caps>
+          <Btn size="sm" variant="terracotta" onClick={() => void deleteCoverage()} disabled={anyBusy} title="Forget this map and free every hotel — a backup is kept and can be restored">
+            {actionBusy === 'delete' ? '…' : 'Delete coverage'}
+          </Btn>
         </div>
       </div>
     </Backdrop>

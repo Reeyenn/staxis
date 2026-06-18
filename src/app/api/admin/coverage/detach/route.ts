@@ -1,10 +1,17 @@
 /**
  * POST /api/admin/coverage/detach
- *   body: { pmsFamily: string }
+ *   body: { pmsFamily: string, propertyId?: string }
  *   → { ok, data: { detachedCount: number } }
  *
- * feature/cua-coverage-mgmt — DETACH every hotel from a PMS family without
- * losing the learned coverage. For every property currently on the family:
+ * feature/cua-coverage-mgmt — DETACH hotels from a PMS family without losing
+ * the learned coverage.
+ *   - With `propertyId`: detach ONLY that hotel (the per-hotel detach buttons
+ *     on Live Hotels + the PMS coverage modal's hotel list). Scoped with an
+ *     `eq(pms_type, family)` guard so it only acts if the hotel is actually on
+ *     this family (idempotent, never cross-detaches).
+ *   - Without it: detach EVERY hotel on the family ("free the hotels").
+ *
+ * For every property detached:
  *   - property_sessions.status = 'stopped'   (the supervisor's existing
  *     terminal state — it prunes that driver, stops polling; other families /
  *     hotels are unaffected),
@@ -12,9 +19,9 @@
  *
  * NEVER touches pms_knowledge_files — the coverage (the learned recipe) is
  * preserved, so re-matching a hotel later is free (no re-learn). This is the
- * key difference from a delete: detach is reversible via /assign.
+ * key difference from /delete: detach is reversible via /assign.
  *
- * Idempotent: a family with no hotels on it returns detachedCount=0, 200.
+ * Idempotent: a family/hotel with nothing to detach returns detachedCount=0, 200.
  *
  * Auth: requireAdmin. supabaseAdmin (service-role; both tables are
  * deny-all-browser RLS).
@@ -30,7 +37,9 @@ import { isPMSType } from '@/lib/pms/types';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-interface Body { pmsFamily?: unknown }
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface Body { pmsFamily?: unknown; propertyId?: unknown }
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -46,9 +55,41 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const pmsFamily = body.pmsFamily;
 
-  // Every property currently on this family — by pms_type (the assignment of
-  // record). property_sessions rows may lag, so source the hotel list from
-  // properties and stop their sessions too.
+  const wantsSingle = body.propertyId !== undefined && body.propertyId !== null;
+  if (wantsSingle && (typeof body.propertyId !== 'string' || !UUID_RE.test(body.propertyId))) {
+    return err('propertyId must be a UUID', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  // ─── Per-hotel detach ───────────────────────────────────────────────────
+  if (wantsSingle) {
+    const propertyId = body.propertyId as string;
+
+    // Stop that hotel's session for this family.
+    const { error: sessErr } = await supabaseAdmin
+      .from('property_sessions')
+      .update({ status: 'stopped', updated_at: new Date().toISOString() })
+      .eq('property_id', propertyId)
+      .eq('pms_family', pmsFamily);
+    if (sessErr) {
+      return err('could not stop the session', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
+    }
+
+    // Clear pms_type, but ONLY if the hotel is actually on this family.
+    const { data: cleared, error: clearErr } = await supabaseAdmin
+      .from('properties')
+      .update({ pms_type: null })
+      .eq('id', propertyId)
+      .eq('pms_type', pmsFamily)
+      .select('id');
+    if (clearErr) {
+      return err('could not detach the hotel', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
+    }
+    return ok({ detachedCount: (cleared ?? []).length }, { requestId });
+  }
+
+  // ─── Detach EVERY hotel on the family ───────────────────────────────────
+  // by pms_type (the assignment of record). property_sessions rows may lag, so
+  // source the hotel list from properties and stop their sessions too.
   const { data: propRows, error: propErr } = await supabaseAdmin
     .from('properties')
     .select('id')
@@ -59,8 +100,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const propertyIds = (propRows ?? []).map((p) => (p as { id: string }).id);
 
   // Stop every session on the family (covers any session whose property may
-  // have already been re-pointed but still has a live driver). The supervisor
-  // honors 'stopped' by pruning that driver.
+  // have already been re-pointed but still has a live driver).
   const { error: sessErr } = await supabaseAdmin
     .from('property_sessions')
     .update({ status: 'stopped', updated_at: new Date().toISOString() })
