@@ -436,7 +436,7 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
       role="button"
       tabIndex={0}
       onClick={() => flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 })}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 }); } }}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 }); } }}
       onDoubleClick={onOpen}
       style={{
         textAlign: 'left', background: dimWhite(.06),
