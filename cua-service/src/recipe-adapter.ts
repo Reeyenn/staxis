@@ -263,10 +263,10 @@ function mapInPageStepsToPreSteps(inPage: RecipeStep[], context: 'csv' | 'dom_ta
   for (const s of inPage) {
     switch (s.kind) {
       case 'click':
-        mapped.push({ kind: 'click', selector: s.selector });
+        mapped.push({ kind: 'click', selector: s.selector, ...(s.tieredSelector?.roleName ? { roleName: s.tieredSelector.roleName } : {}) });
         break;
       case 'click_at':
-        mapped.push({ kind: 'click_at', x: s.x, y: s.y });
+        mapped.push({ kind: 'click_at', x: s.x, y: s.y, ...(s.roleName ? { roleName: s.roleName } : {}) });
         break;
       case 'fill':
         if (s.value === '$username' || s.value === '$password') {
@@ -332,6 +332,28 @@ function lastGotoIndex(steps: RecipeStep[]): number {
 export function deriveDomPreStepsFromSteps(steps: RecipeStep[]): PreStep[] {
   const inPage = steps.slice(lastGotoIndex(steps) + 1);
   return mapInPageStepsToPreSteps(inPage, 'dom_table');
+}
+
+/**
+ * feature/cua-feed-replay — the FULL learned navigation, for menu-replay
+ * FALLBACK when a cold deep-link to the source url renders no rows / bounces.
+ * Returns the first goto (a known base — the dashboard/login landing) plus EVERY
+ * recorded click in order, by roleName. The intermediate cold-deep-link gotos
+ * are dropped on purpose: they are the destinations the menu clicks navigate to,
+ * and replaying them cold skips the in-app menu navigation that establishes the
+ * frameset/session context some PMS report pages require to render. Returns
+ * undefined when there is no click to replay (a directly-navigable feed needs no
+ * menu fallback) — keeping the byte-identical legacy path for those.
+ */
+export function deriveNavChainFromSteps(
+  steps: RecipeStep[],
+): { baseUrl: string; steps: PreStep[] } | undefined {
+  const firstGoto = steps.find((s) => s.kind === 'goto') as { kind: 'goto'; url: string } | undefined;
+  if (!firstGoto) return undefined;
+  const interaction = steps.filter((s) => s.kind !== 'goto');
+  const mapped = mapInPageStepsToPreSteps(interaction, 'dom_table');
+  if (!mapped.some((m) => m.kind === 'click' || m.kind === 'click_at')) return undefined;
+  return { baseUrl: firstGoto.url, steps: mapped };
 }
 
 export function deriveCsvFlowFromSteps(steps: RecipeStep[]): DerivedCsvFlow {
@@ -455,6 +477,13 @@ export function actionRecipeToTableTemplate(
     const domPreSteps = deriveDomPreStepsFromSteps(action.steps);
     if (domPreSteps.length > 0) {
       extra = { ...(extra ?? {}), preSteps: domPreSteps };
+    }
+    // feature/cua-feed-replay — also carry the full learned menu-nav chain so
+    // the extractor can fall back to replaying the in-app menu path (by
+    // roleName) when the cold deep-link source url yields no rows / bounces.
+    const navChain = deriveNavChainFromSteps(action.steps);
+    if (navChain) {
+      extra = { ...(extra ?? {}), navChain };
     }
   } else if (action.parse.mode === 'inline_text') {
     columns = action.parse.fields;

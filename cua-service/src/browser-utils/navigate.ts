@@ -328,3 +328,21 @@ export async function safeGoto(
     timeout: opts.timeoutMs ?? 30_000,
   });
 }
+
+/**
+ * feature/cua-feed-replay — detect whether the current page has bounced to a
+ * re-auth / login screen (session expired, an interstitial, a re-auth popup).
+ * PMS-agnostic: a visible login form (a password field, or a
+ * j_username/username field) is the reliable signal — feed/report pages don't
+ * show one. The DOM extractors call this right after navigating so a bounce
+ * fails the feed loudly with `bounced_to_reauth` (→ the poll re-logs-in) instead
+ * of scraping login chrome as data, and — critically — so a reconcile feed never
+ * auto-resolves live rows from a 0-row read that was really a bounce.
+ */
+export async function detectReauthBounce(page: Page): Promise<boolean> {
+  return page
+    .locator('input[type="password"], input[name="j_username"], input[name="username"]')
+    .first()
+    .isVisible({ timeout: 1_000 })
+    .catch(() => false);
+}

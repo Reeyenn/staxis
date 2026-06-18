@@ -25,8 +25,8 @@ import type { LearnedDateFormat } from '../types.js';
 import { renderDatePlaceholders } from './date-template.js';
 
 export type PreStep =
-  | { kind: 'click'; selector: string; timeoutMs?: number }
-  | { kind: 'click_at'; x: number; y: number }
+  | { kind: 'click'; selector: string; roleName?: { role: string; name: string }; timeoutMs?: number }
+  | { kind: 'click_at'; x: number; y: number; roleName?: { role: string; name: string } }
   | { kind: 'select'; selector: string; value: string; timeoutMs?: number }
   | { kind: 'fill'; selector: string; value: string; timeoutMs?: number }
   | { kind: 'type_text'; value: string }
@@ -57,6 +57,57 @@ function isCredentialValue(value: string): boolean {
  *  '#tokenizedSearch' while still catching '#csrf-token'/'#csrf_token'. */
 const CREDENTIAL_SELECTOR_RE = /passw|pwd|secret|api[-_]?key|token(?![a-z0-9])/i;
 
+/** Validate an optional roleName {role,name} off a raw step object. */
+function parseRoleName(s: Record<string, unknown>): { role: string; name: string } | undefined {
+  const rn = s.roleName as { role?: unknown; name?: unknown } | undefined;
+  if (rn && typeof rn.role === 'string' && rn.role !== '' && typeof rn.name === 'string' && rn.name !== '') {
+    return { role: rn.role, name: rn.name };
+  }
+  return undefined;
+}
+
+/**
+ * Click a recorded target durably. Prefers the ARIA role+accessible-name the
+ * mapper recorded (survives viewport size, data volume, banners, and per-tenant
+ * chrome — a family recipe is replayed across every hotel), falling back to a
+ * css selector, then to the recorded pixel coordinate. Raw-pixel-only was the
+ * old behavior and the prime cross-PMS drift source.
+ */
+async function clickRecorded(
+  page: Page,
+  target: { roleName?: { role: string; name: string }; selector?: string; x?: number; y?: number },
+  timeoutMs: number,
+): Promise<void> {
+  if (target.roleName?.name) {
+    try {
+      await page
+        .getByRole(target.roleName.role as Parameters<Page['getByRole']>[0], { name: target.roleName.name, exact: false })
+        .first()
+        .click({ timeout: timeoutMs });
+      return;
+    } catch {
+      // fall through to selector / coordinate
+    }
+  }
+  if (target.selector) {
+    await page.click(target.selector, { timeout: timeoutMs });
+    return;
+  }
+  if (typeof target.x === 'number' && typeof target.y === 'number') {
+    await page.mouse.click(target.x, target.y);
+    return;
+  }
+  throw new Error('clickRecorded: no roleName, selector, or coordinate to click');
+}
+
+/** Best-effort settle after an interaction that may navigate. A menu click that
+ *  swaps the page must finish loading before the next click/scrape; an in-page
+ *  click leaves networkidle already satisfied so this returns fast. Bounded so a
+ *  chatty page can't stall the poll. */
+async function settleAfterClick(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
+}
+
 /**
  * Parse an untyped `extra.preSteps` payload (jsonb from the knowledge file)
  * into validated PreSteps. Malformed entries make the WHOLE list invalid —
@@ -77,14 +128,18 @@ export function parsePreSteps(raw: unknown): { ok: true; steps: PreStep[] } | { 
     }
     const bad = (field: string) => ({ ok: false as const, reason: `preSteps[${i}] (${s.kind}) missing/invalid "${field}"` });
     switch (s.kind) {
-      case 'click':
+      case 'click': {
         if (typeof s.selector !== 'string' || s.selector === '') return bad('selector');
-        steps.push({ kind: 'click', selector: s.selector, ...(typeof s.timeoutMs === 'number' ? { timeoutMs: s.timeoutMs } : {}) });
+        const rn = parseRoleName(s);
+        steps.push({ kind: 'click', selector: s.selector, ...(rn ? { roleName: rn } : {}), ...(typeof s.timeoutMs === 'number' ? { timeoutMs: s.timeoutMs } : {}) });
         break;
-      case 'click_at':
+      }
+      case 'click_at': {
         if (typeof s.x !== 'number' || typeof s.y !== 'number') return bad('x/y');
-        steps.push({ kind: 'click_at', x: s.x, y: s.y });
+        const rn = parseRoleName(s);
+        steps.push({ kind: 'click_at', x: s.x, y: s.y, ...(rn ? { roleName: rn } : {}) });
         break;
+      }
       case 'select':
         if (typeof s.selector !== 'string' || s.selector === '') return bad('selector');
         if (typeof s.value !== 'string') return bad('value');
@@ -156,10 +211,12 @@ export async function replayPreSteps(
     try {
       switch (step.kind) {
         case 'click':
-          await page.click(step.selector, { timeout: step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS });
+          await clickRecorded(page, { roleName: step.roleName, selector: step.selector }, step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS);
+          await settleAfterClick(page);
           break;
         case 'click_at':
-          await page.mouse.click(step.x, step.y);
+          await clickRecorded(page, { roleName: step.roleName, x: step.x, y: step.y }, DEFAULT_STEP_TIMEOUT_MS);
+          await settleAfterClick(page);
           break;
         case 'select':
           // Credential check on the RAW value first, render after — a

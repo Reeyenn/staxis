@@ -13,7 +13,7 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
-import { safeGoto } from '../browser-utils/navigate.js';
+import { safeGoto, detectReauthBounce } from '../browser-utils/navigate.js';
 import type { FeedSpec } from '../knowledge-file.js';
 
 export interface DomInlineOptions {
@@ -47,15 +47,25 @@ export async function extractDomInline(opts: DomInlineOptions): Promise<DomInlin
     } catch (err) {
       return { ok: false, data: {}, reason: `navigate failed: ${(err as Error).message}` };
     }
+    // Bounded settle for frameset / redirect-chain pages before reading.
+    await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
   }
 
   if (signal?.aborted) return { ok: false, data: {}, reason: 'aborted' };
 
-  // Wait for at least one of the requested selectors to materialize.
+  // feature/cua-feed-replay — re-auth guard: a goto that bounced to a login
+  // screen must not be scraped as data (and never drive a reconcile feed).
+  if (await detectReauthBounce(page)) {
+    return { ok: false, data: {}, reason: 'bounced_to_reauth' };
+  }
+
+  // Wait for at least one of the requested selectors to materialize. attached
+  // (not visible): document.querySelector below reads textContent off attached
+  // nodes — demanding visibility would time out on present-but-hidden values.
   const firstSelector = Object.values(fields)[0];
   if (firstSelector) {
     try {
-      await page.waitForSelector(firstSelector, { timeout: WAIT_TIMEOUT_MS });
+      await page.waitForSelector(firstSelector, { state: 'attached', timeout: WAIT_TIMEOUT_MS });
     } catch (err) {
       return { ok: false, data: {}, reason: `selector did not appear: ${(err as Error).message}` };
     }
