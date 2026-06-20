@@ -148,6 +148,8 @@ export function LiveSurface() {
   const [sel, setSel] = useState<EnrichedRow | null>(null);
   // Hotel currently being assigned a PMS coverage (null = picker closed).
   const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
+  // Hotel pending permanent deletion (null = confirm closed).
+  const [deleteHotel, setDeleteHotel] = useState<EnrichedRow | null>(null);
 
   // Debounced search (300ms) — same as the prior tab.
   useEffect(() => {
@@ -274,7 +276,7 @@ export function LiveSurface() {
             <div style={{ marginTop: 10 }}><DarkEmpty text="No live hotels yet — they'll appear once their first sync completes." /></div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-              {enriched.map((h) => <MapCard key={h.id} h={h} onOpen={() => setSel(h)} onAssign={() => setPickerHotel(h)} />)}
+              {enriched.map((h) => <MapCard key={h.id} h={h} onOpen={() => setSel(h)} onAssign={() => setPickerHotel(h)} onDelete={() => setDeleteHotel(h)} />)}
             </div>
           )}
 
@@ -338,7 +340,7 @@ export function LiveSurface() {
           onClose={() => setSel(null)}
           onPickCoverage={() => setPickerHotel(sel)}
           onDetached={() => { setSel(null); void load(); }}
-          onDeleted={() => { setSel(null); void load(); }}
+          onRequestDelete={() => { setDeleteHotel(sel); setSel(null); }}
         />
       )}
 
@@ -348,6 +350,14 @@ export function LiveSurface() {
           currentPmsFamily={pickerHotel.pmsType}
           onClose={() => setPickerHotel(null)}
           onAssigned={() => { setPickerHotel(null); void load(); }}
+        />
+      )}
+
+      {deleteHotel && (
+        <DeleteHotelModal
+          h={deleteHotel}
+          onClose={() => setDeleteHotel(null)}
+          onDeleted={() => { setDeleteHotel(null); void load(); }}
         />
       )}
     </SurfaceShell>
@@ -428,7 +438,7 @@ function DarkHealth({ label, n, tone }: { label: string; n: number; tone: DotTon
 }
 
 // ── Hotel card — single-click flips front/back, double-click → detail ────
-function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; onAssign: () => void }) {
+function MapCard({ h, onOpen, onAssign, onDelete }: { h: EnrichedRow; onOpen: () => void; onAssign: () => void; onDelete: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [back, setBack] = useState(false);
   const tone = cardTone(h);
@@ -448,14 +458,25 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 }); } }}
       onDoubleClick={onOpen}
       style={{
+        position: 'relative',
         textAlign: 'left', background: dimWhite(.06),
         border: `1px solid ${tone === 'forest' ? dimWhite(.14) : `var(--${tone})`}`,
         borderRadius: 12, padding: '12px 13px', cursor: 'pointer', color: '#fff', minHeight: 78,
       }}
     >
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        title="Delete this hotel"
+        aria-label={`Delete ${h.name ?? 'this hotel'}`}
+        style={{ position: 'absolute', top: 7, right: 9, zIndex: 1, background: 'transparent', border: 'none', padding: '2px 4px', cursor: 'pointer', color: dimWhite(.4), fontFamily: 'var(--sans)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--terracotta)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = dimWhite(.4); }}
+      >
+        Delete
+      </button>
       {!back ? (
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingRight: 44 }}>
             <Dot tone={tone} size={7} />
             <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name ?? '(unnamed)'}</span>
           </div>
@@ -489,36 +510,27 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
   );
 }
 
-// ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onDeleted }: {
+// ── Delete-hotel confirm (typed-exact-name gate; shared by the card delete
+//    control + the detail modal). The server requires the same name match to
+//    delete a LIVE hotel, so this is the accident guard for the live customer.
+function DeleteHotelModal({ h, onClose, onDeleted }: {
   h: EnrichedRow;
-  sms: SmsHealthRow[];
   onClose: () => void;
-  onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
-  onDetached: () => void;       // detach succeeded → refetch + close
-  onDeleted: () => void;        // hotel permanently deleted → refetch + close
+  onDeleted: () => void;   // delete succeeded → refetch + close
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const row = sms.find((x) => x.propertyId === h.id);
-  const hasSystem = h.pmsType !== null;
-  const [detaching, setDetaching] = useState(false);
-  const [detachError, setDetachError] = useState<string | null>(null);
-  // Danger zone — permanently delete the hotel + all its data. Guarded by a
-  // typed-name confirmation (must match the hotel's exact name); the server
-  // requires the same match to delete a live hotel.
-  const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const nameMatches =
     (h.name ?? '').trim().length > 0 &&
     confirmText.trim().toLowerCase() === (h.name ?? '').trim().toLowerCase();
-  useEffect(() => { riseIn(ref.current, { dy: 26, dur: 440 }); }, []);
+  useEffect(() => { riseIn(ref.current, { dy: 26, dur: 380 }); }, []);
 
   const doDelete = async () => {
     if (deleting || !nameMatches) return;
     setDeleting(true);
-    setDeleteError(null);
+    setError(null);
     try {
       const res = await fetchWithAuth('/api/admin/properties/delete', {
         method: 'POST',
@@ -526,17 +538,64 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onDeleted }: {
         body: JSON.stringify({ propertyId: h.id, confirmName: confirmText.trim() }),
       });
       const json = await res.json();
-      if (!json.ok) {
-        setDeleteError(json.error ?? 'Could not delete this hotel. Please try again.');
-        return;
-      }
+      if (!json.ok) { setError(json.error ?? 'Could not delete this hotel. Please try again.'); return; }
       onDeleted();
     } catch (err) {
-      setDeleteError(`Network error: ${(err as Error).message}`);
+      setError(`Network error: ${(err as Error).message}`);
     } finally {
       setDeleting(false);
     }
   };
+
+  return (
+    <Backdrop onClose={onClose}>
+      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 440 }}>
+        <Caps>Delete hotel</Caps>
+        <h3 style={{ fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 10px' }}>
+          Permanently delete <span style={{ fontStyle: 'italic' }}>{h.name ?? '(unnamed)'}</span>?
+        </h3>
+        <p style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.5, marginBottom: 12 }}>
+          This erases the hotel and <strong>all</strong> its data — rooms, staff, schedules, messages, coverage — and frees the owner’s login. It <strong>cannot be undone</strong>. Type the hotel’s name to confirm.
+        </p>
+        <input
+          autoFocus
+          value={confirmText}
+          onChange={(e) => setConfirmText(e.target.value)}
+          placeholder={h.name ?? 'hotel name'}
+          onKeyDown={(e) => { if (e.key === 'Enter' && nameMatches && !deleting) void doDelete(); }}
+          style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '9px 11px', border: '1px solid var(--rule)', borderRadius: 9, background: '#fff', color: 'var(--ink)', outline: 'none', marginBottom: 12 }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Btn variant="terracotta" onClick={doDelete} disabled={!nameMatches || deleting}>
+            {deleting ? 'Deleting…' : 'Permanently delete'}
+          </Btn>
+          <Btn variant="ghost" onClick={onClose} disabled={deleting}>Cancel</Btn>
+        </div>
+        {error && (
+          <div style={{ marginTop: 12, padding: '11px 13px', background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.3)', borderRadius: 12, color: 'var(--terracotta-deep)', fontSize: 12.5, lineHeight: 1.45 }}>
+            {error}
+          </div>
+        )}
+      </div>
+    </Backdrop>
+  );
+}
+
+// ── Hotel detail modal (light card on blurred ink) ───────────────────────
+function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onRequestDelete }: {
+  h: EnrichedRow;
+  sms: SmsHealthRow[];
+  onClose: () => void;
+  onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
+  onDetached: () => void;       // detach succeeded → refetch + close
+  onRequestDelete: () => void;  // open the shared DeleteHotelModal for this hotel
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const row = sms.find((x) => x.propertyId === h.id);
+  const hasSystem = h.pmsType !== null;
+  const [detaching, setDetaching] = useState(false);
+  const [detachError, setDetachError] = useState<string | null>(null);
+  useEffect(() => { riseIn(ref.current, { dy: 26, dur: 440 }); }, []);
 
   // Detach this hotel from its current coverage. Mirrors the FeedbackRow
   // fetch+envelope+busy pattern: POST through fetchWithAuth, read { ok }, and
@@ -609,42 +668,14 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onDeleted }: {
           <Btn variant="ghost" onClick={onClose}>Close</Btn>
         </div>
 
-        {/* Danger zone — permanently delete the hotel + everything attached. */}
+        {/* Danger zone — opens the shared typed-name delete confirm. */}
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--rule)' }}>
-          {!deleteOpen ? (
-            <button
-              onClick={() => { setDeleteOpen(true); setConfirmText(''); setDeleteError(null); }}
-              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--terracotta-deep)', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, textDecoration: 'underline' }}
-            >
-              Delete this hotel…
-            </button>
-          ) : (
-            <div style={{ background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 12, padding: '12px 13px' }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--terracotta-deep)', marginBottom: 4 }}>
-                Permanently delete “{h.name ?? '(unnamed)'}”?
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--ink)', lineHeight: 1.45, marginBottom: 10 }}>
-                This erases the hotel and <strong>all</strong> its data — rooms, staff, schedules, messages, coverage — and can’t be undone. Type the hotel’s name to confirm.
-              </div>
-              <input
-                autoFocus
-                value={confirmText}
-                onChange={(e) => setConfirmText(e.target.value)}
-                placeholder={h.name ?? 'hotel name'}
-                onKeyDown={(e) => { if (e.key === 'Enter' && nameMatches && !deleting) void doDelete(); }}
-                style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '8px 10px', border: '1px solid var(--rule)', borderRadius: 8, background: '#fff', color: 'var(--ink)', outline: 'none', marginBottom: 10 }}
-              />
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Btn variant="terracotta" onClick={doDelete} disabled={!nameMatches || deleting}>
-                  {deleting ? 'Deleting…' : 'Permanently delete'}
-                </Btn>
-                <Btn variant="ghost" onClick={() => { setDeleteOpen(false); setConfirmText(''); setDeleteError(null); }} disabled={deleting}>Cancel</Btn>
-              </div>
-              {deleteError && (
-                <div style={{ marginTop: 10, fontSize: 12, color: 'var(--terracotta-deep)', lineHeight: 1.4 }}>{deleteError}</div>
-              )}
-            </div>
-          )}
+          <button
+            onClick={onRequestDelete}
+            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--terracotta-deep)', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, textDecoration: 'underline' }}
+          >
+            Delete this hotel…
+          </button>
         </div>
       </div>
     </Backdrop>
