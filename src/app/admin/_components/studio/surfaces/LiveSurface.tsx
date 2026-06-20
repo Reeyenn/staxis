@@ -338,6 +338,7 @@ export function LiveSurface() {
           onClose={() => setSel(null)}
           onPickCoverage={() => setPickerHotel(sel)}
           onDetached={() => { setSel(null); void load(); }}
+          onDeleted={() => { setSel(null); void load(); }}
         />
       )}
 
@@ -489,19 +490,53 @@ function MapCard({ h, onOpen, onAssign }: { h: EnrichedRow; onOpen: () => void; 
 }
 
 // ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, sms, onClose, onPickCoverage, onDetached }: {
+function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onDeleted }: {
   h: EnrichedRow;
   sms: SmsHealthRow[];
   onClose: () => void;
   onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
   onDetached: () => void;       // detach succeeded → refetch + close
+  onDeleted: () => void;        // hotel permanently deleted → refetch + close
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const row = sms.find((x) => x.propertyId === h.id);
   const hasSystem = h.pmsType !== null;
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
+  // Danger zone — permanently delete the hotel + all its data. Guarded by a
+  // typed-name confirmation (must match the hotel's exact name); the server
+  // requires the same match to delete a live hotel.
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const nameMatches =
+    (h.name ?? '').trim().length > 0 &&
+    confirmText.trim().toLowerCase() === (h.name ?? '').trim().toLowerCase();
   useEffect(() => { riseIn(ref.current, { dy: 26, dur: 440 }); }, []);
+
+  const doDelete = async () => {
+    if (deleting || !nameMatches) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/properties/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: h.id, confirmName: confirmText.trim() }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setDeleteError(json.error ?? 'Could not delete this hotel. Please try again.');
+        return;
+      }
+      onDeleted();
+    } catch (err) {
+      setDeleteError(`Network error: ${(err as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // Detach this hotel from its current coverage. Mirrors the FeedbackRow
   // fetch+envelope+busy pattern: POST through fetchWithAuth, read { ok }, and
@@ -572,6 +607,44 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onDetached }: {
         <div style={{ display: 'flex', gap: 8 }}>
           <Btn variant="primary" href={`/admin/properties/${h.id}`}>Property page →</Btn>
           <Btn variant="ghost" onClick={onClose}>Close</Btn>
+        </div>
+
+        {/* Danger zone — permanently delete the hotel + everything attached. */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--rule)' }}>
+          {!deleteOpen ? (
+            <button
+              onClick={() => { setDeleteOpen(true); setConfirmText(''); setDeleteError(null); }}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--terracotta-deep)', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, textDecoration: 'underline' }}
+            >
+              Delete this hotel…
+            </button>
+          ) : (
+            <div style={{ background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 12, padding: '12px 13px' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--terracotta-deep)', marginBottom: 4 }}>
+                Permanently delete “{h.name ?? '(unnamed)'}”?
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--ink)', lineHeight: 1.45, marginBottom: 10 }}>
+                This erases the hotel and <strong>all</strong> its data — rooms, staff, schedules, messages, coverage — and can’t be undone. Type the hotel’s name to confirm.
+              </div>
+              <input
+                autoFocus
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={h.name ?? 'hotel name'}
+                onKeyDown={(e) => { if (e.key === 'Enter' && nameMatches && !deleting) void doDelete(); }}
+                style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '8px 10px', border: '1px solid var(--rule)', borderRadius: 8, background: '#fff', color: 'var(--ink)', outline: 'none', marginBottom: 10 }}
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Btn variant="terracotta" onClick={doDelete} disabled={!nameMatches || deleting}>
+                  {deleting ? 'Deleting…' : 'Permanently delete'}
+                </Btn>
+                <Btn variant="ghost" onClick={() => { setDeleteOpen(false); setConfirmText(''); setDeleteError(null); }} disabled={deleting}>Cancel</Btn>
+              </div>
+              {deleteError && (
+                <div style={{ marginTop: 10, fontSize: 12, color: 'var(--terracotta-deep)', lineHeight: 1.4 }}>{deleteError}</div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </Backdrop>
