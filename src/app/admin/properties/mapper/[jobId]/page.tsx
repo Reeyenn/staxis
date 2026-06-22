@@ -59,6 +59,7 @@ import {
   parseCurrentActivity, phaseLabel, isInProgressPhase, parseThoughts,
   type FeedRow, type AgentThought,
 } from '@/lib/pms/learning-board';
+import { REQUIRED_ACTION_KEYS } from '@/lib/pms/recipe-coverage';
 import {
   ArrowLeft, AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronRight,
   CircleSlash, Loader2, MousePointerClick, ShieldAlert, Send, XCircle,
@@ -163,6 +164,21 @@ interface DraftMap {
   actionsFound: number;
   missingRequired: string[];
   missingBusinessCritical: string[];
+  /** Per-feed review summary (additive; older runs/routes omit it → undefined,
+   *  and the Review panel simply doesn't render). NO selectors — counts only. */
+  actionDetails?: Array<{
+    key: string;
+    label: string;
+    status: 'found' | 'missing';
+    rowCount?: number | null;
+    columnCount: number;
+  }>;
+}
+
+/** Per-feed "Learned columns" fetch state (lazy — populated on first expand). */
+interface FeedDetailState {
+  loading: boolean;
+  columns: Record<string, string>;
 }
 
 const GLYPH_META: Record<FeedRow['glyph'], { tone: PillTone; label: string }> = {
@@ -248,6 +264,54 @@ function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: (
         <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
           No screenshot captured for this feed yet.
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The LEARNED COLUMNS the mapper recorded for one feed (field → selector),
+ * fetched from GET /api/admin/mapper/feed-detail and shown UNDER the source
+ * screenshot in an expanded feed. Read-only review: lets the founder confirm
+ * the robot is reading the right fields before going live. Degrades to a calm
+ * empty state when the run learned no columns for this feed (e.g. an api/csv
+ * feed, or one not yet captured).
+ */
+function LearnedColumnsView({ state }: { state?: FeedDetailState }) {
+  const cols = state ? Object.entries(state.columns) : [];
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{
+        fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5),
+        letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6,
+      }}>
+        Learned columns
+      </div>
+      {!state || state.loading ? (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Loading the columns…
+        </div>
+      ) : cols.length === 0 ? (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
+          No named columns learned for this feed.
+        </div>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', fontFamily: FONT_MONO, fontSize: 11 }}>
+          <tbody>
+            {cols.map(([field, selector]) => (
+              <tr key={field}>
+                <td style={{
+                  padding: '3px 16px 3px 0', color: '#fff', whiteSpace: 'nowrap',
+                  borderBottom: `1px solid ${dimWhite(.08)}`, verticalAlign: 'top',
+                }}>{field}</td>
+                <td style={{
+                  padding: '3px 0', color: dimWhite(.55), borderBottom: `1px solid ${dimWhite(.08)}`,
+                  maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }} title={selector}>{selector}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );
@@ -379,6 +443,15 @@ export default function LiveMappingPage() {
   // Coverage Editor). Job-scoped: the capture from THIS run.
   const [captures, setCaptures] = useState<Record<string, CaptureState>>({});
   const captureReqRef = useRef<Set<string>>(new Set());
+
+  // Per-feed LEARNED COLUMNS (field → selector), lazily fetched when a found
+  // feed is expanded (GET /api/admin/mapper/feed-detail). Shown under the
+  // source screenshot for at-a-glance review before going live.
+  const [feedDetails, setFeedDetails] = useState<Record<string, FeedDetailState>>({});
+  const feedDetailReqRef = useRef<Set<string>>(new Set());
+  // Per-feed REMOVE-from-draft in flight (B4). Confirmation modal for Save (B5).
+  const [removingFeed, setRemovingFeed] = useState<string | null>(null);
+  const [confirmSave, setConfirmSave] = useState(false);
 
   const activityRef = useRef<HTMLDivElement>(null);
   const thoughtsRef = useRef<HTMLDivElement>(null);
@@ -921,6 +994,55 @@ export default function LiveMappingPage() {
     setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url: null } }));
   }, []);
 
+  // Lazy-fetch the LEARNED COLUMNS for one feed (called when it's expanded).
+  // The route is graceful (always ok), so an empty map is the empty state.
+  const ensureFeedDetail = useCallback(async (feedKey: string) => {
+    if (feedDetailReqRef.current.has(feedKey)) return;
+    feedDetailReqRef.current.add(feedKey);
+    setFeedDetails((prev) => ({ ...prev, [feedKey]: { loading: true, columns: {} } }));
+    let columns: Record<string, string> = {};
+    try {
+      const res = await fetchWithAuth(
+        `/api/admin/mapper/feed-detail?jobId=${encodeURIComponent(jobId)}&feedKey=${encodeURIComponent(feedKey)}`,
+      );
+      const json = await res.json();
+      if (res.ok && json.ok && json.data?.columns && typeof json.data.columns === 'object') {
+        columns = json.data.columns as Record<string, string>;
+      }
+    } catch {
+      columns = {};
+    }
+    setFeedDetails((prev) => ({ ...prev, [feedKey]: { loading: false, columns } }));
+    // No columns (yet) → let a re-expand retry (mirrors ensureCapture).
+    if (Object.keys(columns).length === 0) feedDetailReqRef.current.delete(feedKey);
+  }, [jobId]);
+
+  // B4 — remove a non-required FOUND feed from the DRAFT before it goes live.
+  // On success, refetch the whole board so the row drops + the review counts
+  // update. The route owns the safety refusals (required / would-empty / live).
+  const removeFeed = useCallback(async (feedKey: string, label: string) => {
+    if (!confirm(`Remove “${label}” from this map? It won’t be carried into the live recipe. You can re-run it later.`)) return;
+    setRemovingFeed(feedKey);
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/draft/delete-feed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, feedKey }),
+      });
+      const json = await res.json();
+      if (!json.ok) { alert(json.error ?? 'Could not remove this feed.'); return; }
+      // Clear any cached column/capture state for the removed feed.
+      feedDetailReqRef.current.delete(feedKey);
+      captureReqRef.current.delete(feedKey);
+      await load();
+    } catch (err) {
+      alert(`Could not remove this feed: ${(err as Error).message}`);
+    } finally {
+      setRemovingFeed(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
   const feedRows = useMemo(() => deriveFeedRows({
     catalog: job?.result?.targetCatalog,
     boardTargets: job?.result?.boardTargets,
@@ -1154,25 +1276,116 @@ export default function LiveMappingPage() {
                   </div>
                 )}
                 {draftMap.status === 'active' || saveState === 'saved' ? (
-                  <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: 'var(--forest)' }}>
-                    <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-                    It&rsquo;s live — this hotel&rsquo;s robot is starting to use it. It shows in the PMS coverage list.
+                  <div>
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: 'var(--forest)' }}>
+                      <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                      It&rsquo;s live — this hotel&rsquo;s robot is starting to use it. It shows in the PMS coverage list.
+                    </div>
+                    {/* B5 — jump to the Coverage Editor for this hotel to tweak
+                        the now-live map feed-by-feed. job.property_id is the
+                        representative property the editor is keyed on. */}
+                    {job?.property_id && (
+                      <div style={{ marginTop: 12 }}>
+                        <Btn
+                          variant="ghost" size="sm"
+                          href={`/admin/properties/coverage/${job.property_id}`}
+                          style={{ color: 'var(--forest)', borderColor: 'rgba(74,124,89,.45)' }}
+                        >
+                          Open the Coverage Editor →
+                        </Btn>
+                      </div>
+                    )}
                   </div>
                 ) : saveState === 'discarded' ? (
                   <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.6) }}>
                     Thrown away. A future run starts learning from scratch.
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <Btn variant="forest" onClick={() => void saveMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
-                      <CheckCircle2 size={13} /> {saveState === 'saving' ? 'Making it live…' : 'Save & Finish — make this live'}
-                    </Btn>
-                    <Btn variant="terracotta" onClick={() => void discardMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
-                      {saveState === 'discarding' ? 'Discarding…' : 'Discard & Cancel'}
-                    </Btn>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
-                      Save makes this the hotel&rsquo;s live PMS recipe. Discard throws it away.
-                    </span>
+                  <>
+                    {/* B2 — Review before going live: each feed + its row /
+                        column counts, and which required feeds are still
+                        missing. From draftMap.actionDetails (additive; older
+                        runs omit it → the panel is simply skipped). */}
+                    {draftMap.actionDetails && draftMap.actionDetails.length > 0 && (
+                      <div style={{
+                        border: `1px solid ${dimWhite(.12)}`, borderRadius: 8,
+                        padding: '10px 14px', marginBottom: 14,
+                      }}>
+                        <Caps c={dimWhite(.5)}>Review before going live</Caps>
+                        <div style={{ marginTop: 8 }}>
+                          {draftMap.actionDetails.map((d) => (
+                            <div key={d.key} style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '5px 0', borderTop: `1px solid ${dimWhite(.06)}`,
+                            }}>
+                              {d.status === 'missing'
+                                ? <AlertTriangle size={13} color="var(--terracotta)" />
+                                : <CheckCircle2 size={13} color="var(--forest)" />}
+                              <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: d.status === 'missing' ? dimWhite(.6) : '#fff' }}>
+                                {d.label}
+                                {REQUIRED_ACTION_KEYS.has(d.key) && (
+                                  <span style={{ fontFamily: FONT_MONO, fontSize: 9.5, color: dimWhite(.45), marginLeft: 8, letterSpacing: '0.08em' }}>REQUIRED</span>
+                                )}
+                              </span>
+                              {d.status === 'missing' ? (
+                                <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: 'var(--terracotta)' }}>missing</span>
+                              ) : (
+                                <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.55) }}>
+                                  {typeof d.rowCount === 'number' ? `${d.rowCount} ${d.rowCount === 1 ? 'row' : 'rows'} · ` : ''}
+                                  {d.columnCount} {d.columnCount === 1 ? 'column' : 'columns'}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <Btn variant="forest" onClick={() => setConfirmSave(true)} disabled={saveState === 'saving' || saveState === 'discarding'}>
+                        <CheckCircle2 size={13} /> {saveState === 'saving' ? 'Making it live…' : 'Save & Finish — make this live'}
+                      </Btn>
+                      <Btn variant="terracotta" onClick={() => void discardMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
+                        {saveState === 'discarding' ? 'Discarding…' : 'Discard & Cancel'}
+                      </Btn>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                        Save makes this the hotel&rsquo;s live PMS recipe. Discard throws it away.
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {/* B5 — Save confirmation modal. Reuses saveMap() / POST
+                    save-map (no route change). The founder confirms going live
+                    after the review above. */}
+                {confirmSave && (
+                  <div style={{
+                    position: 'fixed', inset: 0, zIndex: 1000,
+                    background: 'rgba(0,0,0,.62)', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', padding: 20,
+                  }}>
+                    <DarkCard style={{ padding: '22px 26px', maxWidth: 440, width: '100%', border: '2px solid var(--forest)' }}>
+                      <Caps c="var(--forest)">Make this live?</Caps>
+                      <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: '#fff', margin: '8px 0 6px' }}>
+                        This makes the {draftMap.actionsFound}-feed map this hotel&rsquo;s live PMS recipe — the robot starts using it right away.
+                      </p>
+                      {draftMap.missingRequired.length > 0 && (
+                        <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: 'var(--terracotta)', margin: '0 0 8px' }}>
+                          Heads up: {draftMap.missingRequired.map((t) => prettifyTargetKey(t)).join(', ')} {draftMap.missingRequired.length === 1 ? 'is' : 'are'} still missing.
+                        </p>
+                      )}
+                      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                        <Btn
+                          variant="forest"
+                          onClick={() => { setConfirmSave(false); void saveMap(); }}
+                          disabled={saveState === 'saving'}
+                        >
+                          <CheckCircle2 size={13} /> Yes, make it live
+                        </Btn>
+                        <Btn variant="ghost" onClick={() => setConfirmSave(false)} style={{ color: dimWhite(.7), borderColor: dimWhite(.2) }}>
+                          Cancel
+                        </Btn>
+                      </div>
+                    </DarkCard>
                   </div>
                 )}
               </DarkCard>
@@ -1209,7 +1422,10 @@ export default function LiveMappingPage() {
                     }}>
                       <div
                         onClick={expandable ? () => {
-                          if (!expandedFeeds.has(row.key)) void ensureCapture(row.key);
+                          if (!expandedFeeds.has(row.key)) {
+                            void ensureCapture(row.key);
+                            void ensureFeedDetail(row.key);
+                          }
                           toggleFeed(row.key);
                         } : undefined}
                         style={{
@@ -1273,6 +1489,24 @@ export default function LiveMappingPage() {
                             Skip
                           </Btn>
                         )}
+                        {/* B4 — Remove a non-required FOUND feed from the draft
+                            before it goes live. Only on a finished run whose
+                            draft isn't active yet; never on required feeds (the
+                            route also refuses them). stopPropagation so it
+                            doesn't also toggle the row expand. */}
+                        {row.glyph === 'found' && jobTerminal && draftMap
+                          && draftMap.status !== 'active' && saveState !== 'saved'
+                          && !REQUIRED_ACTION_KEYS.has(row.key) && (
+                          <Btn
+                            variant="ghost" size="sm"
+                            onClick={(e) => { e.stopPropagation(); void removeFeed(row.key, row.label); }}
+                            disabled={removingFeed === row.key}
+                            title="Remove this feed from the map before it goes live"
+                            style={{ color: 'var(--terracotta)', borderColor: 'rgba(192,108,84,.45)' }}
+                          >
+                            {removingFeed === row.key ? 'Removing…' : 'Remove'}
+                          </Btn>
+                        )}
                         {expandable && (expanded
                           ? <ChevronDown size={14} color={dimWhite(.45)} />
                           : <ChevronRight size={14} color={dimWhite(.45)} />)}
@@ -1316,6 +1550,9 @@ export default function LiveMappingPage() {
                               sample so the founder can verify WHERE on the PMS
                               the data came from. */}
                           <FeedCaptureView state={captures[row.key]} onError={() => handleCaptureError(row.key)} />
+                          {/* B1 — the learned columns (field → selector) the
+                              robot recorded for this feed, for review. */}
+                          <LearnedColumnsView state={feedDetails[row.key]} />
                         </div>
                       )}
                     </div>

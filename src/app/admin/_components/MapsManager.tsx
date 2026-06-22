@@ -21,7 +21,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { RefreshCw, Map as MapIcon, AlertTriangle, X } from 'lucide-react';
+import { RefreshCw, Map as MapIcon, AlertTriangle, X, ChevronRight, ChevronDown, ExternalLink, Layers } from 'lucide-react';
 import { FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn } from '@/app/admin/_components/studio/kit';
 import { Backdrop, MODAL_CARD } from '@/app/admin/_components/studio/surface-kit';
 
@@ -56,6 +56,49 @@ interface PendingAction {
   map: MapView;
   label: string;
 }
+
+// ── Per-feed (M1 /api/admin/live-mapper/feeds) ────────────────────────────
+interface FeedView {
+  key: string;
+  actionKey: string | null;
+  label: string;
+  table: string | null;
+  columns: Record<string, string>;
+  required: boolean;
+  learnable: boolean;
+  drilldown: boolean;
+  canTakeover: boolean;
+  rowCount: number | null;
+  source: 'actions' | 'legacy';
+}
+
+interface FeedsPayload {
+  pmsFamily: string;
+  propertyId: string | null;
+  mapVersion: number | null;
+  editable: boolean;
+  shape: 'actions' | 'legacy' | 'empty';
+  feeds: FeedView[];
+}
+
+// Per-family expander state for the "Show feeds" panel.
+interface FeedsState {
+  open: boolean;
+  loading: boolean;
+  error: string | null;
+  data: FeedsPayload | null;
+  /** Which feed's columns are expanded (View). */
+  viewing: string | null;
+  /** A delete confirm/poll in flight, keyed by the feed being deleted. */
+  pendingDelete: FeedView | null;
+  deleteBusy: boolean;
+  deleteError: string | null;
+}
+
+const EMPTY_FEEDS_STATE: FeedsState = {
+  open: false, loading: false, error: null, data: null,
+  viewing: null, pendingDelete: null, deleteBusy: false, deleteError: null,
+};
 
 const FEED_LABEL: Record<string, string> = {
   dashboard_counts: 'Dashboard',
@@ -222,6 +265,158 @@ function ConfirmDialog({ action, busy, error, onCancel, onConfirm }: {
   );
 }
 
+// ── Delete-feed confirm — family-scoped copy (the recipe drives EVERY hotel
+//    on this PMS family, not one hotel). ───────────────────────────────────
+function DeleteFeedDialog({ feed, familyLabel, busy, error, onCancel, onConfirm }: {
+  feed: FeedView; familyLabel: string; busy: boolean; error: string | null;
+  onCancel: () => void; onConfirm: () => void;
+}) {
+  return (
+    <Backdrop onClose={busy ? () => {} : onCancel}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 480 }}>
+        <h3 style={{ fontFamily: FONT_SERIF, fontSize: 21, fontWeight: 500, margin: '0 0 10px', color: 'var(--ink)', lineHeight: 1.25 }}>
+          Remove the {feed.label} feed?
+        </h3>
+        <div style={{ fontSize: 13.5, color: 'var(--ink-soft)', lineHeight: 1.6 }}>
+          This map is shared by <b>every {familyLabel} hotel</b>. Removing this feed
+          re-publishes the map and the robot will <b>stop capturing {feed.label}</b> for{' '}
+          <b>all {familyLabel} hotels</b> — not just one. The robot keeps every other feed.
+          You can add it back later with Edit.
+        </div>
+
+        {error && (
+          <div style={{ marginTop: 14, borderRadius: 10, border: '1px solid rgba(194,86,46,.4)', background: 'rgba(194,86,46,.08)', padding: '9px 12px', fontSize: 12.5, color: 'var(--terracotta-deep)' }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 22 }}>
+          <Btn size="md" variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Btn>
+          <Btn size="md" variant="terracotta" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Removing…' : `Remove for all ${familyLabel} hotels`}
+          </Btn>
+        </div>
+      </div>
+    </Backdrop>
+  );
+}
+
+// ── One feed row inside the "Show feeds" panel ────────────────────────────
+function FeedRow({ feed, editable, onView, viewing, onEdit, onDelete }: {
+  feed: FeedView; editable: boolean; onView: () => void; viewing: boolean;
+  onEdit: () => void; onDelete: () => void;
+}) {
+  const columnNames = Object.keys(feed.columns);
+  return (
+    <div style={{ padding: '11px 14px', borderTop: `1px solid ${dim(.07)}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{feed.label}</span>
+        {feed.required && <Caps size={9} c="var(--gold)" style={{ letterSpacing: '.1em' }}>core feed</Caps>}
+        {feed.drilldown && <Caps size={9} c={dim(.45)} style={{ letterSpacing: '.1em' }}>drill-down</Caps>}
+        <span style={{ flex: 1 }} />
+        {feed.rowCount != null && (
+          <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dim(.45) }} title="rows captured for the sample hotel">
+            {feed.rowCount.toLocaleString()} rows
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* View — toggles the learned columns. Disabled when none parsed. */}
+        <Btn
+          size="sm"
+          variant="ghost"
+          onClick={onView}
+          disabled={columnNames.length === 0}
+          style={{ color: '#fff', borderColor: dim(.22) }}
+          title={columnNames.length === 0 ? 'No column detail to show for this feed' : undefined}
+        >
+          {viewing ? <ChevronDown size={13} style={{ marginRight: 4 }} /> : <ChevronRight size={13} style={{ marginRight: 4 }} />}
+          {columnNames.length === 0 ? 'No detail' : `View ${columnNames.length} ${columnNames.length === 1 ? 'column' : 'columns'}`}
+        </Btn>
+
+        {/* Edit — re-point this feed via founder takeover (opens the board in a
+            new tab). Only when the map is editable and the feed is takeover-able. */}
+        {editable && feed.canTakeover && (
+          <Btn size="sm" variant="forest" onClick={onEdit}>
+            Edit <ExternalLink size={12} style={{ marginLeft: 4 }} />
+          </Btn>
+        )}
+
+        {/* Delete — HIDDEN for required (core) feeds. Family-scoped confirm. */}
+        {editable && !feed.required && (
+          <Btn size="sm" variant="ghost" onClick={onDelete} style={{ color: 'var(--terracotta)', borderColor: 'rgba(194,86,46,.3)' }}>
+            Delete
+          </Btn>
+        )}
+      </div>
+
+      {viewing && columnNames.length > 0 && (
+        <div style={{ marginTop: 2, borderRadius: 10, border: `1px solid ${dim(.1)}`, background: dim(.03), padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {columnNames.map((name) => (
+            <div key={name} style={{ display: 'flex', gap: 10, alignItems: 'baseline', fontFamily: FONT_MONO, fontSize: 11 }}>
+              <span style={{ color: '#fff', fontWeight: 600, minWidth: 110, flexShrink: 0 }}>{name}</span>
+              <span style={{ color: dim(.5), wordBreak: 'break-all' }}>{feed.columns[name]}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── The "Show feeds" panel for ONE family's live map ──────────────────────
+function FeedsPanel({ familyLabel, state, onView, onEdit, onDelete }: {
+  familyLabel: string;
+  state: FeedsState;
+  onView: (feedKey: string) => void;
+  onEdit: (feed: FeedView) => void;
+  onDelete: (feed: FeedView) => void;
+}) {
+  if (state.loading && !state.data) {
+    return <div style={{ padding: '14px 16px', fontSize: 12.5, color: dim(.5) }}>Loading feeds…</div>;
+  }
+  if (state.error) {
+    return (
+      <div style={{ margin: '12px 14px', borderRadius: 10, border: '1px solid rgba(194,86,46,.4)', background: 'rgba(194,86,46,.08)', padding: '9px 12px', fontSize: 12.5, color: '#f0b8a6' }}>
+        {state.error}
+      </div>
+    );
+  }
+  const data = state.data;
+  if (!data) return null;
+
+  if (data.feeds.length === 0) {
+    return (
+      <div style={{ padding: '14px 16px', fontSize: 12.5, color: dim(.5), fontStyle: 'italic' }}>
+        This family has no live map yet — there are no feeds to manage.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {!data.editable && (
+        <div style={{ margin: '12px 14px 4px', borderRadius: 10, border: '1px solid rgba(201,154,46,.4)', background: 'rgba(201,154,46,.12)', padding: '9px 12px', fontSize: 12, color: 'var(--gold)', display: 'flex', gap: 7, alignItems: 'flex-start' }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>This is an older-style map. Re-learn this PMS once to turn on editing and deleting individual feeds.</span>
+        </div>
+      )}
+      {data.feeds.map((f) => (
+        <FeedRow
+          key={f.key}
+          feed={f}
+          editable={data.editable}
+          viewing={state.viewing === f.key}
+          onView={() => onView(f.key)}
+          onEdit={() => onEdit(f)}
+          onDelete={() => onDelete(f)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /**
  * The maps manager as a modal. Launched from the PMS coverage column header in
  * OnboardingSurface. Renders nothing when `open` is false.
@@ -283,6 +478,137 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
     }
   }, [pending, load]);
 
+  // ── Per-family "Show feeds" expander state, keyed by pms_family ──────────
+  const [feedsByFamily, setFeedsByFamily] = useState<Record<string, FeedsState>>({});
+
+  const patchFeeds = useCallback((family: string, patch: Partial<FeedsState>) => {
+    setFeedsByFamily((prev) => ({
+      ...prev,
+      [family]: { ...(prev[family] ?? EMPTY_FEEDS_STATE), ...patch },
+    }));
+  }, []);
+
+  const loadFeeds = useCallback(async (family: string) => {
+    patchFeeds(family, { loading: true, error: null });
+    try {
+      const res = await fetchWithAuth(`/api/admin/live-mapper/feeds?pmsFamily=${encodeURIComponent(family)}`);
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        patchFeeds(family, { loading: false, error: json.error ?? `Request failed (${res.status})` });
+        return;
+      }
+      patchFeeds(family, { loading: false, error: null, data: json.data as FeedsPayload });
+    } catch (err) {
+      patchFeeds(family, { loading: false, error: (err as Error).message });
+    }
+  }, [patchFeeds]);
+
+  const toggleFeeds = useCallback((family: string) => {
+    const cur = feedsByFamily[family] ?? EMPTY_FEEDS_STATE;
+    if (cur.open) {
+      patchFeeds(family, { open: false });
+      return;
+    }
+    patchFeeds(family, { open: true });
+    // (Re)fetch on open so counts/columns are fresh each time.
+    void loadFeeds(family);
+  }, [feedsByFamily, patchFeeds, loadFeeds]);
+
+  // Edit a single feed → reuse POST /api/admin/mapper/coverage/edit-feed with the
+  // representative property, then open the returned board URL in a NEW TAB so the
+  // founder drives the takeover without losing this modal.
+  const editFeed = useCallback(async (family: string, feed: FeedView) => {
+    const state = feedsByFamily[family];
+    const propertyId = state?.data?.propertyId ?? null;
+    const targetKey = feed.actionKey ?? feed.key;
+    if (!propertyId) {
+      patchFeeds(family, { error: 'No hotel session on this PMS to drive the edit. Connect a hotel first.' });
+      return;
+    }
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/coverage/edit-feed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pmsFamily: family, propertyId, targetKey, mode: 'edit' }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        patchFeeds(family, { error: json.error ?? `Could not start the edit (${res.status})` });
+        return;
+      }
+      const boardUrl = json.data?.boardUrl as string | undefined;
+      if (boardUrl) window.open(boardUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      patchFeeds(family, { error: (err as Error).message });
+    }
+  }, [feedsByFamily, patchFeeds]);
+
+  // Delete a single feed → reuse POST /api/admin/mapper/coverage/delete-feed,
+  // then poll GET /api/admin/mapper/live/[jobId] until the worker re-publishes
+  // the map, and refresh the feed list.
+  const runDeleteFeed = useCallback(async (family: string) => {
+    const state = feedsByFamily[family];
+    const feed = state?.pendingDelete;
+    const propertyId = state?.data?.propertyId ?? null;
+    if (!feed) return;
+    const targetKey = feed.actionKey ?? feed.key;
+    if (!propertyId) {
+      patchFeeds(family, { deleteError: 'No hotel session on this PMS to re-publish the map.' });
+      return;
+    }
+    patchFeeds(family, { deleteBusy: true, deleteError: null });
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/coverage/delete-feed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pmsFamily: family, propertyId, targetKey }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        patchFeeds(family, { deleteBusy: false, deleteError: json.error ?? `Could not remove the feed (${res.status})` });
+        return;
+      }
+      const jobId = json.data?.jobId as string | undefined;
+      if (!jobId) {
+        patchFeeds(family, { deleteBusy: false, deleteError: 'The server did not return a job to track.' });
+        return;
+      }
+      // Poll the job until terminal (~up to 60s; the re-sign is a fast non-browser job).
+      const deadline = Date.now() + 60_000;
+      let finalState: 'completed' | 'failed' | 'cancelled' | 'timeout' = 'timeout';
+      let jobErr: string | null = null;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const pollRes = await fetchWithAuth(`/api/admin/mapper/live/${jobId}`);
+          const pollJson = await pollRes.json();
+          if (pollRes.ok && pollJson.ok) {
+            const status = pollJson.data?.job?.status as string | undefined;
+            if (status === 'completed') { finalState = 'completed'; break; }
+            if (status === 'failed' || status === 'cancelled') {
+              finalState = status;
+              jobErr = (pollJson.data?.job?.error as string | undefined) ?? null;
+              break;
+            }
+          }
+        } catch {
+          // transient — keep polling until the deadline
+        }
+      }
+      if (finalState === 'completed') {
+        patchFeeds(family, { deleteBusy: false, pendingDelete: null, deleteError: null, viewing: null });
+        await loadFeeds(family);
+        await load(); // refresh the version list (a new version was published)
+      } else if (finalState === 'timeout') {
+        patchFeeds(family, { deleteBusy: false, deleteError: 'Still working — the map is taking longer than expected. Close and reopen feeds in a moment to check.' });
+      } else {
+        patchFeeds(family, { deleteBusy: false, deleteError: jobErr ?? `The map could not be re-published (${finalState}).` });
+      }
+    } catch (err) {
+      patchFeeds(family, { deleteBusy: false, deleteError: (err as Error).message });
+    }
+  }, [feedsByFamily, patchFeeds, loadFeeds, load]);
+
   if (!open) return null;
 
   const totalMaps = families.reduce((n, f) => n + f.maps.length, 0);
@@ -334,6 +660,7 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {families.map((fam) => {
                 const live = fam.maps.find((m) => m.status === 'active');
+                const fs = feedsByFamily[fam.family] ?? EMPTY_FEEDS_STATE;
                 return (
                   <div key={fam.family} style={{ background: dim(.04), border: `1px solid ${dim(.12)}`, borderRadius: 14, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 16px', borderBottom: `1px solid ${dim(.08)}`, background: dim(.03) }}>
@@ -350,6 +677,39 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
                     {fam.maps.map((m, idx) => (
                       <MapRow key={m.id} map={m} label={fam.label} first={idx === 0} onAction={(a) => { setActionError(null); setPending(a); }} />
                     ))}
+
+                    {/* Per-feed VIEW / EDIT / DELETE — only the LIVE map's feeds
+                        are manageable here, so the expander is only offered when
+                        the family has a live map. */}
+                    {live && (
+                      <div style={{ borderTop: `1px solid ${dim(.08)}`, background: dim(.02) }}>
+                        <button
+                          type="button"
+                          onClick={() => toggleFeeds(fam.family)}
+                          style={{
+                            width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '11px 16px', background: 'transparent', border: 'none',
+                            color: dim(.72), fontSize: 12, fontWeight: 600, cursor: 'pointer', textAlign: 'left',
+                          }}
+                        >
+                          {fs.open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          <Layers size={13} style={{ color: 'var(--forest)' }} />
+                          {fs.open ? 'Hide feeds' : 'Show feeds'}
+                          <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dim(.4), fontWeight: 400 }}>
+                            view / edit / delete each feed
+                          </span>
+                        </button>
+                        {fs.open && (
+                          <FeedsPanel
+                            familyLabel={fam.label}
+                            state={fs}
+                            onView={(feedKey) => patchFeeds(fam.family, { viewing: fs.viewing === feedKey ? null : feedKey })}
+                            onEdit={(feed) => void editFeed(fam.family, feed)}
+                            onDelete={(feed) => patchFeeds(fam.family, { pendingDelete: feed, deleteError: null })}
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -367,6 +727,26 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
           onConfirm={() => void runAction()}
         />
       )}
+
+      {/* Per-feed delete confirm — family-scoped copy (the recipe is shared by
+          every hotel on the PMS family). At most one open at a time. */}
+      {(() => {
+        const entry = Object.entries(feedsByFamily).find(([, s]) => s.pendingDelete);
+        if (!entry) return null;
+        const [family, s] = entry;
+        const fam = families.find((f) => f.family === family);
+        if (!s.pendingDelete) return null;
+        return (
+          <DeleteFeedDialog
+            feed={s.pendingDelete}
+            familyLabel={fam?.label ?? family}
+            busy={s.deleteBusy}
+            error={s.deleteError}
+            onCancel={() => { if (!s.deleteBusy) patchFeeds(family, { pendingDelete: null, deleteError: null }); }}
+            onConfirm={() => void runDeleteFeed(family)}
+          />
+        );
+      })()}
     </Backdrop>
   );
 }
