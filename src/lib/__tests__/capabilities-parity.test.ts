@@ -34,6 +34,9 @@ function reference(
   const meta = CAPABILITY_META[cap];
   if (!meta || meta.adminOnly) return role === 'admin';
   if (role === 'admin') return true;
+  // Manager floor: account/credential-management caps are owner/GM only and an
+  // override cannot lift it (mirrors can() step b.5).
+  if ((cap === 'manage_team' || cap === 'manage_users') && role !== 'owner' && role !== 'general_manager') return false;
   if (overrides && role && isHotelRole(role)) {
     const r = overrides[cap];
     if (r && Object.prototype.hasOwnProperty.call(r, role)) return r[role] === true;
@@ -53,6 +56,9 @@ const OVERRIDE_MAPS: CapabilityOverrideMap[] = [
   { use_packages: { owner: false }, manage_inventory_orders: { housekeeping: false } },
   // An (illegal-but-defensive) attempt to grant an admin-only cap — must be ignored by both.
   { access_admin: { owner: true }, manage_pms_coverage: { general_manager: true } },
+  // An attempt to GRANT team/user management to line staff — the manager floor
+  // must beat the override (both can() and reference return false here).
+  { manage_team: { housekeeping: true }, manage_users: { front_desk: true } },
 ];
 
 describe('resolver parity: can() matches the reference across the full matrix', () => {

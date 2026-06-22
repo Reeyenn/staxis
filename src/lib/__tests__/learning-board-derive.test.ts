@@ -305,7 +305,7 @@ describe('parseCurrentActivity', () => {
     const ca = parseCurrentActivity({
       currentActivity: { feedKey: 'getArrivals', phase: 'navigating', pct: 42.6, at: '2026-06-16T10:00:00Z' },
     });
-    assert.deepEqual(ca, { feedKey: 'getArrivals', phase: 'navigating', pct: 43, at: '2026-06-16T10:00:00Z' });
+    assert.deepEqual(ca, { feedKey: 'getArrivals', phase: 'navigating', pct: 43, at: '2026-06-16T10:00:00Z', totalCostMicros: null });
   });
 
   test('clamps pct to 0..100 and rounds', () => {
@@ -326,7 +326,13 @@ describe('parseCurrentActivity', () => {
 
   test('an unrecognized phase with a feed key still yields a row (phase null)', () => {
     const ca = parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'bogus' } });
-    assert.deepEqual(ca, { feedKey: 'getArrivals', phase: null, pct: null, at: null });
+    assert.deepEqual(ca, { feedKey: 'getArrivals', phase: null, pct: null, at: null, totalCostMicros: null });
+  });
+
+  test('carries a numeric totalCostMicros (feature/cua-mapper-cost); null when absent or garbage', () => {
+    assert.equal(parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'navigating', totalCostMicros: 1234567 } })?.totalCostMicros, 1234567);
+    assert.equal(parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'navigating' } })?.totalCostMicros, null);
+    assert.equal(parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'navigating', totalCostMicros: 'nope' } })?.totalCostMicros, null);
   });
 });
 

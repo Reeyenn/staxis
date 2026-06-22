@@ -390,7 +390,9 @@ type TranslationKey =
   | 'voiceIssueHint' | 'voiceIssueTapToStop'
   // Lost & Found — housekeeper "Found an item" surface
   | 'hkFoundItem' | 'hkFoundItemTitle' | 'hkFoundItemPlaceholder'
-  | 'hkFoundItemPhotoAdd' | 'hkFoundItemSubmit' | 'hkFoundItemError';
+  | 'hkFoundItemPhotoAdd' | 'hkFoundItemSubmit' | 'hkFoundItemError'
+  // Generic housekeeper modal controls (screen-reader aria-labels)
+  | 'hkClose';
 
 // EN and ES carry every TranslationKey; HT/TL/VI carry the housekeeper-
 // facing subset and fall back to EN via t() for anything missing. The
@@ -1224,6 +1226,7 @@ const translations: TranslationMaps = {
     hkFoundItemPhotoAdd:  'Add photo',
     hkFoundItemSubmit:    'Log item',
     hkFoundItemError:     "Couldn't log the item. Try again.",
+    hkClose:              'Close',
   },
 
   es: {
@@ -2043,6 +2046,7 @@ const translations: TranslationMaps = {
     hkFoundItemPhotoAdd:  'Agregar foto',
     hkFoundItemSubmit:    'Registrar',
     hkFoundItemError:     'No se pudo registrar. Intenta de nuevo.',
+    hkClose:              'Cerrar',
   },
 
   // ─────────────────────────────────────────────────────────────────────

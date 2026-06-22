@@ -5,12 +5,51 @@ import type { InventoryCount, InventoryOrder } from '@/types';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
+import { dateLocale, type Lang } from '../inv-i18n';
 
 interface HistoryPanelProps {
+  lang: Lang;
   open: boolean;
   onClose: () => void;
   counts: InventoryCount[];
   orders: InventoryOrder[];
+}
+
+function hpStrings(lang: Lang) {
+  return {
+    en: {
+      eyebrow: 'History',
+      italic: "Everything that's happened",
+      event: 'event',
+      events: 'events',
+      noHistory: 'No history yet.',
+      order: 'Order',
+      count: 'Count',
+      physicalCount: 'Physical count',
+      vendor: 'Vendor',
+      team: 'team',
+      unit: 'unit',
+      units: 'units',
+      item: 'item',
+      items: 'items',
+    },
+    es: {
+      eyebrow: 'Historial',
+      italic: 'Todo lo que ha pasado',
+      event: 'evento',
+      events: 'eventos',
+      noHistory: 'Aún no hay historial.',
+      order: 'Orden',
+      count: 'Conteo',
+      physicalCount: 'Conteo físico',
+      vendor: 'Proveedor',
+      team: 'equipo',
+      unit: 'unidad',
+      units: 'unidades',
+      item: 'artículo',
+      items: 'artículos',
+    },
+  }[lang];
 }
 
 type Row = {
@@ -23,7 +62,8 @@ type Row = {
   varianceSign?: -1 | 0 | 1;
 };
 
-export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProps) {
+export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPanelProps) {
+  const hp = useMemo(() => hpStrings(lang), [lang]);
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
     for (const o of orders) {
@@ -31,9 +71,9 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
       out.push({
         kind: 'order',
         date: when,
-        label: o.itemName ? `Order · ${o.itemName}` : 'Order',
-        who: o.vendorName || 'Vendor',
-        meta: `${o.quantity} ${o.quantity === 1 ? 'unit' : 'units'}`,
+        label: o.itemName ? `${hp.order} · ${o.itemName}` : hp.order,
+        who: o.vendorName || hp.vendor,
+        meta: `${o.quantity} ${o.quantity === 1 ? hp.unit : hp.units}`,
         amount: o.totalCost,
       });
     }
@@ -50,7 +90,7 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
       if (k === 'unknown') continue;
       const first = group[0];
       const dt = first.countedAt!;
-      const who = first.countedBy || 'team';
+      const who = first.countedBy || hp.team;
       const variance = group.reduce(
         (s, c) => s + (typeof c.varianceValue === 'number' ? c.varianceValue : 0),
         0,
@@ -58,29 +98,29 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
       out.push({
         kind: 'count',
         date: dt,
-        label: 'Physical count',
+        label: hp.physicalCount,
         who,
-        meta: `${group.length} item${group.length === 1 ? '' : 's'}`,
+        meta: `${group.length} ${group.length === 1 ? hp.item : hp.items}`,
         amount: variance,
         varianceSign: variance < 0 ? -1 : variance > 0 ? 1 : 0,
       });
     }
     out.sort((a, b) => b.date.getTime() - a.date.getTime());
     return out;
-  }, [counts, orders]);
+  }, [counts, orders, hp]);
 
   const kindStyle = {
     order: {
       color: T.sageDeep,
       bg: T.sageDim,
       border: `${T.forest}48`,
-      label: 'Order',
+      label: hp.order,
     },
     count: {
       color: T.purple,
       bg: T.purpleDim,
       border: `${T.teal}48`,
-      label: 'Count',
+      label: hp.count,
     },
   } as const;
 
@@ -88,9 +128,9 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow="History"
-      italic="Everything that's happened"
-      suffix={`${rows.length} event${rows.length === 1 ? '' : 's'}`}
+      eyebrow={hp.eyebrow}
+      italic={hp.italic}
+      suffix={`${rows.length} ${rows.length === 1 ? hp.event : hp.events}`}
       width={820}
     >
       <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
@@ -105,7 +145,7 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
               fontStyle: 'italic',
             }}
           >
-            No history yet.
+            {hp.noHistory}
           </div>
         ) : (
           rows.map((row, i) => {
@@ -132,7 +172,7 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
                     letterSpacing: '-0.01em',
                   }}
                 >
-                  {shortDate(row.date)}
+                  {shortDate(row.date, lang)}
                 </span>
                 <span
                   style={{
@@ -199,6 +239,6 @@ export function HistoryPanel({ open, onClose, counts, orders }: HistoryPanelProp
   );
 }
 
-function shortDate(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+function shortDate(d: Date, lang: Lang): string {
+  return d.toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric' });
 }

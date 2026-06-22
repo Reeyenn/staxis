@@ -41,7 +41,7 @@ export const dynamic = 'force-dynamic';
  * Poll fallback (10s) only while the realtime channel is down.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -56,10 +56,11 @@ import {
 import '@/app/admin/_components/studio/studio.css';
 import {
   deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, prettifyTargetKey,
-  parseCurrentActivity, phaseLabel, isInProgressPhase, type FeedRow,
+  parseCurrentActivity, phaseLabel, isInProgressPhase, parseThoughts,
+  type FeedRow, type AgentThought,
 } from '@/lib/pms/learning-board';
 import {
-  ArrowLeft, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight,
+  ArrowLeft, AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronRight,
   CircleSlash, Loader2, MousePointerClick, ShieldAlert, Send, XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -202,6 +203,56 @@ function DarkScope({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Per-feed source-screenshot fetch state (lazy — populated on first expand). */
+interface CaptureState { loading: boolean; url: string | null }
+
+/**
+ * feature/cua-admin-mapper-visibility — the SOURCE screen the robot read a feed
+ * from, shown inside an expanded feed on the LIVE board (mirrors the Coverage
+ * Editor's FeedCaptureView). Lets the founder confirm the robot pulled each feed
+ * off the RIGHT PMS page. Lazily fetched (only when a feed is opened), job-scoped
+ * to THIS run. Degrades to a calm empty state until the worker has captured one.
+ */
+function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{
+        fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5),
+        letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6,
+        display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <Camera size={11} /> Source screen the robot read
+      </div>
+      {!state || state.loading ? (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Loading the screenshot…
+        </div>
+      ) : state.url ? (
+        <div style={{
+          width: '100%', maxWidth: 760, border: `1px solid ${dimWhite(.14)}`,
+          borderRadius: 8, overflow: 'hidden', lineHeight: 0,
+        }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={state.url}
+            alt="The PMS screen the robot captured this feed from (sensitive fields redacted)"
+            loading="lazy"
+            // A signed URL that's gone stale (1h signature lapsed, or the object
+            // was swept) degrades to the empty state and clears the cache so
+            // re-expanding refetches a fresh URL.
+            onError={onError}
+            style={{ width: '100%', height: 'auto', display: 'block' }}
+          />
+        </div>
+      ) : (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
+          No screenshot captured for this feed yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * 2FA code box on the live watch page (feature/cua-polish).
  *
@@ -302,6 +353,10 @@ export default function LiveMappingPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [guidanceText, setGuidanceText] = useState('');
+  // feature/cua-operator-notes — leave the running robot a nudge.
+  const [noteText, setNoteText] = useState('');
+  const [noteSending, setNoteSending] = useState(false);
+  const [sentNotes, setSentNotes] = useState<Array<{ at: string; text: string }>>([]);
   const [marker, setMarker] = useState<ClickMarker | null>(null);
   const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
   // feature/cua-live-view — the robot's latest screen (continuous live view).
@@ -319,7 +374,14 @@ export default function LiveMappingPage() {
   const takeoverFrameSeqRef = useRef(0);
   const takeoverFrameBusyRef = useRef(false);
 
+  // feature/cua-admin-mapper-visibility — per-feed SOURCE screenshots on the
+  // live board, lazily fetched when a found feed is expanded (mirrors the
+  // Coverage Editor). Job-scoped: the capture from THIS run.
+  const [captures, setCaptures] = useState<Record<string, CaptureState>>({});
+  const captureReqRef = useRef<Set<string>>(new Set());
+
   const activityRef = useRef<HTMLDivElement>(null);
+  const thoughtsRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameFetchBusyRef = useRef(false);
   // A live_frame event landing while a fetch is in flight must not be
@@ -645,6 +707,32 @@ export default function LiveMappingPage() {
     setMarker(null);
   }, [pendingHelp?.id, pendingHelp?.screenshot_storage_path]);
 
+  // feature/cua-operator-notes — POST a note; the worker folds it into the
+  // robot's next step. Optimistically echo it so the founder sees it landed.
+  const sendNote = async () => {
+    const text = noteText.trim();
+    if (!text || noteSending) return;
+    setNoteSending(true);
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, note: text }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setSentNotes((prev) => [...prev, { at: new Date().toISOString(), text }].slice(-20));
+        setNoteText('');
+      } else {
+        alert(`Couldn’t send the note: ${json.error ?? 'unknown'}`);
+      }
+    } catch (e) {
+      alert(`Couldn’t send the note: ${(e as Error).message}`);
+    } finally {
+      setNoteSending(false);
+    }
+  };
+
   const submitAssist = async (
     actionType: 'guidance' | 'unavailable' | 'takeover' | 'abort',
     responseText?: string,
@@ -805,6 +893,34 @@ export default function LiveMappingPage() {
     });
   };
 
+  // Lazy-fetch the source screenshot for one feed (called when it's expanded).
+  // Job-scoped → the capture from THIS run. Failures land as url:null (the empty
+  // state) and stay retryable.
+  const ensureCapture = useCallback(async (capKey: string) => {
+    if (captureReqRef.current.has(capKey)) return;
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: true, url: null } }));
+    let url: string | null = null;
+    try {
+      const res = await fetchWithAuth(
+        `/api/admin/mapper/feed-capture?jobId=${encodeURIComponent(jobId)}&feedKey=${encodeURIComponent(capKey)}`,
+      );
+      const json = await res.json();
+      if (res.ok && json.ok && typeof json.data?.url === 'string') url = json.data.url;
+    } catch {
+      url = null;
+    }
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url } }));
+    if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
+  }, [jobId]);
+
+  // A stale/broken signed URL falls back to the empty state and frees the key
+  // so a re-expand refetches a fresh URL.
+  const handleCaptureError = useCallback((capKey: string) => {
+    captureReqRef.current.delete(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url: null } }));
+  }, []);
+
   const feedRows = useMemo(() => deriveFeedRows({
     catalog: job?.result?.targetCatalog,
     boardTargets: job?.result?.boardTargets,
@@ -821,6 +937,15 @@ export default function LiveMappingPage() {
   // broadcast + the short poll below. Older jobs never wrote it → livePhase is
   // null and the indicator is simply absent (graceful degradation).
   const currentActivity = useMemo(() => parseCurrentActivity(job?.result), [job]);
+  // feature/cua-operator-notes — the robot's live reasoning log.
+  const thoughts = useMemo<AgentThought[]>(() => parseThoughts(job?.result), [job]);
+  // Auto-scroll the thinking log to the newest line (declared here so `thoughts`
+  // is in scope before the effect references it — runs before the early returns).
+  useEffect(() => {
+    if (thoughtsRef.current) {
+      thoughtsRef.current.scrollTop = thoughtsRef.current.scrollHeight;
+    }
+  }, [thoughts.length]);
   const livePhase = useMemo(() => {
     if (!currentActivity?.phase) return null;
     const noun = currentActivity.feedKey ? prettifyTargetKey(currentActivity.feedKey) : '';
@@ -903,7 +1028,13 @@ export default function LiveMappingPage() {
     );
   }
 
-  const costDollars = job ? (job.claude_cost_micros / 1_000_000).toFixed(2) : '0.00';
+  // feature/cua-mapper-cost — live spend: currentActivity.totalCostMicros ticks
+  // during the run (job.claude_cost_micros is only written at completion); fall
+  // back to the job's final total once the run ends and currentActivity clears.
+  const liveCostMicros = currentActivity?.totalCostMicros ?? (job ? job.claude_cost_micros : null);
+  const costDollars = liveCostMicros != null ? (liveCostMicros / 1_000_000).toFixed(2) : '0.00';
+  const feedsCostMicros = feedRows.reduce((acc, r) => acc + (r.costMicros ?? 0), 0);
+  const overheadCostMicros = liveCostMicros != null ? Math.max(0, liveCostMicros - feedsCostMicros) : null;
   const hotelName = property?.display_name ?? null;
 
   return (
@@ -981,6 +1112,14 @@ export default function LiveMappingPage() {
                     {summary.waiting > 0 && !jobTerminal && <Pill tone="neutral">{summary.waiting} waiting</Pill>}
                   </div>
                 </div>
+                {/* feature/cua-mapper-cost — spend breakdown (live during the run) */}
+                {liveCostMicros != null && (
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.55), marginTop: 12 }}>
+                    Spent <span style={{ color: '#fff' }}>${(liveCostMicros / 1_000_000).toFixed(2)}</span> total
+                    {' · '}${(feedsCostMicros / 1_000_000).toFixed(2)} on feeds
+                    {overheadCostMicros != null && <>{' · '}${(overheadCostMicros / 1_000_000).toFixed(2)} setup &amp; navigation</>}
+                  </div>
+                )}
               </DarkCard>
             )}
 
@@ -1047,9 +1186,20 @@ export default function LiveMappingPage() {
                 </div>
                 {feedRows.map((row) => {
                   const meta = GLYPH_META[row.glyph];
-                  const expandable = row.glyph === 'found' && Array.isArray(row.sample) && row.sample.length > 0;
+                  // Any found feed is expandable so the founder can open it to
+                  // see the SOURCE screenshot under it — even when the row sample
+                  // is empty (an empty departures page is still worth proving).
+                  const hasSample = Array.isArray(row.sample) && row.sample.length > 0;
+                  const expandable = row.glyph === 'found';
                   const expanded = expandedFeeds.has(row.key);
-                  const sampleCols = expandable ? Object.keys(row.sample![0] ?? {}) : [];
+                  const sampleCols = hasSample ? Object.keys(row.sample![0] ?? {}) : [];
+                  // feature/cua-mapper-cost — per-feed spend: final once done, or
+                  // the active feed's running cost (live total − its start).
+                  const rowCostMicros = row.costMicros != null
+                    ? row.costMicros
+                    : (row.glyph === 'searching' && row.startCostMicros != null && liveCostMicros != null
+                        ? Math.max(0, liveCostMicros - row.startCostMicros)
+                        : null);
                   return (
                     <div key={row.key} style={{
                       borderTop: `1px solid ${dimWhite(.08)}`,
@@ -1058,7 +1208,10 @@ export default function LiveMappingPage() {
                       padding: row.glyph === 'stuck' ? '0 24px' : 0,
                     }}>
                       <div
-                        onClick={expandable ? () => toggleFeed(row.key) : undefined}
+                        onClick={expandable ? () => {
+                          if (!expandedFeeds.has(row.key)) void ensureCapture(row.key);
+                          toggleFeed(row.key);
+                        } : undefined}
                         style={{
                           display: 'flex', alignItems: 'center', gap: 10,
                           padding: '9px 0', cursor: expandable ? 'pointer' : 'default',
@@ -1093,6 +1246,15 @@ export default function LiveMappingPage() {
                             {row.rowCount} {row.rowCount === 1 ? 'row' : 'rows'} seen
                           </span>
                         )}
+                        {/* feature/cua-mapper-cost — per-feed spend, on the side */}
+                        {rowCostMicros != null && (
+                          <span
+                            style={{ fontFamily: FONT_MONO, fontSize: 11, color: row.glyph === 'searching' ? 'var(--gold)' : dimWhite(.55) }}
+                            title={row.glyph === 'searching' ? 'Spent on this feed so far' : 'Spent learning this feed'}
+                          >
+                            ${(rowCostMicros / 1_000_000).toFixed(2)}{row.glyph === 'searching' ? '…' : ''}
+                          </span>
+                        )}
                         {row.glyph === 'found' && row.carried && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.45) }} title="Carried over from an earlier attempt or from the existing recipe (repair run)">carried</span>
                         )}
@@ -1117,34 +1279,43 @@ export default function LiveMappingPage() {
                       </div>
                       {expandable && expanded && (
                         <div style={{ padding: '2px 0 12px 26px', overflowX: 'auto' }}>
-                          <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5), marginBottom: 6, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-                            {row.sampleKind === 'records' ? 'Sample records it captured' : 'First rows it captured'}
-                          </div>
-                          <table style={{ borderCollapse: 'collapse', fontFamily: FONT_MONO, fontSize: 11 }}>
-                            <thead>
-                              <tr>
-                                {sampleCols.map((c) => (
-                                  <th key={c} style={{
-                                    textAlign: 'left', padding: '3px 14px 3px 0', color: dimWhite(.5),
-                                    fontWeight: 500, borderBottom: `1px solid ${dimWhite(.14)}`,
-                                  }}>{c}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {row.sample!.map((r, i) => (
-                                <tr key={i}>
-                                  {sampleCols.map((c) => (
-                                    <td key={c} style={{
-                                      padding: '3px 14px 3px 0', color: dimWhite(.66),
-                                      borderBottom: `1px solid ${dimWhite(.08)}`,
-                                      maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}>{r[c] ?? ''}</td>
+                          {hasSample && (
+                            <>
+                              <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5), marginBottom: 6, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                                {row.sampleKind === 'records' ? 'Sample records it captured' : 'First rows it captured'}
+                              </div>
+                              <table style={{ borderCollapse: 'collapse', fontFamily: FONT_MONO, fontSize: 11 }}>
+                                <thead>
+                                  <tr>
+                                    {sampleCols.map((c) => (
+                                      <th key={c} style={{
+                                        textAlign: 'left', padding: '3px 14px 3px 0', color: dimWhite(.5),
+                                        fontWeight: 500, borderBottom: `1px solid ${dimWhite(.14)}`,
+                                      }}>{c}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {row.sample!.map((r, i) => (
+                                    <tr key={i}>
+                                      {sampleCols.map((c) => (
+                                        <td key={c} style={{
+                                          padding: '3px 14px 3px 0', color: dimWhite(.66),
+                                          borderBottom: `1px solid ${dimWhite(.08)}`,
+                                          maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                        }}>{r[c] ?? ''}</td>
+                                      ))}
+                                    </tr>
                                   ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                                </tbody>
+                              </table>
+                            </>
+                          )}
+                          {/* feature/cua-admin-mapper-visibility — the SOURCE
+                              screen the robot read this feed from, UNDER the row
+                              sample so the founder can verify WHERE on the PMS
+                              the data came from. */}
+                          <FeedCaptureView state={captures[row.key]} onError={() => handleCaptureError(row.key)} />
                         </div>
                       )}
                     </div>
@@ -1476,6 +1647,66 @@ export default function LiveMappingPage() {
                 </div>
               </DarkCard>
             )}
+
+            {/* feature/cua-operator-notes — the robot's live reasoning */}
+            <DarkCard style={{ padding: '16px 20px', marginBottom: 16 }}>
+              <Caps c={dimWhite(.5)}>What it&rsquo;s thinking</Caps>
+              <div
+                ref={thoughtsRef}
+                style={{
+                  fontFamily: FONT_SANS, fontSize: 12.5, color: dimWhite(.8),
+                  lineHeight: 1.55, marginTop: 8, maxHeight: 340,
+                  overflowY: 'auto', background: 'rgba(0,0,0,.3)',
+                  padding: 12, borderRadius: 4,
+                }}
+              >
+                {thoughts.length === 0
+                  ? <div style={{ color: dimWhite(.45), fontFamily: FONT_MONO, fontSize: 11 }}>Its reasoning streams here as it works…</div>
+                  : thoughts.map((th, i) => (
+                      <div key={i} style={{ padding: '6px 0', borderTop: i === 0 ? 'none' : `1px solid ${dimWhite(.08)}` }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.4) }}>
+                          {th.at ? new Date(th.at).toLocaleTimeString() : ''}{th.feedKey ? ` · ${prettifyTargetKey(th.feedKey)}` : ''}
+                        </span>
+                        <div style={{ marginTop: 2 }}>{th.text}</div>
+                      </div>
+                    ))}
+              </div>
+              {/* feature/cua-operator-notes — leave the robot a note (live runs only) */}
+              {!jobTerminal && (
+                <div style={{ marginTop: 14 }}>
+                  <Caps c={dimWhite(.5)}>Leave it a note</Caps>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <input
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !noteSending) void sendNote(); }}
+                      placeholder="e.g. “try the Reports menu” or “wrong page, go back”"
+                      maxLength={500}
+                      style={{
+                        flex: 1, minWidth: 0, fontFamily: FONT_SANS, fontSize: 13,
+                        padding: '9px 12px', background: dimWhite(.06), color: '#fff',
+                        border: `1px solid ${dimWhite(.18)}`, borderRadius: 8, outline: 'none',
+                      }}
+                    />
+                    <Btn variant="forest" onClick={() => void sendNote()} disabled={noteSending || noteText.trim() === ''}>
+                      <Send size={12} /> {noteSending ? 'Sending…' : 'Send note'}
+                    </Btn>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45), marginTop: 6 }}>
+                    It reads your note on its next step (a few seconds) and adjusts.
+                  </div>
+                  {sentNotes.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      {sentNotes.map((n, i) => (
+                        <div key={i} style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.62), padding: '2px 0' }}>
+                          <span style={{ color: dimWhite(.4) }}>{new Date(n.at).toLocaleTimeString()}</span> · sent: {n.text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </DarkCard>
 
             {/* Activity feed */}
             <DarkCard style={{ padding: '16px 20px' }}>

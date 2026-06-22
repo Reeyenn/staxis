@@ -9,7 +9,7 @@ import type { DailyAverages } from '@/lib/inventory-predictions';
 import type { CartLineInput, OrderingMode } from '@/lib/ordering/types';
 import { apiCreateOrders, apiSendOrder } from '../ordering-api';
 
-import { T, fonts, statusColor, catColor, catLabel, type InvCat } from '../tokens';
+import { T, fonts, statusColor, catColor, type InvCat } from '../tokens';
 import { CatIcon } from '../CatIcon';
 import { ItemThumb } from '../ItemThumb';
 import { Caps } from '../Caps';
@@ -20,6 +20,7 @@ import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import { recommendReorder, suggestQuantity } from '../adapter';
 import type { DisplayItem, ReorderRec } from '../types';
+import { catLabelFor, type Lang } from '../inv-i18n';
 
 interface ReorderPanelProps {
   open: boolean;
@@ -40,10 +41,9 @@ interface ReorderPanelProps {
 
 type LineState = { checked: boolean; qty: number };
 
-const URG_LABEL: Record<'now' | 'soon' | 'ok', string> = {
-  now: 'Order now',
-  soon: 'Order soon',
-  ok: 'OK for now',
+const URG_LABEL: Record<Lang, Record<'now' | 'soon' | 'ok', string>> = {
+  en: { now: 'Order now', soon: 'Order soon', ok: 'OK for now' },
+  es: { now: 'Pedir ahora', soon: 'Pedir pronto', ok: 'Bien por ahora' },
 };
 const URG_COLOR: Record<'now' | 'soon' | 'ok', string> = {
   now: statusColor.critical,
@@ -78,10 +78,10 @@ export function ReorderPanel({
     if (!open) return [];
     const out: Array<ReorderRec & { display: DisplayItem }> = [];
     for (const d of display) {
-      const { urgency, reason } = recommendReorder(d, averages, mlRateMap);
+      const { urgency, reason } = recommendReorder(d, averages, mlRateMap, L);
       // Hide truly fine items (status=good AND urgency=ok AND not below par) from the panel.
       if (urgency === 'ok' && d.status === 'good') continue;
-      const sq = suggestQuantity(d);
+      const sq = suggestQuantity(d, L);
       out.push({
         itemId: d.id,
         suggestQty: sq.qty,
@@ -99,7 +99,7 @@ export function ReorderPanel({
       ord[a.urgency] - ord[b.urgency] || a.display.daysLeft - b.display.daysLeft,
     );
     return out;
-  }, [open, display, averages, mlRateMap]);
+  }, [open, display, averages, mlRateMap, L]);
 
   // Honesty-audit Phase 4: detect newly-onboarded hotel (every rec is
   // fallback-60d or no-data) so we can render the onboarding banner instead
@@ -218,6 +218,26 @@ export function ReorderPanel({
     viewOrders: { en: 'View orders →', es: 'Ver órdenes →' }[L],
     managerOnly: { en: 'Only managers can place orders.', es: 'Solo gerentes pueden crear órdenes.' }[L],
     proNote: { en: 'Orders will need approval before they can be sent.', es: 'Las órdenes necesitarán aprobación antes de enviarse.' }[L],
+    reorder: { en: 'Reorder', es: 'Pedido' }[L],
+    item: { en: 'item', es: 'artículo' }[L],
+    items: { en: 'items', es: 'artículos' }[L],
+    inCart: { en: 'in cart', es: 'en carrito' }[L],
+    vendor: { en: 'vendor', es: 'proveedor' }[L],
+    vendors: { en: 'vendors', es: 'proveedores' }[L],
+    noUsageDataYet: { en: 'No usage data yet.', es: 'Aún no hay datos de uso.' }[L],
+    onboardingBanner: {
+      en: ' These suggestions are based on par levels, not real usage. Add a few counts so the AI can learn how fast each item moves — once it’s seen ~3 counts per item it’ll start predicting daily rates and pre-checking what’s actually low.',
+      es: ' Estas sugerencias se basan en niveles par, no en uso real. Agrega algunos conteos para que la IA aprenda qué tan rápido se mueve cada artículo — tras ~3 conteos por artículo empezará a predecir tasas diarias y a preseleccionar lo que está bajo.',
+    }[L],
+    nothingToReorder: { en: 'Nothing to reorder — every item is above par.', es: 'Nada que pedir — todos los artículos están sobre el par.' }[L],
+    thisMonth: { en: 'this month', es: 'este mes' }[L],
+    overBudget: { en: 'over budget', es: 'sobre presupuesto' }[L],
+    headroom: { en: 'headroom', es: 'disponible' }[L],
+    noCap: { en: 'no cap', es: 'sin límite' }[L],
+    spent: { en: 'spent', es: 'gastado' }[L],
+    cap: { en: 'cap', es: 'límite' }[L],
+    daysLeftSuffix: { en: 'd left', es: 'd restantes' }[L],
+    lead: { en: 'lead', es: 'entrega' }[L],
   };
 
   const resultMsg = placeResult
@@ -232,9 +252,9 @@ export function ReorderPanel({
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow={`Reorder · ${recs.length} item${recs.length === 1 ? '' : 's'}`}
+      eyebrow={`${TT.reorder} · ${recs.length} ${recs.length === 1 ? TT.item : TT.items}`}
       italic={fmtMoney(cartTotal)}
-      suffix={`${cartItems.length} in cart · ${distinctVendors} vendor${distinctVendors === 1 ? '' : 's'}`}
+      suffix={`${cartItems.length} ${TT.inCart} · ${distinctVendors} ${distinctVendors === 1 ? TT.vendor : TT.vendors}`}
       accent={statusColor.critical}
       width={1080}
       footer={
@@ -292,6 +312,8 @@ export function ReorderPanel({
             return (
               <BudgetMeter
                 key={cat}
+                lang={L}
+                tt={TT}
                 cat={cat}
                 capDollars={monthly}
                 spentDollars={spentCents / 100}
@@ -318,11 +340,8 @@ export function ReorderPanel({
               lineHeight: 1.5,
             }}
           >
-            <b style={{ color: T.ink }}>No usage data yet.</b>{' '}
-            These suggestions are based on par levels, not real usage. Add a
-            few counts so the AI can learn how fast each item moves — once
-            it&apos;s seen ~3 counts per item it&apos;ll start predicting
-            daily rates and pre-checking what&apos;s actually low.
+            <b style={{ color: T.ink }}>{TT.noUsageDataYet}</b>
+            {TT.onboardingBanner}
           </div>
         )}
 
@@ -341,7 +360,7 @@ export function ReorderPanel({
               fontStyle: 'italic',
             }}
           >
-            Nothing to reorder — every item is above par.
+            {TT.nothingToReorder}
           </div>
         ) : (
           groups.map((g) => (
@@ -358,7 +377,7 @@ export function ReorderPanel({
                     fontWeight: 600,
                   }}
                 >
-                  {URG_LABEL[g.urgency]}
+                  {URG_LABEL[L][g.urgency]}
                 </span>
                 <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3 }}>
                   {g.recs.length}
@@ -369,6 +388,8 @@ export function ReorderPanel({
                 {g.recs.map((rec) => (
                   <ReorderRow
                     key={rec.itemId}
+                    daysLeftSuffix={TT.daysLeftSuffix}
+                    leadLabel={TT.lead}
                     rec={rec}
                     line={state[rec.itemId] || { checked: false, qty: rec.suggestQty }}
                     onToggle={() =>
@@ -415,11 +436,15 @@ function budgetFor(budgets: InventoryBudget[], cat: InventoryCategory): number {
 }
 
 function BudgetMeter({
+  lang,
+  tt,
   cat,
   capDollars,
   spentDollars,
   projectedDollars,
 }: {
+  lang: Lang;
+  tt: { thisMonth: string; overBudget: string; headroom: string; noCap: string; spent: string; cap: string };
   cat: InvCat;
   capDollars: number;
   spentDollars: number;
@@ -444,7 +469,7 @@ function BudgetMeter({
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <CatIcon cat={cat} size={22} />
         <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink, fontWeight: 600 }}>
-          {catLabel[cat]}
+          {catLabelFor(lang, cat)}
         </span>
         <span style={{ flex: 1 }} />
         <span
@@ -456,7 +481,7 @@ function BudgetMeter({
             textTransform: 'uppercase',
           }}
         >
-          this month
+          {tt.thisMonth}
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
@@ -480,7 +505,7 @@ function BudgetMeter({
             color: over ? statusColor.critical : T.ink2,
           }}
         >
-          {capDollars > 0 ? (over ? 'over budget' : 'headroom') : 'no cap'}
+          {capDollars > 0 ? (over ? tt.overBudget : tt.headroom) : tt.noCap}
         </span>
       </div>
       <span
@@ -524,20 +549,24 @@ function BudgetMeter({
           letterSpacing: '0.04em',
         }}
       >
-        <span>spent {fmtMoney(spentDollars)}</span>
+        <span>{tt.spent} {fmtMoney(spentDollars)}</span>
         {projectedDollars > 0 && <span>+ {fmtMoney(projectedDollars)}</span>}
-        <span>cap {capDollars > 0 ? fmtMoney(capDollars) : '—'}</span>
+        <span>{tt.cap} {capDollars > 0 ? fmtMoney(capDollars) : '—'}</span>
       </div>
     </div>
   );
 }
 
 function ReorderRow({
+  daysLeftSuffix,
+  leadLabel,
   rec,
   line,
   onToggle,
   onQty,
 }: {
+  daysLeftSuffix: string;
+  leadLabel: string;
   rec: ReorderRec & { display: DisplayItem };
   line: LineState;
   onToggle: () => void;
@@ -601,7 +630,7 @@ function ReorderRow({
             textOverflow: 'ellipsis',
           }}
         >
-          {(d.vendor || '—')} · lead {d.leadDays}d
+          {(d.vendor || '—')} · {leadLabel} {d.leadDays}d
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
@@ -616,7 +645,7 @@ function ReorderRow({
           }}
         >
           {d.estimated}/{d.par} ·{' '}
-          <span style={{ color: c, fontWeight: 600 }}>{d.daysLeft}d left</span>
+          <span style={{ color: c, fontWeight: 600 }}>{d.daysLeft}{daysLeftSuffix}</span>
         </span>
       </div>
       <div

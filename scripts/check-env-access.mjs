@@ -39,6 +39,23 @@ const EXEMPT_FILES = new Set([
 const EXEMPT_READS = new Set([
   'cua-service/src/mapper.ts:CUA_STRUCTURED_DISCOVERY_ENABLED',
   'cua-service/src/extractors/date-template.ts:CUA_PMS_TZ',
+  // CUA discovery/verify kill switches + tuning knobs (default-off, ops-flippable
+  // via Fly secret without a redeploy — same call-time-read rationale as above).
+  'cua-service/src/mapper.ts:CUA_DISCOVERY_IDENTIFY_SAMPLES',
+  'cua-service/src/mapper.ts:CUA_DISCOVERY_MAX_ENTROPY',
+  'cua-service/src/mapper.ts:CUA_DISCOVERY_MIN_DOMINANCE',
+  'cua-service/src/mapper.ts:CUA_VERIFY_REPLAY_PASSES',
+  'cua-service/src/mapper.ts:CUA_CSV_DISCOVERY_ENABLED',
+  'cua-service/src/mapper.ts:CUA_INLINE_DISCOVERY_ENABLED',
+  'cua-service/src/mapping-driver.ts:CUA_VERIFY_ENFORCE',
+  'cua-service/src/mapping-driver.ts:CUA_VERIFY_COMMIT_THRESHOLD',
+  'cua-service/src/mapping-driver.ts:CUA_VERIFY_REQUIRED_PASSES',
+  'cua-service/src/mapping-driver.ts:CUA_VERIFY_SECOND_MODEL_ENABLED',
+  'cua-service/src/mapping-driver.ts:CUA_SAMPLE_VERIFY_ENABLED',
+  'cua-service/src/mapping-driver.ts:CUA_SAMPLE_VERIFY_N',
+  'cua-service/src/mapping-driver.ts:CUA_GOLDEN_FIXTURES_ENABLED',
+  'cua-service/src/session-driver.ts:CUA_REANCHOR_ENABLED',
+  'cua-service/src/session-driver.ts:CUA_PMS_TZ',
 ]);
 
 const SCAN_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];

@@ -663,6 +663,13 @@ export interface BoardTargetState {
   /** Failure/unavailable explanation (truncated). */
   reason?: string;
   preview?: BoardPreview;
+  /** feature/cua-mapper-cost — per-feed Claude spend (micros). startCostMicros =
+   *  the run's total spend when this feed STARTED (so the live board can show
+   *  the active feed's running cost = currentActivity.totalCostMicros − this);
+   *  costMicros = this feed's final spend, stamped when it finishes. Both
+   *  additive/optional — absent on rows from older workers. */
+  startCostMicros?: number;
+  costMicros?: number;
 }
 
 /**
@@ -685,4 +692,8 @@ export interface BoardCurrentActivity {
   pct: number;
   /** ISO timestamp of this transition. */
   at: string;
+  /** feature/cua-mapper-cost — live total Claude spend (micros) at this tick.
+   *  job.claude_cost_micros is only written at completion, so this carries the
+   *  running total for the board's live cost. Additive/optional. */
+  totalCostMicros?: number;
 }

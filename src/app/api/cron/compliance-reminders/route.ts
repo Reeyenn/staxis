@@ -13,6 +13,7 @@ import { errToString } from '@/lib/utils';
 import { processSmsJobs } from '@/lib/sms-jobs';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { runComplianceRemindersForProperty } from '@/lib/compliance/reminders';
+import { runWithConcurrency } from '@/lib/parallel';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,13 +44,38 @@ async function handle(req: NextRequest) {
     return err('failed to list properties', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
+  // Resolve each property's real timezone. Reminders + life-safety escalation
+  // SMS gate on the property's LOCAL hour; without this they fired at Chicago
+  // time for every hotel, so non-Central hotels got their nudges and overdue
+  // escalations at the wrong local hour. (Correctness audit 2026-06-18.)
+  const tzById = new Map<string, string>();
+  if (propertyIds.length) {
+    const { data: tzRows } = await supabaseAdmin
+      .from('properties')
+      .select('id, timezone')
+      .in('id', propertyIds);
+    for (const r of tzRows ?? []) {
+      tzById.set(String(r.id), (r as { timezone?: string | null }).timezone || 'America/Chicago');
+    }
+  }
+
   let remindersSent = 0;
   let escalationsSent = 0;
-  const results = await Promise.allSettled(propertyIds.map((id) => runComplianceRemindersForProperty(id)));
-  for (const r of results) {
-    if (r.status === 'fulfilled') {
-      remindersSent += r.value.remindersSent;
-      escalationsSent += r.value.escalationsSent;
+  // Bounded fan-out (cap 5) instead of an unbounded Promise.allSettled stampede
+  // that, at fleet scale, opens one connection per property at once.
+  const now = new Date();
+  const outcomes = await runWithConcurrency(
+    propertyIds,
+    (id) => runComplianceRemindersForProperty(id, now, tzById.get(id) ?? 'America/Chicago'),
+    5,
+  );
+  let failed = 0;
+  for (const o of outcomes) {
+    if (o.ok) {
+      remindersSent += o.value.remindersSent;
+      escalationsSent += o.value.escalationsSent;
+    } else {
+      failed += 1;
     }
   }
 
@@ -57,7 +83,6 @@ async function handle(req: NextRequest) {
   try { await processSmsJobs(100); }
   catch (e) { log.error('[cron/compliance-reminders] drain failed', { requestId, msg: errToString(e) }); }
 
-  const failed = results.filter((r) => r.status === 'rejected').length;
   await writeCronHeartbeat('compliance-reminders', {
     requestId,
     notes: { properties: propertyIds.length, remindersSent, escalationsSent, failed },

@@ -29,6 +29,7 @@ import { verifyWebhookSignature, stripeIsConfigured, type Stripe } from '@/lib/s
 import { redactStripeId } from '@/lib/api-validate';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { captureException } from '@/lib/sentry';
 
 // Stripe sends webhooks as raw JSON in the request body. Next.js by
 // default does NOT consume the body before the route handler runs (that
@@ -128,11 +129,23 @@ export async function POST(req: NextRequest) {
       eventId: event.id,
       eventType: event.type,
     });
-    // Delete the dedupe row so the next retry has a chance to succeed.
-    await supabaseAdmin
+    // Delete the dedupe row so the next retry has a chance to succeed. If this
+    // delete itself fails, the row survives and Stripe's retry would be masked
+    // as 'already processed' even though the handler never succeeded — surface
+    // it loudly so it can be cleared manually. (Audit fix 2026-06-18; a fuller
+    // two-phase claimed/completed dedupe is the longer-term hardening.)
+    const { error: dedupeDelErr } = await supabaseAdmin
       .from('stripe_processed_events')
       .delete()
       .eq('event_id', event.id);
+    if (dedupeDelErr) {
+      log.error('[stripe/webhook] dedupe row delete FAILED after handler error — event may be masked on retry', {
+        eventId: event.id, msg: errToString(dedupeDelErr),
+      });
+      captureException(new Error('stripe dedupe delete failed after handler error'), {
+        subsystem: 'stripe-webhook', eventId: event.id,
+      });
+    }
     // Return 500 so Stripe retries. Stripe retries with exponential
     // backoff for up to 3 days, which gives us plenty of time to fix
     // a bad deploy without losing events.
@@ -216,15 +229,27 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
       const sub = event.data.object as Stripe.Subscription;
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
       const status = mapStripeStatus(sub.status);
+      const patch: Record<string, unknown> = {
+        subscription_status: status,
+        stripe_subscription_id: sub.id,
+      };
+      // The subscription_status CHECK requires trial_ends_at to be set when the
+      // status is 'trial'. If we write 'trial' onto a row whose trial_ends_at is
+      // null (e.g. a paid row Stripe re-trials, or an out-of-order replay), the
+      // write 23514s, the handler re-throws, and Stripe 500-retries the SAME
+      // event for 3 days — stranding billing sync. Populate trial_ends_at from
+      // the Stripe-authoritative trial_end. (Audit fix 2026-06-18.)
+      if (status === 'trial') {
+        patch.trial_ends_at = sub.trial_end
+          ? new Date(sub.trial_end * 1000).toISOString()
+          : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+      }
       // Status guard prevents an out-of-order Stripe replay (e.g., a
       // stale 'updated' event arriving after 'deleted') from
       // resurrecting a canceled or terminal-state subscription. Only
       // states that can legitimately transition forward are eligible
       // for update. (Pass-3 fix — H2.)
-      return updateProperty(customerId, {
-        subscription_status: status,
-        stripe_subscription_id: sub.id,
-      }, {
+      return updateProperty(customerId, patch, {
         in: { column: 'subscription_status', values: ['trial', 'active', 'past_due', 'incomplete', 'unpaid', 'paused'] },
       });
     }

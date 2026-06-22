@@ -9,6 +9,7 @@
 // building the backend.
 
 import React from 'react';
+import { useLang } from '@/contexts/LanguageContext';
 import { T, fonts, Btn } from './_tokens';
 
 export type ComingSoonKind =
@@ -46,14 +47,42 @@ const COPY: Record<ComingSoonKind, { title: string; body: string }> = {
   },
 };
 
+const COPY_ES: Record<ComingSoonKind, { title: string; body: string }> = {
+  'request-time-off': {
+    title: 'Las solicitudes de tiempo libre llegarán pronto',
+    body:  'Lo estamos construyendo. Por ahora, escribe directamente a tu gerente.',
+  },
+  'pickup-shift': {
+    title: 'La toma de turnos abiertos llegará pronto',
+    body:  'Lo estamos construyendo. Por ahora, tu gerente te enviará un SMS cuando se abran turnos.',
+  },
+  'swap-shift': {
+    title: 'Los intercambios de turno llegarán pronto',
+    body:  'Lo estamos construyendo. Por ahora, pídele a tu gerente que haga el cambio por ti.',
+  },
+  'publish-week': {
+    title: 'La publicación de la semana llegará pronto',
+    body:  'Por ahora, envía los mensajes de mañana desde Limpieza → Horario.',
+  },
+  'copy-last-week': {
+    title: 'Copiar la semana pasada llegará pronto',
+    body:  'Por ahora, envía los mensajes de mañana desde Limpieza → Horario.',
+  },
+  'cell-edit': {
+    title: 'La edición de celdas llegará pronto',
+    body:  'Por ahora, edita el equipo de mañana desde Limpieza → Horario. La cuadrícula semanal es de solo lectura.',
+  },
+};
+
 export function ComingSoonModal({
   kind, onClose,
 }: {
   kind: ComingSoonKind | null;
   onClose: () => void;
 }) {
+  const { lang } = useLang();
   if (!kind) return null;
-  const { title, body } = COPY[kind];
+  const { title, body } = (lang === 'es' ? COPY_ES : COPY)[kind];
   return (
     <div
       onClick={onClose}
@@ -83,7 +112,7 @@ export function ComingSoonModal({
           fontFamily: fonts.sans, fontSize: 14, color: T.ink2, lineHeight: 1.55,
         }}>{body}</p>
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Btn variant="primary" size="md" onClick={onClose}>Got it</Btn>
+          <Btn variant="primary" size="md" onClick={onClose}>{lang === 'es' ? 'Entendido' : 'Got it'}</Btn>
         </div>
       </div>
     </div>

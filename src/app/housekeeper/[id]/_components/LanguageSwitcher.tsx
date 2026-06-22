@@ -157,7 +157,7 @@ export function LanguageSwitcher({ current, onChange }: Props) {
                   setOpen(false);
                   setQuery('');
                 }}
-                aria-label="Close"
+                aria-label={t('hkClose', current)}
                 style={{
                   minHeight: 44,
                   minWidth: 44,

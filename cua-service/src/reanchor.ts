@@ -29,7 +29,7 @@
 
 import type { Recipe, ActionRecipe, TieredSelector } from './types.js';
 import { certifyColumns, type ActionKey } from './column-recovery.js';
-import { CORE_TARGET_CONTRACTS, type LearnedTranslations } from './target-contract.js';
+import { requiredLearnedFor, type LearnedTranslations } from './target-contract.js';
 import { normalizeHeaderText, parseFirstNthIndex, rebaseNthIndex } from './extractors/dom-rows.js';
 
 /** Minimum rows the fresh extraction must yield before ANY value judgement is
@@ -39,12 +39,14 @@ import { normalizeHeaderText, parseFirstNthIndex, rebaseNthIndex } from './extra
  *  paid path — acceptable (abstain-by-default). */
 export const MIN_REANCHOR_ROWS = 3;
 
-/** Required column NAMES for a core target (the value contract). Non-core targets
- *  (optional money/booking feeds) have no contract → re-anchor abstains on them. */
+/** ESSENTIAL column NAMES for a core target (the value contract). Non-core targets
+ *  (optional money/booking feeds) have no contract → re-anchor abstains on them.
+ *  feature/cua-tolerant-mapper: re-anchor health certifies ONLY the essentials
+ *  (via requiredLearnedFor), so a healthy feed whose contextual date is page-blank
+ *  (e.g. arrivals' arrival_date) is no longer judged "uncertified" → no spurious
+ *  fall-through to the paid $3 re-learn for the exact tolerance case we just fixed. */
 export function requiredColumnsForTarget(actionKey: ActionKey): string[] {
-  const contract = CORE_TARGET_CONTRACTS[actionKey];
-  if (!contract) return [];
-  return contract.columns.filter((c) => c.required).map((c) => c.name);
+  return requiredLearnedFor(actionKey);
 }
 
 // ─── CASE A: transient-health confirmation ──────────────────────────────────

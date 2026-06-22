@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { useLang } from '@/contexts/LanguageContext';
+import AuthShell, { AuthLabel, AuthError, AuthPanel, AUTH_LINK } from '@/components/AuthShell';
 
 export default function ResetPasswordPage() {
   const { lang } = useLang();
@@ -97,159 +98,72 @@ export default function ResetPasswordPage() {
     }, 1500);
   };
 
+  const disabled = submitting || !password || !confirm;
+
   return (
-    <div style={{
-      minHeight: '100dvh',
-      background: 'var(--bg)',
-      display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      padding: '32px 24px',
-    }}>
-      <div style={{ width: '100%', maxWidth: '360px' }}>
+    <AuthShell subtitle={lang === 'es' ? 'Elige una nueva contraseña' : 'Choose a new password'}>
 
-        <div style={{ marginBottom: '40px', textAlign: 'center' }}>
-          <div style={{
-            width: '44px', height: '44px', borderRadius: '11px',
-            background: 'var(--amber)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            margin: '0 auto 16px',
-          }}>
-            <span style={{ fontSize: '22px', fontWeight: 700, color: '#FFFFFF', fontFamily: 'var(--font-mono)' }}>S</span>
+      {hasRecovery === false ? (
+        <AuthPanel>
+          <p style={{ fontSize: 14, color: '#1F231C', lineHeight: 1.5, marginBottom: 16 }}>
+            {lang === 'es'
+              ? 'Este enlace no es válido o ha expirado. Solicita uno nuevo.'
+              : 'This link is invalid or has expired. Request a new one.'}
+          </p>
+          <Link href="/signin/forgot" style={{ fontSize: 14, color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
+            {lang === 'es' ? 'Pedir un nuevo enlace' : 'Request a new link'}
+          </Link>
+        </AuthPanel>
+      ) : done ? (
+        <AuthPanel>
+          <p style={{ fontSize: 14, color: '#1F231C' }}>
+            {lang === 'es' ? 'Contraseña actualizada. Redirigiendo…' : 'Password updated. Redirecting…'}
+          </p>
+        </AuthPanel>
+      ) : (
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+          <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <AuthLabel>{lang === 'es' ? 'Nueva contraseña' : 'New password'}</AuthLabel>
+            <input
+              className="si-input"
+              type="password"
+              value={password}
+              onChange={e => { setPassword(e.target.value); setError(''); }}
+              autoComplete="new-password"
+              disabled={submitting}
+              placeholder="••••••••"
+            />
           </div>
-          <h1 style={{
-            fontFamily: 'var(--font-sans)', fontWeight: 700,
-            fontSize: '22px', letterSpacing: '-0.02em',
-            color: 'var(--text-primary)', marginBottom: '6px',
-          }}>
-            {lang === 'es' ? 'Nueva contraseña' : 'Set new password'}
-          </h1>
-        </div>
 
-        {hasRecovery === false ? (
-          <div style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '24px 20px', textAlign: 'center',
-          }}>
-            <p style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: '16px' }}>
-              {lang === 'es'
-                ? 'Este enlace no es válido o ha expirado. Solicita uno nuevo.'
-                : 'This link is invalid or has expired. Request a new one.'}
-            </p>
-            <Link
-              href="/signin/forgot"
-              style={{
-                fontSize: '14px', color: 'var(--navy-light)',
-                textDecoration: 'none', fontFamily: 'var(--font-sans)',
-              }}
-            >
-              {lang === 'es' ? 'Pedir un nuevo enlace' : 'Request a new link'}
-            </Link>
+          <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <AuthLabel>{lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'}</AuthLabel>
+            <input
+              className="si-input"
+              type="password"
+              value={confirm}
+              onChange={e => { setConfirm(e.target.value); setError(''); }}
+              autoComplete="new-password"
+              disabled={submitting}
+              placeholder="••••••••"
+            />
           </div>
-        ) : done ? (
-          <div style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '24px 20px', textAlign: 'center',
-          }}>
-            <p style={{ fontSize: '14px', color: 'var(--text-primary)' }}>
-              {lang === 'es' ? 'Contraseña actualizada. Redirigiendo…' : 'Password updated. Redirecting…'}
-            </p>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{
-                fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
-                color: 'var(--text-secondary)', textTransform: 'uppercase',
-                fontFamily: 'var(--font-sans)',
-              }}>
-                {lang === 'es' ? 'Nueva contraseña' : 'New password'}
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => { setPassword(e.target.value); setError(''); }}
-                autoComplete="new-password"
-                disabled={submitting}
-                style={{
-                  height: '44px', borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg-card)', border: '1px solid var(--border)',
-                  padding: '0 14px',
-                  color: 'var(--text-primary)', fontSize: '15px',
-                  fontFamily: 'var(--font-sans)',
-                  outline: 'none',
-                  opacity: submitting ? 0.6 : 1,
-                }}
-              />
-            </div>
+          {error && <AuthError>{error}</AuthError>}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{
-                fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
-                color: 'var(--text-secondary)', textTransform: 'uppercase',
-                fontFamily: 'var(--font-sans)',
-              }}>
-                {lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'}
-              </label>
-              <input
-                type="password"
-                value={confirm}
-                onChange={e => { setConfirm(e.target.value); setError(''); }}
-                autoComplete="new-password"
-                disabled={submitting}
-                style={{
-                  height: '44px', borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg-card)', border: '1px solid var(--border)',
-                  padding: '0 14px',
-                  color: 'var(--text-primary)', fontSize: '15px',
-                  fontFamily: 'var(--font-sans)',
-                  outline: 'none',
-                  opacity: submitting ? 0.6 : 1,
-                }}
-              />
-            </div>
-
-            {error && (
-              <p style={{
-                fontSize: '13px', color: 'var(--red)',
-                background: 'var(--red-dim)',
-                border: '1px solid var(--red-border, rgba(239,68,68,0.2))',
-                borderRadius: 'var(--radius-sm)',
-                padding: '10px 12px',
-                margin: 0,
-              }}>
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={submitting || !password || !confirm}
-              style={{
-                width: '100%', height: '48px', marginTop: '4px',
-                borderRadius: 'var(--radius-md)',
-                background: (submitting || !password || !confirm)
-                  ? 'rgba(37,99,235,0.4)'
-                  : 'var(--navy-light)',
-                color: '#FFFFFF',
-                fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '15px',
-                border: 'none',
-                cursor: (submitting || !password || !confirm) ? 'not-allowed' : 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
-            >
-              {submitting
-                ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-                : (lang === 'es' ? 'Guardar contraseña' : 'Save password')
-              }
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+          <button
+            type="submit"
+            disabled={disabled}
+            className={`si-btn si-rise si-d-3 ${disabled ? 'si-btn-off' : 'si-btn-on'}`}
+            style={{ marginTop: 4 }}
+          >
+            {submitting
+              ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
+              : (lang === 'es' ? 'Guardar contraseña' : 'Save password')
+            }
+          </button>
+        </form>
+      )}
+    </AuthShell>
   );
 }

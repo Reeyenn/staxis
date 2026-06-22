@@ -277,6 +277,16 @@ export type RateLimitEndpoint =
   // (pid, staffId) composite via hashToRateLimitKey, fail-open like the other
   // non-AI comms write endpoints.
   | 'comms-acknowledge'
+  // ── Unified Worklist (2026-06-14) — the Communications To-do view's auto-
+  // gathered cross-module worklist. read = the aggregated GET; assign/complete
+  // are the dispatch writes. ALL keyed on the RAW property id (a real
+  // properties.id) — api_limits.property_id FKs properties(id), so a
+  // hashToRateLimitKey composite would FK-violate. Per-property caps; not
+  // billing-impacting (the complaint-assign SMS keeps its own complaints-sms
+  // raw-pid guard), so they fail OPEN on an RPC blip.
+  | 'worklist-read'
+  | 'worklist-assign'
+  | 'worklist-complete'
   // ── Inventory Ordering (2026-05-31) — GM/owner ordering suite. ALL keyed on
   // the RAW property id (a real properties.id) — api_limits.property_id has an
   // FK to properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
@@ -554,6 +564,14 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // announcement. 200/hr per (pid,staffId) absorbs catching up on a backlog of
   // mandatory reads + accidental double-taps, well above realistic use.
   'comms-acknowledge':          200,
+  // Unified Worklist — read is the aggregated GET (the To-do view polls it ~every
+  // 15s while open). 3600/hr per property = ~15 simultaneously-open terminals
+  // before a 429, matching the housekeeper-rooms / lost-found-read poll
+  // precedent (a single open tab is ~240/hr). Writes (assign/complete) are
+  // deliberate taps; 300/hr per property is far above real completion volume.
+  'worklist-read':             3600,
+  'worklist-assign':            300,
+  'worklist-complete':          300,
   // Inventory Ordering — per-property (raw pid). order-create/approve/receive
   // are deliberate manager actions; order-send fires email (billing); reads are
   // panel polls. Tuned to "a manager working through orders" with headroom.

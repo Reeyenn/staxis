@@ -14,6 +14,7 @@
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { runWithConcurrency } from '@/lib/parallel';
 import { errToString } from '@/lib/utils';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
@@ -46,13 +47,10 @@ export async function POST(req: NextRequest) {
     if (error) throw error;
 
     let scanned = 0;
-    let rewritten = 0;
     let skipped = 0;
     let nonPending = 0;
     const examples: Array<{ from: string; to: string; status: string }> = [];
-
-    // PromiseLike — see backfill-phonelookup for the same-shaped comment.
-    const updates: PromiseLike<unknown>[] = [];
+    const toUpdate: Array<{ token: string; normalized: string }> = [];
 
     for (const row of (confs ?? [])) {
       scanned += 1;
@@ -65,20 +63,30 @@ export async function POST(req: NextRequest) {
       if (!normalized) { skipped += 1; continue; }
       if (normalized === current) { skipped += 1; continue; }
 
-      updates.push(
-        supabaseAdmin
-          .from('shift_confirmations')
-          .update({ staff_phone: normalized })
-          .eq('token', row.token as string)
-          .then(({ error: upErr }) => { if (upErr) throw upErr; }),
-      );
-      rewritten += 1;
+      toUpdate.push({ token: row.token as string, normalized });
       if (examples.length < 10) examples.push({ from: current, to: normalized, status });
     }
 
-    if (updates.length > 0) await Promise.all(updates);
+    // Bounded fan-out (cap 20) instead of firing every UPDATE at once and
+    // aborting the whole run on the first failure. (Audit fix 2026-06-18.)
+    const outcomes = await runWithConcurrency(
+      toUpdate,
+      async (r) => {
+        const { error: upErr } = await supabaseAdmin
+          .from('shift_confirmations')
+          .update({ staff_phone: r.normalized })
+          .eq('token', r.token);
+        if (upErr) throw upErr;
+      },
+      20,
+    );
+    const failed = outcomes.filter((o) => !o.ok).length;
+    const rewritten = outcomes.length - failed;
+    if (failed > 0) {
+      log.error('[admin/normalize-confirmation-phones] some updates failed', { failed, total: outcomes.length });
+    }
 
-    return ok({ scanned, nonPending, rewritten, skipped, examples }, { requestId });
+    return ok({ scanned, nonPending, rewritten, failed, skipped, examples }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
     log.error('[admin/normalize-confirmation-phones] error', { msg });

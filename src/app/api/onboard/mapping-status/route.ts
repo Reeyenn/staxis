@@ -274,6 +274,8 @@ async function buildFeedBreakdown(
     .from('pms_knowledge_files')
     .select('knowledge')
     .eq('pms_family', pmsFamily)
+    .eq('status', 'active')
+    .is('deleted_at', null)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

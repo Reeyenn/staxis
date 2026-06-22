@@ -942,6 +942,10 @@ export function evaluatePromotionGate(
   // is read STRUCTURALLY (ActionRecipe is owned by types.ts, out of scope here)
   // and is ABSENT ⟹ proven: legacy live recipes have no field and stay trusted,
   // so a backfill/promote re-check never mass-reparks the fleet (monotonic).
+  //
+  // feature/cua-tolerant-mapper — `unprovenRequiredColumns` is stamped only from
+  // ESSENTIALS (finalizeRecoveredSuccess), so a blank/derived contextual date
+  // never lands here and never holds a feed for review. No change needed.
   const unprovenByTarget = new Map<string, string[]>();
   for (const t of REQUIRED_TARGETS) {
     const action = recipe.actions[t];
@@ -1642,6 +1646,7 @@ async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerificat
       .from('pms_knowledge_files')
       .select('knowledge')
       .eq('pms_family', pmsFamily)
+      .is('deleted_at', null)
       .order('version', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1783,6 +1788,7 @@ async function checkSeededPromotionGuards(
     .select('version, knowledge')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (error) {
     return {
@@ -1886,7 +1892,7 @@ async function promoteDraft(
   const familyActiveExists = async (): Promise<boolean | null> => {
     const { data, error } = await supabase
       .from('pms_knowledge_files')
-      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').maybeSingle();
+      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').is('deleted_at', null).maybeSingle();
     if (error) return null; // unknown — caller decides conservatively
     return !!data;
   };
@@ -1905,6 +1911,7 @@ async function promoteDraft(
       .from('pms_knowledge_files')
       .update({ status: 'active', promoted_to_active_at: promotedAt ?? nowIso, deprecated_at: null })
       .eq('id', id).eq('status', 'deprecated')
+      .is('deleted_at', null)
       .select('id').maybeSingle();
     return !error && !!data;
   };
@@ -1918,6 +1925,7 @@ async function promoteDraft(
     const { data: prev } = await supabase
       .from('pms_knowledge_files')
       .select('id').eq('pms_family', pmsFamily).eq('status', 'deprecated')
+      .is('deleted_at', null)
       .order('version', { ascending: false }).limit(1).maybeSingle();
     if (!prev) return false;
     return restoreActiveById(prev.id as string, null);
@@ -1933,6 +1941,7 @@ async function promoteDraft(
     .select('id, promoted_to_active_at')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (priorErr) {
     // We could not read the current active. REFUSE to start mutating: a failed
@@ -2307,7 +2316,13 @@ export async function saveDraftKnowledgeFile(
         created_by: 'mapper:mapping-driver',
         notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
           (gateNote ? ` Gate: ${gateNote}` : ''),
-        signature: signatureBytes,
+        // Store the HMAC as a PostgREST bytea HEX LITERAL ('\xDEADBEEF…').
+        // Passing the raw Buffer made supabase-js JSON-serialize it as
+        // {"type":"Buffer","data":[…]} and persist THAT TEXT into the bytea
+        // column — so every stored signature was ~138 bytes of JSON garbage and
+        // verifyRecipe (a 32-byte HMAC) could never match → enforce-mode refused
+        // to load the active recipe. decodeBytea() reads the '\x' hex back.
+        signature: signatureBytes ? '\\x' + signatureBytes.toString('hex') : null,
         signed_with_key_id: signedWithKeyId,
         signed_at: signedAt,
       })

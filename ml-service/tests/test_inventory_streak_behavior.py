@@ -14,6 +14,8 @@ regression that subtly changes the math is caught here, not 6 weeks
 later by a reviewer.
 """
 
+from datetime import datetime, timedelta
+
 from src.training._streak import compute_consecutive_passes as _compute_consecutive_passes
 
 
@@ -196,3 +198,109 @@ def test_validation_mae_at_threshold_boundary_fails():
         current_mean_observed_rate=CURRENT_MEAN,
     )
     assert streak == 1, "ratio == threshold must NOT pass (strict less-than)"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# [9] denominator: prior runs use mean_observed_rate, NOT training_mae
+# ────────────────────────────────────────────────────────────────────────────
+def test_prior_uses_persisted_mean_observed_rate_not_training_mae():
+    """A prior whose val_mae is 40% of its mean must FAIL the 10% gate, even if
+    its training_mae is large. The old code divided by max(training_mae, mean),
+    so a large training_mae (5.0) made ratio 0.4/5.0 = 0.08 < 0.10 and the bad
+    prior counted. Now the prior's persisted mean_observed_rate (1.0) is the
+    denominator → ratio 0.40 → correctly fails."""
+    prior = {
+        "validation_mae": 0.4,
+        "training_mae": 5.0,                       # would mask the failure (old bug)
+        "training_row_count": 60,
+        "hyperparameters": {"mean_observed_rate": 1.0},
+    }
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=[prior],
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=1.0,
+    )
+    assert streak == 1, "prior must be judged on its own mean_observed_rate"
+
+
+def test_prior_passes_on_its_own_mean_when_train_mae_tiny():
+    """Symmetric: an overfit prior (tiny train_mae) must still PASS when its
+    val_mae is small relative to its OWN mean. Old code's max(train_mae, mean)
+    could understate the denominator and unfairly fail it."""
+    prior = {
+        "validation_mae": 0.4,
+        "training_mae": 0.001,
+        "training_row_count": 60,
+        "hyperparameters": {"mean_observed_rate": 8.0},   # ratio 0.4/8 = 0.05 → pass
+    }
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=[prior],
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=1.0,
+    )
+    assert streak == 2
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# [2] time-spacing distinctness gate
+# ────────────────────────────────────────────────────────────────────────────
+_BASE = datetime(2026, 2, 1, 12, 0, 0)
+
+
+def _good_run_at(days_before: float):
+    return {**_good_run(), "trained_at": (_BASE - timedelta(days=days_before)).isoformat()}
+
+
+def test_rapid_retrains_do_not_inflate_streak():
+    """4 good priors all minutes apart → distinctness gate skips them → streak 1."""
+    priors = [_good_run_at(days_before=(i + 1) / 144.0) for i in range(4)]  # ~10-40 min back
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=priors,
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=CURRENT_MEAN,
+        current_trained_at=_BASE.isoformat(),
+        min_gap_seconds=24 * 3600,
+    )
+    assert streak == 1
+
+
+def test_distinct_weekly_priors_count_toward_streak():
+    """4 good priors each 7 days apart → 5 distinct windows → streak == cap."""
+    priors = [_good_run_at(days_before=7 * (i + 1)) for i in range(4)]
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=priors,
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=CURRENT_MEAN,
+        current_trained_at=_BASE.isoformat(),
+        min_gap_seconds=24 * 3600,
+    )
+    assert streak == CAP
+
+
+def test_too_close_failing_prior_still_breaks_streak():
+    """A FAILING run minutes after the current run must BREAK the streak, not be
+    skipped as 'non-distinct' (Codex MED-1). Otherwise a broken model keeps an
+    accumulating streak."""
+    bad_recent = {**_bad_run(), "trained_at": (_BASE - timedelta(minutes=5)).isoformat()}
+    good_old = {**_good_run(), "trained_at": (_BASE - timedelta(days=8)).isoformat()}
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=[bad_recent, good_old],
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=CURRENT_MEAN,
+        current_trained_at=_BASE.isoformat(), min_gap_seconds=24 * 3600,
+    )
+    assert streak == 1  # the recent failure breaks it; the older good run never counts
+
+
+def test_spacing_on_breaks_on_missing_trained_at():
+    """With spacing on, a prior with no parseable trained_at can't be proven
+    distinct → stop counting (don't silently count it)."""
+    priors = [_good_run()]  # no trained_at
+    streak = _compute_consecutive_passes(
+        this_run_passes=True, prior_runs=priors,
+        min_events=MIN_EVENTS, mae_ratio_threshold=MAE_RATIO, cap=CAP,
+        current_mean_observed_rate=CURRENT_MEAN,
+        current_trained_at=_BASE.isoformat(),
+        min_gap_seconds=24 * 3600,
+    )
+    assert streak == 1

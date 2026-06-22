@@ -395,9 +395,13 @@ async function executeSupervisorClick(args: {
 //   drilldown_sample  — needs to drill into N=3 sample records to learn
 //                       the per-record detail page selectors
 const TARGET_BUDGET_MICROS: Record<string, number> = {
-  list_page:        500_000,    // $0.50
-  report_menu:    1_000_000,    // $1.00
-  drilldown_sample: 1_200_000,  // $1.20 (drills 3 records)
+  // Plan v7 base +20% (2026-06-16): a live CA run cost-capped Departures + the
+  // buried report-menu money feeds before they finished. The per-target cap (not
+  // the $40 job cap) was binding, so bump each tier 20% to let buried feeds
+  // finish. Still well under the per-job + daily caps.
+  list_page:        600_000,    // $0.60
+  report_menu:    1_200_000,    // $1.20
+  drilldown_sample: 1_440_000,  // $1.44 (drills 3 records)
 };
 const TARGET_STEP_CAPS: Record<string, number> = {
   list_page:        80,
@@ -658,9 +662,95 @@ async function recordCurrentActivity(
   pct: number,
 ): Promise<void> {
   if (!jobId || !feedKey) return;
+  // feature/cua-mapper-cost — stamp the LIVE total spend (in-process, ~free) so
+  // the board can show a ticking per-feed cost. job.claude_cost_micros is only
+  // written at completion, so this is the live running total during the run.
+  const totalCostMicros = await getJobCostMicros(jobId);
   await mergeJobResult(jobId, {
-    currentActivity: currentActivityObj(feedKey, phase, label, pct),
+    currentActivity: { ...currentActivityObj(feedKey, phase, label, pct), totalCostMicros },
   }).catch(() => {});
+}
+
+// ─── feature/cua-operator-notes — thought log (the "what it's thinking" panel) ──
+// Pull a short, founder-readable line out of the model's reply: its narration
+// text if it wrote any, else a snippet of its adaptive-thinking. Pure tool-call
+// turns (no prose) yield '' and are skipped. Display-only.
+function summarizeThought(content: Anthropic.Messages.ContentBlock[]): string {
+  const texts: string[] = [];
+  let thinking = '';
+  for (const c of content) {
+    const t = (c as { type?: string }).type;
+    if (t === 'text' && typeof (c as { text?: string }).text === 'string' && (c as { text: string }).text.trim()) {
+      texts.push((c as { text: string }).text.trim());
+    } else if (t === 'thinking' && !thinking && typeof (c as { thinking?: string }).thinking === 'string') {
+      thinking = (c as { thinking: string }).thinking.trim();
+    }
+  }
+  return (texts.join(' ') || thinking).replace(/\s+/g, ' ').trim().slice(0, 320);
+}
+
+/** Append one reasoning line to a capped result.thoughts log AND refresh the
+ *  live total spend on currentActivity (job.claude_cost_micros is only written
+ *  at completion — getJobCostMicros is the live in-process total, so stamping it
+ *  here makes the board's cost tick every step, including during navigating).
+ *  Best-effort; awaited on the mapper's single per-job chain so it never races a
+ *  boardTargets / currentActivity write. */
+async function recordThought(
+  jobId: string | null | undefined,
+  feedKey: string,
+  text: string,
+): Promise<void> {
+  if (!jobId) return;
+  try {
+    const totalCostMicros = await getJobCostMicros(jobId);
+    const { data: row } = await supabase.from('workflow_jobs').select('result').eq('id', jobId).maybeSingle();
+    if (!row) return;
+    const result = (row.result as Record<string, unknown>) ?? {};
+    const prev = Array.isArray(result.thoughts) ? (result.thoughts as unknown[]) : [];
+    const trimmed = text.trim();
+    const next = trimmed
+      ? [...prev, { at: new Date().toISOString(), feedKey, text: trimmed.slice(0, 400) }].slice(-40)
+      : prev;
+    const ca = (result.currentActivity && typeof result.currentActivity === 'object')
+      ? (result.currentActivity as Record<string, unknown>)
+      : null;
+    await supabase.from('workflow_jobs').update({
+      result: { ...result, thoughts: next, ...(ca ? { currentActivity: { ...ca, totalCostMicros } } : {}) },
+    }).eq('id', jobId);
+  } catch {
+    /* telemetry — never block the run */
+  }
+}
+
+/** feature/cua-operator-notes — drain the founder's unconsumed notes for this
+ *  job (oldest first) and mark them consumed, so each is injected exactly once.
+ *  Best-effort: any failure yields [] (the run never blocks on a note read). */
+async function consumePendingNotes(jobId: string | null | undefined): Promise<string[]> {
+  if (!jobId) return [];
+  try {
+    const { data, error } = await supabase
+      .from('mapping_notes')
+      .select('id, note')
+      .eq('job_id', jobId)
+      .is('consumed_at', null)
+      .order('created_at', { ascending: true })
+      .limit(10);
+    if (error || !data || data.length === 0) return [];
+    const ids = data.map((r) => (r as { id: string }).id);
+    const { error: upErr } = await supabase
+      .from('mapping_notes')
+      .update({ consumed_at: new Date().toISOString() })
+      .in('id', ids);
+    // If we couldn't mark them consumed, skip delivery this step rather than
+    // risk re-injecting the same note every step (it'll deliver once the mark
+    // succeeds on a later step).
+    if (upErr) return [];
+    return data
+      .map((r) => String((r as { note?: unknown }).note ?? '').trim())
+      .filter((n) => n.length > 0);
+  } catch {
+    return [];
+  }
 }
 
 /** A terminal failure whose reason came from a cost-cap soft-abort (per-target
@@ -1006,7 +1096,11 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       // Learning Board — mark searching only AFTER the budget check above:
       // a budget break must leave unreached feeds as "waiting in line",
       // never strand a phantom spinner.
-      boardTargets[target.key] = { status: 'searching', phase: 'navigating', startedAt: new Date().toISOString() };
+      // feature/cua-mapper-cost — capture cost-so-far at feed start (in-process,
+      // ~free). The live active-feed cost = currentActivity.totalCostMicros −
+      // this; the final per-feed cost is stamped at feed end below.
+      const targetStartCostMicros = opts.jobId ? await getJobCostMicros(opts.jobId) : 0;
+      boardTargets[target.key] = { status: 'searching', phase: 'navigating', startedAt: new Date().toISOString(), startCostMicros: targetStartCostMicros };
       // feature/cua-mapper-phases-captures — per-feed phase rides the existing
       // boardTargets write; the run-level currentActivity rides the SAME merge
       // (one UPDATE, no extra write, no clobber risk).
@@ -1076,11 +1170,16 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // the descriptor's canonical sets).
         accumulateLearnedValues(target.key, result, learnedValueTranslations, learnedDateSamples);
         const startedAt = boardTargets[target.key]?.startedAt;
+        const feedCostMicros = opts.jobId
+          ? Math.max(0, (await getJobCostMicros(opts.jobId)) - targetStartCostMicros)
+          : undefined;
         boardTargets[target.key] = {
           status: 'found',
           phase: 'found',
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           ...(result.boardPreview ? { preview: result.boardPreview } : {}),
         };
         // Plan v8 B6 — persist after each successful target so a crash
@@ -1109,6 +1208,9 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           finalUrl: result.finalUrl,
         });
         const startedAt = boardTargets[target.key]?.startedAt;
+        const feedCostMicros = opts.jobId
+          ? Math.max(0, (await getJobCostMicros(opts.jobId)) - targetStartCostMicros)
+          : undefined;
         // feature/cua-mapper-phases-captures — the persisted `status` is
         // UNCHANGED (unavailable vs failed, no reason-text matching). The
         // finer `phase` additionally splits a cost-cap soft-abort out of the
@@ -1126,6 +1228,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           phase: terminalPhase,
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           reason: result.reason.slice(0, 300),
         };
         await mergeJobResult(opts.jobId, {
@@ -1547,6 +1651,8 @@ async function mapLogin(
     // the rest of the code working with the regular Messages types.
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(ctx.jobId, 'login', summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
@@ -2688,6 +2794,27 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     // page state matches what Claude sees in the screenshot it's about
     // to act on. Best-effort: errors fall back to a URL-only fingerprint
     // inside the helper.
+    // feature/cua-operator-notes — fold any operator notes into the trailing
+    // user turn so the model reads them THIS turn. Same safe pattern as the
+    // takeover finish-hint above: loop-top is always a user turn, so a standalone
+    // push would be consecutive-user (API-invalid) — append to it instead.
+    {
+      const operatorNotes = await consumePendingNotes(args.jobId);
+      if (operatorNotes.length > 0) {
+        const noteBlock = {
+          type: 'text' as const,
+          text:
+            'NOTE FROM THE OPERATOR (a human is watching you map this PMS): ' +
+            operatorNotes.join(' | ') +
+            '\nTake this guidance into account for your next action.',
+        };
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(noteBlock);
+        else messages.push({ role: 'user', content: [noteBlock] });
+        await recordThought(args.jobId, args.actionName, '📝 operator note: ' + operatorNotes.join(' | '));
+      }
+    }
+
     const turnPageFingerprint = await pageFingerprint(args.page);
 
     // fix/cua-mapper-commit — dither tracking for the commit-nudge. Same-page
@@ -2767,6 +2894,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(args.jobId, args.actionName, summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
@@ -3805,6 +3934,15 @@ export function finalizeRecoveredSuccess(
   // A column the drill recovered on the detail page is proven-by-drill → excluded.
   // Filtered to columns still non-blank in the finalized map. Empty/absent ⟹
   // proven, so legacy recipes and fully-certified feeds keep their exact shape.
+  //
+  // feature/cua-tolerant-mapper — CONTEXTUAL/OPTIONAL columns can never reach
+  // here: `audit.outstanding` and `audit.uncertain` are populated EXCLUSIVELY
+  // from requiredLearnedFor()/missingRequiredColumns()/auditRequiredColumns()/
+  // pendingRecovery — all now ESSENTIALS-keyed. So a blank contextual date
+  // (arrival_date/departure_date) is neither force-blanked above nor stamped
+  // unproven below; it keeps any learned selector and is filled at poll time by
+  // applyDerivedContextColumns. No explicit exclusion needed (would require
+  // threading actionKey here) — the essentials-only contract propagates it.
   const drilledColumns = new Set(
     drill?.ok && drill.drillDown ? Object.keys(drill.drillDown.detailColumns) : [],
   );
@@ -5730,6 +5868,8 @@ async function mapDrillDownAction(args: {
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(args.jobId, args.actionName, summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);

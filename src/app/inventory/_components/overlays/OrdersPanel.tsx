@@ -106,6 +106,8 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
       last30: { en: '30 days', es: '30 días' }[L],
       last90: { en: '90 days', es: '90 días' }[L],
       last365: { en: '12 months', es: '12 meses' }[L],
+      order: { en: 'order', es: 'orden' }[L],
+      orders: { en: 'orders', es: 'órdenes' }[L],
     }),
     [L],
   );
@@ -235,7 +237,7 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
       onClose={onClose}
       eyebrow={tt.eyebrow}
       italic={orderingMode === 'pro' ? 'Pro' : ''}
-      suffix={`${orders.length} ${orders.length === 1 ? 'order' : 'orders'}`}
+      suffix={`${orders.length} ${orders.length === 1 ? tt.order : tt.orders}`}
       accent={statusColor.good}
       width={1080}
       footer={

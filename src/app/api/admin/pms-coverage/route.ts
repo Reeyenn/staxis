@@ -20,11 +20,20 @@
  * Per-PMS fields:
  *   - active knowledge file id, version, learned_at (null if not learned)
  *   - feeds captured / missing
- *   - coveragePct: 0..100 = captured / 5
+ *   - coveragePct: 0..100 = live feeds / learnable feeds (actions-aware, see below)
  *   - propertyCount: hotels currently on this PMS
  *   - latestJob: most-recent in-flight session (paused_mfa / paused_no_kf /
  *     failed_restart) for any hotel on this PMS — gives the admin a
  *     fast read on "is anyone stuck on this PMS right now"
+ *
+ * COVERAGE % — actions-aware source of truth (was the bug):
+ *   The original logic counted the 5 LEGACY snake_case feed keys under
+ *   `knowledge.feeds`. Mapper-produced maps store feeds under `knowledge.actions`
+ *   (camelCase verbs: getRoomStatus, …) and have NO `knowledge.feeds`, so EVERY
+ *   modern map read 0%. We now use parseKnowledgeCoverage() (which understands
+ *   both shapes) to enumerate the present feeds, and `knowledge.feedGaps` to mark
+ *   each present feed live vs learning — mirroring /api/admin/mapper/coverage and
+ *   src/lib/pms/feed-status.ts. Coverage = live feeds / learnable feeds present.
  *
  * Read-only.
  */
@@ -36,6 +45,10 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { PMS_REGISTRY } from '@/lib/pms/registry';
 import type { PMSType } from '@/lib/pms/types';
+import {
+  parseKnowledgeCoverage,
+  LEARNABLE_ACTION_KEYS,
+} from '@/lib/pms/recipe-coverage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,12 +64,86 @@ const TARGET_FEEDS = [
 ] as const;
 type TargetFeed = (typeof TARGET_FEEDS)[number];
 
+/** Per-feed coverage state surfaced on the studio coverage card. */
+export type FeedState = 'live' | 'learning' | 'unavailable';
+
+export interface PerFeed {
+  key: string;
+  label: string;
+  state: FeedState;
+}
+
+interface FeedGapsShape {
+  missingRequired?: Array<{ target?: unknown }>;
+  missingBusinessCritical?: unknown[];
+}
+
+/** The set of feeds gap-listed in the active knowledge envelope. Gap-listing
+ *  WINS over presence (a present-but-dead feed is learning) — mirror of
+ *  src/lib/pms/feed-status.ts and /api/admin/mapper/coverage. */
+function extractGappedTargets(knowledge: unknown): Set<string> {
+  const gaps = (knowledge && typeof knowledge === 'object'
+    ? (knowledge as { feedGaps?: FeedGapsShape }).feedGaps
+    : undefined) ?? null;
+  return new Set<string>([
+    ...((gaps?.missingRequired ?? [])
+      .map((g) => (typeof g?.target === 'string' ? g.target : ''))
+      .filter(Boolean)),
+    ...((gaps?.missingBusinessCritical ?? []).filter((t): t is string => typeof t === 'string')),
+  ]);
+}
+
+/**
+ * Actions-aware coverage for one family's active knowledge envelope.
+ *
+ * Returns the per-feed live/learning list and a coveragePct computed over the
+ * LEARNABLE feeds present in the map (live / learnable-present). A feed that
+ * isn't mapper-learnable (e.g. getDashboardCounts) is reported in perFeed but
+ * excluded from the denominator — counting it would peg every newly-learned
+ * family below 100% forever.
+ *
+ * Exported PURE for unit testing (see pms-coverage-pct.test.ts): an actions-
+ * shaped Choice Advantage map must report >0%, never the old 0%.
+ */
+export function computeFamilyCoverage(knowledge: unknown): {
+  perFeed: PerFeed[];
+  coveragePct: number;
+} {
+  const parsed = parseKnowledgeCoverage(knowledge);
+  const gapped = extractGappedTargets(knowledge);
+
+  const perFeed: PerFeed[] = parsed.feeds.map((f) => {
+    const target = f.actionKey;
+    const state: FeedState = target && gapped.has(target) ? 'learning' : 'live';
+    return { key: f.key, label: f.label, state };
+  });
+
+  // Denominator = learnable feeds present in the map. Numerator = those that
+  // are live (present and not gap-listed).
+  const learnable = parsed.feeds.filter(
+    (f) => f.actionKey != null && LEARNABLE_ACTION_KEYS.has(f.actionKey),
+  );
+  const liveLearnable = learnable.filter((f) => !(f.actionKey && gapped.has(f.actionKey)));
+  const coveragePct = learnable.length === 0
+    ? 0
+    : Math.round((liveLearnable.length / learnable.length) * 100);
+
+  return { perFeed, coveragePct };
+}
+
 interface CoverageRow {
   pmsType: PMSType;
   label: string;
   hint: string;
   tier: 1 | 2 | 3;
   runtime: 'railway' | 'fly';
+  /** Friendly name for the LEARNED coverage: COALESCE(display_name, label).
+   *  Falls back to the registry label when un-renamed or unlearned. */
+  displayName: string;
+  /** Actions-aware coverage over learnable feeds (0..100). 0 when unlearned. */
+  coveragePct: number;
+  /** Per-feed live/learning state of the active coverage. [] when unlearned. */
+  perFeed: PerFeed[];
   recipe: {
     id: string;
     version: number;
@@ -88,6 +175,7 @@ interface KnowledgeFileRow {
   version: number;
   learned_at: string;
   knowledge: unknown;
+  display_name: string | null;
 }
 
 /**
@@ -141,8 +229,9 @@ export async function GET(req: NextRequest) {
   //     unique index, see migration 0201). ────────────────────────────────
   const { data: kfRowsRaw, error: kfErr } = await supabaseAdmin
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, learned_at, knowledge')
-    .eq('status', 'active');
+    .select('id, pms_family, version, learned_at, knowledge, display_name')
+    .eq('status', 'active')
+    .is('deleted_at', null); // 0288 — hide soft-deleted coverages from the studio
 
   if (kfErr) {
     return err(`Could not load knowledge files: ${kfErr.message}`, {
@@ -167,10 +256,13 @@ export async function GET(req: NextRequest) {
   // per PMS family, so the admin Repair button can target a real
   // property without making the admin pick one.
   const representativePropIdByPms = new Map<string, string>();
+  // Hotels with no system detected (pms_type IS NULL) — the count the studio
+  // shows as "unassigned hotels" so the founder knows how many need matching.
+  let unassignedHotelCount = 0;
   for (const p of properties ?? []) {
     const row = p as { pms_type: string | null; id?: string };
     const t = row.pms_type;
-    if (!t) continue;
+    if (!t) { unassignedHotelCount += 1; continue; }
     propertyCountByPms.set(t, (propertyCountByPms.get(t) ?? 0) + 1);
     if (row.id && !representativePropIdByPms.has(t)) {
       representativePropIdByPms.set(t, row.id);
@@ -242,6 +334,16 @@ export async function GET(req: NextRequest) {
       else missing.push(f);
     }
 
+    // Actions-aware coverage (the bug fix): live/learning per-feed + a % over
+    // learnable feeds that understands both the modern `actions` shape and the
+    // legacy `feeds` shape. The legacy snake_case captured/missing arrays below
+    // are kept for back-compat with already-deployed clients.
+    const { perFeed, coveragePct } = kf
+      ? computeFamilyCoverage(kf.knowledge)
+      : { perFeed: [] as PerFeed[], coveragePct: 0 };
+
+    const displayName = kf?.display_name || def.label;
+
     const recipe = kf
       ? {
           id: kf.id,
@@ -249,7 +351,9 @@ export async function GET(req: NextRequest) {
           createdAt: kf.learned_at,
           actionsCaptured: captured,
           actionsMissing: missing,
-          coveragePct: Math.round((captured.length / TARGET_FEEDS.length) * 100),
+          // Top-level coveragePct is the source of truth now; keep recipe-level
+          // in sync (was the legacy captured/5 — actions maps always read 0).
+          coveragePct,
           // Plan v8 self-repair — full action_keys list for the Repair button.
           actionKeys: extractActionKeys(kf.knowledge),
         }
@@ -275,6 +379,9 @@ export async function GET(req: NextRequest) {
       hint: def.hint,
       tier: def.tier,
       runtime: def.runtime,
+      displayName,
+      coveragePct,
+      perFeed,
       recipe,
       propertyCount: propertyCountByPms.get(pmsType) ?? 0,
       representativePropertyId: representativePropIdByPms.get(pmsType) ?? null,
@@ -292,5 +399,5 @@ export async function GET(req: NextRequest) {
     return b.propertyCount - a.propertyCount;
   });
 
-  return ok({ pmsTypes: rows }, { requestId });
+  return ok({ pmsTypes: rows, unassignedHotelCount }, { requestId });
 }

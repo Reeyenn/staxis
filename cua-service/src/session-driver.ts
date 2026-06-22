@@ -677,6 +677,35 @@ export class SessionDriver {
       });
       return false;
     }
+    // Dismiss a one-time post-login interstitial before the dashboard renders.
+    // Choice Advantage interposes a "Migrate to Okta / Continue with Traditional
+    // Login" nag at Login.do: the dashboard chrome (#menubar) is present but
+    // HIDDEN behind that modal, so without dismissing it the driver is parked on
+    // a not-the-dashboard page, the success selector never goes visible, and
+    // every feed nav bounces to LoginPopup.do. Click any recipe-configured
+    // "continue / keep-current-login" control IF present (NEVER the migrate /
+    // opt-in path) and let the dashboard settle. CA shows it once per session,
+    // so later feed gotos to Login.do skip it. Absent / other PMS → no-op.
+    const postLoginDismiss =
+      (login as { postLoginDismiss?: Array<{ selector: string; label?: string }> })
+        .postLoginDismiss ?? [];
+    for (const d of postLoginDismiss) {
+      try {
+        const el = this.page!.locator(d.selector).first();
+        if (await el.isVisible({ timeout: 1_500 }).catch(() => false)) {
+          log.info('session-driver: dismissing post-login interstitial', {
+            propertyId: this.propertyId,
+            selector: d.selector,
+            label: d.label,
+          });
+          await el.click({ timeout: 5_000 }).catch(() => {});
+          await this.page!.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+        }
+      } catch {
+        // best-effort — a dismiss attempt must never fail the login
+      }
+    }
+
     const finalUrl = safeUrl(this.page!) ?? '';
     // Best-effort: also wait for a successSelector if configured, but
     // don't fail the login if it doesn't appear (it's a secondary hint).
@@ -739,27 +768,22 @@ export class SessionDriver {
         .first()
         .isVisible({ timeout: 1_000 })
         .catch(() => false);
+
       if (loginFormVisible) return true;
 
       // Positive logged-out signal #2 — an MFA challenge is showing.
       const mfa = await detectMfaPrompt(this.page);
       if (mfa.mfa) return true;
 
-      // Negative signal — a REAL success selector should still be present.
-      // body/html carry no evidence (C3), so they can't prove logged-in and
-      // their absence can't prove logged-out; skip them.
-      const successSelector = this.knowledgeFile.knowledge.login.successSelectors.find(
-        (s) => !isWeakSelector(s),
-      );
-      if (successSelector) {
-        const present = await this.page
-          .locator(successSelector)
-          .first()
-          .isVisible({ timeout: 2_000 })
-          .catch(() => false);
-        if (!present) return true;
-      }
-
+      // The success selector's ABSENCE is deliberately NOT treated as
+      // logged-out here. Choice Advantage's dashboard chrome (#menubar) sits in
+      // the DOM but HIDDEN behind a post-login interstitial (the Okta-migration
+      // nag), so isVisible() returned false even while fully logged in — which
+      // triggered a clearCookies + re-login on every poll, spawning a second CA
+      // session against the live one and tripping CA's re-auth popup
+      // (LoginPopup.do): a self-inflicted logout spiral. We now trust only the
+      // positive signals (login form / MFA). The zero-row-streak guard backstops
+      // a genuine silent logout (every feed empty → re-verify login → recover).
       return false;
     } catch {
       // Probe failure is inconclusive — don't force a re-login on a hiccup.
@@ -816,6 +840,20 @@ export class SessionDriver {
       case 'type_text':
         await this.page.keyboard.type(resolve(step.value as string));
         return;
+      case 'click_at': {
+        // Coordinate click recorded by the vision login (Set-of-Mark). The
+        // session-driver page uses the SAME VIEWPORT (1280×800) as the mapper,
+        // so the recorded x/y land on the same element. Mirrors the extractor
+        // pre-step executor (extractors/pre-steps.ts). No credential exposure —
+        // a click carries no value; the secrets ride the type_text steps.
+        const cx = step.x;
+        const cy = step.y;
+        if (typeof cx !== 'number' || typeof cy !== 'number') {
+          throw new Error('click_at login step missing numeric x/y');
+        }
+        await this.page.mouse.click(cx, cy);
+        return;
+      }
       default:
         throw new Error(`unsupported login step kind: ${kind}`);
     }
@@ -1056,18 +1094,25 @@ export class SessionDriver {
     for (const template of sorted) {
       if (signal.aborted) break;
       try {
+        // feature/cua-tolerant-mapper — PMS-local view date for contextual
+        // derivation (arrivals' arrival_date / departures' departure_date filled
+        // from the day the page represents). Same tz the re-anchor + date
+        // templating use, so a poll across midnight stamps the hotel's day.
+        const runDateIso = reanchorTodayIso();
         const runResult = template.sources.length > 1
           ? await runMultiSourceTemplate({
               page: this.page,
               template,
               allowedHost: this.allowedHost,
               signal,
+              runDateIso,
             })
           : await runSingleSourceTemplate({
               page: this.page,
               template,
               allowedHost: this.allowedHost,
               signal,
+              runDateIso,
               // feature/cua-column-recovery — scope the per-row detail cache
               // by tenant AND knowledge-file version (a promoted repair's new
               // selectors must not consume extractions cached under the old).

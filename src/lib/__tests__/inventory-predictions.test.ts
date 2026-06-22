@@ -16,7 +16,12 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchMlPredictedRates } from '../inventory-predictions';
+import {
+  fetchMlPredictedRates,
+  predictReorder,
+  ruleOccupancyBurnPerDay,
+  type DailyAverages,
+} from '../inventory-predictions';
 
 // ─── Mock client builder ──────────────────────────────────────────────────
 
@@ -254,5 +259,45 @@ describe('fetchMlPredictedRates', () => {
     const result = await fetchMlPredictedRates(PID, client as never);
     assert.equal(result.size, 1);
     assert.equal(result.get('item-finite'), 1.5);
+  });
+});
+
+// ─── ruleOccupancyBurnPerDay — card/panel single-source ─────────────────────
+
+describe('ruleOccupancyBurnPerDay', () => {
+  it('applies each room type its OWN rate (co*pc + so*ps)', () => {
+    // checkout-only item: stayovers must NOT consume it.
+    assert.equal(ruleOccupancyBurnPerDay(0.5, 0, 10, 20), 5);   // 10*0.5 + 20*0
+    // both rates set
+    assert.equal(ruleOccupancyBurnPerDay(0.5, 0.2, 10, 20), 9); // 5 + 4
+  });
+
+  it('does NOT over-count like the old max(pc,ps)*(co+so) formula', () => {
+    const correct = ruleOccupancyBurnPerDay(0.5, 0, 10, 20);     // 5
+    const oldWrong = Math.max(0.5, 0) * (10 + 20);               // 15
+    assert.notEqual(correct, oldWrong);
+    assert.equal(correct, 5);
+  });
+
+  it('treats null/undefined/negative inputs as 0', () => {
+    assert.equal(ruleOccupancyBurnPerDay(null, undefined, 10, 20), 0);
+    assert.equal(ruleOccupancyBurnPerDay(-1, 0.2, 10, 20), 4);   // pc floored to 0
+  });
+
+  it('the card formula now matches predictReorder for the same item', () => {
+    const item = { id: 'i', usagePerCheckout: 0.5, usagePerStayover: 0.2, reorderLeadDays: 3 };
+    const averages: DailyAverages = {
+      avgDailyCheckouts: 10, avgDailyStayovers: 20, daysOfData: 30, source: 'daily_logs',
+    };
+    const stock = 90;
+    const cardBurn = ruleOccupancyBurnPerDay(
+      item.usagePerCheckout, item.usagePerStayover,
+      averages.avgDailyCheckouts, averages.avgDailyStayovers,
+    );
+    const cardDaysLeft = stock / cardBurn;                       // adapter card math
+    const pred = predictReorder(item, averages, stock);         // reorder panel
+    assert.equal(pred.dailyBurnRate, cardBurn);                 // same burn
+    assert.ok(pred.daysUntilOut !== null);
+    assert.equal(cardDaysLeft, pred.daysUntilOut);              // same days-left
   });
 });

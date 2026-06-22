@@ -3,5 +3,6 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .venv/
+.venv311/
 venv/
 *.egg-info/

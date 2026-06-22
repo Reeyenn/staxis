@@ -55,14 +55,14 @@ export default function UsersPage() {
       const res = await fetchWithAuth(`/api/settings/users?propertyId=${propertyId}`);
       const body = await res.json() as { ok?: boolean; data?: { users: UserRow[] }; error?: string };
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || 'Failed to load users');
+        setError(body.error || (lang === 'es' ? 'No se pudieron cargar los usuarios' : 'Failed to load users'));
         return;
       }
       setUsers(body.data.users);
     } finally {
       setLoading(false);
     }
-  }, [propertyId]);
+  }, [propertyId, lang]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -78,7 +78,7 @@ export default function UsersPage() {
       });
       const body = await res.json() as { ok?: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        setError(body.error || 'Action failed');
+        setError(body.error || (lang === 'es' ? 'La acción falló' : 'Action failed'));
         return;
       }
       await load();

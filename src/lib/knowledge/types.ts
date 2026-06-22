@@ -14,8 +14,10 @@ export type { Dept };
 /** The departments a document can be scoped to (visibility='dept'). */
 export const KNOWLEDGE_DEPTS: readonly Dept[] = ['front_desk', 'housekeeping', 'maintenance'];
 
-/** The four knowledge sub-tabs. */
-export type KnowledgeSection = 'sops' | 'documents' | 'contacts' | 'calendar';
+/** The knowledge sub-tabs. (Calendar was promoted to its own Communications
+ *  tab — see communications/_components/CalendarPane.tsx; it still reads/writes
+ *  the knowledge_events table via /api/knowledge/events.) */
+export type KnowledgeSection = 'sops' | 'documents' | 'contacts';
 
 /** Contact buckets (nullable on the row → 'other' in the UI). */
 export type ContactCategory = 'vendor' | 'emergency' | 'brand' | 'local';

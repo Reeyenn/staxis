@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  let body: { propertyId?: unknown };
+  let body: { propertyId?: unknown; confirmName?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -57,10 +57,28 @@ export async function POST(req: NextRequest) {
   if (readErr) return err(`Could not load property: ${readErr.message}`, { requestId, status: 500 });
   if (!prop) return err('Property not found', { requestId, status: 404 });
 
-  // Guard: never quick-delete a live, claimed hotel.
-  if (prop.onboarding_completed_at) {
+  // Typed-name confirmation (Live Hotels "Delete hotel" button). When the admin
+  // types the hotel's EXACT name, that deliberate intent OVERRIDES the live-hotel
+  // guard below — this is the only path that can delete a finished/claimed hotel
+  // (e.g. the live customer), and it's the safety against a stray click wiping it.
+  // The legacy onboarding-timeline hover-✕ sends no confirmName, so it keeps the
+  // old behavior (live hotels stay blocked).
+  const confirmName = typeof body.confirmName === 'string' ? body.confirmName.trim() : '';
+  const confirmedByName =
+    confirmName.length > 0 &&
+    confirmName.toLowerCase() === (prop.name ?? '').trim().toLowerCase();
+  if (confirmName.length > 0 && !confirmedByName) {
     return err(
-      'This hotel has finished onboarding — quick-delete is blocked for live hotels.',
+      'The name you typed does not match this hotel — type its exact name to confirm.',
+      { requestId, status: 400 },
+    );
+  }
+
+  // Guard: never quick-delete a live, claimed hotel UNLESS the admin confirmed by
+  // typing its exact name.
+  if (prop.onboarding_completed_at && !confirmedByName) {
+    return err(
+      'This hotel has finished onboarding — type its exact name to confirm deletion.',
       { requestId, status: 409 },
     );
   }
@@ -82,12 +100,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Delete the hotel — 129 FKs cascade (sessions, staff rows, pms_* data,
-  // join codes, …). Re-assert the live guard at write time.
-  const { error: delErr } = await supabaseAdmin
-    .from('properties')
-    .delete()
-    .eq('id', propertyId)
-    .is('onboarding_completed_at', null);
+  // join codes, …). Re-assert the live guard at write time UNLESS the admin
+  // confirmed by typing the exact name (that path is allowed to delete a live
+  // hotel, so the null re-assertion would otherwise match zero rows).
+  let delQuery = supabaseAdmin.from('properties').delete().eq('id', propertyId);
+  if (!confirmedByName) delQuery = delQuery.is('onboarding_completed_at', null);
+  const { error: delErr } = await delQuery;
   if (delErr) return err(`Delete failed: ${delErr.message}`, { requestId, status: 500 });
 
   // Remove the accounts that existed ONLY for this hotel + free their
@@ -122,7 +140,7 @@ export async function POST(req: NextRequest) {
     action: 'admin.property_deleted',
     propertyId,
     requestId,
-    metadata: { name: prop.name, accountsRemoved, accountsPruned: plan.prune.length },
+    metadata: { name: prop.name, accountsRemoved, accountsPruned: plan.prune.length, wasLive: !!prop.onboarding_completed_at, confirmedByName },
   });
 
   return ok({ deleted: true, name: prop.name, accountsRemoved }, { requestId });

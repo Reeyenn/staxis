@@ -77,6 +77,7 @@ async function fetchFeedStatus(propertyId: string): Promise<PropertyFeedStatus> 
     .select('knowledge')
     .eq('pms_family', session.pms_family as string)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (kfErr) throw kfErr;
 

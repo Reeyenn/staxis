@@ -51,14 +51,22 @@ export async function POST(req: NextRequest) {
   // propertyId is allowed to be null — admin pages don't have a property
   // context. We still log so admin behavior is auditable separately.
 
-  // Look up user role once. Cheap; cached locally per instance.
+  // Look up user role + property access once. Cheap; cached locally per instance.
   const { data: account } = await supabaseAdmin
     .from('accounts')
-    .select('role')
+    .select('role, property_access')
     .eq('data_user_id', session.userId)
     .maybeSingle();
 
   const userRole = (account?.role as string | undefined) ?? null;
+  // Only honor a client-supplied propertyId the caller actually has access to —
+  // otherwise the analytics firehose could be polluted with events mis-tagged to
+  // another hotel, skewing admin per-hotel engagement stats. (Audit fix 2026-06-18.)
+  const access = (account?.property_access ?? []) as string[];
+  const safePropertyId =
+    propertyId && (userRole === 'admin' || access.includes('*') || access.includes(propertyId))
+      ? propertyId
+      : null;
 
   const metadata = (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata))
     ? body.metadata
@@ -67,7 +75,7 @@ export async function POST(req: NextRequest) {
   // recordAppEvent handles insert failure (structured console.error +
   // rate-limited Sentry escalation) — never throws.
   await recordAppEvent({
-    property_id: propertyId ?? null,
+    property_id: safePropertyId,
     user_id: session.userId,
     user_role: userRole,
     event_type: eventType,

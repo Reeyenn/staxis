@@ -93,6 +93,7 @@ export async function GET(req: NextRequest) {
     supabaseAdmin
       .from('pms_knowledge_files')
       .select('pms_family, version, status, learned_at, feed_gaps:knowledge->feedGaps')
+      .is('deleted_at', null)
       .order('pms_family')
       .order('version', { ascending: false }),
     // Learning Board — mapper LEARNING jobs so each session card can link to

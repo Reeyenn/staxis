@@ -533,7 +533,10 @@ export async function listConversationsForStaff(
         .from('comms_messages')
         .select('id', { count: 'exact', head: true })
         .eq('conversation_id', c.id)
-        .neq('sender_staff_id', staffId);
+        // NULL-safe "not authored by me": PostgREST .neq drops NULL rows
+        // (three-valued logic), so @Staxis/system messages (sender_staff_id
+        // null) never lit the unread badge for other members. (Audit fix 2026-06-18.)
+        .or(`sender_staff_id.is.null,sender_staff_id.neq.${staffId}`);
       if (lastRead) q = q.gt('created_at', lastRead);
       const { count } = await q;
       unread = count ?? 0;
@@ -841,7 +844,9 @@ export async function getUnreadDigest(
       .from('comms_messages')
       .select('sender_staff_id, body, created_at')
       .eq('conversation_id', c.id).eq('property_id', pid)
-      .neq('sender_staff_id', staffId)
+      // NULL-safe "not authored by me" — see listConversationsForStaff. .neq
+      // would drop @Staxis/system (null-sender) messages from the digest.
+      .or(`sender_staff_id.is.null,sender_staff_id.neq.${staffId}`)
       .order('created_at', { ascending: true }).limit(25);
     if (lastRead) q = q.gt('created_at', lastRead);
     const { data } = await q;

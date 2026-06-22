@@ -16,8 +16,10 @@ import { Caps } from './Caps';
 import { useRiseIn } from './motion';
 import { BoardCard } from './BoardCard';
 import type { DisplayItem } from './types';
+import { t, type Lang } from './inv-i18n';
 
 interface StockListProps {
+  lang: Lang;
   items: DisplayItem[];
   bucket: StockBucket;
   query: string;
@@ -26,11 +28,14 @@ interface StockListProps {
   onReorder?: () => void;
 }
 
-const COLUMNS: Array<{ status: StockStatus; label: string; sub: string }> = [
-  { status: 'critical', label: 'Order now', sub: 'below half par' },
-  { status: 'low', label: 'Order soon', sub: 'under par' },
-  { status: 'good', label: 'Stocked', sub: 'at or above par' },
-];
+function columnsFor(lang: Lang): Array<{ status: StockStatus; label: string; sub: string }> {
+  const tx = t(lang);
+  return [
+    { status: 'critical', label: tx.colOrderNow, sub: tx.subBelowHalfPar },
+    { status: 'low', label: tx.colOrderSoon, sub: tx.subUnderPar },
+    { status: 'good', label: tx.colStocked, sub: tx.subAtOrAbovePar },
+  ];
+}
 
 // Items with no real forecast (par/60 fallback or no data) sort to the bottom
 // of their column — soonest-to-run-out first otherwise.
@@ -39,7 +44,9 @@ function sortKey(it: DisplayItem): number {
   return it.daysLeft;
 }
 
-export function StockList({ items, bucket, query, onEdit, onCount, onReorder }: StockListProps) {
+export function StockList({ lang, items, bucket, query, onEdit, onCount, onReorder }: StockListProps) {
+  const tx = t(lang);
+  const COLUMNS = columnsFor(lang);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items
@@ -92,6 +99,7 @@ export function StockList({ items, bucket, query, onEdit, onCount, onReorder }: 
               {colItems.map((it) => (
                 <BoardCard
                   key={it.id}
+                  lang={lang}
                   it={it}
                   onEdit={onEdit}
                   onCount={onCount}
@@ -109,7 +117,7 @@ export function StockList({ items, bucket, query, onEdit, onCount, onReorder }: 
                     fontStyle: 'italic',
                   }}
                 >
-                  Nothing here.
+                  {tx.nothingHere}
                 </div>
               )}
             </div>

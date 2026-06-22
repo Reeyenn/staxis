@@ -31,6 +31,7 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
+import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -211,40 +212,42 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!isClear) {
       const assignedStaffIds = room.assignedTo ? [room.assignedTo] : [];
       if (assignedStaffIds.length > 0) {
-        smsQueued = true;
-        const origin = new URL(req.url).origin;
-        // Fan out asynchronously. void-ed promises let the request
-        // continue; the SMS rate limiter inside /api/sms-send caps any
-        // runaway send-loop separately.
-        void (async () => {
-          try {
-            type StaffRow = { id: string; phone: string | null };
-            const { data: staffRows } = await supabaseAdmin
-              .from('staff')
-              .select('id, phone')
-              .in('id', assignedStaffIds);
-            await Promise.allSettled(
-              ((staffRows ?? []) as StaffRow[])
-                .filter((s) => s.phone)
-                .map((s) =>
-                  fetch(`${origin}/api/sms-send`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      to: s.phone,
-                      message: `🚨 Rush: Room ${roomNumber} needs to be ready in ${body.due_label}.`,
-                      source: 'front-desk-rush',
-                      propertyId: pid,
-                    }),
-                  }),
-                ),
-            );
-          } catch (smsErr) {
-            log.warn('front-desk/rush: async sms fan-out failed', {
-              requestId, err: errToString(smsErr),
-            });
+        // ENQUEUE durable, idempotent SMS jobs and AWAIT the enqueue so smsQueued
+        // reflects a committed queue, not just intent — only the Twilio dispatch
+        // is backgrounded. (The previous code POST-ed to /api/sms-send, which
+        // does not exist, so the housekeeper was NEVER notified while the UI said
+        // "Housekeeper notified". Audit fix + review follow-up 2026-06-18.)
+        try {
+          type StaffRow = { id: string; phone: string | null };
+          const { data: staffRows } = await supabaseAdmin
+            .from('staff')
+            .select('id, phone')
+            .in('id', assignedStaffIds);
+          const recipients = ((staffRows ?? []) as StaffRow[]).filter((s) => s.phone);
+          const enqueued = await Promise.allSettled(
+            recipients.map((s) =>
+              enqueueSms({
+                propertyId: pid,
+                toPhone: s.phone!,
+                body: `🚨 Rush: Room ${roomNumber} needs to be ready in ${body.due_label}.`,
+                // One rush text per (room, staff, day, duration) — a double-tap
+                // dedups; a genuinely new rush (different duration) re-sends.
+                idempotencyKey: `rush:${pid}:${roomNumber}:${s.id}:${date}:${body.due_label}`,
+                metadata: { source: 'front-desk-rush', roomNumber },
+              }),
+            ),
+          );
+          smsQueued = enqueued.some((r) => r.status === 'fulfilled');
+          // Drain promptly in the background — a rush is time-sensitive; don't
+          // block the response on Twilio. Failures stay queued for the cron.
+          if (recipients.length > 0) {
+            void processSmsJobs(20).catch(() => { /* cron will retry */ });
           }
-        })();
+        } catch (smsErr) {
+          log.warn('front-desk/rush: sms enqueue failed', {
+            requestId, err: errToString(smsErr),
+          });
+        }
       }
     }
 

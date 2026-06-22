@@ -21,11 +21,16 @@ from unittest.mock import MagicMock, patch
 # Inventory inference doesn't import sklearn at module load (its hydrate
 # helpers use scipy.stats but the module itself doesn't pull static_baseline),
 # so this test runs cleanly on local Py 3.9.
+from src.config import INVENTORY_FEATURE_SET_VERSION
 from src.inference.inventory_rate import _predict_single_item
 
 
 def _make_run(*, algorithm: str, posterior_params: Any) -> Dict[str, Any]:
-    """Minimal valid model_runs row for one item."""
+    """Minimal valid model_runs row for one item.
+
+    Carries the current feature_set_version so the Bayesian serve-path guard
+    lets it through to the hydration logic these tests actually exercise.
+    """
     return {
         "id": "inv-mr-uuid",
         "property_id": "8a041d6e-d881-4f19-83e0-7250f0e36eaa",
@@ -33,6 +38,7 @@ def _make_run(*, algorithm: str, posterior_params: Any) -> Dict[str, Any]:
         "layer": "inventory_rate",
         "is_active": True,
         "algorithm": algorithm,
+        "feature_set_version": INVENTORY_FEATURE_SET_VERSION,
         "posterior_params": posterior_params,
     }
 
@@ -50,9 +56,12 @@ def _bayesian_posterior_dict() -> Dict[str, Any]:
 
 
 def _cold_start_posterior_dict() -> Dict[str, Any]:
-    """Cold-start posterior shape for inventory."""
+    """Cold-start posterior shape for inventory — keys MUST match what
+    `_create_cold_start_model_run` persists and `_predict_from_cohort_prior`
+    reads (`cohort_prior_rate`, not `prior_rate_per_room_per_day`), or the rate
+    silently defaults to 0.0 and the test can't detect a real hydrate failure."""
     return {
-        "prior_rate_per_room_per_day": 0.05,
+        "cohort_prior_rate": 0.05,
         "room_count": 30,
         "cohort_key": "industry-default",
     }
@@ -84,7 +93,7 @@ def test_bayesian_posterior_as_dict_does_not_crash():
 
     # If hydrate failed (json.loads on dict), result would be {"predicted": False}
     # via the bayesian_rebuild_failed except branch. Pin the success path.
-    assert result.get("predicted") is True or "predicted" in result, (
+    assert result.get("predicted") is True, (
         f"Bayesian dict-shaped posterior failed to hydrate: {result!r}"
     )
 
@@ -112,7 +121,7 @@ def test_bayesian_posterior_as_string_still_parses():
         client=fake_client,
     )
 
-    assert result.get("predicted") is True or "predicted" in result, (
+    assert result.get("predicted") is True, (
         f"Bayesian string-shaped posterior (legacy) failed to parse: {result!r}"
     )
 
@@ -137,7 +146,7 @@ def test_cold_start_posterior_as_dict_does_not_crash():
         client=fake_client,
     )
 
-    assert result.get("predicted") is True or "predicted" in result, (
+    assert result.get("predicted") is True, (
         f"Cold-start dict-shaped posterior failed to hydrate: {result!r}"
     )
 

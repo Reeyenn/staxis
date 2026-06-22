@@ -6,6 +6,7 @@ import type { OccupancyBundle, OccupancySinceLastCount } from '@/lib/inventory-e
 import { calculateEstimatedStock, computeOccupancyForItem } from '@/lib/inventory-estimate';
 import {
   predictReorder,
+  ruleOccupancyBurnPerDay,
   selectBurnRate,
   type DailyAverages,
   type PredictionResult,
@@ -14,6 +15,7 @@ import type { DisplayItem } from './types';
 import { ratioStatus } from './format';
 import { thumbKindFor } from './ItemThumb';
 import type { InvCat } from './tokens';
+import type { Lang } from './inv-i18n';
 
 export function toDisplayItem(
   item: InventoryItem,
@@ -56,7 +58,20 @@ export function toDisplayItem(
     ml,
     occRoomsToday,
   );
-  const daysLeft = selected.burnPerDay > 0 ? estimated / selected.burnPerDay : 90;
+  // For the days-left NUMBER, use the same occupancy-weighted formula the
+  // reorder panel (predictReorder) uses, so the card and the panel can't show
+  // contradictory days-left for the same item. selectBurnRate is still the
+  // source-of-truth for the badge (ml / rule-occupancy / fallback-60d / no-data).
+  const burnForDays =
+    selected.burnSource === 'rule-occupancy' && opts.dailyAverages
+      ? ruleOccupancyBurnPerDay(
+          item.usagePerCheckout,
+          item.usagePerStayover,
+          opts.dailyAverages.avgDailyCheckouts,
+          opts.dailyAverages.avgDailyStayovers,
+        )
+      : selected.burnPerDay;
+  const daysLeft = burnForDays > 0 ? estimated / burnForDays : 90;
 
   return {
     raw: item,
@@ -94,6 +109,7 @@ export function recommendReorder(
   d: DisplayItem,
   averages: DailyAverages | null,
   mlRateMap: Map<string, number>,
+  lang: Lang = 'en',
 ): { urgency: 'now' | 'soon' | 'ok'; pred: PredictionResult; reason: string } {
   const overrideRate = mlRateMap.get(d.id);
   const pred = predictReorder(d.raw, averages ?? EMPTY_AVERAGES, d.estimated, overrideRate);
@@ -102,34 +118,41 @@ export function recommendReorder(
   // Build a friendly reason string. predictReorder doesn't return one.
   // Honesty-audit Phase 4: append a source suffix so a row that came from
   // the 60-day fallback is visibly different from a row backed by ML.
+  const es = lang === 'es';
   let reason: string;
   if (pred.daysUntilOut == null) {
-    reason = 'no usage history yet';
+    reason = es ? 'sin historial de uso aún' : 'no usage history yet';
   } else {
-    reason = `${Math.max(0, Math.round(pred.daysUntilOut))}d left, ${d.leadDays}d lead`;
+    const days = Math.max(0, Math.round(pred.daysUntilOut));
+    reason = es
+      ? `${days}d restantes, ${d.leadDays}d entrega`
+      : `${days}d left, ${d.leadDays}d lead`;
   }
   if (d.burnSource === 'fallback-60d') {
-    reason = `${reason} · est`;
+    reason = `${reason} · ${es ? 'est' : 'est'}`;
   } else if (d.burnSource === 'no-data') {
-    reason = `${reason} · no data`;
+    reason = `${reason} · ${es ? 'sin datos' : 'no data'}`;
   } else if (d.burnSource === 'ml') {
-    reason = `${reason} · ai`;
+    reason = `${reason} · ${es ? 'ia' : 'ai'}`;
   }
   return { urgency, pred, reason };
 }
 
 // Suggest a reorder quantity for the recommendation card.
 // Default = whatever brings stock back to par, rounded up to nearest pack.
-export function suggestQuantity(d: DisplayItem): { qty: number; packsLabel: string } {
+export function suggestQuantity(d: DisplayItem, lang: Lang = 'en'): { qty: number; packsLabel: string } {
+  const es = lang === 'es';
   const deficit = Math.max(0, d.par - d.estimated);
   const packSize = d.raw.packSize ?? 0;
   if (packSize > 0) {
     const packs = Math.max(1, Math.ceil(deficit / packSize));
     const qty = packs * packSize;
-    const caseUnit = d.raw.caseUnit || 'case';
+    // caseUnit is a data value (e.g. "case", "box") — keep it as stored; only
+    // the connective word ("of"/"de") is translated.
+    const caseUnit = d.raw.caseUnit || (es ? 'caja' : 'case');
     return {
       qty,
-      packsLabel: `${packs} ${pluralize(caseUnit, packs)} of ${packSize}`,
+      packsLabel: `${packs} ${pluralize(caseUnit, packs)} ${es ? 'de' : 'of'} ${packSize}`,
     };
   }
   const qty = Math.max(1, deficit);

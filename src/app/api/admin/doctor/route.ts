@@ -2887,6 +2887,7 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
       .from('pms_knowledge_files')
       .select('pms_family, version, feed_gaps:knowledge->feedGaps')
       .eq('status', 'active')
+      .is('deleted_at', null)
       .in('pms_family', families);
     if (kfErr) {
       return { status: 'warn', detail: `pms_knowledge_files read failed: ${errToString(kfErr)}` };
@@ -2908,6 +2909,7 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
         .from('pms_knowledge_files')
         .select('pms_family')
         .eq('status', 'draft')
+        .is('deleted_at', null)
         .in('pms_family', missing);
       const haveDraft = new Set(((draftRows as Array<{ pms_family: string }> | null) ?? []).map((r) => r.pms_family));
       const awaitingReview = missing.filter((f) => haveDraft.has(f));
@@ -2941,6 +2943,7 @@ async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'dur
           .from('pms_knowledge_files')
           .select('pms_family, version')
           .eq('status', 'draft')
+          .is('deleted_at', null)
           .in('pms_family', partialFamilies);
         for (const d of (draftRows2 as Array<{ pms_family: string; version: number }> | null) ?? []) {
           if (d.version > (activeVersionByFamily.get(d.pms_family) ?? 0)) pausedFamilies.add(d.pms_family);

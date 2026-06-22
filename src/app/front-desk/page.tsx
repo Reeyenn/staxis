@@ -151,8 +151,13 @@ export default function FrontDeskPage() {
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   // Restore the saved tab; force back to Rooms if a non-manager somehow has
-  // a management-only tab ('lost-and-found' / 'complaints') persisted.
+  // a management-only tab ('lost-and-found' / 'complaints') persisted. A
+  // `?tab=` deep-link (e.g. from the worklist) wins over the saved choice; the
+  // management gate below still forces non-managers off complaints/lost+found.
   useEffect(() => {
+    const fdTabs = ['lost-and-found', 'rooms', 'complaints', 'packages'] as const;
+    const urlTab = new URLSearchParams(window.location.search).get('tab') as FrontDeskTabKey | null;
+    if (urlTab && (fdTabs as readonly string[]).includes(urlTab)) { setTabState(urlTab); localStorage.setItem(FD_TAB_KEY, urlTab); return; }
     const saved = localStorage.getItem(FD_TAB_KEY);
     if (saved === 'lost-and-found' || saved === 'rooms' || saved === 'complaints' || saved === 'packages') setTabState(saved);
   }, []);

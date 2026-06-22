@@ -235,12 +235,12 @@ export default function AccountsPage() {
       if (!body || !body.ok) throw new Error(body?.error ?? 'Failed to load accounts');
       setAccounts(body.data?.accounts ?? []);
     } catch (err) {
-      setError('Failed to load accounts');
+      setError(lang === 'es' ? 'No se pudieron cargar las cuentas' : 'Failed to load accounts');
       captureException(err, { route: 'settings/accounts', op: 'loadAccounts' });
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, lang]);
 
   useEffect(() => { void loadAccounts(); }, [loadAccounts]);
 
@@ -310,7 +310,7 @@ export default function AccountsPage() {
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({})) as { error?: string };
-          setFormError(d?.error || 'Failed to create');
+          setFormError(d?.error || (lang === 'es' ? 'No se pudo crear' : 'Failed to create'));
           return;
         }
       }
@@ -319,7 +319,7 @@ export default function AccountsPage() {
       await loadAccounts();
     } catch (err) {
       console.error(err);
-      setFormError('An error occurred');
+      setFormError(lang === 'es' ? 'Ocurrió un error' : 'An error occurred');
     } finally {
       setSaving(false);
     }
@@ -336,13 +336,13 @@ export default function AccountsPage() {
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({})) as { error?: string };
-        alert(d?.error || 'Failed to delete');
+        alert(d?.error || (lang === 'es' ? 'No se pudo eliminar' : 'Failed to delete'));
         return;
       }
       await loadAccounts();
     } catch (err) {
       console.error(err);
-      alert('Failed to delete account');
+      alert(lang === 'es' ? 'No se pudo eliminar la cuenta' : 'Failed to delete account');
     }
   };
 

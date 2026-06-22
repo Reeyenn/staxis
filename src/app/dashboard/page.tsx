@@ -29,8 +29,10 @@ import { useLang } from '@/contexts/LanguageContext';
 import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
+import { WorklistCard } from './_components/WorklistCard';
 import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
 import { LogBookCard } from './_components/LogBookCard';
+import { CalendarCard } from './_components/CalendarCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
@@ -830,8 +832,13 @@ export default function DashboardPage() {
             </section>
           )}
 
+          {/* Open items — unified worklist window; renders only when there's open work */}
+          <WorklistCard />
           {/* Shift Log Book — latest recaps; renders only once there's at least one */}
           <LogBookCard />
+
+          {/* Upcoming team calendar events; renders only once there's at least one upcoming */}
+          <CalendarCard />
 
           {/* What Staxis learned — self-learning Move #2; renders only once populated */}
           <MemoryRecapCard />

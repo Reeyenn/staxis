@@ -75,6 +75,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .select('id, version, knowledge')
     .eq('pms_family', body.pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle<KnowledgeRow>();
   if (loadErr) {
     return err(`could not load active recipe: ${loadErr.message}`, {

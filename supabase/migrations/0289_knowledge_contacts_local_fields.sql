@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0284 — Local-contact fields on knowledge_contacts (QUORE "Local" parity)
+-- 0289 — Local-contact fields on knowledge_contacts (QUORE "Local" parity)
 --
 -- The Knowledge directory's contacts are being promoted to their own
 -- Communications → Contacts sub-tab. To match QUORE's "Local" directory we add
@@ -31,17 +31,17 @@ alter table public.knowledge_contacts
   add column if not exists local_category text;
 
 comment on column public.knowledge_contacts.address is
-  'Street address for a local contact (free text). Added 0284.';
+  'Street address for a local contact (free text). Added 0289.';
 comment on column public.knowledge_contacts.city_state_zip is
-  'City / state / ZIP on one line (free text). Added 0284.';
+  'City / state / ZIP on one line (free text). Added 0289.';
 comment on column public.knowledge_contacts.hours is
-  'Hours as one free-text line (no structured dropdowns — they go stale). Added 0284.';
+  'Hours as one free-text line (no structured dropdowns — they go stale). Added 0289.';
 comment on column public.knowledge_contacts.local_category is
-  'Local sub-type (LOCAL_CATEGORIES; API-validated, free-text in DB). Only meaningful when category = ''local''. Added 0284.';
+  'Local sub-type (LOCAL_CATEGORIES; API-validated, free-text in DB). Only meaningful when category = ''local''. Added 0289.';
 
 -- ─── Track the migration ─────────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
-values ('0284', 'feature/contacts-tab: knowledge_contacts local fields (address, city_state_zip, hours, local_category) + drop category check (API-validated).')
+values ('0289', 'feature/contacts-tab: knowledge_contacts local fields (address, city_state_zip, hours, local_category) + drop category check (API-validated).')
 on conflict (version) do nothing;
 
 notify pgrst, 'reload schema';
