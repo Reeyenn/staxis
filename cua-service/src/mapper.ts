@@ -19,6 +19,7 @@ import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, getModeConfig, type MapperModelId } from './anthropic-client.js';
 import { executeVisionAction, type VisionAction } from './browser-tool-vision.js';
+import { parseDownloadedFile } from './extractors/download-parser.js';
 import { clearSetOfMark } from './set-of-mark.js';
 import { requestHelp, checkHelpFlood, saveScreenshotToStorage, type HelpActionType } from './human-assist.js';
 import type { TakeoverController } from './takeover.js';
@@ -2679,6 +2680,25 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   let samePageStreak = 0;
   const commitNudgedFingerprints = new Set<string>();
 
+  // feature/cua-report-handling — delivery-mode learn state (all DEFAULT-OFF;
+  // populated only when CUA_DELIVERY_DETECT_ENABLED is on AND a delivery event
+  // fired). These are the loop-scoped record of what we observed so the final
+  // success action can be tagged for replay:
+  //   - deliveryDownloadFired → the feed answered a click with a file download,
+  //     so the emitted recipe action gets downloadsCsv:true (round-trips through
+  //     the EXISTING recipe-adapter csv/download replay path).
+  //   - deliveryNewWindowFired → the feed opened a popup we had to read; the
+  //     emitted action gets opensNewWindow:true (reserved for a future replay).
+  //   - popupPage → the captured popup we redirect the NEXT screenshot to. The
+  //     `currentPage` getter resolves to it ONCE (the capture turn), then we
+  //     null it so reads fall back to the original page. We NEVER mutate
+  //     args.page, so recipe steps (recordLandingGoto(... args.page)) keep
+  //     recording against the original page exactly as today.
+  let deliveryDownloadFired = false;
+  let deliveryNewWindowFired = false;
+  let popupPage: Page | null = null;
+  const currentPage = (): Page => popupPage ?? args.page;
+
   for (let stepIdx = 0; stepIdx < targetStepCap; stepIdx++) {
     // ── feature/cua-live-assist — founder takeover gate ──────────────────
     // Cheap no-op (one indexed read) unless the founder pressed Take over /
@@ -2903,6 +2923,49 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         | { rowSelector?: unknown; columns?: unknown; url?: unknown; unavailable?: unknown; reason?: unknown; ask_admin?: unknown; question?: unknown; valueSamples?: unknown; enumMappings?: unknown }
         | null;
 
+      // feature/cua-report-handling — DOWNLOAD success path (default OFF).
+      // Gated on deliveryDownloadFired, which is ONLY ever true when
+      // CUA_DELIVERY_DETECT_ENABLED is on AND a file download fired during a
+      // click this run — so this whole branch is unreachable on the inline
+      // path (byte-identical). A pure-download feed has NO on-screen table to
+      // emit a rowSelector for, so we accept a columns-only emission (the
+      // model maps required fields → CSV HEADER NAMES from the [DOWNLOADED
+      // FILE] note). We emit mode:'csv' so the recipe round-trips through the
+      // EXISTING recipe-adapter csv/download replay path (downloadsCsv +
+      // deriveCsvFlowFromSteps → downloadClickAt/downloadButton + preSteps).
+      // No DOM audit/recovery here — there is no DOM table to audit against;
+      // the csv extractor's own schema-drift check (expectedHeaderColumns,
+      // derived from these column values) guards wrong-header drift at replay.
+      if (
+        deliveryDownloadFired &&
+        typeof parsed?.rowSelector !== 'string' &&
+        parsed?.columns &&
+        typeof parsed.columns === 'object'
+      ) {
+        const learnedColumns = parsed.columns as Record<string, string>;
+        const learnedSamples = coerceValueSamples(parsed.valueSamples);
+        const learnedEnums = coerceEnumMappings(parsed.enumMappings);
+        popupPage = null; // capture committed — back to the original page.
+        const dlSuccess: ActionMapSuccess = {
+          ok: true,
+          action: {
+            steps: [...recordedSteps],
+            parse: { mode: 'csv', hint: { columns: learnedColumns } },
+            downloadsCsv: true,
+          },
+          ...(learnedSamples && { valueSamples: learnedSamples }),
+          ...(learnedEnums && { enumMappings: learnedEnums }),
+        };
+        log.info('mapper: committing delivery-download feed (mode:csv)', {
+          jobId: args.jobId ?? undefined,
+          actionName: args.actionName,
+          stepIdx,
+          columns: Object.keys(learnedColumns).length,
+        });
+        lastGoodAction = dlSuccess;
+        return dlSuccess;
+      }
+
       // Success path: agent found the page and emitted parse hints.
       if (parsed && typeof parsed.rowSelector === 'string' && parsed.columns && typeof parsed.columns === 'object') {
         const learnedColumns = parsed.columns as Record<string, string>;
@@ -2918,10 +2981,21 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
             // candidate's recipe with later wandering (code review P1).
             steps: [...recordedSteps],
             parse: { mode: 'table', hint: { rowSelector: parsed.rowSelector, columns: learnedColumns } },
+            // feature/cua-report-handling — NEW-WINDOW tag only. The model
+            // emitted a real rowSelector, so it mapped an on-screen table — in
+            // the popup when a new-window delivery fired (opensNewWindow:true,
+            // reserved for a future popup-replay path), else on the original
+            // page. A DOWNLOAD feed never reaches this branch (no rowSelector);
+            // it is handled by the dedicated csv-emission branch above. Tag
+            // ABSENT on inline feeds → byte-identical recipe.
+            ...(deliveryNewWindowFired ? { opensNewWindow: true } : {}),
           },
           ...(learnedSamples && { valueSamples: learnedSamples }),
           ...(learnedEnums && { enumMappings: learnedEnums }),
         };
+        // feature/cua-report-handling — capture committed: switch the screenshot
+        // target back to the original page (no-op when no popup was ever opened).
+        popupPage = null;
 
         // Completeness verification (feature/cua-column-recovery, supersedes
         // the fix/mapper-field-contract string-only check): a "successful"
@@ -3314,20 +3388,37 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     if (toolUses.length === 0) break;
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+    // feature/cua-report-handling — did a delivery event (download / new window)
+    // fire on ANY action THIS turn? If so we treat the turn as PROGRESS and SKIP
+    // recording its tuple into the loop detector (same spirit as the commit-nudge
+    // reset): the click looked like a no-op to the loop detector — no page change
+    // — but it actually produced a file / opened a window, so it must not count
+    // toward the repeat-trip. Stays false on every inline turn.
+    let deliveryFiredThisTurn = false;
     for (const toolUse of toolUses) {
       const action = toolUse.input as VisionAction;
       const actionType = (action as { action?: string }).action ?? '';
+
+      // feature/cua-report-handling — trusted supervisor note appended to this
+      // action's tool_result when a delivery event (download / new window)
+      // fired. Stays '' (no effect) on every inline-feed turn.
+      let execForToolResultDeliveryNote = '';
 
       // Critic — pre-screenshot for click verbs (left_click, double_click).
       // Scrolls and waits have no meaningful "intended outcome" worth
       // grading. Best-effort: if the pre-screenshot capture fails we set
       // preScreenshotB64=null and the critic block below short-circuits.
       const isClick = actionType === 'left_click' || actionType === 'double_click';
+      // feature/cua-report-handling — screenshots (critic + the action's own
+      // capture) read currentPage(): the popup once a new-window delivery
+      // fired, the original page otherwise. With CUA_DELIVERY_DETECT_ENABLED
+      // off, popupPage is always null so currentPage()===args.page (same
+      // reference) and this is byte-identical to passing args.page directly.
       const preScreenshotB64 = isClick
-        ? await captureScreenshotForCritic(args.page)
+        ? await captureScreenshotForCritic(currentPage())
         : null;
 
-      const exec = await executeVisionAction(args.page, action, args.credentials, 'action');
+      const exec = await executeVisionAction(currentPage(), action, args.credentials, 'action');
       if (exec.recordedStep) {
         recordedSteps.push(exec.recordedStep);
         // feature/cua-feed-extract — anchor the landing URL right after THIS
@@ -3338,7 +3429,70 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // replayable pre-step instead of being stranded after a trailing goto.
         // Zero added latency (just a URL read); the turn-top call stays the
         // backstop for a navigation that only commits after this point.
+        // NOTE: recipe steps anchor against args.page (the ORIGINAL page), not
+        // currentPage() — a transient popup is never the replay anchor.
         recordLandingGoto(recordedSteps, safeUrl(args.page));
+      }
+
+      // feature/cua-report-handling — DELIVERY HANDLING (default OFF; exec.delivery
+      // is undefined unless CUA_DELIVERY_DETECT_ENABLED is on AND an event fired).
+      if (exec.delivery) {
+        deliveryFiredThisTurn = true;
+        if (exec.delivery.kind === 'download' && exec.delivery.download) {
+          // (a) DOWNLOAD — parse the file so the model SEES the data and can
+          // emit its column map this same turn. Tag the run so the final
+          // success action gets downloadsCsv:true (replays via the EXISTING
+          // recipe-adapter csv/download path — extractors/csv-download.ts).
+          deliveryDownloadFired = true;
+          const parsedDl = await parseDownloadedFile(exec.delivery.download);
+          const note = parsedDl.ok
+            ? `\n\n[DOWNLOADED FILE] format=${parsedDl.format} headers=[${parsedDl.headers.join(', ')}] ` +
+              `rows=${parsedDl.rows.length} sample=${JSON.stringify(parsedDl.rows[0] ?? {})}\n` +
+              `This feed delivers its data as a downloaded ${parsedDl.format.toUpperCase()} file (not an on-screen ` +
+              `table). Map each required field to one of the headers above and emit the success JSON now — ` +
+              `use the HEADER NAME as each column's value (e.g. {"guest_name": "Guest Name"}).`
+            : `\n\n[DOWNLOADED FILE] could not be read: ${parsedDl.reason}. ` +
+              (parsedDl.format === 'xlsx' || parsedDl.format === 'pdf'
+                ? `This feed exports ${parsedDl.format.toUpperCase()}, which is not supported yet — declare this target unavailable.`
+                : `If you cannot reach an on-screen table for this feed, declare it unavailable.`);
+          execForToolResultDeliveryNote = note;
+          log.info('mapper: delivery download captured during learn', {
+            jobId: args.jobId ?? undefined,
+            actionName: args.actionName,
+            stepIdx,
+            ok: parsedDl.ok,
+            format: parsedDl.format,
+            headers: parsedDl.ok ? parsedDl.headers.length : 0,
+            rows: parsedDl.ok ? parsedDl.rows.length : 0,
+          });
+        } else if (exec.delivery.kind === 'new_window' && exec.delivery.popupPage) {
+          // (b) NEW WINDOW — redirect the NEXT screenshot to the popup via the
+          // currentPage() getter (we do NOT mutate args.page). The model reads
+          // the popup to map columns; we switch back once the capture commits
+          // (popupPage reset where the success action is built, and if the
+          // popup closes underneath us). Tag the run so the emitted action gets
+          // opensNewWindow:true for a future replay path.
+          deliveryNewWindowFired = true;
+          popupPage = exec.delivery.popupPage;
+          try {
+            await popupPage.waitForLoadState('domcontentloaded', { timeout: 5_000 });
+          } catch {
+            /* best-effort — model's next screenshot reads whatever rendered */
+          }
+          popupPage.once('close', () => {
+            if (popupPage === exec.delivery!.popupPage) popupPage = null;
+          });
+          execForToolResultDeliveryNote =
+            `\n\n[NEW WINDOW] that click opened the feed's data in a NEW WINDOW/tab. Your next ` +
+            `screenshot now shows that new window. Read its table there and emit the success JSON ` +
+            `for THIS feed from what you see in it.`;
+          log.info('mapper: delivery new-window captured during learn', {
+            jobId: args.jobId ?? undefined,
+            actionName: args.actionName,
+            stepIdx,
+            popupUrl: safeUrl(popupPage),
+          });
+        }
       }
       // feature/cua-live-view — tee the (already privacy-hardened)
       // screenshot to the Learning Board's live view. Fire-and-forget.
@@ -3360,8 +3514,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // page navigations the agent's next screenshot will catch the
         // settled state; a verdict='unclear' here is the right answer
         // for an in-flight navigation.
-        await args.page.waitForTimeout(300).catch(() => {});
-        const postScreenshotB64 = await captureScreenshotForCritic(args.page);
+        await currentPage().waitForTimeout(300).catch(() => {});
+        const postScreenshotB64 = await captureScreenshotForCritic(currentPage());
         if (postScreenshotB64) {
           const coord = (toolUse.input as { coordinate?: unknown }).coordinate;
           const verdict = await judgeStepOutcome({
@@ -3394,6 +3548,16 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
             });
           }
         }
+      }
+
+      // feature/cua-report-handling — fold the delivery note (download data
+      // preview / new-window redirect) into the tool_result text so the model
+      // SEES it this turn. Empty string on inline turns → output unchanged.
+      if (execForToolResultDeliveryNote) {
+        execForToolResult = {
+          ...execForToolResult,
+          output: execForToolResult.output + execForToolResultDeliveryNote,
+        };
       }
 
       toolResults.push(makeToolResult(toolUse.id, execForToolResult));
@@ -3453,7 +3617,23 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
       }
     }
 
-    if (commitNudgeText) {
+    if (deliveryFiredThisTurn) {
+      // feature/cua-report-handling — a delivery event (download / new window)
+      // fired this turn, so the click WAS progress even though the page didn't
+      // visibly change. SKIP recording this turn's tuple into the loop detector
+      // entirely (no record on either arm) so a Submit/Generate click that
+      // produces a file/popup can't trip the repeat-gate and burn the cost cap.
+      // We do NOT touch loop-detector.ts constants — we just don't feed it this
+      // turn. Applies ONLY on a delivery turn; every inline turn records as
+      // before. (A delivery turn never carries a commit-nudge — that needs an
+      // on-screen tabular structure, which is exactly what a download/popup
+      // feed lacks — so the commitNudge reset+seed below is unreachable here.)
+      log.info('mapper: delivery turn — skipping loop-detector record (treated as progress)', {
+        jobId: args.jobId ?? undefined,
+        actionName: args.actionName,
+        stepIdx,
+      });
+    } else if (commitNudgeText) {
       // Deliberate intervention — reset the loop detector so the reminded model
       // gets a clean leg (mirrors the deliberate-backtrack + recovery-re-ask
       // resets). Seed it with THIS turn's tuples so the reset clears the dithering

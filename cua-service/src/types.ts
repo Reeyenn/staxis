@@ -221,6 +221,14 @@ export interface ActionRecipe {
   steps: RecipeStep[];
   parse: ParseHint;
   downloadsCsv?: boolean;
+  /** feature/cua-report-handling — set TRUE at learn time when the feed's
+   *  result opened in a NEW WINDOW/tab (popup) that the mapper had to read
+   *  to map the columns. RESERVED for a future new-window REPLAY path
+   *  (recipe-adapter currently leaves popup replay as a TODO — see R6).
+   *  Optional + additive: ABSENT on every existing recipe, so they
+   *  deserialize byte-identically and the runtime treats them exactly as
+   *  today. */
+  opensNewWindow?: boolean;
   acceptsDate?: boolean;
   acceptsDays?: boolean;
   /** Plan v7 — drill-down targets (guests, lost-and-found, activity log)
