@@ -74,6 +74,7 @@ async function familyHasActiveMap(pmsFamily: string, requestId: string): Promise
     .select('id')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (error) {
     return err('could not check coverage', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });

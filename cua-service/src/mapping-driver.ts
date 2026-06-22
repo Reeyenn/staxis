@@ -1646,6 +1646,7 @@ async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerificat
       .from('pms_knowledge_files')
       .select('knowledge')
       .eq('pms_family', pmsFamily)
+      .is('deleted_at', null)
       .order('version', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1787,6 +1788,7 @@ async function checkSeededPromotionGuards(
     .select('version, knowledge')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (error) {
     return {
@@ -1890,7 +1892,7 @@ async function promoteDraft(
   const familyActiveExists = async (): Promise<boolean | null> => {
     const { data, error } = await supabase
       .from('pms_knowledge_files')
-      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').maybeSingle();
+      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').is('deleted_at', null).maybeSingle();
     if (error) return null; // unknown — caller decides conservatively
     return !!data;
   };
@@ -1909,6 +1911,7 @@ async function promoteDraft(
       .from('pms_knowledge_files')
       .update({ status: 'active', promoted_to_active_at: promotedAt ?? nowIso, deprecated_at: null })
       .eq('id', id).eq('status', 'deprecated')
+      .is('deleted_at', null)
       .select('id').maybeSingle();
     return !error && !!data;
   };
@@ -1922,6 +1925,7 @@ async function promoteDraft(
     const { data: prev } = await supabase
       .from('pms_knowledge_files')
       .select('id').eq('pms_family', pmsFamily).eq('status', 'deprecated')
+      .is('deleted_at', null)
       .order('version', { ascending: false }).limit(1).maybeSingle();
     if (!prev) return false;
     return restoreActiveById(prev.id as string, null);
@@ -1937,6 +1941,7 @@ async function promoteDraft(
     .select('id, promoted_to_active_at')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (priorErr) {
     // We could not read the current active. REFUSE to start mutating: a failed

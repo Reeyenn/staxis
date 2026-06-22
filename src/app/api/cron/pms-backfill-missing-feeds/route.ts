@@ -101,7 +101,8 @@ async function run(req: NextRequest) {
     const { data: actives, error: kfErr } = await supabaseAdmin
       .from('pms_knowledge_files')
       .select('id, pms_family, version, promoted_to_active_at, knowledge')
-      .eq('status', 'active');
+      .eq('status', 'active')
+      .is('deleted_at', null);
     if (kfErr) throw kfErr;
 
     for (const kf of (actives ?? []) as ActiveKfRow[]) {
@@ -170,6 +171,7 @@ async function backfillFamily(
     .select('version')
     .eq('pms_family', family)
     .eq('status', 'draft')
+    .is('deleted_at', null)
     .gt('version', kf.version)
     .order('version', { ascending: false })
     .limit(1)

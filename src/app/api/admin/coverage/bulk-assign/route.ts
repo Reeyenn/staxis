@@ -66,6 +66,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .select('id')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (kfErr) {
     return err('could not check coverage', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });

@@ -61,6 +61,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .update({ display_name: displayName })
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .select('id');
   if (error) {
     return err('could not rename coverage', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });

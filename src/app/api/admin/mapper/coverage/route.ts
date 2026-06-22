@@ -85,6 +85,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     .select('id, version, status, knowledge, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (kfErr) {
     return err(`could not load active map: ${kfErr.message}`, { requestId, status: 500, code: 'db_error' });

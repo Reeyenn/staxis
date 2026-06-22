@@ -226,6 +226,7 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
     .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
 
   if (error) {
