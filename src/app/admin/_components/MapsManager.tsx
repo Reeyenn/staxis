@@ -27,6 +27,20 @@ import { Backdrop, MODAL_CARD } from '@/app/admin/_components/studio/surface-kit
 
 const dim = (a: number) => `rgba(255,255,255,${a})`;
 
+// verify-before-live — minimal verification subset echoed by the maps route.
+// Present only on fresh-learn rows; absent (undefined) on seeded/edit/legacy.
+interface VerificationView {
+  score: number;
+  threshold: number;
+  consistentPasses: number;
+  requiredPasses: number;
+  enforced: boolean;
+  /** Raw per-signal verdicts from the signed envelope: 'pass' | 'fail' |
+   *  'abstain' (commit-gate.ts SignalVerdict). 'abstain' means the witness had
+   *  nothing to say — NOT a failure — so only 'fail' counts against the draft. */
+  signals: Record<string, string>;
+}
+
 interface MapView {
   id: string;
   pmsFamily: string;
@@ -40,6 +54,41 @@ interface MapView {
   createdBy: string;
   notes: string | null;
   signed: boolean;
+  verification?: VerificationView;
+}
+
+// Human-readable label for each of the four commit signals (used in the
+// why-parked line, e.g. "failed: cross-feed match, second-model agreement").
+// Keyed by the raw signal key; an unknown key falls back to its own name.
+const SIGNAL_LABEL: Record<string, string> = {
+  reconcile: 'cross-feed reconcile',
+  crossFeed: 'cross-feed match',
+  fingerprint: 'repeat-run match',
+  secondModel: 'second-model agreement',
+};
+
+/**
+ * Build a plain-English "why this draft is held for review" sentence from the
+ * verification verdict, or null when there's nothing to explain (no
+ * verification telemetry, or it actually passed). Surfaced on DRAFT rows and
+ * echoed in the Make-live confirm so the founder sees the trade-off.
+ */
+function whyParked(v: VerificationView | undefined): string | null {
+  if (!v) return null;
+  // FAILED = only signals whose verdict is literally 'fail'. 'abstain' (witness
+  // had nothing to say) and 'pass' are NOT failures — collapsing abstain to a
+  // failure used to mark every draft as failing all four signals.
+  const failed = Object.keys(v.signals)
+    .filter((k) => v.signals[k] === 'fail')
+    .map((k) => SIGNAL_LABEL[k] ?? k);
+  const confidenceShort = v.score < v.threshold;
+  const passesShort = v.consistentPasses < v.requiredPasses;
+  // A clean draft (confidence met, passes met, no failed signal) has nothing to flag.
+  if (!confidenceShort && !passesShort && failed.length === 0) return null;
+  const parts: string[] = [`confidence ${v.score.toFixed(2)} / ${v.threshold.toFixed(2)}`];
+  if (passesShort) parts.push(`${v.consistentPasses}/${v.requiredPasses} repeat checks`);
+  if (failed.length) parts.push(`failed: ${failed.join(', ')}`);
+  return `Held for review — ${parts.join('; ')}.`;
 }
 
 interface FamilyGroup {
@@ -179,6 +228,20 @@ function MapRow({ map, label, first, onAction }: { map: MapView; label: string; 
 
       {map.notes && <div style={{ fontSize: 12, color: dim(.55), fontStyle: 'italic', lineHeight: 1.5 }}>{map.notes}</div>}
 
+      {/* verify-before-live — on DRAFT rows, a plain-English reason the robot
+          held this map for the founder's review (from the verification subset).
+          Only shown when there's something to explain; clean drafts stay quiet. */}
+      {map.status === 'draft' && (() => {
+        const why = whyParked(map.verification);
+        if (!why) return null;
+        return (
+          <div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 11.5, color: 'var(--gold)', lineHeight: 1.5 }}>
+            <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{why}</span>
+          </div>
+        );
+      })()}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
         {isActive && (
           <Btn size="sm" variant="terracotta" onClick={() => onAction({ kind: 'deprecate', map, label })}>Take offline</Btn>
@@ -210,10 +273,19 @@ function ConfirmDialog({ action, busy, error, onCancel, onConfirm }: {
 
   if (kind === 'promote') {
     title = `Make ${name} the live map?`;
+    // verify-before-live — if the robot held this draft for review, repeat its
+    // reason here so the founder makes the call eyes-open.
+    const parkedReason = map.status === 'draft' ? whyParked(map.verification) : null;
     body = (
       <>
         Every <b>{label}</b> hotel’s robot will switch to this map
         {map.status === 'deprecated' ? ', rolling back to this earlier version' : ''}.
+        {parkedReason && (
+          <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(201,154,46,.12)', border: '1px solid rgba(201,154,46,.4)', color: 'var(--gold-deep)', fontSize: 12.5 }}>
+            <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>The robot held this map for review — {parkedReason.replace(/^Held for review — /, '')} Make sure you’ve checked what it captured before going live.</span>
+          </span>
+        )}
         {!map.signed && (
           <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(201,154,46,.12)', border: '1px solid rgba(201,154,46,.4)', color: 'var(--gold-deep)', fontSize: 12.5 }}>
             <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />

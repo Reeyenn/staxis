@@ -69,10 +69,10 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 const READ_TIMEOUT_MS = 120_000;
 
 // feature/cua-self-heal-reach — RUNG-2 re-anchor knobs.
-/** DEFAULT OFF (monotonic): unset ⟹ self-repair goes straight to the $3 paid
- *  re-learn exactly as today. Flip to try the free re-anchor first. */
+/** ON by default — free re-anchor tried before a paid re-learn when a feed
+ *  breaks; =false is an emergency kill only. */
 function reanchorEnabled(): boolean {
-  return (process.env.CUA_REANCHOR_ENABLED ?? 'false').toLowerCase() === 'true';
+  return (process.env.CUA_REANCHOR_ENABLED ?? 'true').toLowerCase() === 'true';
 }
 /** The re-anchor live-page probe runs under the read mutex with this timeout. */
 const REANCHOR_TIMEOUT_MS = 90_000;

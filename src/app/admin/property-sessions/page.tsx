@@ -52,6 +52,7 @@ import {
   Loader2,
   Eye,
   Layers,
+  Wand2,
 } from 'lucide-react';
 
 interface MapperJobSummary {
@@ -85,6 +86,11 @@ interface SessionRow {
     missing_business_critical?: string[];
     /** Newest status='draft' row (the founder's review queue). */
     newest_draft?: number | null;
+    // verify-before-live / self-repair — OPTIONAL, best-effort. True when the
+    // active version was produced by the robot's free self-repair (reanchor)
+    // rather than a fresh learn or a founder edit. The route may omit it
+    // (older payloads); the fleet count below tolerates absence.
+    repaired?: boolean;
   } | null;
   active_mapper_job: MapperJobSummary | null;
   last_mapper_job: MapperJobSummary | null;
@@ -239,6 +245,28 @@ export default function PropertySessionsPage() {
               first time show a live board link. New hotels are onboarded from the{' '}
               <Link href="/admin/properties#onboarding" style={{ color: '#fff', textDecorationColor: dimWhite(.3) }}>Onboarding tab</Link>.
             </p>
+
+            {/* verify-before-live / self-repair — fleet-level count of maps the
+                robot fixed itself (active version came from a free reanchor).
+                Best-effort: tolerates the route not sending the `repaired`
+                flag, in which case the chip stays hidden. */}
+            {(() => {
+              const healed = (rows ?? []).filter((s) => s.knowledge_file?.repaired === true).length;
+              if (healed === 0) return null;
+              return (
+                <div style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                  marginBottom: 20, padding: '7px 12px', borderRadius: 999,
+                  background: 'var(--teal-dim)', border: '1px solid rgba(51,137,160,.35)',
+                  fontSize: 12, color: 'var(--teal)',
+                }}>
+                  <Wand2 size={13} />
+                  <span style={{ fontWeight: 600 }}>{healed}</span>
+                  {healed === 1 ? ' feed self-healed' : ' feeds self-healed'}
+                  <span style={{ color: dimWhite(.5), fontWeight: 400 }}>· the robot re-anchored these without a re-learn</span>
+                </div>
+              );
+            })()}
 
             {error && (
               <div style={{

@@ -35,8 +35,20 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
-  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Camera,
+  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Camera, Wand2,
 } from 'lucide-react';
+
+/** Coarse "time ago" for the self-repair pill. Tolerant of null/garbage. */
+function ago(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!isFinite(min)) return '';
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
 
 interface FeedDetail {
   key: string;
@@ -62,6 +74,13 @@ interface CoverageResponse {
   activeMap: {
     id: string; version: number; status: string; signed: boolean;
     shape: 'actions' | 'legacy' | 'empty'; editable: boolean;
+    // verify-before-live / self-repair — OPTIONAL, best-effort. When the active
+    // map version was produced by the robot's free self-repair (reanchor) — as
+    // opposed to a fresh learn or a founder edit — the route may flag it here so
+    // the page can show a "Repaired (auto)" pill. Tolerate absence: older
+    // responses simply omit it and no pill renders.
+    repaired?: boolean;
+    repairedAt?: string | null;
   } | null;
   feeds: FeedDetail[];
   addableFeeds: Array<{ actionKey: string; label: string }>;
@@ -422,6 +441,17 @@ export default function CoveragePage() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
                               <span style={{ fontFamily: FONT_SERIF, fontSize: 17, color: '#fff' }}>{f.label}</span>
                               <Pill tone={STATE_PILL[f.state].tone}>{STATE_PILL[f.state].label}</Pill>
+                              {/* verify-before-live / self-repair — when the
+                                  active map version came from the robot's free
+                                  self-repair, flag the live feeds it re-anchored.
+                                  Best-effort: only renders when the route sent
+                                  the repaired signal. */}
+                              {map.repaired && f.state === 'live' && (
+                                <Pill tone="teal">
+                                  <Wand2 size={10} style={{ marginRight: 4 }} />
+                                  Repaired (auto){map.repairedAt ? ` · ${ago(map.repairedAt)}` : ''}
+                                </Pill>
+                              )}
                               {f.required && <Caps size={9} c="var(--teal)" style={{ letterSpacing: '.12em' }}>core</Caps>}
                             </div>
                             <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45), marginTop: 4 }}>

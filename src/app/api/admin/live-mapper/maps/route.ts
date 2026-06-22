@@ -87,6 +87,32 @@ interface KnowledgeFileRow {
   signed_with_key_id: string | null;
 }
 
+/**
+ * feature — verify-before-live visibility. A minimal, READ-ONLY echo of the
+ * best-class verification telemetry persisted in the signed envelope under
+ * `knowledge.verification` (cua-service mapping-driver computeRecipeVerification).
+ * Present only on fresh-learn rows; absent on seeded / edit / legacy rows.
+ *
+ * We return ONLY this small subset so the admin can see WHY a draft was held
+ * for review — NEVER the full `knowledge` (selectors) or the envelope's
+ * fingerprint/computedAt internals. Each field is copied through defensively
+ * (the jsonb is free-text) so a malformed envelope degrades to `undefined`
+ * rather than throwing.
+ */
+interface VerificationView {
+  score: number;
+  threshold: number;
+  consistentPasses: number;
+  requiredPasses: number;
+  enforced: boolean;
+  /** Raw per-signal verdicts straight from the signed envelope — the same
+   *  'pass' | 'fail' | 'abstain' strings the worker persisted (commit-gate.ts
+   *  SignalVerdict). NOT coerced to booleans: an abstain is NOT a failure, so
+   *  collapsing it to `false` falsely marked every signal failed. The UI
+   *  distinguishes fail from abstain itself. */
+  signals: Record<string, string>;
+}
+
 interface MapView {
   id: string;
   pmsFamily: string;
@@ -106,6 +132,40 @@ interface MapView {
   createdBy: string;
   notes: string | null;
   signed: boolean;
+  /** Optional — only present on fresh-learn rows that ran verification. */
+  verification?: VerificationView;
+}
+
+/**
+ * Read the verification subset out of the row's `knowledge` jsonb, defensively.
+ * Returns undefined for seeded/edit/legacy rows (no `verification` key) or any
+ * malformed shape — never throws, so coverage stays deterministic.
+ */
+function readVerification(knowledge: unknown): VerificationView | undefined {
+  if (!knowledge || typeof knowledge !== 'object') return undefined;
+  const v = (knowledge as { verification?: unknown }).verification;
+  if (!v || typeof v !== 'object') return undefined;
+  const r = v as Record<string, unknown>;
+  const s = (r.signals && typeof r.signals === 'object' && !Array.isArray(r.signals)
+    ? r.signals
+    : {}) as Record<string, unknown>;
+  // Require the numeric core to be present; a partial/garbage envelope abstains.
+  if (typeof r.score !== 'number' || typeof r.threshold !== 'number') return undefined;
+  // Pass the per-signal verdicts through as the RAW strings the worker wrote
+  // ('pass' | 'fail' | 'abstain'), exactly as /api/admin/mapper/live/[jobId]
+  // reads them. Do NOT coerce to booleans — an abstain is not a failure.
+  const signals: Record<string, string> = {};
+  for (const [key, val] of Object.entries(s)) {
+    if (typeof val === 'string') signals[key] = val;
+  }
+  return {
+    score: r.score,
+    threshold: r.threshold,
+    consistentPasses: typeof r.consistentPasses === 'number' ? r.consistentPasses : 0,
+    requiredPasses: typeof r.requiredPasses === 'number' ? r.requiredPasses : 0,
+    enforced: r.enforced === true,
+    signals,
+  };
 }
 
 interface FamilyGroup {
@@ -173,6 +233,13 @@ export async function GET(req: NextRequest) {
       // HMAC here anyway (RECIPE_SIGNING_KEY is Fly-only); the UI just surfaces
       // presence so an admin knows a map might be refused if unsigned.
       signed: r.signature != null && r.signed_with_key_id != null,
+      // verify-before-live — minimal echo of the verification verdict (subset
+      // only; the full knowledge/selectors stay dropped). Undefined on
+      // seeded/edit/legacy rows; omitted from the JSON when undefined.
+      ...((): { verification?: VerificationView } => {
+        const verification = readVerification(r.knowledge);
+        return verification ? { verification } : {};
+      })(),
     };
     const list = byFamily.get(r.pms_family) ?? [];
     list.push(view);

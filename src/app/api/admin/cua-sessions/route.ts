@@ -47,6 +47,9 @@ interface KnowledgeRow {
   version: number;
   status: string;
   learned_at: string;
+  /** Self-repair provenance — reanchor origin is a 'reanchor/' PREFIX on notes
+   *  (mapping-driver saveDraftKnowledgeFile, `${origin}/${decision}: …`). */
+  notes: string | null;
   /** feat/cua-partial-promotion — knowledge->feedGaps (JSON path select). */
   feed_gaps: {
     missingRequired?: Array<{ target: string; reason: string; missingColumns?: string[] }>;
@@ -92,7 +95,7 @@ export async function GET(req: NextRequest) {
       .order('updated_at', { ascending: false }),
     supabaseAdmin
       .from('pms_knowledge_files')
-      .select('pms_family, version, status, learned_at, feed_gaps:knowledge->feedGaps')
+      .select('pms_family, version, status, learned_at, notes, feed_gaps:knowledge->feedGaps')
       .is('deleted_at', null)
       .order('pms_family')
       .order('version', { ascending: false }),
@@ -155,6 +158,10 @@ export async function GET(req: NextRequest) {
      *  quarantined/deprecated row existed, while the backfill cron's
      *  draft-awaiting gate stayed latched on it with no visible explanation. */
     newest_draft: number | null;
+    /** True when the ACTIVE version was produced by the robot's free self-repair
+     *  (reanchor) — the active row's notes start with the 'reanchor/' prefix.
+     *  Optional; absent when there's no active map. */
+    repaired?: boolean;
   }
   const knowledgeByFamily = new Map<string, FamilyKnowledge>();
   for (const k of (kfRows ?? []) as KnowledgeRow[]) {
@@ -163,17 +170,22 @@ export async function GET(req: NextRequest) {
       missing_required: (row.feed_gaps?.missingRequired ?? []).map((g) => g.target),
       missing_business_critical: row.feed_gaps?.missingBusinessCritical ?? [],
     });
+    // Self-repair provenance — true only for the ACTIVE row when its notes were
+    // stamped by a reanchor (saveDraftKnowledgeFile `${origin}/…`).
+    const isReanchor = (k.notes ?? '').startsWith('reanchor/');
     if (!existing) {
       knowledgeByFamily.set(k.pms_family, {
         active: k.status === 'active' ? k.version : null,
         latest: k.version,
         status: k.status,
         newest_draft: k.status === 'draft' ? k.version : null,
+        ...(k.status === 'active' ? { repaired: isReanchor } : {}),
         ...(k.status === 'active' ? gapsOf(k) : { missing_required: [], missing_business_critical: [] }),
       });
     } else {
       if (k.status === 'active') {
         existing.active = k.version;
+        existing.repaired = isReanchor;
         const g = gapsOf(k);
         existing.missing_required = g.missing_required;
         existing.missing_business_critical = g.missing_business_critical;

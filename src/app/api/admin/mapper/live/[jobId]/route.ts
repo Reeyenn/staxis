@@ -157,11 +157,24 @@ export async function GET(
     key: string; label: string;
     status: 'found' | 'missing';
     rowCount?: number | null; columnCount: number;
+    // ADDITIVE (report-handling visibility): how the robot READS this feed —
+    // 'csv' = downloaded report, 'table' = scraped HTML rows, etc. Drives the
+    // "CSV" vs "Table" pill on the board. null for missing feeds / unknown mode.
+    parseMode?: string | null;
   };
   let draftMap: {
     id: string; version: number; status: string; pmsFamily: string;
     actionsFound: number; missingRequired: string[]; missingBusinessCritical: string[];
     actionDetails: ActionDetail[];
+  } | null = null;
+  // ADDITIVE — the draft's best-class verification telemetry (score/threshold/
+  // pass-count/per-signal verdicts) from the signed knowledge envelope. Old
+  // board code ignores it; absent ⟹ the completion card simply omits the score.
+  let verification: {
+    score: number | null; threshold: number | null;
+    consistentPasses: number | null; requiredPasses: number | null;
+    enforced: boolean | null;
+    signals: Record<string, string> | null;
   } | null = null;
   // STRICT: only the draft THIS run produced (knowledge_file_id). No newest-by-
   // family fallback — Save/Discard resolve the same way (job-draft.ts), so the
@@ -175,7 +188,15 @@ export async function GET(
       .maybeSingle();
     const row = (data as KFRow | null) ?? null;
     if (row) {
-      const knowledge = (row.knowledge ?? {}) as { actions?: Record<string, unknown>; feedGaps?: { missingRequired?: Array<{ target?: unknown }>; missingBusinessCritical?: unknown[] } };
+      const knowledge = (row.knowledge ?? {}) as {
+        actions?: Record<string, unknown>;
+        feedGaps?: { missingRequired?: Array<{ target?: unknown }>; missingBusinessCritical?: unknown[] };
+        verification?: {
+          score?: unknown; threshold?: unknown;
+          consistentPasses?: unknown; requiredPasses?: unknown;
+          enforced?: unknown; signals?: unknown;
+        };
+      };
       const gaps = knowledge.feedGaps;
       const actions = (knowledge.actions && typeof knowledge.actions === 'object' && !Array.isArray(knowledge.actions)
         ? knowledge.actions
@@ -198,6 +219,24 @@ export async function GET(
       }
       // Found feeds (present in actions) + any required feeds still missing.
       const presentKeys = Object.keys(actions);
+      // How the robot reads each feed: actions[key].parse.mode ('csv' | 'table'
+      // | 'api' | 'inline_text'). Read inline (tolerant of arbitrary jsonb) so
+      // the board can show a CSV vs Table pill — making the report-handling CSV
+      // path visible. NO selectors are exposed, only the mode tag.
+      const parseModeOf = (action: unknown): string | null => {
+        if (!action || typeof action !== 'object') return null;
+        const dd = (action as Record<string, unknown>).drillDown;
+        if (dd && typeof dd === 'object') {
+          const lm = (dd as Record<string, unknown>).listMode;
+          if (typeof lm === 'string') return lm;
+        }
+        const parse = (action as Record<string, unknown>).parse;
+        if (parse && typeof parse === 'object') {
+          const m = (parse as Record<string, unknown>).mode;
+          if (typeof m === 'string') return m;
+        }
+        return null;
+      };
       const actionDetails: ActionDetail[] = [
         ...presentKeys.map((key) => ({
           key,
@@ -205,6 +244,7 @@ export async function GET(
           status: 'found' as const,
           rowCount: rowCountByKey.has(key) ? rowCountByKey.get(key)! : null,
           columnCount: Object.keys(columnsFromAction(actions[key])).length,
+          parseMode: parseModeOf(actions[key]),
         })),
         ...[...REQUIRED_ACTION_KEYS]
           .filter((k) => !(k in actions))
@@ -214,6 +254,7 @@ export async function GET(
             status: 'missing' as const,
             rowCount: null,
             columnCount: 0,
+            parseMode: null,
           })),
       ];
 
@@ -229,6 +270,30 @@ export async function GET(
           : [],
         actionDetails,
       };
+
+      // ADDITIVE — the best-class verification telemetry the worker persisted
+      // into the signed envelope (feature/cua-bestclass-verify). Tolerant reads
+      // (any field may be absent on older/legacy maps). The DECISION itself
+      // (auto-promoted vs parked) is derived board-side from row.status, since
+      // that is the durable source of truth for whether it went live.
+      const v = knowledge.verification;
+      if (v && typeof v === 'object') {
+        const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+        const sig = v.signals && typeof v.signals === 'object' && !Array.isArray(v.signals)
+          ? Object.fromEntries(
+              Object.entries(v.signals as Record<string, unknown>)
+                .filter(([, val]) => typeof val === 'string') as Array<[string, string]>,
+            )
+          : null;
+        verification = {
+          score: num(v.score),
+          threshold: num(v.threshold),
+          consistentPasses: num(v.consistentPasses),
+          requiredPasses: num(v.requiredPasses),
+          enforced: typeof v.enforced === 'boolean' ? v.enforced : null,
+          signals: sig && Object.keys(sig).length > 0 ? sig : null,
+        };
+      }
     }
   }
 
@@ -249,6 +314,9 @@ export async function GET(
     recentHelpRequests: recentRes.data ?? [],
     takeover,
     draftMap,
+    // ADDITIVE — best-class verification telemetry for the completion card.
+    // null when the draft is absent or the map carries no verification block.
+    verification,
     awaiting2fa,
     awaiting2faSince,
   }, { requestId });

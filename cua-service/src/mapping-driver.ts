@@ -77,8 +77,11 @@ import {
 // observability, but never downgrade), one required pass, the calibrated
 // threshold. Flip CUA_VERIFY_ENFORCE=true (+ optionally raise the passes) for
 // the prove-it-before-family-wide rollout posture.
+// ON by default — a learned map must pass the confidence gate before
+// auto-promoting, else it PARKS as a draft for founder review; =false is an
+// emergency kill.
 const verifyEnforceOn = (): boolean =>
-  (process.env.CUA_VERIFY_ENFORCE ?? 'false').toLowerCase() === 'true';
+  (process.env.CUA_VERIFY_ENFORCE ?? 'true').toLowerCase() === 'true';
 const verifyThreshold = (): number =>
   clampFloatCfg(process.env.CUA_VERIFY_COMMIT_THRESHOLD, DEFAULT_COMMIT_THRESHOLD, 0, 1);
 const verifyRequiredPasses = (): number =>
@@ -177,6 +180,14 @@ export interface MappingJobResult {
    */
   promotionDecision?: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   promotionReason?: string;
+  /** Verification visibility (additive, advisory) — the multi-signal commit
+   *  score [0,1] and per-signal verdicts that fed the promotion decision, so
+   *  the admin can SEE why a map auto-promoted or parked without opening the
+   *  knowledge file. Present only on a fresh full learn (when verification was
+   *  computed); absent on seeded repair/backfill/coverage-edit jobs. Mirrors
+   *  knowledge.verification.{score,signals}; never drives the gate. */
+  verificationScore?: number;
+  verificationSignals?: Record<string, string>;
   /** Learning Board — final per-feed state, carried from mapPMS through the
    *  index.ts handler adapter into workflow_jobs.result. markCompleted
    *  REPLACES result at completion, so dropping these anywhere along the
@@ -209,6 +220,10 @@ export function mappingJobResultToWorkflowResult(
     spent_micros: result.spentMicros,
     promotion_decision: result.promotionDecision,
     promotion_reason: result.promotionReason,
+    // Verification visibility (additive, advisory) — score + per-signal
+    // verdicts surfaced alongside the decision in workflow_jobs.result.
+    verification_score: result.verificationScore,
+    verification_signals: result.verificationSignals,
     targetCatalog: result.targetCatalog,
     boardTargets: result.boardTargets,
   };
@@ -823,6 +838,10 @@ export async function runMappingJob(
       knowledgeFileVersion: draft.version,
       promotionDecision: gate.decision,
       promotionReason: gate.reason,
+      // Verification visibility (additive, advisory) — score + signals beside
+      // the decision; undefined on seeded repair/backfill (no fresh learn).
+      verificationScore: verification?.persist.score,
+      verificationSignals: verification?.persist.signals,
       ...stats,
     },
     at: new Date().toISOString(),
@@ -834,6 +853,10 @@ export async function runMappingJob(
     knowledgeFileVersion: draft.version,
     promotionDecision: gate.decision,
     promotionReason: gate.reason,
+    // Verification visibility (additive, advisory) — only present on a fresh
+    // full learn; mirrors the persisted knowledge.verification.
+    verificationScore: verification?.persist.score,
+    verificationSignals: verification?.persist.signals,
     ...stats,
     // Learning Board — see MappingJobResult doc.
     targetCatalog: result.targetCatalog,

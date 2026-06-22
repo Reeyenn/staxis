@@ -82,7 +82,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   // 2. The family's ACTIVE knowledge file.
   const { data: activeRow, error: kfErr } = await supabaseAdmin
     .from('pms_knowledge_files')
-    .select('id, version, status, knowledge, signature, signed_with_key_id')
+    .select('id, version, status, knowledge, signature, signed_with_key_id, notes, learned_at')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
     .is('deleted_at', null)
@@ -165,6 +165,14 @@ export async function GET(req: NextRequest): Promise<Response> {
       signed: activeRow.signature != null && activeRow.signed_with_key_id != null,
       shape: parsed.shape,
       editable: parsed.editable,
+      // self-repair provenance — the worker records a reanchor's origin as a
+      // 'reanchor/' PREFIX on the active row's notes (promoteRecipeChange →
+      // saveDraftKnowledgeFile, `${origin}/${decision}: …`). Surface it so the
+      // page can show a "Repaired (auto)" pill. Optional; absent when not a
+      // reanchor (fresh learn / founder edit).
+      ...(((activeRow.notes as string | null) ?? '').startsWith('reanchor/')
+        ? { repaired: true, repairedAt: (activeRow.learned_at as string | null) ?? null }
+        : {}),
     },
     feeds,
     // Only an actions-shaped (editable) map can have feeds added by takeover.

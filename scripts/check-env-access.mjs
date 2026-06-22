@@ -56,6 +56,9 @@ const EXEMPT_READS = new Set([
   'cua-service/src/mapping-driver.ts:CUA_GOLDEN_FIXTURES_ENABLED',
   'cua-service/src/session-driver.ts:CUA_REANCHOR_ENABLED',
   'cua-service/src/session-driver.ts:CUA_PMS_TZ',
+  // Default-ON delivery-detect kill switch, read at call time so ops can flip
+  // the Fly secret without a redeploy (same rationale as the flags above).
+  'cua-service/src/browser-tool-vision.ts:CUA_DELIVERY_DETECT_ENABLED',
 ]);
 
 const SCAN_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];

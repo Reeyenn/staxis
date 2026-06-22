@@ -172,7 +172,23 @@ interface DraftMap {
     status: 'found' | 'missing';
     rowCount?: number | null;
     columnCount: number;
+    /** How the robot reads this feed: 'csv' (downloaded report) | 'table'
+     *  (scraped HTML) | 'api' | 'inline_text'. Drives the CSV/Table pill.
+     *  Additive — undefined on older runs (pill simply absent). */
+    parseMode?: string | null;
   }>;
+}
+
+/** feature/cua-report-handling — best-class verification telemetry for the
+ *  completion card. Additive: older runs/maps omit it → the card falls back to
+ *  the plain feed count with no confidence score. NO selectors — telemetry only. */
+interface Verification {
+  score: number | null;
+  threshold: number | null;
+  consistentPasses: number | null;
+  requiredPasses: number | null;
+  enforced: boolean | null;
+  signals: Record<string, string> | null;
 }
 
 /** Per-feed "Learned columns" fetch state (lazy — populated on first expand). */
@@ -433,6 +449,9 @@ export default function LiveMappingPage() {
   const [takeoverMarker, setTakeoverMarker] = useState<ClickMarker | null>(null);
   const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [draftMap, setDraftMap] = useState<DraftMap | null>(null);
+  // feature/cua-report-handling — best-class verification telemetry for the
+  // completion card. Additive (null on older runs).
+  const [verification, setVerification] = useState<Verification | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'discarding' | 'discarded'>('idle');
   // Guards the takeover-frame preload (latest-wins; never commit an older seq).
   const takeoverFrameSeqRef = useRef(0);
@@ -527,6 +546,7 @@ export default function LiveMappingPage() {
         const t = (json.data.takeover ?? null) as TakeoverState | null;
         setTakeover(t);
         setDraftMap((json.data.draftMap ?? null) as DraftMap | null);
+        setVerification((json.data.verification ?? null) as Verification | null);
         if (!t || t.status === 'ended') {
           takeoverFrameSeqRef.current = 0;
           setTakeoverFrame(null);
@@ -1052,6 +1072,17 @@ export default function LiveMappingPage() {
   }), [job, pendingHelp]);
   const summary = useMemo(() => summarizeFeedRows(feedRows), [feedRows]);
   const searchingRow = feedRows.find((r) => r.glyph === 'searching');
+  // feature/cua-report-handling — per-feed read-mode (csv/table/…) keyed by
+  // feed key, from the draft's actionDetails. Drives the "CSV"/"Table" pill so
+  // the report-handling CSV path is visible on the board. Empty until the run
+  // finishes (actionDetails is a completed-run summary).
+  const parseModeByKey = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of draftMap?.actionDetails ?? []) {
+      if (d.parseMode) m.set(d.key, d.parseMode);
+    }
+    return m;
+  }, [draftMap]);
 
   // feature/cua-admin-mapper-visibility — the single live phase line: what the
   // robot is doing RIGHT NOW, from the durable result.currentActivity. It's
@@ -1262,6 +1293,47 @@ export default function LiveMappingPage() {
                 border: `2px solid ${draftMap.status === 'active' || saveState === 'saved' ? 'var(--forest)' : dimWhite(.18)}`,
               }}>
                 <Caps c={dimWhite(.5)}>This run is done — your call</Caps>
+                {/* feature/cua-report-handling — completion verdict, built from
+                    the best-class verification telemetry. The decision is
+                    derived board-side from the draft's status (active/saved =
+                    auto-promoted & live; anything else = parked for review),
+                    annotated with the confidence score when the map carries it.
+                    Degrades gracefully: no verification ⟹ a plain live / parked
+                    line with no score. */}
+                {(() => {
+                  const live = draftMap.status === 'active' || saveState === 'saved';
+                  const score = verification?.score;
+                  const scoreStr = typeof score === 'number' ? score.toFixed(2) : null;
+                  return (
+                    <div style={{
+                      margin: '8px 0 12px', padding: '10px 14px', borderRadius: 8,
+                      background: live ? 'rgba(74,124,89,.14)' : 'rgba(255,255,255,.05)',
+                      border: `1px solid ${live ? 'rgba(74,124,89,.4)' : dimWhite(.14)}`,
+                      display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                    }}>
+                      {live
+                        ? <CheckCircle2 size={16} color="var(--forest)" style={{ flexShrink: 0 }} />
+                        : <AlertTriangle size={16} color="var(--gold)" style={{ flexShrink: 0 }} />}
+                      <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: '#fff' }}>
+                        {live ? (
+                          <>Auto-promoted{scoreStr ? <> <span style={{ fontFamily: FONT_MONO, color: 'var(--forest)' }}>({scoreStr})</span></> : ''} — <strong>live</strong></>
+                        ) : (
+                          <>Parked{scoreStr ? <> — confidence <span style={{ fontFamily: FONT_MONO, color: 'var(--gold)' }}>{scoreStr}</span></> : ''}, review in <strong>Manage maps</strong></>
+                        )}
+                      </span>
+                      {typeof verification?.threshold === 'number' && scoreStr && (
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                          bar {verification.threshold.toFixed(2)}
+                        </span>
+                      )}
+                      {typeof verification?.consistentPasses === 'number' && typeof verification?.requiredPasses === 'number' && (
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                          · {verification.consistentPasses}/{verification.requiredPasses} consistent passes
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', margin: '6px 0 10px' }}>
                   <span style={{ fontFamily: FONT_SERIF, fontSize: 20, fontStyle: 'italic', color: '#fff' }}>
                     {draftMap.actionsFound} {draftMap.actionsFound === 1 ? 'feed' : 'feeds'} learned
@@ -1474,6 +1546,24 @@ export default function LiveMappingPage() {
                         {row.glyph === 'found' && row.carried && (
                           <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.45) }} title="Carried over from an earlier attempt or from the existing recipe (repair run)">carried</span>
                         )}
+                        {/* feature/cua-report-handling — how the robot READS this
+                            feed: a downloaded CSV report vs scraped HTML rows.
+                            Makes the report-handling CSV path visible. Absent
+                            until the run finishes (parseModeByKey is empty mid-run)
+                            and for feeds the draft has no mode for. */}
+                        {row.glyph === 'found' && parseModeByKey.has(row.key) && (() => {
+                          const mode = parseModeByKey.get(row.key)!;
+                          const isCsv = mode === 'csv';
+                          const isTable = mode === 'table';
+                          const label = isCsv ? 'CSV' : isTable ? 'Table' : mode.toUpperCase();
+                          return (
+                            <Pill tone={isCsv ? 'gold' : 'neutral'}>
+                              <span title={isCsv ? 'The robot reads this feed from a downloaded CSV report' : isTable ? 'The robot reads this feed from on-screen table rows' : `Read mode: ${mode}`}>
+                                {label}
+                              </span>
+                            </Pill>
+                          );
+                        })()}
                         <Pill tone={meta.tone}>{meta.label}</Pill>
                         {/* feature/cua-live-assist — skip this feed without
                             taking over (usable while it's searching; not for
