@@ -12,11 +12,62 @@ import { Sparkline } from '../Sparkline';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import type { DisplayItem } from '../types';
+import { dateLocale, type Lang } from '../inv-i18n';
 
 interface ReportsPanelProps {
+  lang: Lang;
   open: boolean;
   onClose: () => void;
   display: DisplayItem[];
+}
+
+function rpStrings(lang: Lang) {
+  return {
+    en: {
+      eyebrow: 'Reports · this property',
+      italic: 'At a glance',
+      mtd: 'MTD',
+      compare: 'Compare ▾',
+      export: 'Export ↓',
+      costPerOccRoom: 'Cost / occ-room',
+      rooms: 'rooms',
+      thisProperty: 'this property',
+      shrinkageRate: 'Shrinkage rate',
+      mtdLoss: 'MTD loss',
+      inventoryValue: 'Inventory value',
+      skus: 'SKUs',
+      valuedToday: 'valued today',
+      monthlyTrend: 'Monthly trend',
+      spendAndShrinkage: 'Spend & shrinkage',
+      lastNMonths: (n: number) => ` · last ${n} months`,
+      spend: 'Spend',
+      shrinkage: 'Shrinkage',
+      loading: 'Loading…',
+      notEnoughHistory: 'Not enough history yet',
+    },
+    es: {
+      eyebrow: 'Informes · esta propiedad',
+      italic: 'De un vistazo',
+      mtd: 'del mes',
+      compare: 'Comparar ▾',
+      export: 'Exportar ↓',
+      costPerOccRoom: 'Costo / hab. ocupada',
+      rooms: 'habitaciones',
+      thisProperty: 'esta propiedad',
+      shrinkageRate: 'Tasa de merma',
+      mtdLoss: 'pérdida del mes',
+      inventoryValue: 'Valor del inventario',
+      skus: 'SKUs',
+      valuedToday: 'valorado hoy',
+      monthlyTrend: 'Tendencia mensual',
+      spendAndShrinkage: 'Gasto y merma',
+      lastNMonths: (n: number) => ` · últimos ${n} meses`,
+      spend: 'Gasto',
+      shrinkage: 'Merma',
+      loading: 'Cargando…',
+      notEnoughHistory: 'Aún no hay suficiente historial',
+    },
+  }[lang];
 }
 
 interface YtdRow {
@@ -38,9 +89,10 @@ interface SummaryShape {
   ytd: YtdRow[];
 }
 
-export function ReportsPanel({ open, onClose, display }: ReportsPanelProps) {
+export function ReportsPanel({ lang, open, onClose, display }: ReportsPanelProps) {
   const { user } = useAuth();
   const { activePropertyId, activeProperty } = useProperty();
+  const rp = rpStrings(lang);
   const [summary, setSummary] = useState<SummaryShape | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -93,43 +145,43 @@ export function ReportsPanel({ open, onClose, display }: ReportsPanelProps) {
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow="Reports · this property"
-      italic="At a glance"
-      suffix={`${currentMonthLabel()}, MTD`}
+      eyebrow={rp.eyebrow}
+      italic={rp.italic}
+      suffix={`${currentMonthLabel(lang)}, ${rp.mtd}`}
       width={1080}
       footer={
         <>
-          <Btn variant="ghost" size="md">{currentMonthLabel()} ▾</Btn>
-          <Btn variant="ghost" size="md">Compare ▾</Btn>
-          <Btn variant="ghost" size="md">Export ↓</Btn>
+          <Btn variant="ghost" size="md">{currentMonthLabel(lang)} ▾</Btn>
+          <Btn variant="ghost" size="md">{rp.compare}</Btn>
+          <Btn variant="ghost" size="md">{rp.export}</Btn>
         </>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           <KPI
-            eyebrow="Cost / occ-room"
+            eyebrow={rp.costPerOccRoom}
             value={fmtMoney(costPerOccRoom, { digits: 2 })}
             spark={sparkReceipts}
             sparkColor={statusColor.good}
-            cohort={{ left: `${totalRooms} rooms`, right: 'this property' }}
+            cohort={{ left: `${totalRooms} ${rp.rooms}`, right: rp.thisProperty }}
           />
           <KPI
-            eyebrow="Shrinkage rate"
+            eyebrow={rp.shrinkageRate}
             value={`${shrinkagePct.toFixed(1)}%`}
             spark={sparkShrinkage}
             sparkColor={T.warm}
-            cohort={{ left: fmtMoney(shrinkage), right: 'MTD loss' }}
+            cohort={{ left: fmtMoney(shrinkage), right: rp.mtdLoss }}
           />
           <KPI
-            eyebrow="Inventory value"
+            eyebrow={rp.inventoryValue}
             value={fmtMoney(closing)}
             spark={ytd.length > 0 ? ytd.map((r) => r.receiptsValue + r.discardsValue) : sparkReceipts}
             sparkColor={T.caramelDeep}
-            cohort={{ left: `${display.length} SKUs`, right: 'valued today' }}
+            cohort={{ left: `${display.length} ${rp.skus}`, right: rp.valuedToday }}
           />
         </div>
-        <MonthlyChart ytd={ytd} loading={loading} />
+        <MonthlyChart ytd={ytd} loading={loading} rp={rp} lang={lang} />
       </div>
     </Overlay>
   );
@@ -211,7 +263,7 @@ function KPI({
   );
 }
 
-function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
+function MonthlyChart({ ytd, loading, rp, lang }: { ytd: YtdRow[]; loading: boolean; rp: ReturnType<typeof rpStrings>; lang: Lang }) {
   const data = ytd.slice(-7);
   const max = data.length > 0 ? Math.max(...data.map((d) => d.receiptsValue || 0), 1) : 1;
   return (
@@ -225,7 +277,7 @@ function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 14 }}>
         <div>
-          <Caps>Monthly trend</Caps>
+          <Caps>{rp.monthlyTrend}</Caps>
           <h3
             style={{
               fontFamily: fonts.serif,
@@ -236,8 +288,8 @@ function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
               fontWeight: 400,
             }}
           >
-            <span style={{ fontStyle: 'italic' }}>Spend & shrinkage</span>
-            <span style={{ color: T.ink3 }}> · last {data.length} months</span>
+            <span style={{ fontStyle: 'italic' }}>{rp.spendAndShrinkage}</span>
+            <span style={{ color: T.ink3 }}>{rp.lastNMonths(data.length)}</span>
           </h3>
         </div>
         <div
@@ -254,11 +306,11 @@ function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
         >
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: T.sageDeep }} />
-            Spend
+            {rp.spend}
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: T.warm }} />
-            Shrinkage
+            {rp.shrinkage}
           </span>
         </div>
       </div>
@@ -275,7 +327,7 @@ function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
             fontStyle: 'italic',
           }}
         >
-          {loading ? 'Loading…' : 'Not enough history yet'}
+          {loading ? rp.loading : rp.notEnoughHistory}
         </div>
       ) : (
         <div
@@ -293,7 +345,7 @@ function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
             // Visual amplification on shrinkage so it stays visible alongside spend.
             const shH = Math.min(150, (Math.max(0, d.discardsValue) / max) * 150 * 6);
             const cur = i === data.length - 1;
-            const monthLabel = shortMonthFromYmd(d.monthStart);
+            const monthLabel = shortMonthFromYmd(d.monthStart, lang);
             return (
               <div
                 key={d.monthStart}
@@ -344,13 +396,13 @@ function MonthlyChart({ ytd, loading }: { ytd: YtdRow[]; loading: boolean }) {
   );
 }
 
-function currentMonthLabel(): string {
-  return new Date().toLocaleDateString('en-US', { month: 'long' });
+function currentMonthLabel(lang: Lang): string {
+  return new Date().toLocaleDateString(dateLocale(lang), { month: 'long' });
 }
 
-function shortMonthFromYmd(s: string): string {
+function shortMonthFromYmd(s: string, lang: Lang): string {
   // s is "YYYY-MM-01" or similar — pull the month index and format.
   const m = Number(s.slice(5, 7));
   if (!Number.isFinite(m)) return '—';
-  return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString('en-US', { month: 'short' });
+  return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString(dateLocale(lang), { month: 'short' });
 }

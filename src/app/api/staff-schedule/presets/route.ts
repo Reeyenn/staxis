@@ -18,7 +18,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
-import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
+import { verifyTeamManager, callerCan } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromShiftPresetRow } from '@/lib/db-mappers';
 import type { StaffDepartment } from '@/types';
@@ -76,7 +76,7 @@ interface PresetInput {
 
 export async function PUT(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_shifts' });
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json().catch(() => ({})) as { hotelId?: string; presets?: PresetInput[] };
@@ -84,7 +84,7 @@ export async function PUT(req: NextRequest) {
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
 
-  if (!canManageHotel(caller, hotelId)) {
+  if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

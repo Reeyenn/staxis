@@ -19,7 +19,7 @@ import type { NextRequest } from 'next/server';
 import { err, ok } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateEnum, validateUuid } from '@/lib/api-validate';
-import { canManageHotel, verifyTeamManager } from '@/lib/team-auth';
+import { callerCan, verifyTeamManager } from '@/lib/team-auth';
 import { partitionTargets } from '@/lib/checklists/access';
 import {
   CLEANING_TYPES,
@@ -39,7 +39,7 @@ const SOURCE_TYPES = ['cleaning', 'inspection'] as const;
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   try {
-    const caller = await verifyTeamManager(req);
+    const caller = await verifyTeamManager(req, { capability: 'manage_checklists' });
     if (!caller) {
       return err('Checklists are restricted to managers, owners, and admins.', {
         requestId, status: 403, code: 'forbidden',
@@ -79,12 +79,24 @@ export async function POST(req: NextRequest) {
       return err('Select at least one property to copy to.', { requestId, status: 400, code: 'validation_failed' });
     }
 
+    // Per-target capability: property access alone isn't enough — an admin may
+    // have switched manage_checklists OFF for this role at a specific target
+    // hotel via the Access tab. Honor that per-hotel restriction (partitionTargets
+    // only checks property access). One restricted target rejects the whole
+    // request, matching the no-partial-writes contract. (Security audit 2026-06-18.)
+    const capChecks = await Promise.all(authorized.map((p) => callerCan(caller, 'manage_checklists', p)));
+    if (capChecks.some((allowed) => !allowed)) {
+      return err('Checklist management is restricted for your role at one or more of the selected properties.', {
+        requestId, status: 403, code: 'property_access_denied',
+      });
+    }
+
     if (sourceType === 'cleaning') {
       const keyV = validateEnum(body.key, CLEANING_TYPES, 'key');
       if (keyV.error) return err(keyV.error, { requestId, status: 400, code: 'validation_failed' });
       const srcV = validateUuid(body.sourcePropertyId, 'sourcePropertyId');
       if (srcV.error) return err(srcV.error, { requestId, status: 400, code: 'validation_failed' });
-      if (!canManageHotel(caller, srcV.value!)) {
+      if (!(await callerCan(caller, 'manage_checklists', srcV.value!))) {
         return err('You do not have access to the source property.', {
           requestId, status: 403, code: 'property_access_denied',
         });
@@ -103,7 +115,7 @@ export async function POST(req: NextRequest) {
     if (!source) {
       return err('Source checklist not found.', { requestId, status: 404, code: 'not_found' });
     }
-    if (source.propertyId !== null && !canManageHotel(caller, source.propertyId)) {
+    if (source.propertyId !== null && !(await callerCan(caller, 'manage_checklists', source.propertyId))) {
       return err('You do not have access to the source checklist.', {
         requestId, status: 403, code: 'property_access_denied',
       });

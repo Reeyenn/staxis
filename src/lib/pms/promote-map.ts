@@ -58,6 +58,7 @@ export async function promoteMap(args: {
     .from('pms_knowledge_files')
     .select('id, pms_family, version, status')
     .eq('id', id)
+    .is('deleted_at', null)
     .maybeSingle();
 
   if (readErr) {

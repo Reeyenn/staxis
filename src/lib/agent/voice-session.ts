@@ -76,6 +76,9 @@ export interface ResolvedVoiceSession {
   propertyId: string;
   role: AppRole;
   staffId: string | null;
+  /** The caller's department (staff.department) on this property, or null —
+   *  gates 'dept'-scoped knowledge documents in the search_knowledge tool. */
+  dept: string | null;
   conversationId: string;
   mode: VoiceMode;
   currentRoomNumber: string | null;
@@ -223,15 +226,20 @@ export async function resolveVoiceSession(
   // 5. Re-resolve staffId for floor roles. If the staff row was unlinked
   //    or the user was moved off this property, staffId comes back null
   //    (which the tool layer handles — listMyRooms returns a polite error).
+  // We also pull `department` here for the knowledge dept gate. front_desk is
+  // included for its department only (staffId stays null — no rooms.assigned_to
+  // scoping for front desk). Managers don't need either (role short-circuits).
   let staffId: string | null = null;
-  if (role === 'housekeeping' || role === 'maintenance') {
+  let staffDept: string | null = null;
+  if (role === 'housekeeping' || role === 'maintenance' || role === 'front_desk') {
     const { data: staffRow } = await supabaseAdmin
       .from('staff')
-      .select('id')
+      .select('id, department')
       .eq('auth_user_id', session.data_user_id as string)
       .eq('property_id', session.property_id as string)
       .maybeSingle();
-    staffId = (staffRow?.id as string) ?? null;
+    if (role === 'housekeeping' || role === 'maintenance') staffId = (staffRow?.id as string) ?? null;
+    staffDept = (staffRow?.department as string | null) ?? null;
   }
 
   // 6. Normalize the persisted mode. Pre-0214 rows have no `mode` column;
@@ -239,7 +247,12 @@ export async function resolveVoiceSession(
   //    caller never has to guard against typos. The CHECK constraint on the
   //    column means a fresh insert can only be one of the union members.
   const rawMode = (session.mode as string | null) ?? 'general';
-  const mode: VoiceMode = rawMode === 'housekeeper_issue' ? 'housekeeper_issue' : 'general';
+  // Preserve ALL valid modes. The old ternary collapsed a persisted 'compliance'
+  // mode to 'general', which made voice-brain load the general toolset and drop
+  // log_reading/log_pm_check/get_compliance_status — so a spoken compliance
+  // reading was silently never logged. (Audit fix 2026-06-18.)
+  const mode: VoiceMode =
+    rawMode === 'housekeeper_issue' || rawMode === 'compliance' ? rawMode : 'general';
   const currentRoomNumber = (session.current_room_number as string | null) ?? null;
 
   return {
@@ -251,6 +264,7 @@ export async function resolveVoiceSession(
       propertyId: session.property_id as string,
       role,
       staffId,
+      dept: staffDept,
       conversationId: session.conversation_id as string,
       mode,
       currentRoomNumber,

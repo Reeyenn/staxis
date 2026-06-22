@@ -7,7 +7,7 @@ static_baseline import chain that supply.py / demand.py pull in.
 Same Phase L extraction pattern as _cold_start.py and _streak.py.
 """
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -34,7 +34,10 @@ def parse_iso_datetime(value) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo else value
+        # Normalize to UTC before dropping tzinfo so an offset-bearing input
+        # isn't silently mis-shifted (the streak distinctness gap math assumes
+        # naive-UTC). No-op under today's UTC defaults.
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
     if not isinstance(value, str):
         return None
     s = value.strip()
@@ -56,4 +59,6 @@ def parse_iso_datetime(value) -> Optional[datetime]:
         dt = datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return None
-    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    # Normalize an offset-bearing timestamp to UTC before stripping tzinfo, so
+    # e.g. '...13:00:00-05:00' and '...18:00:00+00:00' compare equal.
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt

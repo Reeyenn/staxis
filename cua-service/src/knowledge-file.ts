@@ -129,6 +129,55 @@ export interface KnowledgeFile {
    * dead). Lives inside the signed envelope; the app NEVER writes it.
    */
   feedGaps?: FeedGaps;
+  /**
+   * feature/cua-bestclass-verify — onboarding-time verification telemetry +
+   * the per-PMS-family calibrated auto-promotion settings (multi-signal commit
+   * score, the threshold it was gated against, and the consistent-pass count
+   * for pass^N). Written by mapping-driver's saveDraftKnowledgeFile when a
+   * fresh learn computed it; read back by the orchestration so the gate can
+   * quote a confidence number and require N consistent passes before going
+   * family-wide.
+   *
+   * OPTIONAL + ABSENT ⟹ LEGACY-DEFAULT, on purpose: every existing active/
+   * signed row predates this field, so it loads + verifies unchanged (the
+   * signature was computed over an envelope WITHOUT this key; adding it only to
+   * NEW rows keeps signed===stored for both). A recipe with no `verification`
+   * is treated as already-trusted (default threshold, treated as having met its
+   * passes) — the live fleet is NEVER mass re-parked. Inside the signed
+   * envelope alongside feedGaps; the app reads it, never writes it.
+   */
+  verification?: RecipeVerification;
+}
+
+/**
+ * Per-PMS-family verification settings + the latest verification telemetry.
+ * Every field optional so an older or hand-edited envelope degrades to the
+ * code defaults (DEFAULT_COMMIT_THRESHOLD / DEFAULT_REQUIRED_PASSES in
+ * commit-gate.ts) rather than failing to load.
+ */
+export interface RecipeVerification {
+  /** Calibrated minimum multi-signal commit score [0,1] to AUTO-promote this
+   *  family. Absent ⟹ DEFAULT_COMMIT_THRESHOLD. */
+  threshold?: number;
+  /** The multi-signal commit score [0,1] computed at this learn. */
+  score?: number;
+  /** Count of CONSISTENT verification passes accumulated for the family
+   *  (pass^N). draft→active auto-promotion requires this ≥ requiredPasses.
+   *  Absent ⟹ treated as already satisfied (legacy / not-yet-tracked). */
+  consistentPasses?: number;
+  /** Passes required before auto-promotion. Absent ⟹ DEFAULT_REQUIRED_PASSES. */
+  requiredPasses?: number;
+  /** Whether enforcement was ON when this was computed (observability — the
+   *  gate only downgrades when enforce is on; off ⟹ signals are advisory). */
+  enforced?: boolean;
+  /** Stable value-distribution fingerprint of the recipe's feeds — compared on
+   *  the next learn to decide whether a pass CORROBORATED (increment) or
+   *  DIVERGED (reset to 1). */
+  fingerprint?: string;
+  /** ISO timestamp of this verification. */
+  computedAt?: string;
+  /** Per-signal verdicts that fed the score, for the admin "why" string. */
+  signals?: Record<string, string>;
 }
 
 /** One untrustworthy required feed. `not_found` = key absent from actions;
@@ -177,6 +226,7 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
     .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
 
   if (error) {

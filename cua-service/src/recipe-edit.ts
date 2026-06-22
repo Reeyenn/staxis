@@ -89,6 +89,7 @@ export async function runRecipeEditJob(
     .select('id, version, knowledge')
     .eq('pms_family', input.pms_family)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (error) {
     return { ok: false, error: `could not load active map: ${error.message}` };

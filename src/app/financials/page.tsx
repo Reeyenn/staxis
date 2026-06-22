@@ -18,7 +18,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { canViewFinancials } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { monthKey, priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
 import { apiGet, Notice, T, FONT_SANS, FONT_SERIF, FONT_MONO } from './_components/fin-ui';
 import { SummaryTile, BigMoney } from './_components/fin-board';
@@ -48,6 +48,7 @@ function monthDisplay(m: string, lang: Lang): string {
 export default function FinancialsPage() {
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propLoading } = useProperty();
+  const can = useCan();
   const { lang } = useLang();
   const router = useRouter();
   const S = ft(lang as Lang);
@@ -58,19 +59,21 @@ export default function FinancialsPage() {
   const [summaryLoading, setSummaryLoading] = useState(true);
 
   const currentMonth = monthKey(new Date());
-  const allowed = !!user && canViewFinancials(user.role);
+  const allowed = !!user && can('view_financials');
 
-  // Redirect non-managers away (client guard; API gate is the real enforcement).
+  // Redirect a restricted role away (client guard; the API gate is the real
+  // enforcement). `allowed` honors this hotel's Access-tab restrictions and
+  // re-evaluates once the override map finishes loading.
   useEffect(() => {
     if (authLoading || propLoading) return;
     if (!user) {
       router.replace('/signin');
       return;
     }
-    if (!canViewFinancials(user.role)) {
+    if (!allowed) {
       router.replace('/dashboard');
     }
-  }, [user, authLoading, propLoading, router]);
+  }, [user, authLoading, propLoading, allowed, router]);
 
   const loadSummary = useCallback(async () => {
     if (!activePropertyId) return;

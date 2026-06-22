@@ -21,13 +21,15 @@ import { Avatar } from './_people';
 import { useWeekShifts, mondayOf } from './useWeekShifts';
 import { fmtRange } from '@/lib/schedule-board';
 
-export function MyShifts() {
+export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } = {}) {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, staff } = useProperty();
   const [requestOpen, setRequestOpen] = useState(false);
   const weekStart = useMemo(() => mondayOf(new Date()), []);
 
-  const staffId = user?.staffId ?? null;
+  // In demo "preview as staff" mode the page passes the staff row to render
+  // as; otherwise this is the logged-in employee's own linked staffId.
+  const staffId = previewStaffId !== undefined ? previewStaffId : (user?.staffId ?? null);
   const me = useMemo(() => staff.find(s => s.id === staffId) ?? null, [staff, staffId]);
   const {
     days, byStaff, openShifts, torByStaff, publishedDates, presets,

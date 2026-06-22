@@ -31,6 +31,15 @@ import {
   captureScreenshotForCritic,
   type AnthropicLike,
 } from '../critic.js';
+// critic.ts's isCriticEnabled() reads the Zod-parsed `env` object, NOT
+// process.env (env values are frozen at module load — see env.ts). Mutating
+// process.env after boot is a no-op on the flag, so the disable test must flip
+// `env.CUA_CRITIC_ENABLED` directly. Going through the real seam also keeps the
+// disabled case a genuine short-circuit: judgeStepOutcome returns before the
+// try-block, so it never imports usage-log/supabase (whose realtime client
+// emits the "Node 20 without native WebSocket" warning) — the suite stays a
+// trustworthy, deterministic green gate.
+import { env } from '../env.js';
 
 const TINY_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=';
@@ -183,8 +192,8 @@ describe('judgeStepOutcome — happy path', () => {
 
 describe('judgeStepOutcome — env flag', () => {
   test('with env=true the mock client IS invoked', async () => {
-    const prior = process.env.CUA_CRITIC_ENABLED;
-    process.env.CUA_CRITIC_ENABLED = 'true';
+    const prior = env.CUA_CRITIC_ENABLED;
+    env.CUA_CRITIC_ENABLED = 'true';
     try {
       const recordCalls = { count: 0 };
       const client = makeMockClient('VERDICT: success\nREASON: ok', { recordCalls });
@@ -199,13 +208,13 @@ describe('judgeStepOutcome — env flag', () => {
       );
       assert.equal(recordCalls.count, 1, 'critic should call the model when enabled');
     } finally {
-      process.env.CUA_CRITIC_ENABLED = prior;
+      env.CUA_CRITIC_ENABLED = prior;
     }
   });
 
   test('CUA_CRITIC_ENABLED=false short-circuits to success without calling the client', async () => {
-    const prior = process.env.CUA_CRITIC_ENABLED;
-    process.env.CUA_CRITIC_ENABLED = 'false';
+    const prior = env.CUA_CRITIC_ENABLED;
+    env.CUA_CRITIC_ENABLED = 'false';
     try {
       const recordCalls = { count: 0 };
       const client = makeMockClient('VERDICT: success\nREASON: ok', { recordCalls });
@@ -222,7 +231,7 @@ describe('judgeStepOutcome — env flag', () => {
       assert.equal(out.verdict, 'success');
       assert.equal(out.reason, 'critic_disabled');
     } finally {
-      process.env.CUA_CRITIC_ENABLED = prior;
+      env.CUA_CRITIC_ENABLED = prior;
     }
   });
 });

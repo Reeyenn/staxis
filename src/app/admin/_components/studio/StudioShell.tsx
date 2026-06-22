@@ -27,8 +27,9 @@ import { LiveSurface } from './surfaces/LiveSurface';
 import { SystemSurface } from './surfaces/SystemSurface';
 import { MoneySurface } from './surfaces/MoneySurface';
 import { MlSurface } from './surfaces/MlSurface';
+import { AccessSurface } from './surfaces/AccessSurface';
 
-export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml';
+export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml' | 'access';
 
 const TABS: { id: StudioTab; label: string }[] = [
   { id: 'onboarding', label: 'Onboarding' },
@@ -36,6 +37,7 @@ const TABS: { id: StudioTab; label: string }[] = [
   { id: 'system', label: 'System & Agent' },
   { id: 'money', label: 'Money' },
   { id: 'ml', label: 'ML' },
+  { id: 'access', label: 'Access' },
 ];
 
 interface Overview {
@@ -115,7 +117,7 @@ export function StudioShell() {
   // Delayed slightly so the initial Onboarding paint isn't competing for the
   // network on load.
   useEffect(() => {
-    const t = setTimeout(() => setMounted(new Set<StudioTab>(['onboarding', 'live', 'system', 'money', 'ml'])), 500);
+    const t = setTimeout(() => setMounted(new Set<StudioTab>(['onboarding', 'live', 'system', 'money', 'ml', 'access'])), 500);
     return () => clearTimeout(t);
   }, []);
 
@@ -199,6 +201,7 @@ export function StudioShell() {
         {mounted.has('system') && <div style={{ display: tab === 'system' ? 'block' : 'none' }}><SystemSurface /></div>}
         {mounted.has('money') && <div style={{ display: tab === 'money' ? 'block' : 'none' }}><MoneySurface /></div>}
         {mounted.has('ml') && <div style={{ display: tab === 'ml' ? 'block' : 'none' }}><MlSurface /></div>}
+        {mounted.has('access') && <div style={{ display: tab === 'access' ? 'block' : 'none' }}><AccessSurface /></div>}
       </div>
     </div>
   );

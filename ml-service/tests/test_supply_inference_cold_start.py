@@ -72,15 +72,25 @@ def test_cold_start_inference_writes_predictions_per_room_staff():
         assert u["table"] == "supply_predictions"
         assert u["on_conflict"] == "property_id,date,room_number,staff_id,model_run_id"
 
-    # Every payload uses the cold-start mu = 30 with the fixed multipliers.
+    # 2026-06-18: cold-start supply is now COMPOSITION-AWARE — checkout rooms
+    # get more minutes than stayovers, distributed so the per-room average still
+    # equals the cohort mu=30 (level preserved exactly). Rooms here: 101 + 201
+    # checkout, 102 stayover-day1 → type minutes [30, 15, 30], avg 25 →
+    # checkout room_mu = 30·30/25 = 36, stayover room_mu = 30·15/25 = 18.
+    by_room = {u["data"]["room_number"]: u["data"] for u in fake.upserts}
+    assert by_room["101"]["predicted_minutes_p50"] == 36.0  # checkout
+    assert by_room["201"]["predicted_minutes_p50"] == 36.0  # checkout
+    assert by_room["102"]["predicted_minutes_p50"] == 18.0  # stayover
+    assert by_room["101"]["predicted_minutes_p50"] > by_room["102"]["predicted_minutes_p50"]
+    # Cohort level preserved: sum of per-room p50 == mu × n_rooms.
+    assert sum(u["data"]["predicted_minutes_p50"] for u in fake.upserts) == 30.0 * 3
+    # Bands are multipliers of each room's OWN mu; contract fields present.
     for u in fake.upserts:
         d = u["data"]
-        assert d["predicted_minutes_p25"] == 30.0 * 0.7  # 21.0
-        assert d["predicted_minutes_p50"] == 30.0        # mu
-        assert d["predicted_minutes_p75"] == 30.0 * 1.3  # 39.0
-        assert d["predicted_minutes_p90"] == 30.0 * 1.6  # 48.0
+        assert d["predicted_minutes_p25"] == d["predicted_minutes_p50"] * 0.7
+        assert d["predicted_minutes_p75"] == d["predicted_minutes_p50"] * 1.3
+        assert d["predicted_minutes_p90"] == d["predicted_minutes_p50"] * 1.6
         assert d["model_run_id"] == "supply-mr-uuid"
-        # features_snapshot is a JSON string with the cold_start flag.
         assert "cold_start" in d["features_snapshot"]
 
     # All 3 expected (room, staff) pairs covered.

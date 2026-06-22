@@ -14,6 +14,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { canForUserId } from '@/lib/capabilities/server';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { createComplaint } from '@/lib/complaints-create';
 import { COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES } from '@/lib/complaints-shared';
@@ -79,6 +80,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  if (!(await canForUserId(session.userId, 'use_complaints', pid))) {
+    return err('forbidden — complaints are restricted for your role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  }
 
   // Rate-limit per PROPERTY. The key MUST be a real properties.id — api_limits
   // .property_id has an FK to properties(id) (0142), so a hashed `${pid}:${uid}`

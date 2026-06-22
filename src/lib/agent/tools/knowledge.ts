@@ -37,7 +37,7 @@ registerTool<{ query: string }>({
       if (!query || !query.trim()) {
         return { ok: false, error: 'Provide something to search for.' };
       }
-      const result = await searchKnowledge(ctx.propertyId, query, ctx.user.role, { accountId: ctx.user.accountId });
+      const result = await searchKnowledge(ctx.propertyId, query, ctx.user.role, { accountId: ctx.user.accountId, dept: ctx.user.dept ?? null });
       const hits =
         result.passages.length + result.articles.length + result.documents.length +
         result.contacts.length + result.events.length;
@@ -80,7 +80,7 @@ registerTool<{ sourceType: 'document' | 'article'; sourceId: string; offset?: nu
       return { ok: false, error: 'Provide the sourceId from a search_knowledge result.' };
     }
     try {
-      const res = await getDocumentSection(ctx.propertyId, ctx.user.role, {
+      const res = await getDocumentSection(ctx.propertyId, { role: ctx.user.role, dept: ctx.user.dept ?? null }, {
         sourceType, sourceId, offset: typeof offset === 'number' ? offset : 0,
       });
       if ('error' in res) return { ok: false, error: res.error };

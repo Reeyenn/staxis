@@ -23,7 +23,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { t } from '@/lib/translations';
 import { T, fonts, Btn, Caps, Pill } from '@/app/staff/_components/_tokens';
@@ -119,11 +119,12 @@ export default function ChecklistsPage() {
   const { user } = useAuth();
   const { activePropertyId, properties } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
   if (!user) {
     return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
   }
-  if (!canManageTeam(user.role)) {
+  if (!can('manage_checklists')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>

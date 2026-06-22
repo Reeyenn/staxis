@@ -10,12 +10,12 @@ export const dynamic = 'force-dynamic';
 // removed from the array is deleted (cascade nulls out
 // scheduled_shifts.preset_id but doesn't remove the shift).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { ShiftPreset, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, Btn, Caps } from '@/app/staff/_components/_tokens';
@@ -48,9 +48,10 @@ export default function ShiftPresetsPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
-  // Manager-only.
-  if (!user || !canManageTeam(user.role)) {
+  // Gated by per-hotel manage_shifts (default: every role; admin can restrict).
+  if (!user || !can('manage_shifts')) {
     return <AppLayout><div style={{ padding: 24 }}>Manager access only.</div></AppLayout>;
   }
 
@@ -63,6 +64,10 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Read latest lang inside the load effect without making it a dependency —
+  // otherwise toggling EN/ES would refetch and clobber unsaved draft edits.
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   // Initial load.
   useEffect(() => {
@@ -87,7 +92,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       })
       .catch(err => {
         console.error('[shifts:settings] load failed', err);
-        if (active) { setError('Failed to load presets'); setLoading(false); }
+        if (active) { setError(langRef.current === 'es' ? 'No se pudieron cargar los ajustes' : 'Failed to load presets'); setLoading(false); }
       });
     return () => { active = false; };
   }, [pid]);
@@ -127,9 +132,9 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     if (!pid) return;
     // Validate.
     for (const d of drafts) {
-      if (!d.name.trim()) { setError(`"${d.department}" preset needs a name`); return; }
+      if (!d.name.trim()) { setError(lang === 'es' ? `El ajuste "${d.department}" necesita un nombre` : `"${d.department}" preset needs a name`); return; }
       if (!TIME_RE.test(d.startTime) || !TIME_RE.test(d.endTime)) {
-        setError(`"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
+        setError(lang === 'es' ? `"${d.name}" tiene una hora inválida (usa HH:MM, p. ej. 08:00)` : `"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
       }
     }
     setSaving(true);

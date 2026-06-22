@@ -3,8 +3,10 @@
 import React from 'react';
 import { T, fonts, type StockBucket } from './tokens';
 import { Btn } from './Btn';
+import { t, type Lang } from './inv-i18n';
 
 interface FilterBarProps {
+  lang: Lang;
   bucket: StockBucket;
   onBucket: (b: StockBucket) => void;
   query: string;
@@ -16,6 +18,7 @@ interface FilterBarProps {
 }
 
 export function FilterBar({
+  lang,
   bucket,
   onBucket,
   query,
@@ -25,10 +28,11 @@ export function FilterBar({
   breakfastCount,
   onAdd,
 }: FilterBarProps) {
+  const tx = t(lang);
   const segments: Array<{ key: StockBucket; label: string; count: number }> = [
-    { key: 'all', label: 'All', count: allCount },
-    { key: 'general', label: 'General inventory', count: generalCount },
-    { key: 'breakfast', label: 'Breakfast inventory', count: breakfastCount },
+    { key: 'all', label: tx.all, count: allCount },
+    { key: 'general', label: tx.generalInventory, count: generalCount },
+    { key: 'breakfast', label: tx.breakfastInventory, count: breakfastCount },
   ];
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -82,7 +86,7 @@ export function FilterBar({
         type="text"
         value={query}
         onChange={(e) => onQuery(e.target.value)}
-        placeholder="Search…"
+        placeholder={tx.search}
         style={{
           flex: 1,
           minWidth: 140,
@@ -98,7 +102,7 @@ export function FilterBar({
         }}
       />
       <Btn variant="ghost" size="md" onClick={onAdd}>
-        + Add item
+        {tx.addItem}
       </Btn>
     </div>
   );

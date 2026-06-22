@@ -42,13 +42,15 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, BoardPreview, BoardTargetDescriptor, BoardTargetState } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, CsvHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState, BoardTargetPhase, BoardCurrentActivity } from './types.js';
+import { captureFeedProvenanceScreenshot } from './feed-capture.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns, templateFromSample, substituteTemplate } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS, coreTargetSharesRequiredSchema } from './target-contract.js';
 import { shouldNudgeCommit, buildCommitNudge, COMMIT_DITHER_TURNS, type TabularSummary } from './commit-signal.js';
 import {
   auditRequiredColumns,
   gateRecoveredColumn,
+  certifyColumns,
   buildRecoveryHint,
   learnedForGate,
   expectedShapeFor,
@@ -59,9 +61,21 @@ import {
   RECOVERY_DRILL_COST_CAP_MICROS,
   DETAIL_PER_POLL_MAX,
   type RecoveryProblem,
+  type ColumnProofCarrier,
 } from './column-recovery.js';
-import { extractDomRows, extractDetailFields } from './extractors/dom-rows.js';
+import {
+  extractDomRows,
+  extractDetailFields,
+  readTableHeaders,
+  headerGateOk,
+  parseFirstNthIndex,
+  type CapturedTableHeaders,
+} from './extractors/dom-rows.js';
 import { attachNetworkCapture, type NetworkCaptureHandle, type CapturedCall } from './network-capture.js';
+import {
+  chooseConsensusProposal,
+  type DiscoveryProposalShape,
+} from './proposal-entropy.js';
 import {
   DISCOVERY_KEY_COLUMNS,
   DISCOVERY_SEMANTIC_DATE_COLUMNS,
@@ -381,9 +395,13 @@ async function executeSupervisorClick(args: {
 //   drilldown_sample  — needs to drill into N=3 sample records to learn
 //                       the per-record detail page selectors
 const TARGET_BUDGET_MICROS: Record<string, number> = {
-  list_page:        500_000,    // $0.50
-  report_menu:    1_000_000,    // $1.00
-  drilldown_sample: 1_200_000,  // $1.20 (drills 3 records)
+  // Plan v7 base +20% (2026-06-16): a live CA run cost-capped Departures + the
+  // buried report-menu money feeds before they finished. The per-target cap (not
+  // the $40 job cap) was binding, so bump each tier 20% to let buried feeds
+  // finish. Still well under the per-job + daily caps.
+  list_page:        600_000,    // $0.60
+  report_menu:    1_200_000,    // $1.20
+  drilldown_sample: 1_440_000,  // $1.44 (drills 3 records)
 };
 const TARGET_STEP_CAPS: Record<string, number> = {
   list_page:        80,
@@ -463,7 +481,14 @@ let TARGETS: MapperTarget[];
 interface MapperOptions {
   pmsType: PMSType;
   credentials: PMSCredentials;
-  onProgress?: (step: string, pct: number) => void;
+  /** feature/cua-mapper-phases-captures — the optional `meta` carries the
+   *  structured feedKey + live phase for the per-target ticks (login/setup
+   *  ticks omit it). Back-compat: existing 2-arg callers still satisfy this. */
+  onProgress?: (
+    step: string,
+    pct: number,
+    meta?: { feedKey?: string; phase?: BoardTargetPhase },
+  ) => void;
   /**
    * feature/cua-live-view — continuous Learning Board live view. Called
    * with each vision screenshot the agent takes (`exec.screenshotB64` —
@@ -606,6 +631,134 @@ async function mergeJobResult(
   const existingResult = (row.result as Record<string, unknown>) ?? {};
   const newResult = { ...existingResult, ...patch };
   await supabase.from('workflow_jobs').update({ result: newResult }).eq('id', jobId);
+}
+
+// ─── feature/cua-mapper-phases-captures — live phase + activity ─────────────
+// CONCURRENCY NOTE: every currentActivity write below goes through the SAME
+// mergeJobResult (select-then-merge) and is ALWAYS awaited on the mapper's
+// single per-job await chain (mapPMS → mapAction → mapActionCore → here). No
+// currentActivity write is ever fire-and-forget, so it can never interleave
+// with — and clobber — a boardTargets write. This preserves mergeJobResult's
+// "sole sequential mid-run writer" invariant (see its doc above); we observe
+// and emit, we do not change that invariant.
+
+/** Build the run-level activity object with a fresh ISO timestamp. */
+function currentActivityObj(
+  feedKey: string,
+  phase: BoardTargetPhase,
+  label: string,
+  pct: number,
+): BoardCurrentActivity {
+  return { feedKey, phase, label, pct, at: new Date().toISOString() };
+}
+
+/** Best-effort run-level activity write. Awaited by callers (see note above) so
+ *  it never races the per-feed boardTargets writes. No-op without a jobId. */
+async function recordCurrentActivity(
+  jobId: string | null | undefined,
+  feedKey: string,
+  phase: BoardTargetPhase,
+  label: string,
+  pct: number,
+): Promise<void> {
+  if (!jobId || !feedKey) return;
+  // feature/cua-mapper-cost — stamp the LIVE total spend (in-process, ~free) so
+  // the board can show a ticking per-feed cost. job.claude_cost_micros is only
+  // written at completion, so this is the live running total during the run.
+  const totalCostMicros = await getJobCostMicros(jobId);
+  await mergeJobResult(jobId, {
+    currentActivity: { ...currentActivityObj(feedKey, phase, label, pct), totalCostMicros },
+  }).catch(() => {});
+}
+
+// ─── feature/cua-operator-notes — thought log (the "what it's thinking" panel) ──
+// Pull a short, founder-readable line out of the model's reply: its narration
+// text if it wrote any, else a snippet of its adaptive-thinking. Pure tool-call
+// turns (no prose) yield '' and are skipped. Display-only.
+function summarizeThought(content: Anthropic.Messages.ContentBlock[]): string {
+  const texts: string[] = [];
+  let thinking = '';
+  for (const c of content) {
+    const t = (c as { type?: string }).type;
+    if (t === 'text' && typeof (c as { text?: string }).text === 'string' && (c as { text: string }).text.trim()) {
+      texts.push((c as { text: string }).text.trim());
+    } else if (t === 'thinking' && !thinking && typeof (c as { thinking?: string }).thinking === 'string') {
+      thinking = (c as { thinking: string }).thinking.trim();
+    }
+  }
+  return (texts.join(' ') || thinking).replace(/\s+/g, ' ').trim().slice(0, 320);
+}
+
+/** Append one reasoning line to a capped result.thoughts log AND refresh the
+ *  live total spend on currentActivity (job.claude_cost_micros is only written
+ *  at completion — getJobCostMicros is the live in-process total, so stamping it
+ *  here makes the board's cost tick every step, including during navigating).
+ *  Best-effort; awaited on the mapper's single per-job chain so it never races a
+ *  boardTargets / currentActivity write. */
+async function recordThought(
+  jobId: string | null | undefined,
+  feedKey: string,
+  text: string,
+): Promise<void> {
+  if (!jobId) return;
+  try {
+    const totalCostMicros = await getJobCostMicros(jobId);
+    const { data: row } = await supabase.from('workflow_jobs').select('result').eq('id', jobId).maybeSingle();
+    if (!row) return;
+    const result = (row.result as Record<string, unknown>) ?? {};
+    const prev = Array.isArray(result.thoughts) ? (result.thoughts as unknown[]) : [];
+    const trimmed = text.trim();
+    const next = trimmed
+      ? [...prev, { at: new Date().toISOString(), feedKey, text: trimmed.slice(0, 400) }].slice(-40)
+      : prev;
+    const ca = (result.currentActivity && typeof result.currentActivity === 'object')
+      ? (result.currentActivity as Record<string, unknown>)
+      : null;
+    await supabase.from('workflow_jobs').update({
+      result: { ...result, thoughts: next, ...(ca ? { currentActivity: { ...ca, totalCostMicros } } : {}) },
+    }).eq('id', jobId);
+  } catch {
+    /* telemetry — never block the run */
+  }
+}
+
+/** feature/cua-operator-notes — drain the founder's unconsumed notes for this
+ *  job (oldest first) and mark them consumed, so each is injected exactly once.
+ *  Best-effort: any failure yields [] (the run never blocks on a note read). */
+async function consumePendingNotes(jobId: string | null | undefined): Promise<string[]> {
+  if (!jobId) return [];
+  try {
+    const { data, error } = await supabase
+      .from('mapping_notes')
+      .select('id, note')
+      .eq('job_id', jobId)
+      .is('consumed_at', null)
+      .order('created_at', { ascending: true })
+      .limit(10);
+    if (error || !data || data.length === 0) return [];
+    const ids = data.map((r) => (r as { id: string }).id);
+    const { error: upErr } = await supabase
+      .from('mapping_notes')
+      .update({ consumed_at: new Date().toISOString() })
+      .in('id', ids);
+    // If we couldn't mark them consumed, skip delivery this step rather than
+    // risk re-injecting the same note every step (it'll deliver once the mark
+    // succeeds on a later step).
+    if (upErr) return [];
+    return data
+      .map((r) => String((r as { note?: unknown }).note ?? '').trim())
+      .filter((n) => n.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** A terminal failure whose reason came from a cost-cap soft-abort (per-target
+ *  or cumulative). Used ONLY to pick the finer 'cost_capped' board phase — the
+ *  persisted `status` stays 'failed', unchanged. result.unavailable is still
+ *  the only structured terminal flag; this is a narrow reason-text read. */
+export function isCostCapReason(reason: string | null | undefined): boolean {
+  return !!reason && /cost cap/i.test(reason);
 }
 
 /**
@@ -925,7 +1078,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       if (onlyTargets && !onlyTargets.has(target.key)) {
         continue;
       }
-      opts.onProgress?.(target.progressLabel, target.progressPct);
+      opts.onProgress?.(target.progressLabel, target.progressPct, {
+        feedKey: target.key,
+        phase: 'navigating',
+      });
       const overBudget = await checkBudget();
       if (overBudget) {
         log.warn('mapper: global cost cap hit — stopping target loop', {
@@ -940,12 +1096,28 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       // Learning Board — mark searching only AFTER the budget check above:
       // a budget break must leave unreached feeds as "waiting in line",
       // never strand a phantom spinner.
-      boardTargets[target.key] = { status: 'searching', startedAt: new Date().toISOString() };
-      await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
+      // feature/cua-mapper-cost — capture cost-so-far at feed start (in-process,
+      // ~free). The live active-feed cost = currentActivity.totalCostMicros −
+      // this; the final per-feed cost is stamped at feed end below.
+      const targetStartCostMicros = opts.jobId ? await getJobCostMicros(opts.jobId) : 0;
+      boardTargets[target.key] = { status: 'searching', phase: 'navigating', startedAt: new Date().toISOString(), startCostMicros: targetStartCostMicros };
+      // feature/cua-mapper-phases-captures — per-feed phase rides the existing
+      // boardTargets write; the run-level currentActivity rides the SAME merge
+      // (one UPDATE, no extra write, no clobber risk).
+      await mergeJobResult(opts.jobId, {
+        boardTargets,
+        currentActivity: currentActivityObj(target.key, 'navigating', target.progressLabel, target.progressPct),
+      }).catch(() => {});
       // Plan v7 — dispatch on target classification. Drill-down targets
       // use mapDrillDownAction (different agent loop, different output
       // shape — captures URL templates + per-field coverage). List/report
       // targets use the original mapAction.
+      // feature/cua-mapper-phases-captures — only the mapAction path takes a
+      // durable provenance screenshot. drilldown_sample feeds INTENTIONALLY get
+      // none: their "page" is a single guest DETAIL record, which exposes more
+      // un-masked guest text (names/emails/addresses are policy-visible — only
+      // credentials/SSN/CC are masked) than a list page, so we withhold by
+      // default. The board treats "a found feed with no capture row" as normal.
       const result = target.classification === 'drilldown_sample'
         ? await mapDrillDownAction({
             page,
@@ -976,6 +1148,11 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             signal: opts.signal,
             model,
             jobCostCapMicros: opts.jobCostCapMicros,
+            // feature/cua-mapper-phases-captures — pmsFamily stamps the durable
+            // per-feed provenance capture row; progressPct carries the overall
+            // pct onto in-mapAction sub-phase activity ticks.
+            pmsFamily: opts.pmsType,
+            progressPct: target.progressPct,
             // feature/cua-column-recovery — the date order learned from
             // earlier targets this run (plus any repair seed), so the
             // recovery value-gate parses candidate dates exactly like the
@@ -993,17 +1170,29 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
         // the descriptor's canonical sets).
         accumulateLearnedValues(target.key, result, learnedValueTranslations, learnedDateSamples);
         const startedAt = boardTargets[target.key]?.startedAt;
+        const feedCostMicros = opts.jobId
+          ? Math.max(0, (await getJobCostMicros(opts.jobId)) - targetStartCostMicros)
+          : undefined;
         boardTargets[target.key] = {
           status: 'found',
+          phase: 'found',
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           ...(result.boardPreview ? { preview: result.boardPreview } : {}),
         };
         // Plan v8 B6 — persist after each successful target so a crash
         // doesn't lose the work. Board state rides the same single UPDATE.
         // Best-effort: on persist failure, keep running (the next target
         // will retry the persist with both).
-        await mergeJobResult(opts.jobId, { actionsSoFar: actions, boardTargets }).catch((err) => {
+        // feature/cua-mapper-phases-captures — terminal phase + currentActivity
+        // ride this same single UPDATE.
+        await mergeJobResult(opts.jobId, {
+          actionsSoFar: actions,
+          boardTargets,
+          currentActivity: currentActivityObj(target.key, 'found', target.progressLabel, target.progressPct),
+        }).catch((err) => {
           log.warn('mapper: target progress persist failed (non-fatal)', {
             jobId: opts.jobId ?? undefined, actionName: target.key, err: (err as Error).message,
           });
@@ -1019,16 +1208,34 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           finalUrl: result.finalUrl,
         });
         const startedAt = boardTargets[target.key]?.startedAt;
+        const feedCostMicros = opts.jobId
+          ? Math.max(0, (await getJobCostMicros(opts.jobId)) - targetStartCostMicros)
+          : undefined;
+        // feature/cua-mapper-phases-captures — the persisted `status` is
+        // UNCHANGED (unavailable vs failed, no reason-text matching). The
+        // finer `phase` additionally splits a cost-cap soft-abort out of the
+        // generic 'failed' bucket for the board, purely observational.
+        const terminalPhase: BoardTargetPhase = result.unavailable
+          ? 'unavailable'
+          : isCostCapReason(result.reason)
+            ? 'cost_capped'
+            : 'failed';
         boardTargets[target.key] = {
           // `unavailable` is the structured agent/admin declaration — the
           // board renders it "not available in this PMS" vs plain "couldn't
           // find it". No string matching on reason text.
           status: result.unavailable ? 'unavailable' : 'failed',
+          phase: terminalPhase,
           ...(startedAt ? { startedAt } : {}),
           finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           reason: result.reason.slice(0, 300),
         };
-        await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
+        await mergeJobResult(opts.jobId, {
+          boardTargets,
+          currentActivity: currentActivityObj(target.key, terminalPhase, target.progressLabel, target.progressPct),
+        }).catch(() => {});
       }
     }
 
@@ -1444,6 +1651,8 @@ async function mapLogin(
     // the rest of the code working with the regular Messages types.
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(ctx.jobId, 'login', summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
@@ -1754,6 +1963,14 @@ interface MapActionArgs {
   /** Plan v7 — drives per-target step/cost caps. Defaults to 'list_page'
    *  if absent (back-compat for any caller from before TARGETS landed). */
   classification?: 'list_page' | 'report_menu' | 'drilldown_sample';
+  /** feature/cua-mapper-phases-captures — the PMS family (opts.pmsType),
+   *  threaded so the durable per-feed provenance capture can stamp its
+   *  mapping_feed_captures row. Optional/back-compat. */
+  pmsFamily?: string;
+  /** feature/cua-mapper-phases-captures — this target's progressPct, threaded
+   *  so the in-mapAction sub-phase currentActivity ticks (extracting/
+   *  certifying/rechecking/drilling/cost_capped) carry an overall pct. */
+  progressPct?: number;
   /** Plan v9 — true for the promotion-gating feeds (optional:false). Used by the
    *  agent prompt to tell the model this feed is ESSENTIAL (so it persists +
    *  backtracks instead of giving up early). Plan v10 (FIX 2): `required === false`
@@ -2074,6 +2291,24 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     if (result.ok && !result.viaBail && result.action.parse.mode === 'table') {
       result.boardPreview = await captureBoardPreview(args.page, result.action);
     }
+    // feature/cua-mapper-phases-captures — durable per-feed PROVENANCE
+    // screenshot, taken on the SAME verified-on-feed-page moment as the board
+    // preview, BEFORE structured discovery (or anything else) can navigate the
+    // page away. Gated on `!viaBail` (the page-wandered signal) like the
+    // preview, but NOT on table mode — a picture is meaningful for non-table
+    // feeds too. Best-effort, fully self-contained (never throws); withholds
+    // when a reliably-masked capture can't be produced. Drill-recovered feeds
+    // are already navigated back to the feed page before mapActionCore returns,
+    // so this still captures the feed (not a drill detail).
+    if (result.ok && !result.viaBail) {
+      await captureFeedProvenanceScreenshot({
+        page: args.page,
+        jobId: args.jobId,
+        propertyId: args.propertyId,
+        pmsFamily: args.pmsFamily ?? null,
+        feedKey: args.actionName,
+      });
+    }
     // feature/cua-column-recovery — an action that gained a drillDown block
     // (stage-2 recovery) skips structured discovery: a mode:'api' upgrade
     // would collide with the adapter's drillDown collapse, and the DOM oracle
@@ -2084,13 +2319,45 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     // and use a staler capture.recent() (the early snapshot was the freshest).
     if (
       !result.ok || result.viaBail || result.action.parse.mode !== 'table'
-      || result.action.drillDown || !capture || !runStructuredDiscovery
-      || discoveryState.earlyAttempted
+      || result.action.drillDown
     ) {
       return result;
     }
-    const upgraded = await runStructuredDiscovery(result, capture.recent(), args.page.url());
-    return upgraded ?? result;
+    // api upgrade (existing) — needs network capture + the discovery closure +
+    // not-already-attempted-early. Unchanged: when any of those is absent the
+    // api path is skipped exactly as before.
+    if (capture && runStructuredDiscovery && !discoveryState.earlyAttempted) {
+      const upgraded = await runStructuredDiscovery(result, capture.recent(), args.page.url());
+      if (upgraded) return upgraded;
+    }
+    // feature/cua-self-heal-reach — OPTIONAL csv / inline_text upgrades. Both
+    // DEFAULT OFF, so with flags unset this is a no-op and the function returns
+    // `result` exactly as before. Each runs only on a clean table result the api
+    // path did NOT upgrade, is abstain-by-default, and a throw keeps the table
+    // recipe (mirrors the api upgrade's fall-through).
+    if (result.action.parse.mode === 'table' && csvDiscoveryEnabled()) {
+      try {
+        const csv = await attemptCsvDiscovery(
+          { actionName: args.actionName as keyof Recipe['actions'], success: result, feedPageUrl: args.page.url(), jobId: args.jobId, signal: args.signal },
+          makeDefaultCsvDiscoveryDeps(args),
+        );
+        if (csv) return csv;
+      } catch (err) {
+        log.warn('mapper: csv discovery threw — keeping table recipe', { actionName: args.actionName, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (result.action.parse.mode === 'table' && inlineDiscoveryEnabled()) {
+      try {
+        const inline = await attemptInlineTextDiscovery(
+          { actionName: args.actionName as keyof Recipe['actions'], success: result, feedPageUrl: args.page.url(), jobId: args.jobId, signal: args.signal },
+          makeDefaultInlineDiscoveryDeps(args),
+        );
+        if (inline) return inline;
+      } catch (err) {
+        log.warn('mapper: inline discovery threw — keeping table recipe', { actionName: args.actionName, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return result;
   } finally {
     try { capture?.detach(); } catch { /* idempotent per contract */ }
   }
@@ -2271,12 +2538,16 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     `other — if you already found one, its sibling is normally the adjacent menu ` +
     `item, so look there.\n` +
     `6. Once on the target page (you see a table/list whose COLUMNS match the ` +
-    `required fields — even if it has ZERO data rows right now), ` +
-    `take a final screenshot and identify the table visually. Make your best ` +
-    `guess at CSS selectors — most PMSes use \`tr\` or \`tbody tr\` for rows ` +
-    `and \`td\` or \`td:nth-child(N)\` for columns. The runtime will verify ` +
-    `your selectors on the first extraction; if wrong, a self-heal job will ` +
-    `re-engage you.\n` +
+    `required fields — even if it has ZERO data rows right now), take a final ` +
+    `screenshot. Each column HEADER is tagged with a numbered badge (e.g. "H1", ` +
+    `"H2", …). Map each required field to a column by its HEADER MEANING FIRST: ` +
+    `read the header text, decide which header is that field, and note its column ` +
+    `position N (counting cells from 1, left to right). THEN write that column's ` +
+    `selector as \`td:nth-child(N)\` for the SAME N. Anchoring on the header — not ` +
+    `a pixel guess — is what lets us re-find the column if the PMS later reorders ` +
+    `or renames its columns. Most PMSes use \`tr\` or \`tbody tr\` for rows. The ` +
+    `runtime verifies your selectors on the first extraction; if wrong, a ` +
+    `self-heal job re-engages you.\n` +
     `7. If the page DOES NOT have the data we need (no equivalent report ` +
     `exists in this PMS, or it's behind a paid module), reply with ` +
     `{"unavailable": true, "reason": "<why>"} so we can mark this target ` +
@@ -2498,6 +2769,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
       });
       // Fall through to the end-of-loop "no usable JSON" branch with a
       // clearer reason. mapPMS treats this as a non-fatal partial.
+      // feature/cua-mapper-phases-captures — surface the soft-abort live.
+      await recordCurrentActivity(args.jobId, args.actionName, 'cost_capped', "Reached this feed's budget", args.progressPct ?? 0);
       return bail(`per-target cost cap exceeded for ${classification} ($${(targetCostCapMicros / 1_000_000).toFixed(2)})`);
     }
 
@@ -2521,6 +2794,27 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     // page state matches what Claude sees in the screenshot it's about
     // to act on. Best-effort: errors fall back to a URL-only fingerprint
     // inside the helper.
+    // feature/cua-operator-notes — fold any operator notes into the trailing
+    // user turn so the model reads them THIS turn. Same safe pattern as the
+    // takeover finish-hint above: loop-top is always a user turn, so a standalone
+    // push would be consecutive-user (API-invalid) — append to it instead.
+    {
+      const operatorNotes = await consumePendingNotes(args.jobId);
+      if (operatorNotes.length > 0) {
+        const noteBlock = {
+          type: 'text' as const,
+          text:
+            'NOTE FROM THE OPERATOR (a human is watching you map this PMS): ' +
+            operatorNotes.join(' | ') +
+            '\nTake this guidance into account for your next action.',
+        };
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(noteBlock);
+        else messages.push({ role: 'user', content: [noteBlock] });
+        await recordThought(args.jobId, args.actionName, '📝 operator note: ' + operatorNotes.join(' | '));
+      }
+    }
+
     const turnPageFingerprint = await pageFingerprint(args.page);
 
     // fix/cua-mapper-commit — dither tracking for the commit-nudge. Same-page
@@ -2600,6 +2894,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(args.jobId, args.actionName, summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);
@@ -2639,6 +2935,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // off-page fields like a forecast run-date the model genuinely can't
         // supply). This keeps recovery symmetric with the promotion gate,
         // which is also REQUIRED_TARGETS-only.
+        // feature/cua-mapper-phases-captures — about to read rows off the live
+        // DOM and certify the required columns against them.
+        await recordCurrentActivity(args.jobId, args.actionName, 'extracting', 'Gathering rows', args.progressPct ?? 0);
         const audit = await auditLearnedColumnsOnPage({
           page: args.page,
           actionKey: args.actionName as keyof Recipe['actions'],
@@ -2651,6 +2950,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           pendingRecovery,
         });
         for (const col of audit.outstanding.keys()) pendingRecovery.add(col);
+        // feature/cua-mapper-phases-captures — columns audited / value-certified.
+        await recordCurrentActivity(args.jobId, args.actionName, 'certifying', 'Verifying columns', args.progressPct ?? 0);
 
         // Best-candidate tracking: an abort (or a re-ask that breaks a
         // previously-good column) must never ship a WORSE map than one we
@@ -2677,8 +2978,14 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // never under recovery at all. An unverified audit with columns still
         // pending recovery must not short-circuit (its non-blank selector
         // strings are exactly the evidence we already proved insufficient).
+        // Return the FINALIZED best (lastGoodAction), not the raw success: for a
+        // value-verified clean emission this is identical, but for an unverified
+        // accept (empty/unreadable feed, pendingRecovery still empty) it carries
+        // the `unprovenRequiredColumns` stamp so the promotion gate parks the
+        // feed for founder review instead of auto-promoting a guessed column
+        // (feature/cua-prove-columns).
         if (audit.outstanding.size === 0 && (audit.verified || pendingRecovery.size === 0)) {
-          return success;
+          return lastGoodAction;
         }
 
         // ── fix/cua-two-oracle (build #2 + #4): EARLY backend-JSON discovery ──
@@ -2729,6 +3036,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // re-enters the same capped for-loop).
         if (completenessReasks < MAX_COMPLETENESS_REASKS) {
           completenessReasks++;
+          // feature/cua-mapper-phases-captures — a required column was blank/dead;
+          // re-asking the model on-page.
+          await recordCurrentActivity(args.jobId, args.actionName, 'rechecking', 'Re-checking the page', args.progressPct ?? 0);
           log.warn('mapper: required columns blank/dead — focused recovery re-ask', {
             actionName: args.actionName,
             outstanding: Object.fromEntries(audit.outstanding),
@@ -2780,6 +3090,9 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           recoveryDrillAttempted = true;
           const pre = drillPreconditions(args.actionName as keyof Recipe['actions'], best.audit);
           if (pre.ok) {
+            // feature/cua-mapper-phases-captures — opening a sample record to
+            // recover the missing column from its detail page.
+            await recordCurrentActivity(args.jobId, args.actionName, 'drilling', 'Opening a record for details', args.progressPct ?? 0);
             // The drill MUST run against the page the best candidate was
             // VERIFIED on — its rowSelector/probeRows/sampleKey describe that
             // page, and drillDown.listUrl is persisted from it. The model may
@@ -3228,7 +3541,19 @@ export interface PageAudit {
    *  failed the value gate (its selector must not ship — wrong values are
    *  worse than blanks). */
   outstanding: Map<string, 'missing' | 'dead' | 'unparseable' | 'rejected'>;
+  /** feature/cua-prove-columns — required columns that SHIP (selector kept,
+   *  non-blank) but could NOT be value-certified because the page yielded no
+   *  value evidence (empty feed / wandered / probe failure, i.e. verified=false).
+   *  Distinct from `outstanding`: these keep their selector (they may be correct)
+   *  but must never auto-promote — the promotion gate routes them to founder
+   *  review. Optional so hand-built test audits stay valid. */
+  uncertain?: Set<string>;
   problems: RecoveryProblem[];
+  /** feature/cua-semantic-columns — the live header row captured on the feed
+   *  page during this audit (when we were confident we're on the right page).
+   *  finalizeRecoveredSuccess uses it to author per-column header anchors. Absent
+   *  on degraded/structural audits where the page wasn't trustworthy. */
+  headers?: CapturedTableHeaders;
 }
 
 // fix/cua-two-oracle — INERT query params that spuriously differ between the
@@ -3308,11 +3633,20 @@ async function auditLearnedColumnsOnPage(args: {
   const outstanding = new Map<string, 'missing' | 'dead' | 'unparseable' | 'rejected'>();
   const problems: RecoveryProblem[] = [];
   const pageUrl = args.page.url();
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   if (requiredLearnedFor(args.actionKey).length === 0) {
     // Non-core target — not column-gated, nothing to verify.
     return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, problems };
   }
+
+  // feature/cua-semantic-columns — the live header row, captured below once we've
+  // confirmed we're on the right feed page. Threaded into EVERY audit return from
+  // that point (incl. the empty-feed structural path) so finalize can author
+  // header anchors even for a feed that's empty today. Closure-captured by
+  // structuralOnly; undefined until the capture line, so the wandered-page return
+  // above structuralOnly's capture never carries (stale) headers.
+  let capturedHeaders: CapturedTableHeaders | undefined;
 
   const structuralOnly = (reason: string): PageAudit => {
     for (const col of missingRequiredColumns(args.actionKey, args.columns)) {
@@ -3333,10 +3667,33 @@ async function auditLearnedColumnsOnPage(args: {
         detail: `could not re-verify (${reason}) — return to the feed page and re-emit from there`,
       });
     }
+    // feature/cua-prove-columns — every OTHER required column that still ships
+    // (present, non-blank, not already flagged) is UNCERTAIN: a structural-only
+    // audit gathered zero value evidence (empty feed today / wandered page /
+    // probe failure), so its selector — though it may be perfect — was never
+    // proven. Keep the selector (don't blank a possibly-correct column) but mark
+    // it unproven so the promotion gate parks the feed for founder review instead
+    // of auto-promoting a guessed column. certifyColumns is the single source of
+    // the verdict semantics (hasValueEvidence:false → uncertain).
+    const uncertain = new Set<string>();
+    const unjudged = requiredLearnedFor(args.actionKey).filter(
+      (col) => !outstanding.has(col) && (args.columns[col] ?? '').trim() !== '',
+    );
+    for (const [col, v] of certifyColumns({
+      actionKey: args.actionKey,
+      columns: unjudged,
+      allValues: {},
+      allSelectors: args.columns,
+      todayIso,
+      hasValueEvidence: false,
+    })) {
+      if (v.verdict === 'uncertain') uncertain.add(col);
+    }
     log.info('mapper: column audit degraded to structural check', {
-      actionName: args.actionKey, reason, outstanding: [...outstanding.keys()],
+      actionName: args.actionKey, reason,
+      outstanding: [...outstanding.keys()], uncertain: [...uncertain],
     });
-    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, problems };
+    return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, uncertain, problems, ...(capturedHeaders ? { headers: capturedHeaders } : {}) };
   };
 
   // Wandered-page guard: the model can emit its JSON after navigating away;
@@ -3353,6 +3710,12 @@ async function auditLearnedColumnsOnPage(args: {
       return structuralOnly(`page url ${args.page.url().slice(0, 80)} differs from emitted url`);
     }
   }
+
+  // feature/cua-semantic-columns — capture the header row now that the page is
+  // confirmed to be the feed page. Best-effort (null on failure); finalize only
+  // authors anchors when the header gate passes, so a missing/spanning header
+  // simply yields no tiered shape (positional-only, exactly as today).
+  capturedHeaders = (await readTableHeaders(args.page, args.rowSelector)) ?? undefined;
 
   let extraction: { rows: Array<Record<string, string>>; totalMatched: number };
   try {
@@ -3392,15 +3755,33 @@ async function auditLearnedColumnsOnPage(args: {
     problems.push({ column: col, kind: 'unparseable', probedRows: extraction.rows.length });
   }
 
-  // Acceptance gate — only for columns under recovery that now extract
-  // something. First-emission columns that were never flagged are NOT
-  // re-judged here (recovery must not regress feeds that work today).
+  // Value checks (both the recovery re-ask gate AND first-emission certification)
+  // run over the FULL deadness window (extraction.rows, ≤ DEADNESS_ROW_CAP), NOT
+  // the 8-row probe: a legitimately SPARSE required column (out_of_order set on 1
+  // row in 50) is blank in the first 8 rows but real — judging it on the probe
+  // alone would `all_blank`-reject a correct selector. The full window makes the
+  // gate's all-blank verdict consistent with auditRequiredColumns' deadness scan
+  // (a truly empty column is already classified 'dead' above). probeRows is kept
+  // only for the RETURNED audit (the drill's per-record URL templating).
   const probeRows = extraction.rows.slice(0, VALUE_PROBE_ROW_CAP);
   const allValues: Record<string, string[]> = {};
   for (const col of Object.keys(args.columns)) {
-    allValues[col] = probeRows.map((r) => (r[col] ?? '').trim());
+    allValues[col] = extraction.rows.map((r) => (r[col] ?? '').trim());
   }
-  const todayIso = new Date().toISOString().slice(0, 10);
+
+  // Columns kept (selector present, non-blank) but NOT value-certified: they must
+  // not auto-go-live unproven, yet blanking them could erase a correct selector
+  // or cascade to quarantine — so they keep the selector and route to founder
+  // review via the promotion gate's unprovenRequiredColumns. Shared by both loops.
+  const uncertain = new Set<string>();
+
+  // Acceptance gate for columns ALREADY under recovery that now extract something
+  // (the focused re-ask loop owns these). A `semantic_date_window` miss is the ONE
+  // failure down-ranked to uncertain (keep + park) rather than rejected (blank):
+  // a CORRECT date column re-learned on a rolling multi-day arrivals/departures
+  // view trips it, and blanking a correct column could cascade to quarantine —
+  // identical treatment to the first-emission path below. Every other failure is
+  // a strong wrong-column signal → 'rejected' (blank + keep recovering).
   for (const col of args.pendingRecovery) {
     if (outstanding.has(col)) continue;
     if (!(col in args.columns)) continue;
@@ -3415,12 +3796,56 @@ async function auditLearnedColumnsOnPage(args: {
       todayIso,
     });
     if (!verdict.ok) {
-      outstanding.set(col, 'rejected');
-      problems.push({ column: col, kind: 'rejected', detail: verdict.reason });
+      if (verdict.reason.startsWith('semantic_date_window')) {
+        uncertain.add(col);
+      } else {
+        outstanding.set(col, 'rejected');
+        problems.push({ column: col, kind: 'rejected', detail: verdict.reason });
+      }
     }
   }
 
-  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, problems };
+  // feature/cua-prove-columns — FIRST-EMISSION certification. Previously a clean
+  // first emission returned here after only the missing/dead/unparseable audit,
+  // so a wrong-but-plausible required column on a plain HTML table (a swapped
+  // check-in/check-out, a rate cell mapped to a date column, a status string
+  // mapped to the key) shipped silently — the JSON-oracle path proves columns,
+  // the DOM path did not. Run the SAME strong value checks on every required
+  // column that still ships clean (present, non-blank, never flagged, and not
+  // already owned by the recovery loop above).
+  //   - 'failed' → BLANK + recover (worse-than-blank: a provably wrong selector
+  //     must not ship): joins `outstanding` as 'rejected', exactly like a recovery
+  //     rejection — it enters the focused re-ask loop and, if unrecovered,
+  //     finalizes BLANK (→ a promotion-gate gap).
+  //   - 'uncertain' → KEEP the selector but record it unproven: a plain-text
+  //     column we can't corroborate (thin/constant/mirrors another column), or a
+  //     date column that only tripped the soft semantic-window heuristic on a
+  //     wider-than-today feed — both may be correct, so never blank them; the
+  //     promotion gate parks the feed for founder review instead.
+  const unjudged = requiredLearnedFor(args.actionKey).filter(
+    (col) =>
+      !outstanding.has(col) &&
+      !args.pendingRecovery.has(col) &&
+      (args.columns[col] ?? '').trim() !== '',
+  );
+  for (const [col, verdict] of certifyColumns({
+    actionKey: args.actionKey,
+    columns: unjudged,
+    allValues,
+    allSelectors: args.columns,
+    learned,
+    todayIso,
+    hasValueEvidence: true,
+  })) {
+    if (verdict.verdict === 'failed') {
+      outstanding.set(col, 'rejected');
+      problems.push({ column: col, kind: 'rejected', detail: `first-emission: ${verdict.reason}` });
+    } else if (verdict.verdict === 'uncertain') {
+      uncertain.add(col);
+    }
+  }
+
+  return { verified: true, pageUrl, probeRows, totalMatched: extraction.totalMatched, outstanding, uncertain, problems, ...(capturedHeaders ? { headers: capturedHeaders } : {}) };
 }
 
 /**
@@ -3435,6 +3860,44 @@ async function auditLearnedColumnsOnPage(args: {
  * and the drillDown's listColumns mirror the finalized map (the eligibility
  * predicate resolves placeholders against it).
  */
+/**
+ * feature/cua-semantic-columns — author the DURABLE per-column HEADER anchors
+ * from the live header row captured during the audit. For each FINAL column whose
+ * positional css carries a rebaseable `:nth-child(K)` AND whose K maps to a
+ * non-blank header cell, emit a TieredSelector { roleName:{role,name:<header>},
+ * css }. The flat `columns` map is always still written; this is purely additive.
+ *
+ * Returns {} (no tiered shape) when the header gate fails (no header row /
+ * colspan / header-vs-body cell-count mismatch) or no column resolves an anchor —
+ * so headerless feeds (CA housekeeping center, scalar inline feeds) and legacy
+ * recipes keep their exact positional-only shape and replay byte-identically.
+ */
+function buildColumnHeaderAnchors(
+  columns: Record<string, string>,
+  rowSelector: string,
+  headers: CapturedTableHeaders | undefined,
+): { columnsTiered?: Record<string, TieredSelector>; rowSelectorTiered?: TieredSelector } {
+  if (!headers || !headerGateOk(headers)) return {};
+  const textByIndex = new Map<number, string>();
+  for (const c of headers.cells) {
+    if (c.index >= 1 && c.raw.trim() !== '') textByIndex.set(c.index, c.raw);
+  }
+  const tiered: Record<string, TieredSelector> = {};
+  let any = false;
+  for (const [field, cssRaw] of Object.entries(columns)) {
+    const css = (cssRaw ?? '').trim();
+    if (css === '') continue;            // blanked/dead column — no anchor
+    const idx = parseFirstNthIndex(css);
+    if (idx == null) continue;            // non-positional (class/attr) — reorder-immune
+    const headerText = textByIndex.get(idx);
+    if (!headerText) continue;            // no header text at that column index
+    tiered[field] = { roleName: { role: headers.roleKind, name: headerText }, css };
+    any = true;
+  }
+  if (!any) return {};
+  return { columnsTiered: tiered, rowSelectorTiered: { css: rowSelector } };
+}
+
 export function finalizeRecoveredSuccess(
   candidate: { success: ActionMapSuccess; audit: PageAudit },
   drill?: RecoveryDrillResult,
@@ -3460,13 +3923,54 @@ export function finalizeRecoveredSuccess(
   for (const [col, samples] of Object.entries(drill?.valueSamples ?? {})) {
     valueSamples[col] = [...new Set([...(valueSamples[col] ?? []), ...samples])];
   }
+
+  // feature/cua-prove-columns — record required columns that SHIP but were NOT
+  // value-certified, so the promotion gate refuses to auto-promote them (it
+  // parks the feed for founder review instead of letting a guessed column go
+  // live). Two kinds, both keep their selector: (1) `uncertain` — no value
+  // evidence existed (empty/unreadable feed at onboarding); (2) `unparseable` —
+  // present but parsed as the wrong type on every sampled row (residual policy
+  // keeps the selector for a different-day retry, but it must not auto-go-live).
+  // A column the drill recovered on the detail page is proven-by-drill → excluded.
+  // Filtered to columns still non-blank in the finalized map. Empty/absent ⟹
+  // proven, so legacy recipes and fully-certified feeds keep their exact shape.
+  //
+  // feature/cua-tolerant-mapper — CONTEXTUAL/OPTIONAL columns can never reach
+  // here: `audit.outstanding` and `audit.uncertain` are populated EXCLUSIVELY
+  // from requiredLearnedFor()/missingRequiredColumns()/auditRequiredColumns()/
+  // pendingRecovery — all now ESSENTIALS-keyed. So a blank contextual date
+  // (arrival_date/departure_date) is neither force-blanked above nor stamped
+  // unproven below; it keeps any learned selector and is filled at poll time by
+  // applyDerivedContextColumns. No explicit exclusion needed (would require
+  // threading actionKey here) — the essentials-only contract propagates it.
+  const drilledColumns = new Set(
+    drill?.ok && drill.drillDown ? Object.keys(drill.drillDown.detailColumns) : [],
+  );
+  const unproven = new Set<string>(audit.uncertain ?? []);
+  for (const [col, cls] of audit.outstanding) {
+    if (cls === 'unparseable') unproven.add(col);
+  }
+  const unprovenRequiredColumns = [...unproven].filter(
+    (col) => !drilledColumns.has(col) && (finalColumns[col] ?? '').trim() !== '',
+  );
+
+  // feature/cua-semantic-columns — author header anchors against the FINAL
+  // (post-recovery) list columns + the header row captured during the audit.
+  // Written alongside the flat columns; absent ⟹ positional-only (back-compat).
+  const headerAnchors = buildColumnHeaderAnchors(finalColumns, hint.rowSelector, audit.headers);
+
+  const action: ActionRecipe = {
+    ...success.action,
+    parse: { mode: 'table', hint: { ...hint, columns: finalColumns, ...headerAnchors } },
+    ...(drillDown ? { drillDown } : {}),
+  };
+  if (unprovenRequiredColumns.length > 0) {
+    (action as ColumnProofCarrier).unprovenRequiredColumns = unprovenRequiredColumns;
+  }
+
   return {
     ...success,
-    action: {
-      ...success.action,
-      parse: { mode: 'table', hint: { ...hint, columns: finalColumns } },
-      ...(drillDown ? { drillDown } : {}),
-    },
+    action,
     ...(Object.keys(valueSamples).length > 0 ? { valueSamples } : {}),
     ...(Object.keys(enumMappings).length > 0 ? { enumMappings } : {}),
   };
@@ -3898,8 +4402,11 @@ export interface DiscoveryDeps {
     columns: Record<string, string>,
     cap: number,
   ) => Promise<Array<Record<string, string>>>;
-  /** ONE bounded identify call; returns the model's raw text. */
-  identify: (prompt: string) => Promise<string>;
+  /** A bounded identify call; returns the model's raw text. `sample` (default 0)
+   *  distinguishes the N draws of the semantic-entropy abstain loop so the
+   *  default impl can vary its idempotency key — without that, every draw would
+   *  reuse one cached response and the entropy signal would be vacuous. */
+  identify: (prompt: string, sample?: number) => Promise<string>;
   /** In-page fetch with the page's cookies (mirrors extractors/fetch-api.ts,
    *  plus cache:'no-store' so a cached response can't fake a pass). */
   replayFetch: (req: {
@@ -3922,10 +4429,15 @@ function makeDefaultDiscoveryDeps(args: MapActionArgs): DiscoveryDeps {
     extractOracleRows: (rowSelector, columns, cap) =>
       extractDomRows(args.page, rowSelector, columns, { cap }).then((r) => r.rows),
 
-    identify: async (prompt) => {
+    identify: async (prompt, sample = 0) => {
+      // Per-sample idempotency key: the N-sample entropy loop must get N
+      // INDEPENDENT draws. A fixed key would make Anthropic return one cached
+      // response for every draw → entropy always 0 → the abstain signal is
+      // useless. The `:s${sample}` suffix keeps each draw independently
+      // idempotent (a retry of draw i reuses draw i's key).
       const idempotencyKey = args.jobId
-        ? `${args.jobId}:${args.actionName}:discovery`
-        : `anon:${args.actionName}:discovery:${Date.now()}`;
+        ? `${args.jobId}:${args.actionName}:discovery:s${sample}`
+        : `anon:${args.actionName}:discovery:s${sample}:${Date.now()}`;
       const cfg = getModeConfig(args.model);
       const response = await anthropic.messages.create({
         model: cfg.model,
@@ -4049,6 +4561,25 @@ export async function attemptStructuredDiscovery(
   if (input.capturedCalls.length === 0) return abstain('no_captured_calls');
   if (await deps.isOverBudget()) return abstain('job_over_budget');
 
+  // ── best-class verification knobs (feature/cua-bestclass-verify) ──
+  // Read from process.env (mirrors the CUA_STRUCTURED_DISCOVERY_ENABLED read
+  // above so tests can mutate per-case; env.ts is out of scope for this change).
+  // ALL DEFAULT TO TODAY'S BEHAVIOUR: 1 identify draw, 1 replay pass. The
+  // cost-multiplying paths only activate when explicitly raised, and only ever
+  // at onboarding (this pipeline never runs at the 30s poll).
+  const clampInt = (raw: string | undefined, def: number, lo: number, hi: number): number => {
+    const n = raw == null ? def : parseInt(raw, 10);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const clampFloat = (raw: string | undefined, def: number, lo: number, hi: number): number => {
+    const n = raw == null ? def : parseFloat(raw);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const identifySampleCount = (): number => clampInt(process.env.CUA_DISCOVERY_IDENTIFY_SAMPLES, 1, 1, 5);
+  const identifyMaxEntropy = (): number => clampFloat(process.env.CUA_DISCOVERY_MAX_ENTROPY, 0.5, 0, 1);
+  const identifyMinDominance = (): number => clampFloat(process.env.CUA_DISCOVERY_MIN_DOMINANCE, 0.5, 0, 1);
+  const replayPassCount = (): number => clampInt(process.env.CUA_VERIFY_REPLAY_PASSES, 1, 1, 5);
+
   const tableHint = input.success.action.parse.hint;
 
   // ── 1. Fresh oracle scrape ──
@@ -4133,7 +4664,13 @@ export async function attemptStructuredDiscovery(
     });
   }
 
-  // ── 4. ONE LLM identify call (hypothesis only) ──
+  // ── 4. LLM identify (hypothesis only) — N-sample SEMANTIC-ENTROPY abstain ──
+  // A single identify() can be confidently WRONG on an ambiguous page (two
+  // near-identical arrays, two plausible date fields). When CUA_DISCOVERY_
+  // IDENTIFY_SAMPLES > 1 we draw the proposal N times and abstain unless the
+  // draws AGREE ON MEANING (proposal-entropy.ts). This is ONBOARDING-ONLY (this
+  // whole pipeline never runs at the 30s poll) and DEFAULTS TO 1 — a single draw
+  // is one cluster, entropy 0, behaviourally identical to today's one call.
   const valueContract = TARGET_VALUE_CONTRACTS[input.actionName];
   const prompt = buildIdentifyPrompt({
     actionName: input.actionName,
@@ -4141,29 +4678,74 @@ export async function attemptStructuredDiscovery(
     domRows,
     candidates: pre.candidates,
   });
-  let rawText: string;
-  try {
-    rawText = await deps.identify(prompt);
-  } catch (err) {
-    return abstain('identify_call_failed', { err: err instanceof Error ? err.message : String(err) });
-  }
-  const proposal = tryParseJson(rawText) as
-    | { none?: unknown; candidateIndex?: unknown; jsonPath?: unknown; columns?: unknown }
-    | null;
-  if (!proposal || proposal.none === true) return abstain('identify_none');
-  const idx = typeof proposal.candidateIndex === 'number' ? proposal.candidateIndex : -1;
-  if (idx < 0 || idx >= pre.candidates.length) return abstain('identify_bad_index');
-  const jsonPath = typeof proposal.jsonPath === 'string' ? proposal.jsonPath.trim() : '';
-  if (!proposal.columns || typeof proposal.columns !== 'object') return abstain('identify_bad_columns');
 
   const contractCols = new Set(contract.columns.map((c) => c.name));
-  const columns: Record<string, string> = {};
-  for (const [col, path] of Object.entries(proposal.columns as Record<string, unknown>)) {
-    if (typeof path !== 'string' || path.trim() === '') continue;
-    if (!contractCols.has(col)) continue; // extra fields would be dropped by the writer anyway
-    columns[col] = path.trim();
+  /** Parse one raw identify response → a normalized, contract-filtered proposal
+   *  with the key column present, or null (malformed / {none} / unmappable —
+   *  counts as the "none" meaning in clustering, diluting consensus). */
+  const normalizeProposal = (rawText: string): DiscoveryProposalShape | null => {
+    const p = tryParseJson(rawText) as
+      | { none?: unknown; candidateIndex?: unknown; jsonPath?: unknown; columns?: unknown }
+      | null;
+    if (!p || p.none === true) return null;
+    const ci = typeof p.candidateIndex === 'number' ? p.candidateIndex : -1;
+    if (ci < 0 || ci >= pre.candidates.length) return null;
+    if (!p.columns || typeof p.columns !== 'object') return null;
+    const cols: Record<string, string> = {};
+    for (const [col, path] of Object.entries(p.columns as Record<string, unknown>)) {
+      if (typeof path !== 'string' || path.trim() === '') continue;
+      if (!contractCols.has(col)) continue; // extra fields would be dropped by the writer anyway
+      cols[col] = path.trim();
+    }
+    if (!cols[keyCol]) return null;
+    return { candidateIndex: ci, jsonPath: typeof p.jsonPath === 'string' ? p.jsonPath.trim() : '', columns: cols };
+  };
+
+  const sampleCount = identifySampleCount();
+  const proposalSamples: Array<DiscoveryProposalShape | null> = [];
+  let identifyCalls = 0;
+  for (let s = 0; s < sampleCount; s++) {
+    // Budget governs the loop: each draw is a paid call. The first draw always
+    // runs (the top-of-function isOverBudget already passed); re-check before
+    // each EXTRA draw so N-sampling can never blow the per-job cost cap.
+    if (s > 0 && await deps.isOverBudget()) break;
+    if (input.signal?.aborted) return abstain('aborted');
+    let rawText: string;
+    try {
+      rawText = await deps.identify(prompt, s);
+    } catch (err) {
+      if (identifyCalls === 0) {
+        return abstain('identify_call_failed', { err: err instanceof Error ? err.message : String(err) });
+      }
+      break; // a later draw failed — decide on the draws we have
+    }
+    identifyCalls++;
+    proposalSamples.push(normalizeProposal(rawText));
   }
-  if (!columns[keyCol]) return abstain('identify_missing_key_column');
+  if (identifyCalls === 0) return abstain('identify_call_failed', { reason: 'no_draws' });
+
+  // When N>1 was requested, require a MAJORITY of the draws to actually land
+  // (review): a budget-truncated 1-of-5 must not be silently trusted as if it
+  // were the full sample — abstain instead (keeps the safe DOM recipe).
+  const consensus = chooseConsensusProposal(proposalSamples, {
+    minSamples: sampleCount > 1 ? Math.ceil(sampleCount / 2) : 1,
+    maxEntropy: identifyMaxEntropy(),
+    minDominance: identifyMinDominance(),
+  });
+  if (!consensus.ok) {
+    return abstain(`identify_no_consensus:${consensus.reason}`, {
+      samples: consensus.samples, entropy: Number(consensus.entropy.toFixed(3)), agreement: Number(consensus.agreement.toFixed(3)),
+    });
+  }
+  if (sampleCount > 1) {
+    log.info('mapper: identify consensus across samples', {
+      actionName: input.actionName, jobId: input.jobId ?? undefined,
+      draws: identifyCalls, agreement: Number(consensus.agreement.toFixed(3)), entropy: Number(consensus.entropy.toFixed(3)),
+    });
+  }
+  const idx = consensus.proposal.candidateIndex;
+  const jsonPath = consensus.proposal.jsonPath;
+  const columns: Record<string, string> = { ...consensus.proposal.columns };
 
   // ── 5. Mechanical reconcile against the captured body ──
   const cand = pre.candidates[idx]!;
@@ -4327,6 +4909,48 @@ export async function attemptStructuredDiscovery(
     if (verdict.derivedEnumMappings) delete verdict.derivedEnumMappings[col];
   }
 
+  // ── 8b. pass^N replay consistency (feature/cua-bestclass-verify) ──
+  // The replay-confirm above proves the endpoint reconciles ONCE. A flaky /
+  // load-balanced / occasionally-stale endpoint can pass a single confirm by
+  // luck. When CUA_VERIFY_REPLAY_PASSES > 1 we re-fetch the SAME anchor-day
+  // request that many MORE times (reusing the existing replay machinery) and
+  // require every pass to still reconcile in 'replay' mode against the SAME
+  // (post-drop) column set — any wobble abstains. HTTP-only, no LLM; gated to
+  // onboarding; DEFAULT 1 ⟹ no extra fetches, today's behaviour.
+  const extraReplayPasses = replayPassCount() - 1;
+  for (let p = 0; p < extraReplayPasses; p++) {
+    if (input.signal?.aborted) return abstain('aborted');
+    const rerun = await deps.replayFetch({
+      url: renderTemplateAtDate(variants[0]!.url, effectiveAnchor),
+      method: cand.call.method,
+      ...(variants[0]!.body !== undefined
+        ? { body: renderTemplateAtDate(variants[0]!.body, effectiveAnchor) }
+        : {}),
+      ...(sanitized.headers ? { headers: sanitized.headers } : {}),
+    });
+    if (!rerun.ok) return abstain(`replay_consistency_fetch_failed:${rerun.reason ?? 'unknown'}`);
+    const rerunRows = extractRowsAtPath(rerun.data, jsonPath);
+    if (!rerunRows.ok) return abstain(`replay_consistency_extract_failed:${rerunRows.reason}`);
+    if (findEnvelopeDecoy(rerun.data, jsonPath)) return abstain('replay_consistency_envelope_decoy');
+    const rerunVerdict = reconcileRows({
+      actionKey: input.actionName,
+      domRows,
+      apiRows: projectRows(rerunRows.rows, columns),
+      mappedColumns: Object.keys(columns),
+      domEnumMappings: input.success.enumMappings,
+      enumValueSets,
+      anchorIso,
+      ...(blindDateColumns ? { blindDateColumns } : {}),
+      mode: 'replay',
+    });
+    if (!rerunVerdict.reconciles) return abstain(`replay_consistency_failed:${rerunVerdict.reason}`);
+  }
+  if (extraReplayPasses > 0) {
+    log.info('mapper: replay pass^N consistency confirmed', {
+      actionName: input.actionName, jobId: input.jobId ?? undefined, passes: extraReplayPasses + 1,
+    });
+  }
+
   // ── SECOND-ORACLE today-anchor proof (live replay) ──
   // The LIVE replay rows' blind semantic date must be uniformly == today and
   // self-describing. This + the tomorrow probe (step 9b) is what separates the
@@ -4470,6 +5094,438 @@ export async function attemptStructuredDiscovery(
     ...input.success,
     action: { ...input.success.action, parse: { mode: 'api', hint } },
     ...(mergedEnums ? { enumMappings: mergedEnums } : {}),
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// feature/cua-self-heal-reach — CSV-export + single-value (inline_text) learning
+//
+// The mapper has only ever emitted parse:{mode:'table'} (mapActionCore) and
+// parse:{mode:'api'} (attemptStructuredDiscovery above). The runtime + adapter
+// already CONSUME csv (csv_download) and inline_text (dom_inline) — see
+// extractors/csv-download.ts, extractors/dom-inline.ts, recipe-adapter.ts, and
+// csv-adapter-wiring.test.ts — but nothing LEARNED them. These two self-contained
+// strategies close that gap WITHOUT touching the table-emit core: each runs as an
+// OPTIONAL post-table upgrade (like attemptStructuredDiscovery), default-OFF via
+// its own env flag, mirroring the same abstain-by-default verify ladder and the
+// same injected-deps testability seam.
+//
+// Both REUSE the safety cores (reconcileRows / certifyColumns) for value proof —
+// a learned csv/inline feed only emits when its data CORROBORATES the DOM oracle
+// (csv) or value-certifies (inline). Any doubt → return null → keep the table
+// recipe (exactly attemptStructuredDiscovery's fall-through contract).
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Default OFF (monotonic): with the flag unset the dispatch never runs these,
+ *  so the mapper behaves byte-for-byte as today (table + api only). */
+function csvDiscoveryEnabled(): boolean {
+  return (process.env.CUA_CSV_DISCOVERY_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+function inlineDiscoveryEnabled(): boolean {
+  return (process.env.CUA_INLINE_DISCOVERY_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+
+// ─── CSV-export discovery ───────────────────────────────────────────────────
+
+export interface CsvDiscoveryInput {
+  actionName: keyof Recipe['actions'];
+  /** The clean DOM-table success from mapActionCore (the oracle source). */
+  success: ActionMapSuccess;
+  /** page.url() at success time. */
+  feedPageUrl: string;
+  jobId: string | null;
+  signal?: AbortSignal;
+}
+
+export interface CsvDiscoveryDeps {
+  /** Re-scrape the current page with the table recipe's selectors (the oracle the
+   *  CSV must reconcile against). */
+  extractOracleRows: (
+    rowSelector: string,
+    columns: Record<string, string>,
+    cap: number,
+  ) => Promise<Array<Record<string, string>>>;
+  /** Detect a CSV/Export affordance on the current feed page and return the
+   *  recorded click flow ENDING in the download trigger (so deriveCsvFlowFromSteps
+   *  reads the last click as the download button). Abstains when none found. */
+  findCsvExport: () => Promise<{ ok: true; steps: RecipeStep[] } | { ok: false; reason: string }>;
+  /** Replay `steps` and parse the downloaded CSV into header + rows. READ-ONLY
+   *  apart from triggering the export download. */
+  downloadCsv: (
+    steps: RecipeStep[],
+  ) => Promise<{ ok: true; headers: string[]; rows: Array<Record<string, string>> } | { ok: false; reason: string }>;
+  isOverBudget: () => Promise<boolean>;
+}
+
+const normCell = (v: unknown): string => (typeof v === 'string' ? v.trim().toLowerCase() : '');
+
+/** Do a DOM cell value and a CSV cell value describe the same datum? Exact
+ *  (normalized) match OR same ISO date (the CSV may format dates differently
+ *  than the on-screen table). */
+function csvValuesAgree(domVal: string, csvVal: string): boolean {
+  if (domVal === csvVal) return true;
+  const dIso = parseIsoDate(domVal) ?? parseTextualDate(domVal);
+  const cIso = parseIsoDate(csvVal) ?? parseTextualDate(csvVal);
+  if (dIso && cIso) return dIso === cIso;
+  // Ambiguous numeric dates: agree iff their interpretation sets intersect.
+  const di = numericDateInterpretations(domVal);
+  const ci = numericDateInterpretations(csvVal);
+  if (di.length > 0 && ci.length > 0) return di.some((x) => ci.includes(x));
+  return false;
+}
+
+/**
+ * PURE. Learn a canonical-field → CSV-header map by VALUE-JOINING the downloaded
+ * CSV against the DOM oracle on the feed's key column. Returns null-mapping
+ * (ok:false) unless the key column maps with high overlap; other columns map only
+ * when ≥90% of their per-key values agree. reconcileRows then VERIFIES the whole
+ * proposal (the safety core), so a sloppy match still can't ship.
+ */
+export function proposeCsvColumnMap(input: {
+  keyColumn: string;
+  candidateColumns: string[];
+  domRows: Array<Record<string, string>>;
+  csvRows: Array<Record<string, string>>;
+  csvHeaders: string[];
+}): { ok: true; map: Record<string, string>; keyHeader: string } | { ok: false; reason: string } {
+  const { keyColumn, candidateColumns, domRows, csvRows, csvHeaders } = input;
+  const domKeySet = new Set(domRows.map((r) => normCell(r[keyColumn])).filter((k) => k !== ''));
+  if (domKeySet.size < MIN_ORACLE_ROWS) return { ok: false, reason: 'dom_keyset_too_small' };
+
+  // 1. The CSV key header = the header whose value set best covers the DOM keys.
+  let keyHeader: string | null = null;
+  let keyOverlap = 0;
+  for (const h of csvHeaders) {
+    const csvSet = new Set(csvRows.map((r) => normCell(r[h])).filter((v) => v !== ''));
+    const overlap = [...domKeySet].filter((k) => csvSet.has(k)).length / domKeySet.size;
+    if (overlap > keyOverlap) { keyOverlap = overlap; keyHeader = h; }
+  }
+  if (!keyHeader || keyOverlap < 0.9) return { ok: false, reason: `no_csv_key_header(best=${keyOverlap.toFixed(2)})` };
+
+  // 2. Per-key lookups for value-join.
+  const domByKey = new Map<string, Record<string, string>>();
+  for (const r of domRows) { const k = normCell(r[keyColumn]); if (k) domByKey.set(k, r); }
+  const csvByKey = new Map<string, Record<string, string>>();
+  for (const r of csvRows) { const k = normCell(r[keyHeader]); if (k && !csvByKey.has(k)) csvByKey.set(k, r); }
+  const sharedKeys = [...domKeySet].filter((k) => csvByKey.has(k));
+  if (sharedKeys.length < MIN_ORACLE_ROWS) return { ok: false, reason: 'too_few_shared_keys' };
+
+  // 3. Map each remaining canonical column to its best-agreeing CSV header.
+  const map: Record<string, string> = { [keyColumn]: keyHeader };
+  for (const canon of candidateColumns) {
+    if (canon === keyColumn) continue;
+    let best: string | null = null;
+    let bestScore = 0;
+    for (const h of csvHeaders) {
+      if (h === keyHeader) continue;
+      let match = 0;
+      let total = 0;
+      for (const k of sharedKeys) {
+        const dv = normCell(domByKey.get(k)?.[canon]);
+        if (dv === '') continue;
+        total++;
+        if (csvValuesAgree(dv, normCell(csvByKey.get(k)?.[h]))) match++;
+      }
+      const score = total > 0 ? match / total : 0;
+      if (score > bestScore) { bestScore = score; best = h; }
+    }
+    // Unmappable columns are simply omitted (optional); the reconcile + promotion
+    // gate still demand the contract's required columns, so a dropped REQUIRED
+    // column fails downstream rather than shipping blank.
+    if (best && bestScore >= 0.9) map[canon] = best;
+  }
+  return { ok: true, map, keyHeader };
+}
+
+/**
+ * Learn a parse:{mode:'csv'} recipe for a feed that exposes a CSV/Export
+ * download. Abstain-by-default ladder; emits ONLY when the CSV reconciles with
+ * the DOM oracle (reconcileRows). Self-contained — never mutates the table core.
+ */
+export async function attemptCsvDiscovery(
+  input: CsvDiscoveryInput,
+  deps: CsvDiscoveryDeps,
+): Promise<ActionMapSuccess | null> {
+  const abstain = (reason: string, extra?: Record<string, unknown>): null => {
+    log.info('mapper: csv discovery abstain', { actionName: input.actionName, reason, jobId: input.jobId ?? undefined, ...extra });
+    return null;
+  };
+  const actionKey = input.actionName;
+  const contract = CORE_TARGET_CONTRACTS[actionKey];
+  const keyCol = DISCOVERY_KEY_COLUMNS[actionKey];
+  if (!contract || !keyCol) return null; // non-core target — silent (no csv reconcile possible)
+  if (input.signal?.aborted) return abstain('aborted');
+  if (input.success.viaBail) return abstain('via_bail');
+  if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
+  if (await deps.isOverBudget()) return abstain('job_over_budget');
+
+  const tableHint = input.success.action.parse.hint as TableRowHint;
+  if (!tableHint.columns[keyCol]) return abstain('key_column_unmapped');
+
+  const exp = await deps.findCsvExport();
+  if (!exp.ok) return abstain('no_csv_affordance', { reason: exp.reason });
+
+  const dl = await deps.downloadCsv(exp.steps);
+  if (!dl.ok) return abstain('csv_download_failed', { reason: dl.reason });
+  if (dl.rows.length === 0) return abstain('csv_empty');
+
+  const domRows = await deps.extractOracleRows(tableHint.rowSelector, tableHint.columns, MAX_ORACLE_ROWS);
+  if (domRows.length < MIN_ORACLE_ROWS) return abstain('oracle_too_small', { rows: domRows.length });
+
+  const proposal = proposeCsvColumnMap({
+    keyColumn: keyCol,
+    candidateColumns: Object.keys(tableHint.columns),
+    domRows,
+    csvRows: dl.rows,
+    csvHeaders: dl.headers,
+  });
+  if (!proposal.ok) return abstain('csv_column_map_failed', { reason: proposal.reason });
+
+  // Project the CSV rows through the learned map and VERIFY against the DOM oracle
+  // with the SAME safety core the api path uses (never forked).
+  const csvAsApi = dl.rows.map((r) => {
+    const o: Record<string, unknown> = {};
+    for (const [canon, header] of Object.entries(proposal.map)) o[canon] = r[header];
+    return o;
+  });
+  const verdict = reconcileRows({
+    actionKey,
+    domRows,
+    apiRows: csvAsApi,
+    mappedColumns: Object.keys(proposal.map),
+    mode: 'learn',
+  });
+  if (!verdict.reconciles) return abstain('csv_reconcile_failed', { reason: verdict.reason });
+
+  // Drop optional columns reconcile flagged as unverifiable.
+  const finalMap: Record<string, string> = { ...proposal.map };
+  for (const c of verdict.droppedOptionalColumns ?? []) delete finalMap[c];
+  if (!finalMap[keyCol]) return abstain('key_dropped_post_reconcile');
+
+  const hint: CsvHint = { columns: finalMap, requiredColumn: finalMap[keyCol] };
+  // steps = the recorded nav to the report page + the export click flow. The last
+  // click in exp.steps becomes the download trigger (deriveCsvFlowFromSteps);
+  // credential fills are stripped by the adapter + extractor (defense-in-depth).
+  const steps = [...input.success.action.steps, ...exp.steps];
+  log.info('mapper: csv discovery VERIFIED — emitting csv recipe', {
+    actionName: input.actionName,
+    jobId: input.jobId ?? undefined,
+    columnCount: Object.keys(finalMap).length,
+    matched: verdict.matchedCount,
+    surplus: verdict.surplus,
+  });
+  return {
+    ...input.success,
+    action: { ...input.success.action, steps, downloadsCsv: true, parse: { mode: 'csv', hint } },
+  };
+}
+
+// ─── Single-value (inline_text) discovery ───────────────────────────────────
+
+export interface InlineDiscoveryInput {
+  actionName: keyof Recipe['actions'];
+  success: ActionMapSuccess;
+  feedPageUrl: string;
+  jobId: string | null;
+  signal?: AbortSignal;
+}
+
+export interface InlineDiscoveryDeps {
+  /** Re-scrape the table recipe's row(s) to confirm the page is a single record. */
+  extractOracleRows: (
+    rowSelector: string,
+    columns: Record<string, string>,
+    cap: number,
+  ) => Promise<Array<Record<string, string>>>;
+  /** Read each field's value via a DOCUMENT-rooted selector (dom_inline reads the
+   *  whole page, not a row). Returns null for a missing element. */
+  extractInline: (fields: Record<string, string>) => Promise<Record<string, string | null>>;
+  isOverBudget: () => Promise<boolean>;
+}
+
+const COUNT_RE = /^-?\d{1,3}(,\d{3})*(\.\d+)?$|^-?\d+(\.\d+)?$/;
+
+/**
+ * Learn a parse:{mode:'inline_text'} recipe for a SINGLE-VALUE page (a dashboard
+ * counter view — the documented dom_inline use). Abstain-by-default: emits ONLY
+ * when the page is a single record AND every field reads a non-blank NUMERIC
+ * value (counters). Free-text single values are out of scope (un-provable) →
+ * abstain. Self-contained; never mutates the table core.
+ */
+export async function attemptInlineTextDiscovery(
+  input: InlineDiscoveryInput,
+  deps: InlineDiscoveryDeps,
+): Promise<ActionMapSuccess | null> {
+  const abstain = (reason: string, extra?: Record<string, unknown>): null => {
+    log.info('mapper: inline discovery abstain', { actionName: input.actionName, reason, jobId: input.jobId ?? undefined, ...extra });
+    return null;
+  };
+  if (input.signal?.aborted) return abstain('aborted');
+  if (input.success.viaBail) return abstain('via_bail');
+  if (input.success.action.parse.mode !== 'table') return abstain('not_table_parse');
+  if (await deps.isOverBudget()) return abstain('job_over_budget');
+
+  // inline_text has NO preStep replay in recipe-adapter, so a single-value page
+  // reachable ONLY via an in-page interaction AFTER the last goto would be flagged
+  // `incomplete` and silently skipped at runtime. Emit inline ONLY for a
+  // directly-navigable page (goto-only after the last goto); else keep the table.
+  const steps = input.success.action.steps;
+  let lastGoto = -1;
+  for (let i = steps.length - 1; i >= 0; i--) { if (steps[i]!.kind === 'goto') { lastGoto = i; break; } }
+  if (steps.slice(lastGoto + 1).some((s) => s.kind !== 'goto')) {
+    return abstain('post_goto_interaction_unsupported_for_inline');
+  }
+
+  const tableHint = input.success.action.parse.hint as TableRowHint;
+  const cols = Object.entries(tableHint.columns).filter(([, css]) => typeof css === 'string' && css.trim() !== '');
+  if (cols.length === 0) return abstain('no_columns');
+
+  // Single-value pages are NOT multi-row tables. Confirm at most one row matched.
+  const domRows = await deps.extractOracleRows(tableHint.rowSelector, tableHint.columns, 5);
+  if (domRows.length > 1) return abstain('multi_row_table_not_inline', { rows: domRows.length });
+
+  // Build DOCUMENT-rooted field → selector map. The dom_inline extractor reads
+  // document.querySelector(sel), so compose rowSelector + the per-column css
+  // (row-rooted) into an absolute selector. '.' (the row itself) → the rowSelector.
+  const fields: Record<string, string> = {};
+  for (const [field, css] of cols) {
+    fields[field] = css === '.' ? tableHint.rowSelector : `${tableHint.rowSelector} ${css}`;
+  }
+
+  const values = await deps.extractInline(fields);
+  const numericByField: Record<string, string[]> = {};
+  for (const field of Object.keys(fields)) {
+    const v = (values[field] ?? '').trim();
+    if (v === '') return abstain('blank_field', { field });
+    if (!COUNT_RE.test(v)) return abstain('non_numeric_field', { field, sample: v.slice(0, 24) });
+    numericByField[field] = [v];
+  }
+
+  log.info('mapper: inline discovery VERIFIED — emitting inline_text recipe', {
+    actionName: input.actionName,
+    jobId: input.jobId ?? undefined,
+    fieldCount: Object.keys(fields).length,
+  });
+  return {
+    ...input.success,
+    action: { ...input.success.action, parse: { mode: 'inline_text', fields } },
+  };
+}
+
+// ─── Default live-page deps for the two strategies ──────────────────────────
+
+/** Minimal RFC-4180-ish CSV parser (quoted fields, embedded commas/newlines,
+ *  doubled quotes). Returns header + rows keyed by header. Self-contained so the
+ *  mapper's learn-time download never depends on the runtime extractor's
+ *  FeedSpec-coupled parser. */
+export function parseCsvText(text: string): { headers: string[]; rows: Array<Record<string, string>> } {
+  const records: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else { field += ch; }
+      continue;
+    }
+    if (ch === '"') { inQuotes = true; continue; }
+    if (ch === ',') { row.push(field); field = ''; continue; }
+    if (ch === '\r') { continue; }
+    if (ch === '\n') { row.push(field); records.push(row); field = ''; row = []; continue; }
+    field += ch;
+  }
+  if (field !== '' || row.length > 0) { row.push(field); records.push(row); }
+  const nonEmpty = records.filter((r) => r.some((c) => c.trim() !== ''));
+  if (nonEmpty.length === 0) return { headers: [], rows: [] };
+  const headers = nonEmpty[0]!.map((h) => h.trim());
+  const rows = nonEmpty.slice(1).map((r) => {
+    const o: Record<string, string> = {};
+    headers.forEach((h, idx) => { o[h] = (r[idx] ?? '').trim(); });
+    return o;
+  });
+  return { headers, rows };
+}
+
+/** Heuristic export-affordance finder: a link/button whose text or attributes
+ *  read as a CSV/export control. Records a single click step ending the flow
+ *  (the download trigger). Abstains when nothing plausible is on the page. */
+function makeDefaultCsvDiscoveryDeps(args: MapActionArgs): CsvDiscoveryDeps {
+  return {
+    extractOracleRows: (rowSelector, columns, cap) =>
+      extractDomRows(args.page, rowSelector, columns, { cap }).then((r) => r.rows),
+    findCsvExport: async () => {
+      const EXPORT_SELECTORS = [
+        'a[href$=".csv" i]',
+        'a[download][href*="csv" i]',
+        'button:has-text("Export CSV")',
+        'button:has-text("Download CSV")',
+        'a:has-text("Export CSV")',
+        'a:has-text("Download CSV")',
+        'button:has-text("Export")',
+        'a:has-text("Export")',
+        '[aria-label*="export" i]',
+        '[data-export*="csv" i]',
+      ];
+      for (const sel of EXPORT_SELECTORS) {
+        try {
+          const loc = args.page.locator(sel).first();
+          if (await loc.isVisible({ timeout: 1_000 }).catch(() => false)) {
+            return { ok: true, steps: [{ kind: 'click', selector: sel }] };
+          }
+        } catch { /* selector unsupported / not present — try next */ }
+      }
+      return { ok: false, reason: 'no_export_control_found' };
+    },
+    downloadCsv: async (steps) => {
+      try {
+        // Replay every step except the LAST click, then race the download against
+        // the final trigger click (the same ordering the runtime extractor uses).
+        const trigger = steps[steps.length - 1];
+        const pre = steps.slice(0, -1);
+        for (const s of pre) {
+          if (s.kind === 'click') await args.page.click(s.selector, { timeout: 10_000 });
+          else if (s.kind === 'select') await args.page.selectOption(s.selector, s.value);
+          else if (s.kind === 'fill') await args.page.fill(s.selector, s.value);
+          else if (s.kind === 'wait_for') await args.page.waitForSelector(s.selector, { timeout: s.timeoutMs ?? 10_000 });
+          else if (s.kind === 'wait_ms') await args.page.waitForTimeout(s.ms);
+        }
+        if (!trigger || trigger.kind !== 'click') return { ok: false, reason: 'no_trigger_click' };
+        const [download] = await Promise.all([
+          args.page.waitForEvent('download', { timeout: 30_000 }),
+          args.page.click(trigger.selector, { timeout: 10_000 }),
+        ]);
+        const stream = await download.createReadStream();
+        const chunks: Buffer[] = [];
+        for await (const c of stream) chunks.push(Buffer.from(c));
+        const parsed = parseCsvText(Buffer.concat(chunks).toString('utf8'));
+        if (parsed.headers.length === 0) return { ok: false, reason: 'empty_or_unparseable_csv' };
+        return { ok: true, headers: parsed.headers, rows: parsed.rows };
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message };
+      }
+    },
+    isOverBudget: async () => (await isJobOverBudget(args.jobId, args.jobCostCapMicros)).over,
+  };
+}
+
+function makeDefaultInlineDiscoveryDeps(args: MapActionArgs): InlineDiscoveryDeps {
+  return {
+    extractOracleRows: (rowSelector, columns, cap) =>
+      extractDomRows(args.page, rowSelector, columns, { cap }).then((r) => r.rows),
+    extractInline: async (fields) =>
+      args.page.evaluate((fieldsMap: Record<string, string>) => {
+        const out: Record<string, string | null> = {};
+        for (const [field, sel] of Object.entries(fieldsMap)) {
+          let el: Element | null = null;
+          try { el = document.querySelector(sel); } catch { el = null; }
+          out[field] = el ? (el.textContent ?? '').trim() : null;
+        }
+        return out;
+      }, fields),
+    isOverBudget: async () => (await isJobOverBudget(args.jobId, args.jobCostCapMicros)).over,
   };
 }
 
@@ -4651,9 +5707,12 @@ async function mapDrillDownAction(args: {
     `1. Take a SCREENSHOT to see the dashboard menus.\n` +
     `2. Navigate to the LIST page by clicking visible menus (e.g. ` +
     `reservations list, lost-items list).\n` +
-    `3. Look at the list visually. Make your best-guess CSS selectors for ` +
-    `the row + the columns of fields visible IN THE ROW (most PMSes use ` +
-    `\`tr\` for rows + \`td:nth-child(N)\` for cells).\n` +
+    `3. Look at the list visually. Its column HEADERS are tagged with numbered ` +
+    `badges (e.g. "H1", "H2", …). Map each row field to a column by its HEADER ` +
+    `MEANING first, note that header's column position N, and write the cell ` +
+    `selector as \`td:nth-child(N)\` for the SAME N (most PMSes use \`tr\` for ` +
+    `rows). Header-anchoring — not a pixel guess — is what lets us re-find a ` +
+    `column if the PMS reorders or renames its columns later.\n` +
     `4. Pick up to ${SAMPLE_COUNT} sample rows (fewer is fine if the list ` +
     `has only 1-2 records — even ONE sample is enough). For each one:\n` +
     `   - Capture the row's data (so we can map URL placeholders to columns)\n` +
@@ -4809,6 +5868,8 @@ async function mapDrillDownAction(args: {
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
+    // feature/cua-operator-notes — surface this turn's reasoning on the board.
+    await recordThought(args.jobId, args.actionName, summarizeThought(responseContent));
 
     if (response.stop_reason === 'end_turn') {
       const finalText = extractFinalText(responseContent);

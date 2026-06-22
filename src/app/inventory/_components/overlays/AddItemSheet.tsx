@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import {
   addInventoryItem,
   updateInventoryItem,
@@ -12,13 +11,15 @@ import {
 import type { InventoryItem, InventoryCategory } from '@/types';
 import type { Vendor } from '@/lib/ordering/types';
 
-import { T, fonts, catLabel, type InvCat } from '../tokens';
+import { T, fonts, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { apiListVendors } from '../ordering-api';
+import { catLabelFor, type Lang } from '../inv-i18n';
 
 interface AddItemSheetProps {
+  lang: Lang;
   open: boolean;
   onClose: () => void;
   item: InventoryItem | null;
@@ -30,11 +31,71 @@ interface AddItemSheetProps {
 
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeeping' }: AddItemSheetProps) {
+// Co-located strings for the add/edit item sheet.
+function aisStrings(lang: Lang) {
+  return {
+    en: {
+      editItem: 'Edit item',
+      newItem: 'New item',
+      addToInventory: 'Add to inventory',
+      other: '— Other (type below) —',
+      delete: 'Delete',
+      cancel: 'Cancel',
+      saving: 'Saving…',
+      save: 'Save',
+      addItem: 'Add item',
+      name: 'Name',
+      namePh: 'e.g. Bath towels',
+      category: 'Category',
+      onHand: 'On hand',
+      parLevel: 'Par level',
+      unit: 'Unit',
+      unitPh: 'each / bottle / case',
+      unitCost: 'Unit cost ($)',
+      vendor: 'Vendor',
+      supplier: 'Supplier',
+      leadDays: 'Lead days',
+      notes: 'Notes (optional)',
+      notesPh: 'Anything worth remembering',
+      saveFailed: 'Saving the item failed. Please try again.',
+      confirmRemove: (n: string) => `Remove "${n}" from inventory?`,
+      couldNotRemove: 'Could not remove the item.',
+    },
+    es: {
+      editItem: 'Editar artículo',
+      newItem: 'Nuevo artículo',
+      addToInventory: 'Agregar al inventario',
+      other: '— Otro (escribe abajo) —',
+      delete: 'Eliminar',
+      cancel: 'Cancelar',
+      saving: 'Guardando…',
+      save: 'Guardar',
+      addItem: 'Agregar artículo',
+      name: 'Nombre',
+      namePh: 'ej. Toallas de baño',
+      category: 'Categoría',
+      onHand: 'Disponible',
+      parLevel: 'Nivel par',
+      unit: 'Unidad',
+      unitPh: 'unidad / botella / caja',
+      unitCost: 'Costo unitario ($)',
+      vendor: 'Proveedor',
+      supplier: 'Proveedor',
+      leadDays: 'Días de entrega',
+      notes: 'Notas (opcional)',
+      notesPh: 'Algo que valga la pena recordar',
+      saveFailed: 'No se pudo guardar el artículo. Inténtalo de nuevo.',
+      confirmRemove: (n: string) => `¿Quitar "${n}" del inventario?`,
+      couldNotRemove: 'No se pudo quitar el artículo.',
+    },
+  }[lang];
+}
+
+export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'housekeeping' }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
-  const { lang } = useLang();
-  const otherLabel = { en: '— Other (type below) —', es: '— Otro (escribe abajo) —' }[lang === 'es' ? 'es' : 'en'];
+  const ais = aisStrings(lang);
+  const otherLabel = ais.other;
   const isEdit = item != null;
 
   const [name, setName] = useState('');
@@ -117,7 +178,7 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
       onClose();
     } catch (err) {
       console.error('[add-item] save failed', err);
-      alert('Saving the item failed. Please try again.');
+      alert(ais.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -125,14 +186,14 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
 
   const handleDelete = async () => {
     if (!user || !activePropertyId || !item || saving) return;
-    if (!confirm(`Remove "${item.name}" from inventory?`)) return;
+    if (!confirm(ais.confirmRemove(item.name))) return;
     setSaving(true);
     try {
       await deleteInventoryItem(user.uid, activePropertyId, item.id);
       onClose();
     } catch (err) {
       console.error('[add-item] delete failed', err);
-      alert('Could not remove the item.');
+      alert(ais.couldNotRemove);
     } finally {
       setSaving(false);
     }
@@ -142,37 +203,37 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow={isEdit ? 'Edit item' : 'New item'}
-      italic={isEdit ? item?.name : 'Add to inventory'}
+      eyebrow={isEdit ? ais.editItem : ais.newItem}
+      italic={isEdit ? item?.name : ais.addToInventory}
       width={640}
       footer={
         <>
           {isEdit && (
             <Btn variant="ghost" size="md" onClick={handleDelete} disabled={saving} style={{ marginRight: 'auto', color: T.warm }}>
-              Delete
+              {ais.delete}
             </Btn>
           )}
           <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
-            Cancel
+            {ais.cancel}
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || !name.trim()}>
-            {saving ? 'Saving…' : isEdit ? 'Save' : 'Add item'}
+            {saving ? ais.saving : isEdit ? ais.save : ais.addItem}
           </Btn>
         </>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <Field label="Name">
+        <Field label={ais.name}>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Bath towels"
+            placeholder={ais.namePh}
             style={inputStyle}
           />
         </Field>
 
-        <Field label="Category">
+        <Field label={ais.category}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {CATS.map((c) => {
               const active = category === c;
@@ -193,7 +254,7 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
                     fontWeight: 500,
                   }}
                 >
-                  {catLabel[c]}
+                  {catLabelFor(lang, c)}
                 </button>
               );
             })}
@@ -201,7 +262,7 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
         </Field>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-          <Field label="On hand">
+          <Field label={ais.onHand}>
             <input
               type="number"
               min="0"
@@ -213,7 +274,7 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
               style={inputStyle}
             />
           </Field>
-          <Field label="Par level">
+          <Field label={ais.parLevel}>
             <input
               type="number"
               min="0"
@@ -223,19 +284,19 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
               style={inputStyle}
             />
           </Field>
-          <Field label="Unit">
+          <Field label={ais.unit}>
             <input
               type="text"
               value={unit}
               onChange={(e) => setUnit(e.target.value)}
-              placeholder="each / bottle / case"
+              placeholder={ais.unitPh}
               style={inputStyle}
             />
           </Field>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-          <Field label="Unit cost ($)">
+          <Field label={ais.unitCost}>
             <input
               type="number"
               min="0"
@@ -247,7 +308,7 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
               style={inputStyle}
             />
           </Field>
-          <Field label="Vendor">
+          <Field label={ais.vendor}>
             {vendors.length > 0 && (
               <select
                 value={vendorId ?? ''}
@@ -271,11 +332,11 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
               type="text"
               value={vendor}
               onChange={(e) => { setVendor(e.target.value); setVendorId(null); }}
-              placeholder="Supplier"
+              placeholder={ais.supplier}
               style={inputStyle}
             />
           </Field>
-          <Field label="Lead days">
+          <Field label={ais.leadDays}>
             <input
               type="number"
               min="0"
@@ -287,12 +348,12 @@ export function AddItemSheet({ open, onClose, item, defaultCategory = 'housekeep
           </Field>
         </div>
 
-        <Field label="Notes (optional)">
+        <Field label={ais.notes}>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={2}
-            placeholder="Anything worth remembering"
+            placeholder={ais.notesPh}
             style={{
               ...inputStyle,
               height: 'auto',

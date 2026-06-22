@@ -81,6 +81,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .select('id, version, knowledge')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle<KnowledgeRow>();
   if (loadErr) {
     return err(`could not load active map: ${loadErr.message}`, { requestId, status: 500, code: 'db_error' });

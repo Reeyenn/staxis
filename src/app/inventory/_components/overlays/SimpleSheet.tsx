@@ -20,17 +20,19 @@ import {
   type CommitPlan,
 } from '@/lib/inventory-invoice-commit';
 
-import { T, fonts, statusColor, catLabel, type InvCat } from '../tokens';
+import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { ItemThumb } from '../ItemThumb';
 import { Overlay } from './Overlay';
 import type { DisplayItem } from '../types';
+import { catLabelFor, type Lang } from '../inv-i18n';
 
 type Kind = 'scan' | 'ai';
 type AiMode = 'off' | 'auto' | 'always-on';
 
 interface SimpleSheetProps {
+  lang: Lang;
   open: boolean;
   kind: Kind;
   onClose: () => void;
@@ -39,12 +41,194 @@ interface SimpleSheetProps {
   display: DisplayItem[];
 }
 
-export function SimpleSheet({ open, kind, onClose, aiMode, onModeChange, display }: SimpleSheetProps) {
+// Co-located strings for the scan-invoice + AI-helper sheets.
+function ssStrings(lang: Lang) {
+  return {
+    en: {
+      // scan
+      scanInvoice: 'Scan invoice',
+      reviewSave: 'Review & save',
+      saved: 'Saved',
+      dropOneIn: 'Drop one in',
+      matched: 'matched',
+      new: 'new',
+      skipped: 'skipped',
+      autoUpdateStock: 'auto-update stock',
+      cancel: 'Cancel',
+      saving: 'Saving…',
+      saveLines: (n: number) => `Save ${n} line${n === 1 ? '' : 's'}`,
+      dropInvoicePhoto: 'Drop an invoice photo here',
+      dropHint: "A photo or screenshot. We'll read the lines and match them to your inventory — you confirm before anything saves.",
+      reading: 'Reading…',
+      choosePhoto: 'Choose photo…',
+      pdfHint: 'PDF invoice? Screenshot the page and upload the image.',
+      tryAnotherPhoto: 'Try another photo',
+      savedMsg: (n: number) => `Saved. Stock updated and the delivery logged for ${n} item${n === 1 ? '' : 's'}.`,
+      done: 'Done',
+      dupWarn: "This invoice looks like it may already be recorded. You can still save it if it's a new delivery.",
+      vendor: 'Vendor',
+      supplier: 'Supplier',
+      invoiceDate: 'Invoice date',
+      createNew: '＋ Create new item',
+      skipLine: 'Skip this line',
+      twoCloseMatches: 'Two close matches — confirm which.',
+      qtyReceived: 'Qty received',
+      unitCost: 'Unit cost ($)',
+      onHand: (n: number) => `On hand ≈${n} → new on-hand`,
+      checkSuffix: ' ⚠ check',
+      newItemCategory: 'New item category',
+      unit: 'Unit',
+      par: 'Par',
+      // scan errors
+      errTooMany: 'Too many line items to scan at once. Split the invoice into pages and rescan.',
+      errBadImage: 'Couldn’t read that image. Try a clearer, well-lit photo.',
+      errRateLimit: 'Too many scans this hour — please try again shortly.',
+      errUnavailable: 'Scanning is temporarily unavailable. Try again in a moment.',
+      errReadInvoice: (e: string) => `Couldn’t read that invoice (${e}).`,
+      errReadInvoiceGeneric: 'Couldn’t read that invoice. Please try a clearer photo.',
+      noLineItems: 'No line items detected — try a clearer photo.',
+      uploadFailed: 'Upload failed. Please try again.',
+      savingFailed: (e: string) => `Saving failed: ${e}`,
+      nameExists: 'That name already exists — match it to the existing item instead.',
+      needAttention: (saved: number, n: number) => `${saved} saved, ${n} need attention — fix and Save again.`,
+      cases: (n: number, pack: number) => `${n} case${n === 1 ? '' : 's'} × ${pack}`,
+      // AI helper
+      aiHelper: 'AI Helper',
+      howItWorks: 'How it works',
+      andWhatItKnows: 'and what it knows',
+      overview: 'Overview',
+      usageRates: 'Usage rates',
+      status: 'Status',
+      aiIntro: "The AI watches your counts, occupancy, and order history, then learns how fast you use each item. Once it's confident, it starts ",
+      fillingInCounts: 'filling in counts for you',
+      youCanOverride: '. You can always override.',
+      mode: 'Mode',
+      off: 'Off',
+      auto: 'Auto',
+      alwaysOn: 'Always-on',
+      modeAuto: 'Auto · the AI fills counts only for items where it’s confident.',
+      modeAlwaysOn: 'Always-on · any prediction is pre-filled, even for less-trained items.',
+      modeOff: 'Off · no auto-fill. Type every number yourself.',
+      graduated: 'Graduated.',
+      learning: 'Learning.',
+      autoFilling: (a: number, b: number) => `Auto-filling ${a} of ${b} items.`,
+      seeStatus: 'See status →',
+      ratesIntro: "You don't enter usage rates yourself. The AI learns each one from your monthly counts and the property's occupancy. Override if something looks off.",
+      noItemsYet: 'No items yet.',
+      perRoom: ' per room',
+      perDay: ' per day',
+      learned: 'learned',
+      learningTag: 'learning',
+      statusIntro: "Three checks need to pass before the AI will fill counts for you. Once it graduates, it stays graduated as long as it's still hitting the bar.",
+      countsLogged: 'Counts logged',
+      needed: (n: number) => `${n} needed`,
+      accuracy: 'Accuracy',
+      populating: 'Populating…',
+      pctOff: (n: string) => `${n}% off`,
+      firstRetrain: 'first weekly retrain fills this in',
+      underToPass: (n: number) => `under ${n}% to pass`,
+      stableMonths: 'Stable months',
+      stillLearning: 'Still learning.',
+      autoFillingCounts: (a: number, b: number) => `Auto-filling counts on ${a} of ${b} items.`,
+      remainingLearning: (n: number) => `The remaining ${n} are still learning — they’ll join once they hit the bar.`,
+      passing: 'Passing',
+    },
+    es: {
+      scanInvoice: 'Escanear factura',
+      reviewSave: 'Revisar y guardar',
+      saved: 'Guardado',
+      dropOneIn: 'Suelta una aquí',
+      matched: 'coincidencias',
+      new: 'nuevos',
+      skipped: 'omitidos',
+      autoUpdateStock: 'actualiza el stock',
+      cancel: 'Cancelar',
+      saving: 'Guardando…',
+      saveLines: (n: number) => `Guardar ${n} línea${n === 1 ? '' : 's'}`,
+      dropInvoicePhoto: 'Suelta una foto de la factura aquí',
+      dropHint: 'Una foto o captura. Leemos las líneas y las emparejamos con tu inventario — tú confirmas antes de que se guarde algo.',
+      reading: 'Leyendo…',
+      choosePhoto: 'Elegir foto…',
+      pdfHint: '¿Factura en PDF? Toma una captura de la página y sube la imagen.',
+      tryAnotherPhoto: 'Probar otra foto',
+      savedMsg: (n: number) => `Guardado. Stock actualizado y entrega registrada para ${n} artículo${n === 1 ? '' : 's'}.`,
+      done: 'Listo',
+      dupWarn: 'Esta factura parece que ya está registrada. Puedes guardarla de todas formas si es una entrega nueva.',
+      vendor: 'Proveedor',
+      supplier: 'Proveedor',
+      invoiceDate: 'Fecha de factura',
+      createNew: '＋ Crear artículo nuevo',
+      skipLine: 'Omitir esta línea',
+      twoCloseMatches: 'Dos coincidencias cercanas — confirma cuál.',
+      qtyReceived: 'Cant. recibida',
+      unitCost: 'Costo unitario ($)',
+      onHand: (n: number) => `Disponible ≈${n} → nuevo disponible`,
+      checkSuffix: ' ⚠ revisar',
+      newItemCategory: 'Categoría del nuevo artículo',
+      unit: 'Unidad',
+      par: 'Par',
+      errTooMany: 'Demasiadas líneas para escanear de una vez. Divide la factura en páginas y vuelve a escanear.',
+      errBadImage: 'No se pudo leer la imagen. Intenta una foto más clara y bien iluminada.',
+      errRateLimit: 'Demasiados escaneos esta hora — inténtalo de nuevo en un momento.',
+      errUnavailable: 'El escaneo no está disponible por ahora. Inténtalo de nuevo en un momento.',
+      errReadInvoice: (e: string) => `No se pudo leer la factura (${e}).`,
+      errReadInvoiceGeneric: 'No se pudo leer la factura. Intenta una foto más clara.',
+      noLineItems: 'No se detectaron líneas — intenta una foto más clara.',
+      uploadFailed: 'Falló la subida. Inténtalo de nuevo.',
+      savingFailed: (e: string) => `Falló al guardar: ${e}`,
+      nameExists: 'Ese nombre ya existe — emparéjalo con el artículo existente.',
+      needAttention: (saved: number, n: number) => `${saved} guardados, ${n} requieren atención — corrige y Guarda de nuevo.`,
+      cases: (n: number, pack: number) => `${n} caja${n === 1 ? '' : 's'} × ${pack}`,
+      aiHelper: 'Asistente IA',
+      howItWorks: 'Cómo funciona',
+      andWhatItKnows: 'y qué sabe',
+      overview: 'Resumen',
+      usageRates: 'Tasas de uso',
+      status: 'Estado',
+      aiIntro: 'La IA observa tus conteos, ocupación e historial de pedidos, luego aprende qué tan rápido usas cada artículo. Cuando tiene confianza, empieza a ',
+      fillingInCounts: 'llenar los conteos por ti',
+      youCanOverride: '. Siempre puedes corregir.',
+      mode: 'Modo',
+      off: 'Apagado',
+      auto: 'Auto',
+      alwaysOn: 'Siempre activo',
+      modeAuto: 'Auto · la IA llena conteos solo para artículos en los que confía.',
+      modeAlwaysOn: 'Siempre activo · cualquier predicción se prellenará, incluso para artículos menos entrenados.',
+      modeOff: 'Apagado · sin autollenado. Escribe cada número tú mismo.',
+      graduated: 'Graduado.',
+      learning: 'Aprendiendo.',
+      autoFilling: (a: number, b: number) => `Autollenando ${a} de ${b} artículos.`,
+      seeStatus: 'Ver estado →',
+      ratesIntro: 'No ingresas las tasas de uso tú mismo. La IA aprende cada una de tus conteos mensuales y la ocupación de la propiedad. Corrige si algo se ve mal.',
+      noItemsYet: 'Aún no hay artículos.',
+      perRoom: ' por habitación',
+      perDay: ' por día',
+      learned: 'aprendido',
+      learningTag: 'aprendiendo',
+      statusIntro: 'Tres comprobaciones deben pasar antes de que la IA llene conteos por ti. Una vez que se gradúa, sigue graduada mientras siga cumpliendo el estándar.',
+      countsLogged: 'Conteos registrados',
+      needed: (n: number) => `${n} necesarios`,
+      accuracy: 'Precisión',
+      populating: 'Cargando…',
+      pctOff: (n: string) => `${n}% de error`,
+      firstRetrain: 'el primer reentrenamiento semanal completa esto',
+      underToPass: (n: number) => `menos de ${n}% para pasar`,
+      stableMonths: 'Meses estables',
+      stillLearning: 'Aún aprendiendo.',
+      autoFillingCounts: (a: number, b: number) => `Autollenando conteos en ${a} de ${b} artículos.`,
+      remainingLearning: (n: number) => `Los ${n} restantes aún están aprendiendo — se unirán cuando cumplan el estándar.`,
+      passing: 'Cumple',
+    },
+  }[lang];
+}
+
+export function SimpleSheet({ lang, open, kind, onClose, aiMode, onModeChange, display }: SimpleSheetProps) {
   if (kind === 'scan') {
-    return <ScanInvoiceSheet open={open} onClose={onClose} display={display} />;
+    return <ScanInvoiceSheet lang={lang} open={open} onClose={onClose} display={display} />;
   }
   return (
     <AIHelperSheet
+      lang={lang}
       open={open}
       onClose={onClose}
       aiMode={aiMode}
@@ -93,12 +277,13 @@ interface ReviewRow {
 const numGuard = (v: string) => v === '' || /^\d*\.?\d*$/.test(v);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-function scanErrorFor(status: number, err?: string): string {
-  if (status === 422) return 'Too many line items to scan at once. Split the invoice into pages and rescan.';
-  if (status === 400) return 'Couldn’t read that image. Try a clearer, well-lit photo.';
-  if (status === 429) return 'Too many scans this hour — please try again shortly.';
-  if (status === 503) return 'Scanning is temporarily unavailable. Try again in a moment.';
-  return err ? `Couldn’t read that invoice (${err}).` : 'Couldn’t read that invoice. Please try a clearer photo.';
+function scanErrorFor(lang: Lang, status: number, err?: string): string {
+  const ss = ssStrings(lang);
+  if (status === 422) return ss.errTooMany;
+  if (status === 400) return ss.errBadImage;
+  if (status === 429) return ss.errRateLimit;
+  if (status === 503) return ss.errUnavailable;
+  return err ? ss.errReadInvoice(err) : ss.errReadInvoiceGeneric;
 }
 
 function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[]): ReviewRow {
@@ -126,9 +311,10 @@ function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[]): Revie
   };
 }
 
-function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: () => void; display: DisplayItem[] }) {
+function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang; open: boolean; onClose: () => void; display: DisplayItem[] }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const ss = ssStrings(lang);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [phase, setPhase] = useState<ScanPhase>('upload');
@@ -222,13 +408,13 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
       };
       if (!res.ok || !json.ok) {
         setPhase('error');
-        setErrorText(scanErrorFor(res.status, json.error));
+        setErrorText(scanErrorFor(lang, res.status, json.error));
         return;
       }
       const items = json.items ?? [];
       if (items.length === 0) {
         setPhase('error');
-        setErrorText('No line items detected — try a clearer photo.');
+        setErrorText(ss.noLineItems);
         return;
       }
       setRows(items.map((raw, i) => buildRow(raw, i, display)));
@@ -250,7 +436,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
     } catch (err) {
       console.error('[scan-invoice] failed', err);
       setPhase('error');
-      setErrorText('Upload failed. Please try again.');
+      setErrorText(ss.uploadFailed);
     }
   };
 
@@ -280,7 +466,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
         failures.push({
           lineKey: c.createKey,
           collision,
-          reason: collision ? 'That name already exists — match it to the existing item instead.' : errMsg(e),
+          reason: collision ? ss.nameExists : errMsg(e),
         });
       }
     }
@@ -346,7 +532,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
     try {
       failures = await executeCommit(plan);
     } catch (e) {
-      setBanner(`Saving failed: ${errMsg(e)}`);
+      setBanner(ss.savingFailed(errMsg(e)));
       setPhase('review');
       return;
     }
@@ -367,7 +553,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
         return { ...r, saved: committed, error: f?.reason };
       }),
     );
-    setBanner(`${prog.orderedKeys.size} saved, ${failures.length} need attention — fix and Save again.`);
+    setBanner(ss.needAttention(prog.orderedKeys.size, failures.length));
     setPhase('review');
   };
 
@@ -381,19 +567,19 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow="Scan invoice"
-      italic={reviewing ? 'Review & save' : phase === 'done' ? 'Saved' : 'Drop one in'}
-      suffix={reviewing ? `${matchedCount} matched · ${createCount} new · ${skipCount} skipped` : 'auto-update stock'}
+      eyebrow={ss.scanInvoice}
+      italic={reviewing ? ss.reviewSave : phase === 'done' ? ss.saved : ss.dropOneIn}
+      suffix={reviewing ? `${matchedCount} ${ss.matched} · ${createCount} ${ss.new} · ${skipCount} ${ss.skipped}` : ss.autoUpdateStock}
       accent={T.sageDeep}
       width={reviewing ? 900 : 640}
       footer={
         reviewing ? (
           <>
             <Btn variant="ghost" size="md" onClick={onClose} disabled={phase === 'committing'}>
-              Cancel
+              {ss.cancel}
             </Btn>
             <Btn variant="primary" size="md" onClick={handleCommit} disabled={phase === 'committing' || actionable === 0}>
-              {phase === 'committing' ? 'Saving…' : `Save ${actionable} line${actionable === 1 ? '' : 's'}`}
+              {phase === 'committing' ? ss.saving : ss.saveLines(actionable)}
             </Btn>
           </>
         ) : undefined
@@ -411,14 +597,14 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
             }}
           >
             <div style={{ fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
-              Drop an invoice photo here
+              {ss.dropInvoicePhoto}
             </div>
             <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, margin: '8px 0 0' }}>
-              A photo or screenshot. We&apos;ll read the lines and match them to your inventory — you confirm before anything saves.
+              {ss.dropHint}
             </div>
             <div style={{ marginTop: 16 }}>
               <Btn variant="primary" size="md" onClick={handlePick} disabled={phase === 'reading'}>
-                {phase === 'reading' ? 'Reading…' : 'Choose photo…'}
+                {phase === 'reading' ? ss.reading : ss.choosePhoto}
               </Btn>
               <input
                 ref={fileRef}
@@ -433,7 +619,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
               />
             </div>
             <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, marginTop: 12 }}>
-              PDF invoice? Screenshot the page and upload the image.
+              {ss.pdfHint}
             </div>
           </div>
         </div>
@@ -457,7 +643,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
           </div>
           <div>
             <Btn variant="primary" size="md" onClick={() => { setPhase('upload'); setErrorText(''); }}>
-              Try another photo
+              {ss.tryAnotherPhoto}
             </Btn>
           </div>
         </div>
@@ -477,11 +663,11 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
               lineHeight: 1.5,
             }}
           >
-            Saved. Stock updated and the delivery logged for {matchedCount + createCount} item{matchedCount + createCount === 1 ? '' : 's'}.
+            {ss.savedMsg(matchedCount + createCount)}
           </div>
           <div>
             <Btn variant="primary" size="md" onClick={onClose}>
-              Done
+              {ss.done}
             </Btn>
           </div>
         </div>
@@ -501,7 +687,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
                 color: T.warm,
               }}
             >
-              This invoice looks like it may already be recorded. You can still save it if it&apos;s a new delivery.
+              {ss.dupWarn}
             </div>
           )}
           {banner && (
@@ -522,11 +708,11 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
 
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 240px' }}>
-              <Caps>Vendor</Caps>
-              <input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Supplier" style={inputSm} />
+              <Caps>{ss.vendor}</Caps>
+              <input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder={ss.supplier} style={inputSm} />
             </div>
             <div style={{ flex: '1 1 160px' }}>
-              <Caps>Invoice date</Caps>
+              <Caps>{ss.invoiceDate}</Caps>
               <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} style={inputSm} />
             </div>
           </div>
@@ -535,6 +721,7 @@ function ScanInvoiceSheet({ open, onClose, display }: { open: boolean; onClose: 
             {rows.map((row) => (
               <ReviewRowView
                 key={row.key}
+                lang={lang}
                 row={row}
                 onHand={onHandFor(row.matchedItemId)}
                 matchedCounted={row.matchedItemId ? byId.get(row.matchedItemId)?.counted ?? 0 : 0}
@@ -569,6 +756,7 @@ const inputSm: React.CSSProperties = {
 };
 
 function ReviewRowView({
+  lang,
   row,
   onHand,
   matchedCounted,
@@ -580,6 +768,7 @@ function ReviewRowView({
   onNewUnit,
   onNewPar,
 }: {
+  lang: Lang;
   row: ReviewRow;
   onHand: number;
   matchedCounted: number;
@@ -591,13 +780,14 @@ function ReviewRowView({
   onNewUnit: (v: string) => void;
   onNewPar: (v: string) => void;
 }) {
+  const ss = ssStrings(lang);
   const skipped = row.decision === 'skip';
   const selectValue = row.decision === 'create' ? '__create__' : row.decision === 'skip' ? '__skip__' : row.matchedItemId ?? '__create__';
   // Loud if we'd re-baseline to roughly just the received qty even though the
   // item has stored stock — usually a stale usage rate, worth a second look.
   const staleEstimate = row.decision === 'match' && onHand === 0 && matchedCounted > 0;
   const caseCaption =
-    row.raw.quantity_cases && row.raw.pack_size ? `${row.raw.quantity_cases} case${row.raw.quantity_cases === 1 ? '' : 's'} × ${row.raw.pack_size}` : null;
+    row.raw.quantity_cases && row.raw.pack_size ? ss.cases(row.raw.quantity_cases, row.raw.pack_size) : null;
 
   return (
     <div
@@ -626,31 +816,31 @@ function ReviewRowView({
               {c.name} ({Math.round(c.score * 100)}%)
             </option>
           ))}
-          <option value="__create__">＋ Create new item</option>
-          <option value="__skip__">Skip this line</option>
+          <option value="__create__">{ss.createNew}</option>
+          <option value="__skip__">{ss.skipLine}</option>
         </select>
       </div>
 
       {row.ambiguous && row.decision === 'match' && (
-        <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.caramel }}>Two close matches — confirm which.</div>
+        <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.caramel }}>{ss.twoCloseMatches}</div>
       )}
       {row.error && <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.warm }}>{row.error}</div>}
 
       {!skipped && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label style={{ flex: '0 0 92px' }}>
-            <span style={miniLabel}>Qty received</span>
+            <span style={miniLabel}>{ss.qtyReceived}</span>
             <input value={row.qtyInput} inputMode="decimal" onChange={(e) => onQty(e.target.value)} style={inputSm} />
           </label>
           <label style={{ flex: '0 0 100px' }}>
-            <span style={miniLabel}>Unit cost ($)</span>
+            <span style={miniLabel}>{ss.unitCost}</span>
             <input value={row.unitCostInput} inputMode="decimal" placeholder="—" onChange={(e) => onUnitCost(e.target.value)} style={inputSm} />
           </label>
 
           {row.decision === 'match' && (
             <label style={{ flex: '1 1 160px' }}>
               <span style={miniLabel}>
-                On hand ≈{onHand} → new on-hand{staleEstimate ? ' ⚠ check' : ''}
+                {ss.onHand(onHand)}{staleEstimate ? ss.checkSuffix : ''}
               </span>
               <input
                 value={row.afterInput}
@@ -664,21 +854,21 @@ function ReviewRowView({
           {row.decision === 'create' && (
             <>
               <label style={{ flex: '0 0 150px' }}>
-                <span style={miniLabel}>New item category</span>
+                <span style={miniLabel}>{ss.newItemCategory}</span>
                 <select value={row.newCategory} onChange={(e) => onNewCategory(e.target.value as InvCat)} style={{ ...inputSm, cursor: 'pointer' }}>
                   {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((c) => (
                     <option key={c} value={c}>
-                      {catLabel[c]}
+                      {catLabelFor(lang, c)}
                     </option>
                   ))}
                 </select>
               </label>
               <label style={{ flex: '0 0 90px' }}>
-                <span style={miniLabel}>Unit</span>
+                <span style={miniLabel}>{ss.unit}</span>
                 <input value={row.newUnit} onChange={(e) => onNewUnit(e.target.value)} style={inputSm} />
               </label>
               <label style={{ flex: '0 0 80px' }}>
-                <span style={miniLabel}>Par</span>
+                <span style={miniLabel}>{ss.par}</span>
                 <input value={row.newPar} inputMode="decimal" onChange={(e) => onNewPar(e.target.value)} style={inputSm} />
               </label>
             </>
@@ -730,12 +920,14 @@ interface AIStatusShape {
 }
 
 function AIHelperSheet({
+  lang,
   open,
   onClose,
   aiMode,
   onModeChange,
   display,
 }: {
+  lang: Lang;
   open: boolean;
   onClose: () => void;
   aiMode: AiMode;
@@ -743,6 +935,7 @@ function AIHelperSheet({
   display: DisplayItem[];
 }) {
   const { activePropertyId } = useProperty();
+  const ss = ssStrings(lang);
   const [view, setView] = useState<AIView>('overview');
   const [stats, setStats] = useState<AIStatusShape | null>(null);
   const [totalCounts, setTotalCounts] = useState<number | null>(null);
@@ -802,18 +995,18 @@ function AIHelperSheet({
   };
 
   const views: Array<{ key: AIView; label: string }> = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'rates', label: 'Usage rates' },
-    { key: 'status', label: 'Status' },
+    { key: 'overview', label: ss.overview },
+    { key: 'rates', label: ss.usageRates },
+    { key: 'status', label: ss.status },
   ];
 
   return (
     <Overlay
       open={open}
       onClose={onClose}
-      eyebrow="AI Helper"
-      italic="How it works"
-      suffix="and what it knows"
+      eyebrow={ss.aiHelper}
+      italic={ss.howItWorks}
+      suffix={ss.andWhatItKnows}
       accent={T.purple}
       width={640}
     >
@@ -845,35 +1038,39 @@ function AIHelperSheet({
         </div>
 
         {view === 'overview' && (
-          <OverviewTab aiMode={aiMode} onModeChange={onModeChange} ml={ml} onSeeStatus={() => setView('status')} />
+          <OverviewTab ss={ss} aiMode={aiMode} onModeChange={onModeChange} ml={ml} onSeeStatus={() => setView('status')} />
         )}
-        {view === 'rates' && <RatesTab items={display} />}
-        {view === 'status' && <StatusTab ml={ml} />}
+        {view === 'rates' && <RatesTab ss={ss} items={display} />}
+        {view === 'status' && <StatusTab ss={ss} ml={ml} />}
       </div>
     </Overlay>
   );
 }
 
+type SS = ReturnType<typeof ssStrings>;
+
 function OverviewTab({
+  ss,
   aiMode,
   onModeChange,
   ml,
   onSeeStatus,
 }: {
+  ss: SS;
   aiMode: AiMode;
   onModeChange: (m: AiMode) => void;
   ml: { autoFillEligibleItems: number; totalItems: number; graduated: boolean };
   onSeeStatus: () => void;
 }) {
   const modes: AiMode[] = ['off', 'auto', 'always-on'];
-  const labelFor: Record<AiMode, string> = { off: 'Off', auto: 'Auto', 'always-on': 'Always-on' };
+  const labelFor: Record<AiMode, string> = { off: ss.off, auto: ss.auto, 'always-on': ss.alwaysOn };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, margin: 0, lineHeight: 1.55 }}>
-        The AI watches your counts, occupancy, and order history, then learns how fast you use each item. Once it&apos;s confident, it starts <b style={{ color: T.ink }}>filling in counts for you</b>. You can always override.
+        {ss.aiIntro}<b style={{ color: T.ink }}>{ss.fillingInCounts}</b>{ss.youCanOverride}
       </p>
       <div>
-        <Caps>Mode</Caps>
+        <Caps>{ss.mode}</Caps>
         <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
           {modes.map((m) => {
             const active = aiMode === m;
@@ -902,9 +1099,9 @@ function OverviewTab({
           })}
         </div>
         <p style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, margin: '8px 0 0', fontStyle: 'italic' }}>
-          {aiMode === 'auto' && 'Auto · the AI fills counts only for items where it’s confident.'}
-          {aiMode === 'always-on' && 'Always-on · any prediction is pre-filled, even for less-trained items.'}
-          {aiMode === 'off' && 'Off · no auto-fill. Type every number yourself.'}
+          {aiMode === 'auto' && ss.modeAuto}
+          {aiMode === 'always-on' && ss.modeAlwaysOn}
+          {aiMode === 'off' && ss.modeOff}
         </p>
       </div>
       <div
@@ -937,10 +1134,10 @@ function OverviewTab({
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontFamily: fonts.serif, fontSize: 18, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em' }}>
-            {ml.graduated ? 'Graduated.' : 'Learning.'}
+            {ml.graduated ? ss.graduated : ss.learning}
           </span>
           <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, marginLeft: 6 }}>
-            Auto-filling {ml.autoFillEligibleItems} of {ml.totalItems} items.
+            {ss.autoFilling(ml.autoFillEligibleItems, ml.totalItems)}
           </span>
         </div>
         <button
@@ -958,23 +1155,23 @@ function OverviewTab({
             textTransform: 'uppercase',
           }}
         >
-          See status →
+          {ss.seeStatus}
         </button>
       </div>
     </div>
   );
 }
 
-function RatesTab({ items }: { items: DisplayItem[] }) {
+function RatesTab({ ss, items }: { ss: SS; items: DisplayItem[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, margin: 0, lineHeight: 1.55 }}>
-        You don&apos;t enter usage rates yourself. The AI learns each one from your monthly counts and the property&apos;s occupancy. Override if something looks off.
+        {ss.ratesIntro}
       </p>
       <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 18px', maxHeight: 360, overflow: 'auto' }}>
         {items.length === 0 ? (
           <div style={{ padding: '32px 0', textAlign: 'center', fontFamily: fonts.serif, fontSize: 18, color: T.ink3, fontStyle: 'italic' }}>
-            No items yet.
+            {ss.noItemsYet}
           </div>
         ) : (
           items.map((it, i) => (
@@ -995,7 +1192,7 @@ function RatesTab({ items }: { items: DisplayItem[] }) {
               </span>
               <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>
                 {it.burn.toFixed(2)} {it.unit}
-                {it.burnUnit === '/occ-room' ? ' per room' : ' per day'}
+                {it.burnUnit === '/occ-room' ? ss.perRoom : ss.perDay}
               </span>
               <span
                 style={{
@@ -1009,7 +1206,7 @@ function RatesTab({ items }: { items: DisplayItem[] }) {
                   textAlign: 'right',
                 }}
               >
-                {it.graduated ? 'learned' : 'learning'}
+                {it.graduated ? ss.learned : ss.learningTag}
               </span>
             </div>
           ))
@@ -1020,8 +1217,10 @@ function RatesTab({ items }: { items: DisplayItem[] }) {
 }
 
 function StatusTab({
+  ss,
   ml,
 }: {
+  ss: SS;
   ml: {
     eventsLogged: number;
     eventsNeeded: number;
@@ -1041,29 +1240,32 @@ function StatusTab({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, margin: 0, lineHeight: 1.55 }}>
-        Three checks need to pass before the AI will fill counts for you. Once it graduates, it stays graduated as long as it&apos;s still hitting the bar.
+        {ss.statusIntro}
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
         <StatusCard
-          label="Counts logged"
+          ss={ss}
+          label={ss.countsLogged}
           big={String(ml.eventsLogged)}
-          target={`${ml.eventsNeeded} needed`}
+          target={ss.needed(ml.eventsNeeded)}
           passing={ml.eventsLogged >= ml.eventsNeeded}
         />
         <StatusCard
-          label="Accuracy"
-          big={ml.maePctOrNull == null ? 'Populating…' : `${ml.maePctOrNull.toFixed(1)}% off`}
+          ss={ss}
+          label={ss.accuracy}
+          big={ml.maePctOrNull == null ? ss.populating : ss.pctOff(ml.maePctOrNull.toFixed(1))}
           target={
             ml.maePctOrNull == null
-              ? 'first weekly retrain fills this in'
-              : `under ${ml.maeTarget}% to pass`
+              ? ss.firstRetrain
+              : ss.underToPass(ml.maeTarget)
           }
           passing={ml.maePctOrNull != null && ml.maePctOrNull > 0 && ml.maePctOrNull <= ml.maeTarget}
         />
         <StatusCard
-          label="Stable months"
+          ss={ss}
+          label={ss.stableMonths}
           big={String(ml.consecutivePasses)}
-          target={`${ml.passesNeeded} needed`}
+          target={ss.needed(ml.passesNeeded)}
           passing={ml.consecutivePasses >= ml.passesNeeded}
         />
       </div>
@@ -1079,11 +1281,11 @@ function StatusTab({
           lineHeight: 1.5,
         }}
       >
-        <b>{ml.graduated ? 'Graduated.' : 'Still learning.'}</b>{' '}
-        Auto-filling counts on {ml.autoFillEligibleItems} of {ml.totalItems} items.{' '}
+        <b>{ml.graduated ? ss.graduated : ss.stillLearning}</b>{' '}
+        {ss.autoFillingCounts(ml.autoFillEligibleItems, ml.totalItems)}{' '}
         {ml.totalItems - ml.autoFillEligibleItems > 0 && (
           <>
-            The remaining {ml.totalItems - ml.autoFillEligibleItems} are still learning — they&apos;ll join once they hit the bar.
+            {ss.remainingLearning(ml.totalItems - ml.autoFillEligibleItems)}
           </>
         )}
       </div>
@@ -1092,11 +1294,13 @@ function StatusTab({
 }
 
 function StatusCard({
+  ss,
   label,
   big,
   target,
   passing,
 }: {
+  ss: SS;
   label: string;
   big: string;
   target: string;
@@ -1152,7 +1356,7 @@ function StatusCard({
         }}
       >
         <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: c }} />
-        {passing ? 'Passing' : target}
+        {passing ? ss.passing : target}
       </span>
     </div>
   );

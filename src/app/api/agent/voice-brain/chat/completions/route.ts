@@ -503,6 +503,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           displayName: '',
           role: ctx.role,
           propertyAccess: [ctx.propertyId],
+          dept: ctx.dept,
         };
 
         const iter = streamAgent({

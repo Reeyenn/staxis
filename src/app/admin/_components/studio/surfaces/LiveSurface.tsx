@@ -43,6 +43,7 @@ import {
 import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite, Backdrop, MODAL_CARD,
 } from '../surface-kit';
+import { CoveragePickerModal } from '../CoveragePickerModal';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
 const PAGE_SIZE = 50;
@@ -93,7 +94,7 @@ interface FeedbackItem {
 }
 interface Pagination { totalMatching: number; totalPages: number; hasMore: boolean }
 
-type StatusFilter = 'all' | 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected';
+type StatusFilter = 'all' | 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected' | 'no_pms';
 
 // A property enriched with the staleness flag (= prior tab's isStale12h).
 type EnrichedRow = PropertyRow & { isStale12h: boolean };
@@ -111,6 +112,8 @@ function syncColor(p: { pmsConnected: boolean; isStale12h: boolean; syncFreshnes
 }
 // Health-strip tone for a single hotel (matches LiveMap's per-card toneOf).
 function cardTone(p: EnrichedRow): DotTone {
+  // No system detected (pms_type IS NULL) → needs action. Check first.
+  if (p.pmsType === null) return 'terracotta';
   if (p.subscriptionStatus === 'past_due' || p.isStale12h || !p.pmsConnected) return 'terracotta';
   if (p.subscriptionStatus === 'trial' || (p.pmsConnected && p.syncFreshnessMin !== null && p.syncFreshnessMin > 60)) return 'gold';
   return 'forest';
@@ -119,6 +122,7 @@ function cardTone(p: EnrichedRow): DotTone {
 const STATUS_OPTS: [StatusFilter, string][] = [
   ['all', 'All statuses'], ['active', 'Active'], ['trial', 'Trial'], ['past_due', 'Past due'],
   ['stale', 'Stale (no PMS sync >12h)'], ['pms_disconnected', 'PMS disconnected'],
+  ['no_pms', 'No system detected'],
 ];
 
 const CAT: Record<string, string> = {
@@ -142,6 +146,10 @@ export function LiveSurface() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
 
   const [sel, setSel] = useState<EnrichedRow | null>(null);
+  // Hotel currently being assigned a PMS coverage (null = picker closed).
+  const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
+  // Hotel pending permanent deletion (null = confirm closed).
+  const [deleteHotel, setDeleteHotel] = useState<EnrichedRow | null>(null);
 
   // Debounced search (300ms) — same as the prior tab.
   useEffect(() => {
@@ -155,10 +163,13 @@ export function LiveSurface() {
     setError(null);
     try {
       const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+      // 'no_pms' (unassigned hotels) has no server-side status — request the
+      // broad 'all' set and narrow to pmsType === null client-side below.
+      const serverStatus = statusFilter === 'no_pms' ? 'all' : statusFilter;
       const propsParams = new URLSearchParams({
         page: String(page),
         pageSize: String(PAGE_SIZE),
-        status: statusFilter,
+        status: serverStatus,
       });
       if (searchTerm) propsParams.set('search', searchTerm);
       const [propsRes, errorsRes, smsRes, feedbackRes] = await Promise.all([
@@ -204,10 +215,15 @@ export function LiveSurface() {
   }
 
   // ── Derivations (verbatim from the prior tab) ──────────────────────────
-  // "all" view shows only hotels that have synced at least once OR are active;
-  // a specific status filter is already applied server-side, so trust the list.
-  const live = statusFilter === 'all'
-    ? props.filter((p) => p.lastSyncedAt !== null || p.subscriptionStatus === 'active')
+  // "all" view shows hotels that have synced at least once OR are active OR
+  // are not-yet-assigned (so "no system detected" hotels surface for an admin
+  // to pick coverage instead of hiding silently). 'no_pms' narrows to just the
+  // unassigned hotels (served as 'all', filtered here). Other filters are
+  // already applied server-side, so trust the list.
+  const live = statusFilter === 'no_pms'
+    ? props.filter((p) => p.pmsType === null)
+    : statusFilter === 'all'
+    ? props.filter((p) => p.lastSyncedAt !== null || p.subscriptionStatus === 'active' || p.pmsType === null)
     : props;
 
   const enriched: EnrichedRow[] = live.map((p) => ({
@@ -260,7 +276,7 @@ export function LiveSurface() {
             <div style={{ marginTop: 10 }}><DarkEmpty text="No live hotels yet — they'll appear once their first sync completes." /></div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-              {enriched.map((h) => <MapCard key={h.id} h={h} onOpen={() => setSel(h)} />)}
+              {enriched.map((h) => <MapCard key={h.id} h={h} onOpen={() => setSel(h)} onAssign={() => setPickerHotel(h)} onDelete={() => setDeleteHotel(h)} />)}
             </div>
           )}
 
@@ -317,7 +333,33 @@ export function LiveSurface() {
         </section>
       </div>
 
-      {sel && <MapDetail h={sel} sms={sms} onClose={() => setSel(null)} />}
+      {sel && (
+        <MapDetail
+          h={sel}
+          sms={sms}
+          onClose={() => setSel(null)}
+          onPickCoverage={() => setPickerHotel(sel)}
+          onDetached={() => { setSel(null); void load(); }}
+          onRequestDelete={() => { setDeleteHotel(sel); setSel(null); }}
+        />
+      )}
+
+      {pickerHotel && (
+        <CoveragePickerModal
+          propertyId={pickerHotel.id}
+          currentPmsFamily={pickerHotel.pmsType}
+          onClose={() => setPickerHotel(null)}
+          onAssigned={() => { setPickerHotel(null); void load(); }}
+        />
+      )}
+
+      {deleteHotel && (
+        <DeleteHotelModal
+          h={deleteHotel}
+          onClose={() => setDeleteHotel(null)}
+          onDeleted={() => { setDeleteHotel(null); void load(); }}
+        />
+      )}
     </SurfaceShell>
   );
 }
@@ -396,10 +438,11 @@ function DarkHealth({ label, n, tone }: { label: string; n: number; tone: DotTon
 }
 
 // ── Hotel card — single-click flips front/back, double-click → detail ────
-function MapCard({ h, onOpen }: { h: EnrichedRow; onOpen: () => void }) {
-  const ref = useRef<HTMLButtonElement>(null);
+function MapCard({ h, onOpen, onAssign, onDelete }: { h: EnrichedRow; onOpen: () => void; onAssign: () => void; onDelete: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
   const [back, setBack] = useState(false);
   const tone = cardTone(h);
+  const unassigned = h.pmsType === null;
   useEffect(() => {
     const el = ref.current;
     if (el && typeof el.animate === 'function') {
@@ -407,26 +450,54 @@ function MapCard({ h, onOpen }: { h: EnrichedRow; onOpen: () => void }) {
     }
   }, []);
   return (
-    <button
+    <div
       ref={ref}
+      role="button"
+      tabIndex={0}
       onClick={() => flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 })}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void flip(ref.current, () => setBack((b) => !b), { axis: 'Y', dur: 520 }); } }}
       onDoubleClick={onOpen}
       style={{
+        position: 'relative',
         textAlign: 'left', background: dimWhite(.06),
         border: `1px solid ${tone === 'forest' ? dimWhite(.14) : `var(--${tone})`}`,
         borderRadius: 12, padding: '12px 13px', cursor: 'pointer', color: '#fff', minHeight: 78,
       }}
     >
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        title="Delete this hotel"
+        aria-label={`Delete ${h.name ?? 'this hotel'}`}
+        style={{ position: 'absolute', top: 7, right: 9, zIndex: 1, background: 'transparent', border: 'none', padding: '2px 4px', cursor: 'pointer', color: dimWhite(.4), fontFamily: 'var(--sans)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase' }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--terracotta)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = dimWhite(.4); }}
+      >
+        Delete
+      </button>
       {!back ? (
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingRight: 44 }}>
             <Dot tone={tone} size={7} />
             <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name ?? '(unnamed)'}</span>
           </div>
           <div className="mono" style={{ fontSize: 9.5, color: dimWhite(.45), marginTop: 5 }}>{h.totalRooms ?? '—'} rooms · {h.staffCount} staff</div>
-          <div className="mono" style={{ fontSize: 9.5, color: syncColor(h), marginTop: 3 }}>
-            {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · ${freshLabel(h.syncFreshnessMin)}` : ''}` : 'not connected'}
-          </div>
+          {unassigned ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7, flexWrap: 'wrap' }}>
+              <Pill tone="gold" style={{ fontSize: 9, padding: '2px 6px' }}>No system detected</Pill>
+              <Btn
+                size="sm"
+                variant="ghost"
+                onClick={(e) => { e.stopPropagation(); onAssign(); }}
+                style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}
+              >
+                Assign coverage
+              </Btn>
+            </div>
+          ) : (
+            <div className="mono" style={{ fontSize: 9.5, color: syncColor(h), marginTop: 3 }}>
+              {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · ${freshLabel(h.syncFreshnessMin)}` : ''}` : 'not connected'}
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ transform: 'scaleX(-1)' }}>
@@ -435,15 +506,123 @@ function MapCard({ h, onOpen }: { h: EnrichedRow; onOpen: () => void }) {
           <div className="mono" style={{ fontSize: 9.5, color: dimWhite(.5), marginTop: 3 }}>double-click → detail</div>
         </div>
       )}
-    </button>
+    </div>
+  );
+}
+
+// ── Delete-hotel confirm (typed-exact-name gate; shared by the card delete
+//    control + the detail modal). The server requires the same name match to
+//    delete a LIVE hotel, so this is the accident guard for the live customer.
+function DeleteHotelModal({ h, onClose, onDeleted }: {
+  h: EnrichedRow;
+  onClose: () => void;
+  onDeleted: () => void;   // delete succeeded → refetch + close
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameMatches =
+    (h.name ?? '').trim().length > 0 &&
+    confirmText.trim().toLowerCase() === (h.name ?? '').trim().toLowerCase();
+  useEffect(() => { riseIn(ref.current, { dy: 26, dur: 380 }); }, []);
+
+  const doDelete = async () => {
+    if (deleting || !nameMatches) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/properties/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: h.id, confirmName: confirmText.trim() }),
+      });
+      const json = await res.json();
+      if (!json.ok) { setError(json.error ?? 'Could not delete this hotel. Please try again.'); return; }
+      onDeleted();
+    } catch (err) {
+      setError(`Network error: ${(err as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <Backdrop onClose={onClose}>
+      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 440 }}>
+        <Caps>Delete hotel</Caps>
+        <h3 style={{ fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 10px' }}>
+          Permanently delete <span style={{ fontStyle: 'italic' }}>{h.name ?? '(unnamed)'}</span>?
+        </h3>
+        <p style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.5, marginBottom: 12 }}>
+          This erases the hotel and <strong>all</strong> its data — rooms, staff, schedules, messages, coverage — and frees the owner’s login. It <strong>cannot be undone</strong>. Type the hotel’s name to confirm.
+        </p>
+        <input
+          autoFocus
+          value={confirmText}
+          onChange={(e) => setConfirmText(e.target.value)}
+          placeholder={h.name ?? 'hotel name'}
+          onKeyDown={(e) => { if (e.key === 'Enter' && nameMatches && !deleting) void doDelete(); }}
+          style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '9px 11px', border: '1px solid var(--rule)', borderRadius: 9, background: '#fff', color: 'var(--ink)', outline: 'none', marginBottom: 12 }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Btn variant="terracotta" onClick={doDelete} disabled={!nameMatches || deleting}>
+            {deleting ? 'Deleting…' : 'Permanently delete'}
+          </Btn>
+          <Btn variant="ghost" onClick={onClose} disabled={deleting}>Cancel</Btn>
+        </div>
+        {error && (
+          <div style={{ marginTop: 12, padding: '11px 13px', background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.3)', borderRadius: 12, color: 'var(--terracotta-deep)', fontSize: 12.5, lineHeight: 1.45 }}>
+            {error}
+          </div>
+        )}
+      </div>
+    </Backdrop>
   );
 }
 
 // ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, sms, onClose }: { h: EnrichedRow; sms: SmsHealthRow[]; onClose: () => void }) {
+function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onRequestDelete }: {
+  h: EnrichedRow;
+  sms: SmsHealthRow[];
+  onClose: () => void;
+  onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
+  onDetached: () => void;       // detach succeeded → refetch + close
+  onRequestDelete: () => void;  // open the shared DeleteHotelModal for this hotel
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const row = sms.find((x) => x.propertyId === h.id);
+  const hasSystem = h.pmsType !== null;
+  const [detaching, setDetaching] = useState(false);
+  const [detachError, setDetachError] = useState<string | null>(null);
   useEffect(() => { riseIn(ref.current, { dy: 26, dur: 440 }); }, []);
+
+  // Detach this hotel from its current coverage. Mirrors the FeedbackRow
+  // fetch+envelope+busy pattern: POST through fetchWithAuth, read { ok }, and
+  // on success let the parent refetch (load()) and close the modal.
+  const detach = async () => {
+    if (detaching || !hasSystem) return;
+    setDetaching(true);
+    setDetachError(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/coverage/detach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pmsFamily: h.pmsType, propertyId: h.id }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setDetachError(json.error ?? 'Could not detach coverage. Please try again.');
+        return;
+      }
+      onDetached();
+    } catch (err) {
+      setDetachError(`Network error: ${(err as Error).message}`);
+    } finally {
+      setDetaching(false);
+    }
+  };
+
   return (
     <Backdrop onClose={onClose}>
       <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 460 }}>
@@ -457,14 +636,46 @@ function MapDetail({ h, sms, onClose }: { h: EnrichedRow; sms: SmsHealthRow[]; o
           <Stat label="SMS" v={row && row.deliveryPct !== null ? `${row.deliveryPct}%` : '—'} c={row && row.deliveryPct !== null && row.deliveryPct < 90 ? 'var(--terracotta)' : 'var(--forest-deep)'} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-          <Pill tone={subTone(h.subscriptionStatus)}>{(h.subscriptionStatus ?? 'unknown').toUpperCase()}</Pill>
+          <Pill tone={hasSystem ? subTone(h.subscriptionStatus) : 'gold'}>
+            {hasSystem ? (h.subscriptionStatus ?? 'unknown').toUpperCase() : 'NO SYSTEM DETECTED'}
+          </Pill>
           <span className="mono" style={{ fontSize: 11, color: syncColor(h) }}>
-            {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · synced ${freshLabel(h.syncFreshnessMin)} ago` : ''}` : 'PMS not connected'}
+            {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · synced ${freshLabel(h.syncFreshnessMin)} ago` : ''}` : hasSystem ? 'PMS not connected' : 'No coverage assigned'}
           </span>
         </div>
+
+        {/* Coverage actions — attach (no system) / switch + detach (has system) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: detachError ? 10 : 16, flexWrap: 'wrap' }}>
+          {hasSystem ? (
+            <>
+              <Btn variant="ghost" onClick={onPickCoverage} disabled={detaching}>Switch coverage</Btn>
+              <Btn variant="terracotta" onClick={detach} disabled={detaching}>
+                {detaching ? 'Detaching…' : 'Detach'}
+              </Btn>
+            </>
+          ) : (
+            <Btn variant="forest" onClick={onPickCoverage}>Assign coverage</Btn>
+          )}
+        </div>
+        {detachError && (
+          <div style={{ padding: '11px 13px', marginBottom: 16, background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.3)', borderRadius: 12, color: 'var(--terracotta-deep)', fontSize: 12.5, lineHeight: 1.45 }}>
+            {detachError}
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 8 }}>
           <Btn variant="primary" href={`/admin/properties/${h.id}`}>Property page →</Btn>
           <Btn variant="ghost" onClick={onClose}>Close</Btn>
+        </div>
+
+        {/* Danger zone — opens the shared typed-name delete confirm. */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--rule)' }}>
+          <button
+            onClick={onRequestDelete}
+            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--terracotta-deep)', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, textDecoration: 'underline' }}
+          >
+            Delete this hotel…
+          </button>
         </div>
       </div>
     </Backdrop>

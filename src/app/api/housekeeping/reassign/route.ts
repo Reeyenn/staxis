@@ -32,6 +32,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { canForUserId } from '@/lib/capabilities/server';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -79,6 +80,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // any signed-in user with two UUIDs (task + housekeeper) could move
   // work between housekeepers at another hotel via the service-role
   // client.
+  if (!(await canForUserId(auth.userId, 'assign_work', propertyId))) {
+    return err('forbidden — assigning work is restricted for your role at this property', { requestId, status: 403, code: 'forbidden' });
+  }
   const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
   if (!hasAccess) {
     log.warn('reassign: forbidden — user lacks property access', {

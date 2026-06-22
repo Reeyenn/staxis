@@ -8,6 +8,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
+import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
+import type { Property } from '@/types';
 import { Building2, LogOut } from 'lucide-react';
 
 export default function PropertySelectorPage() {
@@ -23,24 +25,49 @@ export default function PropertySelectorPage() {
     }
   }, [user, authLoading, router]);
 
-  // Auto-select when exactly 1 property
-  useEffect(() => {
-    if (authLoading || propLoading || !user) return;
-    if (properties.length === 1) {
-      setActivePropertyId(properties[0].id);
-      sessionStorage.setItem('hotelops-session-selected', '1');
-      router.replace('/dashboard');
+  // Route into the app — UNLESS this property's onboarding isn't finished,
+  // in which case keep the owner in the wizard (a half-onboarded hotel has no
+  // PMS and an empty dashboard). The server resolves the resume code. Full
+  // navigation (not router.replace) so the API route's 302 is followed.
+  const enter = (p: Property) => {
+    // Mid-onboarding owner → resume the wizard, but only ONCE: if a prior
+    // resume attempt already bounced us back here (guard set), fall through to
+    // the dashboard instead of looping forever (see RESUME_GUARD_KEY).
+    // Admins are NEVER pulled into onboarding — they manage hotels, they don't
+    // own the signup, and routing them in would trap them in (and mutate)
+    // someone else's wizard.
+    if (
+      user?.role !== 'admin' &&
+      isOnboardingInProgress(p.onboardingCompletedAt, p.onboardingState) &&
+      typeof window !== 'undefined' &&
+      !sessionStorage.getItem(RESUME_GUARD_KEY)
+    ) {
+      sessionStorage.setItem(RESUME_GUARD_KEY, '1');
+      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(p.id)}`;
+      return;
     }
-  }, [authLoading, propLoading, user, properties, setActivePropertyId, router]);
-
-  const handleSelect = (id: string) => {
-    setActivePropertyId(id);
+    setActivePropertyId(p.id);
     sessionStorage.setItem('hotelops-session-selected', '1');
     router.replace('/dashboard');
   };
 
+  // Auto-select when exactly 1 property
+  useEffect(() => {
+    if (authLoading || propLoading || !user) return;
+    if (properties.length === 1) {
+      enter(properties[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, propLoading, user, properties]);
+
+  const handleSelect = (id: string) => {
+    const p = properties.find(x => x.id === id);
+    if (p) enter(p);
+  };
+
   const handleSignOut = async () => {
     sessionStorage.removeItem('hotelops-session-selected');
+    sessionStorage.removeItem(RESUME_GUARD_KEY);
     await signOut();
   };
 

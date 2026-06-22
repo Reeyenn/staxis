@@ -25,6 +25,9 @@ import {
   summarizeFeedRows,
   prettifyTargetKey,
   isTerminalJobStatus,
+  parseCurrentActivity,
+  phaseLabel,
+  isInProgressPhase,
 } from '@/lib/pms/learning-board';
 
 const CATALOG = [
@@ -257,5 +260,114 @@ describe('summarizeFeedRows / prettifyTargetKey', () => {
     assert.equal(prettifyTargetKey('getLostAndFound'), 'Lost and found');
     assert.equal(prettifyTargetKey('getRatesAndInventory'), 'Rates and inventory');
     assert.equal(prettifyTargetKey('getGuests'), 'Guests');
+  });
+});
+
+// ─── Live phase contract (feature/cua-admin-mapper-visibility) ───────────────
+
+describe('deriveFeedRows — per-feed phase is additive, never changes the glyph', () => {
+  test('a recognized phase surfaces on the row without altering its glyph', () => {
+    const rows = rowsByKey(deriveFeedRows({
+      catalog: CATALOG,
+      boardTargets: {
+        getRoomStatus: { status: 'found', phase: 'found' },
+        getArrivals: { status: 'searching', phase: 'extracting' },
+      },
+      actionsSoFar: {},
+      pendingHelpTargetKey: null,
+      jobStatus: 'running',
+    }));
+    assert.equal(rows.get('getArrivals')?.glyph, 'searching');
+    assert.equal(rows.get('getArrivals')?.phase, 'extracting');
+    assert.equal(rows.get('getRoomStatus')?.glyph, 'found');
+    assert.equal(rows.get('getRoomStatus')?.phase, 'found');
+  });
+
+  test('an unknown / absent phase leaves the field off entirely', () => {
+    const rows = rowsByKey(deriveFeedRows({
+      catalog: CATALOG,
+      boardTargets: {
+        getArrivals: { status: 'searching', phase: 'bogus-phase' },
+        getDepartures: { status: 'searching' },
+      },
+      actionsSoFar: {},
+      pendingHelpTargetKey: null,
+      jobStatus: 'running',
+    }));
+    assert.equal(rows.get('getArrivals')?.glyph, 'searching');
+    assert.equal('phase' in (rows.get('getArrivals') ?? {}), false);
+    assert.equal('phase' in (rows.get('getDepartures') ?? {}), false);
+  });
+});
+
+describe('parseCurrentActivity', () => {
+  test('parses a well-formed currentActivity and clamps pct', () => {
+    const ca = parseCurrentActivity({
+      currentActivity: { feedKey: 'getArrivals', phase: 'navigating', pct: 42.6, at: '2026-06-16T10:00:00Z' },
+    });
+    assert.deepEqual(ca, { feedKey: 'getArrivals', phase: 'navigating', pct: 43, at: '2026-06-16T10:00:00Z', totalCostMicros: null });
+  });
+
+  test('clamps pct to 0..100 and rounds', () => {
+    assert.equal(parseCurrentActivity({ currentActivity: { phase: 'extracting', pct: 250 } })?.pct, 100);
+    assert.equal(parseCurrentActivity({ currentActivity: { phase: 'extracting', pct: -5 } })?.pct, 0);
+    assert.equal(parseCurrentActivity({ currentActivity: { phase: 'extracting', pct: 'nope' } })?.pct, null);
+  });
+
+  test('null for missing / pre-ship / garbage shapes (graceful degradation)', () => {
+    assert.equal(parseCurrentActivity(undefined), null);
+    assert.equal(parseCurrentActivity(null), null);
+    assert.equal(parseCurrentActivity({}), null);
+    assert.equal(parseCurrentActivity({ currentActivity: null }), null);
+    assert.equal(parseCurrentActivity({ currentActivity: [1, 2] }), null);
+    // Neither a recognized phase NOR a feed key → nothing useful → null.
+    assert.equal(parseCurrentActivity({ currentActivity: { phase: 'bogus' } }), null);
+  });
+
+  test('an unrecognized phase with a feed key still yields a row (phase null)', () => {
+    const ca = parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'bogus' } });
+    assert.deepEqual(ca, { feedKey: 'getArrivals', phase: null, pct: null, at: null, totalCostMicros: null });
+  });
+
+  test('carries a numeric totalCostMicros (feature/cua-mapper-cost); null when absent or garbage', () => {
+    assert.equal(parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'navigating', totalCostMicros: 1234567 } })?.totalCostMicros, 1234567);
+    assert.equal(parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'navigating' } })?.totalCostMicros, null);
+    assert.equal(parseCurrentActivity({ currentActivity: { feedKey: 'getArrivals', phase: 'navigating', totalCostMicros: 'nope' } })?.totalCostMicros, null);
+  });
+});
+
+describe('phaseLabel', () => {
+  test('interpolates the feed noun (lower-cased) for navigating / extracting', () => {
+    assert.equal(phaseLabel('navigating', 'Room status'), 'Finding the room status screen…');
+    assert.equal(phaseLabel('extracting', 'Arrivals'), 'Reading the arrivals data…');
+  });
+
+  test('falls back to feed-less wording when no noun is given', () => {
+    assert.equal(phaseLabel('navigating'), 'Finding the screen…');
+    assert.equal(phaseLabel('extracting'), 'Reading the data…');
+  });
+
+  test('static labels for the remaining phases', () => {
+    assert.equal(phaseLabel('certifying'), 'Double-checking the columns…');
+    assert.equal(phaseLabel('drilling'), 'Digging into the details…');
+    assert.equal(phaseLabel('rechecking'), 'Re-checking…');
+    assert.equal(phaseLabel('queued'), 'Waiting in line…');
+    assert.equal(phaseLabel('found'), 'Found ✓');
+    assert.equal(phaseLabel('unavailable'), 'Not in this PMS');
+    assert.equal(phaseLabel('failed'), "Couldn't find it");
+    assert.equal(phaseLabel('cost_capped'), 'Stopped (budget)');
+  });
+});
+
+describe('isInProgressPhase', () => {
+  test('working phases spin; terminal-ish phases do not', () => {
+    for (const p of ['queued', 'navigating', 'extracting', 'certifying', 'drilling', 'rechecking'] as const) {
+      assert.equal(isInProgressPhase(p), true, p);
+    }
+    for (const p of ['found', 'unavailable', 'failed', 'cost_capped'] as const) {
+      assert.equal(isInProgressPhase(p), false, p);
+    }
+    assert.equal(isInProgressPhase(null), false);
+    assert.equal(isInProgressPhase(undefined), false);
   });
 });

@@ -38,11 +38,19 @@ export interface BoardPreview {
 
 export interface BoardTargetState {
   status?: string;
+  /** Additive to `status` (feature/cua-admin-mapper-visibility): the finer
+   *  live phase the robot is in. Optional — older jobs persist only `status`. */
+  phase?: string;
   startedAt?: string;
   finishedAt?: string;
   carried?: boolean;
   reason?: string;
   preview?: BoardPreview;
+  /** feature/cua-mapper-cost — per-feed Claude spend (micros). startCostMicros =
+   *  total spend when the feed started (active-feed live cost = live total −
+   *  this); costMicros = final spend once the feed finishes. Optional. */
+  startCostMicros?: number;
+  costMicros?: number;
 }
 
 // ─── Derived row ───────────────────────────────────────────────────────────
@@ -57,17 +65,70 @@ export type FeedGlyph =
   | 'didnt_finish' // ◐ was searching when the run died (terminal coercion)
   | 'not_reached'; // — never reached before the run ended
 
+/**
+ * The finer live PHASE within (mostly) the 'searching' glyph — a separate,
+ * additive contract from the glyph above. The robot writes it onto
+ * boardTargets[key].phase and onto result.currentActivity.phase
+ * (feature/cua-admin-mapper-visibility). Display-only; degrades to absent.
+ */
+export type FeedPhase =
+  | 'queued'
+  | 'navigating'
+  | 'extracting'
+  | 'certifying'
+  | 'drilling'
+  | 'rechecking'
+  | 'found'
+  | 'unavailable'
+  | 'failed'
+  | 'cost_capped';
+
+const FEED_PHASES: ReadonlySet<string> = new Set<FeedPhase>([
+  'queued', 'navigating', 'extracting', 'certifying', 'drilling',
+  'rechecking', 'found', 'unavailable', 'failed', 'cost_capped',
+]);
+
+/** Phases that mean "actively working" — a spinner is appropriate. */
+const IN_PROGRESS_PHASES: ReadonlySet<string> = new Set<FeedPhase>([
+  'queued', 'navigating', 'extracting', 'certifying', 'drilling', 'rechecking',
+]);
+
+export function isInProgressPhase(phase: FeedPhase | null | undefined): boolean {
+  return typeof phase === 'string' && IN_PROGRESS_PHASES.has(phase);
+}
+
 export interface FeedRow {
   key: string;
   label: string;
   goal: string;
   optional: boolean;
   glyph: FeedGlyph;
+  /** Finer live phase (mostly while glyph==='searching'). Additive; absent on
+   *  older jobs. Drives the per-feed phase detail without touching the glyph. */
+  phase?: FeedPhase;
   rowCount?: number;
   sample?: Array<Record<string, string>>;
   sampleKind?: 'rows' | 'records';
   reason?: string;
   carried?: boolean;
+  /** feature/cua-mapper-cost — per-feed Claude spend (micros). costMicros once
+   *  finished; startCostMicros to compute the active feed's live running cost. */
+  costMicros?: number;
+  startCostMicros?: number;
+}
+
+/**
+ * The single live line: what the robot is doing RIGHT NOW, from
+ * result.currentActivity. Display-only mirror of the worker's writer.
+ */
+export interface CurrentActivity {
+  feedKey: string | null;
+  phase: FeedPhase | null;
+  pct: number | null;
+  at: string | null;
+  /** feature/cua-mapper-cost — live total spend (micros) at this tick; null on
+   *  older jobs. Drives the board's live total + the active feed's running cost. */
+  totalCostMicros?: number | null;
 }
 
 export interface FeedSummary {
@@ -153,6 +214,10 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
     const preview = state.preview && typeof state.preview === 'object' ? state.preview : undefined;
     const foundViaBoard = state.status === 'found';
     const foundViaActions = d.key in actionsSoFar;
+    // Additive finer phase — never affects the glyph below.
+    const phase = typeof state.phase === 'string' && FEED_PHASES.has(state.phase)
+      ? (state.phase as FeedPhase)
+      : undefined;
 
     let glyph: FeedGlyph;
     if (foundViaBoard || foundViaActions) {
@@ -177,6 +242,7 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
       goal: d.goal,
       optional: d.optional,
       glyph,
+      ...(phase ? { phase } : {}),
       ...(typeof preview?.rowCount === 'number' ? { rowCount: preview.rowCount } : {}),
       ...(Array.isArray(preview?.sample) && preview.sample.length > 0 ? { sample: preview.sample } : {}),
       ...(preview?.sampleKind === 'rows' || preview?.sampleKind === 'records'
@@ -184,6 +250,8 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
         : {}),
       ...(typeof state.reason === 'string' && state.reason.length > 0 ? { reason: state.reason } : {}),
       ...(state.carried === true ? { carried: true } : {}),
+      ...(typeof state.costMicros === 'number' ? { costMicros: state.costMicros } : {}),
+      ...(typeof state.startCostMicros === 'number' ? { startCostMicros: state.startCostMicros } : {}),
     };
   });
 }
@@ -202,4 +270,84 @@ export function summarizeFeedRows(rows: FeedRow[]): FeedSummary {
     else summary.waiting++;
   }
   return summary;
+}
+
+/**
+ * Parse result.currentActivity into the single live-line shape. Pure +
+ * defensive: any non-conforming shape (or a pre-ship job that never wrote it)
+ * yields null so the board degrades to no phase line. Returns null unless at
+ * least a recognized phase OR a feed key is present.
+ */
+export function parseCurrentActivity(result: unknown): CurrentActivity | null {
+  const raw = asRecord(result).currentActivity;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const ca = raw as Record<string, unknown>;
+  const phase = typeof ca.phase === 'string' && FEED_PHASES.has(ca.phase)
+    ? (ca.phase as FeedPhase)
+    : null;
+  const feedKey = typeof ca.feedKey === 'string' && ca.feedKey.length > 0 ? ca.feedKey : null;
+  const pct = typeof ca.pct === 'number' && Number.isFinite(ca.pct)
+    ? Math.max(0, Math.min(100, Math.round(ca.pct)))
+    : null;
+  const at = typeof ca.at === 'string' && ca.at.length > 0 ? ca.at : null;
+  const totalCostMicros = typeof ca.totalCostMicros === 'number' && Number.isFinite(ca.totalCostMicros)
+    ? ca.totalCostMicros
+    : null;
+  if (!phase && !feedKey) return null;
+  return { feedKey, phase, pct, at, totalCostMicros };
+}
+
+/**
+ * feature/cua-operator-notes — one line of the robot's reasoning, persisted to
+ * a capped result.thoughts log by the worker (newest last). Display-only reader.
+ */
+export interface AgentThought {
+  at: string | null;
+  feedKey: string | null;
+  text: string;
+}
+
+/** Parse result.thoughts into a clean, bounded list. Pure + defensive: any
+ *  non-conforming entry is dropped; missing/garbage yields []. */
+export function parseThoughts(result: unknown): AgentThought[] {
+  const raw = asRecord(result).thoughts;
+  if (!Array.isArray(raw)) return [];
+  const out: AgentThought[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const text = typeof o.text === 'string' ? o.text.trim() : '';
+    if (!text) continue;
+    out.push({
+      at: typeof o.at === 'string' && o.at.length > 0 ? o.at : null,
+      feedKey: typeof o.feedKey === 'string' && o.feedKey.length > 0 ? o.feedKey : null,
+      text,
+    });
+  }
+  return out.slice(-60);
+}
+
+/**
+ * Human, founder-facing phase label. `feedNoun` is a prettified feed name
+ * (e.g. "Room status") that interpolates into the navigating/extracting
+ * phrasings; an empty string falls back to feed-less wording. English — the
+ * admin studio (this board + the coverage editor) is English-only by
+ * convention, like every other screen under /admin.
+ */
+export function phaseLabel(phase: FeedPhase, feedNoun = ''): string {
+  // Lower-case the feed for natural mid-sentence flow ("the room status screen").
+  const feed = feedNoun ? feedNoun.charAt(0).toLowerCase() + feedNoun.slice(1) : '';
+  switch (phase) {
+    case 'navigating':  return feed ? `Finding the ${feed} screen…` : 'Finding the screen…';
+    case 'extracting':  return feed ? `Reading the ${feed} data…` : 'Reading the data…';
+    case 'certifying':  return 'Double-checking the columns…';
+    case 'drilling':    return 'Digging into the details…';
+    case 'rechecking':  return 'Re-checking…';
+    case 'queued':      return 'Waiting in line…';
+    case 'found':       return 'Found ✓';
+    case 'unavailable': return 'Not in this PMS';
+    case 'failed':      return "Couldn't find it";
+    case 'cost_capped': return 'Stopped (budget)';
+    default:            return '';
+  }
 }

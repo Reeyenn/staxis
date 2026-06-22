@@ -21,7 +21,7 @@ export const dynamic = 'force-dynamic';
  * pms_* and pms_knowledge_files tables are deny-all-browser RLS.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -35,7 +35,7 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
-  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock,
+  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Camera,
 } from 'lucide-react';
 
 interface FeedDetail {
@@ -86,6 +86,55 @@ function DarkScope({ children }: { children: React.ReactNode }) {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Per-feed source-screenshot fetch state (lazy — populated on first expand). */
+interface CaptureState { loading: boolean; url: string | null }
+
+/**
+ * feature/cua-admin-mapper-visibility — the SOURCE screen the robot read this
+ * feed from. Lets an admin verify the robot pulled from the right PMS page.
+ * Lazily fetched (only when a feed is expanded) and lazily decoded. Degrades
+ * to a calm empty state when the worker hasn't captured one yet.
+ */
+function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{
+        fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5),
+        letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6,
+        display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <Camera size={11} /> Source screen the robot read
+      </div>
+      {!state || state.loading ? (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Loading the screenshot…
+        </div>
+      ) : state.url ? (
+        <div style={{
+          width: '100%', maxWidth: 760, border: `1px solid ${dimWhite(.14)}`,
+          borderRadius: 8, overflow: 'hidden', lineHeight: 0,
+        }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={state.url}
+            alt="The PMS screen the robot captured this feed from (sensitive fields redacted)"
+            loading="lazy"
+            // A signed URL that's gone stale (the 1h signature lapsed, or the
+            // object was swept) degrades to the empty state and clears the
+            // cache so re-expanding refetches a fresh URL.
+            onError={onError}
+            style={{ width: '100%', height: 'auto', display: 'block' }}
+          />
+        </div>
+      ) : (
+        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
+          No screenshot captured for this feed yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CoveragePage() {
   const params = useParams<{ propertyId: string }>();
   const propertyId = params?.propertyId ?? '';
@@ -97,6 +146,9 @@ export default function CoveragePage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);     // `${verb}:${key}`
   const [expanded, setExpanded] = useState<string | null>(null);
+  // feature/cua-admin-mapper-visibility — per-feed source screenshots, keyed by
+  // the capture feed key (actionKey ?? row key). Lazily filled on first expand.
+  const [captures, setCaptures] = useState<Record<string, CaptureState>>({});
   const [addKey, setAddKey] = useState<string>('');
   const [pendingDelete, setPendingDelete] = useState<FeedDetail | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -125,6 +177,41 @@ export default function CoveragePage() {
     if (!user || !propertyId) return;
     void load();
   }, [user, propertyId, load]);
+
+  // De-dupe guard: keys with a fetch in flight or a SUCCESSFUL result. We keep
+  // successes cached (re-expanding is free) but deliberately drop empties +
+  // failures so they retry on a later expand — the robot may capture a feed
+  // between two views of this page.
+  const captureReqRef = useRef<Set<string>>(new Set());
+
+  // Lazy-fetch the source screenshot for one feed (called when it's expanded).
+  // Resolved per-property + feed key — the latest capture the robot took for
+  // this hotel's feed. Failures land as url:null → the empty state, and stay
+  // retryable.
+  const ensureCapture = useCallback(async (capKey: string) => {
+    if (captureReqRef.current.has(capKey)) return;
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: true, url: null } }));
+    let url: string | null = null;
+    try {
+      const res = await fetchWithAuth(
+        `/api/admin/mapper/feed-capture?propertyId=${encodeURIComponent(propertyId)}&feedKey=${encodeURIComponent(capKey)}`,
+      );
+      const json = await res.json();
+      if (res.ok && json.ok && typeof json.data?.url === 'string') url = json.data.url;
+    } catch {
+      url = null;
+    }
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url } }));
+    if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
+  }, [propertyId]);
+
+  // A stale/broken signed URL (1h signature lapsed, or the object was swept)
+  // falls back to the empty state and frees the key so a re-expand refetches.
+  const handleCaptureError = useCallback((capKey: string) => {
+    captureReqRef.current.delete(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url: null } }));
+  }, []);
 
   // Edit / Add → enqueue a single-target run + redirect to the live board where
   // the founder drives the robot to the right page and presses Finish.
@@ -325,6 +412,9 @@ export default function CoveragePage() {
                   {data.feeds.map((f) => {
                     const colNames = Object.keys(f.columns);
                     const isOpen = expanded === f.key;
+                    // The robot captures keyed by the canonical action key; fall
+                    // back to the row key for legacy/unmapped feeds.
+                    const capKey = f.actionKey ?? f.key;
                     return (
                       <DarkCard key={f.key} style={{ padding: '14px 18px' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -355,7 +445,11 @@ export default function CoveragePage() {
 
                         {colNames.length > 0 && (
                           <button
-                            onClick={() => setExpanded(isOpen ? null : f.key)}
+                            onClick={() => {
+                              const next = isOpen ? null : f.key;
+                              setExpanded(next);
+                              if (next) void ensureCapture(capKey);
+                            }}
                             style={{ marginTop: 10, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
                               fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), letterSpacing: '.08em', textTransform: 'uppercase' }}
                           >
@@ -370,6 +464,9 @@ export default function CoveragePage() {
                                 <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), wordBreak: 'break-all' }}>{f.columns[c]}</span>
                               </div>
                             ))}
+                            {/* feature/cua-admin-mapper-visibility — the source
+                                screen the robot read, ABOVE the row sample. */}
+                            <FeedCaptureView state={captures[capKey]} onError={() => handleCaptureError(capKey)} />
                             {f.sample.length > 0 && (
                               <div style={{ marginTop: 8, fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.4) }}>
                                 sample: {JSON.stringify(f.sample[0]).slice(0, 240)}

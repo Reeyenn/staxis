@@ -10,9 +10,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   canRoleSeeManagerOnly, roleCanSeeVisibility, sanitizeSearchTerm, makeSnippet,
-  blendChunkHits, type ChunkHit,
+  blendChunkHits, docVisibilityScope, canReadDocVisibility, type ChunkHit,
 } from '@/lib/knowledge/search-helpers';
-import type { AppRole } from '@/lib/roles';
+import { isManagerRole } from '@/lib/capabilities/dept-scope';
+import { canManageTeam, type AppRole } from '@/lib/roles';
 
 const FLOOR: AppRole[] = ['housekeeping', 'front_desk', 'maintenance'];
 const MANAGEMENT: AppRole[] = ['admin', 'owner', 'general_manager'];
@@ -48,6 +49,75 @@ test('a managers-only row is invisible to a housekeeper (search/list/download ga
   // And a GM sees both.
   const visibleToGm = rows.filter((r) => roleCanSeeVisibility('general_manager', r.visibility));
   assert.deepEqual(visibleToGm.map((r) => r.id), ['doc-public', 'doc-secret']);
+});
+
+// ── Per-department document access (the 'dept' visibility tier) ──────────────
+
+test('manager notion is identical across the binary gate and the dept checker', () => {
+  // The dept gate uses isManagerRole; the binary gate uses canManageTeam. If
+  // these ever drift, a manager could be "manager" for one gate and not the
+  // other. Pin them equal across every role.
+  const ROLES: AppRole[] = [...MANAGEMENT, ...FLOOR, 'staff' as AppRole];
+  for (const r of ROLES) assert.equal(isManagerRole(r), canManageTeam(r), `manager notion drift for ${r}`);
+});
+
+test('docVisibilityScope: managers see all; staff see all_staff + own dept; deptless see all_staff only', () => {
+  for (const r of MANAGEMENT) {
+    assert.deepEqual(docVisibilityScope(r, 'front_desk'), { kind: 'all' }, `${r} → all`);
+    assert.deepEqual(docVisibilityScope(r, null), { kind: 'all' });
+  }
+  assert.deepEqual(docVisibilityScope('front_desk', 'front_desk'), { kind: 'allStaffOrDept', dept: 'front_desk' });
+  assert.deepEqual(docVisibilityScope('housekeeping', 'HOUSEKEEPING'), { kind: 'allStaffOrDept', dept: 'housekeeping' }, 'dept normalize is case-insensitive');
+  assert.deepEqual(docVisibilityScope('front_desk', null), { kind: 'allStaffOnly' }, 'no dept → all_staff only');
+  assert.deepEqual(docVisibilityScope('front_desk', 'other'), { kind: 'allStaffOnly' }, "unknown dept ('other') → all_staff only");
+});
+
+test("a Front-Desk-scoped document is invisible to a housekeeper and visible to front desk + managers", () => {
+  const doc = { visibility: 'dept' as const, visibleDept: 'front_desk' };
+  // The only people who can read it: managers + front_desk staff.
+  assert.equal(canReadDocVisibility({ role: 'general_manager', dept: 'housekeeping' }, doc.visibility, doc.visibleDept), true, 'manager reaches every dept');
+  assert.equal(canReadDocVisibility({ role: 'front_desk', dept: 'front_desk' }, doc.visibility, doc.visibleDept), true, 'front desk reaches its own dept');
+  assert.equal(canReadDocVisibility({ role: 'housekeeping', dept: 'housekeeping' }, doc.visibility, doc.visibleDept), false, 'housekeeper cannot reach a front-desk doc');
+  assert.equal(canReadDocVisibility({ role: 'maintenance', dept: null }, doc.visibility, doc.visibleDept), false, 'deptless staff cannot reach a dept doc');
+  // all_staff is readable by everyone; managers-only only by managers.
+  assert.equal(canReadDocVisibility({ role: 'housekeeping', dept: 'housekeeping' }, 'all_staff', null), true);
+  assert.equal(canReadDocVisibility({ role: 'housekeeping', dept: 'housekeeping' }, 'managers', null), false);
+  assert.equal(canReadDocVisibility({ role: 'owner', dept: null }, 'managers', null), true);
+});
+
+test('the query-layer scope and the per-row predicate agree on every (doc, viewer) pair', () => {
+  // docVisibilityScope builds the list/search filter; canReadDocVisibility is
+  // the fetch_document_section row gate. They must never disagree — else a doc
+  // hidden in the list could still be fetched (or vice-versa).
+  const docs: { visibility: 'all_staff' | 'dept' | 'managers'; visibleDept: string | null }[] = [
+    { visibility: 'all_staff', visibleDept: null },
+    { visibility: 'managers', visibleDept: null },
+    { visibility: 'dept', visibleDept: 'front_desk' },
+    { visibility: 'dept', visibleDept: 'housekeeping' },
+    { visibility: 'dept', visibleDept: 'maintenance' },
+  ];
+  const viewers: { role: AppRole; dept: string | null }[] = [
+    { role: 'general_manager', dept: null },
+    { role: 'front_desk', dept: 'front_desk' },
+    { role: 'housekeeping', dept: 'housekeeping' },
+    { role: 'maintenance', dept: 'maintenance' },
+    { role: 'front_desk', dept: null },
+  ];
+  for (const v of viewers) {
+    const scope = docVisibilityScope(v.role, v.dept);
+    for (const d of docs) {
+      // Re-derive list visibility from the scope the query would apply.
+      let listVisible: boolean;
+      if (scope.kind === 'all') listVisible = true;
+      else if (scope.kind === 'allStaffOnly') listVisible = d.visibility === 'all_staff';
+      else listVisible = d.visibility === 'all_staff' || (d.visibility === 'dept' && d.visibleDept === scope.dept);
+      assert.equal(
+        listVisible,
+        canReadDocVisibility(v, d.visibility, d.visibleDept),
+        `mismatch for ${v.role}/${v.dept} on ${d.visibility}/${d.visibleDept}`,
+      );
+    }
+  }
 });
 
 test('sanitizeSearchTerm strips LIKE wildcards + PostgREST metacharacters', () => {

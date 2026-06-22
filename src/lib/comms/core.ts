@@ -14,28 +14,30 @@ import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { translateMessagesForReader } from './translate';
 import type {
   ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
-  AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO,
+  AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO, LogEntryDTO, LogReplyDTO,
 } from './types';
 import { CHANNEL_LABELS } from './types';
+import {
+  canReachDeptContent,
+  isManagerRole as deptIsManagerRole,
+  normalizeDept,
+} from '@/lib/capabilities/dept-scope';
 
 const ATTACHMENT_BUCKET = 'housekeeping-issue-photos'; // reuse existing private bucket
 const SIGNED_URL_TTL = 60 * 60; // 1h read URLs
 
 // ── Roles / departments ────────────────────────────────────────────────────
 
-const MANAGER_ROLES = new Set(['admin', 'owner', 'general_manager']);
+// Manager detection lives in dept-scope (single source of truth); re-exported
+// here so the many comms callers keep importing it from comms/core unchanged.
 export function isManagerRole(role: string | null | undefined): boolean {
-  return !!role && MANAGER_ROLES.has(role);
+  return deptIsManagerRole(role);
 }
 
-/** Map a staff.department value to its department channel (null = no dept channel). */
+/** Map a staff.department value to its department channel (null = no dept channel).
+ *  Reuses the canonical dept normalization in dept-scope. */
 export function deptChannel(dept: string | null | undefined): ChannelKey | null {
-  switch ((dept ?? '').toLowerCase()) {
-    case 'front_desk': return 'front_desk';
-    case 'maintenance': return 'maintenance';
-    case 'housekeeping': return 'housekeeping';
-    default: return null; // 'other' / unknown → all-staff only
-  }
+  return normalizeDept(dept);
 }
 
 /** Map a staff.department to a colour bucket for the Slack-style UI (dept dots / channel tints). */
@@ -73,12 +75,14 @@ function staffInChannel(channelKey: ChannelKey, dept: CommsDept): boolean {
 /** Online if the activity heartbeat landed within this window. */
 const PRESENCE_WINDOW_MS = 150_000; // 2.5 min — generous vs the ~8s client poll
 
-/** Channels a person can see. Managers see them all; staff see all-staff + their dept. */
+/** Channels a person can see. Managers see them all; staff see all-staff + their
+ *  dept. Re-expressed on the shared dept-scope checker so channel visibility and
+ *  future per-dept content access can never diverge. */
 export function channelsVisibleTo(opts: { dept: string | null; isManager: boolean }): ChannelKey[] {
-  if (opts.isManager) return ['all_staff', 'front_desk', 'housekeeping', 'maintenance'];
   const out: ChannelKey[] = ['all_staff'];
-  const dc = deptChannel(opts.dept);
-  if (dc) out.push(dc);
+  for (const ch of ['front_desk', 'housekeeping', 'maintenance'] as const) {
+    if (canReachDeptContent({ isManager: opts.isManager, staffDept: opts.dept }, ch)) out.push(ch);
+  }
   return out;
 }
 
@@ -529,7 +533,10 @@ export async function listConversationsForStaff(
         .from('comms_messages')
         .select('id', { count: 'exact', head: true })
         .eq('conversation_id', c.id)
-        .neq('sender_staff_id', staffId);
+        // NULL-safe "not authored by me": PostgREST .neq drops NULL rows
+        // (three-valued logic), so @Staxis/system messages (sender_staff_id
+        // null) never lit the unread badge for other members. (Audit fix 2026-06-18.)
+        .or(`sender_staff_id.is.null,sender_staff_id.neq.${staffId}`);
       if (lastRead) q = q.gt('created_at', lastRead);
       const { count } = await q;
       unread = count ?? 0;
@@ -837,7 +844,9 @@ export async function getUnreadDigest(
       .from('comms_messages')
       .select('sender_staff_id, body, created_at')
       .eq('conversation_id', c.id).eq('property_id', pid)
-      .neq('sender_staff_id', staffId)
+      // NULL-safe "not authored by me" — see listConversationsForStaff. .neq
+      // would drop @Staxis/system (null-sender) messages from the digest.
+      .or(`sender_staff_id.is.null,sender_staff_id.neq.${staffId}`)
       .order('created_at', { ascending: true }).limit(25);
     if (lastRead) q = q.gt('created_at', lastRead);
     const { data } = await q;
@@ -1186,6 +1195,125 @@ export async function deleteTask(
   if (!allowAny && byStaffId) q = q.eq('created_by_staff_id', byStaffId);
   const { data } = await q.select('id').maybeSingle();
   return !!data;
+}
+
+// ── Shift Log Book (recaps + threaded replies) ───────────────────────────────
+
+const LOG_CATEGORIES = new Set(['front_desk', 'housekeeping', 'maintenance', 'general']);
+
+export async function createLogEntry(
+  pid: string,
+  input: { authorStaffId?: string | null; title: string; body?: string | null; category?: string | null },
+): Promise<{ id: string }> {
+  const category = input.category && LOG_CATEGORIES.has(input.category) ? input.category : null;
+  const { data, error } = await supabaseAdmin
+    .from('comms_log_entries')
+    .insert({
+      property_id: pid,
+      author_staff_id: input.authorStaffId ?? null,
+      title: input.title,
+      body: input.body ?? '',
+      category,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return { id: data.id as string };
+}
+
+export async function listLogEntries(pid: string): Promise<LogEntryDTO[]> {
+  const { data } = await supabaseAdmin
+    .from('comms_log_entries')
+    .select('*')
+    .eq('property_id', pid)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => r.id as string);
+  // Reply counts — one scoped read, tallied in JS (entry page is small).
+  const { data: replyRows } = await supabaseAdmin
+    .from('comms_log_replies')
+    .select('entry_id')
+    .eq('property_id', pid)
+    .in('entry_id', ids);
+  const counts = new Map<string, number>();
+  for (const r of (replyRows ?? []) as { entry_id: string }[]) {
+    counts.set(r.entry_id, (counts.get(r.entry_id) ?? 0) + 1);
+  }
+
+  const authorIds = rows.map((r) => r.author_staff_id as string | null).filter((x): x is string => !!x);
+  const nameMap = await staffNameMap(pid, authorIds);
+
+  return rows.map((r) => ({
+    id: r.id as string,
+    title: r.title as string,
+    body: (r.body as string | null) ?? '',
+    category: (r.category as string | null) ?? null,
+    authorStaffId: (r.author_staff_id as string | null) ?? null,
+    authorName: r.author_staff_id ? (nameMap.get(r.author_staff_id as string) ?? null) : null,
+    replyCount: counts.get(r.id as string) ?? 0,
+    createdAt: r.created_at as string,
+    updatedAt: (r.updated_at as string | null) ?? (r.created_at as string),
+  }));
+}
+
+/** Confirm a recap exists in THIS property (cross-tenant write guard for replies). */
+async function logEntryInProperty(pid: string, entryId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('comms_log_entries')
+    .select('id')
+    .eq('id', entryId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  return !!data;
+}
+
+export async function listLogReplies(pid: string, entryId: string): Promise<LogReplyDTO[]> {
+  const { data } = await supabaseAdmin
+    .from('comms_log_replies')
+    .select('*')
+    .eq('property_id', pid)
+    .eq('entry_id', entryId)
+    .order('created_at', { ascending: true })
+    .limit(500);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  const authorIds = rows.map((r) => r.author_staff_id as string | null).filter((x): x is string => !!x);
+  const nameMap = await staffNameMap(pid, authorIds);
+  return rows.map((r) => ({
+    id: r.id as string,
+    entryId: r.entry_id as string,
+    body: r.body as string,
+    authorStaffId: (r.author_staff_id as string | null) ?? null,
+    authorName: r.author_staff_id ? (nameMap.get(r.author_staff_id as string) ?? null) : null,
+    createdAt: r.created_at as string,
+  }));
+}
+
+/**
+ * Post a reply to a recap. Returns null when the recap isn't in this property
+ * (the route maps that to a 404) so a caller can't attach replies to another
+ * hotel's log by guessing an entry id.
+ */
+export async function createLogReply(
+  pid: string,
+  entryId: string,
+  input: { authorStaffId?: string | null; body: string },
+): Promise<{ id: string } | null> {
+  if (!(await logEntryInProperty(pid, entryId))) return null;
+  const { data, error } = await supabaseAdmin
+    .from('comms_log_replies')
+    .insert({
+      property_id: pid,
+      entry_id: entryId,
+      author_staff_id: input.authorStaffId ?? null,
+      body: input.body,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return { id: data.id as string };
 }
 
 // ── Message → action (reuse the work-order + complaint creation paths) ──────

@@ -11,6 +11,7 @@
 import { NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
@@ -80,12 +81,46 @@ export async function POST(req: NextRequest) {
   // account row is guaranteed to still exist if the invite does.
   const { data: inviter } = await supabaseAdmin
     .from('accounts')
-    .select('role')
+    .select('role, property_access')
     .eq('id', invite.invited_by)
     .maybeSingle();
   if (!inviter || !canManageTeam(inviter.role as AppRole)) {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
+  // Time-of-use re-checks (audit review 2026-06-18): the inviter must STILL have
+  // access to this invite's hotel (access may have been revoked since sending),
+  // and an owner-role invite requires an admin/owner inviter — a GM can never
+  // mint an owner, even via an invite created before the privilege matrix existed.
+  const inviterRole = inviter.role as AppRole;
+  const inviterAccess = (inviter.property_access ?? []) as string[];
+  if (inviterRole !== 'admin' && !inviterAccess.includes('*') && !inviterAccess.includes(invite.hotel_id)) {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+  if (invite.role === 'owner' && inviterRole !== 'admin' && inviterRole !== 'owner') {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+
+  // Atomically CLAIM the invite BEFORE any side effect. Two concurrent accept
+  // submissions with the same token would both pass the accepted_at check above,
+  // both create the auth user, and the second's createOrReclaimAuthUser could
+  // reclaim/delete the first's brand-new login. The compare-and-swap
+  // (accepted_at IS NULL -> now) lets exactly one win. (Audit fix 2026-06-18.)
+  const { data: claimed } = await supabaseAdmin
+    .from('account_invites')
+    .update({ accepted_at: new Date().toISOString() })
+    .eq('id', invite.id)
+    .is('accepted_at', null)
+    .select('id')
+    .maybeSingle();
+  if (!claimed) {
+    return err('Invite already used', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+  // Release the claim if account creation fails below, so a legitimate retry can
+  // re-accept (mirrors the offline-replay releaseClaim pattern).
+  const releaseInvite = async () => {
+    try { await supabaseAdmin.from('account_invites').update({ accepted_at: null }).eq('id', invite.id); }
+    catch { /* best-effort */ }
+  };
 
   // Username from email local-part. Audit P3.1 (2026-05-17): previously
   // a SELECT-then-INSERT loop pre-checked uniqueness; now we trust the
@@ -97,17 +132,29 @@ export async function POST(req: NextRequest) {
     username = deriveUsername(invite.email);
   }
 
-  // Create auth user.
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+  // Create auth user. createOrReclaimAuthUser reclaims an orphan login (an
+  // auth.users row left behind by a flaked hotel-delete with no accounts
+  // row) instead of failing with "email already registered" for a week. If
+  // the email belongs to a REAL account it is never touched — we surface a
+  // 409 telling the invitee to sign in instead.
+  const authResult = await createOrReclaimAuthUser({
     email: invite.email,
     password,
-    email_confirm: true,
-    user_metadata: { username, displayName },
+    userMetadata: { username, displayName },
   });
-  if (authErr || !authData.user) {
-    log.error('[accept-invite] createUser failed', { err: authErr, requestId });
+  if (authResult.alreadyHasAccount) {
+    await releaseInvite();
+    return err(
+      'An account with this email already exists — please sign in instead.',
+      { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+    );
+  }
+  if (!authResult.user) {
+    log.error('[accept-invite] createOrReclaimAuthUser failed', { err: authResult.error, requestId });
+    await releaseInvite();
     return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  const authUser = authResult.user;
 
   // Insert with collision-retry against the UNIQUE constraint.
   let insErr: { code?: string; message?: string } | null = null;
@@ -117,7 +164,7 @@ export async function POST(req: NextRequest) {
       display_name: displayName,
       role: invite.role,
       property_access: [invite.hotel_id],
-      data_user_id: authData.user.id,
+      data_user_id: authUser.id,
     });
     if (!error) { insErr = null; break; }
     insErr = error;
@@ -132,9 +179,9 @@ export async function POST(req: NextRequest) {
     // breadcrumb. Log loudly + Sentry so the orphan sweeper cron has
     // backup observability and on-call gets paged if rollback fails
     // routinely.
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+    await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
       log.error('[accept-invite] AUTH ROLLBACK FAILED', {
-        auth_user_id: authData.user.id,
+        auth_user_id: authUser.id,
         email: invite.email,
         err: rollErr,
         requestId,
@@ -142,22 +189,20 @@ export async function POST(req: NextRequest) {
       captureException(rollErr, {
         subsystem: 'auth',
         failure_mode: 'rollback_failed',
-        auth_user_id: authData.user.id,
+        auth_user_id: authUser.id,
         flow: 'accept-invite',
       });
     });
+    await releaseInvite();
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  // Mark invite consumed.
-  await supabaseAdmin
-    .from('account_invites')
-    .update({ accepted_at: new Date().toISOString() })
-    .eq('id', invite.id);
+  // Invite was already claimed atomically up front (compare-and-swap), so no
+  // separate "mark consumed" write is needed here.
 
   await writeAudit({
     action: 'invite.accept',
-    actorUserId: authData.user.id,
+    actorUserId: authUser.id,
     actorEmail: invite.email,
     targetType: 'invite',
     targetId: invite.id,

@@ -11,7 +11,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronLeft, Bell, Mail, MessageSquare, Plus, X, Save } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 
 interface Preferences {
   propertyId: string;
@@ -29,12 +29,13 @@ export default function NotificationsPage() {
   const { user } = useAuth();
   const { properties } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
-  // Only show this page to people who could receive the report
-  // (admin/owner/GM). Front desk/housekeeping don't need it.
+  // Gated by per-hotel manage_notifications (default: every role; admin can
+  // switch a role OFF per hotel from the Access tab).
   useEffect(() => {
-    if (user && !canManageTeam(user.role)) router.replace('/settings');
-  }, [user, router]);
+    if (user && !can('manage_notifications')) router.replace('/settings');
+  }, [user, can, router]);
 
   const [propertyId, setPropertyId] = useState<string>('');
   useEffect(() => {
@@ -56,14 +57,14 @@ export default function NotificationsPage() {
       const res = await fetchWithAuth(`/api/settings/notifications?propertyId=${propertyId}`);
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || 'Failed to load preferences');
+        setError(body.error || (lang === 'es' ? 'No se pudieron cargar las preferencias' : 'Failed to load preferences'));
         return;
       }
       setPrefs(body.data.preferences);
     } finally {
       setLoading(false);
     }
-  }, [propertyId]);
+  }, [propertyId, lang]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -79,7 +80,7 @@ export default function NotificationsPage() {
       });
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || 'Failed to save');
+        setError(body.error || (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
         return;
       }
       setPrefs(body.data.preferences);
@@ -118,7 +119,7 @@ export default function NotificationsPage() {
     await save({ pausedUntil: until });
   };
 
-  if (!user || !canManageTeam(user.role)) return null;
+  if (!user || !can('manage_notifications')) return null;
 
   return (
     <AppLayout>

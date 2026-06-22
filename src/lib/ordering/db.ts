@@ -380,7 +380,7 @@ async function insertPoHeader(
 // Stamp each ordered item's last_ordered_at (+ vendor / unit cost) so the
 // reorder UI shows "ordered N days ago" — mirrors addInventoryOrder's stamp.
 // Non-fatal: a failed stamp never blocks the order.
-async function stampOrderedItems(lines: CartLineInput[], vendorName: string | null): Promise<void> {
+async function stampOrderedItems(pid: string, lines: CartLineInput[], vendorName: string | null): Promise<void> {
   const nowIso = new Date().toISOString();
   await Promise.all(
     lines
@@ -389,7 +389,11 @@ async function stampOrderedItems(lines: CartLineInput[], vendorName: string | nu
         const stamp: Record<string, unknown> = { last_ordered_at: nowIso };
         if (vendorName) stamp.vendor_name = vendorName;
         if (l.unitCostCents > 0) stamp.unit_cost = l.unitCostCents / 100; // cents → dollars
-        const { error } = await supabaseAdmin.from('inventory').update(stamp).eq('id', l.itemId!);
+        // Scope by property_id — supabaseAdmin bypasses RLS, so without this a
+        // cart line carrying another hotel's inventory UUID would overwrite that
+        // hotel's vendor/cost/last_ordered_at. A foreign itemId now matches 0
+        // rows (silent no-op). (Security audit 2026-06-18.)
+        const { error } = await supabaseAdmin.from('inventory').update(stamp).eq('id', l.itemId!).eq('property_id', pid);
         if (error) {
           log.error('[ordering] stampOrderedItems failed (non-fatal)', {
             itemId: l.itemId,
@@ -464,7 +468,7 @@ export async function createPurchaseOrders(
       throw lineErr;
     }
 
-    await stampOrderedItems(g.lines, g.nameSnapshot);
+    await stampOrderedItems(pid, g.lines, g.nameSnapshot);
 
     const full = await getPurchaseOrder(pid, poId);
     if (full) created.push(full);
@@ -560,8 +564,17 @@ export async function receivePurchaseOrder(
     targets.set(rl.lineId, clamped);
   }
 
-  // Pre-read current_stock for items that will receive a positive delta.
-  const itemDeltas = new Map<string, number>(); // itemId → total delta to add
+  // Build the atomic receive payload: one {line_id, target_qty, item_id, delta}
+  // per line that actually moves (positive delta). The line bump AND the stock
+  // increment for the whole receive land in ONE transaction inside
+  // staxis_receive_po_lines (migration 0286) — so a mid-receive DB hiccup can
+  // never leave a line marked received with its stock not moved (which the old
+  // two-write path could, and then permanently understated stock because the
+  // next retry recomputes delta = target - qty_received = 0). The stock bump is
+  // a single atomic `current_stock + delta`, closing the read-modify-write race
+  // too. Every write is id-scoped (line by PO, inventory by property), so a PO
+  // line carrying another hotel's UUID is a no-op. (Audit fix #10, 2026-06-18.)
+  const rpcLines: Array<{ line_id: string; target_qty: number; item_id: string | null; delta: number }> = [];
   const ledgerWrites: Promise<unknown>[] = [];
   const nowIso = new Date().toISOString();
 
@@ -570,25 +583,12 @@ export async function receivePurchaseOrder(
     const delta = target - line.qtyReceived;
     if (delta <= 0) continue;
 
-    // 1) bump the line's cumulative received total
-    const { error: upErr } = await supabaseAdmin
-      .from('purchase_order_lines')
-      .update({ qty_received: target })
-      .eq('id', lineId)
-      .eq('purchase_order_id', id);
-    if (upErr) {
-      log.error('[ordering] receive: line update failed', { lineId, err: upErr.message });
-      throw upErr;
-    }
+    rpcLines.push({ line_id: lineId, target_qty: target, item_id: line.itemId ?? null, delta });
     line.qtyReceived = target; // keep local copy current for status calc
 
-    // 2) accumulate the stock delta for the item
-    if (line.itemId) {
-      itemDeltas.set(line.itemId, (itemDeltas.get(line.itemId) ?? 0) + delta);
-    }
-
-    // 3) write the dollars-based inventory_orders restock-log row (reuse
-    //    addInventoryOrder's row shape so spend metrics keep working).
+    // Write the dollars-based inventory_orders restock-log row (reuse
+    // addInventoryOrder's row shape so spend metrics keep working). Non-fatal:
+    // the ledger is a metrics side-channel, not the source of truth for stock.
     const unitCostDollars = line.unitCostCents > 0 ? line.unitCostCents / 100 : undefined;
     const totalCostDollars =
       unitCostDollars != null ? Math.round(delta * line.unitCostCents) / 100 : undefined;
@@ -613,27 +613,18 @@ export async function receivePurchaseOrder(
     );
   }
 
-  // Apply stock deltas (read-modify-write; receiving is a deliberate single-
-  // actor action so the small race window is acceptable, like Count Mode).
-  if (itemDeltas.size > 0) {
-    const itemIds = [...itemDeltas.keys()];
-    const { data: items } = await supabaseAdmin
-      .from('inventory')
-      .select('id, current_stock')
-      .in('id', itemIds);
-    const stockById = new Map(
-      (items ?? []).map((r) => [String((r as { id: string }).id), Number((r as { current_stock: number }).current_stock ?? 0)]),
-    );
-    await Promise.all(
-      [...itemDeltas.entries()].map(async ([itemId, delta]) => {
-        const next = (stockById.get(itemId) ?? 0) + delta;
-        const { error } = await supabaseAdmin
-          .from('inventory')
-          .update({ current_stock: next, last_ordered_at: nowIso })
-          .eq('id', itemId);
-        if (error) log.error('[ordering] receive: stock update failed', { itemId, err: error.message });
-      }),
-    );
+  // Apply every line bump + stock increment atomically. If this throws, NOTHING
+  // moved and the receive is safely retryable.
+  if (rpcLines.length > 0) {
+    const { error: rpcErr } = await supabaseAdmin.rpc('staxis_receive_po_lines', {
+      p_property_id: pid,
+      p_po_id: id,
+      p_lines: rpcLines,
+    });
+    if (rpcErr) {
+      log.error('[ordering] receive: atomic apply failed', { id, err: rpcErr.message });
+      throw rpcErr;
+    }
   }
 
   await Promise.all(ledgerWrites);

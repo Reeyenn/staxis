@@ -3,15 +3,18 @@
 import React from 'react';
 import { T, fonts, statusColor } from './tokens';
 import { Caps } from './Caps';
-import { fmtMoney, fmtInt, shortMonthDay } from './format';
+import { fmtMoney, fmtInt } from './format';
 import type { DisplayItem } from './types';
+import { t, dateLocale, type Lang } from './inv-i18n';
 
 interface HeroStatsProps {
   items: DisplayItem[];
   lastCount: { date: Date; by: string } | null;
+  lang?: Lang;
 }
 
-export function HeroStats({ items, lastCount }: HeroStatsProps) {
+export function HeroStats({ items, lastCount, lang = 'en' }: HeroStatsProps) {
+  const tx = t(lang);
   const total = items.length;
   const goodCount = items.filter((i) => i.status === 'good').length;
   const stockHealthPct = total > 0 ? Math.round((100 * goodCount) / total) : 0;
@@ -19,24 +22,26 @@ export function HeroStats({ items, lastCount }: HeroStatsProps) {
 
   const stats: Array<{ eyebrow: string; big: string; sub: string; accent?: string }> = [
     {
-      eyebrow: 'Stock health',
+      eyebrow: tx.stockHealth,
       big: `${stockHealthPct}%`,
       sub: total > 0
-        ? `${fmtInt(goodCount)} of ${fmtInt(total)} items have enough`
-        : 'No items yet',
+        ? `${fmtInt(goodCount)} ${tx.of} ${fmtInt(total)} ${tx.itemsHaveEnough}`
+        : tx.noItemsYet,
       accent: statusColor.good,
     },
     {
-      eyebrow: 'On the shelf',
+      eyebrow: tx.onTheShelf,
       big: fmtMoney(totalValue),
-      sub: `What everything's worth today`,
+      sub: tx.whatEverythingsWorth,
     },
     {
-      eyebrow: 'Last counted',
-      big: lastCount ? shortMonthDay(lastCount.date) : '—',
+      eyebrow: tx.lastCounted,
+      big: lastCount
+        ? lastCount.date.toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric' })
+        : '—',
       sub: lastCount
-        ? `${daysAgoLabel(lastCount.date)} by ${lastCount.by || 'team'}`
-        : 'No count yet',
+        ? `${daysAgoLabel(lastCount.date, lang)} ${tx.by} ${lastCount.by || tx.team}`
+        : tx.noCountYet,
     },
   ];
 
@@ -116,10 +121,11 @@ export function HeroStats({ items, lastCount }: HeroStatsProps) {
   );
 }
 
-function daysAgoLabel(date: Date): string {
+function daysAgoLabel(date: Date, lang: Lang): string {
+  const tx = t(lang);
   const ms = Date.now() - date.getTime();
   const d = Math.max(0, Math.floor(ms / 86_400_000));
-  if (d === 0) return 'today';
-  if (d === 1) return 'yesterday';
-  return `${d} days ago`;
+  if (d === 0) return tx.today;
+  if (d === 1) return tx.yesterday;
+  return `${d} ${tx.daysAgo}`;
 }

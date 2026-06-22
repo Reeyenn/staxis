@@ -108,7 +108,7 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                 p.curr_stock,
                 p.prev_at,
                 p.curr_at,
-                greatest(extract(epoch from (p.curr_at - p.prev_at)) / 86400.0, 0.5) as days,
+                extract(epoch from (p.curr_at - p.prev_at)) / 86400.0 as days,
                 coalesce((
                     select sum(o.quantity)
                     from inventory_orders o
@@ -147,14 +147,32 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
             select
                 w.property_id,
                 w.item_id,
-                greatest(
-                    (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock),
-                    0
-                ) / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
+                (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock)
+                    / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
             from with_window w
             join public.properties p on p.id = w.property_id
-            where w.days > 0
+            -- Window hygiene — mirror training/inventory_rate._build_training_rows:
+            -- drop sub-day pairs (require >= 1.0 day); keep windows with real
+            -- positive consumption AND genuine zero-usage windows (count flat or
+            -- down, nothing used); drop only the contamination — unexplained
+            -- increases (consumption < 0) and auto-stock-up zeros (consumption
+            -- = 0 on a count that ROSE). The old `greatest(..., 0)` clamped
+            -- count-up windows to a fake 0, biasing new-hotel cold-start LOW;
+            -- dropping ALL zeros instead would over-estimate intermittent items.
+            where w.days >= 1.0
               and p.total_rooms > 0
+              and (
+                (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) > 0
+                or (
+                  (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock) = 0
+                  and w.curr_stock <= w.prev_stock
+                )
+              )
+              -- Don't let a hotel that turned inventory AI OFF shape the
+              -- network cold-start prior every NEW hotel inherits. coalesce so
+              -- legacy/NULL rows (default = on) are kept. Mirrors the cron
+              -- fan-out, which already skips inventory_ai_mode='off'.
+              and coalesce(p.inventory_ai_mode, 'on') <> 'off'
         )
         select
             property_id,
@@ -180,7 +198,17 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
         median = row.get("median_rate")
         if median is None:
             continue
-        per_property_item_rates[f"{row['property_id']}|{canonical}"] = [float(median)]
+        # APPEND, don't overwrite. The canonical map is coarse (~20 buckets),
+        # so a single hotel routinely has several SKUs collapsing to one
+        # canonical name (e.g. "Bath Towel" + "Pool Towel" → "towel"). The
+        # SQL returns one rate row per (property, item); keying by
+        # property|canonical with `=` kept only the LAST item's rate and
+        # silently dropped every other same-canonical SKU at that hotel —
+        # under-representing high-volume hotels in the network prior. Each
+        # SKU's per-room rate is a legitimate cohort data point.
+        per_property_item_rates.setdefault(
+            f"{row['property_id']}|{canonical}", []
+        ).append(float(median))
 
     # 5. Aggregate by cohort_key + canonical_name
     #    cohort_key = "<brand>-<region>-<size_tier>" (lowercased, slug-ified)

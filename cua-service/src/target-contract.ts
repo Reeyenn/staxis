@@ -40,12 +40,41 @@ import type {
 export type DescriptorColType =
   | 'text' | 'integer' | 'bigint' | 'numeric' | 'boolean' | 'date' | 'timestamptz' | 'jsonb';
 
+/**
+ * Tolerance tier for a learnable column (feature/cua-tolerant-mapper). This is
+ * the SINGLE knob that makes one bot work across ~10 PMS without a rigid
+ * "these exact columns or the feed is DEAD" contract:
+ *   - essential  : the feed is meaningless without it. requiredLearnedFor()
+ *                  returns ONLY these, so the promotion gate + mapper re-ask +
+ *                  column audit + first-emission certification + re-anchor all
+ *                  hard-require exactly the essentials and nothing else.
+ *   - contextual : real data, but often PAGE CONTEXT rather than a per-row cell
+ *                  (e.g. a "View Arrivals" page IS today's arrivals, so the
+ *                  arrival_date column comes back blank). deriveContextColumns()
+ *                  supplies it from the run/view date when the row is blank, so
+ *                  a useful feed is never parked for a column the page never
+ *                  printed per-row. NEVER gated, NEVER classified "dead".
+ *   - optional   : nice-to-have. Captured when present; never gated.
+ */
+export type ColumnTier = 'essential' | 'contextual' | 'optional';
+
 export interface CoreColumn {
   name: string;
   /** 0207 descriptor type — drives the value parser (parserForColumn). */
   type: DescriptorColType;
-  /** required in the descriptor AND scraped (i.e. not writer-synthesized). */
+  /**
+   * STRICT api-upgrade proof flag (oracle-verify.reconcileRows + the
+   * second-oracle blind-date path). Mirrors the column's ORIGINAL contract
+   * weight, INDEPENDENT of `tier`: a DOM→api upgrade still must corroborate
+   * (or blind-certify) every `required` column before it can emit a mode:'api'
+   * recipe. Deliberately decoupled from `tier` — a column can be strict-proof
+   * `required` (the api upgrade must prove it) yet gate-`tier` contextual/
+   * optional (the DOM feed promotes tolerantly without it). The drift guard no
+   * longer ties this to descriptor.required (which now mirrors the ESSENTIALS).
+   */
   required: boolean;
+  /** Promotion/gate tolerance tier (feature/cua-tolerant-mapper). See ColumnTier. */
+  tier: ColumnTier;
 }
 
 export interface TargetColumnContract {
@@ -71,49 +100,55 @@ export const CORE_TARGET_CONTRACTS: Partial<
     table: 'pms_room_status_log',
     // changed_at (required timestamptz) is writer-stamped → not listed/learned.
     columns: [
-      { name: 'room_number', type: 'text', required: true },
-      { name: 'status', type: 'text', required: true }, // enum — normalized by ca_status (see ENUM_PARSER_OVERRIDES)
-      { name: 'changed_by', type: 'text', required: false },
+      { name: 'room_number', type: 'text', required: true, tier: 'essential' },
+      { name: 'status', type: 'text', required: true, tier: 'essential' }, // enum — normalized by ca_status (see ENUM_PARSER_OVERRIDES)
+      { name: 'changed_by', type: 'text', required: false, tier: 'optional' },
     ],
   },
   getArrivals: {
     table: 'pms_reservations',
     columns: [
-      { name: 'pms_reservation_id', type: 'text', required: true },
-      { name: 'guest_name', type: 'text', required: true },
-      { name: 'arrival_date', type: 'date', required: true },
-      { name: 'departure_date', type: 'date', required: true },
-      { name: 'room_number', type: 'text', required: false },
-      { name: 'num_nights', type: 'integer', required: false },
-      { name: 'status', type: 'text', required: false },
-      { name: 'channel_name', type: 'text', required: false },
-      { name: 'rate_per_night_cents', type: 'bigint', required: false },
+      { name: 'pms_reservation_id', type: 'text', required: true, tier: 'essential' },
+      { name: 'guest_name', type: 'text', required: true, tier: 'essential' },
+      // arrival_date is PAGE CONTEXT on a "View Arrivals" page (the page IS
+      // today's arrivals) → contextual: derived from the run date when blank.
+      { name: 'arrival_date', type: 'date', required: true, tier: 'contextual' },
+      { name: 'departure_date', type: 'date', required: true, tier: 'optional' },
+      { name: 'room_number', type: 'text', required: false, tier: 'optional' },
+      { name: 'num_nights', type: 'integer', required: false, tier: 'optional' },
+      { name: 'status', type: 'text', required: false, tier: 'optional' },
+      { name: 'channel_name', type: 'text', required: false, tier: 'optional' },
+      { name: 'rate_per_night_cents', type: 'bigint', required: false, tier: 'optional' },
     ],
   },
   getDepartures: {
     table: 'pms_reservations',
     columns: [
-      { name: 'pms_reservation_id', type: 'text', required: true },
-      { name: 'guest_name', type: 'text', required: true },
-      { name: 'arrival_date', type: 'date', required: true },
-      { name: 'departure_date', type: 'date', required: true },
-      { name: 'room_number', type: 'text', required: false },
-      { name: 'num_nights', type: 'integer', required: false },
-      { name: 'status', type: 'text', required: false },
-      { name: 'channel_name', type: 'text', required: false },
-      { name: 'rate_per_night_cents', type: 'bigint', required: false },
+      { name: 'pms_reservation_id', type: 'text', required: true, tier: 'essential' },
+      { name: 'guest_name', type: 'text', required: true, tier: 'essential' },
+      { name: 'arrival_date', type: 'date', required: true, tier: 'optional' },
+      // departure_date is PAGE CONTEXT on a "View Departures" page → contextual.
+      { name: 'departure_date', type: 'date', required: true, tier: 'contextual' },
+      { name: 'room_number', type: 'text', required: false, tier: 'optional' },
+      { name: 'num_nights', type: 'integer', required: false, tier: 'optional' },
+      { name: 'status', type: 'text', required: false, tier: 'optional' },
+      { name: 'channel_name', type: 'text', required: false, tier: 'optional' },
+      { name: 'rate_per_night_cents', type: 'bigint', required: false, tier: 'optional' },
     ],
   },
   getWorkOrders: {
     table: 'pms_work_orders_v2',
     columns: [
-      { name: 'pms_work_order_id', type: 'text', required: true },
-      { name: 'description', type: 'text', required: true },
-      { name: 'status', type: 'text', required: true }, // enum {open,in_progress,resolved,cancelled} — CA serves these as JSON (already canonical)
-      { name: 'out_of_order', type: 'boolean', required: true },
-      { name: 'room_number', type: 'text', required: false },
-      { name: 'priority', type: 'text', required: false },
-      { name: 'assigned_to', type: 'text', required: false },
+      { name: 'pms_work_order_id', type: 'text', required: true, tier: 'essential' },
+      { name: 'description', type: 'text', required: true, tier: 'essential' },
+      // status/out_of_order are nice-to-have, not all PMS print them per-row →
+      // optional so a useful work-order feed is never parked for lacking them.
+      // (oracle-verify keeps them strict-`required` for the api upgrade proof.)
+      { name: 'status', type: 'text', required: true, tier: 'optional' }, // enum {open,in_progress,resolved,cancelled} — CA serves these as JSON (already canonical)
+      { name: 'out_of_order', type: 'boolean', required: true, tier: 'optional' },
+      { name: 'room_number', type: 'text', required: false, tier: 'optional' },
+      { name: 'priority', type: 'text', required: false, tier: 'optional' },
+      { name: 'assigned_to', type: 'text', required: false, tier: 'optional' },
     ],
   },
 };
@@ -195,10 +230,16 @@ export function parserForColumn(table: string, col: { name: string; type: Descri
 // date/_cents columns stay unparsed, exactly as before this change — NOT a
 // regression): the optional report feeds getRevenueDaily / getRatesAndInventory
 // / getChannelPerformance / getForecastDaily / getGroupsAndBlocks /
-// getLostAndFound / getActivityLog / getGuests / getRoomLayout /
-// getDashboardCounts / getHistoricalOccupancy. They have never run end-to-end;
+// getLostAndFound / getActivityLog / getGuests. They have never run end-to-end;
 // wiring them is a follow-up that must mirror each one's CURRENT live descriptor
 // (several drifted from 0207 — see the room-status / work-order note above).
+//
+// feature/cua-per-hotel-data — getDashboardCounts (pms_in_house_snapshot),
+// getRoomLayout (pms_rooms_inventory) and getHistoricalOccupancy
+// (pms_revenue_daily) are NOW WIRED below (mirroring 0207). Until this their
+// integer/numeric/currency columns scraped as raw DOM strings and the writer's
+// type check (generic-table-writer validateRows) rejected every row — two of
+// the three "extract-but-reject" newly-enrolled feeds.
 
 export interface ValueColumn {
   name: string;
@@ -259,6 +300,47 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'room_number', type: 'text' },
       { name: 'priority', type: 'text', enumValues: ['urgent', 'high', 'medium', 'low'] },
       { name: 'assigned_to', type: 'text' },
+    ],
+  },
+  // ── 3 report/dashboard feeds (feature/cua-per-hotel-data — mirror 0207) ──
+  // None carry an enum column, so a dashboard/inventory/revenue report needs
+  // ONLY generic format parsers (integer / numeric / currency / date). Mirrors
+  // the LIVE pms_table_schemas descriptors (migration 0207, unchanged by
+  // 0209/0224/0237). Writer-stamped timestamptz (pms_in_house_snapshot's
+  // captured_at) is excluded, same as the other feeds above.
+  getDashboardCounts: {
+    table: 'pms_in_house_snapshot',
+    columns: [
+      { name: 'total_guests_in_house', type: 'integer' },
+      { name: 'total_occupied_rooms', type: 'integer' },
+      { name: 'total_vacant_clean', type: 'integer' },
+      { name: 'arrivals_remaining_today', type: 'integer' },
+      { name: 'departures_remaining_today', type: 'integer' },
+    ],
+  },
+  getRoomLayout: {
+    table: 'pms_rooms_inventory',
+    columns: [
+      { name: 'room_number', type: 'text' },
+      { name: 'room_type', type: 'text' },
+      { name: 'bed_config', type: 'text' },
+      { name: 'max_occupancy', type: 'integer' },
+      { name: 'floor', type: 'text' },
+    ],
+  },
+  getHistoricalOccupancy: {
+    table: 'pms_revenue_daily',
+    columns: [
+      { name: 'date', type: 'date' },
+      { name: 'rooms_revenue_cents', type: 'bigint' },
+      { name: 'fnb_revenue_cents', type: 'bigint' },
+      { name: 'tax_cents', type: 'bigint' },
+      { name: 'occupied_rooms', type: 'integer' },
+      // numeric (0..100) → generic_number; the 0..100 range is layer-2's
+      // validateRevenueDaily job (validators-phase2.ts), not the parser's.
+      { name: 'occupancy_pct', type: 'numeric' },
+      { name: 'adr_cents', type: 'bigint' },
+      { name: 'revpar_cents', type: 'bigint' },
     ],
   },
   // ── 5 net-new feeds (mirror migration 0276; all-text status = free text,
@@ -448,14 +530,64 @@ export function missingFromList(
 }
 
 /**
- * The required-learned column names for a target — the list the prompt injects
- * as "Required fields for this page". [] for non-core targets, whose
- * requiredFields are left as their existing prose-derived lists.
+ * The ESSENTIAL learned column names for a target — the list the prompt injects
+ * as "Required fields for this page". feature/cua-tolerant-mapper: returns ONLY
+ * tier==='essential' columns. This SINGLE function gates the mapper re-ask, the
+ * promotion gate (missingRequiredColumns → computeFeedGaps), the column audit
+ * (auditRequiredColumns), first-emission certification, the template-runner
+ * contract guard, AND re-anchor — so demoting a column to contextual/optional
+ * propagates everywhere at once and a useful feed is never parked for a column
+ * that is page-context or merely nice-to-have. [] for non-core targets.
  */
 export function requiredLearnedFor(actionKey: keyof Recipe['actions']): string[] {
   return (CORE_TARGET_CONTRACTS[actionKey]?.columns ?? [])
-    .filter((c) => c.required)
+    .filter((c) => c.tier === 'essential')
     .map((c) => c.name);
+}
+
+/**
+ * CONTEXTUAL learned column names for a target — real data that is often PAGE
+ * CONTEXT (blank per-row), supplied by deriveContextColumns() from the run/view
+ * date when blank. Never gated as essential, never classified "dead".
+ */
+export function contextualColumnsFor(actionKey: keyof Recipe['actions']): string[] {
+  return (CORE_TARGET_CONTRACTS[actionKey]?.columns ?? [])
+    .filter((c) => c.tier === 'contextual')
+    .map((c) => c.name);
+}
+
+/** OPTIONAL learned column names for a target — captured when present, never gated. */
+export function optionalColumnsFor(actionKey: keyof Recipe['actions']): string[] {
+  return (CORE_TARGET_CONTRACTS[actionKey]?.columns ?? [])
+    .filter((c) => c.tier === 'optional')
+    .map((c) => c.name);
+}
+
+/**
+ * GENERIC contextual derivation (feature/cua-tolerant-mapper). When a contextual
+ * column's real selector was blank on the page (the page IS the view — e.g. a
+ * "View Arrivals" page never prints a per-row arrival_date), supply the value
+ * from the VIEW/RUN date. Returns `{ columnName: runDateIso }` for every
+ * contextual DATE column of the target — getArrivals → { arrival_date: runDate },
+ * getDepartures → { departure_date: runDate }. Pure + contract-derived: NO PMS
+ * names, NO page names, so it generalizes to any PMS whose arrivals/departures
+ * view filters by the current date. The runtime applies this to each row BEFORE
+ * the writer validates (see template-runner.applyDerivedContextColumns), mirroring
+ * how the writer synthesizes captured_at/changed_at with now().
+ *
+ * Only DATE-typed contextual columns derive from the run date; a non-date
+ * contextual column (none today) would need its own rule, so it is intentionally
+ * left blank rather than guessed.
+ */
+export function deriveContextColumns(
+  actionKey: keyof Recipe['actions'],
+  runDateIso: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const c of CORE_TARGET_CONTRACTS[actionKey]?.columns ?? []) {
+    if (c.tier === 'contextual' && c.type === 'date') out[c.name] = runDateIso;
+  }
+  return out;
 }
 
 /**
@@ -472,6 +604,14 @@ export function requiredLearnedFor(actionKey: keyof Recipe['actions']): string[]
  * shape (room status, work orders), whose value audits (status enum, out_of_order
  * boolean) give real semantic gating. Pure + contract-derived — no PMS
  * vocabulary, no page names, so it generalizes to any PMS.
+ *
+ * feature/cua-tolerant-mapper — re-validated after the date demotion: now that
+ * requiredLearnedFor() returns ESSENTIALS only, arrivals' and departures' shapes
+ * both reduce to {guest_name, pms_reservation_id} — STILL identical, so the
+ * sibling exclusion still trips for both (they remain heading-disambiguated, not
+ * deterministically nudged). Room status {room_number,status} and work orders
+ * {description,pms_work_order_id} stay UNIQUE, so the nudge still fires for them.
+ * Proven by __tests__/tolerant-mapper.test.ts (A5).
  */
 export function coreTargetSharesRequiredSchema(actionKey: keyof Recipe['actions']): boolean {
   const mine = requiredLearnedFor(actionKey);
@@ -560,6 +700,17 @@ export function recoveredDetailColumns(
  * NOT loosen the gate — the completeness definition is unchanged ("will this
  * feed extract its required columns at poll time"); it widens the evidence to
  * include the verified per-record detail path the recovery built.
+ *
+ * feature/cua-tolerant-mapper — note on CONTEXTUAL columns: they are deliberately
+ * NOT injected here. The gate (missingRequiredColumns) judges ESSENTIALS only, so
+ * a blank contextual date is already non-blocking; injecting a synthetic
+ * "present" marker would instead leak into the structural callers that consume
+ * THIS map verbatim (computeRecipeFingerprint, recipeFreshShape →
+ * golden-fixture), where a phantom column would change the cross-pass
+ * fingerprint and risk a false "column dropped" regression on the re-anchor
+ * path. Derivation supplies contextual values at RUNTIME instead
+ * (template-runner.applyDerivedContextColumns), which is where a real value is
+ * needed (before the writer validates).
  */
 export function effectiveColumnsFromAction(
   actionKey: keyof Recipe['actions'],

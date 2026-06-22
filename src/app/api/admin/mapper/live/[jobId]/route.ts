@@ -35,10 +35,10 @@ export async function GET(
   { params }: { params: Promise<{ jobId: string }> },
 ): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  // Codebase-standard admin gate — return requireAdmin's response verbatim
+  // (correct 403 for a non-admin session) instead of re-minting a flat 401.
   const admin = await requireAdmin(req);
-  if (!admin.ok) {
-    return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
-  }
+  if (!admin.ok) return admin.response;
   const { jobId } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
     return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });
@@ -80,6 +80,17 @@ export async function GET(
   }
   if (!jobRes.data) {
     return err('job not found', { requestId, status: 404, code: 'not_found' });
+  }
+
+  // feature/cua-polish — opportunistic cleanup of the per-job watcher object
+  // (written by POST below). Once the job is terminal there's no help to hold,
+  // so drop it; the expire-help-requests cron only sweeps live.png + tracked
+  // screenshots, not this. Fire-and-forget — never blocks or fails the read.
+  if (['completed', 'failed', 'cancelled'].includes(jobRes.data.status as string)) {
+    void supabaseAdmin.storage
+      .from('mapping-screenshots')
+      .remove([`${jobId}/watcher.json`])
+      .then(() => {}, () => {});
   }
 
   // Hotel name for the board header ("Learning {Hotel}'s PMS"). pms_family
@@ -170,6 +181,16 @@ export async function GET(
     }
   }
 
+  // feature/cua-polish — surface the awaiting-2FA signal the worker writes to
+  // workflow_jobs.result (cua-service/src/mapper.ts setAwaitingMfa). Same shape
+  // the Launch Bay reads via /api/admin/onboarding-detail, so the live watch
+  // page can render the SAME 2FA code box (→ existing POST /api/admin/pms-auth-
+  // code) without forking the 2FA mechanism. Cleared automatically once the
+  // worker resumes (it nulls awaiting_2fa).
+  const awaiting2fa = Boolean((result as { awaiting_2fa?: unknown }).awaiting_2fa);
+  const awaiting2faSince =
+    (result as { awaiting_2fa?: { since?: string } }).awaiting_2fa?.since ?? null;
+
   return ok({
     job: jobRes.data,
     property,
@@ -177,5 +198,80 @@ export async function GET(
     recentHelpRequests: recentRes.data ?? [],
     takeover,
     draftMap,
+    awaiting2fa,
+    awaiting2faSince,
   }, { requestId });
+}
+
+/**
+ * POST /api/admin/mapper/live/[jobId] — per-job watcher heartbeat (feature/
+ * cua-polish).
+ *
+ * The Learning Board pings this every 30s while its tab is open AND visible,
+ * scoped to THIS job. cua-service/src/human-assist.ts reads the freshness of
+ * the object written here to decide — PER JOB, not globally — whether to HOLD
+ * a help request for a watching admin (point-and-click takeover) vs fast-path
+ * to "nobody's home". Replaces the old global accounts.last_seen_at gate for
+ * help-requests: an admin parked on another job (or any admin page) must no
+ * longer make THIS stuck job wait.
+ *
+ * Stored as ONE tiny object per job (`{jobId}/watcher.json`, overwritten in
+ * place — upsert), in the private, service-role-only mapping-screenshots
+ * bucket. No schema change, no new table, and it never touches
+ * workflow_jobs.result — so it can't race the worker's result writes. The GET
+ * handler removes it once the job is terminal (the expire cron doesn't), so it
+ * doesn't accumulate.
+ *
+ * Auth: requireAdmin (same gate as GET).
+ */
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ jobId: string }> },
+): Promise<Response> {
+  const requestId = getOrMintRequestId(req);
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
+  const { jobId } = await params;
+  if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
+    return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });
+  }
+
+  // Scope the write to a live job (Codex review [3], defense-in-depth): don't
+  // let a stray/terminal/non-existent jobId accumulate a watcher object, and
+  // don't keep a help-hold alive for a job that isn't running. Cheap PK lookup.
+  const { data: jobRow } = await supabaseAdmin
+    .from('workflow_jobs')
+    .select('status')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (!jobRow) {
+    return err('job not found', { requestId, status: 404, code: 'not_found' });
+  }
+  if (['completed', 'failed', 'cancelled'].includes(jobRow.status as string)) {
+    // Terminal — nothing to hold help for. Best-effort cleanup, no write.
+    void supabaseAdmin.storage
+      .from('mapping-screenshots')
+      .remove([`${jobId}/watcher.json`])
+      .then(() => {}, () => {});
+    return ok({ watching: false, reason: 'job_not_running' }, { requestId });
+  }
+
+  // The `at` timestamp lives INSIDE the body (the worker parses it) rather than
+  // relying on storage object metadata, which doesn't reliably refresh on an
+  // in-place overwrite. cacheControl '0' so a re-read never sees a stale frame.
+  const at = new Date().toISOString();
+  const payload = Buffer.from(JSON.stringify({ at, by: admin.accountId }));
+  const { error: upErr } = await supabaseAdmin.storage
+    .from('mapping-screenshots')
+    .upload(`${jobId}/watcher.json`, payload, {
+      contentType: 'application/json',
+      cacheControl: '0',
+      upsert: true,
+    });
+  if (upErr) {
+    return err(`watcher heartbeat failed: ${upErr.message}`, {
+      requestId, status: 500, code: 'db_error',
+    });
+  }
+  return ok({ watching: true, at }, { requestId });
 }

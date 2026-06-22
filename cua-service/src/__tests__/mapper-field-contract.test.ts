@@ -60,8 +60,9 @@ const RESERVATIONS_DESCRIPTOR: TableSchemaDescriptor = {
     { name: 'pms_reservation_id', type: 'text', required: true, nullable: false },
     { name: 'guest_name', type: 'text', required: true, nullable: false },
     { name: 'room_number', type: 'text', required: false, nullable: true },
-    { name: 'arrival_date', type: 'date', required: true, nullable: false },
-    { name: 'departure_date', type: 'date', required: true, nullable: false },
+    // feature/cua-tolerant-mapper (0284): dates relaxed — page-context/derived.
+    { name: 'arrival_date', type: 'date', required: false, nullable: true },
+    { name: 'departure_date', type: 'date', required: false, nullable: true },
     { name: 'num_nights', type: 'integer', required: false, nullable: true, range_min: 0, range_max: 365 },
     { name: 'status', type: 'text', required: false, nullable: true },
     { name: 'channel_name', type: 'text', required: false, nullable: true },
@@ -101,10 +102,11 @@ const WORK_ORDERS_DESCRIPTOR: TableSchemaDescriptor = {
       allowed_values: ['low', 'medium', 'high', 'critical', 'unknown'],
     },
     {
-      name: 'status', type: 'text', required: true, nullable: false,
+      // feature/cua-tolerant-mapper (0284): status/out_of_order relaxed — optional.
+      name: 'status', type: 'text', required: false, nullable: true,
       allowed_values: ['open', 'in_progress', 'resolved', 'cancelled'],
     },
-    { name: 'out_of_order', type: 'boolean', required: true, nullable: false },
+    { name: 'out_of_order', type: 'boolean', required: false, nullable: true },
     { name: 'assigned_to', type: 'text', required: false, nullable: true },
   ],
 };
@@ -282,9 +284,14 @@ describe('contract drift guard vs migration 0207', () => {
     ['getWorkOrders', WORK_ORDERS_DESCRIPTOR],
   ];
 
-  test('contract columns (name+type+required) == descriptor, minus writer-stamped timestamptz', () => {
-    const norm = (cols: Array<{ name: string; type: string; required: boolean }>) =>
-      cols.map((c) => `${c.name}:${c.type}:${c.required}`).sort();
+  test('contract columns (name+type) == descriptor, minus writer-stamped timestamptz', () => {
+    // feature/cua-tolerant-mapper — name+type parity is the property that lets the
+    // writer validate every LEARNED column. `required` is NOT compared here anymore:
+    // the contract's `required` is the STRICT api-upgrade proof flag (pinned to the
+    // 0207 seed below), while the descriptor's `required` now mirrors the ESSENTIALS
+    // (relaxed by 0284). The two coherence checks are the next test + the 0207 pin.
+    const norm = (cols: Array<{ name: string; type: string }>) =>
+      cols.map((c) => `${c.name}:${c.type}`).sort();
     for (const [key, desc] of CORE_CASES) {
       // Learnable descriptor columns = all columns minus required timestamptz
       // (changed_at etc., which the writer auto-stamps and the model never learns).
@@ -295,13 +302,19 @@ describe('contract drift guard vs migration 0207', () => {
     }
   });
 
-  test('requiredLearned == descriptor (required && type!=timestamptz)', () => {
+  test('gate ⇄ writer coherence: requiredLearnedFor (essentials) == descriptor.required', () => {
+    // The promotion gate hard-requires exactly the ESSENTIALS; the writer rejects a
+    // row only for a `required` descriptor column. They MUST match, or a gate-promoted
+    // feed could write 0 rows (writer requires more than the gate ensured) or be parked
+    // needlessly (gate requires more than the writer). 0284 relaxed the descriptor so
+    // this holds post-tiering: reservations.required = {pms_reservation_id, guest_name},
+    // work_orders.required = {pms_work_order_id, description}, room_status unchanged.
     for (const [key, desc] of CORE_CASES) {
       const expected = desc.columns
         .filter((c) => c.required && c.type !== 'timestamptz')
         .map((c) => c.name)
         .sort();
-      assert.deepEqual([...requiredLearnedFor(key)].sort(), expected, `${key} requiredLearned drifted`);
+      assert.deepEqual([...requiredLearnedFor(key)].sort(), expected, `${key} requiredLearned ≠ descriptor.required`);
     }
   });
 
@@ -329,8 +342,10 @@ describe('contract drift guard vs migration 0207', () => {
     return cols;
   };
 
-  test('local fixtures AND the contract match the REAL 0207 migration file', () => {
-    const norm = (cols: Array<{ name: string; type: string; required: boolean }>) =>
+  test('local fixtures (name+type) AND the strict-proof contract match the REAL 0207 seed', () => {
+    const normNT = (cols: Array<{ name: string; type: string }>) =>
+      cols.map((c) => `${c.name}:${c.type}`).sort();
+    const normNTR = (cols: Array<{ name: string; type: string; required: boolean }>) =>
       cols.map((c) => `${c.name}:${c.type}:${c.required}`).sort();
     const TABLE_CASES: Array<[keyof Recipe['actions'], TableSchemaDescriptor]> = [
       ['getArrivals', RESERVATIONS_DESCRIPTOR],
@@ -340,15 +355,44 @@ describe('contract drift guard vs migration 0207', () => {
     for (const [key, desc] of TABLE_CASES) {
       const mig = columnsFromMigration(desc.table_name);
       assert.ok(mig.length >= 3, `parsed too few columns for ${desc.table_name} (${mig.length})`);
-      // The local descriptor fixture (used by every validateRows test) must match 0207.
-      assert.deepEqual(norm(desc.columns), norm(mig), `${desc.table_name} fixture drifted from 0207`);
-      // The contract must match 0207's learnable (non-timestamptz) columns.
+      // The local fixture's NAMES+TYPES must match 0207 (its `required` reflects the
+      // post-0284 relaxation — validated by the gate⇄writer coherence test + the 0284
+      // guard below, NOT pinned to 0207's original required here).
+      assert.deepEqual(normNT(desc.columns), normNT(mig), `${desc.table_name} fixture name/type drifted from 0207`);
+      // The STRICT api-upgrade proof contract (CoreColumn.required) IS pinned to the
+      // ORIGINAL 0207 required seed — that is exactly the set oracle-verify.reconcileRows
+      // must still corroborate / blind-certify before emitting a DOM→api recipe. It is
+      // INTENTIONALLY decoupled from the descriptor's (now relaxed) required.
       assert.deepEqual(
-        norm(CORE_TARGET_CONTRACTS[key]!.columns),
-        norm(mig.filter((c) => c.type !== 'timestamptz')),
-        `${key} contract drifted from 0207`,
+        normNTR(CORE_TARGET_CONTRACTS[key]!.columns),
+        normNTR(mig.filter((c) => c.type !== 'timestamptz')),
+        `${key} strict-proof contract drifted from 0207 seed`,
       );
     }
+  });
+
+  // feature/cua-tolerant-mapper — tie the descriptor relaxation to the REAL 0284
+  // migration so the fixtures (and prod) can't silently diverge: 0284 is what makes
+  // a blank/derived contextual date (and optional work-order status/out_of_order)
+  // writable instead of rejecting the whole row.
+  test('migration 0284 relaxes exactly the demoted contextual/optional columns', () => {
+    const REL_0284 = path.join('supabase', 'migrations', '0284_pms_tolerant_contextual_nullable.sql');
+    const PATH_0284 = [
+      path.resolve(process.cwd(), '..', REL_0284),
+      path.resolve(process.cwd(), REL_0284),
+    ].find((p) => existsSync(p));
+    assert.ok(PATH_0284, `0284 migration not found relative to ${process.cwd()}`);
+    const sql = readFileSync(PATH_0284, 'utf8');
+    // The only table-level NOT NULL drop (reservations dates + out_of_order are
+    // already nullable in 0202).
+    assert.match(sql, /alter\s+column\s+status\s+drop\s+not\s+null/i, '0284 must drop NOT NULL on work_orders.status');
+    // Descriptor relaxations for the 4 demoted columns.
+    for (const col of ['arrival_date', 'departure_date', 'status', 'out_of_order']) {
+      assert.ok(sql.includes(`'${col}'`), `0284 must reference ${col}`);
+    }
+    assert.match(sql, /'required',\s*false/i, '0284 must set required:false');
+    assert.match(sql, /'nullable',\s*true/i, '0284 must set nullable:true');
+    assert.match(sql, /notify\s+pgrst/i, '0284 must reload the PostgREST schema cache');
   });
 });
 
@@ -567,6 +611,91 @@ describe('evaluatePromotionGate — partial promotion (feat/cua-partial-promotio
   });
 });
 
+describe('evaluatePromotionGate — value-certification (feature/cua-prove-columns)', () => {
+  // Stamp the structural proof carrier exactly as finalizeRecoveredSuccess does.
+  const withUnproven = (action: ActionRecipe, cols: string[]): ActionRecipe => {
+    (action as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns = cols;
+    return action;
+  };
+  const arrivalsCols = { pms_reservation_id: 'a', guest_name: 'b', arrival_date: 'c', departure_date: 'd' };
+
+  test('a required column that ships but is NOT value-certified blocks auto_promote → park_partial', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(tableAction(arrivalsCols), ['arrival_date']),
+    }));
+    assert.equal(g.decision, 'park_partial');
+    assert.equal(g.feedGaps.missingRequired.length, 0); // present + non-blank → NOT a gap
+    assert.match(g.reason, /value-certified/);
+    assert.match(g.reason, /arrival_date/);
+  });
+
+  test('a legacy table recipe (no proof field) still auto_promotes — no fleet re-park', () => {
+    const g = evaluatePromotionGate(fullRecipe()); // tableAction never stamps the field
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('an empty proof list is treated as proven (certified) → auto_promote', () => {
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(tableAction(arrivalsCols), []),
+    }));
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('the JSON-oracle (api) path is trusted even if a stale proof field is present → auto_promote', () => {
+    const apiArrivals = {
+      steps: [],
+      parse: { mode: 'api', hint: { url: 'https://pms.example.com/api/arr', method: 'GET', columns: arrivalsCols } },
+    } as unknown as ActionRecipe;
+    (apiArrivals as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns = ['arrival_date'];
+    const g = evaluatePromotionGate(fullRecipe({ getArrivals: apiArrivals }));
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('a proof entry naming a BLANK ESSENTIAL column is dropped (gap, not double-reported)', () => {
+    // feature/cua-tolerant-mapper — uses an essential column (room status `status`):
+    // a blank ESSENTIAL is still a real incomplete_columns gap, and the unproven
+    // filter drops it (not shipping) so the reason isn't duplicated. (A blank
+    // CONTEXTUAL date is no longer a gap at all — see tolerant-mapper.test.ts.)
+    const g = evaluatePromotionGate(fullRecipe({
+      getRoomStatus: withUnproven(
+        tableAction({ room_number: 'a', status: '' }),
+        ['status'],
+      ),
+    }));
+    assert.equal(g.decision, 'park_partial');
+    assert.ok(g.feedGaps.missingRequired.some((x) => x.target === 'getRoomStatus' && x.reason === 'incomplete_columns'));
+  });
+
+  test('unproven + below the partial bar never auto-promotes and never escalates to quarantine on its own', () => {
+    // All required present (so the bar is met) but two of them unproven → park_partial.
+    const g = evaluatePromotionGate(fullRecipe({
+      getArrivals: withUnproven(tableAction(arrivalsCols), ['arrival_date']),
+      getDepartures: withUnproven(tableAction(arrivalsCols), ['departure_date']),
+    }));
+    assert.equal(g.decision, 'park_partial');
+  });
+
+  test('a SEEDED already-live target carrying a stale proof field does NOT block a successful repair', () => {
+    // getWorkOrders was onboarded empty and founder-promoted earlier → it carries
+    // a stale unprovenRequiredColumns in the active recipe. A self-repair re-learns
+    // only getRoomStatus; the seeded getWorkOrders must not re-park the repair.
+    const r = fullRecipe();
+    withUnproven(r.actions.getWorkOrders!, ['out_of_order']);
+    const seed = { ...r.actions };
+    delete (seed as Recipe['actions']).getRoomStatus; // recipe is seed+1 (passes the seed guard)
+    const g = evaluatePromotionGate(r, seed);
+    assert.equal(g.decision, 'auto_promote');
+  });
+
+  test('the same proof field on a FRESH onboarding (no seed) DOES block auto_promote', () => {
+    const r = fullRecipe();
+    withUnproven(r.actions.getWorkOrders!, ['out_of_order']);
+    const g = evaluatePromotionGate(r); // no seedActions → fresh onboarding
+    assert.equal(g.decision, 'park_partial');
+    assert.match(g.reason, /value-certified/);
+  });
+});
+
 describe('evaluateSeededPromotionGuard — promote-time re-check vs CURRENT active', () => {
   const gapsOf = (r: Recipe) => computeFeedGaps(r.actions);
 
@@ -755,19 +884,21 @@ describe('end-to-end: CA DOM strings → parsers → validateRows PASS', () => {
     assert.match(v.rejected[0]!.reason, /arrival_date/);
   });
 
-  test('a malformed date rejects only its OWN row — the batch survives (no Postgres throw)', () => {
-    // The BLOCKER: pre-fix, ca_date turned "13/40/2026" into "2026-13-40", which
-    // passed validateRows' shape regex and then threw at the Postgres `date`
-    // column, losing the whole batch. ca_date now calendar-validates → null →
-    // the bad row rejects locally while a good row in the same batch still writes.
+  test('a malformed date parses to null and no longer rejects the row (tolerant, no Postgres throw)', () => {
+    // The original BLOCKER: ca_date turned "13/40/2026" into "2026-13-40", which
+    // passed the shape regex then threw at the Postgres `date` column, losing the
+    // whole batch. ca_date/generic_date now calendar-validates → null (never the
+    // garbage). feature/cua-tolerant-mapper — with arrival_date nullable (0284), a
+    // null date no longer rejects the row: it WRITES with a null date and the
+    // run-date derivation supplies the real value at poll time. The parser's
+    // null-not-garbage guarantee (no DB throw) is the property that still holds.
     const cols = { pms_reservation_id: 's.conf', guest_name: 's.name', arrival_date: 's.arr', departure_date: 's.dep' };
     const goodRow = pipelineRow('getArrivals', 'pms_reservations', cols, { 's.conf': 'OK-1', 's.name': 'A', 's.arr': '6/10/2026', 's.dep': '6/12/2026' });
     const badRow = pipelineRow('getArrivals', 'pms_reservations', cols, { 's.conf': 'BAD-1', 's.name': 'B', 's.arr': '13/40/2026', 's.dep': '6/12/2026' });
-    assert.equal(badRow.arrival_date, null); // ca_date rejected the fake calendar date
+    assert.equal(badRow.arrival_date, null); // ca_date rejected the fake calendar date → null, not "2026-13-40"
     const v = validateRows([{ ...goodRow, property_id: PID }, { ...badRow, property_id: PID }], RESERVATIONS_DESCRIPTOR);
-    assert.equal(v.valid.length, 1);         // good row survives
-    assert.equal(v.rejected.length, 1);      // bad row rejected (missing required arrival_date), no DB-bound garbage
-    assert.match(v.rejected[0]!.reason, /arrival_date/);
+    assert.equal(v.valid.length, 2);         // both survive — a null date is allowed (nullable), no DB-bound garbage
+    assert.equal(v.rejected.length, 0);
   });
 });
 

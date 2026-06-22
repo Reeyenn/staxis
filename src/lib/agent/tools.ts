@@ -26,6 +26,10 @@ export interface ToolContext {
     displayName: string;
     role: AppRole;
     propertyAccess: string[];
+    /** The caller's own department (staff.department) on this property, or null.
+     *  Optional so background/eval constructors can omit it; absent → most-
+     *  restrictive for non-managers. Gates 'dept'-scoped knowledge documents. */
+    dept?: string | null;
   };
   /** Property the conversation is scoped to. */
   propertyId: string;

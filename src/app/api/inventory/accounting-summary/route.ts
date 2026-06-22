@@ -20,6 +20,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInventoryAccountingSummary } from '@/lib/db/inventory-accounting';
 import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -62,8 +63,11 @@ export async function GET(req: NextRequest) {
       data: summary,
     });
   } catch (e) {
+    // Log the detail server-side; don't leak PostgREST table/column/constraint
+    // names to the client (matches scan-invoice's hardening). (Audit fix 2026-06-18.)
+    log.error('[inventory/accounting-summary] aggregation failed', { err: errToString(e) });
     return NextResponse.json(
-      { ok: false, error: 'aggregation_failed', detail: errToString(e) },
+      { ok: false, error: 'aggregation_failed' },
       { status: 500 },
     );
   }

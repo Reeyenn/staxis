@@ -11,6 +11,7 @@ import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 import { parseCheckTrustResponse } from '@/lib/api-validate';
 import { safeRedirect } from '@/lib/url-redirect';
+import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/components/AuthShell';
 
 /**
  * Banner shown when fetchWithAuth signed the user out and bounced them
@@ -27,13 +28,12 @@ function SessionEndedBanner() {
     <div
       role="status"
       style={{
-        marginBottom: '24px',
+        marginBottom: '20px',
         padding: '12px 14px',
-        borderRadius: 'var(--radius-md)',
-        background: isConfig ? 'var(--red-dim, rgba(239,68,68,0.08))' : 'var(--bg-card)',
-        border: '1px solid ' + (isConfig ? 'var(--red-border, rgba(239,68,68,0.25))' : 'var(--border)'),
-        color: isConfig ? 'var(--red)' : 'var(--text-primary)',
-        fontFamily: 'var(--font-sans)',
+        borderRadius: '12px',
+        background: isConfig ? 'rgba(184,92,61,0.10)' : 'rgba(255,255,255,0.6)',
+        border: '1px solid ' + (isConfig ? 'rgba(184,92,61,0.30)' : 'rgba(31,35,28,0.10)'),
+        color: isConfig ? '#B85C3D' : '#3A3F38',
         fontSize: '13px',
         lineHeight: 1.45,
         textAlign: 'center',
@@ -171,178 +171,82 @@ function SignInInner() {
 
   if (loading) {
     return (
-      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
-        <div className="spinner" style={{ width: '32px', height: '32px' }} />
+      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F2EFE8' }}>
+        <div className="spinner" style={{ width: '32px', height: '32px', borderTopColor: '#C99644', borderColor: 'rgba(201,150,68,0.25)' }} />
       </div>
     );
   }
 
+  const disabled = signing || !email.trim() || !password;
+
   return (
-    <div style={{
-      minHeight: '100dvh',
-      background: 'var(--bg)',
-      display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      padding: '32px 24px',
-    }}>
-      <div style={{ width: '100%', maxWidth: '360px' }}>
+    <AuthShell subtitle={t('signInPrompt', lang)}>
 
-        {/* Surfaced when fetchWithAuth signed us out due to an expired/
-            invalid session, or when project-mismatch made auth unusable.
-            Suspense wrapper keeps the page renderable during SSG since
-            useSearchParams suspends. */}
-        <Suspense fallback={null}>
-          <SessionEndedBanner />
-        </Suspense>
+      <Suspense fallback={null}>
+        <SessionEndedBanner />
+      </Suspense>
 
-        {/* Logo */}
-        <div style={{ marginBottom: '40px', textAlign: 'center' }}>
-          <div style={{
-            width: '44px', height: '44px', borderRadius: '11px',
-            background: 'var(--amber)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            margin: '0 auto 16px',
-          }}>
-            <span style={{ fontSize: '22px', fontWeight: 700, color: '#FFFFFF', fontFamily: 'var(--font-mono)' }}>S</span>
-          </div>
-          <h1 style={{
-            fontFamily: 'var(--font-sans)', fontWeight: 700,
-            fontSize: '26px', letterSpacing: '-0.02em',
-            color: 'var(--text-primary)', marginBottom: '6px',
-          }}>
-            Staxis
-          </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{t('signInPrompt', lang)}</p>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+        <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <AuthLabel>{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
+          <input
+            className="si-input"
+            type="text"
+            inputMode="email"
+            value={email}
+            onChange={e => { setEmail(e.target.value); setError(''); }}
+            autoComplete="username"
+            autoCapitalize="off"
+            spellCheck={false}
+            disabled={signing}
+            placeholder="you@hotel.com"
+          />
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{
-              fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
-              color: 'var(--text-secondary)', textTransform: 'uppercase',
-              fontFamily: 'var(--font-sans)',
-            }}>
-              {lang === 'es' ? 'Correo electrónico' : 'Email'}
-            </label>
-            <input
-              type="text"
-              inputMode="email"
-              value={email}
-              onChange={e => { setEmail(e.target.value); setError(''); }}
-              autoComplete="username"
-              autoCapitalize="off"
-              spellCheck={false}
-              disabled={signing}
-              style={{
-                height: '44px', borderRadius: 'var(--radius-md)',
-                background: 'var(--bg-card)', border: '1px solid var(--border)',
-                padding: '0 14px',
-                color: 'var(--text-primary)', fontSize: '15px',
-                fontFamily: 'var(--font-sans)',
-                outline: 'none',
-                transition: 'border-color 120ms',
-                opacity: signing ? 0.6 : 1,
-              }}
-              onFocus={e => { e.currentTarget.style.borderColor = 'var(--border-focus)'; }}
-              onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <label style={{
-                fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
-                color: 'var(--text-secondary)', textTransform: 'uppercase',
-                fontFamily: 'var(--font-sans)',
-              }}>
-                {t('password', lang)}
-              </label>
-              <Link
-                href="/signin/forgot"
-                style={{
-                  fontSize: '12px', color: 'var(--navy-light)',
-                  textDecoration: 'none', fontFamily: 'var(--font-sans)',
-                }}
-              >
-                {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
-              </Link>
-            </div>
-            <input
-              type="password"
-              value={password}
-              onChange={e => { setPassword(e.target.value); setError(''); }}
-              autoComplete="current-password"
-              disabled={signing}
-              style={{
-                height: '44px', borderRadius: 'var(--radius-md)',
-                background: 'var(--bg-card)', border: '1px solid var(--border)',
-                padding: '0 14px',
-                color: 'var(--text-primary)', fontSize: '15px',
-                fontFamily: 'var(--font-sans)',
-                outline: 'none',
-                transition: 'border-color 120ms',
-                opacity: signing ? 0.6 : 1,
-              }}
-              onFocus={e => { e.currentTarget.style.borderColor = 'var(--border-focus)'; }}
-              onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
-            />
-          </div>
-
-          {error && (
-            <p style={{
-              fontSize: '13px', color: 'var(--red)',
-              background: 'var(--red-dim)',
-              border: '1px solid var(--red-border, rgba(239,68,68,0.2))',
-              borderRadius: 'var(--radius-sm)',
-              padding: '10px 12px',
-              margin: 0,
-            }}>
-              {error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={signing || !email.trim() || !password}
-            style={{
-              width: '100%', height: '48px', marginTop: '4px',
-              borderRadius: 'var(--radius-md)',
-              background: (signing || !email.trim() || !password)
-                ? 'rgba(37,99,235,0.4)'
-                : 'var(--navy-light)',
-              color: '#FFFFFF',
-              fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '15px',
-              border: 'none',
-              cursor: (signing || !email.trim() || !password) ? 'not-allowed' : 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 120ms',
-            }}
-          >
-            {signing
-              ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-              : t('signIn', lang)
-            }
-          </button>
-
-          {/* Create-account link — staff sign up at /signup using a code
-              the hotel owner generated. Existing users sign in above. */}
-          <p style={{
-            textAlign: 'center', marginTop: '8px',
-            fontSize: '13px', color: 'var(--text-muted)',
-            fontFamily: 'var(--font-sans)',
-          }}>
-            {lang === 'es' ? '¿No tienes una cuenta? ' : "Don't have an account? "}
-            <Link href="/signup" style={{ color: 'var(--navy-light)', textDecoration: 'none', fontWeight: 600 }}>
-              {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+        <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <AuthLabel>{t('password', lang)}</AuthLabel>
+            <Link href="/signin/forgot" style={authLinkStyle}>
+              {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
             </Link>
-          </p>
+          </div>
+          <input
+            className="si-input"
+            type="password"
+            value={password}
+            onChange={e => { setPassword(e.target.value); setError(''); }}
+            autoComplete="current-password"
+            disabled={signing}
+            placeholder="••••••••"
+          />
+        </div>
 
-        </form>
+        {error && <AuthError>{error}</AuthError>}
 
-      </div>
-    </div>
+        <button
+          type="submit"
+          disabled={disabled}
+          className={`si-btn si-rise si-d-3 ${disabled ? 'si-btn-off' : 'si-btn-on'}`}
+          style={{ marginTop: 6 }}
+        >
+          {signing
+            ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
+            : t('signIn', lang)
+          }
+        </button>
+
+        {/* Create-account link — staff sign up at /signup using a code
+            the hotel owner generated. Existing users sign in above. */}
+        <p className="si-rise si-d-3" style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: '#5C625C' }}>
+          {lang === 'es' ? '¿No tienes una cuenta? ' : "Don't have an account? "}
+          <Link href="/signup" style={{ color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
+            {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+          </Link>
+        </p>
+
+      </form>
+    </AuthShell>
   );
 }
 

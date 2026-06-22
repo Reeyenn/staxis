@@ -35,8 +35,9 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles, ChevronLeft } from 'lucide-react';
-import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
+import { PLACEHOLDER_HOTEL_NAME, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { useLang } from '@/contexts/LanguageContext';
+import { ChevronMark } from '@/components/AuthShell';
 import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
 
 // ─── Types mirroring the wizard API response ───────────────────────────
@@ -94,7 +95,7 @@ export default function OnboardPage() {
   // this the build fails: "useSearchParams should be wrapped in a
   // suspense boundary".
   return (
-    <Suspense fallback={<FullPage><Loader2 size={28} className="spin" color="var(--text-muted)" /></FullPage>}>
+    <Suspense fallback={<FullPage><Loader2 size={28} className="spin" color="#C99644" /></FullPage>}>
       <OnboardWizard />
     </Suspense>
   );
@@ -125,6 +126,10 @@ function OnboardWizard() {
         return;
       }
       const data = json.data as WizardStateResponse;
+      // We made it into the wizard — clear the login-funnel's one-shot resume
+      // guard so (a) a future resume can fire again and (b) navigating to the
+      // dashboard mid-wizard correctly re-gates back here instead of escaping.
+      if (typeof window !== 'undefined') sessionStorage.removeItem(RESUME_GUARD_KEY);
       if (data.completed) {
         // Already done — bounce them to dashboard.
         router.push('/dashboard');
@@ -153,17 +158,17 @@ function OnboardWizard() {
   if (loading) {
     return (
       <FullPage>
-        <Loader2 size={28} className="spin" color="var(--text-muted)" />
-        <p style={{ marginTop: '12px', color: 'var(--text-muted)' }}>Loading your invite…</p>
+        <Loader2 size={28} className="spin" color="#C99644" />
+        <p style={{ marginTop: '12px', color: '#5C625C' }}>Loading your invite…</p>
       </FullPage>
     );
   }
   if (error) {
     return (
       <FullPage>
-        <AlertCircle size={32} color="var(--red, #ef4444)" />
+        <AlertCircle size={32} color="#B85C3D" />
         <h1 style={{ fontSize: '20px', marginTop: '16px' }}>Can&apos;t open this invite</h1>
-        <p style={{ marginTop: '8px', color: 'var(--text-muted)', maxWidth: '400px', textAlign: 'center' }}>{error}</p>
+        <p style={{ marginTop: '8px', color: '#5C625C', maxWidth: '400px', textAlign: 'center' }}>{error}</p>
       </FullPage>
     );
   }
@@ -193,31 +198,77 @@ const STEP_LABELS = [
   'PMS', 'Mapping', 'Team', 'Done',
 ];
 
+// Warm animated mesh + paper grain — the same backdrop the /signin flow uses,
+// so the onboarding wizard feels like one continuous branded experience.
+function WizardBackdrop() {
+  return (
+    <>
+      <div className="si-blob" style={{ position: 'absolute', top: '-10%', left: '-5%', width: 680, height: 680, background: 'radial-gradient(circle, rgba(201,150,68,0.5) 0%, transparent 60%)', filter: 'blur(60px)', animation: 'si-d1 26s ease-in-out infinite', pointerEvents: 'none' }} />
+      <div className="si-blob" style={{ position: 'absolute', bottom: '-15%', left: '10%', width: 720, height: 720, background: 'radial-gradient(circle, rgba(158,183,166,0.55) 0%, transparent 60%)', filter: 'blur(60px)', animation: 'si-d2 30s ease-in-out infinite', pointerEvents: 'none' }} />
+      <div className="si-blob" style={{ position: 'absolute', top: '5%', right: '-8%', width: 640, height: 640, background: 'radial-gradient(circle, rgba(184,92,61,0.45) 0%, transparent 60%)', filter: 'blur(60px)', animation: 'si-d3 28s ease-in-out infinite', pointerEvents: 'none' }} />
+      <div className="si-blob" style={{ position: 'absolute', bottom: '0%', right: '5%', width: 560, height: 560, background: 'radial-gradient(circle, rgba(123,106,151,0.35) 0%, transparent 62%)', filter: 'blur(60px)', animation: 'si-d4 32s ease-in-out infinite', pointerEvents: 'none' }} />
+      <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.05, mixBlendMode: 'multiply', pointerEvents: 'none' }} aria-hidden="true">
+        <filter id="wz-noise"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" /></filter>
+        <rect width="100%" height="100%" filter="url(#wz-noise)" />
+      </svg>
+    </>
+  );
+}
+
+// Shared style for the wizard: mesh keyframes + rise-in + the caramel input /
+// button / label classes every step renders through.
+const WIZARD_STYLE = `
+  .spin { animation: spin 1.5s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  @keyframes si-d1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(120px,80px) scale(1.1)}}
+  @keyframes si-d2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-100px,60px) scale(1.15)}}
+  @keyframes si-d3{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(80px,-90px) scale(1.05)}}
+  @keyframes si-d4{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-90px,-70px) scale(1.12)}}
+  @keyframes si-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+  .si-rise{animation:si-rise .8s cubic-bezier(0.05,0.7,0.1,1) both}
+  .si-d-1{animation-delay:.05s}.si-d-2{animation-delay:.15s}
+  .onboard-indeterminate { width: 40%; animation: onboardSlide 1.3s ease-in-out infinite; }
+  @keyframes onboardSlide { 0% { margin-left: -40% } 100% { margin-left: 100% } }
+  .input { width:100%; height:46px; padding:0 14px; border:1px solid rgba(31,35,28,0.1); border-radius:12px; font-size:15px; box-sizing:border-box; background:rgba(255,255,255,0.7); color:#1F231C; font-family:inherit; outline:none; transition:border-color .18s, box-shadow .18s, background .18s; }
+  .input::placeholder { color:#9A9E96; }
+  .input:focus { border-color:#C99644; box-shadow:0 0 0 4px rgba(201,150,68,0.16); background:#fff; }
+  .btn { padding:0 20px; height:48px; border-radius:12px; border:none; cursor:pointer; font-size:15px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; gap:6px; font-family:inherit; transition:transform .12s, filter .18s; }
+  .btn-primary { background:#C99644; color:#fff; box-shadow:0 10px 24px -8px rgba(201,150,68,0.55); }
+  .btn-primary:hover { filter:brightness(1.05); }
+  .btn-primary:active { transform:scale(.98); }
+  .btn-primary:disabled { opacity:0.5; cursor:not-allowed; box-shadow:none; }
+  .btn-secondary { background:rgba(255,255,255,0.7); color:#1F231C; border:1px solid rgba(31,35,28,0.12); }
+  .btn-secondary:hover { background:#fff; }
+  .label { display:block; font-size:11px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5C625C; margin-bottom:6px; }
+  @media (prefers-reduced-motion: reduce){ .si-blob{animation:none!important} .si-rise{animation:none!important} }
+`;
+
 function WizardLayout({ step, hotelName, children }: {
   step: number; hotelName: string; children: React.ReactNode;
 }) {
   return (
     <div style={{
-      minHeight: '100vh',
-      background: 'var(--bg, #f6f7f9)',
-      padding: '40px 20px',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      position: 'relative', minHeight: '100dvh', overflow: 'hidden',
+      background: '#F2EFE8', fontFamily: 'var(--font-geist), sans-serif',
+      padding: '48px 20px',
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
     }}>
-      <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-        {/* Header */}
-        <div style={{ marginBottom: '24px' }}>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: '4px' }}>
-            Onboarding
-          </div>
-          <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0, lineHeight: 1.2 }}>
-            {hotelName}
+      <WizardBackdrop />
+
+      <div style={{ position: 'relative', width: '100%', maxWidth: 620 }}>
+        {/* Brand + hotel header */}
+        <div className="si-rise si-d-1" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 24, textAlign: 'center' }}>
+          <ChevronMark size={30} color="#1A1F1B" />
+          <h1 style={{ fontFamily: 'var(--font-instrument-serif), Georgia, serif', fontSize: 38, lineHeight: 1, fontWeight: 400, color: '#1F231C', margin: '8px 0 0', letterSpacing: '-0.01em' }}>
+            Staxis
           </h1>
+          <p style={{ fontSize: 13.5, color: '#5C625C', marginTop: 6 }}>Setting up {hotelName}</p>
         </div>
 
         {/* Progress steps */}
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          marginBottom: '24px', overflow: 'auto', gap: '4px',
+        <div className="si-rise si-d-2" style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+          marginBottom: 20, overflow: 'auto', gap: 4,
         }}>
           {STEP_LABELS.map((label, i) => {
             const stepNum = i + 1;
@@ -226,46 +277,44 @@ function WizardLayout({ step, hotelName, children }: {
             return (
               <div key={label} style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'center',
-                flex: 1, minWidth: '44px', position: 'relative',
+                flex: 1, minWidth: 44, position: 'relative',
               }}>
                 <div style={{
-                  width: '24px', height: '24px', borderRadius: '50%',
-                  background: isPast ? 'var(--green, #22c55e)' : isCurrent ? 'var(--text-primary, #111)' : 'var(--border, #e5e5e5)',
-                  color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '12px', fontWeight: 600,
+                  width: 26, height: 26, borderRadius: '50%',
+                  background: isPast ? '#C99644' : isCurrent ? '#1F231C' : 'rgba(31,35,28,0.06)',
+                  border: (isPast || isCurrent) ? 'none' : '1px solid rgba(31,35,28,0.15)',
+                  color: (isPast || isCurrent) ? '#fff' : '#9A9E96',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 12, fontWeight: 600,
+                  boxShadow: isPast ? '0 4px 10px -4px rgba(201,150,68,0.6)' : 'none',
                 }}>
                   {isPast ? <Check size={14} /> : stepNum}
                 </div>
                 <span style={{
-                  fontSize: '10px', marginTop: '4px',
-                  color: isCurrent ? 'var(--text-primary)' : 'var(--text-muted)',
-                  fontWeight: isCurrent ? 600 : 400,
+                  fontSize: 10, marginTop: 5,
+                  color: isCurrent ? '#1F231C' : '#8A8F88',
+                  fontWeight: isCurrent ? 600 : 400, textAlign: 'center',
                 }}>{label}</span>
               </div>
             );
           })}
         </div>
 
-        {/* Step content */}
-        <div style={{
-          background: '#fff',
-          borderRadius: '12px',
-          padding: '32px',
-          border: '1px solid var(--border, #e5e5e5)',
+        {/* Step content — frosted glass card. color:#1F231C anchors all
+            descendant text dark so the warm light card is theme-independent. */}
+        <div className="si-rise si-d-2" style={{
+          position: 'relative', color: '#1F231C',
+          background: 'rgba(255,255,255,0.55)',
+          backdropFilter: 'blur(28px) saturate(150%)', WebkitBackdropFilter: 'blur(28px) saturate(150%)',
+          border: '1px solid rgba(255,255,255,0.7)', borderRadius: 24,
+          padding: 32,
+          boxShadow: '0 30px 70px -30px rgba(31,35,28,0.35), 0 1px 0 rgba(255,255,255,0.8) inset',
         }}>
           {children}
         </div>
       </div>
-      <style>{`
-        .spin { animation: spin 1.5s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg) } }
-        .input { width: 100%; padding: 10px 12px; border: 1px solid var(--border, #e5e5e5); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
-        .btn { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
-        .btn-primary { background: var(--text-primary, #111); color: #fff; }
-        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-secondary { background: #fff; color: var(--text-primary, #111); border: 1px solid var(--border, #e5e5e5); }
-        .label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary, #555); margin-bottom: 6px; }
-      `}</style>
+
+      <style>{WIZARD_STYLE}</style>
     </div>
   );
 }
@@ -273,9 +322,26 @@ function WizardLayout({ step, hotelName, children }: {
 function FullPage({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
-      minHeight: '100vh', display: 'flex', flexDirection: 'column',
+      position: 'relative', minHeight: '100dvh', overflow: 'hidden',
+      display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center', padding: '20px',
-    }}>{children}</div>
+      background: '#F2EFE8', fontFamily: 'var(--font-geist), sans-serif',
+      color: '#1F231C', textAlign: 'center',
+    }}>
+      <WizardBackdrop />
+      <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {children}
+      </div>
+      <style>{`
+        .spin { animation: spin 1.5s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg) } }
+        @keyframes si-d1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(120px,80px) scale(1.1)}}
+        @keyframes si-d2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-100px,60px) scale(1.15)}}
+        @keyframes si-d3{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(80px,-90px) scale(1.05)}}
+        @keyframes si-d4{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-90px,-70px) scale(1.12)}}
+        @media (prefers-reduced-motion: reduce){ .si-blob{animation:none!important} }
+      `}</style>
+    </div>
   );
 }
 
@@ -320,7 +386,7 @@ function WizardBackButton({ code, clearKeys, onNext }: {
         style={{
           background: 'none', border: 'none', padding: 0,
           cursor: backing ? 'default' : 'pointer',
-          color: 'var(--text-muted)', fontSize: '13px',
+          color: '#5C625C', fontSize: '13px',
           display: 'inline-flex', alignItems: 'center', gap: '4px',
           opacity: backing ? 0.5 : 1,
         }}
@@ -328,7 +394,7 @@ function WizardBackButton({ code, clearKeys, onNext }: {
         {backing ? <Loader2 size={14} className="spin" /> : <ChevronLeft size={15} />} Back
       </button>
       {failed && (
-        <span style={{ marginLeft: '8px', fontSize: '12px', color: 'var(--red, #ef4444)' }}>
+        <span style={{ marginLeft: '8px', fontSize: '12px', color: '#B85C3D' }}>
           Couldn&apos;t go back — try again.
         </span>
       )}
@@ -360,14 +426,14 @@ function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardSt
   };
   return (
     <div>
-      <Building2 size={32} color="var(--amber, #d49040)" style={{ marginBottom: '16px' }} />
+      <Building2 size={32} color="#C99644" style={{ marginBottom: '16px' }} />
       <h2 style={{ fontSize: '22px', margin: '0 0 8px 0', fontWeight: 700 }}>
         You&apos;re invited to set up {wizard.propertyName}
       </h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '24px', lineHeight: 1.5 }}>
+      <p style={{ color: '#5C625C', marginBottom: '24px', lineHeight: 1.5 }}>
         You&apos;ve been added as the <strong>{role}</strong> for {wizard.propertyName} on Staxis — the AI-powered operations platform that runs your housekeeping, inventory, and labor planning in the background.
       </p>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '32px', lineHeight: 1.5, fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '32px', lineHeight: 1.5, fontSize: '13px' }}>
         We&apos;ll walk you through 9 quick steps (account, hotel info, services, PMS connection). Takes about 10 minutes.
       </p>
       <button className="btn btn-primary" onClick={begin} disabled={starting} style={{ width: '100%', justifyContent: 'center' }}>
@@ -432,7 +498,7 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
   return (
     <div>
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Create your account</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
         This is the login you&apos;ll use to manage {wizard.propertyName}.
       </p>
       {err && <ErrorBox msg={err} />}
@@ -516,9 +582,9 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
 
   return (
     <div>
-      <Mail size={32} color="var(--amber, #d49040)" style={{ marginBottom: '16px' }} />
+      <Mail size={32} color="#C99644" style={{ marginBottom: '16px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Check your email</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
         We sent a 6-digit code to <strong>{pendingEmail || 'your email'}</strong>.
       </p>
       {err && <ErrorBox msg={err} />}
@@ -583,9 +649,9 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
 
   return (
     <div>
-      <Building2 size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
+      <Building2 size={28} color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>About your hotel</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
         Confirm the details. The brand and region help us learn from similar hotels.
       </p>
       {err && <ErrorBox msg={err} />}
@@ -672,9 +738,9 @@ function Step5Services({ code, wizard, onNext }: { code: string; wizard: WizardS
   return (
     <div>
       <WizardBackButton code={code} clearKeys={['hotelDetailsAt']} onNext={onNext} />
-      <SettingsIcon size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
+      <SettingsIcon size={28} color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Which services do you want?</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
         Toggle off anything you don&apos;t need. You can change these later in settings.
       </p>
       {err && <ErrorBox msg={err} />}
@@ -682,12 +748,12 @@ function Step5Services({ code, wizard, onNext }: { code: string; wizard: WizardS
         {SERVICES.map((s) => (
           <label key={s.key} style={{
             display: 'flex', alignItems: 'flex-start', gap: '12px',
-            padding: '12px', border: '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer',
+            padding: '12px', border: '1px solid rgba(31,35,28,0.12)', borderRadius: '8px', cursor: 'pointer',
           }}>
-            <input type="checkbox" checked={selected[s.key]} onChange={(e) => setSelected({ ...selected, [s.key]: e.target.checked })} style={{ marginTop: '2px' }} />
+            <input type="checkbox" checked={selected[s.key]} onChange={(e) => setSelected({ ...selected, [s.key]: e.target.checked })} style={{ marginTop: '2px', width: 16, height: 16, accentColor: '#C99644' }} />
             <div>
               <div style={{ fontWeight: 600, fontSize: '14px' }}>{s.label}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{s.hint}</div>
+              <div style={{ fontSize: '12px', color: '#5C625C' }}>{s.hint}</div>
             </div>
           </label>
         ))}
@@ -756,9 +822,9 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
   return (
     <div>
       <WizardBackButton code={code} clearKeys={['servicesAt']} onNext={onNext} />
-      <KeyRound size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
+      <KeyRound size={28} color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Connect your PMS</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
         We&apos;ll log into your PMS in a remote browser to learn your room layout. Read-only — we never make changes there.
       </p>
       {err && <ErrorBox msg={err} />}
@@ -968,9 +1034,9 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
           : t.failGeneric;
     return (
       <div>
-        <AlertCircle size={28} color="var(--red, #ef4444)" style={{ marginBottom: '12px' }} />
+        <AlertCircle size={28} color="#B85C3D" style={{ marginBottom: '12px' }} />
         <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.failTitle}</h2>
-        <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{msg}</p>
+        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{msg}</p>
         {reenterError && <ErrorBox msg={reenterError} />}
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button
@@ -1007,15 +1073,15 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
 
   return (
     <div>
-      <Loader2 size={28} className="spin" color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
+      <Loader2 size={28} className="spin" color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{title}</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px', lineHeight: 1.5 }}>{body}</p>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px', lineHeight: 1.5 }}>{body}</p>
 
-      <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden', marginBottom: '16px' }}>
+      <div style={{ height: '6px', background: 'rgba(31,35,28,0.12)', borderRadius: '3px', overflow: 'hidden', marginBottom: '16px' }}>
         {indeterminate ? (
-          <div className="onboard-indeterminate" style={{ height: '100%', background: 'var(--amber, #d49040)' }} />
+          <div className="onboard-indeterminate" style={{ height: '100%', background: '#C99644' }} />
         ) : (
-          <div style={{ width: `${barPct}%`, height: '100%', background: 'var(--amber, #d49040)', transition: 'width 0.4s' }} />
+          <div style={{ width: `${barPct}%`, height: '100%', background: '#C99644', transition: 'width 0.4s' }} />
         )}
       </div>
 
@@ -1037,10 +1103,10 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
 
 function MilestoneRow({ label, done, active }: { label: string; done: boolean; active: boolean }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: active ? 'var(--text-primary, #111)' : 'var(--text-muted)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: active ? '#1F231C' : '#5C625C' }}>
       {done
-        ? <Check size={14} color="var(--green, #22c55e)" />
-        : <Loader2 size={14} className="spin" color="var(--amber, #d49040)" />}
+        ? <Check size={14} color="#3F8F5F" />
+        : <Loader2 size={14} className="spin" color="#C99644" />}
       <span>{label}</span>
     </div>
   );
@@ -1069,12 +1135,12 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
 
   return (
     <div>
-      <CheckCircle2 size={30} color="var(--green, #22c55e)" style={{ marginBottom: '12px' }} />
+      <CheckCircle2 size={30} color="#3F8F5F" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '21px', marginBottom: '6px', fontWeight: 700 }}>{title}</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{body}</p>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{body}</p>
 
       {feeds.length > 0 && (
-        <div style={{ background: 'var(--bg, #f6f7f9)', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
+        <div style={{ background: 'rgba(201,150,68,0.10)', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
           <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 10px 0' }}>
             {`Captured ${gotCount} of ${feeds.length} feeds from ${pms}`}
           </p>
@@ -1082,10 +1148,10 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
             {feeds.map((f) => (
               <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
                 {f.captured
-                  ? <Check size={14} color="var(--green, #22c55e)" style={{ flexShrink: 0 }} />
+                  ? <Check size={14} color="#3F8F5F" style={{ flexShrink: 0 }} />
                   : <span style={{ color: '#c2562e', width: 14, textAlign: 'center', flexShrink: 0, fontWeight: 700 }}>✕</span>}
-                <span style={{ color: f.captured ? 'inherit' : 'var(--text-muted)' }}>{f.label}</span>
-                <span style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ color: f.captured ? 'inherit' : '#5C625C' }}>{f.label}</span>
+                <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#5C625C', fontVariantNumeric: 'tabular-nums' }}>
                   {f.captured
                     ? (f.count != null && f.count > 0 ? String(f.count) : 'captured')
                     : 'not found'}
@@ -1093,7 +1159,7 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
               </div>
             ))}
           </div>
-          <p style={{ fontSize: '11.5px', color: 'var(--text-muted)', margin: '10px 0 0', lineHeight: 1.45 }}>
+          <p style={{ fontSize: '11.5px', color: '#5C625C', margin: '10px 0 0', lineHeight: 1.45 }}>
             Numbers fill in once the map goes live. “captured” means the robot learned where the data is.
           </p>
         </div>
@@ -1114,7 +1180,7 @@ function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
 function LiveNumbersBlock({ t, lang, numbers }: { t: MappingStrings; lang: 'en' | 'es'; numbers: MappingNumbers | null }) {
   if (!numbers || !numbers.anyAvailable) {
     return (
-      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: 1.5 }}>
+      <p style={{ fontSize: '13px', color: '#5C625C', marginBottom: '16px', lineHeight: 1.5 }}>
         {t.numbersNone}
       </p>
     );
@@ -1138,7 +1204,7 @@ function LiveNumbersBlock({ t, lang, numbers }: { t: MappingStrings; lang: 'en' 
 
   if (cards.length === 0) {
     return (
-      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: 1.5 }}>
+      <p style={{ fontSize: '13px', color: '#5C625C', marginBottom: '16px', lineHeight: 1.5 }}>
         {t.numbersNone}
       </p>
     );
@@ -1148,13 +1214,13 @@ function LiveNumbersBlock({ t, lang, numbers }: { t: MappingStrings; lang: 'en' 
   return (
     <div style={{ marginBottom: '16px' }}>
       <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 4px 0' }}>{t.numbersHeading}</p>
-      <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '0 0 10px 0' }}>{t.numbersCaption.replace('{when}', when)}</p>
+      <p style={{ fontSize: '11px', color: '#5C625C', margin: '0 0 10px 0' }}>{t.numbersCaption.replace('{when}', when)}</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '8px' }}>
         {cards.map((c) => (
-          <div key={c.label} style={{ background: 'var(--bg, #f6f7f9)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px 12px', textAlign: 'center' }}>
-            <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary, #111)' }}>{c.main}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{c.label}</div>
-            {c.sub ? <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>{c.sub}</div> : null}
+          <div key={c.label} style={{ background: 'rgba(201,150,68,0.10)', border: '1px solid rgba(31,35,28,0.12)', borderRadius: '8px', padding: '10px 12px', textAlign: 'center' }}>
+            <div style={{ fontSize: '22px', fontWeight: 700, color: '#1F231C' }}>{c.main}</div>
+            <div style={{ fontSize: '11px', color: '#5C625C', marginTop: '2px' }}>{c.label}</div>
+            {c.sub ? <div style={{ fontSize: '10px', color: '#5C625C', marginTop: '2px' }}>{c.sub}</div> : null}
           </div>
         ))}
       </div>
@@ -1236,9 +1302,9 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
           progress screen — not an editable form — so a back button would land
           on a result screen the operator can't act on. Team is the last
           optional form; "Skip" covers opting out. */}
-      <Users size={28} color="var(--amber, #d49040)" style={{ marginBottom: '12px' }} />
+      <Users size={28} color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Add your team (optional)</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '13px' }}>
+      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
         Add a few key staff now, or skip and invite them later from settings.
       </p>
       {err && <ErrorBox msg={err} />}
@@ -1267,7 +1333,6 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
 // ─── Step 9: All set ────────────────────────────────────────────────────
 
 function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
-  const router = useRouter();
   const [going, setGoing] = useState(false);
   const finalize = async () => {
     setGoing(true);
@@ -1277,7 +1342,12 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ code, finalize: true }),
       });
-      router.push('/dashboard');
+      // Full navigation (not router.push) so PropertyContext re-fetches the
+      // property FRESH — now with onboarding_completed_at set. A client-side
+      // push would leave the cached (pre-completion) property in context, and
+      // the dashboard's onboarding gate would bounce the owner back through
+      // the wizard once before settling. A reload lands them cleanly.
+      window.location.href = '/dashboard';
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress
       setGoing(false);
@@ -1286,12 +1356,12 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
 
   return (
     <div>
-      <Sparkles size={32} color="var(--amber, #d49040)" style={{ marginBottom: '16px' }} />
+      <Sparkles size={32} color="#C99644" style={{ marginBottom: '16px' }} />
       <h2 style={{ fontSize: '22px', margin: '0 0 8px 0', fontWeight: 700 }}>You&apos;re all set!</h2>
-      <p style={{ color: 'var(--text-muted)', marginBottom: '16px', lineHeight: 1.5 }}>
+      <p style={{ color: '#5C625C', marginBottom: '16px', lineHeight: 1.5 }}>
         Welcome to Staxis. {wizard.propertyName} is ready.
       </p>
-      <div style={{ background: 'var(--bg, #f6f7f9)', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
+      <div style={{ background: 'rgba(201,150,68,0.10)', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
         <p style={{ fontSize: '13px', margin: 0, lineHeight: 1.5 }}>
           ✓ Your inventory has 16 default items (sheets, towels, soap, etc.). Customize anytime in the Inventory tab.
         </p>
@@ -1322,8 +1392,9 @@ function ErrorBox({ msg }: { msg: string }) {
     <div style={{
       display: 'flex', alignItems: 'center', gap: '8px',
       padding: '10px 12px', marginBottom: '14px',
-      background: 'rgba(239,68,68,0.1)', borderRadius: '8px',
-      color: 'var(--red, #ef4444)', fontSize: '13px',
+      background: 'rgba(184,92,61,0.10)', border: '1px solid rgba(184,92,61,0.25)',
+      borderRadius: '10px',
+      color: '#B85C3D', fontSize: '13px',
     }}>
       <AlertCircle size={14} />
       {msg}

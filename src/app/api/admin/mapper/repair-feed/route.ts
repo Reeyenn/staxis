@@ -50,10 +50,10 @@ interface KnowledgeRow {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  // Codebase-standard admin gate — return requireAdmin's response verbatim
+  // (correct 403 for a non-admin session) instead of re-minting a flat 401.
   const admin = await requireAdmin(req);
-  if (!admin.ok) {
-    return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
-  }
+  if (!admin.ok) return admin.response;
 
   let body: { pmsFamily?: unknown; propertyId?: unknown; targetKey?: unknown };
   try { body = await req.json(); } catch {
@@ -75,6 +75,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .select('id, version, knowledge')
     .eq('pms_family', body.pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle<KnowledgeRow>();
   if (loadErr) {
     return err(`could not load active recipe: ${loadErr.message}`, {

@@ -34,6 +34,7 @@ import assert from 'node:assert/strict';
 import {
   auditRequiredColumns,
   gateRecoveredColumn,
+  certifyColumns,
   learnedForGate,
   buildRecoveryHint,
   expectedShapeFor,
@@ -84,7 +85,11 @@ const rowsOf = (n: number, make: (i: number) => Record<string, string>) =>
   Array.from({ length: n }, (_, i) => make(i));
 
 describe('auditRequiredColumns', () => {
-  test('the live failure: present selectors whose values are blank everywhere → dead', () => {
+  test('feature/cua-tolerant-mapper: blank CONTEXTUAL/OPTIONAL dates are NOT dead', () => {
+    // The 2026-06 live failure (page-context dates blank → whole feed parked) is
+    // now impossible: arrival_date/departure_date are contextual/optional, so the
+    // audit (essentials-keyed) never classifies them. The essentials (id, name)
+    // are present → the feed is healthy, nothing to recover.
     const columns = {
       pms_reservation_id: 'td:nth-child(14)',
       guest_name: 'td:nth-child(2)',
@@ -98,16 +103,27 @@ describe('auditRequiredColumns', () => {
       departure_date: '',
     }));
     const audit = auditRequiredColumns('getArrivals', columns, rows, learnedForGate('getArrivals', undefined));
-    assert.deepEqual(audit.dead.sort(), ['arrival_date', 'departure_date']);
+    assert.deepEqual(audit.dead, []);
     assert.deepEqual(audit.structurallyMissing, []);
-    assert.deepEqual(audit.recoveryTargets.sort(), ['arrival_date', 'departure_date']);
+    assert.deepEqual(audit.recoveryTargets, []);
   });
 
-  test('empty-string selectors → structurallyMissing (today\'s check preserved)', () => {
+  test('a blank ESSENTIAL column is still dead (mechanism preserved)', () => {
+    // room status `status` is essential — blank everywhere is still a real gap.
+    const columns = { room_number: 'td:nth-child(1)', status: 'td:nth-child(2)' };
+    const rows = rowsOf(6, (i) => ({ room_number: `${100 + i}`, status: '' }));
+    const audit = auditRequiredColumns('getRoomStatus', columns, rows, learnedForGate('getRoomStatus', undefined));
+    assert.deepEqual(audit.dead, ['status']);
+    assert.deepEqual(audit.recoveryTargets, ['status']);
+  });
+
+  test('empty-string selectors on ESSENTIALS → structurallyMissing (optional ignored)', () => {
+    // status/out_of_order are optional now → a blank selector for them is fine;
+    // only the essential pms_work_order_id is flagged.
     const columns = { pms_work_order_id: '', description: 'td:nth-child(4)', status: '', out_of_order: '' };
     const rows = rowsOf(4, (i) => ({ description: `Fix thing ${i}` }));
     const audit = auditRequiredColumns('getWorkOrders', columns, rows, learnedForGate('getWorkOrders', undefined));
-    assert.deepEqual(audit.structurallyMissing.sort(), ['out_of_order', 'pms_work_order_id', 'status']);
+    assert.deepEqual(audit.structurallyMissing.sort(), ['pms_work_order_id']);
   });
 
   test('sparse column (1 non-blank in 50) is NOT dead', () => {
@@ -125,7 +141,9 @@ describe('auditRequiredColumns', () => {
     assert.ok(!audit.recoveryTargets.includes('out_of_order'));
   });
 
-  test('wrong-cell selector (date column extracting status words) → unparseable', () => {
+  test('a wrong-cell CONTEXTUAL date is no longer flagged unparseable (tolerant)', () => {
+    // arrival_date is contextual → not audited → never blocks a useful feed even
+    // if its selector reads junk; the run-date derivation supplies the value.
     const columns = {
       pms_reservation_id: 'td:nth-child(14)', guest_name: 'td:nth-child(2)',
       arrival_date: 'td:nth-child(3)', departure_date: 'td:nth-child(6)',
@@ -135,19 +153,23 @@ describe('auditRequiredColumns', () => {
       arrival_date: 'Confirmed', departure_date: '06/13/2026',
     }));
     const audit = auditRequiredColumns('getArrivals', columns, rows, learnedForGate('getArrivals', undefined));
-    assert.deepEqual(audit.unparseable, ['arrival_date']);
+    assert.deepEqual(audit.unparseable, []);
+  });
+
+  test('wrong-cell ESSENTIAL enum (status column reading dates) → unparseable (mechanism preserved)', () => {
+    const columns = { room_number: 'td:nth-child(1)', status: 'td:nth-child(2)' };
+    const rows = rowsOf(5, (i) => ({ room_number: `${100 + i}`, status: '06/13/2026' }));
+    const audit = auditRequiredColumns('getRoomStatus', columns, rows, learnedForGate('getRoomStatus', undefined));
+    assert.deepEqual(audit.unparseable, ['status']);
   });
 
   test(`fewer than ${MIN_UNPARSEABLE_SAMPLES} non-blank values never declares unparseable`, () => {
-    const columns = {
-      pms_reservation_id: 'td:nth-child(14)', guest_name: 'td:nth-child(2)',
-      arrival_date: 'td:nth-child(3)', departure_date: 'td:nth-child(6)',
-    };
+    const columns = { room_number: 'td:nth-child(1)', status: 'td:nth-child(2)' };
     const rows = [
-      { pms_reservation_id: 'R1', guest_name: 'G', arrival_date: 'junk', departure_date: '06/13/2026' },
-      { pms_reservation_id: 'R2', guest_name: 'G', arrival_date: 'junk', departure_date: '06/13/2026' },
+      { room_number: '101', status: 'junk' },
+      { room_number: '102', status: 'junk' },
     ];
-    const audit = auditRequiredColumns('getArrivals', columns, rows, learnedForGate('getArrivals', undefined));
+    const audit = auditRequiredColumns('getRoomStatus', columns, rows, learnedForGate('getRoomStatus', undefined));
     assert.deepEqual(audit.unparseable, []);
   });
 
@@ -156,13 +178,16 @@ describe('auditRequiredColumns', () => {
       auditRequiredColumns('getGuests', { pms_guest_id: '' }, rowsOf(3, () => ({})), undefined).recoveryTargets,
       [],
     );
+    // feature/cua-tolerant-mapper — a blank arrival_date selector is NOT a
+    // recovery target anymore (contextual, not essential). A blank ESSENTIAL
+    // selector still is: blank guest_name → structurallyMissing.
     const audit = auditRequiredColumns(
       'getArrivals',
-      { pms_reservation_id: 'td', guest_name: 'td', arrival_date: '', departure_date: 'td' },
+      { pms_reservation_id: 'td', guest_name: '', arrival_date: '', departure_date: 'td' },
       [],
       undefined,
     );
-    assert.deepEqual(audit.recoveryTargets, ['arrival_date']);
+    assert.deepEqual(audit.recoveryTargets, ['guest_name']);
     assert.deepEqual(audit.dead, []);
   });
 });
@@ -368,6 +393,210 @@ describe('gateRecoveredColumn (worse-than-blank protections)', () => {
   });
 });
 
+// ─── 3b. First-emission certification (feature/cua-prove-columns) ────────────
+
+describe('certifyColumns (first-emission proof of ALL required columns)', () => {
+  const TODAY_ISO = TODAY; // 2026-06-12
+
+  // A correct arrivals map: key distinct, names text, dates near-today + ordered.
+  const correctArrivals = {
+    pms_reservation_id: ['R1001', 'R1002', 'R1003'],
+    guest_name: ['John Smith', 'Jane Doe', 'Bob Lee'],
+    arrival_date: ['06/12/2026', '06/12/2026', '06/13/2026'],
+    departure_date: ['06/14/2026', '06/15/2026', '06/14/2026'],
+  };
+  const arrivalsSelectors = {
+    pms_reservation_id: 'td:nth-child(1) a@href',
+    guest_name: 'td:nth-child(2)',
+    arrival_date: 'td:nth-child(5)',
+    departure_date: 'td:nth-child(6)',
+  };
+
+  test('a correct populated table → every required column certified', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date'],
+      allValues: correctArrivals,
+      allSelectors: arrivalsSelectors,
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    for (const col of ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date']) {
+      assert.equal(verdicts.get(col)?.verdict, 'certified', `${col} should certify`);
+    }
+  });
+
+  test('THE GAP: a check-in ↔ check-out swap on a plain HTML table is caught (failed), not shipped', () => {
+    // arrival_date selector points at the CHECKOUT cell (future dates), and
+    // departure_date at the CHECK-IN cell (today) — the classic silent corruption.
+    const swapped = {
+      pms_reservation_id: ['R1001', 'R1002', 'R1003'],
+      guest_name: ['John Smith', 'Jane Doe', 'Bob Lee'],
+      arrival_date: ['06/15/2026', '06/16/2026', '06/17/2026'],   // really checkout
+      departure_date: ['06/12/2026', '06/12/2026', '06/13/2026'], // really checkin
+    };
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date', 'departure_date'],
+      allValues: swapped,
+      allSelectors: arrivalsSelectors,
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    // arrival_date is provably wrong (later than departure AND far from today).
+    assert.equal(verdicts.get('arrival_date')?.verdict, 'failed');
+    // departure_date is also caught by the same date-order invariant.
+    assert.equal(verdicts.get('departure_date')?.verdict, 'failed');
+  });
+
+  test('a status string mapped into a date column → failed (parse majority)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date'],
+      allValues: { arrival_date: ['Confirmed', 'Confirmed', 'Booked'] },
+      allSelectors: { arrival_date: 'td:nth-child(3)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(verdicts.get('arrival_date')?.verdict, 'failed');
+    assert.match((verdicts.get('arrival_date') as { reason: string }).reason, /parse_majority/);
+  });
+
+  test('no value evidence (empty/unreadable feed) → every column UNCERTAIN, never certified', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date'],
+      allValues: {},
+      allSelectors: arrivalsSelectors,
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: false,
+    });
+    for (const col of ['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date']) {
+      assert.equal(verdicts.get(col)?.verdict, 'uncertain', `${col} should be uncertain with no evidence`);
+    }
+  });
+
+  test('a wide multi-day arrivals view (correct order) → semantic-window miss is UNCERTAIN, not failed/blanked', () => {
+    // Far-future dates (PMS shows a rolling window, not today-only) but arrival<=
+    // departure on every row → only the soft semantic-window heuristic trips. We
+    // must NOT blank a correct column (that could cascade to quarantine) — park it.
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['arrival_date'],
+      allValues: {
+        arrival_date: ['07/20/2026', '07/21/2026', '07/22/2026'],
+        departure_date: ['07/22/2026', '07/23/2026', '07/24/2026'],
+      },
+      allSelectors: { arrival_date: 'td:nth-child(5)', departure_date: 'td:nth-child(6)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('arrival_date');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /semantic_date_window/);
+  });
+
+  test('plain-text column mirroring another mapped column → uncertain (not blindly certified)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['guest_name'],
+      allValues: {
+        guest_name: ['A100', 'A200', 'A300'],
+        pms_reservation_id: ['A100', 'A200', 'A300'], // selector pointed at the id cell
+      },
+      allSelectors: { guest_name: 'td:nth-child(2)', pms_reservation_id: 'td:nth-child(1)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('guest_name');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /text_mirror/);
+  });
+
+  test('a thin (<3 row) plain-text column → uncertain, not blindly certified', () => {
+    // On a 1-2 row feed the mirror/constant heuristics can't run, so a wrong
+    // free-text selector would otherwise auto-promote. Abstain → founder review.
+    const verdicts = certifyColumns({
+      actionKey: 'getArrivals',
+      columns: ['guest_name'],
+      allValues: { guest_name: ['John Smith', 'Jane Doe'] }, // only 2 non-blank
+      allSelectors: { guest_name: 'td:nth-child(2)' },
+      learned: learnedForGate('getArrivals', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('guest_name');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /thin_text_evidence/);
+  });
+
+  test('a constant plain-text column → uncertain (a header/label echoed down the column)', () => {
+    const verdicts = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['description'],
+      allValues: { description: ['Maintenance', 'Maintenance', 'Maintenance'] },
+      allSelectors: { description: 'td:nth-child(2)' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    const v = verdicts.get('description');
+    assert.equal(v?.verdict, 'uncertain');
+    assert.match((v as { reason: string }).reason, /constant_text/);
+  });
+
+  test('a sparse-but-real boolean (out_of_order set on 1 row in 8) certifies, not all_blank-rejected', () => {
+    // The mapper feeds certifyColumns the FULL deadness window, so a column blank
+    // in most rows but real in one is proven, not falsely failed. Guards the
+    // sparse-column regression.
+    const verdicts = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['out_of_order'],
+      allValues: { out_of_order: ['', '', '', '', '', '', '', 'Y'] },
+      allSelectors: { out_of_order: 'td:nth-child(7) input@value' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(verdicts.get('out_of_order')?.verdict, 'certified');
+  });
+
+  test('work-orders: a correct status enum with model vocab certifies; the key mirroring another column fails', () => {
+    // status maps cleanly via the model's emitted vocabulary → certified.
+    const certified = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['status'],
+      allValues: { status: ['Open', 'In Progress', 'Open'] },
+      allSelectors: { status: 'td:nth-child(3)' },
+      learned: learnedForGate('getWorkOrders', { status: { Open: 'open', 'In Progress': 'in_progress' } }),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(certified.get('status')?.verdict, 'certified');
+
+    // The key column whose values mirror another column is provably wrong.
+    const mirrored = certifyColumns({
+      actionKey: 'getWorkOrders',
+      columns: ['pms_work_order_id'],
+      allValues: {
+        pms_work_order_id: ['101', '102', '103'],
+        room_number: ['101', '102', '103'],
+      },
+      allSelectors: { pms_work_order_id: 'td:nth-child(1)', room_number: 'td:nth-child(5)' },
+      learned: learnedForGate('getWorkOrders', undefined),
+      todayIso: TODAY_ISO,
+      hasValueEvidence: true,
+    });
+    assert.equal(mirrored.get('pms_work_order_id')?.verdict, 'failed');
+  });
+});
+
 describe('learnedForGate', () => {
   test('keys mappings by table.column and drops hallucinated canonicals', () => {
     const learned = learnedForGate('getWorkOrders', {
@@ -466,6 +695,13 @@ describe('templateFromSample', () => {
 
 // ─── 5. Gate ↔ adapter symmetry ─────────────────────────────────────────────
 
+// feature/cua-tolerant-mapper — the canonical recovery target used to be the
+// page-context dates; those are now CONTEXTUAL/OPTIONAL (derived at poll time),
+// so this models the still-valid mechanism: an ESSENTIAL column (guest_name)
+// blank in the list and recovered on the verified detail page. room_number is an
+// OPTIONAL detail column that recoveredDetailColumns must NOT wire. arrival_date/
+// departure_date stay blank in the list (page-context) and are intentionally not
+// recovered — they derive from the run date.
 const recoveredArrivals = (overrides?: Partial<NonNullable<ActionRecipe['drillDown']>>): ActionRecipe => ({
   steps: [{ kind: 'goto', url: 'https://pms.example.com/arrivals' }],
   parse: {
@@ -473,7 +709,7 @@ const recoveredArrivals = (overrides?: Partial<NonNullable<ActionRecipe['drillDo
     hint: {
       rowSelector: 'table tbody tr',
       columns: {
-        pms_reservation_id: 'td:nth-child(14)', guest_name: 'td:nth-child(2)',
+        pms_reservation_id: 'td:nth-child(14)', guest_name: '',
         arrival_date: '', departure_date: '',
       },
     },
@@ -482,13 +718,13 @@ const recoveredArrivals = (overrides?: Partial<NonNullable<ActionRecipe['drillDo
     listUrl: 'https://pms.example.com/arrivals',
     listRowSelector: 'table tbody tr',
     listColumns: {
-      pms_reservation_id: 'td:nth-child(14)', guest_name: 'td:nth-child(2)',
+      pms_reservation_id: 'td:nth-child(14)', guest_name: '',
       arrival_date: '', departure_date: '',
     },
     detailUrlTemplate: 'https://pms.example.com/Reservation/view?id={pms_reservation_id}',
     detailUrlParams: { pms_reservation_id: 'pms_reservation_id' },
-    detailColumns: { arrival_date: '#stay-arrival', departure_date: '#stay-departure', room_number: '#room' },
-    fieldCoverage: { arrival_date: '2/2', departure_date: '2/2' },
+    detailColumns: { guest_name: '#guest-name', room_number: '#room' },
+    fieldCoverage: { guest_name: '1/1' },
     samplesDrilled: 1,
     templateVerified: true,
     ...(overrides ?? {}),
@@ -496,12 +732,12 @@ const recoveredArrivals = (overrides?: Partial<NonNullable<ActionRecipe['drillDo
 });
 
 describe('gate ↔ adapter symmetry (no split brain)', () => {
-  test('verified key-anchored drillDown makes recovered REQUIRED columns effective', () => {
+  test('verified key-anchored drillDown makes recovered ESSENTIAL columns effective', () => {
     const action = recoveredArrivals();
     assert.equal(drillDownDetailEligible(action), true);
-    // required-only pick: room_number (optional) is NOT wired.
+    // essentials-only pick: room_number (optional) is NOT wired.
     assert.deepEqual(Object.keys(recoveredDetailColumns('getArrivals', action)).sort(),
-      ['arrival_date', 'departure_date']);
+      ['guest_name']);
     assert.deepEqual(missingRequiredColumns('getArrivals', effectiveColumnsFromAction('getArrivals', action)), []);
   });
 
@@ -510,7 +746,7 @@ describe('gate ↔ adapter symmetry (no split brain)', () => {
     assert.equal(drillDownDetailEligible(unverified), false);
     assert.deepEqual(
       missingRequiredColumns('getArrivals', effectiveColumnsFromAction('getArrivals', unverified)).sort(),
-      ['arrival_date', 'departure_date'],
+      ['guest_name'],
     );
     const orphanPlaceholder = recoveredArrivals({
       detailUrlTemplate: 'https://pms.example.com/Reservation/view?id={confirmation_code}',
@@ -548,11 +784,10 @@ describe('gate ↔ adapter symmetry (no split brain)', () => {
     const { templates } = recipeToTableTemplates(recipe);
     const t = templates.find((x) => x.sourceActionKey === 'getArrivals')!;
     assert.ok(t.rowDetail);
-    assert.deepEqual(Object.keys(t.rowDetail!.columns).sort(), ['arrival_date', 'departure_date']);
+    assert.deepEqual(Object.keys(t.rowDetail!.columns).sort(), ['guest_name']);
     assert.equal(t.rowDetail!.urlTemplate, 'https://pms.example.com/Reservation/view?id={pms_reservation_id}');
-    assert.equal(t.fields.arrival_date!.origin, 'detail_page');
-    assert.equal(t.fields.arrival_date!.parser, 'generic_date');
-    assert.equal(t.fields.arrival_date!.selectorOrColumn, '#stay-arrival');
+    assert.equal(t.fields.guest_name!.origin, 'detail_page');
+    assert.equal(t.fields.guest_name!.selectorOrColumn, '#guest-name');
     // optional detail col NOT wired; list fields unchanged.
     assert.equal(t.fields.room_number, undefined);
     assert.equal(t.fields.pms_reservation_id!.origin, 'list_row');
@@ -568,7 +803,7 @@ describe('gate ↔ adapter symmetry (no split brain)', () => {
     const { templates } = recipeToTableTemplates(recipe);
     const t = templates.find((x) => x.sourceActionKey === 'getArrivals')!;
     assert.equal(t.rowDetail, undefined);
-    assert.equal(t.fields.arrival_date!.origin, 'list_row');
+    assert.equal(t.fields.pms_reservation_id!.origin, 'list_row');
   });
 });
 
@@ -737,6 +972,90 @@ describe('finalizeRecoveredSuccess (residual policy)', () => {
       missingRequiredColumns('getArrivals', effectiveColumnsFromAction('getArrivals', out.action)),
       [],
     );
+  });
+});
+
+describe('finalizeRecoveredSuccess — unprovenRequiredColumns stamp (feature/cua-prove-columns)', () => {
+  const read = (action: ActionRecipe): string[] | undefined =>
+    (action as { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns;
+
+  const success = {
+    ok: true as const,
+    action: {
+      steps: [],
+      parse: {
+        mode: 'table' as const,
+        hint: {
+          rowSelector: 'tbody tr',
+          columns: {
+            pms_reservation_id: 'td:nth-child(1)', guest_name: 'td:nth-child(2)',
+            arrival_date: 'td:nth-child(5)', departure_date: 'td:nth-child(6)',
+          },
+        },
+      },
+    },
+  };
+
+  test('fully-certified emission carries NO field (legacy/clean shape preserved)', () => {
+    const out = finalizeRecoveredSuccess({ success, audit: auditWith([]) });
+    assert.equal(read(out.action), undefined);
+  });
+
+  test('an unparseable column keeps its selector AND is recorded unproven', () => {
+    const out = finalizeRecoveredSuccess({
+      success,
+      audit: auditWith([['arrival_date', 'unparseable']]),
+    });
+    const cols = out.action.parse.mode === 'table' ? out.action.parse.hint.columns : {};
+    assert.equal(cols.arrival_date, 'td:nth-child(5)');       // selector kept (thin-evidence rule)
+    assert.deepEqual(read(out.action), ['arrival_date']);     // but never auto-promoted
+  });
+
+  test('a blanked (dead/rejected) column is NOT in the unproven list — it is a gap, not a live column', () => {
+    const out = finalizeRecoveredSuccess({
+      success,
+      audit: auditWith([['arrival_date', 'dead'], ['departure_date', 'rejected']]),
+    });
+    assert.equal(read(out.action), undefined); // both blanked → handled by computeFeedGaps
+  });
+
+  test('an UNCERTAIN audit (empty/unreadable feed) records every still-shipping required column', () => {
+    const audit: PageAudit = {
+      verified: false,
+      pageUrl: 'https://pms.example.com/arrivals',
+      probeRows: [],
+      totalMatched: 0,
+      outstanding: new Map(),
+      uncertain: new Set(['arrival_date', 'departure_date']),
+      problems: [],
+    };
+    const out = finalizeRecoveredSuccess({ success, audit });
+    assert.deepEqual(read(out.action)?.sort(), ['arrival_date', 'departure_date']);
+    // selectors are kept — they may be perfect, just unproven on an empty feed.
+    const cols = out.action.parse.mode === 'table' ? out.action.parse.hint.columns : {};
+    assert.equal(cols.arrival_date, 'td:nth-child(5)');
+  });
+
+  test('a column recovered on the detail page (drill) is proven-by-drill → excluded from unproven', () => {
+    const out = finalizeRecoveredSuccess(
+      { success, audit: auditWith([['arrival_date', 'unparseable']]) },
+      {
+        ok: true,
+        tokensUsed: 0,
+        drillDown: {
+          listUrl: 'https://pms.example.com/arrivals',
+          listRowSelector: 'tbody tr',
+          listColumns: {},
+          detailUrlTemplate: 'https://pms.example.com/r?id={pms_reservation_id}',
+          detailUrlParams: { pms_reservation_id: 'pms_reservation_id' },
+          detailColumns: { arrival_date: '#arr' },
+          fieldCoverage: { arrival_date: '1/1' },
+          samplesDrilled: 1,
+          templateVerified: true,
+        },
+      },
+    );
+    assert.equal(read(out.action), undefined); // arrival_date proven by the drill
   });
 });
 

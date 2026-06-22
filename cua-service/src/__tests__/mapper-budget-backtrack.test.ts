@@ -33,15 +33,15 @@ describe('targetBudget (FIX 2) — optional feeds get a tighter budget', () => {
 
   test('required feeds keep the FULL by-classification budget', () => {
     // These are the documented base caps (cost in micros, steps per record).
-    assert.deepEqual(targetBudget('list_page', false), { stepCap: 80, costCapMicros: 500_000 });
-    assert.deepEqual(targetBudget('report_menu', false), { stepCap: 100, costCapMicros: 1_000_000 });
-    assert.deepEqual(targetBudget('drilldown_sample', false), { stepCap: 60, costCapMicros: 1_200_000 });
+    assert.deepEqual(targetBudget('list_page', false), { stepCap: 80, costCapMicros: 600_000 });
+    assert.deepEqual(targetBudget('report_menu', false), { stepCap: 100, costCapMicros: 1_200_000 });
+    assert.deepEqual(targetBudget('drilldown_sample', false), { stepCap: 60, costCapMicros: 1_440_000 });
   });
 
   test('optional feeds get exactly half the cost cap', () => {
-    assert.equal(targetBudget('list_page', true).costCapMicros, 250_000);
-    assert.equal(targetBudget('report_menu', true).costCapMicros, 500_000);
-    assert.equal(targetBudget('drilldown_sample', true).costCapMicros, 600_000);
+    assert.equal(targetBudget('list_page', true).costCapMicros, 300_000);
+    assert.equal(targetBudget('report_menu', true).costCapMicros, 600_000);
+    assert.equal(targetBudget('drilldown_sample', true).costCapMicros, 720_000);
   });
 
   test('optional feeds get half the step cap (floored)', () => {

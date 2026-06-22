@@ -46,13 +46,62 @@ import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { safeGoto, normalizeUrl } from './browser-utils/navigate.js';
-import type { Recipe, ScraperCredentialsRow, TableTemplate } from './types.js';
+import type { Recipe, ScraperCredentialsRow, TableTemplate, ActionRecipe, TableRowHint } from './types.js';
+// feature/cua-self-heal-reach — RUNG-2 cheap re-anchor (decision core + safety cores).
+import { extractDomRows, readTableHeaders, headerGateOk } from './extractors/dom-rows.js';
+import { certifyColumns } from './column-recovery.js';
+import {
+  checkFeedHealth,
+  decideColumnReanchor,
+  buildCandidateSelectors,
+  applyColumnReanchor,
+  requiredColumnsForTarget,
+  MIN_REANCHOR_ROWS,
+  type ColumnChange,
+} from './reanchor.js';
+import { promoteRecipeChange } from './mapping-driver.js';
+import type { FreshExtractionShape, FixtureColumnVerdict } from './golden-fixtures.js';
 
 const VIEWPORT = { width: 1280, height: 800 };
 const POLL_INTERVAL_MS = 30_000;
 const POLL_JITTER_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const READ_TIMEOUT_MS = 120_000;
+
+// feature/cua-self-heal-reach — RUNG-2 re-anchor knobs.
+/** DEFAULT OFF (monotonic): unset ⟹ self-repair goes straight to the $3 paid
+ *  re-learn exactly as today. Flip to try the free re-anchor first. */
+function reanchorEnabled(): boolean {
+  return (process.env.CUA_REANCHOR_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+/** The re-anchor live-page probe runs under the read mutex with this timeout. */
+const REANCHOR_TIMEOUT_MS = 90_000;
+/** Rows scraped for the re-anchor health/candidate probe. */
+const REANCHOR_PROBE_CAP = 60;
+/** Lifetime re-anchor attempts per feed per session — bounds any version-churn
+ *  loop; beyond it, self-repair goes straight to the paid path. */
+const MAX_REANCHOR_ATTEMPTS = 2;
+
+/** ISO "today" (yyyy-mm-dd) in the PMS timezone for re-anchor value
+ *  certification. Uses the PMS tz (the same CUA_PMS_TZ → America/Chicago default
+ *  the runtime date-templating + cost-cap use) instead of the Fly box's UTC
+ *  clock, so the date-window certification doesn't skew near midnight in
+ *  far-from-UTC timezones (which would wrongly abstain a valid date column). */
+function reanchorTodayIso(): string {
+  return todayInTimezone(process.env.CUA_PMS_TZ || 'America/Chicago');
+}
+
+/** Transpose extracted rows → per-column value arrays (same row order). Missing
+ *  cells read as '' so all column arrays stay length-aligned for cross-column
+ *  certification checks. */
+function transposeColumns(
+  rows: Array<Record<string, string>>,
+  cols: string[],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const c of cols) out[c] = rows.map((r) => r[c] ?? '');
+  return out;
+}
 // Plan v7 Phase 2c — knowledge hot-reload poll. Every 60s, the driver
 // checks whether the active version for its pms_family has changed
 // (e.g. mapping-driver promoted a new draft). If so, reload in place
@@ -131,6 +180,35 @@ export class SessionDriver {
    * already in-flight.
    */
   private consecutiveZeroRowsByAction: Map<string, number> = new Map();
+
+  /** feature/cua-self-heal-reach — lifetime rung-2 re-anchor attempts per feed
+   *  this session (bounds version-churn; see MAX_REANCHOR_ATTEMPTS). */
+  private reanchorAttemptsByAction: Map<string, number> = new Map();
+
+  /** feature/cua-self-heal-reach — feeds whose zero-row streak tripped this poll.
+   *  Self-heal is DEFERRED to AFTER the poll's single-flight read mutex releases
+   *  (drainSelfHeal in pollOnce): the rung-2 re-anchor probe re-acquires that same
+   *  per-hotel mutex, so running it inline (still inside the poll's lock) would
+   *  always see the lock busy and fall straight through to the paid path. */
+  private pendingSelfHeal: Set<keyof Recipe['actions']> = new Set();
+
+  /**
+   * feature/cua-per-hotel-data (Task 4) — consume template.incomplete at replay.
+   * recipe-adapter flags a feed `incomplete` when it's genuinely un-locatable (a
+   * csv flow with no recorded download trigger, a dom_table/inline feed with no
+   * source URL, an inline feed needing interaction the inline extractor can't
+   * replay). Such a feed can NEVER produce rows, so polling it every 30s only
+   * burns a navigation, counts as a failed feed (dragging read_failure_streak),
+   * and can mis-fire a paid self-repair. We skip it and surface it for review.
+   *
+   * Holds the action/table keys flagged incomplete for the CURRENT knowledge
+   * version (incompleteness is a static property of the recipe, so within a
+   * version this set is stable). Single source of truth: drives BOTH the
+   * log-ONCE warn (not every 30s poll) AND the heartbeat `notes` annotation
+   * (/admin/property-sessions). Cleared on knowledge hot-reload so a promoted
+   * fix drops the flag and a still-broken feed re-surfaces under the new version.
+   */
+  private loggedIncompleteFeeds: Set<string> = new Set();
 
   constructor(opts: SessionDriverOptions) {
     this.propertyId = opts.propertyId;
@@ -406,6 +484,30 @@ export class SessionDriver {
     return resolveLoginGotoUrl(rawUrl, familyStartUrl, this.credentials?.loginUrl);
   }
 
+  /**
+   * feature/cua-per-hotel-data (Task 1) — re-point every runnable feed's source
+   * URL(s) AND per-row detail URL template at THIS hotel's tenant origin (the
+   * data-read analogue of loginGotoTarget). Mutates the freshly-built templates
+   * in place: they're rebuilt from the knowledge file every poll, local to
+   * runAllFeeds, so no shared/persisted state is touched. No-op for hotels with
+   * no per-hotel URL (Choice Advantage) and for feeds not on the learned tenant
+   * — see rehostFeedUrl.
+   */
+  private rehostFeedUrlsForHotel(templates: TableTemplate[]): void {
+    const familyStartUrl = this.knowledgeFile?.knowledge.login.startUrl ?? '';
+    const perHotelLoginUrl = this.credentials?.loginUrl;
+    for (const template of templates) {
+      for (const source of template.sources) {
+        source.url = rehostFeedUrl(source.url, familyStartUrl, perHotelLoginUrl);
+      }
+      if (template.rowDetail) {
+        template.rowDetail.urlTemplate = rehostFeedUrl(
+          template.rowDetail.urlTemplate, familyStartUrl, perHotelLoginUrl,
+        );
+      }
+    }
+  }
+
   private async ensureLoggedIn(): Promise<boolean> {
     if (!this.page || !this.knowledgeFile || !this.credentials || !this.allowedHost) {
       throw new Error('ensureLoggedIn precondition failed');
@@ -575,6 +677,35 @@ export class SessionDriver {
       });
       return false;
     }
+    // Dismiss a one-time post-login interstitial before the dashboard renders.
+    // Choice Advantage interposes a "Migrate to Okta / Continue with Traditional
+    // Login" nag at Login.do: the dashboard chrome (#menubar) is present but
+    // HIDDEN behind that modal, so without dismissing it the driver is parked on
+    // a not-the-dashboard page, the success selector never goes visible, and
+    // every feed nav bounces to LoginPopup.do. Click any recipe-configured
+    // "continue / keep-current-login" control IF present (NEVER the migrate /
+    // opt-in path) and let the dashboard settle. CA shows it once per session,
+    // so later feed gotos to Login.do skip it. Absent / other PMS → no-op.
+    const postLoginDismiss =
+      (login as { postLoginDismiss?: Array<{ selector: string; label?: string }> })
+        .postLoginDismiss ?? [];
+    for (const d of postLoginDismiss) {
+      try {
+        const el = this.page!.locator(d.selector).first();
+        if (await el.isVisible({ timeout: 1_500 }).catch(() => false)) {
+          log.info('session-driver: dismissing post-login interstitial', {
+            propertyId: this.propertyId,
+            selector: d.selector,
+            label: d.label,
+          });
+          await el.click({ timeout: 5_000 }).catch(() => {});
+          await this.page!.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+        }
+      } catch {
+        // best-effort — a dismiss attempt must never fail the login
+      }
+    }
+
     const finalUrl = safeUrl(this.page!) ?? '';
     // Best-effort: also wait for a successSelector if configured, but
     // don't fail the login if it doesn't appear (it's a secondary hint).
@@ -637,27 +768,22 @@ export class SessionDriver {
         .first()
         .isVisible({ timeout: 1_000 })
         .catch(() => false);
+
       if (loginFormVisible) return true;
 
       // Positive logged-out signal #2 — an MFA challenge is showing.
       const mfa = await detectMfaPrompt(this.page);
       if (mfa.mfa) return true;
 
-      // Negative signal — a REAL success selector should still be present.
-      // body/html carry no evidence (C3), so they can't prove logged-in and
-      // their absence can't prove logged-out; skip them.
-      const successSelector = this.knowledgeFile.knowledge.login.successSelectors.find(
-        (s) => !isWeakSelector(s),
-      );
-      if (successSelector) {
-        const present = await this.page
-          .locator(successSelector)
-          .first()
-          .isVisible({ timeout: 2_000 })
-          .catch(() => false);
-        if (!present) return true;
-      }
-
+      // The success selector's ABSENCE is deliberately NOT treated as
+      // logged-out here. Choice Advantage's dashboard chrome (#menubar) sits in
+      // the DOM but HIDDEN behind a post-login interstitial (the Okta-migration
+      // nag), so isVisible() returned false even while fully logged in — which
+      // triggered a clearCookies + re-login on every poll, spawning a second CA
+      // session against the live one and tripping CA's re-auth popup
+      // (LoginPopup.do): a self-inflicted logout spiral. We now trust only the
+      // positive signals (login form / MFA). The zero-row-streak guard backstops
+      // a genuine silent logout (every feed empty → re-verify login → recover).
       return false;
     } catch {
       // Probe failure is inconclusive — don't force a re-login on a hiccup.
@@ -714,6 +840,20 @@ export class SessionDriver {
       case 'type_text':
         await this.page.keyboard.type(resolve(step.value as string));
         return;
+      case 'click_at': {
+        // Coordinate click recorded by the vision login (Set-of-Mark). The
+        // session-driver page uses the SAME VIEWPORT (1280×800) as the mapper,
+        // so the recorded x/y land on the same element. Mirrors the extractor
+        // pre-step executor (extractors/pre-steps.ts). No credential exposure —
+        // a click carries no value; the secrets ride the type_text steps.
+        const cx = step.x;
+        const cy = step.y;
+        if (typeof cx !== 'number' || typeof cy !== 'number') {
+          throw new Error('click_at login step missing numeric x/y');
+        }
+        await this.page.mouse.click(cx, cy);
+        return;
+      }
       default:
         throw new Error(`unsupported login step kind: ${kind}`);
     }
@@ -777,6 +917,31 @@ export class SessionDriver {
         err: err instanceof Error ? err.message : String(err),
       });
     });
+
+    // feature/cua-self-heal-reach — process queued self-heals AFTER the poll's
+    // read mutex has RELEASED. The rung-2 re-anchor probe re-acquires that same
+    // mutex; running it here (not inside runAllFeeds) is what lets it actually
+    // take the lock. scheduleNextPoll only fires after pollOnce() resolves, so
+    // a bounded re-anchor probe can't overlap the next poll.
+    await this.drainSelfHeal();
+  }
+
+  /** Run each queued self-heal (rung-2 re-anchor → rung-1 paid re-learn) now that
+   *  the poll mutex is free. Bounded (one entry per feed per threshold-trip);
+   *  errors are isolated so one feed's failure never blocks another's. */
+  private async drainSelfHeal(): Promise<void> {
+    if (this.pendingSelfHeal.size === 0) return;
+    const pending = [...this.pendingSelfHeal];
+    this.pendingSelfHeal.clear();
+    for (const actionKey of pending) {
+      try {
+        await this.attemptSelfHeal(actionKey);
+      } catch (err) {
+        log.warn('session-driver: self-heal drain error', {
+          propertyId: this.propertyId, actionKey, err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   /**
@@ -886,25 +1051,68 @@ export class SessionDriver {
     // tell a quietly-stuck session (logged-out, drifted) from a healthy one.
     let anySuccessfulFeed = false;
 
+    // feature/cua-per-hotel-data (Task 4) — gate out feeds recipe-adapter flagged
+    // `incomplete` (genuinely un-locatable). Skip them, record them in this
+    // poll's results, and surface them for operator review (log once + heartbeat
+    // note). Done BEFORE the per-hotel URL rewrite so we never bother re-hosting
+    // a feed we're not going to run.
+    const runnable: TableTemplate[] = [];
+    for (const template of adaptResult.templates) {
+      if (template.incomplete) {
+        const key = (template.sourceActionKey as string | undefined) ?? template.tableName;
+        results.push({ table: template.tableName, ok: false, reason: 'incomplete_feed_skipped_for_review' });
+        if (!this.loggedIncompleteFeeds.has(key)) {
+          this.loggedIncompleteFeeds.add(key);
+          log.warn('session-driver: feed flagged incomplete (un-locatable) — skipping poll, needs operator review', {
+            propertyId: this.propertyId,
+            pmsFamily: this.pmsFamily,
+            tableName: template.tableName,
+            sourceActionKey: template.sourceActionKey,
+            knowledgeFileVersion: this.knowledgeFileVersion,
+          });
+        }
+        continue;
+      }
+      runnable.push(template);
+    }
+
+    // feature/cua-per-hotel-data (Task 1) — re-host each runnable feed's source +
+    // detail URLs onto THIS hotel's tenant origin. The recipe's URLs were
+    // recorded on the MAPPER tenant; one active knowledge file per pms_family
+    // replays them for every hotel, so a per-subdomain cloud PMS (OPERA Cloud,
+    // Cloudbeds, Mews, RoomKey) would log into ITS tenant (per-hotel login fix)
+    // yet still READ the mapper tenant's data — the feed host shares the family
+    // registrable domain, so safeGoto's same-site guard (registrable-domain, not
+    // exact-host) waves it through. Mirrors the per-hotel login goto rewrite;
+    // hotels with no per-hotel URL (Choice Advantage) are a no-op.
+    this.rehostFeedUrlsForHotel(runnable);
+
     // Process in stable order: dashboard / in-house snapshot first
     // (cheapest, most-displayed), then list pages, then drill-down.
-    const sorted = [...adaptResult.templates].sort((a, b) => priorityOf(a.tableName) - priorityOf(b.tableName));
+    const sorted = [...runnable].sort((a, b) => priorityOf(a.tableName) - priorityOf(b.tableName));
 
     for (const template of sorted) {
       if (signal.aborted) break;
       try {
+        // feature/cua-tolerant-mapper — PMS-local view date for contextual
+        // derivation (arrivals' arrival_date / departures' departure_date filled
+        // from the day the page represents). Same tz the re-anchor + date
+        // templating use, so a poll across midnight stamps the hotel's day.
+        const runDateIso = reanchorTodayIso();
         const runResult = template.sources.length > 1
           ? await runMultiSourceTemplate({
               page: this.page,
               template,
               allowedHost: this.allowedHost,
               signal,
+              runDateIso,
             })
           : await runSingleSourceTemplate({
               page: this.page,
               template,
               allowedHost: this.allowedHost,
               signal,
+              runDateIso,
               // feature/cua-column-recovery — scope the per-row detail cache
               // by tenant AND knowledge-file version (a promoted repair's new
               // selectors must not consume extractions cached under the old).
@@ -1030,7 +1238,14 @@ export class SessionDriver {
         last_alive_at: new Date().toISOString(),
         worker_machine_id: this.workerMachineId,
         current_browser_url: this.page ? safeUrl(this.page) : null,
-        notes: `polling: completed=${metrics.completed} skipped=${metrics.skipped} timedOut=${metrics.timedOut}`,
+        // feature/cua-per-hotel-data (Task 4) — surface un-locatable feeds
+        // skipped this version on /admin/property-sessions, alongside the
+        // single-flight metrics (no schema change: folded into `notes`).
+        notes:
+          `polling: completed=${metrics.completed} skipped=${metrics.skipped} timedOut=${metrics.timedOut}` +
+          (this.loggedIncompleteFeeds.size > 0
+            ? ` | incomplete_feeds_skipped=${[...this.loggedIncompleteFeeds].sort().join(',')}`
+            : ''),
       })
       .eq('property_id', this.propertyId);
     if (error) {
@@ -1191,6 +1406,12 @@ export class SessionDriver {
       // must NOT silently revert allowedHost to the family startUrl's host —
       // that would re-break per-hotel subdomains ~60s after every promotion.
       this.allowedHost = this.currentAllowedHost();
+      // feature/cua-per-hotel-data (Task 4) — a promoted version may fix (or
+      // newly break) which feeds are un-locatable. Reset the incomplete-feed set
+      // so a still-incomplete feed re-surfaces (re-logs + re-appears in the
+      // heartbeat note) under the new version, and a fixed one stops being
+      // flagged. Repopulated on the next poll from the new templates.
+      this.loggedIncompleteFeeds.clear();
       // No browser restart needed — next pollOnce uses the new feeds.
     } catch (err) {
       log.warn('session-driver: knowledge hot-reload check failed', {
@@ -1259,10 +1480,15 @@ export class SessionDriver {
    * Live polling picks up new selectors on the next hot-reload tick
    * (~60s) after a promotion.
    *
-   * Idempotency key = `mapper.repair:{family}:{actionKey}` prevents
-   * double-enqueue while a repair is in-flight OR after a failed
-   * repair (failed = constraint persists = no silent re-trigger; admin
-   * must manually retry from the UI).
+   * Idempotency key = `mapper.repair:{family}:{propertyId}:{actionKey}` prevents
+   * double-enqueue while a repair is in-flight OR after a failed repair (failed
+   * = constraint persists = no silent re-trigger; admin must manually retry from
+   * the UI). Scoped PER-HOTEL (feature/cua-per-hotel-data): a family-only key let
+   * ONE stuck hotel's lingering (failed, max_attempts=1) repair row block every
+   * sibling on the same pms_family from ever enqueuing its own — one hotel's
+   * broken feed silently froze self-repair fleet-wide. The aggregate
+   * daily-mapping spend cap (checkDailyMappingSpend, below) stays the cost
+   * backstop against many hotels repairing the same drifted family feed at once.
    */
   private maybeFireSelfRepair(template: TableTemplate, rowCount: number, suppress = false, runFailed = false): void {
     const actionKey = template.sourceActionKey;
@@ -1310,7 +1536,273 @@ export class SessionDriver {
     // next poll tick. Reset the counter after the attempt so we don't
     // hammer the workflow_jobs INSERT every 30s if something's wrong.
     this.consecutiveZeroRowsByAction.set(actionKey, 0);
-    void this.enqueueSelfRepairJob(actionKey);
+    // feature/cua-self-heal-reach — QUEUE the self-heal; it runs in drainSelfHeal
+    // AFTER this poll's read mutex releases (the re-anchor probe needs that same
+    // mutex). Firing it inline here would deadlock-skip every time. `template` is
+    // not needed downstream (the recipe action is the source of truth).
+    this.pendingSelfHeal.add(actionKey);
+    void template;
+  }
+
+  /**
+   * feature/cua-self-heal-reach — rung-2 (free re-anchor) → rung-1 ($3 re-learn).
+   * Fire-and-forget from maybeFireSelfRepair. Re-anchor is ABSTAIN-BY-DEFAULT and
+   * fleet-safe (its promotion goes through the SAME sample-verify + golden-fixture
+   * gauntlet as a paid re-learn); ANY doubt falls through to enqueueSelfRepairJob.
+   */
+  private async attemptSelfHeal(actionKey: keyof Recipe['actions']): Promise<void> {
+    if (reanchorEnabled()) {
+      try {
+        const healed = await this.tryReanchor(actionKey);
+        if (healed) {
+          log.info('session-driver: rung-2 self-heal succeeded — skipped $3 paid re-learn', {
+            propertyId: this.propertyId, pmsFamily: this.pmsFamily, actionKey,
+          });
+          return;
+        }
+      } catch (err) {
+        log.warn('session-driver: rung-2 re-anchor threw — falling through to paid re-learn', {
+          propertyId: this.propertyId, actionKey, err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    await this.enqueueSelfRepairJob(actionKey);
+  }
+
+  /**
+   * Attempt a FREE re-anchor of a drifted feed. Returns true ONLY when the feed
+   * is confirmed healthy on a fresh extraction (transient) OR a confident
+   * single-column re-anchor was minted AND auto-promoted through the fleet-safety
+   * gauntlet. Every other outcome returns false (caller pays for the re-learn).
+   *
+   * The live-page probe runs UNDER THE READ MUTEX (schedule = skip-if-busy), so
+   * it never overlaps a poll; a busy mutex ⟹ skip ⟹ abstain → paid path. The DB
+   * promotion runs OUTSIDE the mutex (it touches no page).
+   */
+  private async tryReanchor(actionKey: keyof Recipe['actions']): Promise<boolean> {
+    if (!this.page || !this.knowledgeFile || !this.allowedHost) return false;
+    const attempts = this.reanchorAttemptsByAction.get(String(actionKey)) ?? 0;
+    if (attempts >= MAX_REANCHOR_ATTEMPTS) return false; // bounded — avoid version churn
+
+    const k = this.knowledgeFile.knowledge;
+    const recipe: Recipe = {
+      schema: 1,
+      ...(k.description ? { description: k.description } : {}),
+      login: k.login as Recipe['login'],
+      actions: k.actions as Recipe['actions'],
+      ...(k.hints ? { hints: k.hints as Recipe['hints'] } : {}),
+      ...(k.valueTranslations ? { valueTranslations: k.valueTranslations } : {}),
+      ...(k.dateFormat ? { dateFormat: k.dateFormat } : {}),
+    };
+    const action = recipe.actions[actionKey] as ActionRecipe | undefined;
+    if (!action || action.parse.mode !== 'table') return false; // re-anchor is table-only
+
+    // READ-mutex (skip-if-busy): the probe is a page read; it must not overlap a
+    // poll. schedule() returns null ONLY when the mutex was busy (the probe
+    // itself never returns null — it returns an explicit 'abstain'). A busy mutex
+    // is a transient scheduling artifact, NOT a re-anchor attempt, so it doesn't
+    // burn the per-feed attempt budget; we just yield to the paid path this time.
+    const probe = await singleFlight(this.propertyId, REANCHOR_TIMEOUT_MS, (signal) =>
+      this.probeReanchor(actionKey, recipe, action, signal),
+    );
+    if (probe === null) return false; // mutex busy → paid path (no attempt counted)
+
+    // The probe RAN — count it against the bounded budget (abstain included) so a
+    // persistently-drifted feed can't re-probe every streak forever.
+    this.reanchorAttemptsByAction.set(String(actionKey), attempts + 1);
+    if (probe.kind === 'abstain') return false; // ran, decided no → paid path
+
+    if (probe.kind === 'healthy') {
+      log.info('session-driver: rung-2 confirmed feed healthy on fresh extraction (transient) — no recipe change', {
+        propertyId: this.propertyId, actionKey,
+      });
+      return true; // skip the paid re-learn; nothing to promote
+    }
+
+    // probe.kind === 'reanchor' — mint a candidate (changed selector only) and
+    // run it through the SHARED fleet-safety gauntlet (gate → sample-verify →
+    // golden-fixture → save → promote). Only an auto-promote actually heals.
+    const candidate = applyColumnReanchor(recipe, actionKey, probe.changes);
+    // The heal re-extracted + re-certified the feed's required columns with the
+    // NEW selectors (probe.freshShape). Refresh the candidate's value-proof state
+    // from that REAL evidence: a STALE unprovenRequiredColumns inherited from the
+    // active recipe (e.g. a column onboarded empty, since populated) must not block
+    // auto-promotion of a now-certified feed; a column STILL not certified must
+    // keep the feed in founder review (review P1).
+    const healedAction = candidate.actions[actionKey] as ActionRecipe & { unprovenRequiredColumns?: string[] };
+    const stillUnproven = requiredColumnsForTarget(actionKey).filter((c) => {
+      const v = probe.freshShape.columnVerdicts[c];
+      return v !== undefined && v !== 'certified'; // shipping + judged + not certified
+    });
+    if (stillUnproven.length > 0) healedAction.unprovenRequiredColumns = stillUnproven;
+    else delete healedAction.unprovenRequiredColumns;
+    const seedActions: Recipe['actions'] = { ...recipe.actions };
+    delete seedActions[actionKey];
+    const promoted = await promoteRecipeChange({
+      pmsFamily: this.pmsFamily,
+      recipe: candidate,
+      seedActions,
+      changedTargets: [String(actionKey)],
+      freshShapeFor: (key) => (key === String(actionKey) ? probe.freshShape : null),
+      origin: 'reanchor',
+      excludePropertyId: this.propertyId,
+    });
+    if (promoted.activated) {
+      log.info('session-driver: rung-2 re-anchor PROMOTED a new recipe version', {
+        propertyId: this.propertyId, actionKey, version: promoted.version,
+        changes: probe.changes.map((c) => c.column),
+      });
+      return true; // hot-reload (~60s) picks up the healed recipe
+    }
+    log.info('session-driver: rung-2 re-anchor parked (not auto-promoted) — falling through to paid re-learn', {
+      propertyId: this.propertyId, actionKey, decision: promoted.decision, reason: promoted.reason,
+    });
+    return false; // abstain-by-default: a non-activating heal yields to the paid path
+  }
+
+  /**
+   * Live-page probe (runs under the read mutex). Re-navigates the feed, extracts
+   * with the CURRENT selectors, and decides — entirely via the PURE reanchor core
+   * + the SAME certify/header safety machinery the mapper uses:
+   *   - rows present + all required certify          → { healthy } (transient)
+   *   - exactly ONE required column drifted, and a UNIQUE header candidate
+   *     value-certifies                              → { reanchor, changes, freshShape }
+   *   - anything else (rowSelector drift, ≥2 drifted, ambiguous, no headers) → { abstain }
+   *
+   * Returns an explicit { abstain } (never null) so the caller can tell a real
+   * probe-decided abstain from a busy-mutex skip (schedule()'s null).
+   */
+  private async probeReanchor(
+    actionKey: keyof Recipe['actions'],
+    recipe: Recipe,
+    action: ActionRecipe,
+    signal: AbortSignal,
+  ): Promise<{ kind: 'healthy' } | { kind: 'abstain' } | { kind: 'reanchor'; changes: ColumnChange[]; freshShape: FreshExtractionShape }> {
+    const abstain = (): { kind: 'abstain' } => ({ kind: 'abstain' });
+    if (!this.page || !this.allowedHost || signal.aborted) return abstain();
+    if (action.parse.mode !== 'table') return abstain();
+    const hint = action.parse.hint as TableRowHint;
+
+    // Resolve + re-host the feed's source URL exactly like a normal poll.
+    const { templates } = recipeToTableTemplates(recipe, {
+      valueTranslations: recipe.valueTranslations,
+      dateFormat: recipe.dateFormat,
+    });
+    const template = templates.find((t) => t.sourceActionKey === actionKey);
+    if (!template || template.incomplete || template.sources.length !== 1) return abstain();
+    this.rehostFeedUrlsForHotel([template]);
+    const sourceUrl = template.sources[0]!.url;
+    if (!sourceUrl) return abstain();
+    try {
+      await safeGoto(this.page, sourceUrl, { allowedHost: this.allowedHost, context: 'reanchor:probe' });
+    } catch {
+      return abstain(); // can't even load the feed page — abstain (paid path)
+    }
+    if (signal.aborted) return abstain();
+
+    const columns = hint.columns;
+    const learned = { valueTranslations: recipe.valueTranslations, dateFormat: recipe.dateFormat };
+    const todayIso = reanchorTodayIso();
+    const requiredAll = requiredColumnsForTarget(actionKey);
+    const shippingRequired = requiredAll.filter(
+      (c) => typeof columns[c] === 'string' && columns[c]!.trim() !== '',
+    );
+
+    // Fresh extraction with the CURRENT selectors (+ Chat-6 tiered self-heal).
+    const ext = await extractDomRows(this.page, hint.rowSelector, columns, {
+      cap: REANCHOR_PROBE_CAP,
+      ...(hint.columnsTiered ? { columnsTiered: hint.columnsTiered } : {}),
+      ...(hint.rowSelectorTiered ? { rowSelectorTiered: hint.rowSelectorTiered } : {}),
+    });
+    const rows = ext.rows;
+    // rowSelector drift / page wander (zero/near-zero rows) is NOT safely
+    // re-anchorable from value evidence we don't have → abstain (paid path).
+    if (rows.length < MIN_REANCHOR_ROWS) return abstain();
+    if (shippingRequired.length === 0) return abstain();
+
+    const allValues = transposeColumns(rows, Object.keys(columns));
+
+    // CASE A — transient health: fresh extraction certifies → no change needed.
+    const health = checkFeedHealth({
+      actionKey, requiredColumns: shippingRequired, allValues, allSelectors: columns,
+      rowCount: rows.length, learned, todayIso,
+    });
+    if (health.healthy) return { kind: 'healthy' };
+
+    // CASE B — exactly one drifted required column, re-anchored by header.
+    const verdicts = certifyColumns({
+      actionKey, columns: shippingRequired, allValues, allSelectors: columns,
+      learned, todayIso, hasValueEvidence: true,
+    });
+    const drifted = shippingRequired.filter((c) => verdicts.get(c)?.verdict !== 'certified');
+    if (drifted.length !== 1) return abstain(); // 0 (contradiction) or ≥2 (too risky) → abstain
+    const col = drifted[0]!;
+
+    const headers = await readTableHeaders(this.page, hint.rowSelector);
+    if (!headers || !headerGateOk(headers)) return abstain(); // can't trust header positions
+    const liveHeaders = headers.cells.map((c) => ({ index: c.index, text: c.text }));
+
+    const candidates = buildCandidateSelectors({ oldSelector: columns[col] ?? '', headers: liveHeaders });
+    if (candidates.length === 0) return abstain(); // not positionally rebaseable → abstain
+
+    const candidateResults = [];
+    for (const cand of candidates) {
+      if (signal.aborted) return abstain();
+      const cext = await extractDomRows(this.page, hint.rowSelector, { [col]: cand.selector }, { cap: REANCHOR_PROBE_CAP });
+      // The candidate uses the SAME rowSelector that yielded `rows`; if its match
+      // count differs, the page shifted mid-probe (rowSelector instability) and
+      // the per-row values would mis-align with otherValues → drop this candidate
+      // rather than risk a mis-aligned (false) certification.
+      if (cext.rows.length !== rows.length) continue;
+      candidateResults.push({
+        headerIndex: cand.headerIndex,
+        selector: cand.selector,
+        values: cext.rows.map((r) => r[col] ?? ''),
+        headerText: cand.headerText,
+      });
+    }
+    if (candidateResults.length === 0) return abstain();
+    const otherValues: Record<string, string[]> = {};
+    const otherSelectors: Record<string, string> = {};
+    for (const [c, v] of Object.entries(allValues)) if (c !== col) otherValues[c] = v;
+    for (const [c, s] of Object.entries(columns)) if (c !== col) otherSelectors[c] = s;
+
+    const decision = decideColumnReanchor({
+      actionKey, column: col, oldSelector: columns[col] ?? '',
+      anchorHeaderText: hint.columnsTiered?.[col]?.roleName?.name,
+      candidates: candidateResults, otherValues, otherSelectors, learned, todayIso,
+    });
+    if (decision.action !== 'reanchor') return abstain(); // abstain → paid path
+
+    const changes: ColumnChange[] = [{ column: col, newSelector: decision.newSelector }];
+
+    // Build the golden-fixture FRESH SHAPE from a re-extraction with the NEW
+    // selector — real value evidence (catches a certified→failed regression).
+    const healed = applyColumnReanchor(recipe, actionKey, changes);
+    const healedAction = healed.actions[actionKey] as ActionRecipe;
+    const healedHint = healedAction.parse.mode === 'table' ? healedAction.parse.hint : hint;
+    const reext = await extractDomRows(this.page, healedHint.rowSelector, healedHint.columns, { cap: REANCHOR_PROBE_CAP });
+    const healedValues = transposeColumns(reext.rows, Object.keys(healedHint.columns));
+    const healedVerdicts = certifyColumns({
+      actionKey, columns: shippingRequired, allValues: healedValues, allSelectors: healedHint.columns,
+      learned, todayIso, hasValueEvidence: reext.rows.length > 0,
+    });
+    const shipCols = Object.keys(healedHint.columns).filter(
+      (c) => typeof healedHint.columns[c] === 'string' && healedHint.columns[c]!.trim() !== '',
+    );
+    const columnVerdicts: Record<string, FixtureColumnVerdict> = {};
+    for (const c of shipCols) {
+      const v = healedVerdicts.get(c)?.verdict;
+      columnVerdicts[c] = v === 'certified' ? 'certified' : v === 'failed' ? 'failed' : 'uncertain';
+    }
+    const freshShape: FreshExtractionShape = {
+      parseMode: 'table',
+      columns: shipCols,
+      columnVerdicts,
+      hasValueEvidence: reext.rows.length > 0,
+      rowCount: reext.rows.length,
+    };
+    return { kind: 'reanchor', changes, freshShape };
   }
 
   private async enqueueSelfRepairJob(actionKey: keyof Recipe['actions']): Promise<void> {
@@ -1347,7 +1839,7 @@ export class SessionDriver {
     const seedActions: Recipe['actions'] = { ...allActions };
     delete seedActions[actionKey];
 
-    const idempotencyKey = `mapper.repair:${this.pmsFamily}:${actionKey}`;
+    const idempotencyKey = `mapper.repair:${this.pmsFamily}:${this.propertyId}:${actionKey}`;
     const { error } = await supabase.from('workflow_jobs').insert({
       property_id: this.propertyId,
       kind: 'mapper.learn_pms_family',
@@ -1470,6 +1962,94 @@ export function resolveLoginGotoUrl(
 ): string {
   if (rawUrl !== familyStartUrl) return rawUrl;
   return resolveLoginUrl(perHotelLoginUrl, familyStartUrl);
+}
+
+/**
+ * feature/cua-per-hotel-data (Task 1) — re-host a recorded FEED url onto THIS
+ * hotel's tenant origin: the data-read analogue of resolveLoginGotoUrl.
+ *
+ * The mapper records every feed URL on ITS tenant; one active knowledge file per
+ * pms_family replays those same URLs for every hotel. So a per-subdomain cloud
+ * PMS (OPERA Cloud, Cloudbeds, Mews, RoomKey) logs into its own tenant (the
+ * per-hotel login fix) yet still READS the mapper tenant's data — the feed host
+ * shares the family's registrable domain, so safeGoto's same-site guard
+ * (registrable-domain, NOT exact-host) lets the wrong-tenant read through. This
+ * swaps the ORIGIN (scheme + host[:port]) of feed URLs that live on the LEARNED
+ * tenant for the per-hotel origin, leaving everything after the origin verbatim:
+ *
+ *   - No per-hotel URL (e.g. Choice Advantage) → returned verbatim — byte-for-
+ *     byte the pre-fix behavior (family fallback).
+ *   - Per-hotel origin == learned origin → verbatim (no-op). Covers the mapper
+ *     tenant itself AND a single-host multi-tenant PMS like Choice Advantage,
+ *     where tenancy is by login/session, not by host.
+ *   - Feed URL NOT on the learned origin (a cross-host SSO / shared report host)
+ *     → verbatim — exactly as resolveLoginGotoUrl leaves non-login gotos alone.
+ *   - Otherwise → per-hotel origin + the recorded path/query/hash, unchanged.
+ *
+ * Pure string surgery on the path tail (the origin is matched by a
+ * boundary-anchored regex that stops at the first '/', '?' or '#'), so the
+ * {today}/{date}/{placeholder} tokens that ride feed + detail URLs — rendered at
+ * navigation time by template-runner / substituteTemplate — survive verbatim. A
+ * `new URL(rawUrl).toString()` round-trip would percent-encode '{'/'}' and break
+ * them. Never throws; any unparseable input is returned unchanged (and safeGoto
+ * stays the navigation guard regardless). Exported for unit testing.
+ */
+export function rehostFeedUrl(
+  rawUrl: string,
+  familyStartUrl: string,
+  perHotelLoginUrl: string | null | undefined,
+): string {
+  const perHotel = perHotelLoginUrl?.trim();
+  if (!perHotel || !rawUrl) return rawUrl;            // family fallback / nothing to rewrite
+  const learned = feedOrigin(familyStartUrl);
+  const perHotelO = feedOrigin(normalizeUrl(perHotel));
+  const raw = feedOrigin(rawUrl);
+  // Any origin unparseable (relative / malformed / no startUrl) → leave unchanged.
+  if (!learned || !perHotelO || !raw) return rawUrl;
+  // Same tenant already (the mapper tenant itself, or a single-host PMS) → no-op.
+  if (learned.origin === perHotelO.origin) return rawUrl;
+  // Only re-host feeds on the LEARNED tenant origin; cross-host URLs (SSO,
+  // shared report servers) replay exactly as learned.
+  if (raw.origin !== learned.origin) return rawUrl;
+  // Swap the recorded origin (incl. any userinfo prefix) for the per-hotel
+  // origin; the path/query/hash tail is preserved byte-for-byte.
+  return perHotelO.origin + rawUrl.slice(raw.prefixLen);
+}
+
+/**
+ * Parse the ORIGIN of an absolute http(s) URL WITHOUT a `new URL()` round-trip
+ * (which would percent-encode the {today}/{date}/{placeholder} tokens feed +
+ * detail URLs carry). Returns:
+ *   - origin:    canonical scheme://host[:port] (lower-cased, userinfo stripped,
+ *                trailing FQDN dot + explicit default port removed) — so
+ *                equivalent host forms compare equal AND re-host correctly.
+ *   - prefixLen: length of the matched prefix in the INPUT (scheme + any
+ *                userinfo + host[:port]) so the caller slices off exactly the
+ *                path/query/hash tail (which keeps its original case + tokens).
+ * Boundary-anchored (stops at the first '/', '?' or '#') so it can't be tricked
+ * into prefix-matching `https://learned.com.evil.com` as `https://learned.com`.
+ * Returns null for a relative / malformed / non-http(s) URL — the caller leaves
+ * those unchanged (safeGoto stays the navigation guard regardless).
+ *
+ * Deliberately an EXACT-origin check: navigate.ts's hostsAreSameSite is a
+ * registrable-DOMAIN check, which is precisely what must NOT be used here —
+ * sibling tenant subdomains share a registrable domain, and that same-site
+ * pass-through is the wrong-tenant read this fix closes.
+ */
+function feedOrigin(url: string): { origin: string; prefixLen: number } | null {
+  const m = /^(https?:\/\/)(?:[^/?#@]*@)?([^/?#]+)/i.exec(url);
+  if (!m) return null;
+  const scheme = m[1]!.toLowerCase();        // 'https://' | 'http://'
+  let host = m[2]!.toLowerCase();            // host[:port]; userinfo already dropped
+  // Canonicalize equivalent host forms so the comparison + re-host are exact and
+  // can't be fooled by a trailing FQDN dot or an explicit default port (a hand-
+  // crafted recipe URL of `learned.opera.com.` shares the per-hotel registrable
+  // domain, so safeGoto's same-site guard would otherwise let the un-rehosted,
+  // wrong-tenant read through). Placeholders never appear in the origin, so
+  // normalizing here is token-safe.
+  host = host.replace(/\.(?=:|$)/, '');                               // trailing '.' (before port or end)
+  host = host.replace(scheme === 'https://' ? /:443$/ : /:80$/, '');  // explicit default port
+  return { origin: scheme + host, prefixLen: m[0]!.length };
 }
 
 function todayInTimezone(tz: string): string {

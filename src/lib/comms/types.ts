@@ -149,6 +149,30 @@ export interface TaskDTO {
   createdAt: string;
 }
 
+/** A Shift Log Book recap (titled free-text handoff, scoped per property). */
+export interface LogEntryDTO {
+  id: string;
+  title: string;
+  body: string;
+  /** front_desk | housekeeping | maintenance | general — nullable. */
+  category: string | null;
+  authorStaffId: string | null;
+  authorName: string | null;   // resolved via the staffNameMap join
+  replyCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A threaded reply to a Shift Log Book recap. */
+export interface LogReplyDTO {
+  id: string;
+  entryId: string;
+  body: string;
+  authorStaffId: string | null;
+  authorName: string | null;   // resolved via the staffNameMap join
+  createdAt: string;
+}
+
 /** A staff entry for the directory / DM picker. */
 export interface StaffLite {
   id: string;

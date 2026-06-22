@@ -21,6 +21,7 @@
 // data layer's failure surface narrow.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import type { OnboardingState } from '@/lib/onboarding/state';
 import type {
   Property,
   StaffMember,
@@ -222,6 +223,12 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     roomInventory: Array.isArray(r.room_inventory)
       ? parseArrayField(r.room_inventory, (x) => x != null ? String(x) : undefined)
       : undefined,
+    // Onboarding tracking — drives the login funnel's "mid-onboarding owner
+    // belongs in the wizard, not the dashboard" gate (isOnboardingInProgress).
+    onboardingCompletedAt: parseStringField(r.onboarding_completed_at) ?? null,
+    onboardingState: (r.onboarding_state && typeof r.onboarding_state === 'object' && !Array.isArray(r.onboarding_state))
+      ? (r.onboarding_state as OnboardingState)
+      : null,
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }

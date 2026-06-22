@@ -173,6 +173,20 @@ export interface TableRowHint {
   rowSelector: string;
   columns: Record<string, string>;
   skipSelector?: string;
+  /** feature/cua-semantic-columns — DURABLE per-column HEADER anchor, written
+   *  ALONGSIDE (never instead of) the flat `columns` map and keyed by the SAME
+   *  field names. Each entry carries the working positional `css` (the identical
+   *  string in `columns`, kept as fallback) PLUS a `roleName`
+   *  {role:'cell'|'gridcell', name:<header text>} so the runtime can re-resolve a
+   *  column by its HEADER MEANING when a PMS reorders columns. Written ONLY for
+   *  feeds with a reliable header row (no colspan, header cell-count == body
+   *  cell-count) AND only for columns whose positional css is rebaseable; ABSENT
+   *  ⟹ the legacy positional-only path replays byte-identically. */
+  columnsTiered?: Record<string, TieredSelector>;
+  /** feature/cua-semantic-columns — tiered alternative for `rowSelector`. `css`
+   *  is the same string as `rowSelector` today; `xpath` is reserved for a future
+   *  structural fallback the runtime already honors. Present iff columnsTiered is. */
+  rowSelectorTiered?: TieredSelector;
 }
 
 /** A learned STRUCTURED-DATA endpoint — the JSON the page itself fetches under
@@ -451,10 +465,15 @@ export interface TableTemplateSource {
    *  Backward-compat: legacy templates without this field replay using
    *  the existing single-string rowSelector exactly as before. */
   selectorsTiered?: Record<string, TieredSelector>;
-  /** Plan v9 F2 — tiered per-column alternatives. Keyed by the same
-   *  column name as `columns`. Runtime checks columnsTiered first; if
-   *  the column has tiered selectors AND any tier resolves on the row,
-   *  uses that. Else falls through to `columns[col]` (CSS). Optional. */
+  /** Plan v9 F2 / feature/cua-semantic-columns — tiered per-column alternatives,
+   *  keyed by the same column name as `columns`. Populated by recipe-adapter from
+   *  the learned header anchors. NOTE: at RUNTIME the dom_table reader consumes
+   *  these from `extra.columnsTiered` (recipe-adapter mirrors them there), because
+   *  template-runner's sourceToFeedSpec forwards only mode/url/selectors/columns/
+   *  EXTRA to the FeedSpec — this typed field is the canonical shape for typed
+   *  consumers but is not itself read by the worker. Per column the reader resolves
+   *  roleName (header text → live index) → css → xpath, falling back to
+   *  `columns[col]` when a column has no anchor. Optional (legacy = absent). */
   columnsTiered?: Record<string, TieredSelector>;
 }
 
@@ -602,8 +621,41 @@ export interface BoardPreview {
 
 export type BoardTargetStatus = 'searching' | 'found' | 'unavailable' | 'failed';
 
+// feature/cua-mapper-phases-captures — finer LIVE phase the mapper surfaces so
+// the admin board can show "finding the page" vs "gathering rows" vs
+// "verifying" instead of just searching/found/failed. Strictly additive +
+// optional + display-only — same contract as BoardTargetStatus (hand-synced
+// reader in src/lib/pms/learning-board.ts, every field optional there).
+//
+//   queued      target catalogued but not yet reached (the web DERIVES this for
+//               a targetCatalog entry with no boardTargets row — the worker
+//               never has to write it, but the union carries it so the reader
+//               types it)
+//   navigating  target started: menu-hunting / finding the feed page
+//   extracting  reading the rows / sample off the page
+//   certifying  value-certification / required-column audit
+//   drilling    stage-2 detail-page drill to recover a missing column
+//   rechecking  stage-1 focused re-ask after a blank/dead required column
+//   found / unavailable / failed   terminal (mirror BoardTargetStatus)
+//   cost_capped target soft-aborted on its own cost cap (status stays 'failed')
+export type BoardTargetPhase =
+  | 'queued'
+  | 'navigating'
+  | 'extracting'
+  | 'certifying'
+  | 'drilling'
+  | 'rechecking'
+  | 'found'
+  | 'unavailable'
+  | 'failed'
+  | 'cost_capped';
+
 export interface BoardTargetState {
   status: BoardTargetStatus;
+  /** feature/cua-mapper-phases-captures — finer live phase (additive; the
+   *  existing `status` is kept and unchanged). Absent on rows written by older
+   *  workers or carried from a prior attempt. */
+  phase?: BoardTargetPhase;
   startedAt?: string;
   finishedAt?: string;
   /** True when carried from a prior attempt (reclaim) or repair seed. */
@@ -611,4 +663,37 @@ export interface BoardTargetState {
   /** Failure/unavailable explanation (truncated). */
   reason?: string;
   preview?: BoardPreview;
+  /** feature/cua-mapper-cost — per-feed Claude spend (micros). startCostMicros =
+   *  the run's total spend when this feed STARTED (so the live board can show
+   *  the active feed's running cost = currentActivity.totalCostMicros − this);
+   *  costMicros = this feed's final spend, stamped when it finishes. Both
+   *  additive/optional — absent on rows from older workers. */
+  startCostMicros?: number;
+  costMicros?: number;
+}
+
+/**
+ * feature/cua-mapper-phases-captures — run-level "what the robot is doing right
+ * now" line for the admin Learning Board, persisted at
+ * workflow_jobs.result.currentActivity. ONE per run, overwritten on every
+ * onProgress tick and at each per-target phase transition. Live-only: the
+ * completion adapter (mappingJobResultToWorkflowResult) does NOT carry it, so
+ * it is naturally cleared when the job finishes and the board switches to the
+ * terminal per-feed boardTargets. Additive/optional, display-only; hand-synced
+ * reader in src/lib/pms/learning-board.ts.
+ */
+export interface BoardCurrentActivity {
+  /** The mapper target key (Recipe.actions key, e.g. getRoomStatus). */
+  feedKey: string;
+  phase: BoardTargetPhase;
+  /** Human-readable one-liner for the live ticker. */
+  label: string;
+  /** 0-100 overall progress, mirrors the feed's progressPct. */
+  pct: number;
+  /** ISO timestamp of this transition. */
+  at: string;
+  /** feature/cua-mapper-cost — live total Claude spend (micros) at this tick.
+   *  job.claude_cost_micros is only written at completion, so this carries the
+   *  running total for the board's live cost. Additive/optional. */
+  totalCostMicros?: number;
 }

@@ -11,7 +11,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { canViewFinancials } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { monthKey, formatCentsCompact, type FinanceSummary } from '@/lib/financials/shared';
 import { apiGet } from './fin-ui';
 
@@ -21,11 +21,12 @@ const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
 export function FinancialsDashboardCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const can = useCan();
   const { lang } = useLang();
   const router = useRouter();
   const [summary, setSummary] = useState<FinanceSummary | null>(null);
 
-  const canSee = !!user && canViewFinancials(user.role);
+  const canSee = !!user && can('view_financials');
 
   useEffect(() => {
     if (!canSee || !activePropertyId) return;

@@ -60,7 +60,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const gate = await gateHousekeeperRequest<Body>(req, 'housekeeper-photo-presign');
   if (!gate.ok) return gate.response;
   const body = gate.body;
-  if (!body.scopeKey || body.scopeKey.length > 100) {
+  // scopeKey is interpolated into the storage path below, so pin it to a safe
+  // charset — real clients only ever send a UUID or a draft-<ts> key. This
+  // rejects '..' / '/' path-traversal into another hotel's folder. (Audit
+  // hardening 2026-06-18.)
+  if (!body.scopeKey || !/^[A-Za-z0-9_-]{1,100}$/.test(body.scopeKey)) {
     return err('invalid scopeKey', {
       requestId: gate.requestId,
       status: 400,

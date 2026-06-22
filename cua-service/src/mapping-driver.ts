@@ -28,7 +28,7 @@
  * from the per-hotel daily cost cap.
  */
 
-import type { Browser } from 'playwright';
+import type { Browser, BrowserContextOptions } from 'playwright';
 import { chromium } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
@@ -42,7 +42,70 @@ import { createTakeoverController } from './takeover.js';
 import type { PMSCredentials, PMSType, Recipe, ScraperCredentialsRow, LearnedValueTranslations, LearnedDateFormat, BoardTargetDescriptor, BoardTargetState } from './types.js';
 import type { MapperModelId } from './anthropic-client.js';
 import { effectiveColumnsFromAction, missingRequiredColumns } from './target-contract.js';
-import type { FeedGaps, FeedGapEntry } from './knowledge-file.js';
+import type { FeedGaps, FeedGapEntry, RecipeVerification } from './knowledge-file.js';
+import {
+  computeCommitScore,
+  decideCommit,
+  valueFingerprint,
+  fingerprintsMatch,
+  DEFAULT_COMMIT_THRESHOLD,
+  DEFAULT_REQUIRED_PASSES,
+  type CommitSignals,
+  type SignalVerdict,
+} from './commit-gate.js';
+import { reconcileCrossFeed, parseCounter, type FeedObservation } from './cross-feed-reconcile.js';
+import { DISCOVERY_KEY_COLUMNS } from './oracle-verify.js';
+import { CORE_TARGET_CONTRACTS } from './target-contract.js';
+// feature/cua-self-heal-reach — one-fix-generalizes (sample-verify) + golden-fixture gates.
+import { recipeToTableTemplates } from './recipe-adapter.js';
+import { runSingleSourceTemplate } from './extractors/template-runner.js';
+// rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
+// from here, so this is a cycle — but BOTH cross-module references are call-time
+// (inside functions/methods), never load-time, so it resolves safely under CJS+ESM.
+import { rehostFeedUrl } from './session-driver.js';
+import { requiredColumnsForTarget } from './reanchor.js';
+import {
+  loadGoldenFixture,
+  gateAgainstFixture,
+  type FreshExtractionShape,
+  type FixtureColumnVerdict,
+} from './golden-fixtures.js';
+
+// ── best-class verification config knobs (feature/cua-bestclass-verify) ──
+// Read from process.env (env.ts is out of scope for this change). ALL DEFAULT
+// to today's behaviour: enforcement OFF (signals computed + persisted for
+// observability, but never downgrade), one required pass, the calibrated
+// threshold. Flip CUA_VERIFY_ENFORCE=true (+ optionally raise the passes) for
+// the prove-it-before-family-wide rollout posture.
+const verifyEnforceOn = (): boolean =>
+  (process.env.CUA_VERIFY_ENFORCE ?? 'false').toLowerCase() === 'true';
+const verifyThreshold = (): number =>
+  clampFloatCfg(process.env.CUA_VERIFY_COMMIT_THRESHOLD, DEFAULT_COMMIT_THRESHOLD, 0, 1);
+const verifyRequiredPasses = (): number =>
+  clampIntCfg(process.env.CUA_VERIFY_REQUIRED_PASSES, DEFAULT_REQUIRED_PASSES, 1, 9);
+const secondModelVoteOn = (): boolean =>
+  (process.env.CUA_VERIFY_SECOND_MODEL_ENABLED ?? 'false').toLowerCase() === 'true';
+
+function clampFloatCfg(raw: string | undefined, def: number, lo: number, hi: number): number {
+  const n = raw == null ? def : parseFloat(raw);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+}
+function clampIntCfg(raw: string | undefined, def: number, lo: number, hi: number): number {
+  const n = raw == null ? def : parseInt(raw, 10);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+}
+
+// ── self-heal/reach gate knobs (feature/cua-self-heal-reach) ──
+// ALL default OFF: a recipe change auto-promotes exactly as today until an
+// operator opts in. The gates are downgrade-only, so flipping them on can only
+// HOLD a change for review, never re-park an existing live recipe.
+const sampleVerifyEnabled = (): boolean =>
+  (process.env.CUA_SAMPLE_VERIFY_ENABLED ?? 'false').toLowerCase() === 'true';
+/** How many sibling hotels to replay (read-only, bounded). Default 2, max 5. */
+const sampleVerifyN = (): number =>
+  clampIntCfg(process.env.CUA_SAMPLE_VERIFY_N, 2, 1, 5);
+const goldenFixtureGateEnabled = (): boolean =>
+  (process.env.CUA_GOLDEN_FIXTURES_ENABLED ?? 'false').toLowerCase() === 'true';
 
 export interface MappingJobInput {
   pms_family: string;
@@ -505,17 +568,30 @@ export async function runMappingJob(
     // feature/cua-live-assist — founder takeover controller (gate polled at
     // the top of each mapActionCore step).
     takeover,
-    onProgress: (label, pct) => {
-      log.info('mapping-driver: progress', { jobId, label, pct });
+    onProgress: (label, pct, meta) => {
+      log.info('mapping-driver: progress', {
+        jobId, label, pct,
+        ...(meta?.feedKey ? { feedKey: meta.feedKey } : {}),
+        ...(meta?.phase ? { phase: meta.phase } : {}),
+      });
       // Plan v8 Phase B chunk 2 — pipe mapper progress to the Live
       // Mapping admin UI. mapper.ts emits these from mapPMS at:
       // login start/done, each target start, each target done. Fire-
       // and-forget; broadcastMappingEvent never throws.
+      // feature/cua-mapper-phases-captures — when the tick carries structured
+      // feedKey/phase (per-target ticks do; login/setup ticks don't), ride them
+      // on the event's existing `detail` escape hatch so the realtime live
+      // ticker can show the phase without polling the job result. The durable
+      // currentActivity write itself lives in mapper.ts (where mergeJobResult
+      // and the feedKey/phase actually are); this is purely the live broadcast.
       void broadcastMappingEvent(channel, {
         type: 'mapping_in_progress',
         jobId,
         label,
         pct,
+        ...(meta?.feedKey || meta?.phase
+          ? { detail: { feedKey: meta?.feedKey, phase: meta?.phase } }
+          : {}),
         at: new Date().toISOString(),
       });
     },
@@ -532,9 +608,46 @@ export async function runMappingJob(
     return { ok: false, error: result.userMessage };
   }
 
+  // 2.9. feature/cua-bestclass-verify — compute the multi-signal verification
+  //      verdict, but ONLY for a FRESH, full, unseeded learn. A self-repair /
+  //      backfill / coverage-edit seeds an existing recipe and is EXEMPT (same
+  //      rationale as the gate's seeded-target exemption), so a repair is never
+  //      newly parked. Signals are always computed + persisted for ops
+  //      visibility; they only DOWNGRADE auto-promotion when CUA_VERIFY_ENFORCE
+  //      is on. Fail-open: a thrown verification never blocks the learn.
+  const isFreshFullLearn =
+    !input.seed_actions && !input.backfill_missing_feeds &&
+    !(input.only_targets && input.only_targets.length > 0);
+  let verification: ComputedVerification | null = null;
+  if (isFreshFullLearn) {
+    try {
+      verification = await computeRecipeVerification({
+        pmsFamily: input.pms_family,
+        recipe: result.recipe,
+        boardTargets: result.boardTargets,
+        jobId,
+        propertyId: input.property_id,
+        signal,
+      });
+      log.info('mapping-driver: best-class verification computed', {
+        jobId,
+        score: verification.gateInput.score,
+        enforce: verification.gateInput.enforce,
+        consistentPasses: verification.gateInput.consistentPasses,
+        requiredPasses: verification.gateInput.requiredPasses,
+        note: verification.gateInput.note,
+      });
+    } catch (err) {
+      log.warn('mapping-driver: best-class verification threw — proceeding without it (advisory)', {
+        jobId, err: (err as Error).message,
+      });
+      verification = null;
+    }
+  }
+
   // 3. Evaluate the auto-promotion gate (Plan v7 — replaces the "≥60%
   //    of targets" magic number with required-target-class checks).
-  const gate = evaluatePromotionGate(result.recipe, input.seed_actions);
+  const gate = evaluatePromotionGate(result.recipe, input.seed_actions, verification?.gateInput);
   log.info('mapping-driver: promotion gate evaluated', {
     jobId, decision: gate.decision, reason: gate.reason,
   });
@@ -593,6 +706,53 @@ export async function runMappingJob(
     }
   }
 
+  // 3.7. feature/cua-self-heal-reach — ONE-FIX-GENERALIZES sample-verify +
+  //      GOLDEN-FIXTURE regression gates. Both DEFAULT OFF and run ONLY when the
+  //      recipe would otherwise auto-promote (nothing to downgrade on a parked
+  //      draft) — so with the flags unset this whole block is skipped and the
+  //      decision is byte-identical to today. Each only DOWNGRADES auto_promote
+  //      → park_draft; the live fleet is never re-parked. Fail-OPEN: a thrown
+  //      sample-verify is advisory (already caught inside computeSampleVerifyGate).
+  if (gate.decision === 'auto_promote' && (sampleVerifyEnabled() || goldenFixtureGateEnabled())) {
+    // A SEEDED job re-learned only the non-seeded target(s) → gate exactly those.
+    // An UNSEEDED full learn (fresh family OR admin regenerate of a family that
+    // already has live siblings) replaced the WHOLE recipe → gate EVERY emitted
+    // feed, not just the required core, so a regressed business-critical feed
+    // can't go fleet-wide unchecked (Codex P1). Bounded by sampleVerifyN siblings.
+    const changedTargets = input.seed_actions
+      ? Object.keys(result.recipe.actions).filter((k) => !(k in (input.seed_actions as Record<string, unknown>)))
+      : Object.keys(result.recipe.actions);
+    let sampleVerify: SampleVerifyGateInput | undefined;
+    let goldenFixture: GoldenFixtureGateInput | undefined;
+    if (goldenFixtureGateEnabled()) {
+      goldenFixture = computeGoldenFixtureGate({
+        pmsFamily: input.pms_family,
+        recipe: result.recipe,
+        targets: changedTargets,
+        freshShapeFor: (k) => recipeFreshShape(result.recipe, k),
+      });
+    }
+    if (sampleVerifyEnabled() && changedTargets.length > 0) {
+      sampleVerify = await computeSampleVerifyGate({
+        pmsFamily: input.pms_family,
+        recipe: result.recipe,
+        changedTargets,
+        excludePropertyId: input.property_id,
+        deps: defaultSampleVerifyDeps(),
+      });
+    }
+    if (sampleVerify || goldenFixture) {
+      const regate = evaluatePromotionGate(result.recipe, input.seed_actions, verification?.gateInput, sampleVerify, goldenFixture);
+      if (regate.decision !== gate.decision) {
+        log.info('mapping-driver: self-heal/reach gate downgraded promotion', {
+          jobId, from: gate.decision, to: regate.decision, reason: regate.reason,
+        });
+      }
+      gate.decision = regate.decision;
+      gate.reason = regate.reason;
+    }
+  }
+
   // 4. Save the draft knowledge file with the right status.
   //    auto_promote → save as draft, then promote in step 5
   //    park_partial → save as draft with feedGaps; NOT activated — the
@@ -608,6 +768,9 @@ export async function runMappingJob(
     // Hunter re-review P2-5 — the admin reviewing Manage maps needs to see
     // WHY a draft parked, not just which targets it has.
     `${gate.decision}: ${gate.reason}`,
+    // feature/cua-bestclass-verify — persist the verification telemetry +
+    // pass^N counter inside the signed envelope (only on fresh learns).
+    verification?.persist,
   );
   if (!draft.ok) {
     return { ok: false, error: `recipe mapped successfully but draft save failed: ${draft.error}` };
@@ -694,9 +857,72 @@ export async function runMappingJob(
 
 // ─── Promotion gate ────────────────────────────────────────────────────
 
+/**
+ * feature/cua-bestclass-verify — the calibrated multi-signal verdict the
+ * orchestration feeds into the gate. ABSENT ⟹ today's behaviour (the gate
+ * decides exactly as before). When present AND `enforce`, a recipe that would
+ * AUTO-PROMOTE is held for founder review (park_partial — never quarantine,
+ * never re-park) unless it clears the calibrated threshold AND pass^N. The
+ * orchestration only ever passes this for FRESH, unseeded full learns, so a
+ * self-repair / backfill / coverage-edit (and every already-live recipe, which
+ * the gate is never re-run on) is exempt — the live fleet cannot mass re-park.
+ */
+export interface VerificationGateInput {
+  enforce: boolean;
+  score: number;
+  threshold: number;
+  consistentPasses: number;
+  requiredPasses: number;
+  /** Short human note appended to the gate reason (signal summary). */
+  note?: string;
+}
+
+/**
+ * feature/cua-self-heal-reach — ONE-FIX-GENERALIZES sample-verify result, fed
+ * into the gate. A per-family recipe is shared by EVERY hotel on the family, so a
+ * version that auto-promotes goes live fleet-wide at once. Before that, the
+ * promotion sequence replays the changed feed(s) READ-ONLY on a SAMPLE of OTHER
+ * sibling hotels. If the new selectors POSITIVELY fail on ANY sampled sibling
+ * (rows extracted but a required column is blank there), this downgrades
+ * auto_promote → park_draft so the founder reviews instead of breaking the fleet.
+ *
+ * DOWNGRADE-ONLY + DEFAULT-OFF + ABSENT ⟹ today's behaviour: `enabled:false` (or
+ * absent) is a no-op; an inconclusive sibling (offline, session expired, empty
+ * day) NEVER downgrades — only a positive failure does — so a single offline
+ * sibling can't starve the fleet's promotions.
+ */
+export interface SampleVerifyGateInput {
+  enabled: boolean;
+  /** Sibling hotels actually replayed. */
+  sampled: number;
+  /** Siblings where the changed feed POSITIVELY failed under the new selectors. */
+  failedSiblings: number;
+  note?: string;
+}
+
+/**
+ * feature/cua-self-heal-reach — GOLDEN-FIXTURE regression result, fed into the
+ * gate. Compares the candidate recipe's per-feed extraction SHAPE against a
+ * committed known-good snapshot (golden-fixtures.ts). A feed where a
+ * previously-CERTIFIED column was dropped or value-regressed → blocked.
+ *
+ * DOWNGRADE-ONLY + DEFAULT-OFF + ABSENT-FIXTURE ⟹ skip: with no fixture (the
+ * normal state until one is captured + committed) `regressedFeeds` is empty and
+ * this is a no-op — the live fleet is never re-parked on rollout.
+ */
+export interface GoldenFixtureGateInput {
+  enabled: boolean;
+  /** Feeds that regressed vs their golden fixture (certified→failed/dropped). */
+  regressedFeeds: string[];
+  note?: string;
+}
+
 export function evaluatePromotionGate(
   recipe: Recipe,
   seedActions?: Recipe['actions'],
+  verification?: VerificationGateInput,
+  sampleVerify?: SampleVerifyGateInput,
+  goldenFixture?: GoldenFixtureGateInput,
 ): {
   decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
   reason: string;
@@ -704,6 +930,50 @@ export function evaluatePromotionGate(
 } {
   const found = new Set(Object.keys(recipe.actions));
   const feedGaps = computeFeedGaps(recipe.actions);
+
+  // feature/cua-prove-columns — a required target is TRUSTWORTHY FOR AUTO-PROMOTION
+  // only when each required column was PROVEN: oracle-reconciled (mode:'api', the
+  // JSON path, whose rows are reconciled against the DOM oracle) OR first-emission
+  // value-certified (mode:'table', the new DOM-path check). A table feed that
+  // carries `unprovenRequiredColumns` (columns kept but NOT value-certified — the
+  // page was empty/unreadable at onboarding so no value evidence existed, or the
+  // value parsed as the wrong type on every sampled row) must NEVER auto-go-live
+  // with a guessed column; it parks for founder review (park_partial). The field
+  // is read STRUCTURALLY (ActionRecipe is owned by types.ts, out of scope here)
+  // and is ABSENT ⟹ proven: legacy live recipes have no field and stay trusted,
+  // so a backfill/promote re-check never mass-reparks the fleet (monotonic).
+  //
+  // feature/cua-tolerant-mapper — `unprovenRequiredColumns` is stamped only from
+  // ESSENTIALS (finalizeRecoveredSuccess), so a blank/derived contextual date
+  // never lands here and never holds a feed for review. No change needed.
+  const unprovenByTarget = new Map<string, string[]>();
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;                      // missing → already a computeFeedGaps gap
+    if (action.parse?.mode === 'api') continue; // oracle-reconciled JSON path — already strong
+    // SEEDED targets are already LIVE — they passed this gate (or the founder's
+    // Promote click) on a prior job, so a stale `unprovenRequiredColumns` they
+    // carry (e.g. a feed onboarded empty, then founder-approved) must NOT re-park
+    // a successful self-repair/backfill that only re-learned a DIFFERENT target.
+    // The field is never stripped from the active recipe, so without this a repair
+    // would silently fail to auto-promote forever (Claude review P1). Only freshly
+    // learned targets (absent from the seed) are subject to value-certification.
+    // Require a REAL seeded action (not just key presence): a malformed seed with
+    // `{ target: null }` must NOT be treated as already-live and exempt (review #2).
+    if (seedActions && seedActions[t] != null) continue;
+    const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
+    if (!Array.isArray(carried) || carried.length === 0) continue; // certified / legacy
+    // Count only columns still SHIPPING (non-blank) — a blanked column is already
+    // a computeFeedGaps gap (incomplete_columns), not an "unproven but live" one.
+    const cols = effectiveColumnsFromAction(t, action);
+    const live = carried.filter(
+      (c): c is string => typeof c === 'string' && typeof cols[c] === 'string' && cols[c]!.trim() !== '',
+    );
+    if (live.length > 0) unprovenByTarget.set(String(t), live);
+  }
+  const unprovenNote = unprovenByTarget.size > 0
+    ? ` — required columns not value-certified (need founder review): ${[...unprovenByTarget].map(([t, cols]) => `${t} (${cols.join(', ')})`).join('; ')}`
+    : '';
 
   // Plan v8 self-repair guard — a repair job seeds the existing recipe's
   // actions (minus the one failing target) and re-learns just that one,
@@ -738,12 +1008,56 @@ export function evaluatePromotionGate(
   );
   const businessCriticalFound = BUSINESS_CRITICAL_TARGETS.filter((t) => found.has(t));
 
-  // All 4 required trustworthy → the pre-existing full path.
+  // All 4 required present + column-complete (non-blank). Auto-promote ONLY when
+  // every required column is also value-PROVEN AND enough business-critical feeds
+  // landed — otherwise park for the founder's Promote click.
   if (feedGaps.missingRequired.length === 0) {
-    if (businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
+    if (unprovenByTarget.size === 0 && businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO) {
+      // feature/cua-bestclass-verify — when enforcement is ON, a recipe that
+      // would auto-promote must additionally clear the calibrated multi-signal
+      // threshold AND pass^N. Failing either holds it for the founder's Promote
+      // click (park_partial) — never quarantine, never a live re-park (this
+      // branch is only reached for fresh learns the orchestration verified).
+      if (verification?.enforce) {
+        const d = decideCommit({
+          score: verification.score,
+          threshold: verification.threshold,
+          consistentPasses: verification.consistentPasses,
+          requiredPasses: verification.requiredPasses,
+        });
+        if (!d.commit) {
+          return {
+            decision: 'park_partial',
+            reason: `held for founder review by best-class verification — ${d.reason}${verification.note ? `; ${verification.note}` : ''}`,
+            feedGaps,
+          };
+        }
+      }
+      // feature/cua-self-heal-reach — two MORE downgrade-only gates, applied only
+      // in the auto-promote branch and only when ENABLED + POSITIVELY failing.
+      // Both park_draft (never quarantine): the prior active is untouched, the
+      // candidate is saved for founder review. Absent/disabled ⟹ no effect, so
+      // the live fleet is never re-parked when these roll out (monotonic).
+      if (sampleVerify?.enabled && sampleVerify.failedSiblings > 0) {
+        return {
+          decision: 'park_draft',
+          reason: `held for founder review — one-fix-generalizes sample-verify failed on ${sampleVerify.failedSiblings}/${sampleVerify.sampled} sibling hotel(s)${sampleVerify.note ? `; ${sampleVerify.note}` : ''}`,
+          feedGaps,
+        };
+      }
+      if (goldenFixture?.enabled && goldenFixture.regressedFeeds.length > 0) {
+        return {
+          decision: 'park_draft',
+          reason: `held for founder review — golden-fixture regression on: ${goldenFixture.regressedFeeds.join(', ')}${goldenFixture.note ? `; ${goldenFixture.note}` : ''}`,
+          feedGaps,
+        };
+      }
+      const verifyNote = verification
+        ? ` [verify score ${verification.score.toFixed(2)}≥${verification.threshold}, passes ${verification.consistentPasses}/${verification.requiredPasses}${verification.enforce ? '' : ', advisory'}]`
+        : '';
       return {
         decision: 'auto_promote',
-        reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})`,
+        reason: `all required + ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (${businessCriticalFound.join(', ')})${verifyNote}`,
         feedGaps,
       };
     }
@@ -753,9 +1067,18 @@ export function evaluatePromotionGate(
     // like a 3/4 one that meets the bar below; neither ships without him.
     // The BC gaps are recorded in feedGaps so the promoted file goes live
     // with the honesty annotations + daily backfill retries intact.
+    //
+    // feature/cua-prove-columns — a required column that ships but was NOT
+    // value-certified (unprovenByTarget) is treated exactly like a BC shortfall
+    // here: never auto-go-live, always founder-reviewed. The column keeps its
+    // selector (it may be correct) so a single Promote click ships it; we just
+    // refuse to do it automatically with a guessed column.
+    const bcClause = businessCriticalFound.length >= MIN_BUSINESS_CRITICAL_FOR_AUTO
+      ? `${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical`
+      : `only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion)`;
     return {
       decision: 'park_partial',
-      reason: `all required found but only ${businessCriticalFound.length}/${BUSINESS_CRITICAL_TARGETS.length} business-critical (need ${MIN_BUSINESS_CRITICAL_FOR_AUTO} for full promotion) — parked for admin review; missing business-critical recorded for retry: ${feedGaps.missingBusinessCritical.join(', ')}`,
+      reason: `all required found but ${bcClause}${unprovenNote} — parked for admin review; missing business-critical recorded for retry: ${feedGaps.missingBusinessCritical.join(', ')}`,
       feedGaps,
     };
   }
@@ -773,7 +1096,7 @@ export function evaluatePromotionGate(
       .join('; ');
     return {
       decision: 'park_partial',
-      reason: `partial recipe parked for admin review — trustworthy: ${[...trustworthyRequired].join(', ')}; still missing required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}`,
+      reason: `partial recipe parked for admin review — trustworthy: ${[...trustworthyRequired].join(', ')}; still missing required: ${gapSummary}${feedGaps.missingBusinessCritical.length > 0 ? `; missing business-critical: ${feedGaps.missingBusinessCritical.join(', ')}` : ''}${unprovenNote}`,
       feedGaps,
     };
   }
@@ -783,6 +1106,650 @@ export function evaluatePromotionGate(
     reason: `below the partial-promotion bar (need getRoomStatus, or getArrivals + getDepartures, learned and complete) — missing/dead required targets: ${feedGaps.missingRequired.map((g) => `${g.target} (${g.reason})`).join(', ')}`,
     feedGaps,
   };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// feature/cua-self-heal-reach — ONE-FIX-GENERALIZES (sample-verify) + GOLDEN-
+// FIXTURE gate computations, the read-only sibling replay, and the shared
+// promotion gauntlet the rung-2 re-anchor (session-driver) reuses so a re-anchor
+// is held to the SAME fleet-safety bar as a paid re-learn.
+// ════════════════════════════════════════════════════════════════════════════
+
+export type SiblingVerifyVerdict = 'pass' | 'fail' | 'inconclusive';
+export interface SiblingVerifyResult {
+  propertyId: string;
+  actionKey: string;
+  verdict: SiblingVerifyVerdict;
+  reason: string;
+}
+
+/** A sibling must yield at least this many rows before a blank-column verdict is
+ *  trusted — below it the feed is too thin to tell "selector wrong" from "quiet
+ *  hotel", so it reads inconclusive (never a false fail). */
+const SAMPLE_VERIFY_MIN_ROWS = 3;
+const SAMPLE_VERIFY_REPLAY_TIMEOUT_MS = 60_000;
+/** A required column present on < this fraction of a sibling's rows is read as a
+ *  POSITIVE selector failure (the candidate points at the wrong/empty cell there). */
+const SAMPLE_VERIFY_MIN_COVERAGE = 0.5;
+/** Hard caps on the WHOLE gate (siblings × changed feeds can be large for an
+ *  unseeded full re-learn). Bound both the replay COUNT and the wall-clock so a
+ *  promotion is never blocked for minutes; un-replayed feeds are simply not
+ *  sampled (never a false fail). */
+const SAMPLE_VERIFY_MAX_TOTAL_REPLAYS = 16;
+const SAMPLE_VERIFY_TOTAL_BUDGET_MS = 180_000;
+
+/** Injectable seam: the gate's selection + aggregation is unit-testable with
+ *  fakes; production wires the real Supabase + Playwright replay. */
+export interface SampleVerifyDeps {
+  /** Eligible sibling property_ids on the family (excludes the mapper tenant +
+   *  any non-`alive` hotel so a cost-capped/paused hotel is never woken), bounded. */
+  selectSiblings: (pmsFamily: string, excludePropertyId: string | null, limit: number) => Promise<string[]>;
+  /** Replay ONE changed feed READ-ONLY on ONE sibling under the candidate recipe. */
+  replayFeedOnSibling: (propertyId: string, recipe: Recipe, actionKey: string) => Promise<SiblingVerifyResult>;
+}
+
+/** PURE. Verdict counts; only POSITIVE failures matter (inconclusive never
+ *  downgrades — a single offline sibling can't starve fleet promotions). */
+export function aggregateSampleVerify(results: SiblingVerifyResult[]): {
+  sampled: number; failed: number; passed: number; inconclusive: number; failedSiblings: number;
+} {
+  const sampled = new Set(results.map((r) => r.propertyId)).size;
+  const failedSiblings = new Set(results.filter((r) => r.verdict === 'fail').map((r) => r.propertyId)).size;
+  return {
+    sampled,
+    failed: results.filter((r) => r.verdict === 'fail').length,
+    passed: results.filter((r) => r.verdict === 'pass').length,
+    inconclusive: results.filter((r) => r.verdict === 'inconclusive').length,
+    failedSiblings,
+  };
+}
+
+export async function computeSampleVerifyGate(args: {
+  pmsFamily: string;
+  recipe: Recipe;
+  changedTargets: string[];
+  excludePropertyId: string | null;
+  deps: SampleVerifyDeps;
+}): Promise<SampleVerifyGateInput> {
+  if (args.changedTargets.length === 0) {
+    return { enabled: true, sampled: 0, failedSiblings: 0, note: 'no changed feeds to sample' };
+  }
+  const siblings = await args.deps.selectSiblings(args.pmsFamily, args.excludePropertyId, sampleVerifyN());
+  if (siblings.length === 0) {
+    return { enabled: true, sampled: 0, failedSiblings: 0, note: 'no eligible sibling hotels' };
+  }
+  const results: SiblingVerifyResult[] = [];
+  const deadline = Date.now() + SAMPLE_VERIFY_TOTAL_BUDGET_MS;
+  let replays = 0;
+  let truncated = false;
+  outer:
+  for (const propertyId of siblings) {
+    for (const actionKey of args.changedTargets) {
+      if (replays >= SAMPLE_VERIFY_MAX_TOTAL_REPLAYS || Date.now() >= deadline) {
+        truncated = true;
+        break outer;
+      }
+      replays++;
+      try {
+        results.push(await args.deps.replayFeedOnSibling(propertyId, args.recipe, actionKey));
+      } catch (err) {
+        results.push({ propertyId, actionKey, verdict: 'inconclusive', reason: (err as Error).message });
+      }
+    }
+  }
+  const agg = aggregateSampleVerify(results);
+  return {
+    enabled: true,
+    sampled: agg.sampled,
+    failedSiblings: agg.failedSiblings,
+    note: `pass=${agg.passed} fail=${agg.failed} inconclusive=${agg.inconclusive}${truncated ? ' (budget-truncated)' : ''}`,
+  };
+}
+
+/**
+ * Read-only replay of ONE feed on ONE sibling in a FRESH, ISOLATED browser. Never
+ * touches the sibling's live session-driver page/process; reuses the sibling's
+ * STORED session (scraper_session) so it does NOT fresh-login (which could evict
+ * a single-session PMS and disturb the sibling's polling). Any ambiguity →
+ * 'inconclusive' (never a false 'fail').
+ */
+async function replaySiblingFeedReadOnly(
+  propertyId: string,
+  recipe: Recipe,
+  actionKey: string,
+): Promise<SiblingVerifyResult> {
+  const out = (verdict: SiblingVerifyVerdict, reason: string): SiblingVerifyResult => ({ propertyId, actionKey, verdict, reason });
+  const credentials = await loadCredentials(propertyId);
+  if (!credentials) return out('inconclusive', 'no_credentials');
+  const { data: sess } = await supabase
+    .from('scraper_session').select('state').eq('property_id', propertyId).maybeSingle();
+  const storageState = (sess as { state?: Record<string, unknown> } | null)?.state;
+  if (!storageState) return out('inconclusive', 'no_stored_session');
+
+  const { templates } = recipeToTableTemplates(recipe);
+  const template = templates.find((t) => t.sourceActionKey === actionKey);
+  if (!template) return out('inconclusive', 'feed_not_in_recipe');
+  if (template.incomplete) return out('inconclusive', 'feed_incomplete');
+  if (template.sources.length !== 1) return out('inconclusive', 'multi_source_unsupported');
+
+  // Re-host the feed URL onto THIS sibling's tenant origin (per-subdomain PMS).
+  // The recipe URL is the MAPPER tenant's; without this, safeGoto's same-site
+  // (registrable-domain) guard would let a wrong-tenant read through and the
+  // replay would "verify" against the mapper's data → a false pass. Same-host
+  // PMS (Choice Advantage) → no-op.
+  const familyStartUrl = recipe.login?.startUrl ?? '';
+  for (const source of template.sources) {
+    source.url = rehostFeedUrl(source.url, familyStartUrl, credentials.loginUrl);
+  }
+
+  let browser: Browser | null = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      // Reuse the sibling's STORED session (jsonb) — never a fresh login.
+      storageState: storageState as BrowserContextOptions['storageState'],
+      acceptDownloads: true,
+    });
+    const page = await context.newPage();
+    const allowedHost = new URL(credentials.loginUrl).host;
+    const run = await runSingleSourceTemplate({
+      page, template, allowedHost, signal: AbortSignal.timeout(SAMPLE_VERIFY_REPLAY_TIMEOUT_MS),
+    });
+    if (!run.ok) return out('inconclusive', `run_failed:${run.reason ?? ''}`);
+    if (run.rows.length < SAMPLE_VERIFY_MIN_ROWS) return out('inconclusive', `too_few_rows:${run.rows.length}`);
+    const required = requiredColumnsForTarget(actionKey as keyof Recipe['actions']);
+    if (required.length === 0) return out('pass', 'no_required_columns_to_check');
+    for (const col of required) {
+      const nonBlank = run.rows.filter((r) => {
+        const v = r[col];
+        return v !== null && v !== undefined && String(v).trim() !== '';
+      }).length;
+      const coverage = nonBlank / run.rows.length;
+      if (coverage < SAMPLE_VERIFY_MIN_COVERAGE) {
+        return out('fail', `required_column_blank_on_sibling:${col}(${coverage.toFixed(2)})`);
+      }
+    }
+    return out('pass', `${run.rows.length} rows, required columns present`);
+  } catch (err) {
+    return out('inconclusive', (err as Error).message);
+  } finally {
+    if (browser) await browser.close().catch(() => { /* best-effort */ });
+  }
+}
+
+function defaultSampleVerifyDeps(): SampleVerifyDeps {
+  return {
+    selectSiblings: async (pmsFamily, excludePropertyId, limit) => {
+      const { data, error } = await supabase
+        .from('property_sessions').select('property_id, status').eq('pms_family', pmsFamily);
+      if (error || !data) return [];
+      return (data as Array<{ property_id: string; status: string }>)
+        .filter((r) => r.property_id !== excludePropertyId && r.status === 'alive')
+        .map((r) => r.property_id)
+        .slice(0, limit);
+    },
+    replayFeedOnSibling: (propertyId, recipe, actionKey) => replaySiblingFeedReadOnly(propertyId, recipe, actionKey),
+  };
+}
+
+/** PURE. Derive a golden-fixture FRESH SHAPE from the candidate recipe itself
+ *  (the mapping-driver path has no per-feed live re-extraction). A column is
+ *  'certified' unless the recipe carries it in `unprovenRequiredColumns`. Catches
+ *  the structural regression a re-learn can introduce: a previously-certified
+ *  column DROPPED from the new recipe. (The re-anchor path supplies REAL values
+ *  → certified→failed is caught there too.) */
+export function recipeFreshShape(recipe: Recipe, actionKey: string): FreshExtractionShape | null {
+  const action = recipe.actions[actionKey as keyof Recipe['actions']];
+  if (!action) return null;
+  const colMap = effectiveColumnsFromAction(actionKey as keyof Recipe['actions'], action);
+  const columns = Object.keys(colMap).filter((c) => typeof colMap[c] === 'string' && colMap[c]!.trim() !== '');
+  const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
+  const unproven = new Set(Array.isArray(carried) ? carried.filter((c): c is string => typeof c === 'string') : []);
+  const columnVerdicts: Record<string, FixtureColumnVerdict> = {};
+  for (const c of columns) columnVerdicts[c] = unproven.has(c) ? 'uncertain' : 'certified';
+  // hasValueEvidence:false on purpose — this path has NO live re-extraction, only
+  // recipe structure. So the golden-fixture gate uses it ONLY to detect a DROPPED
+  // certified column (a structural regression a re-learn can introduce); a
+  // certified→failed VALUE regression needs real rows and is caught on the
+  // re-anchor path's freshShape, which carries honest hasValueEvidence.
+  return { parseMode: action.parse.mode, columns, columnVerdicts, hasValueEvidence: false, rowCount: -1 };
+}
+
+export function computeGoldenFixtureGate(args: {
+  pmsFamily: string;
+  recipe: Recipe;
+  targets: string[];
+  /** Re-anchor supplies REAL fresh shapes (live values); the mapping path passes
+   *  recipeFreshShape (structural). */
+  freshShapeFor: (actionKey: string) => FreshExtractionShape | null;
+}): GoldenFixtureGateInput {
+  const regressed: string[] = [];
+  for (const actionKey of args.targets) {
+    const fixture = loadGoldenFixture(args.pmsFamily, actionKey);
+    if (!fixture) continue; // ABSENT ⟹ skip (no gate)
+    const fresh = args.freshShapeFor(actionKey);
+    if (!fresh) continue;
+    const verdict = gateAgainstFixture({ fixture, fresh });
+    if (verdict.regressed) {
+      regressed.push(actionKey);
+      log.warn('mapping-driver: golden-fixture regression', { pmsFamily: args.pmsFamily, actionKey, reason: verdict.reason });
+    }
+  }
+  return { enabled: true, regressedFeeds: regressed };
+}
+
+export interface PromoteRecipeChangeArgs {
+  pmsFamily: string;
+  recipe: Recipe;
+  /** All actions EXCEPT the changed one(s) — the seed-guard exemption (a repair
+   *  shape). The changed target(s) are freshly proven, so they are NOT seeded. */
+  seedActions?: Recipe['actions'];
+  /** Targets that changed (sample-verify + golden-fixture scope). */
+  changedTargets: string[];
+  /** Re-anchor supplies REAL fresh shapes for golden-fixture; absent → structural. */
+  freshShapeFor?: (actionKey: string) => FreshExtractionShape | null;
+  /** Origin label for logs / the draft gate note (e.g. 'reanchor'). */
+  origin: string;
+  /** The hotel that originated the change — excluded from sibling sampling. */
+  excludePropertyId?: string | null;
+}
+
+export interface PromoteRecipeChangeResult {
+  ok: boolean;
+  decision: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine';
+  reason: string;
+  activated: boolean;
+  draftId?: string;
+  version?: number;
+  error?: string;
+}
+
+/**
+ * The SHARED promotion gauntlet for an out-of-band recipe change (the rung-2
+ * re-anchor). Runs the SAME sequence runMappingJob does — base gate → (auto-
+ * promote only) sample-verify + golden-fixture → save signed draft → promote —
+ * so a cheap re-anchor is held to the EXACT fleet-safety bar as a paid re-learn.
+ * Activates ONLY on auto_promote; anything else saves a draft for founder review
+ * and leaves the current active untouched (never zero-active).
+ */
+export async function promoteRecipeChange(args: PromoteRecipeChangeArgs): Promise<PromoteRecipeChangeResult> {
+  let gate = evaluatePromotionGate(args.recipe, args.seedActions);
+  if (gate.decision === 'auto_promote') {
+    let sampleVerify: SampleVerifyGateInput | undefined;
+    let goldenFixture: GoldenFixtureGateInput | undefined;
+    if (goldenFixtureGateEnabled()) {
+      goldenFixture = computeGoldenFixtureGate({
+        pmsFamily: args.pmsFamily,
+        recipe: args.recipe,
+        targets: args.changedTargets,
+        freshShapeFor: args.freshShapeFor ?? ((k) => recipeFreshShape(args.recipe, k)),
+      });
+    }
+    if (sampleVerifyEnabled()) {
+      try {
+        sampleVerify = await computeSampleVerifyGate({
+          pmsFamily: args.pmsFamily,
+          recipe: args.recipe,
+          changedTargets: args.changedTargets,
+          excludePropertyId: args.excludePropertyId ?? null,
+          deps: defaultSampleVerifyDeps(),
+        });
+      } catch (err) {
+        log.warn('promoteRecipeChange: sample-verify threw — proceeding without it', { origin: args.origin, err: (err as Error).message });
+      }
+    }
+    if (sampleVerify || goldenFixture) {
+      gate = evaluatePromotionGate(args.recipe, args.seedActions, undefined, sampleVerify, goldenFixture);
+    }
+  }
+
+  const initialStatus = gate.decision === 'quarantine' ? 'quarantined' : 'draft';
+  const draft = await saveDraftKnowledgeFile(
+    args.pmsFamily, args.recipe, initialStatus, gate.feedGaps, `${args.origin}/${gate.decision}: ${gate.reason}`,
+  );
+  if (!draft.ok) {
+    return { ok: false, decision: gate.decision, reason: gate.reason, activated: false, error: draft.error };
+  }
+  let activated = false;
+  if (shouldActivateImmediately(gate.decision)) {
+    const promoted = await promoteDraft(args.pmsFamily, draft.id);
+    if (promoted.ok) {
+      activated = true;
+      await reviveNoKnowledgeSessions(args.pmsFamily);
+    } else {
+      gate.decision = 'park_draft';
+      gate.reason = `promotion failed: ${promoted.error}`;
+    }
+  }
+  return { ok: true, decision: gate.decision, reason: gate.reason, activated, draftId: draft.id, version: draft.version };
+}
+
+// ─── Best-class verification (feature/cua-bestclass-verify) ─────────────────
+//
+// Computed ONCE per FRESH, unseeded full learn (the orchestration gates on
+// that), NEVER at the 30s poll. Folds four INDEPENDENT signals into the
+// calibrated commit decision the gate consumes, and persists the telemetry +
+// pass^N counter into the signed envelope. Cross-feed + fingerprint are pure
+// (free); the second-model vote is env-gated OFF by default; the prior-pass
+// read is one cheap query. Everything fail-OPEN: any error degrades to "no
+// signal", never blocks a learn.
+
+/** Build cross-feed-reconcile inputs from the Learning-Board previews carried
+ *  out of mapPMS (boardTargets). getDashboardCounts is a single-row counter
+ *  feed → its first preview row supplies the dashboard counters; every other
+ *  feed contributes its rowCount (and a truncated sample). NEVER routes
+ *  getDashboardCounts through reconcileRows. Pure + exported for tests. */
+export function gatherCrossFeedObservation(
+  boardTargets: Record<string, BoardTargetState> | undefined,
+): { feeds: Record<string, FeedObservation>; dashboardCounters: Record<string, number | null> } {
+  const feeds: Record<string, FeedObservation> = {};
+  const dashboardCounters: Record<string, number | null> = {};
+  for (const [key, st] of Object.entries(boardTargets ?? {})) {
+    const preview = st?.preview;
+    if (!preview) continue;
+    if (key === 'getDashboardCounts') {
+      const row = preview.sample?.[0];
+      if (row) for (const [col, val] of Object.entries(row)) dashboardCounters[col] = parseCounter(val);
+      continue;
+    }
+    const obs: FeedObservation = {};
+    if (typeof preview.rowCount === 'number') obs.rowCount = preview.rowCount;
+    if (Array.isArray(preview.sample)) {
+      obs.rows = preview.sample;
+      // NEVER mark the board preview "complete": its rows are RAW DOM text
+      // (un-translated — e.g. "Occ"/"VC", not the canonical occupied/vacant_clean
+      // the exact predicate expects) and truncated to ≤3. Either alone makes an
+      // exact predicate count unsound (review P2: a tiny-property preview could
+      // exact-count 0 against a positive counter → false mismatch). Cross-feed
+      // therefore uses ONLY the SOUND lower-bound (rowCount ≥ counter) from this
+      // wiring. The exact path stays in cross-feed-reconcile.ts for callers that
+      // pass canonical full rows (a documented follow-up: canonicalize preview
+      // statuses to enable exact occupancy reconcile).
+      obs.rowsComplete = false;
+    }
+    feeds[key] = obs;
+  }
+  return { feeds, dashboardCounters };
+}
+
+/**
+ * STRUCTURAL fingerprint of the recipe's REQUIRED feeds — the pass^N
+ * consistency anchor. Adversarial review (both reviewers, P1) showed a
+ * fingerprint derived from the ≤3-row live preview NEVER converges: the specific
+ * rows differ between two onboarding passes minutes apart (occupancy changes,
+ * paging), so the counter reset to 1 every time and pass^N (N≥2) could never
+ * accumulate. This builds the anchor from STABLE recipe structure instead — feed
+ * present + parse mode + sorted mapped columns + the learned enum vocabulary —
+ * so an unchanged recipe re-derives an IDENTICAL fingerprint (converges), AND
+ * two hotels on the SAME family with the same structure corroborate each other
+ * (genuine "before it goes family-wide"). The live preview is used ONLY for the
+ * one-shot degenerate-key SANITY flag, never for the cross-pass string. Pure +
+ * exported. */
+export function computeRecipeFingerprint(
+  recipe: Recipe,
+  boardTargets: Record<string, BoardTargetState> | undefined,
+): { fingerprint: string; sane: boolean } {
+  const parts: string[] = [];
+  let sane = true;
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;
+    const mode = action.parse?.mode ?? 'none';
+    const colMap = effectiveColumnsFromAction(t, action);
+    const cols = Object.keys(colMap)
+      .filter((c) => typeof colMap[c] === 'string' && colMap[c]!.trim() !== '')
+      .sort();
+    const table = CORE_TARGET_CONTRACTS[t]?.table;
+    const vocab = table ? learnedVocabFor(recipe.valueTranslations, table) : '';
+    parts.push(`${String(t)}|${mode}|${cols.join(',')}|${vocab}`);
+
+    // One-shot sanity (degenerate key) from the live preview — NOT part of the
+    // cross-pass string (those rows vary between passes).
+    const keyField = DISCOVERY_KEY_COLUMNS[t];
+    const rows = boardTargets?.[String(t)]?.preview?.sample;
+    if (keyField && Array.isArray(rows) && rows.length > 0) {
+      const fp = valueFingerprint({ feed: String(t), rows, keyField });
+      if (!fp.sane) sane = false;
+    }
+  }
+  return { fingerprint: parts.sort().join(';'), sane };
+}
+
+/** Sorted, stable summary of the learned enum vocabulary for a table from
+ *  recipe.valueTranslations (keyed `${table}.${col}`) — part of the structural
+ *  fingerprint so a recipe that re-learned a DIFFERENT status vocabulary is a
+ *  different shape, while the SAME vocabulary corroborates. */
+function learnedVocabFor(
+  valueTranslations: Recipe['valueTranslations'] | undefined,
+  table: string,
+): string {
+  if (!valueTranslations) return '';
+  const cols: string[] = [];
+  for (const [key, mapping] of Object.entries(valueTranslations)) {
+    if (!key.startsWith(`${table}.`)) continue;
+    const col = key.slice(table.length + 1);
+    const canon = [...new Set(Object.values(mapping ?? {}).map((v) => String(v)))].sort();
+    cols.push(`${col}=${canon.join('/')}`);
+  }
+  return cols.sort().join('&');
+}
+
+/** Reconcile (proof) signal for the score: 'fail' iff a required target ships a
+ *  live, non-blank required column that was NOT value-certified / api-reconciled
+ *  (the same shape the gate's unprovenByTarget uses). Mirrors — does not fork —
+ *  the proof state; reconcileRows / certifyColumns own the verdicts. */
+function reconcileSignalForRecipe(recipe: Recipe): SignalVerdict {
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;
+    if (action.parse?.mode === 'api') continue; // oracle-reconciled JSON path
+    const carried = (action as { unprovenRequiredColumns?: unknown }).unprovenRequiredColumns;
+    if (!Array.isArray(carried) || carried.length === 0) continue;
+    const cols = effectiveColumnsFromAction(t, action);
+    const live = carried.some(
+      (c): c is string => typeof c === 'string' && typeof cols[c] === 'string' && cols[c]!.trim() !== '',
+    );
+    if (live) return 'fail';
+  }
+  return 'pass';
+}
+
+export interface ComputedVerification {
+  gateInput: VerificationGateInput;
+  persist: RecipeVerification;
+}
+
+/**
+ * Compute the full verification verdict for a fresh learn: gather the four
+ * signals, score them, read the prior family pass^N counter, and assemble both
+ * the gate input and the envelope telemetry to persist. Read-only DB access;
+ * fail-open throughout.
+ */
+export async function computeRecipeVerification(args: {
+  pmsFamily: string;
+  recipe: Recipe;
+  boardTargets?: Record<string, BoardTargetState>;
+  jobId: string | null;
+  propertyId: string | null;
+  signal?: AbortSignal;
+  /** Injectable for tests; defaults to the real (env-gated, fail-open) vote. */
+  secondModelVote?: (a: SecondModelVoteArgs) => Promise<SignalVerdict>;
+}): Promise<ComputedVerification> {
+  const enforce = verifyEnforceOn();
+  const threshold = verifyThreshold();
+  const requiredPasses = verifyRequiredPasses();
+
+  // (b) cross-feed reconciliation.
+  const obs = gatherCrossFeedObservation(args.boardTargets);
+  const crossFeedResult = reconcileCrossFeed({ feeds: obs.feeds, dashboardCounters: obs.dashboardCounters });
+  const crossFeed: SignalVerdict =
+    crossFeedResult.signal === 'fail' ? 'fail' : crossFeedResult.signal === 'pass' ? 'pass' : 'abstain';
+
+  // (c) value-fingerprint: degenerate distribution ⟹ fail; else decided below
+  //     by cross-pass consistency.
+  const fp = computeRecipeFingerprint(args.recipe, args.boardTargets);
+
+  // (a) reconcile/certify proof state.
+  const reconcile = reconcileSignalForRecipe(args.recipe);
+
+  // (d) cheap second-model vote (env-gated OFF by default → 'abstain'). Skip the
+  //     paid call entirely if the job is already aborting (don't honor a doomed
+  //     request) — fail-open to 'abstain'.
+  const voteFn = args.secondModelVote ?? secondModelRecipeVote;
+  let secondModel: SignalVerdict = 'abstain';
+  if (!args.signal?.aborted) {
+    try {
+      secondModel = await voteFn({
+        recipe: args.recipe, boardTargets: args.boardTargets,
+        jobId: args.jobId, propertyId: args.propertyId, signal: args.signal,
+      });
+    } catch {
+      secondModel = 'abstain'; // fail-open
+    }
+  }
+
+  // ── pass^N: read the family's most-recent prior verification fingerprint ──
+  const prior = await loadPriorVerification(args.pmsFamily);
+  const matchedPrior = fingerprintsMatch(prior?.fingerprint, fp.fingerprint);
+  const fingerprint: SignalVerdict = !fp.sane ? 'fail' : matchedPrior ? 'pass' : 'abstain';
+
+  const signals: CommitSignals = { reconcile, crossFeed, fingerprint, secondModel };
+  const { score } = computeCommitScore(signals);
+
+  // A "consistent pass" is one that BOTH met the threshold AND re-derived the
+  // same fingerprint as the prior qualifying pass. A sub-threshold pass resets
+  // the counter to 0 (nothing to build on); a fresh/divergent shape resets to 1.
+  const qualifies = score >= threshold;
+  const priorQualified = (prior?.consistentPasses ?? 0) > 0;
+  const consistentPasses = !qualifies ? 0 : (priorQualified && matchedPrior) ? (prior!.consistentPasses ?? 0) + 1 : 1;
+
+  const note = `signals reconcile=${reconcile} crossFeed=${crossFeed} fingerprint=${fingerprint} secondModel=${secondModel}`;
+
+  return {
+    gateInput: { enforce, score, threshold, consistentPasses, requiredPasses, note },
+    persist: {
+      threshold, score, consistentPasses, requiredPasses,
+      enforced: enforce,
+      fingerprint: fp.fingerprint,
+      computedAt: new Date().toISOString(),
+      signals: { reconcile, crossFeed, fingerprint, secondModel },
+    },
+  };
+}
+
+/** The most-recent prior verification telemetry for a family (latest version,
+ *  any status) — drives the pass^N counter. Fail-open: any error ⟹ null (the
+ *  counter simply starts fresh). */
+async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerification | null> {
+  try {
+    const { data, error } = await supabase
+      .from('pms_knowledge_files')
+      .select('knowledge')
+      .eq('pms_family', pmsFamily)
+      .is('deleted_at', null)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    const v = (data.knowledge as { verification?: RecipeVerification } | null)?.verification;
+    return v && typeof v === 'object' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface SecondModelVoteArgs {
+  recipe: Recipe;
+  boardTargets?: Record<string, BoardTargetState>;
+  jobId: string | null;
+  propertyId: string | null;
+  signal?: AbortSignal;
+}
+
+const VOTE_SYSTEM =
+  'You are a strict reviewer of an automatically-learned data-extraction recipe ' +
+  'for a hotel PMS. You are given, per required feed, the column→source mapping ' +
+  'and a few sample values. Judge whether the mapping is PLAUSIBLE (each column ' +
+  'name matches the kind of value sampled for it). Respond on TWO lines, no ' +
+  'preamble, no markdown:\nVERDICT: <approve|unclear|reject>\nREASON: <one short sentence>\n' +
+  '- approve: every sampled value matches its column meaning.\n' +
+  '- reject: at least one column is clearly mapped to the WRONG kind of value ' +
+  '(e.g. a date in a name column, a status string in an id column).\n' +
+  '- unclear: you cannot tell from the samples.';
+
+/**
+ * Cheap second-model sanity vote on the learned recipe (mirrors critic.ts:
+ * Sonnet, fail-open, cost-attributed, abort-aware). ENV-GATED OFF by default —
+ * returns 'abstain' with zero LLM cost unless CUA_VERIFY_SECOND_MODEL_ENABLED=
+ * true. Onboarding-only (called from computeRecipeVerification). Lazy-imports
+ * the SDK + usage log so the module-load graph (and the test suite) is
+ * unaffected when the vote is off.
+ */
+export async function secondModelRecipeVote(args: SecondModelVoteArgs): Promise<SignalVerdict> {
+  if (!secondModelVoteOn()) return 'abstain';
+  try {
+    const prompt = buildVotePrompt(args.recipe, args.boardTargets);
+    if (!prompt) return 'abstain'; // nothing concrete to judge
+    const { anthropic } = await import('./anthropic-client.js');
+    const resp = await anthropic.messages.create(
+      {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: VOTE_SYSTEM,
+        messages: [{ role: 'user', content: prompt }],
+      },
+      args.signal ? { signal: args.signal } : undefined,
+    );
+    try {
+      const { logClaudeUsage } = await import('./usage-log.js');
+      await logClaudeUsage(resp.usage ?? {}, {
+        // Reuse the mapping-action workload so this onboarding-only spend is
+        // tagged source='mapping' (excluded from the per-hotel daily cost cap,
+        // migration 0208); the phase metadata distinguishes the verify vote.
+        workload: 'cua_mapping_action',
+        model: 'claude-sonnet-4-6',
+        propertyId: args.propertyId,
+        jobId: args.jobId,
+        metadata: { phase: 'second_model_verify_vote' },
+      });
+    } catch { /* cost log is best-effort */ }
+    const text = resp.content
+      .filter((c) => c.type === 'text')
+      .map((c) => (c as { text?: string }).text ?? '')
+      .join('\n');
+    const m = text.match(/VERDICT\s*:\s*(approve|unclear|reject)/i);
+    const v = m?.[1]?.toLowerCase();
+    return v === 'approve' ? 'pass' : v === 'reject' ? 'fail' : 'abstain';
+  } catch {
+    return 'abstain'; // fail-open: a vote error never blocks a learn
+  }
+}
+
+/** Build a compact, PII-light vote prompt from the required feeds' column maps +
+ *  a couple of sample values. Returns '' when there's nothing concrete. */
+function buildVotePrompt(
+  recipe: Recipe,
+  boardTargets: Record<string, BoardTargetState> | undefined,
+): string {
+  const lines: string[] = [];
+  for (const t of REQUIRED_TARGETS) {
+    const action = recipe.actions[t];
+    if (!action) continue;
+    const cols = effectiveColumnsFromAction(t, action);
+    const colNames = Object.keys(cols).filter((c) => (cols[c] ?? '').trim() !== '');
+    if (colNames.length === 0) continue;
+    lines.push(`FEED ${String(t)}:`);
+    const sample = boardTargets?.[String(t)]?.preview?.sample?.[0] ?? {};
+    for (const c of colNames) {
+      const raw = sample[c];
+      const masked = /name|guest|assigned|changed_by/i.test(c) && typeof raw === 'string'
+        ? raw.replace(/[A-Za-z]/g, 'x').replace(/\d/g, '#')
+        : raw;
+      const shown = masked == null ? '(no sample)' : String(masked).slice(0, 40);
+      lines.push(`  ${c} ⟵ ${shown}`);
+    }
+  }
+  return lines.length > 0 ? `Recipe to review:\n${lines.join('\n')}` : '';
 }
 
 /**
@@ -821,6 +1788,7 @@ async function checkSeededPromotionGuards(
     .select('version, knowledge')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (error) {
     return {
@@ -924,7 +1892,7 @@ async function promoteDraft(
   const familyActiveExists = async (): Promise<boolean | null> => {
     const { data, error } = await supabase
       .from('pms_knowledge_files')
-      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').maybeSingle();
+      .select('id').eq('pms_family', pmsFamily).eq('status', 'active').is('deleted_at', null).maybeSingle();
     if (error) return null; // unknown — caller decides conservatively
     return !!data;
   };
@@ -943,6 +1911,7 @@ async function promoteDraft(
       .from('pms_knowledge_files')
       .update({ status: 'active', promoted_to_active_at: promotedAt ?? nowIso, deprecated_at: null })
       .eq('id', id).eq('status', 'deprecated')
+      .is('deleted_at', null)
       .select('id').maybeSingle();
     return !error && !!data;
   };
@@ -956,6 +1925,7 @@ async function promoteDraft(
     const { data: prev } = await supabase
       .from('pms_knowledge_files')
       .select('id').eq('pms_family', pmsFamily).eq('status', 'deprecated')
+      .is('deleted_at', null)
       .order('version', { ascending: false }).limit(1).maybeSingle();
     if (!prev) return false;
     return restoreActiveById(prev.id as string, null);
@@ -971,6 +1941,7 @@ async function promoteDraft(
     .select('id, promoted_to_active_at')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
+    .is('deleted_at', null)
     .maybeSingle();
   if (priorErr) {
     // We could not read the current active. REFUSE to start mutating: a failed
@@ -1216,6 +2187,7 @@ export async function saveDraftKnowledgeFile(
   status: 'draft' | 'quarantined' = 'draft',
   feedGaps?: FeedGaps,
   gateNote?: string,
+  verification?: RecipeVerification,
 ): Promise<{ ok: true; id: string; version: number } | { ok: false; error: string }> {
   // (pms_family, version) is UNIQUE. Under concurrency two jobs for the same
   // family read the same max(version) and both try to insert max+1; the loser
@@ -1267,6 +2239,11 @@ export async function saveDraftKnowledgeFile(
       ...(feedGaps && (feedGaps.missingRequired.length > 0 || feedGaps.missingBusinessCritical.length > 0)
         ? { feedGaps }
         : {}),
+      // feature/cua-bestclass-verify — persist the verification telemetry +
+      // pass^N counter inside the SAME signed envelope (only when computed: a
+      // fresh learn). Absent on seeded/edit jobs and on legacy rows, keeping
+      // their exact prior signed shape — so old signed rows still verify+load.
+      ...(verification ? { verification } : {}),
     };
 
     // canonicalJson-stability: sign AND store the JSON-normalized envelope
@@ -1339,7 +2316,13 @@ export async function saveDraftKnowledgeFile(
         created_by: 'mapper:mapping-driver',
         notes: `Mapped at ${new Date().toISOString()}. Targets: ${Object.keys(recipe.actions).join(', ')}.` +
           (gateNote ? ` Gate: ${gateNote}` : ''),
-        signature: signatureBytes,
+        // Store the HMAC as a PostgREST bytea HEX LITERAL ('\xDEADBEEF…').
+        // Passing the raw Buffer made supabase-js JSON-serialize it as
+        // {"type":"Buffer","data":[…]} and persist THAT TEXT into the bytea
+        // column — so every stored signature was ~138 bytes of JSON garbage and
+        // verifyRecipe (a 32-byte HMAC) could never match → enforce-mode refused
+        // to load the active recipe. decodeBytea() reads the '\x' hex back.
+        signature: signatureBytes ? '\\x' + signatureBytes.toString('hex') : null,
         signed_with_key_id: signedWithKeyId,
         signed_at: signedAt,
       })

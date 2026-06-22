@@ -17,7 +17,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
+import { verifyTeamManager, callerCan } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
 import type { StaffDepartment, ScheduledShiftKind } from '@/types';
@@ -44,14 +44,14 @@ interface ShiftInput {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_shifts' });
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json().catch(() => ({})) as { hotelId?: string; shift?: ShiftInput };
   const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!canManageHotel(caller, hotelId)) {
+  if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
@@ -136,14 +136,14 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req);
+  const caller = await verifyTeamManager(req, { capability: 'manage_shifts' });
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { searchParams } = new URL(req.url);
   const hotelIdCheck = validateUuid(searchParams.get('hotelId'), 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!canManageHotel(caller, hotelId)) {
+  if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

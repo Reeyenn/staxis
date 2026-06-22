@@ -113,13 +113,30 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    await writeCronHeartbeat('run-scheduled-reports');
     const fired = results.filter((r) => r.status === 'sent' || r.status === 'partial' || r.status === 'failed').length;
-    return ok({ checked: schedules.length, fired, results }, { requestId });
+    // Degraded if any schedule threw, failed/partially-failed to send, or was
+    // skipped by the deadline — otherwise the doctor saw a false-green heartbeat
+    // and a broken report pipeline went unnoticed. (Audit fix #13, observability
+    // only — does NOT change report sending. 2026-06-18.)
+    const degradedCount = results.filter(
+      (r) => r.status === 'error' || r.status === 'failed' || r.status === 'partial' || r.status === 'deferred',
+    ).length;
+    await writeCronHeartbeat('run-scheduled-reports', {
+      requestId,
+      status: degradedCount > 0 ? 'degraded' : 'ok',
+      notes: {
+        checked: schedules.length,
+        fired,
+        degraded: degradedCount,
+        deferred: results.filter((r) => r.status === 'deferred').length,
+      },
+    });
+    return ok({ checked: schedules.length, fired, degraded: degradedCount, results }, { requestId });
   } catch (e) {
     log.error('run-scheduled-reports failed', { requestId, error: e instanceof Error ? e.message : String(e) });
-    // Still write a heartbeat so the doctor sees the cron ran.
-    try { await writeCronHeartbeat('run-scheduled-reports'); } catch { /* noop */ }
+    // Still write a heartbeat so the doctor sees the cron ran — but mark it
+    // degraded since the whole run threw.
+    try { await writeCronHeartbeat('run-scheduled-reports', { requestId, status: 'degraded', notes: { fatal: true } }); } catch { /* noop */ }
     return err('Scheduled reports run failed.', { requestId, status: 500, code: 'internal_error' });
   }
 }

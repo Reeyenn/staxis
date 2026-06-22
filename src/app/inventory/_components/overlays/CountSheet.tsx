@@ -19,7 +19,7 @@ import {
 import type { InventoryItem, InventoryCount } from '@/types';
 import type { AutoFillItem } from '@/lib/db/ml-inventory-cockpit';
 
-import { T, fonts, statusColor, catLabel, type InvCat } from '../tokens';
+import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { CatIcon } from '../CatIcon';
 import { ItemThumb } from '../ItemThumb';
 import { Caps } from '../Caps';
@@ -28,8 +28,10 @@ import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { Overlay } from './Overlay';
 import type { DisplayItem } from '../types';
+import { t, catLabelFor, type Lang } from '../inv-i18n';
 
 interface CountSheetProps {
+  lang: Lang;
   open: boolean;
   onClose: () => void;
   items: InventoryItem[];
@@ -45,9 +47,98 @@ interface CountSheetProps {
 type FillSource = 'manual' | 'ai' | 'photo';
 type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium' | 'low' };
 
-export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: CountSheetProps) {
+// Co-located strings for the count sheet (too specific for inv-i18n).
+function csStrings(lang: Lang) {
+  return {
+    en: {
+      title: 'Inventory counting',
+      generalInventory: 'General inventory',
+      breakfastInventory: 'Breakfast inventory',
+      countBoth: 'Count both',
+      everything: 'Everything',
+      items: 'items',
+      countMode: 'Count mode',
+      walkTally: 'Walk & tally',
+      aiPrefilled: 'AI-prefilled',
+      cancel: 'Cancel',
+      saving: 'Saving…',
+      saveCount: '✓ Save count',
+      changeWhatToCount: 'Change what to count',
+      progress: 'Progress',
+      graduatedFor: (n: number) => `graduated for ${n} items`,
+      graduatedHelp: ' — those start prefilled with the prediction. Tap the number to change it. The rest you’ll enter yourself.',
+      theModelHas: 'The model has ',
+      par: 'par',
+      last: 'last',
+      predicted: 'Predicted',
+      noPredictionYet: 'No prediction yet',
+      skip: 'Skip',
+      countByPhoto: 'Count by photo',
+      photoHint: 'Snap a shelf — we’ll fill the counts for you to review. Nothing saves until you hit Save count.',
+      allVisible: 'All visible',
+      reading: 'Reading…',
+      choosePhoto: '📷 Choose photo',
+      saveFailed: 'Saving the count failed. Please try again.',
+      noItemsInGroup: 'No items in this group to count.',
+      filled: (n: number, total: number) => `Filled ${n} of ${total} item${total === 1 ? '' : 's'}`,
+      notRecognized: (n: number) => ` · ${n} not recognized`,
+      reviewAndSave: '. Review the numbers and Save.',
+      lowConfidence: (n: number) => ` ${n} low-confidence — please verify (flagged in red).`,
+      couldntReadPhoto: 'Couldn’t read that photo — try a clearer, well-lit shot.',
+      errTooMany: 'Too many items for one photo — scan one shelf or category at a time.',
+      errBadImage: 'Couldn’t read that image. Try a clearer, well-lit photo.',
+      errRateLimit: 'Too many photo scans this hour — please try again shortly.',
+      errUnavailable: 'Photo counting is briefly unavailable — enter counts manually for now.',
+      errGeneric: 'Couldn’t count that photo. Please try again.',
+    },
+    es: {
+      title: 'Conteo de inventario',
+      generalInventory: 'Inventario general',
+      breakfastInventory: 'Inventario de desayuno',
+      countBoth: 'Contar ambos',
+      everything: 'Todo',
+      items: 'artículos',
+      countMode: 'Modo de conteo',
+      walkTally: 'Recorrer y contar',
+      aiPrefilled: 'prellenado por IA',
+      cancel: 'Cancelar',
+      saving: 'Guardando…',
+      saveCount: '✓ Guardar conteo',
+      changeWhatToCount: 'Cambiar qué contar',
+      progress: 'Progreso',
+      graduatedFor: (n: number) => `aprendió ${n} artículos`,
+      graduatedHelp: ' — esos vienen prellenados con la predicción. Toca el número para cambiarlo. El resto los ingresas tú.',
+      theModelHas: 'El modelo ',
+      par: 'par',
+      last: 'último',
+      predicted: 'Predicho',
+      noPredictionYet: 'Sin predicción aún',
+      skip: 'Omitir',
+      countByPhoto: 'Contar por foto',
+      photoHint: 'Toma una foto del estante — llenamos los conteos para que los revises. Nada se guarda hasta que toques Guardar conteo.',
+      allVisible: 'Todos visibles',
+      reading: 'Leyendo…',
+      choosePhoto: '📷 Elegir foto',
+      saveFailed: 'No se pudo guardar el conteo. Inténtalo de nuevo.',
+      noItemsInGroup: 'No hay artículos en este grupo para contar.',
+      filled: (n: number, total: number) => `Llenados ${n} de ${total} artículo${total === 1 ? '' : 's'}`,
+      notRecognized: (n: number) => ` · ${n} no reconocidos`,
+      reviewAndSave: '. Revisa los números y Guarda.',
+      lowConfidence: (n: number) => ` ${n} de baja confianza — verifica (marcados en rojo).`,
+      couldntReadPhoto: 'No se pudo leer la foto — intenta una toma más clara y bien iluminada.',
+      errTooMany: 'Demasiados artículos para una foto — escanea un estante o categoría a la vez.',
+      errBadImage: 'No se pudo leer la imagen. Intenta una foto más clara y bien iluminada.',
+      errRateLimit: 'Demasiados escaneos de foto esta hora — inténtalo de nuevo en un momento.',
+      errUnavailable: 'El conteo por foto no está disponible por ahora — ingresa los conteos manualmente.',
+      errGeneric: 'No se pudo contar esa foto. Inténtalo de nuevo.',
+    },
+  }[lang];
+}
+
+export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMode }: CountSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const cs = csStrings(lang);
   // scope: null shows the "what to count" chooser; a value shows the scoped count.
   const [scope, setScope] = useState<Scope | null>(null);
   const [entries, setEntries] = useState<Record<string, Entry>>({});
@@ -142,11 +233,11 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
     const gN = display.filter((d) => d.cat !== 'breakfast').length;
     const bN = display.filter((d) => d.cat === 'breakfast').length;
     return (
-      <Overlay open onClose={onClose} width={560} title="Inventory counting">
+      <Overlay open onClose={onClose} width={560} title={cs.title}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <ScopeOption title="General inventory" n={gN} onPick={() => begin('general')} />
-          <ScopeOption title="Breakfast inventory" n={bN} onPick={() => begin('breakfast')} />
-          <ScopeOption title="Count both" n={gN + bN} onPick={() => begin('all')} />
+          <ScopeOption title={cs.generalInventory} n={gN} itemsLabel={cs.items} onPick={() => begin('general')} />
+          <ScopeOption title={cs.breakfastInventory} n={bN} itemsLabel={cs.items} onPick={() => begin('breakfast')} />
+          <ScopeOption title={cs.countBoth} n={gN + bN} itemsLabel={cs.items} onPick={() => begin('all')} />
         </div>
       </Overlay>
     );
@@ -162,7 +253,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
   const pct = total > 0 ? Math.round((100 * filled) / total) : 0;
 
   const scopeLabel =
-    scope === 'general' ? 'General inventory' : scope === 'breakfast' ? 'Breakfast inventory' : 'Everything';
+    scope === 'general' ? cs.generalInventory : scope === 'breakfast' ? cs.breakfastInventory : cs.everything;
   const cats: InvCat[] =
     scope === 'breakfast'
       ? ['breakfast']
@@ -265,7 +356,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
       onClose();
     } catch (err) {
       console.error('[count-sheet] save failed', err);
-      alert('Saving the count failed. Please try again.');
+      alert(cs.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -276,8 +367,8 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
       open
       onClose={onClose}
       accent={statusColor.good}
-      eyebrow="Count mode"
-      italic="Walk & tally"
+      eyebrow={cs.countMode}
+      italic={cs.walkTally}
       suffix={scopeLabel}
       width={920}
       footer={
@@ -292,13 +383,13 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
               textTransform: 'uppercase',
             }}
           >
-            {auto} AI-prefilled{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
+            {auto} {cs.aiPrefilled}{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
           </span>
           <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
-            Cancel
+            {cs.cancel}
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || filled === 0}>
-            {saving ? 'Saving…' : `✓ Save count · ${filled}/${total}`}
+            {saving ? cs.saving : `${cs.saveCount} · ${filled}/${total}`}
           </Btn>
         </>
       }
@@ -323,7 +414,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
         }}
       >
         <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15 }}>‹</span>
-        Change what to count
+        {cs.changeWhatToCount}
       </button>
 
       {/* Progress (moved out of the old full-screen header into the modal body) */}
@@ -337,7 +428,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-          <Caps size={9}>Progress · {scopeLabel}</Caps>
+          <Caps size={9}>{cs.progress} · {scopeLabel}</Caps>
           <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
             {filled}/{total} · {pct}%
           </span>
@@ -355,7 +446,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
           />
         </span>
       </div>
-        <PhotoCountPanel display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
+        <PhotoCountPanel lang={lang} display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
 
         {auto > 0 && (
           <div
@@ -396,7 +487,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
                 lineHeight: 1.45,
               }}
             >
-              The model has <b style={{ color: T.ink }}>graduated for {auto} items</b> — those start prefilled with the prediction. Tap the number to change it. The rest you&apos;ll enter yourself.
+              {cs.theModelHas}<b style={{ color: T.ink }}>{cs.graduatedFor(auto)}</b>{cs.graduatedHelp}
             </span>
           </div>
         )}
@@ -416,7 +507,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
                     fontWeight: 600,
                   }}
                 >
-                  {catLabel[cat]}
+                  {catLabelFor(lang, cat)}
                 </span>
                 <span style={{ flex: 1, height: 1, background: T.rule }} />
               </div>
@@ -424,6 +515,7 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
                 {catItems.map((d) => (
                   <CountRow
                     key={d.id}
+                    lang={lang}
                     d={d}
                     entry={entries[d.id] || { value: '', source: 'manual' }}
                     onChange={(v) => setEntry(d.id, v)}
@@ -439,16 +531,19 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
 }
 
 function CountRow({
+  lang,
   d,
   entry,
   onChange,
   autoFill,
 }: {
+  lang: Lang;
   d: DisplayItem;
   entry: Entry;
   onChange: (v: string) => void;
   autoFill?: AutoFillItem;
 }) {
+  const cs = csStrings(lang);
   const expected =
     autoFill && Number.isFinite(autoFill.predictedCurrentStock)
       ? Math.max(0, Math.round(autoFill.predictedCurrentStock))
@@ -485,14 +580,14 @@ function CountRow({
             letterSpacing: '0.04em',
           }}
         >
-          par {d.par} · last {d.counted}
+          {cs.par} {d.par} · {cs.last} {d.counted}
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {expected !== null ? (
           <>
             <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
-              Predicted <b style={{ color: T.ink }}>{expected}</b>
+              {cs.predicted} <b style={{ color: T.ink }}>{expected}</b>
             </span>
             <span
               style={{
@@ -509,7 +604,7 @@ function CountRow({
           </>
         ) : (
           <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, fontStyle: 'italic' }}>
-            No prediction yet
+            {cs.noPredictionYet}
           </span>
         )}
       </div>
@@ -582,7 +677,7 @@ function CountRow({
         onClick={() => onChange('')}
         style={{ height: 30, fontSize: 11, padding: '0 10px' }}
       >
-        Skip
+        {cs.skip}
       </Btn>
     </div>
   );
@@ -605,23 +700,27 @@ function fillStyle(entry: Entry): FillVisual {
   return { bg: T.bg, border: T.rule, badge: null };
 }
 
-function photoCountErrorFor(status: number, detail?: string): string {
-  if (status === 422) return 'Too many items for one photo — scan one shelf or category at a time.';
-  if (status === 400) return 'Couldn’t read that image. Try a clearer, well-lit photo.';
-  if (status === 429) return 'Too many photo scans this hour — please try again shortly.';
-  if (status === 503) return 'Photo counting is briefly unavailable — enter counts manually for now.';
-  return detail || 'Couldn’t count that photo. Please try again.';
+function photoCountErrorFor(lang: Lang, status: number, detail?: string): string {
+  const cs = csStrings(lang);
+  if (status === 422) return cs.errTooMany;
+  if (status === 400) return cs.errBadImage;
+  if (status === 429) return cs.errRateLimit;
+  if (status === 503) return cs.errUnavailable;
+  return detail || cs.errGeneric;
 }
 
 function PhotoCountPanel({
+  lang,
   display,
   pid,
   onFills,
 }: {
+  lang: Lang;
   display: DisplayItem[];
   pid: string | null;
   onFills: (fills: MergedFill[]) => void;
 }) {
+  const cs = csStrings(lang);
   const fileRef = useRef<HTMLInputElement>(null);
   const cats = useMemo(
     () => (['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).filter((c) => display.some((d) => d.cat === c)),
@@ -638,7 +737,7 @@ function PhotoCountPanel({
     if (!pid) return;
     if (scoped.length === 0) {
       setStatus('error');
-      setMessage('No items in this group to count.');
+      setMessage(cs.noItemsInGroup);
       return;
     }
     setStatus('reading');
@@ -656,7 +755,7 @@ function PhotoCountPanel({
       const json = (await res.json()) as { ok?: boolean; counts?: PhotoCount[]; error?: string; detail?: string };
       if (!res.ok || !json.ok) {
         setStatus('error');
-        setMessage(photoCountErrorFor(res.status, json.detail || json.error));
+        setMessage(photoCountErrorFor(lang, res.status, json.detail || json.error));
         return;
       }
       const { filled, unmatched } = mergePhotoCounts(json.counts ?? [], buildNameToIdMap(scoped));
@@ -665,14 +764,14 @@ function PhotoCountPanel({
       setLowCount(low);
       setStatus('done');
       setMessage(
-        `Filled ${filled.length} of ${scoped.length} item${scoped.length === 1 ? '' : 's'}` +
-          (unmatched.length > 0 ? ` · ${unmatched.length} not recognized` : '') +
-          '. Review the numbers and Save.',
+        cs.filled(filled.length, scoped.length) +
+          (unmatched.length > 0 ? cs.notRecognized(unmatched.length) : '') +
+          cs.reviewAndSave,
       );
     } catch (err) {
       console.error('[photo-count] failed', err);
       setStatus('error');
-      setMessage('Couldn’t read that photo — try a clearer, well-lit shot.');
+      setMessage(cs.couldntReadPhoto);
     }
   };
 
@@ -691,10 +790,10 @@ function PhotoCountPanel({
       }}
     >
       <span style={{ fontFamily: fonts.serif, fontSize: 17, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
-        Count by photo
+        {cs.countByPhoto}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, flex: '1 1 200px', minWidth: 0 }}>
-        Snap a shelf — we&apos;ll fill the counts for you to review. Nothing saves until you hit Save count.
+        {cs.photoHint}
       </span>
       {cats.length > 1 && (
         <select
@@ -712,16 +811,16 @@ function PhotoCountPanel({
             cursor: 'pointer',
           }}
         >
-          <option value="all">All visible</option>
+          <option value="all">{cs.allVisible}</option>
           {cats.map((c) => (
             <option key={c} value={c}>
-              {catLabel[c]}
+              {catLabelFor(lang, c)}
             </option>
           ))}
         </select>
       )}
       <Btn variant="ghost" size="md" onClick={() => fileRef.current?.click()} disabled={status === 'reading'}>
-        {status === 'reading' ? 'Reading…' : '📷 Choose photo'}
+        {status === 'reading' ? cs.reading : cs.choosePhoto}
       </Btn>
       <input
         ref={fileRef}
@@ -745,7 +844,7 @@ function PhotoCountPanel({
           }}
         >
           {message}
-          {lowCount > 0 && status === 'done' ? ` ${lowCount} low-confidence — please verify (flagged in red).` : ''}
+          {lowCount > 0 && status === 'done' ? cs.lowConfidence(lowCount) : ''}
         </div>
       )}
     </div>
@@ -764,7 +863,7 @@ function inScope(cat: InvCat, scope: Scope): boolean {
 
 // One chooser row: serif label on the left, "{n} items" + arrow on the right.
 // Deliberately plain — no category chip, no subtext (per the handoff).
-function ScopeOption({ title, n, onPick }: { title: string; n: number; onPick: () => void }) {
+function ScopeOption({ title, n, itemsLabel, onPick }: { title: string; n: number; itemsLabel: string; onPick: () => void }) {
   const ref = useRef<HTMLButtonElement>(null);
   return (
     <button
@@ -790,7 +889,7 @@ function ScopeOption({ title, n, onPick }: { title: string; n: number; onPick: (
       <Serif size={23} style={{ letterSpacing: '-0.01em', whiteSpace: 'nowrap' }}>{title}</Serif>
       <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
         <Serif size={22} color={T.ink2}>{n}</Serif>
-        <Caps size={9} color={T.dim}>items</Caps>
+        <Caps size={9} color={T.dim}>{itemsLabel}</Caps>
         <Serif size={20} color={T.dim} style={{ marginLeft: 4 }}>→</Serif>
       </span>
     </button>

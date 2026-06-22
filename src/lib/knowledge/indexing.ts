@@ -97,6 +97,9 @@ async function embedAndStoreChunks(opts: {
   propertyId: string;
   accountId: string;
   visibility: KnowledgeVisibility;
+  /** Denormalized department for visibility='dept' documents; null otherwise
+   *  (and always null for articles). Mirrored to knowledge_chunks.visible_dept. */
+  visibleDept: string | null;
   sourceType: 'document' | 'article';
   documentId: string | null;
   articleId: string | null;
@@ -149,6 +152,7 @@ async function embedAndStoreChunks(opts: {
     content: c.content,
     section: c.section,
     visibility: opts.visibility,
+    visible_dept: opts.visibleDept,
     embedding: vectors[i] ? toVectorLiteral(vectors[i] as number[]) : null,
     char_count: c.charCount,
   }));
@@ -172,6 +176,44 @@ async function deleteChunksForDocument(documentId: string): Promise<void> {
 async function deleteChunksForArticle(articleId: string): Promise<void> {
   const { error } = await supabaseAdmin.from('knowledge_chunks').delete().eq('article_id', articleId);
   if (error) log.warn('knowledge.deleteChunksForArticle failed', { err: error.message });
+}
+
+/** Read a document's CURRENT scope (visibility + visible_dept) from the row,
+ *  falling back to the supplied values if the row can't be read. Used so chunks
+ *  are stamped with the live scope, not the (possibly stale) upload-time scope. */
+async function currentDocScope(
+  propertyId: string, docId: string,
+  fallbackVisibility: KnowledgeVisibility, fallbackVisibleDept: string | null,
+): Promise<{ visibility: KnowledgeVisibility; visibleDept: string | null }> {
+  const { data } = await supabaseAdmin
+    .from('knowledge_documents')
+    .select('visibility, visible_dept')
+    .eq('id', docId)
+    .eq('property_id', propertyId)
+    .maybeSingle();
+  if (!data) return { visibility: fallbackVisibility, visibleDept: fallbackVisibleDept };
+  return {
+    visibility: (data.visibility as KnowledgeVisibility | null) ?? fallbackVisibility,
+    visibleDept: (data.visible_dept as string | null) ?? null,
+  };
+}
+
+/** After chunks are stored, re-flip them to the document's CURRENT scope if it
+ *  changed while we were embedding (the embed can take seconds, and a doc tightened
+ *  during the pending window had no chunks for updateDocumentAccess to sync).
+ *  Idempotent no-op when unchanged. Review HIGH-2. */
+async function reconcileDocChunkScope(
+  propertyId: string, docId: string,
+  stamped: { visibility: KnowledgeVisibility; visibleDept: string | null },
+): Promise<void> {
+  const cur = await currentDocScope(propertyId, docId, stamped.visibility, stamped.visibleDept);
+  if (cur.visibility === stamped.visibility && (cur.visibleDept ?? null) === (stamped.visibleDept ?? null)) return;
+  const { error } = await supabaseAdmin
+    .from('knowledge_chunks')
+    .update({ visibility: cur.visibility, visible_dept: cur.visibleDept })
+    .eq('document_id', docId)
+    .eq('property_id', propertyId);
+  if (error) log.warn('knowledge.reconcileDocChunkScope failed', { err: error.message });
 }
 
 async function setDocStatus(
@@ -207,6 +249,8 @@ export interface IndexDocumentInput {
   mime: string;
   accountId: string;
   visibility: KnowledgeVisibility;
+  /** Department for visibility='dept' docs; null otherwise. Stamped on chunks. */
+  visibleDept: string | null;
   embedder?: Embedder;
 }
 
@@ -216,7 +260,7 @@ export interface IndexDocumentInput {
  * extraction_status so the UI/agent always sees a definite state.
  */
 export async function indexDocument(input: IndexDocumentInput): Promise<ExtractionStatus> {
-  const { propertyId, docId, filePath, mime, accountId, visibility } = input;
+  const { propertyId, docId, filePath, mime, accountId, visibility, visibleDept } = input;
   try {
     await setDocStatus(propertyId, docId, 'processing');
     // Clear any prior chunks (idempotent re-index).
@@ -244,11 +288,17 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
 
     // Store the (capped) text for keyword fallback + fetch_document_section.
     const chunks = chunkText(outcome.text);
+    // Re-read the CURRENT scope right before stamping chunks — a manager may have
+    // changed the doc's access during the (possibly long) pending window, where
+    // updateDocumentAccess's chunk-sync is a no-op (0 chunks yet). Then reconcile
+    // once more after the embed in case access changed while embedding. HIGH-2.
+    const scope0 = await currentDocScope(propertyId, docId, visibility, visibleDept);
     const emb = await embedAndStoreChunks({
-      propertyId, accountId, visibility,
+      propertyId, accountId, visibility: scope0.visibility, visibleDept: scope0.visibleDept,
       sourceType: 'document', documentId: docId, articleId: null,
       chunks, embedder: input.embedder,
     });
+    await reconcileDocChunkScope(propertyId, docId, scope0);
 
     // If chunking hit the hard cap, the tail wasn't indexed → honest `partial`
     // (don't show a green "ready" badge the doc didn't earn).
@@ -292,6 +342,7 @@ export async function indexArticle(input: IndexArticleInput): Promise<void> {
     if (chunks.length === 0) return;
     await embedAndStoreChunks({
       propertyId: input.propertyId, accountId: input.accountId, visibility: input.visibility,
+      visibleDept: null, // SOPs never use the 'dept' tier.
       sourceType: 'article', documentId: null, articleId: input.articleId,
       chunks, embedder: input.embedder,
     });

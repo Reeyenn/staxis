@@ -10,6 +10,7 @@
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { runWithConcurrency } from '@/lib/parallel';
 import { errToString } from '@/lib/utils';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
@@ -41,12 +42,8 @@ export async function POST(req: NextRequest) {
       .select('id, phone, phone_lookup');
     if (error) throw error;
 
-    // PromiseLike (not Promise) because Supabase's query-builder chain is a
-    // thenable — .then() on it returns a PromiseLike, which Promise.all
-    // accepts without a full Promise cast.
-    const updates: PromiseLike<unknown>[] = [];
+    const toUpdate: Array<{ id: string; normalized: string }> = [];
     const examples: Array<{ staffId: string; phone: string; phoneLookup: string }> = [];
-    let updated = 0;
     let skippedNoPhone = 0;
     let alreadyCurrent = 0;
 
@@ -57,24 +54,37 @@ export async function POST(req: NextRequest) {
       if (!normalized) { skippedNoPhone++; continue; }
       if ((row.phone_lookup as string | null) === normalized) { alreadyCurrent++; continue; }
 
-      updates.push(
-        supabaseAdmin
-          .from('staff')
-          .update({ phone_lookup: normalized })
-          .eq('id', row.id)
-          .then(({ error: upErr }) => { if (upErr) throw upErr; }),
-      );
+      toUpdate.push({ id: row.id as string, normalized });
       if (examples.length < 10) {
         examples.push({ staffId: row.id as string, phone, phoneLookup: normalized });
       }
-      updated++;
     }
 
-    if (updates.length > 0) await Promise.all(updates);
+    // Bounded fan-out (cap 20) instead of firing every UPDATE at once — at fleet
+    // scale (thousands of staff) Promise.all opened one connection per row
+    // simultaneously, and a single failure aborted the whole backfill. Now each
+    // row's outcome is captured independently. (Audit fix 2026-06-18.)
+    const outcomes = await runWithConcurrency(
+      toUpdate,
+      async (r) => {
+        const { error: upErr } = await supabaseAdmin
+          .from('staff')
+          .update({ phone_lookup: r.normalized })
+          .eq('id', r.id);
+        if (upErr) throw upErr;
+      },
+      20,
+    );
+    const failed = outcomes.filter((o) => !o.ok).length;
+    const updated = outcomes.length - failed;
+    if (failed > 0) {
+      log.error('[admin/backfill-phonelookup] some updates failed', { failed, total: outcomes.length });
+    }
 
     return ok({
       scanned: (staff ?? []).length,
       updated,
+      failed,
       alreadyCurrent,
       skippedNoPhone,
       examples,

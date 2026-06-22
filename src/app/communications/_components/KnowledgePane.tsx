@@ -2,7 +2,7 @@
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Knowledge hub — the third Communications view (Chats · Tasks · Knowledge).
-// Sub-tabs: SOPs · Documents · Contacts · Calendar. ALL STAFF read; MANAGERS
+// Sub-tabs: SOPs · Documents · Contacts. ALL STAFF read; MANAGERS
 // publish/edit. All data flows through /api/knowledge/* (service-role); this
 // component never touches the browser DB client. The real Q&A happens through
 // the existing bottom-right assistant (search_knowledge tool) — the banner at
@@ -11,13 +11,14 @@
 
 import React from 'react';
 import {
-  BookOpen, FileText, Phone, CalendarDays, Plus, Pencil, Trash2, Sparkles,
+  BookOpen, FileText, Phone, Plus, Pencil, Trash2, Sparkles,
   Download, Loader2, ChevronLeft, Mail, Search, Lock, AlertTriangle,
+  Folder, FolderPlus, Users,
 } from 'lucide-react';
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
 import type {
-  KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeContactDTO, KnowledgeEventDTO,
-  KnowledgeSection, ContactCategory, KnowledgeVisibility, ExtractionStatus,
+  KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO, KnowledgeContactDTO,
+  KnowledgeSection, ContactCategory, KnowledgeVisibility, ExtractionStatus, Dept,
 } from '@/lib/knowledge/types';
 import { CONTACT_CATEGORIES, KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 
@@ -38,8 +39,35 @@ function statusBadge(status: ExtractionStatus, L: LFn): { label: string; color: 
 
 const VIS_LABEL: Record<KnowledgeVisibility, { en: string; es: string }> = {
   all_staff: { en: 'All staff', es: 'Todo el personal' },
+  dept: { en: 'One department', es: 'Un departamento' },
   managers: { en: 'Managers only', es: 'Solo gerentes' },
 };
+
+// Department labels (the three real departments a document can be scoped to).
+const DEPT_LABEL: Record<Dept, { en: string; es: string }> = {
+  front_desk: { en: 'Front desk', es: 'Recepción' },
+  housekeeping: { en: 'Housekeeping', es: 'Limpieza' },
+  maintenance: { en: 'Maintenance', es: 'Mantenimiento' },
+};
+
+// The document access choice as a single value: a visibility tier OR a department.
+type AccessVal = 'all_staff' | 'managers' | Dept;
+const ACCESS_OPTIONS: { value: AccessVal; en: string; es: string }[] = [
+  { value: 'all_staff', en: 'Everyone', es: 'Todos' },
+  { value: 'front_desk', en: DEPT_LABEL.front_desk.en, es: DEPT_LABEL.front_desk.es },
+  { value: 'housekeeping', en: DEPT_LABEL.housekeeping.en, es: DEPT_LABEL.housekeeping.es },
+  { value: 'maintenance', en: DEPT_LABEL.maintenance.en, es: DEPT_LABEL.maintenance.es },
+  { value: 'managers', en: 'Managers only', es: 'Solo gerentes' },
+];
+function docAccessVal(d: KnowledgeDocumentDTO): AccessVal {
+  if (d.visibility === 'dept') return d.visibleDept ?? 'all_staff';
+  return d.visibility; // 'all_staff' | 'managers'
+}
+function accessToPayload(a: AccessVal): { visibility: KnowledgeVisibility; visibleDept: Dept | null } {
+  if (a === 'all_staff' || a === 'managers') return { visibility: a, visibleDept: null };
+  return { visibility: 'dept', visibleDept: a };
+}
+
 const SANS = 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif';
 
 // ── shared styles ─────────────────────────────────────────────────────────
@@ -55,7 +83,6 @@ const SECTIONS: { key: KnowledgeSection; icon: React.ReactNode; en: string; es: 
   { key: 'sops', icon: <BookOpen size={15} />, en: 'SOPs', es: 'Procedimientos' },
   { key: 'documents', icon: <FileText size={15} />, en: 'Documents', es: 'Documentos' },
   { key: 'contacts', icon: <Phone size={15} />, en: 'Contacts', es: 'Contactos' },
-  { key: 'calendar', icon: <CalendarDays size={15} />, en: 'Calendar', es: 'Calendario' },
 ];
 
 export function KnowledgePane({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
@@ -94,7 +121,6 @@ export function KnowledgePane({ pid, isManager, L }: { pid: string; isManager: b
         {section === 'sops' && <SopsSection pid={pid} isManager={isManager} L={L} />}
         {section === 'documents' && <DocumentsSection pid={pid} isManager={isManager} L={L} />}
         {section === 'contacts' && <ContactsSection pid={pid} isManager={isManager} L={L} />}
-        {section === 'calendar' && <CalendarSection pid={pid} isManager={isManager} L={L} />}
       </div>
     </div>
   );
@@ -108,7 +134,7 @@ function Loading({ L }: { L: LFn }) {
 function Empty({ text }: { text: string }) {
   return <div style={{ color: 'var(--snow-ink3)', fontSize: 13.5, padding: '28px 8px', textAlign: 'center' }}>{text}</div>;
 }
-function SectionHeader({ title, action }: { title: string; action?: React.ReactNode }) {
+function SectionHeader({ title, action }: { title: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
       <div style={{ fontSize: 15, fontWeight: 700 }}>{title}</div>
@@ -262,15 +288,24 @@ const ACCEPT_DOCS = '.pdf,.txt,.md,.markdown,.csv,.doc,.docx';
 
 function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
   const [items, setItems] = React.useState<KnowledgeDocumentDTO[] | null>(null);
+  const [folders, setFolders] = React.useState<KnowledgeFolderDTO[]>([]);
+  const [currentFolderId, setCurrentFolderId] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [uploadVis, setUploadVis] = React.useState<KnowledgeVisibility>('all_staff');
+  const [uploadAccess, setUploadAccess] = React.useState<AccessVal>('all_staff');
+  const [uploadFolderId, setUploadFolderId] = React.useState<string | null>(null);
+  const [addingFolder, setAddingFolder] = React.useState(false);
+  const [newFolderName, setNewFolderName] = React.useState('');
+  const [editingDocId, setEditingDocId] = React.useState<string | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
   const load = React.useCallback(async () => {
-    const r = await apiGet<{ documents: KnowledgeDocumentDTO[] }>(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setItems(r.data.documents);
-    else setItems([]);
+    const [docsR, foldersR] = await Promise.all([
+      apiGet<{ documents: KnowledgeDocumentDTO[] }>(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}`),
+      apiGet<{ folders: KnowledgeFolderDTO[] }>(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}`),
+    ]);
+    setItems(docsR.ok && docsR.data ? docsR.data.documents : []);
+    setFolders(foldersR.ok && foldersR.data ? foldersR.data.folders : []);
   }, [pid]);
   React.useEffect(() => { void load(); }, [load]);
 
@@ -283,6 +318,9 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
     const t = setTimeout(() => { void load(); }, 4000);
     return () => clearTimeout(t);
   }, [items, load]);
+
+  // Uploads land in the folder you're viewing; at the root, the upload-target picker.
+  const targetFolderId = currentFolderId ?? uploadFolderId;
 
   const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -298,7 +336,8 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       const up = await fetch(pre.data.signedUrl, { method: 'PUT', body: file, headers: { 'Content-Type': pre.data.contentType } });
       if (!up.ok) { setError(L('Upload failed. Try again.', 'La carga falló. Inténtalo de nuevo.')); return; }
       const title = file.name.replace(/\.[^.]+$/, '').slice(0, KNOWLEDGE_LIMITS.TITLE_MAX) || file.name;
-      const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size, visibility: uploadVis });
+      const access = accessToPayload(uploadAccess);
+      const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size, visibility: access.visibility, visibleDept: access.visibleDept, folderId: targetFolderId });
       if (!reg.ok) { setError(reg.error || L('Could not save the document.', 'No se pudo guardar el documento.')); return; }
       await load();
     } finally {
@@ -306,68 +345,259 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
     }
   };
 
-  const remove = async (d: KnowledgeDocumentDTO) => {
+  const removeDoc = async (d: KnowledgeDocumentDTO) => {
     if (!window.confirm(L(`Delete "${d.title}"?`, `¿Eliminar "${d.title}"?`))) return;
     await apiDelete(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(d.id)}`);
     await load();
   };
 
+  const addFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    const r = await apiPost('/api/knowledge/folders', { pid, name });
+    if (!r.ok) { setError(r.error || L('Could not create the folder.', 'No se pudo crear la carpeta.')); return; }
+    setNewFolderName(''); setAddingFolder(false);
+    await load();
+  };
+
+  const renameFolder = async (f: KnowledgeFolderDTO) => {
+    const name = window.prompt(L('Rename folder', 'Renombrar carpeta'), f.name);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === f.name) return;
+    await apiPatch('/api/knowledge/folders', { pid, id: f.id, name: trimmed });
+    await load();
+  };
+
+  const removeFolder = async (f: KnowledgeFolderDTO) => {
+    if (!window.confirm(L('Delete this folder? The files inside are kept — they just move out of the folder.', '¿Eliminar esta carpeta? Los archivos se conservan — solo salen de la carpeta.'))) return;
+    await apiDelete(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(f.id)}`);
+    if (currentFolderId === f.id) setCurrentFolderId(null);
+    await load();
+  };
+
+  const currentFolder = folders.find((f) => f.id === currentFolderId) ?? null;
+  const folderCount = (fid: string) => (items ?? []).filter((d) => d.folderId === fid).length;
+  // Root shows unfiled docs; inside a folder, that folder's docs.
+  const visibleDocs = (items ?? []).filter((d) => (currentFolderId ? d.folderId === currentFolderId : d.folderId === null));
+
+  const uploadControls = isManager ? (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <AccessSelect value={uploadAccess} onChange={setUploadAccess} L={L} title={L('Who can see the next upload', 'Quién verá la próxima carga')} />
+      {currentFolderId === null && folders.length > 0 && (
+        <FolderSelect value={uploadFolderId} onChange={setUploadFolderId} folders={folders} L={L} title={L('Upload into folder', 'Subir a la carpeta')} />
+      )}
+      <input ref={fileRef} type="file" accept={ACCEPT_DOCS} onChange={onPick} style={{ display: 'none' }} />
+      <button onClick={() => fileRef.current?.click()} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : <Plus size={15} />} {L('Upload', 'Subir')}</button>
+    </div>
+  ) : undefined;
+
+  const docList = (emptyText: string) => (
+    <DocList
+      docs={visibleDocs}
+      isManager={isManager}
+      folders={folders}
+      pid={pid}
+      L={L}
+      editingId={editingDocId}
+      onEdit={(id) => setEditingDocId(id)}
+      onRemove={removeDoc}
+      onChanged={async () => { setEditingDocId(null); await load(); }}
+      emptyText={emptyText}
+    />
+  );
+
+  // ── Folder view (drilled into one folder) ────────────────────────────────
+  if (currentFolderId !== null) {
+    return (
+      <div>
+        <button onClick={() => { setCurrentFolderId(null); setEditingDocId(null); }} style={{ ...ghostBtn, marginBottom: 12 }}><ChevronLeft size={14} /> {L('All documents', 'Todos los documentos')}</button>
+        <SectionHeader
+          title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Folder size={17} color="var(--snow-sage-deep)" /> {currentFolder?.name ?? L('Folder', 'Carpeta')}</span>}
+          action={uploadControls}
+        />
+        {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+        {items === null ? <Loading L={L} /> : docList(L('No documents in this folder yet.', 'Aún no hay documentos en esta carpeta.'))}
+      </div>
+    );
+  }
+
+  // ── Root view (folders + unfiled documents) ──────────────────────────────
   return (
     <div>
       <SectionHeader
         title={L('Documents', 'Documentos')}
         action={isManager ? (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select
-              value={uploadVis}
-              onChange={(e) => setUploadVis(e.target.value as KnowledgeVisibility)}
-              title={L('Who can see the next upload', 'Quién verá la próxima carga')}
-              style={{ ...ghostBtn, cursor: 'pointer', padding: '7px 10px' }}
-            >
-              <option value="all_staff">{L(VIS_LABEL.all_staff.en, VIS_LABEL.all_staff.es)}</option>
-              <option value="managers">{L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</option>
-            </select>
-            <input ref={fileRef} type="file" accept={ACCEPT_DOCS} onChange={onPick} style={{ display: 'none' }} />
-            <button onClick={() => fileRef.current?.click()} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : <Plus size={15} />} {L('Upload', 'Subir')}</button>
+            {uploadControls}
+            <button onClick={() => setAddingFolder((v) => !v)} style={ghostBtn}><FolderPlus size={15} /> {L('New folder', 'Nueva carpeta')}</button>
           </div>
         ) : undefined}
       />
       {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
       {isManager && <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', marginBottom: 12 }}>{L('PDF, Word, Text, Markdown, CSV up to 10 MB. The assistant reads the full text of typed PDFs and Word docs — ask it anything about them. Scanned (photo) PDFs can’t be read yet.', 'PDF, Word, Texto, Markdown, CSV hasta 10 MB. El asistente lee el texto completo de los PDF y documentos de Word — pregúntale lo que sea. Los PDF escaneados (foto) aún no se pueden leer.')}</div>}
-      {items === null ? <Loading L={L} /> : items.length === 0 ? (
+      {addingFolder && isManager && (
+        <div style={{ ...card, padding: 12, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            maxLength={KNOWLEDGE_LIMITS.FOLDER_NAME_MAX}
+            placeholder={L('Folder name', 'Nombre de la carpeta')}
+            style={{ ...inputStyle, flex: 1, minWidth: 160 }}
+            autoFocus
+            onKeyDown={(e) => { if (e.key === 'Enter') void addFolder(); }}
+          />
+          <button onClick={() => void addFolder()} disabled={!newFolderName.trim()} style={{ ...primaryBtn, opacity: newFolderName.trim() ? 1 : 0.5 }}>{L('Create', 'Crear')}</button>
+          <button onClick={() => { setAddingFolder(false); setNewFolderName(''); }} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
+        </div>
+      )}
+      {items === null ? <Loading L={L} /> : (folders.length === 0 && visibleDocs.length === 0) ? (
         <Empty text={L('No documents yet.', 'Aún no hay documentos.')} />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {items.map((d) => (
-            <div key={d.id} style={{ ...card, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
-              <FileText size={16} color="var(--snow-ink3)" style={{ flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
-                <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span>{prettyType(d.mimeType)}</span>
-                  {d.sizeBytes != null && <span>· {prettySize(d.sizeBytes)}</span>}
-                  {(() => {
-                    const b = statusBadge(d.extractionStatus, L);
-                    if (!b) return null;
-                    const Icon = b.tone === 'good' ? Search : b.tone === 'warn' ? AlertTriangle : Loader2;
-                    return (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: b.color, fontWeight: 600 }}>
-                        <Icon size={11} className={b.tone === 'muted' && (d.extractionStatus === 'pending' || d.extractionStatus === 'processing') ? 'spin' : undefined} /> {b.label}
-                      </span>
-                    );
-                  })()}
-                  {d.visibility === 'managers' && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--snow-ink3)', fontWeight: 600 }}><Lock size={11} /> {L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</span>}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {folders.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {folders.map((f) => (
+                <div key={f.id} style={{ ...card, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button onClick={() => { setCurrentFolderId(f.id); setEditingDocId(null); }} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0, font: 'inherit', color: 'inherit' }}>
+                    <Folder size={16} color="var(--snow-sage-deep)" style={{ flexShrink: 0 }} />
+                    <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.name}</span>
+                    <span style={{ fontSize: 11.5, color: 'var(--snow-ink3)', flexShrink: 0 }}>· {folderCount(f.id)} {L('files', 'archivos')}</span>
+                  </button>
+                  {isManager && (
+                    <>
+                      <button onClick={() => void renameFolder(f)} title={L('Rename', 'Renombrar')} style={iconBtn}><Pencil size={14} /></button>
+                      <button onClick={() => void removeFolder(f)} title={L('Delete folder', 'Eliminar carpeta')} style={iconBtn}><Trash2 size={14} /></button>
+                    </>
+                  )}
                 </div>
-              </div>
-              {d.downloadUrl && (
-                <a href={d.downloadUrl} target="_blank" rel="noopener noreferrer" title={L('Download', 'Descargar')} style={{ ...iconBtn, textDecoration: 'none' }}><Download size={15} /></a>
-              )}
-              {isManager && <button onClick={() => remove(d)} title={L('Delete', 'Eliminar')} style={iconBtn}><Trash2 size={15} /></button>}
+              ))}
             </div>
-          ))}
+          )}
+          {visibleDocs.length > 0 && (
+            <div>
+              {folders.length > 0 && <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 6 }}>{L('Not in a folder', 'Sin carpeta')}</div>}
+              {docList(L('No documents yet.', 'Aún no hay documentos.'))}
+            </div>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+// ── Documents — list + row + inline access/folder editor + selects ───────────
+
+function DocList({ docs, isManager, folders, pid, L, editingId, onEdit, onRemove, onChanged, emptyText }: {
+  docs: KnowledgeDocumentDTO[]; isManager: boolean; folders: KnowledgeFolderDTO[]; pid: string; L: LFn;
+  editingId: string | null; onEdit: (id: string | null) => void; onRemove: (d: KnowledgeDocumentDTO) => void; onChanged: () => void; emptyText: string;
+}) {
+  if (docs.length === 0) return <Empty text={emptyText} />;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {docs.map((d) => (
+        <DocRow key={d.id} d={d} isManager={isManager} folders={folders} pid={pid} L={L}
+          editing={editingId === d.id} onEdit={() => onEdit(editingId === d.id ? null : d.id)}
+          onRemove={() => onRemove(d)} onChanged={onChanged} />
+      ))}
+    </div>
+  );
+}
+
+function DocRow({ d, isManager, folders, pid, L, editing, onEdit, onRemove, onChanged }: {
+  d: KnowledgeDocumentDTO; isManager: boolean; folders: KnowledgeFolderDTO[]; pid: string; L: LFn;
+  editing: boolean; onEdit: () => void; onRemove: () => void; onChanged: () => void;
+}) {
+  const b = statusBadge(d.extractionStatus, L);
+  const Icon = b ? (b.tone === 'good' ? Search : b.tone === 'warn' ? AlertTriangle : Loader2) : null;
+  return (
+    <div style={{ ...card, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: editing ? 12 : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <FileText size={16} color="var(--snow-ink3)" style={{ flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
+          <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>{prettyType(d.mimeType)}</span>
+            {d.sizeBytes != null && <span>· {prettySize(d.sizeBytes)}</span>}
+            {b && Icon && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: b.color, fontWeight: 600 }}>
+                <Icon size={11} className={b.tone === 'muted' && (d.extractionStatus === 'pending' || d.extractionStatus === 'processing') ? 'spin' : undefined} /> {b.label}
+              </span>
+            )}
+            {d.visibility === 'managers' && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--snow-ink3)', fontWeight: 600 }}><Lock size={11} /> {L(VIS_LABEL.managers.en, VIS_LABEL.managers.es)}</span>}
+            {d.visibility === 'dept' && d.visibleDept && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--snow-sage-deep)', fontWeight: 600 }}><Users size={11} /> {L(DEPT_LABEL[d.visibleDept].en, DEPT_LABEL[d.visibleDept].es)}</span>}
+          </div>
+        </div>
+        {d.downloadUrl && (
+          <a href={d.downloadUrl} target="_blank" rel="noopener noreferrer" title={L('Download', 'Descargar')} style={{ ...iconBtn, textDecoration: 'none' }}><Download size={15} /></a>
+        )}
+        {isManager && <button onClick={onEdit} title={L('Access & folder', 'Acceso y carpeta')} style={{ ...iconBtn, color: editing ? 'var(--snow-sage-deep)' : 'var(--snow-ink2)' }}><Pencil size={15} /></button>}
+        {isManager && <button onClick={onRemove} title={L('Delete', 'Eliminar')} style={iconBtn}><Trash2 size={15} /></button>}
+      </div>
+      {isManager && editing && <DocEditor d={d} folders={folders} pid={pid} L={L} onDone={onChanged} onCancel={onEdit} />}
+    </div>
+  );
+}
+
+function DocEditor({ d, folders, pid, L, onDone, onCancel }: {
+  d: KnowledgeDocumentDTO; folders: KnowledgeFolderDTO[]; pid: string; L: LFn; onDone: () => void; onCancel: () => void;
+}) {
+  const [access, setAccess] = React.useState<AccessVal>(docAccessVal(d));
+  const [folderId, setFolderId] = React.useState<string | null>(d.folderId);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const dirty = access !== docAccessVal(d) || folderId !== d.folderId;
+  const save = async () => {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      if (access !== docAccessVal(d)) {
+        const a = accessToPayload(access);
+        const r = await apiPatch('/api/knowledge/documents', { pid, id: d.id, action: 'access', visibility: a.visibility, visibleDept: a.visibleDept });
+        if (!r.ok) { setError(r.error || L('Could not update access.', 'No se pudo actualizar el acceso.')); return; }
+      }
+      if (folderId !== d.folderId) {
+        const r = await apiPatch('/api/knowledge/documents', { pid, id: d.id, action: 'move', folderId });
+        if (!r.ok) { setError(r.error || L('Could not move the document.', 'No se pudo mover el documento.')); return; }
+      }
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ borderTop: '1px solid var(--snow-rule)', paddingTop: 12, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <div>
+        <label style={labelStyle}>{L('Who can see it', 'Quién puede verlo')}</label>
+        <AccessSelect value={access} onChange={setAccess} L={L} title={L('Who can see it', 'Quién puede verlo')} />
+      </div>
+      <div>
+        <label style={labelStyle}>{L('Folder', 'Carpeta')}</label>
+        <FolderSelect value={folderId} onChange={setFolderId} folders={folders} L={L} title={L('Folder', 'Carpeta')} />
+      </div>
+      <button onClick={() => void save()} disabled={busy || !dirty} style={{ ...primaryBtn, opacity: busy || !dirty ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
+      <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
+      {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, width: '100%' }}>{error}</div>}
+    </div>
+  );
+}
+
+function AccessSelect({ value, onChange, L, title }: { value: AccessVal; onChange: (v: AccessVal) => void; L: LFn; title: string }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value as AccessVal)} title={title} style={{ ...ghostBtn, cursor: 'pointer', padding: '7px 10px' }}>
+      {ACCESS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{L(o.en, o.es)}</option>)}
+    </select>
+  );
+}
+
+function FolderSelect({ value, onChange, folders, L, title }: { value: string | null; onChange: (v: string | null) => void; folders: KnowledgeFolderDTO[]; L: LFn; title: string }) {
+  return (
+    <select value={value ?? ''} onChange={(e) => onChange(e.target.value || null)} title={title} style={{ ...ghostBtn, cursor: 'pointer', padding: '7px 10px' }}>
+      <option value="">{L('No folder', 'Sin carpeta')}</option>
+      {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+    </select>
   );
 }
 
@@ -530,124 +760,6 @@ function ContactEditor({ pid, contact, L, onDone, onCancel }: { pid: string; con
           <button onClick={save} disabled={busy || !name.trim()} style={{ ...primaryBtn, opacity: busy || !name.trim() ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
           <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════ Calendar ════════════════════════════════════
-
-function CalendarSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
-  const [items, setItems] = React.useState<KnowledgeEventDTO[] | null>(null);
-  const [adding, setAdding] = React.useState(false);
-
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ events: KnowledgeEventDTO[] }>(`/api/knowledge/events?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setItems(r.data.events);
-    else setItems([]);
-  }, [pid]);
-  React.useEffect(() => { void load(); }, [load]);
-
-  const remove = async (ev: KnowledgeEventDTO) => {
-    if (!window.confirm(L(`Delete "${ev.title}"?`, `¿Eliminar "${ev.title}"?`))) return;
-    await apiDelete(`/api/knowledge/events?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(ev.id)}`);
-    await load();
-  };
-
-  // Split upcoming vs past (today inclusive in upcoming).
-  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD local
-  const upcoming = (items ?? []).filter((e) => (e.endDate ?? e.eventDate) >= todayStr);
-  const past = (items ?? []).filter((e) => (e.endDate ?? e.eventDate) < todayStr).reverse();
-
-  return (
-    <div>
-      <SectionHeader
-        title={L('Team calendar', 'Calendario del equipo')}
-        action={isManager ? <button onClick={() => setAdding((v) => !v)} style={primaryBtn}><Plus size={15} /> {L('Add event', 'Agregar')}</button> : undefined}
-      />
-      {adding && isManager && <EventEditor pid={pid} L={L} onDone={async () => { setAdding(false); await load(); }} onCancel={() => setAdding(false)} />}
-      {items === null ? <Loading L={L} /> : items.length === 0 ? (
-        <Empty text={L('No events yet. Add training days, vendor visits, or brand audits.', 'Aún no hay eventos. Agrega días de capacitación, visitas de proveedores o auditorías.')} />
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {upcoming.length > 0 && <EventList title={L('Upcoming', 'Próximos')} events={upcoming} isManager={isManager} onRemove={remove} L={L} />}
-          {past.length > 0 && <EventList title={L('Past', 'Pasados')} events={past} isManager={isManager} onRemove={remove} L={L} dim />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EventList({ title, events, isManager, onRemove, L, dim }: { title: string; events: KnowledgeEventDTO[]; isManager: boolean; onRemove: (e: KnowledgeEventDTO) => void; L: LFn; dim?: boolean }) {
-  return (
-    <div style={{ opacity: dim ? 0.7 : 1 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 6 }}>{title}</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {events.map((ev) => (
-          <div key={ev.id} style={{ ...card, padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-            <div style={{ flexShrink: 0, textAlign: 'center', minWidth: 46 }}>
-              <CalendarDays size={16} color="var(--snow-sage-deep)" />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{ev.title}</div>
-              <div style={{ fontSize: 12.5, color: 'var(--snow-ink2)' }}>{fmtRange(ev.eventDate, ev.endDate, L)}</div>
-              {ev.notes && <div style={{ fontSize: 12.5, color: 'var(--snow-ink3)', marginTop: 3, whiteSpace: 'pre-wrap' }}>{ev.notes}</div>}
-            </div>
-            {isManager && <button onClick={() => onRemove(ev)} title={L('Delete', 'Eliminar')} style={iconBtn}><Trash2 size={14} /></button>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function fmtRange(start: string, end: string | null, L: LFn): string {
-  const fmt = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  if (!end || end === start) return fmt(start);
-  return `${fmt(start)} → ${fmt(end)}`;
-}
-
-function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: LFn; onDone: () => void; onCancel: () => void }) {
-  const [title, setTitle] = React.useState('');
-  const [eventDate, setEventDate] = React.useState('');
-  const [endDate, setEndDate] = React.useState('');
-  const [notes, setNotes] = React.useState('');
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const save = async () => {
-    if (!title.trim() || !eventDate || busy) return;
-    setBusy(true); setError(null);
-    const r = await apiPost('/api/knowledge/events', { pid, title: title.trim(), eventDate, endDate: endDate || null, notes: notes.trim() || null });
-    setBusy(false);
-    if (r.ok) onDone();
-    else setError(r.error || L('Could not save. Try again.', 'No se pudo guardar. Inténtalo de nuevo.'));
-  };
-
-  return (
-    <div style={{ ...card, padding: 16, display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16, maxWidth: 520 }}>
-      <div>
-        <label style={labelStyle}>{L('Title', 'Título')}</label>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={KNOWLEDGE_LIMITS.TITLE_MAX} placeholder={L('e.g. Fire safety training', 'ej. Capacitación contra incendios')} style={inputStyle} autoFocus />
-      </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={labelStyle}>{L('Date', 'Fecha')}</label>
-          <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} style={inputStyle} />
-        </div>
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={labelStyle}>{L('End date (optional)', 'Fecha fin (opcional)')}</label>
-          <input type="date" value={endDate} min={eventDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-        </div>
-      </div>
-      <div>
-        <label style={labelStyle}>{L('Notes (optional)', 'Notas (opcional)')}</label>
-        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={KNOWLEDGE_LIMITS.NOTES_MAX} rows={2} style={{ ...inputStyle, resize: 'vertical' }} />
-      </div>
-      {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={save} disabled={busy || !title.trim() || !eventDate} style={{ ...primaryBtn, opacity: busy || !title.trim() || !eventDate ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
-        <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
       </div>
     </div>
   );

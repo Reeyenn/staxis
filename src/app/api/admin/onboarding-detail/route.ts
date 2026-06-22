@@ -112,6 +112,7 @@ export async function GET(req: NextRequest) {
       .select('version, learned_at')
       .eq('pms_family', family)
       .eq('status', 'active')
+      .is('deleted_at', null)
       .maybeSingle();
     if (kf) knowledge = { version: kf.version, learnedAt: kf.learned_at };
   }

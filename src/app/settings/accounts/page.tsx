@@ -14,7 +14,8 @@ import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail,
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { captureException } from '@/lib/sentry';
 
-import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole, type AssignableRole } from '@/lib/roles';
+import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, type AppRole, type AssignableRole } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 
 interface AccountRow {
   accountId: string;
@@ -49,6 +50,7 @@ export default function AccountsPage() {
   const { properties } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
+  const can = useCan();
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,8 +66,8 @@ export default function AccountsPage() {
   // Allow admin / owner / general_manager. Front-desk / housekeeping /
   // maintenance roles get bounced back to /settings.
   useEffect(() => {
-    if (user && !canManageTeam(user.role)) router.replace('/settings');
-  }, [user, router]);
+    if (user && !can('manage_team')) router.replace('/settings');
+  }, [user, can, router]);
 
   const isAdmin = user?.role === 'admin';
 
@@ -233,12 +235,12 @@ export default function AccountsPage() {
       if (!body || !body.ok) throw new Error(body?.error ?? 'Failed to load accounts');
       setAccounts(body.data?.accounts ?? []);
     } catch (err) {
-      setError('Failed to load accounts');
+      setError(lang === 'es' ? 'No se pudieron cargar las cuentas' : 'Failed to load accounts');
       captureException(err, { route: 'settings/accounts', op: 'loadAccounts' });
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, lang]);
 
   useEffect(() => { void loadAccounts(); }, [loadAccounts]);
 
@@ -308,7 +310,7 @@ export default function AccountsPage() {
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({})) as { error?: string };
-          setFormError(d?.error || 'Failed to create');
+          setFormError(d?.error || (lang === 'es' ? 'No se pudo crear' : 'Failed to create'));
           return;
         }
       }
@@ -317,7 +319,7 @@ export default function AccountsPage() {
       await loadAccounts();
     } catch (err) {
       console.error(err);
-      setFormError('An error occurred');
+      setFormError(lang === 'es' ? 'Ocurrió un error' : 'An error occurred');
     } finally {
       setSaving(false);
     }
@@ -334,13 +336,13 @@ export default function AccountsPage() {
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({})) as { error?: string };
-        alert(d?.error || 'Failed to delete');
+        alert(d?.error || (lang === 'es' ? 'No se pudo eliminar' : 'Failed to delete'));
         return;
       }
       await loadAccounts();
     } catch (err) {
       console.error(err);
-      alert('Failed to delete account');
+      alert(lang === 'es' ? 'No se pudo eliminar la cuenta' : 'Failed to delete account');
     }
   };
 
@@ -361,7 +363,7 @@ export default function AccountsPage() {
     setForm(f => ({ ...f, propertyAccess: admin ? ['*'] : [] }));
   };
 
-  if (!user || !canManageTeam(user.role)) return null;
+  if (!user || !can('manage_team')) return null;
 
   return (
     <AppLayout>

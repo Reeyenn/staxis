@@ -215,12 +215,38 @@ export async function fetchWithAuth(
   // signin page so the message is honest.
   if (code === 'project_mismatch') endSessionAndRedirect('config-error');
 
-  // 2FA required: the JWT is valid but the device isn't trusted (or the
-  // skip_2fa bypass was refused). Refresh wouldn't help — only a fresh
-  // OTP can recover. Sign out and bounce to /signin?reason=2fa_required
-  // so the user re-enters password and gets prompted for OTP again.
-  // Added 2026-05-22 alongside server-side enforcement in api-auth.ts.
-  if (code === 'requires_2fa') endSessionAndRedirect('2fa_required');
+  // 2FA required: the server's requireSession → validateDeviceTrust says this
+  // device isn't trusted. That verdict is driven by the httpOnly `staxis_device`
+  // COOKIE matched against the `trusted_devices` table — NOT by any JWT claim.
+  //
+  // This is usually terminal — but there is a real, transient window where it
+  // is NOT: the trust-establishment race. Right after an OTP verify (the
+  // onboarding wizard's Step 3, or /signin/verify) the client calls
+  // /api/auth/trust-device, whose response Set-Cookies `staxis_device`. Any
+  // protected request already in flight when verifyOtp fired SIGNED_IN — e.g.
+  // PropertyContext auto-loading /api/capabilities/overrides for a freshly-
+  // created single-property owner — raced ahead of that cookie and 401'd here.
+  // Before this fix that 401 force-logged the owner straight to /signin the
+  // instant they finished 2FA.
+  //
+  // Recovery: refresh the token and retry ONCE. The fix is really the RETRY,
+  // not the refresh — by the time the awaited refresh resolves, trust-device's
+  // Set-Cookie has landed, and fetch re-sends the now-present `staxis_device`
+  // cookie on the same-origin retry, so the server now sees a trusted device.
+  // The refresh is incidental delay + token hygiene. If the retry STILL says
+  // requires_2fa, the device genuinely isn't trusted (no cookie / no row) →
+  // re-auth. (Note: the onboarding wizard surface is additionally protected by
+  // PropertyContext skipping the overrides call mid-onboarding; this retry is
+  // the load-bearing guard for other surfaces, e.g. AppLayout's WakeWord /
+  // feed-status mount calls, that a mid-onboarding owner can transiently hit.)
+  if (code === 'requires_2fa') {
+    const fresh = await refreshAndGetToken();
+    if (fresh) {
+      const retryRes = await send(fresh);
+      if (retryRes.status !== 401) return retryRes;
+    }
+    endSessionAndRedirect('2fa_required');
+  }
 
   // Recoverable: refresh the token and retry exactly once. If that retry
   // also 401s, we're out of moves — sign out cleanly.

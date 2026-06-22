@@ -15,29 +15,23 @@ export function FrontDeskTabBar({
   onTab,
   lang,
   showLostFound,
+  showComplaints,
+  showPackages,
 }: {
   tab: FrontDeskTabKey;
   onTab: (t: FrontDeskTabKey) => void;
   lang: 'en' | 'es';
+  // Each tab is gated by its own capability (default: everyone; an admin can
+  // switch a role OFF per hotel from the Access tab). Rooms is always present.
   showLostFound: boolean;
+  showComplaints: boolean;
+  showPackages: boolean;
 }) {
   const tabs: { key: FrontDeskTabKey; label: string }[] = [
     { key: 'rooms', label: lang === 'es' ? 'Habitaciones' : 'Rooms' },
-    // Packages is for ALL front-desk staff — always present, like Rooms (NOT
-    // gated behind showLostFound, which is the management-only flag).
-    { key: 'packages', label: lang === 'es' ? 'Paquetes' : 'Packages' },
-    ...(showLostFound
-      ? [
-          {
-            key: 'lost-and-found' as const,
-            label: lang === 'es' ? 'Objetos perdidos' : 'Lost & Found',
-          },
-          {
-            key: 'complaints' as const,
-            label: lang === 'es' ? 'Quejas' : 'Complaints',
-          },
-        ]
-      : []),
+    ...(showPackages ? [{ key: 'packages' as const, label: lang === 'es' ? 'Paquetes' : 'Packages' }] : []),
+    ...(showLostFound ? [{ key: 'lost-and-found' as const, label: lang === 'es' ? 'Objetos perdidos' : 'Lost & Found' }] : []),
+    ...(showComplaints ? [{ key: 'complaints' as const, label: lang === 'es' ? 'Quejas' : 'Complaints' }] : []),
   ];
   return (
     <div

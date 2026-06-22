@@ -1,7 +1,7 @@
 // Front-end-only shared types for the Communications tab.
 import type { ConversationDTO, StaffLite } from '@/lib/comms/types';
 
-export type ViewMode = 'chats' | 'threads' | 'todo' | 'knowledge';
+export type ViewMode = 'chats' | 'threads' | 'todo' | 'knowledge' | 'logbook' | 'calendar';
 export type RightPanel = null | 'pinned' | 'members';
 
 export interface Me {

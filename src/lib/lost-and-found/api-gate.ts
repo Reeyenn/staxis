@@ -27,6 +27,7 @@ import {
 } from '@/lib/api-ratelimit';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
 
 /** Roles allowed to use the Front-Desk Lost & Found surface. */
 export const FRONT_DESK_ROLES: readonly AppRole[] = [
@@ -88,7 +89,7 @@ export async function gateFrontDeskRead(
   const pid = pidV.value;
 
   const { accountId, role } = await resolveAccount(session.userId);
-  if (!role || !FRONT_DESK_ROLES.includes(role)) {
+  if (!role || !(await canForProperty({ role }, 'use_lost_and_found', pid))) {
     return {
       ok: false,
       response: err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
@@ -146,7 +147,7 @@ export async function gateFrontDeskWrite<TBody extends { pid?: unknown }>(
   const pid = pidV.value;
 
   const { accountId, role } = await resolveAccount(session.userId);
-  if (!role || !FRONT_DESK_ROLES.includes(role)) {
+  if (!role || !(await canForProperty({ role }, 'use_lost_and_found', pid))) {
     return {
       ok: false,
       response: err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),

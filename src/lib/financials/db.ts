@@ -629,6 +629,12 @@ export async function decideCapex(
     .update(upd)
     .eq('property_id', pid)
     .eq('id', id)
+    // Only an undecided project can be decided. Without this an already
+    // approved/rejected project (a stale second tab re-clicking, or a retried
+    // POST) would regress — nulling approved_at and destroying the approval
+    // audit trail the CapEx binder is meant to make un-bypassable. The in-DB
+    // predicate also closes the concurrent-decider race. (Audit fix 2026-06-18.)
+    .in('status', ['requested', 'revisions_needed'])
     .select('id')
     .maybeSingle();
   if (error) {
