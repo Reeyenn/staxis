@@ -391,7 +391,10 @@ export interface VisionActionResult {
  *  arms the popup/download listeners, so `delivery` stays undefined and the
  *  click path is byte-for-byte what it is today. */
 function deliveryDetectEnabled(): boolean {
-  return (process.env.CUA_DELIVERY_DETECT_ENABLED ?? 'false').toLowerCase() === 'true';
+  // ON by default — only affects MAP runs (founder-watched), never live polling,
+  // and the inline path is byte-identical when no download/popup event fires.
+  // CUA_DELIVERY_DETECT_ENABLED='false' is an emergency ops kill-switch only.
+  return (process.env.CUA_DELIVERY_DETECT_ENABLED ?? 'true').toLowerCase() === 'true';
 }
 
 // Listener windows — short, non-blocking. A download dialog and a popup both

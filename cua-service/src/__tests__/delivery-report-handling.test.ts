@@ -172,7 +172,7 @@ describe('R1 inline path — delivery undefined + byte-identical when flag OFF',
   });
 
   test('flag OFF: left_click result has no delivery and records the click step', async () => {
-    delete process.env.CUA_DELIVERY_DETECT_ENABLED;
+    process.env.CUA_DELIVERY_DETECT_ENABLED = 'false'; // default is now ON — set false to exercise the off path
     const clicks: Array<[number, number]> = [];
     const res = await executeVisionAction(fakeClickPage(clicks), clickAction(640, 500), CREDS, 'action');
     assert.equal(res.delivery, undefined, 'inline turn must leave delivery undefined');
@@ -191,7 +191,7 @@ describe('R1 inline path — delivery undefined + byte-identical when flag OFF',
   });
 
   test('flag-OFF and flag-ON-no-event results are identical except for the (absent) delivery', async () => {
-    delete process.env.CUA_DELIVERY_DETECT_ENABLED;
+    process.env.CUA_DELIVERY_DETECT_ENABLED = 'false';
     const off = await executeVisionAction(fakeClickPage([]), clickAction(10, 20), CREDS, 'action');
     process.env.CUA_DELIVERY_DETECT_ENABLED = 'true';
     const on = await executeVisionAction(fakeClickPage([]), clickAction(10, 20), CREDS, 'action');
