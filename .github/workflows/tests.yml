@@ -91,9 +91,10 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
-      # Scraper unit tests run on plain node:test.
-      - name: Run scraper unit tests
-        run: node --test scraper/__tests__/*.test.js
+      # (The legacy `scraper/` unit-test step was removed here: the scraper
+      # directory was deleted in the Plan v4 rebuild (2026-05-23), so
+      # `node --test scraper/__tests__/*.test.js` matched no files and exited
+      # non-zero on every run, failing CI before the real tests below ran.)
 
       # TypeScript test suites run via tsx --test. The env module (src/lib/env.ts)
       # validates required vars at boot and several test files transitively
