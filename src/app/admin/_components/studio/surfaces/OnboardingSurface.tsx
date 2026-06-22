@@ -80,6 +80,9 @@ interface PMSCoverage {
   coveragePct?: number;
   /** Per-feed live status — replaces the single "% of actions captured". */
   perFeed?: PerFeed[];
+  /** A newly-learned map parked as a DRAFT awaiting review. When present, the
+   *  row shows a "needs review" badge alongside the active-map status. */
+  pendingReview?: { version: number; score?: number; threshold?: number; reason?: string };
   /** Hotels with no PMS detected (properties.pms_type IS NULL). */
   unassignedHotelCount?: number;
 }
@@ -235,7 +238,10 @@ export function OnboardingSurface() {
     .map((p) => ({ p, j: journeyOf(p), ts: latestStateTs(p.onboardingState) }))
     .sort((a, c) => (c.ts - a.ts) || (Date.parse(c.p.createdAt) - Date.parse(a.p.createdAt)));
   const liveCount = props.filter(isLive).length;
-  const learnedPms = pms.filter((p) => p.recipe !== null);
+  // Show every learned PMS, PLUS any family with a freshly-learned map parked
+  // for review (even before it has an active map) so the "needs review" signal
+  // never hides behind an empty active list.
+  const learnedPms = pms.filter((p) => p.recipe !== null || p.pendingReview);
   const activeProspects = (prospects ?? []).filter((p) => p.status !== 'onboarded' && p.status !== 'dropped');
 
   return (
@@ -768,12 +774,27 @@ function BaySession({ job }: { job: JobRow }) {
 
 function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
   const st = pmsState(pms);
+  const pr = pms.pendingReview;
   // The detail card now does more than repair (rename · view · use-for-all ·
   // detach), so any learned PMS row is clickable.
   return (
     <button onClick={onClick} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9, background: dim(.05), border: `1px solid ${dim(.12)}`, borderRadius: 10, padding: '9px 12px', cursor: 'pointer', color: '#fff', width: '100%' }}>
       <Dot tone={st.tone} />
       <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pms.displayName ?? pms.label}</span>
+      {/* A freshly-learned map is parked for the founder to review — surface it
+          right on the list (NOT a button; BayPms is already a <button>). The
+          active-map status (dot + label) stays beside it. */}
+      {pr && (
+        <span
+          className="mono"
+          title={`A new map (v${pr.version}) is waiting for you to review${pr.reason ? ` — ${pr.reason}` : ''}. Open “Manage maps” to make it live.`}
+          style={{
+            flexShrink: 0, fontSize: 9, letterSpacing: '.04em', whiteSpace: 'nowrap',
+            color: 'var(--gold)', background: 'rgba(201,154,46,.12)',
+            border: '1px solid rgba(201,154,46,.4)', borderRadius: 7, padding: '2px 7px',
+          }}
+        >⚠ New map v{pr.version} · review</span>
+      )}
       <span style={{ fontSize: 11, color: st.tone === 'muted' ? dim(.5) : `var(--${st.tone})` }}>{st.label}</span>
       <span className="mono" style={{ fontSize: 9, color: dim(.35) }}>manage ›</span>
     </button>

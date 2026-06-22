@@ -156,6 +156,10 @@ interface CoverageRow {
     actionKeys: string[];
   } | null;
   propertyCount: number;
+  /** A learned map parked as a DRAFT awaiting founder review — surfaced on the
+   *  main list so the "needs review" signal is visible without opening Manage-
+   *  maps. Omitted when there's no parked draft for this family. */
+  pendingReview?: PendingReview;
   /** Plan v8 self-repair — any property on this PMS family. Repair
    *  jobs need SOME property_id; admin shouldn't have to pick one. */
   representativePropertyId: string | null;
@@ -176,6 +180,60 @@ interface KnowledgeFileRow {
   learned_at: string;
   knowledge: unknown;
   display_name: string | null;
+}
+
+/**
+ * A parked DRAFT awaiting the founder's review, surfaced on the MAIN coverage
+ * list (not just inside Manage-maps). Optional — present only when a family has
+ * a non-deleted draft. Carries a SUBSET of the verification verdict only
+ * (score/threshold) and a short human reason — NEVER selectors or full
+ * knowledge. Mirrors the verify-before-live subset the maps route already echoes.
+ */
+export interface PendingReview {
+  version: number;
+  score?: number;
+  threshold?: number;
+  reason?: string;
+}
+
+interface DraftRow {
+  pms_family: string;
+  version: number;
+  knowledge: unknown;
+  notes: string | null;
+}
+
+/**
+ * Read score/threshold out of a draft's `knowledge.verification`, defensively.
+ * Subset ONLY (never selectors). Returns {} when the row carries no usable
+ * verification telemetry (seeded/edit/legacy drafts), so the badge degrades to
+ * just "review" without a confidence figure.
+ */
+function readDraftVerification(knowledge: unknown): { score?: number; threshold?: number } {
+  if (!knowledge || typeof knowledge !== 'object') return {};
+  const v = (knowledge as { verification?: unknown }).verification;
+  if (!v || typeof v !== 'object') return {};
+  const r = v as Record<string, unknown>;
+  const out: { score?: number; threshold?: number } = {};
+  if (typeof r.score === 'number') out.score = r.score;
+  if (typeof r.threshold === 'number') out.threshold = r.threshold;
+  return out;
+}
+
+/**
+ * Distil a draft's `notes` into a short human reason. Strips a leading
+ * "<origin>/<decision>: " prefix (e.g. "mapper/park: …") when present, takes
+ * the first sentence, and clamps the length. Returns undefined for empty notes.
+ */
+function shortReason(notes: string | null): string | undefined {
+  if (!notes) return undefined;
+  // Strip a leading "<origin>/<decision>: " prefix (single slash-joined token
+  // pair followed by a colon) if present; otherwise leave the note untouched.
+  const stripped = notes.replace(/^\s*[\w-]+\/[\w-]+:\s*/, '').trim();
+  if (!stripped) return undefined;
+  const firstSentence = stripped.split(/(?<=[.!?])\s/)[0].trim();
+  const reason = firstSentence || stripped;
+  return reason.length > 140 ? `${reason.slice(0, 137)}…` : reason;
 }
 
 /**
@@ -239,6 +297,29 @@ export async function GET(req: NextRequest) {
     });
   }
   const kfRows = (kfRowsRaw ?? []) as KnowledgeFileRow[];
+
+  // ─── Parked DRAFTS per PMS family (latest non-deleted draft each). ─────
+  //     Surfaces the "a new map is parked for review" signal on the MAIN list
+  //     so the founder sees it without opening Manage-maps. Subset only —
+  //     never the full knowledge/selectors (see PendingReview).
+  const { data: draftRowsRaw, error: draftErr } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('pms_family, version, knowledge, notes')
+    .eq('status', 'draft')
+    .is('deleted_at', null)
+    .order('version', { ascending: false });
+
+  if (draftErr) {
+    return err(`Could not load draft maps: ${draftErr.message}`, {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+  // Keep the highest-version draft per family (query is version-desc, so the
+  // first one seen per family wins).
+  const latestDraftByFamily = new Map<string, DraftRow>();
+  for (const d of (draftRowsRaw ?? []) as DraftRow[]) {
+    if (!latestDraftByFamily.has(d.pms_family)) latestDraftByFamily.set(d.pms_family, d);
+  }
 
   // ─── Property counts per pms_type ─────────────────────────────────────
   const { data: properties, error: propErr } = await supabaseAdmin
@@ -359,6 +440,19 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
+    // Parked draft awaiting review (if any) — subset only.
+    const draft = latestDraftByFamily.get(pmsType);
+    const pendingReview: PendingReview | undefined = draft
+      ? {
+          version: draft.version,
+          ...readDraftVerification(draft.knowledge),
+          ...((): { reason?: string } => {
+            const reason = shortReason(draft.notes);
+            return reason ? { reason } : {};
+          })(),
+        }
+      : undefined;
+
     const session = latestNonAliveByFamily.get(pmsType);
     let latestJob: CoverageRow['latestJob'] = null;
     if (session) {
@@ -384,6 +478,7 @@ export async function GET(req: NextRequest) {
       perFeed,
       recipe,
       propertyCount: propertyCountByPms.get(pmsType) ?? 0,
+      ...(pendingReview ? { pendingReview } : {}),
       representativePropertyId: representativePropIdByPms.get(pmsType) ?? null,
       latestJob,
     };
