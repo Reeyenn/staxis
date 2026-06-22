@@ -6,7 +6,7 @@
 // Search palette · Catch-up popover. All data via /api/comms/*. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Search, Sparkles, ListTodo, BookOpen, Notebook, Megaphone, Plus, Reply, ArrowRight } from 'lucide-react';
+import { Search, Sparkles, ListTodo, BookOpen, Notebook, CalendarDays, Megaphone, Plus, Reply, ArrowRight } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
@@ -17,6 +17,7 @@ import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePa
 import { SearchPalette, CatchUp, NewMessageModal, TodoMode } from './CommsOverlays';
 import { KnowledgePane } from './KnowledgePane';
 import { LogbookMode } from './LogbookPane';
+import { CalendarMode } from './CalendarPane';
 
 export function CommsApp() {
   const { activePropertyId: pid } = useProperty();
@@ -48,7 +49,7 @@ export function CommsApp() {
     // same hydration discipline as the pid branch below (#418).
     try {
       const v = new URLSearchParams(window.location.search).get('view');
-      if (v === 'logbook' || v === 'threads' || v === 'todo' || v === 'knowledge') setMode(v);
+      if (v === 'logbook' || v === 'threads' || v === 'todo' || v === 'knowledge' || v === 'calendar') setMode(v);
     } catch { /* */ }
   }, []);
 
@@ -187,6 +188,7 @@ export function CommsApp() {
           <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openTasks || undefined} />
           <NavItem icon={<BookOpen size={17} />} label={L('Knowledge', 'Conocimiento')} active={mode === 'knowledge'} onClick={() => switchMode('knowledge')} />
           <NavItem icon={<Notebook size={17} />} label={L('Log book', 'Bitácora')} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
+          <NavItem icon={<CalendarDays size={17} />} label={L('Calendar', 'Calendario')} active={mode === 'calendar'} onClick={() => switchMode('calendar')} />
 
           <SidebarSection label={L('Announcements', 'Anuncios')} onAdd={() => setSearchOpen(true)} tip={L('Post an announcement', 'Publicar un anuncio')} />
           {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
@@ -216,6 +218,7 @@ export function CommsApp() {
         {mode === 'todo' && <TodoMode pid={pid} tasks={tasks} staff={boot?.staff ?? []} L={L} reload={loadTasks} />}
         {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot?.me.isManager} L={L} /></div>}
         {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot?.me.displayName ?? L('You', 'Tú')} L={L} />}
+        {mode === 'calendar' && <CalendarMode key={pid} pid={pid} isManager={!!boot?.me.isManager} L={L} />}
       </div>
 
       {/* ── Overlays ── */}
