@@ -219,8 +219,12 @@ async function streamToString(stream: NodeJS.ReadableStream): Promise<string> {
  *
  * Not full RFC 4180 — doesn't handle multi-line embedded CRLFs well —
  * but covers what Choice Advantage produces.
+ *
+ * Exported so the LEARN-TIME download parser (extractors/download-parser.ts,
+ * feature/cua-report-handling) reuses this exact logic rather than
+ * duplicating a second CSV parser that could drift.
  */
-function parseCsv(
+export function parseCsv(
   text: string,
   delimiter: string,
 ): { header: string[]; rows: Array<Record<string, string>> } {

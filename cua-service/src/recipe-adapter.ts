@@ -405,6 +405,24 @@ export function actionRecipeToTableTemplate(
   const gotoSteps = action.steps.filter((s) => s.kind === 'goto');
   const sourceUrl = gotoSteps.length > 0 ? (gotoSteps[gotoSteps.length - 1]!).url : '';
 
+  // feature/cua-report-handling — NEW-WINDOW REPLAY is a follow-up, not part
+  // of this deliverable (learn-time READ). A learn-time-discovered DOWNLOAD
+  // feed already round-trips UNCHANGED here: the mapper emits parse.mode:'csv'
+  // + downloadsCsv:true, and the csv branch below derives downloadClickAt /
+  // downloadButton + preSteps via deriveCsvFlowFromSteps from the recorded
+  // trigger click — no change needed for downloads.
+  //
+  // TODO(new-window replay): when action.opensNewWindow is true, the click
+  // that reaches the feed opens a popup whose page holds the table. The
+  // current dom_table replay (extractors/dom-table.ts) reads only the primary
+  // page, so popup feeds are NOT yet replayable. Implementing this is
+  // non-trivial — it needs the template-runner to (a) listen for the popup
+  // via page.context().waitForEvent('page') around the trigger click, and (b)
+  // scrape the popup page instead of the primary — so it is deferred. Until
+  // then, opensNewWindow is carried on the recipe (additive, harmless) for the
+  // admin UI / future runtime; the table branch below replays against the
+  // primary page (degrades to "feed not located" rather than mis-scraping).
+
   // ParseHint → mode + selectors + columns.
   const mode = route.modeFromParseHint(action.parse.mode);
   let selectors: Record<string, string> = {};

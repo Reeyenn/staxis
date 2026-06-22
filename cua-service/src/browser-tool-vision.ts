@@ -39,7 +39,7 @@
  * + page.screenshot provide.
  */
 
-import type { Page } from 'playwright';
+import type { Page, Download } from 'playwright';
 import type { PMSCredentials, RecipeStep } from './types.js';
 import { log } from './log.js';
 import { applySetOfMark, clearSetOfMark, applyHeaderMark, clearHeaderMark, type BadgeInfo, type HeaderMarkInfo } from './set-of-mark.js';
@@ -353,6 +353,23 @@ export type VisionAction =
   | { action: 'wait'; duration: number }
   | { action: 'cursor_position' };
 
+/**
+ * feature/cua-report-handling — a delivery event that fired as a side effect
+ * of a CLICK action. ONLY ever populated when CUA_DELIVERY_DETECT_ENABLED is
+ * on AND an event actually fired; UNDEFINED for the inline-feed path so that
+ * path stays byte-identical to today.
+ *
+ *   - kind:'download'    → the click triggered a file download (CSV report);
+ *                          `download` is the captured Playwright Download.
+ *   - kind:'new_window'  → the click opened a new window/tab (popup);
+ *                          `popupPage` is the captured Page.
+ */
+export interface VisionDelivery {
+  kind: 'download' | 'new_window';
+  download?: Download;
+  popupPage?: Page;
+}
+
 export interface VisionActionResult {
   /** Plain-text output for the agent's tool_result content. */
   output: string;
@@ -362,7 +379,26 @@ export interface VisionActionResult {
   recordedStep?: RecipeStep;
   /** True if this action failed; sets `is_error: true` on the tool_result. */
   isError?: boolean;
+  /** feature/cua-report-handling — OPTIONAL. Present only when a delivery
+   *  event (download / new window) fired during a CLICK, and only when
+   *  CUA_DELIVERY_DETECT_ENABLED is on. UNDEFINED on every inline-feed turn,
+   *  which is what keeps the inline learn path byte-identical. */
+  delivery?: VisionDelivery;
 }
+
+/** feature/cua-report-handling — default OFF (mirrors CUA_CSV_DISCOVERY_ENABLED
+ *  handling in mapper.ts). With the flag unset, executeVisionAction never
+ *  arms the popup/download listeners, so `delivery` stays undefined and the
+ *  click path is byte-for-byte what it is today. */
+function deliveryDetectEnabled(): boolean {
+  return (process.env.CUA_DELIVERY_DETECT_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+
+// Listener windows — short, non-blocking. A download dialog and a popup both
+// open within a beat of the click; we race them and move on either way so a
+// normal in-page click pays no latency penalty beyond these short waits.
+const DELIVERY_POPUP_TIMEOUT_MS = 1_500;
+const DELIVERY_DOWNLOAD_TIMEOUT_MS = 5_000;
 
 // ─── Executor ────────────────────────────────────────────────────────────
 
@@ -513,16 +549,59 @@ export async function executeVisionAction(
         // fall back to a fresh elementsFromPoint lookup if the agent
         // clicked by raw coordinate.
         const roleName = resolved?.roleName ?? (await extractRoleNameAtPoint(page, x, y));
+
+        // feature/cua-report-handling — DELIVERY DETECTION (default OFF).
+        // Some feeds answer a Submit/Generate/Export click by DOWNLOADING a
+        // file or OPENING A NEW WINDOW instead of rendering inline. Without
+        // this, the mapper sees no page change, re-clicks Submit, trips the
+        // loop detector, and burns the cost cap. When the flag is ON, arm the
+        // popup + download listeners BEFORE the click (the proven csv-download
+        // pattern is to listen-before-trigger), then race them non-blocking
+        // after. When the flag is OFF — or no event fires — `delivery` stays
+        // undefined and everything below is byte-identical to today.
+        const detectDelivery = deliveryDetectEnabled();
+        const popupPromise = detectDelivery
+          ? page
+              .context()
+              .waitForEvent('page', { timeout: DELIVERY_POPUP_TIMEOUT_MS })
+              .catch(() => null)
+          : null;
+        const downloadPromise = detectDelivery
+          ? page
+              .waitForEvent('download', { timeout: DELIVERY_DOWNLOAD_TIMEOUT_MS })
+              .catch(() => null)
+          : null;
+
         await page.mouse.click(x, y);
+
         const step: RecipeStep = roleName
           ? { kind: 'click_at', x, y, roleName }
           : { kind: 'click_at', x, y };
         const tag = resolved
           ? ` (via badge ${action.text})`
           : '';
+
+        let delivery: VisionDelivery | undefined;
+        if (detectDelivery) {
+          // A download wins over a popup if both somehow fire (the popup may
+          // just be a transient "preparing your file" tab). Each promise
+          // already swallows its own timeout/rejection above, so this await
+          // can never throw — preserving the no-event byte-identical path.
+          const download = downloadPromise ? await downloadPromise : null;
+          if (download) {
+            delivery = { kind: 'download', download };
+          } else {
+            const popupPage = popupPromise ? await popupPromise : null;
+            if (popupPage) {
+              delivery = { kind: 'new_window', popupPage };
+            }
+          }
+        }
+
         return {
           output: `Left-clicked at (${x}, ${y})${tag}.`,
           recordedStep: step,
+          ...(delivery ? { delivery } : {}),
         };
       }
 
