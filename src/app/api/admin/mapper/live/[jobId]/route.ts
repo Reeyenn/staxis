@@ -26,6 +26,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import {
+  columnsFromAction, REQUIRED_ACTION_KEYS, ACTION_FEED_CONTRACTS, prettifyKey,
+} from '@/lib/pms/recipe-coverage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -147,9 +150,18 @@ export async function GET(
   // the family. Selectors are NEVER returned — only a coverage summary.
   const result = (jobRes.data.result ?? {}) as Record<string, unknown>;
   const knowledgeFileId = typeof result.knowledge_file_id === 'string' ? result.knowledge_file_id : null;
+  // ADDITIVE (Review-before-going-live panel): per-feed coverage summary —
+  // label + learned-column count + which required feeds are still missing.
+  // Old board code ignores this; NO selectors are returned, only counts.
+  type ActionDetail = {
+    key: string; label: string;
+    status: 'found' | 'missing';
+    rowCount?: number | null; columnCount: number;
+  };
   let draftMap: {
     id: string; version: number; status: string; pmsFamily: string;
     actionsFound: number; missingRequired: string[]; missingBusinessCritical: string[];
+    actionDetails: ActionDetail[];
   } | null = null;
   // STRICT: only the draft THIS run produced (knowledge_file_id). No newest-by-
   // family fallback — Save/Discard resolve the same way (job-draft.ts), so the
@@ -165,18 +177,57 @@ export async function GET(
     if (row) {
       const knowledge = (row.knowledge ?? {}) as { actions?: Record<string, unknown>; feedGaps?: { missingRequired?: Array<{ target?: unknown }>; missingBusinessCritical?: unknown[] } };
       const gaps = knowledge.feedGaps;
+      const actions = (knowledge.actions && typeof knowledge.actions === 'object' && !Array.isArray(knowledge.actions)
+        ? knowledge.actions
+        : {}) as Record<string, unknown>;
+      const missingRequired = Array.isArray(gaps?.missingRequired)
+        ? gaps!.missingRequired.map((e) => (typeof e?.target === 'string' ? e.target : '')).filter(Boolean)
+        : [];
+
+      // ADDITIVE per-feed summary for the Review-before-going-live panel.
+      // Live row counts come from the run's boardTargets (same source the board
+      // expand reads) — best-effort; absent → null. Selectors NEVER leave here.
+      const boardTargets = Array.isArray((result as { boardTargets?: unknown }).boardTargets)
+        ? ((result as { boardTargets?: unknown }).boardTargets as Array<Record<string, unknown>>)
+        : [];
+      const rowCountByKey = new Map<string, number>();
+      for (const t of boardTargets) {
+        if (t && typeof t.key === 'string' && typeof t.rowCount === 'number') {
+          rowCountByKey.set(t.key, t.rowCount);
+        }
+      }
+      // Found feeds (present in actions) + any required feeds still missing.
+      const presentKeys = Object.keys(actions);
+      const actionDetails: ActionDetail[] = [
+        ...presentKeys.map((key) => ({
+          key,
+          label: ACTION_FEED_CONTRACTS[key]?.label ?? prettifyKey(key),
+          status: 'found' as const,
+          rowCount: rowCountByKey.has(key) ? rowCountByKey.get(key)! : null,
+          columnCount: Object.keys(columnsFromAction(actions[key])).length,
+        })),
+        ...[...REQUIRED_ACTION_KEYS]
+          .filter((k) => !(k in actions))
+          .map((key) => ({
+            key,
+            label: ACTION_FEED_CONTRACTS[key]?.label ?? prettifyKey(key),
+            status: 'missing' as const,
+            rowCount: null,
+            columnCount: 0,
+          })),
+      ];
+
       draftMap = {
         id: row.id,
         version: row.version,
         status: row.status,
         pmsFamily: row.pms_family,
-        actionsFound: Object.keys(knowledge.actions ?? {}).length,
-        missingRequired: Array.isArray(gaps?.missingRequired)
-          ? gaps!.missingRequired.map((e) => (typeof e?.target === 'string' ? e.target : '')).filter(Boolean)
-          : [],
+        actionsFound: presentKeys.length,
+        missingRequired,
         missingBusinessCritical: Array.isArray(gaps?.missingBusinessCritical)
           ? (gaps!.missingBusinessCritical as unknown[]).filter((t): t is string => typeof t === 'string')
           : [],
+        actionDetails,
       };
     }
   }
