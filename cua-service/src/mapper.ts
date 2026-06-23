@@ -4139,9 +4139,29 @@ export function finalizeRecoveredSuccess(
   // Written alongside the flat columns; absent ⟹ positional-only (back-compat).
   const headerAnchors = buildColumnHeaderAnchors(finalColumns, hint.rowSelector, audit.headers);
 
+  // feature/cua-column-editor — persist EVERY header the audit saw on the page
+  // (not just the mapped ones), with its cell index. This is the catalogue the
+  // Coverage Editor's "add a column from what's on the page" dropdown reads:
+  // a header here that isn't a captured column is one the founder can add (its
+  // index lets the editor author a positional selector). Purely additive; a
+  // headerless/colspan feed simply omits it (empty dropdown → re-map prompt).
+  const detectedColumns = audit.headers
+    ? audit.headers.cells
+        .filter((c) => c.index >= 1 && c.raw.trim() !== '')
+        .map((c) => ({ index: c.index, header: c.raw.trim() }))
+    : [];
+
   const action: ActionRecipe = {
     ...success.action,
-    parse: { mode: 'table', hint: { ...hint, columns: finalColumns, ...headerAnchors } },
+    parse: {
+      mode: 'table',
+      hint: {
+        ...hint,
+        columns: finalColumns,
+        ...headerAnchors,
+        ...(detectedColumns.length > 0 ? { detectedColumns } : {}),
+      },
+    },
     ...(drillDown ? { drillDown } : {}),
   };
   if (unprovenRequiredColumns.length > 0) {

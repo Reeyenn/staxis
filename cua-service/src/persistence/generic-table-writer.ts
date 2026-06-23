@@ -197,6 +197,12 @@ export function validateRows(
     // surfaces schema drift.
     for (const k of Object.keys(row)) {
       if (k === 'property_id') continue;  // always allowed
+      // feature/cua-column-editor — `raw` is a real jsonb column on every pms_*
+      // table (migration 0202) used as the bucket for founder-added custom
+      // columns. It's intentionally NOT in the validation descriptor (it holds
+      // arbitrary, un-typed page values), so skip the drift warning for it —
+      // it writes through to Postgres as-is.
+      if (k === 'raw') continue;
       if (!columnsByName.has(k)) {
         log.warn('generic-table-writer: row has field not in descriptor', {
           tableName: descriptor.table_name,

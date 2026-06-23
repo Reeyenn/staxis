@@ -167,6 +167,22 @@ function applyTemplateParsers(
     }
     out[col] = field.parser ? applyParser(field.parser, raw, field.parserConfig) : raw;
   }
+
+  // feature/cua-column-editor — FOUNDER-ADDED custom columns. Their selectors
+  // were merged into the source's read set (recipe-adapter), so the extractor
+  // keyed each value by the custom column name on the raw `row`. Gather any
+  // non-blank ones into a `raw` jsonb sub-object instead of a typed field —
+  // captured + visible without ever touching the field contract / validator.
+  // list_row pass only (custom columns are page-table cells); absent ⟹ no `raw`
+  // key on the row (byte-identical to before this feature).
+  if (origin === 'list_row' && template.rawColumns && template.rawColumns.length > 0) {
+    const rawOut: Record<string, string> = {};
+    for (const key of template.rawColumns) {
+      const v = row[key];
+      if (v !== undefined && v !== null && String(v).trim() !== '') rawOut[key] = String(v);
+    }
+    if (Object.keys(rawOut).length > 0) out.raw = rawOut;
+  }
   return out;
 }
 

@@ -40,7 +40,11 @@ import type {
   ExtractionMode,
 } from './types.js';
 import { log } from './log.js';
-import { resolveColumnParser, recoveredDetailColumns, type LearnedTranslations } from './target-contract.js';
+import {
+  resolveColumnParser, recoveredDetailColumns,
+  requiredLearnedFor, contextualColumnsFor, optionalColumnsFor,
+  type LearnedTranslations,
+} from './target-contract.js';
 import type { PreStep } from './extractors/pre-steps.js';
 
 // ─── Per-action → table mapping ───────────────────────────────────────────
@@ -592,6 +596,37 @@ export function actionRecipeToTableTemplate(
     };
   }
 
+  // feature/cua-column-editor — wire FOUNDER-ADDED custom columns. They're
+  // captured from the page like any DOM column (merged into the primary
+  // source's read set) but tagged `rawColumns` so template-runner gathers them
+  // into each row's `raw` jsonb bucket instead of a typed warehouse field — so
+  // they never enter the field contract / validator. Table mode only (DOM page
+  // cells) and never on a drill-down feed (those collapse to a list page and
+  // aren't editable here). Absent ⟹ no-op (byte-identical, rawColumns omitted).
+  const rawColumns: string[] = [];
+  if (action.parse.mode === 'table' && !action.drillDown) {
+    const custom = action.parse.hint.customColumns;
+    if (custom && typeof custom === 'object') {
+      const primary = sources[0]!;
+      const mergedColumns = { ...primary.columns };
+      // A typed contract column always wins — a custom column can never shadow
+      // or overwrite contract data, even if the contract column wasn't LEARNED
+      // (so isn't in `fields`). Guard against the full contract set, not just
+      // the learned columns (the route + worker refuse this at write time; this
+      // is the runtime safety net for any pre-guard/hand-edited recipe).
+      const contractCols = new Set<string>([
+        ...requiredLearnedFor(actionKey), ...contextualColumnsFor(actionKey), ...optionalColumnsFor(actionKey),
+      ]);
+      for (const [key, sel] of Object.entries(custom)) {
+        if (typeof sel === 'string' && sel.trim() !== '' && !(key in fields) && !(key in mergedColumns) && !contractCols.has(key)) {
+          mergedColumns[key] = sel;
+          rawColumns.push(key);
+        }
+      }
+      if (rawColumns.length > 0) primary.columns = mergedColumns;
+    }
+  }
+
   const template: TableTemplate = {
     tableName: route.tableName,
     keys: route.keys,
@@ -599,6 +634,7 @@ export function actionRecipeToTableTemplate(
     snapshotScope: route.snapshotScope,
     sources,
     fields,
+    ...(rawColumns.length > 0 ? { rawColumns } : {}),
     ...(rowDetail ? { rowDetail } : {}),
     // Plan v8 self-repair — bridge template → recipe action_key so
     // session-driver's zero-row failure detector can enqueue a

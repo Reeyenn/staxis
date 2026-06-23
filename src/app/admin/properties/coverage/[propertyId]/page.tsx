@@ -58,6 +58,13 @@ interface FeedDetail {
   label: string;
   table: string | null;
   columns: Record<string, string>;
+  // feature/cua-column-editor — founder-added custom columns (name → selector),
+  // captured into the table's `raw` bucket; the page columns the founder could
+  // still add (detected, not yet captured); and the columns that can't be
+  // removed (core contract — the delete control is hidden for these).
+  customColumns: Record<string, string>;
+  availablePageColumns: Array<{ index: number; header: string }>;
+  undeletableColumns: string[];
   required: boolean;
   canTakeover: boolean;
   source: 'actions' | 'legacy';
@@ -145,6 +152,13 @@ export default function CoveragePage() {
   const [pendingPromote, setPendingPromote] = useState(false);
   const [promoteBusy, setPromoteBusy] = useState(false);
   const [promoteError, setPromoteError] = useState<string | null>(null);
+  // feature/cua-column-editor — per-column delete / add-custom. `colBusy` keys a
+  // single in-flight op (`del:${feedKey}:${col}` | `add:${feedKey}`) to disable
+  // the right control; the add-form is open for at most one feed at a time.
+  const [colBusy, setColBusy] = useState<string | null>(null);
+  const [addColFeed, setAddColFeed] = useState<string | null>(null);
+  const [addColIndex, setAddColIndex] = useState<string>('');   // selected page-header index (as string)
+  const [addColName, setAddColName] = useState<string>('');     // editable custom name
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -367,6 +381,75 @@ export default function CoveragePage() {
       } catch { /* keep polling */ }
     }
     return { ok: false, error: 'Timed out waiting for the edit to finish — check Manage maps.', timedOut: true };
+  };
+
+  // feature/cua-column-editor — "Rate Plan" → "rate_plan" default custom name.
+  const slugifyHeader = (header: string): string =>
+    header.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/^([0-9])/, 'c_$1').slice(0, 49) || 'field';
+
+  // Shared edit-column caller. A parked DRAFT edits its unsigned jsonb in place
+  // (instant); a LIVE map enqueues a re-signing worker job we poll to completion.
+  // On success we reload coverage so the new/removed column shows + the sample
+  // (which reads the live warehouse incl. the `raw` bucket) reflects it.
+  // Returns true on success (column actually edited), false on any failure — so
+  // callers can keep a form open + populated for the user to retry on error.
+  const runColumnEdit = async (busyKey: string, payload: Record<string, unknown>, okText: string): Promise<boolean> => {
+    if (!data) return false;
+    setColBusy(busyKey);
+    setToast(null);
+    const draft = data.activeMap?.isDraft ? data.activeMap : null;
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/coverage/edit-column', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          propertyId,
+          ...(draft ? { draftId: draft.draftId } : { pmsFamily: data.pmsFamily }),
+          ...payload,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setToast({ tone: 'bad', text: json.error ?? 'Could not edit the column.' });
+        return false;
+      }
+      // Draft path returns immediately; live path returns a jobId to poll.
+      if (typeof json.data?.jobId === 'string') {
+        const outcome = await pollJob(json.data.jobId);
+        if (!outcome.ok) { setToast({ tone: 'bad', text: outcome.error }); return false; }
+        const decision = (outcome.result?.promotion_decision as string | undefined) ?? '';
+        setToast(decision === 'auto_promote'
+          ? { tone: 'good', text: okText }
+          : { tone: 'warn', text: (outcome.result?.promotion_reason as string | undefined) ?? 'Saved as a draft to review in Manage maps.' });
+      } else {
+        setToast({ tone: 'good', text: okText });
+      }
+      await load();
+      return true;
+    } catch (err) {
+      setToast({ tone: 'bad', text: (err as Error).message });
+      return false;
+    } finally {
+      setColBusy(null);
+    }
+  };
+
+  const deleteColumn = (feed: FeedDetail, columnName: string) =>
+    void runColumnEdit(`del:${feed.key}:${columnName}`,
+      { feedKey: feed.actionKey ?? feed.key, op: 'delete', columnName },
+      `Stopped capturing “${columnName}”.`);
+
+  const addCustomColumn = (feed: FeedDetail) => {
+    const headerIndex = Number(addColIndex);
+    const columnKey = slugifyHeader(addColName);
+    if (!Number.isInteger(headerIndex) || headerIndex < 1) {
+      setToast({ tone: 'bad', text: 'Pick a column from the page to capture.' });
+      return;
+    }
+    void runColumnEdit(`add:${feed.key}`,
+      { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, headerIndex },
+      `Now capturing “${columnKey}” into this feed.`)
+      .then((okFlag) => { if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); } });
   };
 
   const relearn = async () => {
@@ -602,7 +685,7 @@ export default function CoveragePage() {
                           </div>
                         </div>
 
-                        {colNames.length > 0 && (
+                        {(colNames.length > 0 || Object.keys(f.customColumns).length > 0) && (
                           <button
                             onClick={() => {
                               const next = isOpen ? null : f.key;
@@ -615,24 +698,114 @@ export default function CoveragePage() {
                             {isOpen ? '▾ hide columns' : '▸ show columns'}
                           </button>
                         )}
-                        {isOpen && (
-                          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            {colNames.map((c) => (
-                              <div key={c} style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                                <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: '#fff', minWidth: 150 }}>{c}</span>
-                                <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), wordBreak: 'break-all' }}>{f.columns[c]}</span>
+                        {isOpen && (() => {
+                          // feature/cua-column-editor — known + custom columns get a
+                          // delete control (hidden for core contract columns); the
+                          // founder can add an extra page column from a dropdown.
+                          const editable = !!map?.editable && f.source === 'actions';
+                          const customNames = Object.keys(f.customColumns);
+                          const ColRow = (c: string, selector: string, custom: boolean) => {
+                            const locked = !custom && f.undeletableColumns.includes(c);
+                            const delKey = `del:${f.key}:${c}`;
+                            return (
+                              <div key={`${custom ? 'x' : ''}${c}`} style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                                <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: '#fff', minWidth: 150, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {c}
+                                  {custom && <Caps size={8} c="var(--gold)" style={{ letterSpacing: '.1em' }}>custom</Caps>}
+                                  {locked && <Lock size={9} color={dimWhite(.4)} />}
+                                </span>
+                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), wordBreak: 'break-all' }}>{selector}</span>
+                                {editable && !locked && (
+                                  <button
+                                    onClick={() => void deleteColumn(f, c)}
+                                    disabled={!!colBusy || !!liveJobId}
+                                    title="Stop capturing this column"
+                                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--terracotta)', opacity: colBusy === delKey ? 1 : .7 }}
+                                  >
+                                    {colBusy === delKey ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={11} />}
+                                  </button>
+                                )}
                               </div>
-                            ))}
-                            {/* feature/cua-admin-mapper-visibility — the source
-                                screen the robot read, ABOVE the row sample. */}
-                            <FeedCaptureView state={captures[capKey]} onError={() => handleCaptureError(capKey)} />
-                            {f.sample.length > 0 && (
-                              <div style={{ marginTop: 8, fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.4) }}>
-                                sample: {JSON.stringify(f.sample[0]).slice(0, 240)}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                            );
+                          };
+                          return (
+                            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              {colNames.map((c) => ColRow(c, f.columns[c], false))}
+                              {customNames.map((c) => ColRow(c, f.customColumns[c], true))}
+
+                              {/* Add an extra page column (custom → stored in the
+                                  feed's "extras" bucket). Editable table feeds only. */}
+                              {editable && f.canTakeover && (
+                                addColFeed === f.key ? (
+                                  f.availablePageColumns.length > 0 ? (
+                                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                                      <select
+                                        value={addColIndex}
+                                        onChange={(e) => {
+                                          setAddColIndex(e.target.value);
+                                          const hdr = f.availablePageColumns.find((p) => String(p.index) === e.target.value);
+                                          if (hdr) setAddColName(slugifyHeader(hdr.header));
+                                        }}
+                                        style={{ background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '6px 8px', fontFamily: FONT_SANS, fontSize: 12 }}
+                                      >
+                                        <option value="" style={{ color: '#000' }}>Column on the page…</option>
+                                        {f.availablePageColumns.map((p) => (
+                                          <option key={p.index} value={p.index} style={{ color: '#000' }}>{p.header}</option>
+                                        ))}
+                                      </select>
+                                      <input
+                                        value={addColName}
+                                        onChange={(e) => setAddColName(e.target.value)}
+                                        placeholder="name (e.g. rate_plan)"
+                                        style={{ background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '6px 8px', fontFamily: FONT_MONO, fontSize: 11.5, width: 150 }}
+                                      />
+                                      <Btn variant="forest" size="sm" disabled={!addColIndex || !addColName.trim() || colBusy === `add:${f.key}`} onClick={() => addCustomColumn(f)}>
+                                        {colBusy === `add:${f.key}` ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={11} />} Add
+                                      </Btn>
+                                      <Btn variant="ghost" size="sm" onClick={() => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); }} style={{ color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel</Btn>
+                                    </div>
+                                  ) : (
+                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                                      The robot hasn’t listed this page’s columns yet — hit <b>Re-map</b> above once, then you can add one.
+                                    </div>
+                                  )
+                                ) : (
+                                  <button
+                                    onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); }}
+                                    disabled={!!liveJobId}
+                                    style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
+                                  >
+                                    <Plus size={11} /> Add a column from this page
+                                  </button>
+                                )
+                              )}
+
+                              {/* feature/cua-admin-mapper-visibility — the source
+                                  screen the robot read, ABOVE the row sample. */}
+                              <FeedCaptureView state={captures[capKey]} onError={() => handleCaptureError(capKey)} />
+                              {f.sample.length > 0 && (() => {
+                                // Surface the custom (raw bucket) values FIRST so a
+                                // founder sees the column they added is actually being
+                                // captured (the full row is truncated below it).
+                                const row0 = f.sample[0];
+                                const raw = row0 && typeof row0.raw === 'object' && row0.raw
+                                  ? (row0.raw as Record<string, unknown>) : null;
+                                return (
+                                  <div style={{ marginTop: 8 }}>
+                                    {raw && Object.keys(raw).length > 0 && (
+                                      <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: 'var(--gold)', marginBottom: 4, wordBreak: 'break-all' }}>
+                                        extras: {Object.entries(raw).map(([k, v]) => `${k}=${String(v)}`).join('  ·  ').slice(0, 300)}
+                                      </div>
+                                    )}
+                                    <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.4), wordBreak: 'break-all' }}>
+                                      sample: {JSON.stringify(row0).slice(0, 240)}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          );
+                        })()}
                       </DarkCard>
                     );
                   })}

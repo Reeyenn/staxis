@@ -187,6 +187,23 @@ export interface TableRowHint {
    *  is the same string as `rowSelector` today; `xpath` is reserved for a future
    *  structural fallback the runtime already honors. Present iff columnsTiered is. */
   rowSelectorTiered?: TieredSelector;
+  /** feature/cua-column-editor — FOUNDER-ADDED custom columns: a page cell the
+   *  founder chose to capture that has NO typed slot in the pms_* warehouse
+   *  (e.g. "Rate Plan", "Guarantee"). Keyed by a sanitized snake_case name →
+   *  the SAME positional css selector shape as `columns`. The runtime reads them
+   *  like any DOM column but routes their values into the table's `raw` jsonb
+   *  bucket (recipe-adapter → template-runner), so they're captured + visible
+   *  WITHOUT ever entering the field contract / validator. Absent ⟹ byte-
+   *  identical replay. NEVER includes a key already in `columns`. */
+  customColumns?: Record<string, string>;
+  /** feature/cua-column-editor — EVERY column header the audit saw on the page
+   *  (not just the mapped ones), with its 1-based cell index. Powers the
+   *  "add a column from what's on the page" dropdown in the Coverage Editor:
+   *  the index lets the editor author a positional selector for a chosen header
+   *  by templating off a sibling mapped column. Authored by the mapper at
+   *  finalize from the captured header row; absent on maps learned before this
+   *  shipped (the editor then prompts a one-time re-map to detect them). */
+  detectedColumns?: Array<{ index: number; header: string }>;
 }
 
 /** A learned STRUCTURED-DATA endpoint — the JSON the page itself fetches under
@@ -557,6 +574,13 @@ export interface TableTemplate {
    *  PRIMARY source's action key — repair re-learns that one and accepts
    *  that the other sources' selectors are still good. */
   sourceActionKey?: keyof Recipe['actions'];
+  /** feature/cua-column-editor — runtime list of FOUNDER-ADDED custom column
+   *  keys (mirrors the keys of TableRowHint.customColumns). Their selectors are
+   *  merged into the primary source's `columns` so the DOM extractor reads them,
+   *  but template-runner gathers their values into each row's `raw` jsonb bucket
+   *  instead of a typed field — so they never touch the field contract / writer
+   *  validation. undefined ⟹ no custom columns (byte-identical). */
+  rawColumns?: string[];
 }
 
 // ─── Job + recipe storage shapes ──────────────────────────────────────────

@@ -35,6 +35,55 @@ export const REQUIRED_ACTION_KEYS = new Set<string>([
   'getRoomStatus', 'getArrivals', 'getDepartures', 'getWorkOrders',
 ]);
 
+/**
+ * feature/cua-column-editor — per-feed columns that CAN'T be deleted: the
+ * ESSENTIAL identity columns + CONTEXTUAL (page-context, derived-at-poll) date
+ * columns of the 4 core feeds. APP-SIDE mirror of
+ * cua-service/src/target-contract.ts CORE_TARGET_CONTRACTS (tier essential ∪
+ * contextual). The delete-column route fast-fails on these; the worker
+ * re-validates authoritatively (requiredLearnedFor ∪ contextualColumnsFor).
+ * Feeds not listed here have no contract → every column is freely removable.
+ * ⚠️ keep in sync with CORE_TARGET_CONTRACTS.
+ */
+export const UNDELETABLE_COLUMNS_BY_FEED: Record<string, ReadonlySet<string>> = {
+  getRoomStatus: new Set(['room_number', 'status']),
+  getArrivals:   new Set(['pms_reservation_id', 'guest_name', 'arrival_date']),
+  getDepartures: new Set(['pms_reservation_id', 'guest_name', 'departure_date']),
+  getWorkOrders: new Set(['pms_work_order_id', 'description']),
+};
+
+/**
+ * feature/cua-column-editor — the FULL set of typed contract columns per core
+ * feed (essential + contextual + optional). APP-SIDE mirror of
+ * cua-service/src/target-contract.ts CORE_TARGET_CONTRACTS column names. A
+ * founder-added CUSTOM column must NOT reuse one of these names: those columns
+ * are captured automatically into their typed warehouse slot, and a custom
+ * column with the same name would route to the `raw` bucket and shadow it
+ * confusingly. The add-custom route + the worker both refuse it.
+ * ⚠️ keep in sync with CORE_TARGET_CONTRACTS.
+ */
+export const CONTRACT_COLUMNS_BY_FEED: Record<string, ReadonlySet<string>> = {
+  getRoomStatus: new Set(['room_number', 'status', 'changed_by']),
+  getArrivals:   new Set(['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date', 'room_number', 'num_nights', 'status', 'channel_name', 'rate_per_night_cents']),
+  getDepartures: new Set(['pms_reservation_id', 'guest_name', 'arrival_date', 'departure_date', 'room_number', 'num_nights', 'status', 'channel_name', 'rate_per_night_cents']),
+  getWorkOrders: new Set(['pms_work_order_id', 'description', 'status', 'out_of_order', 'room_number', 'priority', 'assigned_to']),
+};
+
+/** System/writer-synthesized column names a custom column can never reuse. */
+export const RESERVED_CUSTOM_KEYS = new Set<string>([
+  'raw', 'id', 'property_id', 'captured_at', 'changed_at', 'created_at', 'updated_at',
+]);
+
+/** Why a custom column key is not allowed on a feed (reserved name, or a typed
+ *  contract column captured automatically), or null when it's a fine custom key. */
+export function customColumnKeyConflict(feedKey: string, key: string): string | null {
+  if (RESERVED_CUSTOM_KEYS.has(key)) return `"${key}" is a reserved name — pick another.`;
+  if (CONTRACT_COLUMNS_BY_FEED[feedKey]?.has(key)) {
+    return `"${key}" is a standard field for this feed — the robot already captures it, no need to add it.`;
+  }
+  return null;
+}
+
 /** Drill-down feeds run through mapDrillDownAction, which has NO founder-takeover
  *  gate in v1 (cua-service/src/mapper.ts). The coverage editor therefore cannot
  *  drive them by hand — edit/add-via-takeover is hidden for these. */
@@ -161,6 +210,92 @@ function asStringMap(obj: object): Record<string, string> {
   return out;
 }
 
+/** feature/cua-column-editor — FOUNDER-ADDED custom columns (name → selector)
+ *  from `knowledge.actions[key].parse.hint.customColumns`. Tolerant of arbitrary
+ *  jsonb; empty for any feed without custom columns. */
+export function customColumnsFromAction(action: unknown): Record<string, string> {
+  if (!action || typeof action !== 'object') return {};
+  const parse = (action as Record<string, unknown>).parse as Record<string, unknown> | undefined;
+  if (!parse || parse.mode !== 'table') return {};
+  const hint = parse.hint as Record<string, unknown> | undefined;
+  const custom = hint?.customColumns;
+  if (custom && typeof custom === 'object' && !Array.isArray(custom)) return asStringMap(custom);
+  return {};
+}
+
+/** feature/cua-column-editor — every column HEADER the robot saw on the page,
+ *  with its 1-based cell index, from `parse.hint.detectedColumns`. The source
+ *  for the "add a column from what's on the page" dropdown. Empty for maps
+ *  learned before this shipped (UI then prompts a one-time re-map). */
+export function detectedColumnsFromAction(action: unknown): Array<{ index: number; header: string }> {
+  if (!action || typeof action !== 'object') return [];
+  const parse = (action as Record<string, unknown>).parse as Record<string, unknown> | undefined;
+  if (!parse || parse.mode !== 'table') return [];
+  const hint = parse.hint as Record<string, unknown> | undefined;
+  const raw = hint?.detectedColumns;
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ index: number; header: string }> = [];
+  for (const c of raw) {
+    if (c && typeof c === 'object') {
+      const idx = (c as Record<string, unknown>).index;
+      const header = (c as Record<string, unknown>).header;
+      if (typeof idx === 'number' && Number.isInteger(idx) && idx >= 1 && typeof header === 'string' && header.trim() !== '') {
+        out.push({ index: idx, header: header.trim() });
+      }
+    }
+  }
+  return out;
+}
+
+/** Parse the 1-based :nth-child(K) index out of a positional selector, else null
+ *  (class/attr-anchored or non-positional selectors return null). */
+function nthChildIndex(selector: string): number | null {
+  const m = /:nth-child\(\s*(\d+)\s*\)/.exec(selector);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * feature/cua-column-editor — the page columns a founder can ADD: detected
+ * headers whose cell index isn't already captured by a known or custom column.
+ * Deduped by header text. Empty when the map has no detectedColumns (pre-feature
+ * map → the UI shows a "re-map to detect columns" prompt instead).
+ */
+export function availablePageColumnsFor(action: unknown): Array<{ index: number; header: string }> {
+  const detected = detectedColumnsFromAction(action);
+  if (detected.length === 0) return [];
+  const captured = new Set<number>();
+  for (const sel of [...Object.values(columnsFromAction(action)), ...Object.values(customColumnsFromAction(action))]) {
+    const idx = nthChildIndex(sel);
+    if (idx != null) captured.add(idx);
+  }
+  const seen = new Set<string>();
+  const out: Array<{ index: number; header: string }> = [];
+  for (const dc of detected) {
+    if (captured.has(dc.index)) continue;
+    const key = dc.header.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dc);
+  }
+  return out;
+}
+
+/**
+ * feature/cua-column-editor — author a positional CSS selector for a chosen
+ * detected-column index by templating off a sibling MAPPED column (same table,
+ * same row shape). Prefers a clean `<tag>:nth-child(K)` sibling so a class/attr
+ * never leaks across columns; falls back to `td:nth-child(index)` (the
+ * overwhelming shape of PMS list tables). Returns null only for index < 1.
+ */
+export function authorSelectorForIndex(columns: Record<string, string>, index: number): string | null {
+  if (!Number.isInteger(index) || index < 1) return null;
+  for (const sel of Object.values(columns)) {
+    const m = /^([a-z]+):nth-child\(\s*\d+\s*\)$/i.exec(sel.trim());
+    if (m) return `${m[1]}:nth-child(${index})`;
+  }
+  return `td:nth-child(${index})`;
+}
+
 export interface FeedView {
   /** The recipe key — actionKey for editable maps; the legacy feed name otherwise. */
   key: string;
@@ -172,6 +307,15 @@ export interface FeedView {
   table: string | null;
   /** Learned columns (name → selector). Empty for legacy feeds we don't parse. */
   columns: Record<string, string>;
+  /** feature/cua-column-editor — founder-added custom columns (name → selector),
+   *  captured into the table's `raw` jsonb bucket. Empty for most feeds. */
+  customColumns: Record<string, string>;
+  /** feature/cua-column-editor — page columns the founder could ADD (detected
+   *  headers not yet captured). Empty when the map predates header detection. */
+  availablePageColumns: Array<{ index: number; header: string }>;
+  /** feature/cua-column-editor — columns that can't be removed (core contract).
+   *  The UI hides the delete control for these. */
+  undeletableColumns: string[];
   required: boolean;
   /** True when this feed can be re-pointed/deleted via takeover (not drill-down,
    *  and the map is actions-shaped). */
@@ -212,12 +356,16 @@ export function parseKnowledgeCoverage(knowledge: unknown): ParsedKnowledgeCover
   if (actions && Object.keys(actions).length > 0) {
     const feeds: FeedView[] = Object.keys(actions).map((actionKey) => {
       const contract = ACTION_FEED_CONTRACTS[actionKey];
+      const action = actions[actionKey];
       return {
         key: actionKey,
         actionKey,
         label: contract?.label ?? prettifyKey(actionKey),
         table: contract?.table ?? null,
-        columns: columnsFromAction(actions[actionKey]),
+        columns: columnsFromAction(action),
+        customColumns: customColumnsFromAction(action),
+        availablePageColumns: availablePageColumnsFor(action),
+        undeletableColumns: [...(UNDELETABLE_COLUMNS_BY_FEED[actionKey] ?? new Set<string>())],
         required: REQUIRED_ACTION_KEYS.has(actionKey),
         // Re-pointable by takeover only if the mapper can learn it AND it isn't
         // a drill-down feed (those have no takeover gate in v1).
@@ -240,6 +388,9 @@ export function parseKnowledgeCoverage(knowledge: unknown): ParsedKnowledgeCover
         label: LEGACY_FEED_LABEL[feedKey] ?? prettifyKey(feedKey),
         table: contract?.table ?? null,
         columns: {},
+        customColumns: {},
+        availablePageColumns: [],
+        undeletableColumns: [],
         required: !!actionKey && REQUIRED_ACTION_KEYS.has(actionKey),
         canTakeover: false,
         source: 'legacy',

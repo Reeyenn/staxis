@@ -18,6 +18,12 @@ import {
   REQUIRED_ACTION_KEYS,
   DRILLDOWN_ACTION_KEYS,
   LEARNABLE_ACTION_KEYS,
+  UNDELETABLE_COLUMNS_BY_FEED,
+  customColumnsFromAction,
+  detectedColumnsFromAction,
+  availablePageColumnsFor,
+  authorSelectorForIndex,
+  customColumnKeyConflict,
 } from '@/lib/pms/recipe-coverage';
 
 describe('columnsFromAction', () => {
@@ -155,5 +161,121 @@ describe('catalogue invariants', () => {
 
   test('prettifyKey humanizes a get* key', () => {
     assert.equal(prettifyKey('getFutureBookings'), 'Future bookings');
+  });
+});
+
+// ── feature/cua-column-editor ──────────────────────────────────────────────
+
+describe('customColumnsFromAction', () => {
+  test('reads parse.hint.customColumns on a table feed', () => {
+    const cc = customColumnsFromAction({
+      parse: { mode: 'table', hint: { rowSelector: 'tr', columns: { a: 'td:nth-child(1)' }, customColumns: { rate_plan: 'td:nth-child(9)' } } },
+    });
+    assert.deepEqual(cc, { rate_plan: 'td:nth-child(9)' });
+  });
+  test('empty for non-table feeds and missing/garbage shapes', () => {
+    assert.deepEqual(customColumnsFromAction({ parse: { mode: 'csv', hint: { columns: {}, customColumns: { x: 'y' } } } }), {});
+    assert.deepEqual(customColumnsFromAction({ parse: { mode: 'table', hint: {} } }), {});
+    assert.deepEqual(customColumnsFromAction(null), {});
+  });
+});
+
+describe('detectedColumnsFromAction', () => {
+  test('reads + sanitizes parse.hint.detectedColumns', () => {
+    const d = detectedColumnsFromAction({
+      parse: { mode: 'table', hint: { columns: {}, detectedColumns: [
+        { index: 1, header: 'Conf. #' }, { index: 2, header: ' Guest ' },
+        { index: 0, header: 'bad-index' }, { index: 3, header: '' }, { header: 'no-index' },
+      ] } },
+    });
+    assert.deepEqual(d, [{ index: 1, header: 'Conf. #' }, { index: 2, header: 'Guest' }]);
+  });
+  test('empty when absent', () => {
+    assert.deepEqual(detectedColumnsFromAction({ parse: { mode: 'table', hint: { columns: {} } } }), []);
+  });
+});
+
+describe('availablePageColumnsFor', () => {
+  test('excludes headers whose cell index is already captured (known OR custom)', () => {
+    const action = {
+      parse: { mode: 'table', hint: {
+        rowSelector: 'tbody tr',
+        columns: { guest_name: 'td:nth-child(2)' },                 // captures index 2
+        customColumns: { conf: 'td:nth-child(1)' },                  // captures index 1
+        detectedColumns: [
+          { index: 1, header: 'Conf. #' },   // captured (custom) → excluded
+          { index: 2, header: 'Guest' },      // captured (known) → excluded
+          { index: 9, header: 'Rate Plan' },  // free → offered
+        ],
+      } },
+    };
+    assert.deepEqual(availablePageColumnsFor(action), [{ index: 9, header: 'Rate Plan' }]);
+  });
+  test('empty when the map has no detectedColumns (pre-feature map)', () => {
+    assert.deepEqual(availablePageColumnsFor({ parse: { mode: 'table', hint: { columns: { a: 'td:nth-child(1)' } } } }), []);
+  });
+  test('dedupes repeated header text', () => {
+    const action = { parse: { mode: 'table', hint: { columns: {}, detectedColumns: [
+      { index: 4, header: 'Notes' }, { index: 5, header: 'notes' },
+    ] } } };
+    assert.equal(availablePageColumnsFor(action).length, 1);
+  });
+});
+
+describe('authorSelectorForIndex', () => {
+  test('templates off a clean positional sibling', () => {
+    assert.equal(authorSelectorForIndex({ a: 'td:nth-child(2)' }, 9), 'td:nth-child(9)');
+  });
+  test('falls back to td:nth-child(index) when no positional sibling', () => {
+    assert.equal(authorSelectorForIndex({ a: '.some-class' }, 7), 'td:nth-child(7)');
+    assert.equal(authorSelectorForIndex({}, 3), 'td:nth-child(3)');
+  });
+  test('never lets a class/attr leak across columns', () => {
+    // a class-anchored sibling is NOT a clean tag:nth-child → fall back to td.
+    assert.equal(authorSelectorForIndex({ a: 'td.guest:nth-child(2)' }, 9), 'td:nth-child(9)');
+  });
+  test('rejects an invalid index', () => {
+    assert.equal(authorSelectorForIndex({ a: 'td:nth-child(2)' }, 0), null);
+  });
+});
+
+describe('customColumnKeyConflict', () => {
+  test('rejects a typed contract column name (captured automatically)', () => {
+    assert.ok(customColumnKeyConflict('getArrivals', 'rate_per_night_cents')); // optional contract col
+    assert.ok(customColumnKeyConflict('getArrivals', 'guest_name'));            // essential
+    assert.ok(customColumnKeyConflict('getArrivals', 'arrival_date'));          // contextual
+  });
+  test('rejects reserved/system names', () => {
+    assert.ok(customColumnKeyConflict('getArrivals', 'raw'));
+    assert.ok(customColumnKeyConflict('getArrivals', 'property_id'));
+  });
+  test('allows a genuinely-extra page column', () => {
+    assert.equal(customColumnKeyConflict('getArrivals', 'rate_plan'), null);
+    assert.equal(customColumnKeyConflict('getArrivals', 'guarantee'), null);
+  });
+  test('non-core feed has no contract → any non-reserved key is fine', () => {
+    assert.equal(customColumnKeyConflict('getRevenueDaily', 'anything'), null);
+  });
+});
+
+describe('UNDELETABLE_COLUMNS_BY_FEED + FeedView wiring', () => {
+  test('core identity + page-context date columns are protected', () => {
+    assert.ok(UNDELETABLE_COLUMNS_BY_FEED.getArrivals.has('guest_name'));
+    assert.ok(UNDELETABLE_COLUMNS_BY_FEED.getArrivals.has('arrival_date'));
+    assert.ok(!UNDELETABLE_COLUMNS_BY_FEED.getArrivals.has('room_number')); // optional → removable
+  });
+  test('parseKnowledgeCoverage surfaces custom/available/undeletable per feed', () => {
+    const parsed = parseKnowledgeCoverage({ actions: {
+      getArrivals: { parse: { mode: 'table', hint: {
+        rowSelector: 'tbody tr',
+        columns: { pms_reservation_id: 'td:nth-child(1)', guest_name: 'td:nth-child(2)' },
+        customColumns: { rate_plan: 'td:nth-child(9)' },
+        detectedColumns: [{ index: 1, header: 'Conf' }, { index: 5, header: 'City' }],
+      } } },
+    } });
+    const f = parsed.feeds.find((x) => x.actionKey === 'getArrivals')!;
+    assert.deepEqual(f.customColumns, { rate_plan: 'td:nth-child(9)' });
+    assert.deepEqual(f.availablePageColumns, [{ index: 5, header: 'City' }]); // index 1 captured
+    assert.ok(f.undeletableColumns.includes('guest_name'));
   });
 });
