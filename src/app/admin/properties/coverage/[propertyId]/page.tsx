@@ -34,8 +34,10 @@ import {
   SurfaceShell, DarkCard, DarkEmpty, dimWhite, Backdrop, MODAL_CARD,
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
+import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
+import { LiveRobotView } from '@/app/admin/_components/cua/LiveRobotView';
 import {
-  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Camera, Wand2, Check,
+  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Wand2, Check, MousePointerClick,
 } from 'lucide-react';
 
 /** Coarse "time ago" for the self-repair pill. Tolerant of null/garbage. */
@@ -114,55 +116,6 @@ function DarkScope({ children }: { children: React.ReactNode }) {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** Per-feed source-screenshot fetch state (lazy — populated on first expand). */
-interface CaptureState { loading: boolean; url: string | null }
-
-/**
- * feature/cua-admin-mapper-visibility — the SOURCE screen the robot read this
- * feed from. Lets an admin verify the robot pulled from the right PMS page.
- * Lazily fetched (only when a feed is expanded) and lazily decoded. Degrades
- * to a calm empty state when the worker hasn't captured one yet.
- */
-function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
-  return (
-    <div style={{ marginTop: 10 }}>
-      <div style={{
-        fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5),
-        letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6,
-        display: 'flex', alignItems: 'center', gap: 6,
-      }}>
-        <Camera size={11} /> Source screen the robot read
-      </div>
-      {!state || state.loading ? (
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Loading the screenshot…
-        </div>
-      ) : state.url ? (
-        <div style={{
-          width: '100%', maxWidth: 760, border: `1px solid ${dimWhite(.14)}`,
-          borderRadius: 8, overflow: 'hidden', lineHeight: 0,
-        }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={state.url}
-            alt="The PMS screen the robot captured this feed from (sensitive fields redacted)"
-            loading="lazy"
-            // A signed URL that's gone stale (the 1h signature lapsed, or the
-            // object was swept) degrades to the empty state and clears the
-            // cache so re-expanding refetches a fresh URL.
-            onError={onError}
-            style={{ width: '100%', height: 'auto', display: 'block' }}
-          />
-        </div>
-      ) : (
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
-          No screenshot captured for this feed yet.
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function CoveragePage() {
   const params = useParams<{ propertyId: string }>();
   const propertyId = params?.propertyId ?? '';
@@ -182,6 +135,12 @@ export default function CoveragePage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ tone: 'good' | 'warn' | 'bad'; text: string } | null>(null);
+  // cockpit — when a per-feed Re-map run is enqueued we stay IN-PAGE and embed
+  // the shared LiveRobotView for this job instead of navigating to the board.
+  // The board URL is kept so "Take over" can open the full driving surface in a
+  // new tab; on a terminal job we clear this + reload coverage.
+  const [liveJobId, setLiveJobId] = useState<string | null>(null);
+  const [liveBoardUrl, setLiveBoardUrl] = useState<string | null>(null);
   // feature/coverage-show-draft — Make-live (promote) flow for a parked draft.
   const [pendingPromote, setPendingPromote] = useState(false);
   const [promoteBusy, setPromoteBusy] = useState(false);
@@ -245,24 +204,52 @@ export default function CoveragePage() {
     setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url: null } }));
   }, []);
 
-  // Edit / Add → enqueue a single-target run + redirect to the live board where
-  // the founder drives the robot to the right page and presses Finish.
+  // Re-map / Add → enqueue a single-target run and stay IN-PAGE: the embedded
+  // LiveRobotView (mounted at the top of the feed list when liveJobId is set)
+  // shows the robot working; "Take over" opens the full board in a new tab to
+  // drive it. For a PARKED DRAFT (no live map) the re-map targets the draft by
+  // draftId; for a LIVE map it targets the family by pmsFamily. When the job
+  // reaches a terminal status we clear the live card and reload coverage so the
+  // re-mapped feed's new columns (or the updated draft) show.
   const startEditOrAdd = async (targetKey: string, mode: 'edit' | 'add') => {
+    if (!data) return;
     setBusy(`${mode}:${targetKey}`);
     setToast(null);
+    const draft = data.activeMap?.isDraft ? data.activeMap : null;
     try {
       const res = await fetchWithAuth('/api/admin/mapper/coverage/edit-feed', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pmsFamily: data!.pmsFamily, propertyId, targetKey, mode }),
+        body: JSON.stringify(
+          draft
+            ? { draftId: draft.draftId, propertyId, targetKey, mode }
+            : { pmsFamily: data.pmsFamily, propertyId, targetKey, mode },
+        ),
       });
       const json = await res.json();
       if (!res.ok || !json.ok) {
-        setToast({ tone: 'bad', text: json.error ?? 'Could not start the edit run.' });
+        setToast({ tone: 'bad', text: json.error ?? 'Could not start the re-map run.' });
         return;
       }
-      // Off to the board to drive the takeover.
-      router.push(json.data.boardUrl as string);
+      // Stay in-page — embed the live view for this job.
+      const jobId = json.data.jobId as string;
+      setLiveBoardUrl((json.data.boardUrl as string | undefined) ?? null);
+      setLiveJobId(jobId);
+      // Watch the run in the background. A re-map is takeover-driven — the robot
+      // pauses for you to guide it, which can take many minutes — so poll long
+      // (~40min) and only tear down the embedded live card on a REAL terminal
+      // status. On the rare timeout, LEAVE the card up (keep watching / Take over).
+      void (async () => {
+        const r = await pollJob(jobId, 1200);
+        if (!r.ok && r.timedOut) {
+          setToast({ tone: 'warn', text: 'Re-map still running — keep watching here, or open it in Manage maps.' });
+          return;
+        }
+        setLiveJobId(null);
+        setLiveBoardUrl(null);
+        if (!r.ok) setToast({ tone: 'bad', text: r.error });
+        await load();
+      })();
     } catch (err) {
       setToast({ tone: 'bad', text: (err as Error).message });
     } finally {
@@ -368,8 +355,8 @@ export default function CoveragePage() {
   };
 
   // Poll GET /live/[jobId] until the (headless) edit job finishes.
-  const pollJob = async (jobId: string): Promise<{ ok: true; result: Record<string, unknown> | null } | { ok: false; error: string }> => {
-    for (let i = 0; i < 45; i++) {
+  const pollJob = async (jobId: string, maxIters = 45): Promise<{ ok: true; result: Record<string, unknown> | null } | { ok: false; error: string; timedOut?: boolean }> => {
+    for (let i = 0; i < maxIters; i++) {
       await sleep(2000);
       try {
         const res = await fetchWithAuth(`/api/admin/mapper/live/${jobId}`);
@@ -379,7 +366,7 @@ export default function CoveragePage() {
         if (job?.status === 'failed' || job?.status === 'cancelled') return { ok: false, error: job.error ?? 'The edit run failed.' };
       } catch { /* keep polling */ }
     }
-    return { ok: false, error: 'Timed out waiting for the edit to finish — check Manage maps.' };
+    return { ok: false, error: 'Timed out waiting for the edit to finish — check Manage maps.', timedOut: true };
   };
 
   const relearn = async () => {
@@ -534,6 +521,29 @@ export default function CoveragePage() {
                   </DarkCard>
                 )}
 
+                {/* cockpit — embedded live view of an in-flight per-feed Re-map.
+                    Stays in-page (no nav to the board); "Take over" opens the
+                    full driving surface in a new tab. Clears itself + reloads
+                    coverage when the run finishes (handled in startEditOrAdd). */}
+                {liveJobId && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{
+                      fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.6),
+                      display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8,
+                    }}>
+                      <MousePointerClick size={12} color="var(--teal)" />
+                      Re-map pauses for you to guide it — watch here, or Take over to drive it.
+                    </div>
+                    <LiveRobotView
+                      jobId={liveJobId}
+                      canStartTakeover
+                      onStartTakeover={() => {
+                        if (liveBoardUrl) window.open(liveBoardUrl, '_blank', 'noopener,noreferrer');
+                      }}
+                    />
+                  </div>
+                )}
+
                 {/* Feed list */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {data.feeds.length === 0 && <DarkEmpty text="This map captures no feeds." />}
@@ -569,14 +579,19 @@ export default function CoveragePage() {
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            {/* Edit / Add re-point a LIVE map via takeover — not
-                                offered while reviewing a parked draft (review +
-                                Make live is the v1 path; per-feed edits happen
-                                once it's live). REMOVE still works on a draft
-                                (routed through the draft delete-feed path). */}
-                            {!isDraft && f.source === 'actions' && f.canTakeover && (
-                              <Btn variant="ghost" size="sm" onClick={() => void startEditOrAdd(f.actionKey!, 'edit')} disabled={!!busy} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
-                                {busy === `edit:${f.actionKey}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Pencil size={12} />} Edit
+                            {/* Re-map re-points the feed via takeover — works on
+                                a LIVE map (family-wide) AND a parked DRAFT (this
+                                draft only). It stays IN-PAGE: the embedded live
+                                view at the top shows the robot working. The
+                                family-wide warning is confirmed before firing. */}
+                            {f.source === 'actions' && f.canTakeover && (
+                              <Btn variant="ghost" size="sm" onClick={() => {
+                                if (!window.confirm(isDraft
+                                  ? `Re-mapping re-runs this feed on the parked draft — it won't go live until you publish it.\n\nThe robot will pause for you to guide it to the right page. Continue?`
+                                  : `Re-mapping this feed affects every ${data.familyLabel} hotel.\n\nThe robot will pause for you to guide it to the right page. Continue?`)) return;
+                                void startEditOrAdd(f.actionKey!, 'edit');
+                              }} disabled={!!busy || !!liveJobId} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
+                                {busy === `edit:${f.actionKey}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <MousePointerClick size={12} />} Re-map
                               </Btn>
                             )}
                             {f.source === 'actions' && !f.required && map.editable && (

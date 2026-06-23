@@ -152,6 +152,13 @@ export interface MappingJobInput {
    *  (no race with the autonomous agent). Opened INSIDE the run so the finally's
    *  takeover.close() always cleans it up — a never-run job never opens one. */
   assist_first?: boolean;
+  /** feature/cua-coverage-editor — set by edit-feed when it seeds the run from
+   *  an existing DRAFT (founder re-mapping a feed on a not-yet-live map). Such a
+   *  re-map must NEVER auto-go-live: even if the gate would auto_promote, it gets
+   *  downgraded to park_draft so the draft stays parked for founder review. Never
+   *  touches the active-map promote path (a seeded re-map of a LIVE family still
+   *  flows through the normal seeded guards). */
+  never_auto_promote?: boolean;
 }
 
 export interface MappingJobResult {
@@ -666,6 +673,21 @@ export async function runMappingJob(
   log.info('mapping-driver: promotion gate evaluated', {
     jobId, decision: gate.decision, reason: gate.reason,
   });
+
+  // 3.1. feature/cua-coverage-editor — a DRAFT-SEEDED re-map (founder editing a
+  //      feed on a not-yet-live map) must PARK, never auto-go-live. edit-feed
+  //      sets never_auto_promote on these. We ONLY downgrade auto_promote here;
+  //      park_partial / park_draft / quarantine already wait for a human, and
+  //      the gate math itself is untouched (this is a post-gate clamp). The
+  //      active-map promote path is unaffected: a seeded re-map of a LIVE family
+  //      doesn't carry this flag and still runs the normal seeded guards below.
+  if (input.never_auto_promote && gate.decision === 'auto_promote') {
+    log.info('mapping-driver: never_auto_promote — parking draft-seeded re-map for founder review', {
+      jobId, was: gate.reason,
+    });
+    gate.decision = 'park_draft';
+    gate.reason = 'parked: founder re-mapped a draft feed — review before live';
+  }
 
   // 3.5. feat/cua-partial-promotion — promote-time guards for SEEDED jobs.
   //      A seeded job's seed snapshot can go stale: another repair/backfill

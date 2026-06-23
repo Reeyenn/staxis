@@ -1,6 +1,6 @@
 /**
  * POST /api/admin/mapper/coverage/edit-feed
- *   body: { pmsFamily, propertyId, targetKey, mode: 'edit' | 'add' }
+ *   body: { pmsFamily, propertyId, targetKey, mode: 'edit' | 'add', draftId? }
  *
  * feature/cua-coverage-editor — re-point (edit) or add ONE feed via the SAME
  * founder point-and-click takeover the Learning Board uses. It enqueues a
@@ -14,6 +14,12 @@
  *   - seed_actions = the active recipe's actions MINUS targetKey (preserves
  *     every other feed),
  *   - only_targets = [targetKey] so the mapper learns EXACTLY this feed.
+ *
+ * feature/coverage-show-draft — when there is no live map yet, the founder edits
+ * feeds on a PARKED DRAFT. Pass `draftId` (a uuid) to seed the run from THAT
+ * draft row instead of the active row. A draft-seeded run carries
+ * never_auto_promote:true so the worker keeps the result parked (a draft must be
+ * reviewed in the Coverage Editor before going live, never auto-promoted).
  *
  * Only actions-shaped (mapper-produced) active maps are editable; a legacy
  * knowledge.feeds map must be re-learned once first (the UI gates this).
@@ -47,12 +53,43 @@ interface KnowledgeRow {
   };
 }
 
+/** A seed source resolved from a draft row (Coverage Editor parked-draft path).
+ *  Mirrors resolveDraftById in /api/admin/mapper/draft/delete-feed but also
+ *  selects `knowledge`, since this route seeds the run from the draft's actions. */
+interface DraftSeedRow {
+  id: string;
+  version: number;
+  status: string;
+  pms_family: string;
+  knowledge: {
+    actions?: Record<string, unknown>;
+    valueTranslations?: unknown;
+    dateFormat?: unknown;
+  };
+}
+
+type ResolveDraftSeedResult =
+  | { ok: true; row: DraftSeedRow }
+  | { ok: false; status: number; message: string };
+
+async function resolveDraftById(draftId: string): Promise<ResolveDraftSeedResult> {
+  const { data, error: e } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('id, version, status, pms_family, knowledge')
+    .eq('id', draftId)
+    .is('deleted_at', null)
+    .maybeSingle<DraftSeedRow>();
+  if (e) return { ok: false, status: 500, message: `draft lookup failed: ${e.message}` };
+  if (!data) return { ok: false, status: 404, message: 'The map no longer exists.' };
+  return { ok: true, row: data };
+}
+
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
 
-  let body: { pmsFamily?: unknown; propertyId?: unknown; targetKey?: unknown; mode?: unknown };
+  let body: { pmsFamily?: unknown; propertyId?: unknown; targetKey?: unknown; mode?: unknown; draftId?: unknown };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
   }
@@ -61,6 +98,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   if (typeof body.targetKey !== 'string' || !body.targetKey) {
     return err('targetKey required', { requestId, status: 400, code: 'bad_request' });
+  }
+  const hasDraftId = typeof body.draftId === 'string' && /^[0-9a-f-]{36}$/i.test(body.draftId);
+  if (body.draftId !== undefined && !hasDraftId) {
+    return err('draftId must be a uuid', { requestId, status: 400, code: 'bad_request' });
   }
   const mode = body.mode === 'add' ? 'add' : 'edit';
   const targetKey = body.targetKey;
@@ -89,29 +130,58 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
   }
 
-  // Load the active knowledge file for the family.
-  const { data: activeRow, error: loadErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .select('id, version, knowledge')
-    .eq('pms_family', pmsFamily)
-    .eq('status', 'active')
-    .is('deleted_at', null)
-    .maybeSingle<KnowledgeRow>();
-  if (loadErr) {
-    return err(`could not load active map: ${loadErr.message}`, { requestId, status: 500, code: 'db_error' });
-  }
-  if (!activeRow) {
-    return err(`no active map for ${pmsFamily} — there's nothing to edit yet.`, { requestId, status: 404, code: 'not_found' });
+  // Resolve the SEED source. Two paths:
+  //   - active path (no draftId): seed from the live recipe (byte-identical to
+  //     the original behaviour).
+  //   - draft path (draftId present): seed from a PARKED DRAFT instead, and mark
+  //     the run never_auto_promote so the worker keeps the result parked for
+  //     Coverage-Editor review.
+  let seedRow: KnowledgeRow;
+  let neverAutoPromote = false;
+
+  if (hasDraftId) {
+    // Coverage Editor parked-draft path — seed from THAT draft row.
+    const draft = await resolveDraftById(body.draftId as string);
+    if (!draft.ok) return err(draft.message, { requestId, status: draft.status, code: 'bad_request' });
+
+    // Anti-spoof: the draft must belong to THIS property's session family —
+    // never seed one family's run from another family's draft.
+    if (draft.row.pms_family !== pmsFamily) {
+      return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+    }
+    // An active row is edited through the active (signed-envelope) path, not seeded as a draft.
+    if (draft.row.status === 'active') {
+      return err('This map is already live — edit it from the live map instead.', { requestId, status: 409, code: 'conflict' });
+    }
+
+    seedRow = { id: draft.row.id, version: draft.row.version, knowledge: draft.row.knowledge };
+    neverAutoPromote = true;
+  } else {
+    // Load the active knowledge file for the family.
+    const { data: activeRow, error: loadErr } = await supabaseAdmin
+      .from('pms_knowledge_files')
+      .select('id, version, knowledge')
+      .eq('pms_family', pmsFamily)
+      .eq('status', 'active')
+      .is('deleted_at', null)
+      .maybeSingle<KnowledgeRow>();
+    if (loadErr) {
+      return err(`could not load active map: ${loadErr.message}`, { requestId, status: 500, code: 'db_error' });
+    }
+    if (!activeRow) {
+      return err(`no active map for ${pmsFamily} — there's nothing to edit yet.`, { requestId, status: 404, code: 'not_found' });
+    }
+    seedRow = activeRow;
   }
 
-  const parsed = parseKnowledgeCoverage(activeRow.knowledge);
+  const parsed = parseKnowledgeCoverage(seedRow.knowledge);
   if (!parsed.editable) {
     return err('This map predates per-feed editing. Re-learn this PMS once to enable editing individual feeds.', {
       requestId, status: 409, code: 'conflict',
     });
   }
 
-  const allActions = (activeRow.knowledge?.actions ?? {}) as Record<string, unknown>;
+  const allActions = (seedRow.knowledge?.actions ?? {}) as Record<string, unknown>;
   const isPresent = targetKey in allActions;
   if (mode === 'edit' && !isPresent) {
     return err(`"${targetKey}" isn't in this map — use Add instead.`, { requestId, status: 409, code: 'conflict' });
@@ -152,11 +222,15 @@ export async function POST(req: NextRequest): Promise<Response> {
         // mapping-driver runMappingJob.
         assist_first: true,
         // Carry the other feeds' learned vocabulary/date order forward.
-        seed_value_translations: activeRow.knowledge?.valueTranslations,
-        seed_date_format: activeRow.knowledge?.dateFormat,
+        seed_value_translations: seedRow.knowledge?.valueTranslations,
+        seed_date_format: seedRow.knowledge?.dateFormat,
+        // Draft-seeded runs MUST stay parked — a draft is reviewed in the
+        // Coverage Editor before it can go live, never auto-promoted. The active
+        // path omits this flag entirely (byte-identical behaviour).
+        ...(neverAutoPromote ? { never_auto_promote: true } : {}),
         // Audit + board labelling.
         repair_target_key: targetKey,
-        repaired_from_version: activeRow.version,
+        repaired_from_version: seedRow.version,
         coverage_edit_mode: mode,
       },
     })

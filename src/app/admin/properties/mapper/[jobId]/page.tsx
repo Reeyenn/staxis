@@ -60,8 +60,10 @@ import {
   type FeedRow, type AgentThought,
 } from '@/lib/pms/learning-board';
 import { REQUIRED_ACTION_KEYS } from '@/lib/pms/recipe-coverage';
+import { LiveRobotView } from '@/app/admin/_components/cua/LiveRobotView';
+import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
 import {
-  ArrowLeft, AlertTriangle, Camera, CheckCircle2, ChevronDown, ChevronRight,
+  ArrowLeft, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight,
   CircleSlash, Loader2, MousePointerClick, ShieldAlert, Send, XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -121,16 +123,6 @@ interface ClickMarker {
   y: number;
   leftPct: number;
   topPct: number;
-}
-
-/** feature/cua-live-view — latest live frame, served by
- *  /api/admin/mapper/live/[jobId]/frame (short-lived signed URL into the
- *  private bucket; the robot only uploads while an admin heartbeat is
- *  fresh, so this exists only while someone is watching). */
-interface LiveFrameState {
-  url: string;
-  /** Storage object timestamp — drives the "Xs ago" label. */
-  updatedAt: string | null;
 }
 
 /** feature/cua-live-assist — the open founder-takeover session for this job
@@ -231,56 +223,6 @@ function DarkScope({ children }: { children: React.ReactNode }) {
       minHeight: 'calc(100vh - 64px)',
     }}>
       {children}
-    </div>
-  );
-}
-
-/** Per-feed source-screenshot fetch state (lazy — populated on first expand). */
-interface CaptureState { loading: boolean; url: string | null }
-
-/**
- * feature/cua-admin-mapper-visibility — the SOURCE screen the robot read a feed
- * from, shown inside an expanded feed on the LIVE board (mirrors the Coverage
- * Editor's FeedCaptureView). Lets the founder confirm the robot pulled each feed
- * off the RIGHT PMS page. Lazily fetched (only when a feed is opened), job-scoped
- * to THIS run. Degrades to a calm empty state until the worker has captured one.
- */
-function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
-  return (
-    <div style={{ marginTop: 10 }}>
-      <div style={{
-        fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5),
-        letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6,
-        display: 'flex', alignItems: 'center', gap: 6,
-      }}>
-        <Camera size={11} /> Source screen the robot read
-      </div>
-      {!state || state.loading ? (
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> Loading the screenshot…
-        </div>
-      ) : state.url ? (
-        <div style={{
-          width: '100%', maxWidth: 760, border: `1px solid ${dimWhite(.14)}`,
-          borderRadius: 8, overflow: 'hidden', lineHeight: 0,
-        }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={state.url}
-            alt="The PMS screen the robot captured this feed from (sensitive fields redacted)"
-            loading="lazy"
-            // A signed URL that's gone stale (1h signature lapsed, or the object
-            // was swept) degrades to the empty state and clears the cache so
-            // re-expanding refetches a fresh URL.
-            onError={onError}
-            style={{ width: '100%', height: 'auto', display: 'block' }}
-          />
-        </div>
-      ) : (
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
-          No screenshot captured for this feed yet.
-        </div>
-      )}
     </div>
   );
 }
@@ -439,10 +381,6 @@ export default function LiveMappingPage() {
   const [sentNotes, setSentNotes] = useState<Array<{ at: string; text: string }>>([]);
   const [marker, setMarker] = useState<ClickMarker | null>(null);
   const [expandedFeeds, setExpandedFeeds] = useState<Set<string>>(new Set());
-  // feature/cua-live-view — the robot's latest screen (continuous live view).
-  const [liveFrame, setLiveFrame] = useState<LiveFrameState | null>(null);
-  // Re-render tick so the "Xs ago" freshness label stays honest.
-  const [frameTick, setFrameTick] = useState(0);
   // feature/cua-live-assist — founder takeover + save/discard.
   const [takeover, setTakeover] = useState<TakeoverState | null>(null);
   const [takeoverFrame, setTakeoverFrame] = useState<TakeoverFrame | null>(null);
@@ -475,15 +413,6 @@ export default function LiveMappingPage() {
   const activityRef = useRef<HTMLDivElement>(null);
   const thoughtsRef = useRef<HTMLDivElement>(null);
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const frameFetchBusyRef = useRef(false);
-  // A live_frame event landing while a fetch is in flight must not be
-  // dropped (it may be the LAST frame before a long pause) — coalesce it
-  // into one follow-up fetch.
-  const frameFetchQueuedRef = useRef(false);
-  // Generation token: bumped when the job changes (or the page unmounts)
-  // so a slow in-flight frame fetch can never commit another job's screen
-  // — or set state after unmount.
-  const frameGenRef = useRef(0);
 
   // feature/cua-live-assist — preload the takeover click-target frame, then
   // commit it only when its frame_seq advances (latest-wins). The "Send click"
@@ -569,96 +498,23 @@ export default function LiveMappingPage() {
     loadDebounceRef.current = setTimeout(() => { void load(); }, 1_000);
   };
 
-  // feature/cua-live-view — refresh the robot's live screen. Cheap route
-  // (no DB work beyond the admin gate) so it's safe to call once per
-  // live_frame broadcast. Single-flight with a 1-deep coalesced re-run:
-  // frames land every few seconds; overlapping fetches would just race
-  // each other, but a refresh requested mid-fetch must still happen (it
-  // may announce the final frame before a pause). Preload-then-commit
-  // keeps the previous frame on screen while the next downloads.
-  const fetchFrame = async () => {
-    if (frameFetchBusyRef.current) {
-      frameFetchQueuedRef.current = true;
-      return;
-    }
-    frameFetchBusyRef.current = true;
-    const gen = frameGenRef.current;
-    try {
-      const res = await fetchWithAuth(`/api/admin/mapper/live/${jobId}/frame`);
-      const json = await res.json();
-      if (!json.ok) return;
-      const frame = (json.data?.frame ?? null) as LiveFrameState | null;
-      if (gen !== frameGenRef.current) return; // job changed / unmounted
-      if (!frame) {
-        // Normal idle state: nothing uploaded yet, or the job ended and
-        // cleanup removed the object.
-        setLiveFrame(null);
-        return;
-      }
-      await new Promise<void>((resolve) => {
-        const img = new window.Image();
-        img.onload = () => {
-          if (gen === frameGenRef.current) setLiveFrame(frame);
-          resolve();
-        };
-        // Signed-URL hiccup / object swapped mid-download: keep the old
-        // frame, the next broadcast or poll retries.
-        img.onerror = () => resolve();
-        img.src = frame.url;
-      });
-    } catch {
-      // Network hiccup — next event/poll retries.
-    } finally {
-      frameFetchBusyRef.current = false;
-      if (frameFetchQueuedRef.current) {
-        frameFetchQueuedRef.current = false;
-        void fetchFrame();
-      }
-    }
-  };
-
   // Plan v8 hardening (Codex P1 #3) — one initial GET for hydration,
   // then rely on realtime for updates. Polling only re-enables when the
   // realtime subscription enters CHANNEL_ERROR / CLOSED state. At 300
   // concurrent mapping jobs × multiple admins watching each, the old
   // 10s poll was 1000+ DB reads per minute on top of realtime.
+  //
+  // The robot's live SCREEN (frame fetch + both heartbeats + the live_frame
+  // broadcast) now lives entirely in <LiveRobotView>, which is mounted below
+  // and self-drives. The board keeps the feed-board / help / takeover state.
   useEffect(() => {
     if (!jobId) return;
-    setLiveFrame(null); // never show a previous job's screen on this one
     void load();
-    void fetchFrame();
     return () => {
       if (loadDebounceRef.current) clearTimeout(loadDebounceRef.current);
-      // Invalidate in-flight frame fetches (job switch or unmount).
-      frameGenRef.current += 1;
-      frameFetchQueuedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
-
-  // Heartbeat ping while this tab is open AND VISIBLE. Two signals, both
-  // visibility-gated so a backgrounded tab can't impersonate a watching founder:
-  //   - global /api/admin/heartbeat (accounts.last_seen_at) → gates
-  //     cua-service/src/live-frame.ts's "robot's screen" tee.
-  //   - per-job POST /api/admin/mapper/live/[jobId] (feature/cua-polish) →
-  //     gates human-assist.ts's PER-JOB help hold: the robot waits up to
-  //     HELP_REQUEST_TIMEOUT_MS for a click only while THIS job is being
-  //     watched, and releases the hold early when this ping stops.
-  useEffect(() => {
-    if (!user || user.role !== 'admin') return;
-    const ping = () => {
-      if (document.visibilityState !== 'visible') return;
-      void fetchWithAuth('/api/admin/heartbeat', { method: 'POST' });
-      if (jobId) void fetchWithAuth(`/api/admin/mapper/live/${jobId}`, { method: 'POST' });
-    };
-    ping();
-    const t = setInterval(ping, 30_000);
-    document.addEventListener('visibilitychange', ping);
-    return () => {
-      clearInterval(t);
-      document.removeEventListener('visibilitychange', ping);
-    };
-  }, [user, jobId]);
 
   // Subscribe to mapping_help_requests postgres_changes for this job.
   // If the channel disconnects, fall back to 10s polling until it
@@ -707,9 +563,9 @@ export default function LiveMappingPage() {
         // feature/cua-live-view — live_frame is a metadata-only nudge that
         // fires every few seconds while the robot works. It must NOT enter
         // the activity feed and must NOT trigger the full-state refetch
-        // (that's 4 DB queries per event) — it only refreshes the frame.
+        // (that's 4 DB queries per event). <LiveRobotView> owns the frame on
+        // its own channel; here we just swallow it.
         if (msg.event === 'live_frame' || msg.payload?.type === 'live_frame') {
-          void fetchFrame();
           return;
         }
         setActivity((prev) => [...prev, msg.payload].slice(-50));
@@ -740,7 +596,7 @@ export default function LiveMappingPage() {
   useEffect(() => {
     if (!jobId) return;
     if (job && isTerminalJobStatus(job.status)) return;
-    const t = setInterval(() => { void load(); void fetchFrame(); }, 30_000);
+    const t = setInterval(() => { void load(); }, 30_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, job?.status]);
@@ -774,16 +630,6 @@ export default function LiveMappingPage() {
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, takeover?.status, takeover?.id, job?.status]);
-
-  // feature/cua-live-view — keep the "Xs ago" freshness label honest while
-  // a frame is showing. Re-render only; no fetching. Deps deliberately use
-  // job?.status (not the job object, whose identity changes every load()).
-  useEffect(() => {
-    if (!liveFrame) return;
-    if (isTerminalJobStatus(job?.status)) return;
-    const t = setInterval(() => setFrameTick((n) => n + 1), 10_000);
-    return () => clearInterval(t);
-  }, [liveFrame, job?.status]);
 
   // Auto-scroll activity to bottom on new event.
   useEffect(() => {
@@ -1084,11 +930,8 @@ export default function LiveMappingPage() {
     return m;
   }, [draftMap]);
 
-  // feature/cua-admin-mapper-visibility — the single live phase line: what the
-  // robot is doing RIGHT NOW, from the durable result.currentActivity. It's
-  // fetched by load() (so it survives a page reload) and refreshed by every
-  // broadcast + the short poll below. Older jobs never wrote it → livePhase is
-  // null and the indicator is simply absent (graceful degradation).
+  // feature/cua-mapper-cost — the durable result.currentActivity, still read
+  // here for the live spend total (the live PHASE line moved to <LiveRobotView>).
   const currentActivity = useMemo(() => parseCurrentActivity(job?.result), [job]);
   // feature/cua-operator-notes — the robot's live reasoning log.
   const thoughts = useMemo<AgentThought[]>(() => parseThoughts(job?.result), [job]);
@@ -1099,12 +942,6 @@ export default function LiveMappingPage() {
       thoughtsRef.current.scrollTop = thoughtsRef.current.scrollHeight;
     }
   }, [thoughts.length]);
-  const livePhase = useMemo(() => {
-    if (!currentActivity?.phase) return null;
-    const noun = currentActivity.feedKey ? prettifyTargetKey(currentActivity.feedKey) : '';
-    const text = phaseLabel(currentActivity.phase, noun);
-    return text ? { text, phase: currentActivity.phase, pct: currentActivity.pct } : null;
-  }, [currentActivity]);
   // INVARIANT guard for the panel too: a pending row whose target is
   // already found (stale after a worker restart) must not show a live
   // clickable panel — the robot is not listening on it.
@@ -1135,25 +972,6 @@ export default function LiveMappingPage() {
   // the screen.
   const canStartTakeover = job?.status === 'running' && searchingTakeoverable && !takeover &&
     (!pendingHelp || pendingIsStale);
-
-  // feature/cua-live-view — frame age in seconds (clamped at 0 to absorb
-  // small client/storage clock skew); null when unknown. frameTick keeps
-  // it honest between frames.
-  const frameAgeSec = useMemo(() => {
-    if (!liveFrame?.updatedAt) return null;
-    const ts = Date.parse(liveFrame.updatedAt);
-    if (Number.isNaN(ts)) return null;
-    return Math.max(0, Math.round((Date.now() - ts) / 1000));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveFrame, frameTick]);
-  const frameIsFresh = frameAgeSec !== null && frameAgeSec <= 45;
-  const frameAgeLabel = frameAgeSec === null
-    ? ''
-    : frameAgeSec < 8
-      ? 'just now'
-      : frameAgeSec < 60
-        ? `${frameAgeSec}s ago`
-        : `${Math.floor(frameAgeSec / 60)}m ago`;
 
   if (authLoading || !user) {
     return (
@@ -1883,97 +1701,27 @@ export default function LiveMappingPage() {
             )}
 
             {/* feature/cua-live-view — the robot's screen, continuously.
-                Subsumes the old "working on its own" placeholder card.
-                Hidden while an ACTIONABLE help request is open: the help
-                panel above already shows the robot's (frozen) screen, and
-                stacking two near-identical screenshots would be confusing.
-                NOT clickable — click-to-teach stays on the help panel.
-                Hidden during a takeover — the takeover panel owns the screen. */}
-            {(!pendingHelp || pendingIsStale) && job?.status === 'running' && !takeover && (
-              <DarkCard style={{ padding: '16px 20px', marginBottom: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <Caps c={dimWhite(.5)}>Robot&rsquo;s screen</Caps>
-                  {liveFrame && (
-                    frameIsFresh
-                      ? <Pill tone="forest"><span style={{
-                          display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
-                          background: 'currentColor', marginRight: 2,
-                        }} /> LIVE</Pill>
-                      : <Pill tone="neutral">{frameAgeLabel ? `as of ${frameAgeLabel}` : 'paused'}</Pill>
-                  )}
-                  {liveFrame && frameIsFresh && frameAgeLabel && (
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>
-                      updated {frameAgeLabel}
-                    </span>
-                  )}
-                  {/* feature/cua-admin-mapper-visibility — the live phase line.
-                      No auto-margin of its own: it flows at the end of the left
-                      cluster, and the Take over button's marginLeft:auto pushes
-                      itself to the far right, leaving this to its LEFT. Absent
-                      for older jobs that never wrote currentActivity. */}
-                  {livePhase && (
-                    <span
-                      title="What the robot is doing right now"
-                      style={{
-                        display: 'inline-flex', alignItems: 'center',
-                        gap: 6, minWidth: 0, maxWidth: 380,
-                        fontFamily: FONT_MONO, fontSize: 11,
-                        color: isInProgressPhase(livePhase.phase) ? 'var(--gold)' : dimWhite(.66),
-                        background: isInProgressPhase(livePhase.phase) ? 'rgba(201,154,46,.12)' : 'rgba(255,255,255,.05)',
-                        border: `1px solid ${isInProgressPhase(livePhase.phase) ? 'rgba(201,154,46,.4)' : dimWhite(.16)}`,
-                        borderRadius: 999, padding: '3px 11px',
-                      }}
-                    >
-                      {isInProgressPhase(livePhase.phase)
-                        ? <Loader2 size={11} style={{ animation: 'spin 1.5s linear infinite', flexShrink: 0 }} />
-                        : livePhase.phase === 'found'
-                          ? <CheckCircle2 size={11} color="var(--forest)" style={{ flexShrink: 0 }} />
-                          : <CircleSlash size={11} style={{ flexShrink: 0 }} />}
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {livePhase.text}{typeof livePhase.pct === 'number' ? ` · ${livePhase.pct}%` : ''}
-                      </span>
-                    </span>
-                  )}
-                  {/* feature/cua-live-assist — pause the robot and drive it
-                      yourself (only while a feed is actively searching). */}
-                  {canStartTakeover && (
-                    <Btn variant="forest" size="sm" onClick={() => void startTakeover('start', searchingRow?.key)} disabled={takeoverBusy} style={{ marginLeft: 'auto' }}>
-                      <MousePointerClick size={13} /> Take over
-                    </Btn>
-                  )}
+                Now a SHARED self-driving component (it self-fetches frames,
+                runs BOTH heartbeats, owns the live_frame broadcast + freshness).
+                It stays MOUNTED whenever the page is open so the per-job
+                heartbeat keeps firing (load-bearing: the worker only tees frames
+                while that heartbeat is fresh, AND the help-request hold depends
+                on it too) — so we HIDE it (display:none) rather than unmount it
+                while an actionable help request or a takeover owns the screen.
+                The Take-over affordance is only offered when nothing else owns
+                the screen; the host owns the eligibility + the takeover call. */}
+            {(() => {
+              const screenOwnedElsewhere = (!!pendingHelp && !pendingIsStale) || !!takeover;
+              return (
+                <div style={screenOwnedElsewhere ? { display: 'none' } : undefined}>
+                  <LiveRobotView
+                    jobId={jobId}
+                    canStartTakeover={!screenOwnedElsewhere && canStartTakeover}
+                    onStartTakeover={() => void startTakeover('start', searchingRow?.key)}
+                  />
                 </div>
-                {liveFrame ? (
-                  <>
-                    <div style={{
-                      marginTop: 10, width: '100%', maxWidth: 980,
-                      border: `1px solid ${dimWhite(.14)}`, borderRadius: 8,
-                      overflow: 'hidden', lineHeight: 0,
-                    }}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={liveFrame.url}
-                        alt="The robot's current screen, updating live (sensitive fields redacted)"
-                        style={{ width: '100%', height: 'auto', display: 'block' }}
-                      />
-                    </div>
-                    <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), marginTop: 8 }}>
-                      {frameIsFresh
-                        ? 'This is what the robot sees right now — it updates with every step. (Passwords and payment details are blacked out automatically.)'
-                        : 'Paused — the robot is thinking. The picture updates with its next step. (Passwords and payment details are blacked out automatically.)'}
-                    </div>
-                  </>
-                ) : (
-                  <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5), marginTop: 8 }}>
-                    The robot&rsquo;s screen appears here as it works — the first picture can take a
-                    minute while it thinks.
-                  </div>
-                )}
-                <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5), marginTop: 10 }}>
-                  <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--forest)' }} />
-                  The robot is working on its own. If it gets stuck, the feed turns red here and it waits for your click.
-                </div>
-              </DarkCard>
-            )}
+              );
+            })()}
 
             {/* feature/cua-operator-notes — the robot's live reasoning */}
             <DarkCard style={{ padding: '16px 20px', marginBottom: 16 }}>
