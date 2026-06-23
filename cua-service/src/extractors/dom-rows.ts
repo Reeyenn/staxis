@@ -106,6 +106,11 @@ export interface CapturedTableHeaders {
   headerChildCount: number;
   /** Element-child count of the first body row matched by rowSelector. */
   bodyChildCount: number;
+  /** feature/cua-read-integrity — a durable IDENTITY for the chosen table:
+   *  'id:<id>' | 'aria:<label>' | 'hdr:<header-text-fingerprint>'. Lets a poll
+   *  confirm it is reading the SAME table the map learned (vs a different table a
+   *  generic rowSelector also matches). Empty when no table ancestor. */
+  tableKey?: string;
 }
 
 /**
@@ -116,25 +121,70 @@ export interface CapturedTableHeaders {
 export async function readTableHeaders(
   page: Page,
   rowSelector: string,
-  opts?: { isXpath?: boolean },
+  opts?: { isXpath?: boolean; expectedHeaders?: string[] },
 ): Promise<CapturedTableHeaders | null> {
   try {
     const raw = await page.evaluate(
-      (args: { rowSelector: string; isXpath: boolean }) => {
+      (args: { rowSelector: string; isXpath: boolean; expectedHeaders: string[] }) => {
         // Inline-only (no closures / arrow helpers) — same esbuild `__name`
-        // gotcha set-of-mark.ts documents. Locate the first body row.
-        let firstRow: Element | null = null;
+        // gotcha set-of-mark.ts documents.
+        //
+        // feature/cua-read-integrity — TABLE DISAMBIGUATION: a generic rowSelector
+        // (e.g. "tbody tr") can match rows in MORE THAN ONE table on the page. The
+        // old code took the FIRST matching row then closest() — silently the wrong
+        // table on multi-table pages. Now: gather EVERY candidate table the
+        // selector matches, and when the caller passed the header labels it
+        // expects (expectedHeaders), pick the table whose header row best matches
+        // them. With no expectedHeaders OR a single candidate table, this is
+        // byte-identical to the old first-match behaviour.
+        let allRows: Element[] = [];
         if (args.isXpath) {
           try {
-            const r = document.evaluate(args.rowSelector, document, null, 9, null);
-            firstRow = (r.singleNodeValue as Element | null) ?? null;
-          } catch { firstRow = null; }
+            const it = document.evaluate(args.rowSelector, document, null, 7, null); // ORDERED_NODE_SNAPSHOT_TYPE
+            for (let i = 0; i < it.snapshotLength; i++) { const n = it.snapshotItem(i); if (n) allRows.push(n as Element); }
+          } catch { allRows = []; }
         } else {
-          try { firstRow = document.querySelector(args.rowSelector); } catch { firstRow = null; }
+          try { allRows = Array.from(document.querySelectorAll(args.rowSelector)); } catch { allRows = []; }
         }
-        if (!firstRow) return null;
+        if (allRows.length === 0) return null;
 
-        const table = firstRow.closest('table, [role="table"], [role="grid"], [role="treegrid"]');
+        // Distinct candidate tables, in DOM order (candidates[0] === old behaviour).
+        const candidates: Element[] = [];
+        for (let i = 0; i < allRows.length; i++) {
+          const t = allRows[i]!.closest('table, [role="table"], [role="grid"], [role="treegrid"]');
+          if (t && candidates.indexOf(t) === -1) candidates.push(t);
+        }
+
+        let table: Element | null = candidates.length > 0 ? candidates[0]! : allRows[0]!.closest('table, [role="table"], [role="grid"], [role="treegrid"]');
+
+        // Disambiguate ONLY when there is a real choice + an expectation to match.
+        if (table && args.expectedHeaders.length > 0 && candidates.length > 1) {
+          let bestScore = -1;
+          let best = table;
+          for (let ti = 0; ti < candidates.length; ti++) {
+            const cand = candidates[ti]!;
+            let hdrEls: Element[] = Array.from(cand.querySelectorAll('thead th, thead [role="columnheader"]'));
+            if (hdrEls.length === 0) hdrEls = Array.from(cand.querySelectorAll('[role="columnheader"]'));
+            if (hdrEls.length === 0) { const ftr = cand.querySelector('tr'); if (ftr) hdrEls = Array.from(ftr.querySelectorAll(':scope > th')); }
+            let score = 0;
+            for (let hi = 0; hi < hdrEls.length; hi++) {
+              const txt = (hdrEls[hi]!.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              if (txt === '') continue;
+              for (let ei = 0; ei < args.expectedHeaders.length; ei++) {
+                const exp = args.expectedHeaders[ei]!;
+                if (exp !== '' && (txt === exp || txt.indexOf(exp) !== -1 || exp.indexOf(txt) !== -1)) { score++; break; }
+              }
+            }
+            if (score > bestScore) { bestScore = score; best = cand; }
+          }
+          table = best;
+        }
+
+        // Representative body row INSIDE the chosen table (for bodyChildCount).
+        let firstRow: Element | null = null;
+        for (let i = 0; i < allRows.length; i++) { if (table && table.contains(allRows[i]!)) { firstRow = allRows[i]!; break; } }
+        if (!firstRow) firstRow = allRows[0]!;
+
         const tableRole = table ? table.getAttribute('role') : null;
         const roleKind: 'cell' | 'gridcell' =
           tableRole === 'grid' || tableRole === 'treegrid' ? 'gridcell' : 'cell';
@@ -168,7 +218,14 @@ export async function readTableHeaders(
 
         const bodyChildCount = firstRow.children.length;
         if (headerCells.length === 0) {
-          return { cells: [], roleKind, hasSpan: false, headerChildCount: 0, bodyChildCount };
+          let tk = '';
+          if (table) {
+            const tid = table.getAttribute('id');
+            const tal = table.getAttribute('aria-label');
+            if (tid && tid.trim() !== '') tk = 'id:' + tid.trim();
+            else if (tal && tal.trim() !== '') tk = 'aria:' + tal.trim();
+          }
+          return { cells: [], roleKind, hasSpan: false, headerChildCount: 0, bodyChildCount, tableKey: tk };
         }
 
         let hasSpan = false;
@@ -202,15 +259,26 @@ export async function readTableHeaders(
           const text = raw.toLowerCase();
           cells.push({ index, text, raw });
         }
+        // Durable table identity — id / aria-label win; else a header-text
+        // fingerprint (plain loop, no closures per the esbuild gotcha above).
+        let tableKey = '';
+        if (table) {
+          const tid = table.getAttribute('id');
+          const tal = table.getAttribute('aria-label');
+          if (tid && tid.trim() !== '') tableKey = 'id:' + tid.trim();
+          else if (tal && tal.trim() !== '') tableKey = 'aria:' + tal.trim();
+          else { let fp = ''; for (let i = 0; i < cells.length; i++) { fp += (i ? '|' : '') + cells[i]!.text; } tableKey = 'hdr:' + fp.slice(0, 200); }
+        }
         return {
           cells,
           roleKind,
           hasSpan,
           headerChildCount: headerRow ? headerRow.children.length : 0,
           bodyChildCount,
+          tableKey,
         };
       },
-      { rowSelector, isXpath: !!opts?.isXpath },
+      { rowSelector, isXpath: !!opts?.isXpath, expectedHeaders: (opts?.expectedHeaders ?? []).map((h) => h.toLowerCase()) },
     );
     return (raw as CapturedTableHeaders | null) ?? null;
   } catch (err) {
@@ -425,7 +493,13 @@ async function extractDomRowsTiered(
   //    xpath, NOT Playwright's `xpath=`-prefixed form.
   const anyRoleName = !!opts.columnsTiered && Object.values(opts.columnsTiered).some((t) => !!t?.roleName);
   const headerSelector = rowIsXpath ? opts.rowSelectorTiered!.xpath! : effectiveRowSelector;
-  const headers = anyRoleName ? await readTableHeaders(page, headerSelector, { isXpath: rowIsXpath }) : null;
+  // feature/cua-read-integrity — feed the LEARNED header labels so a generic
+  // rowSelector that matches several tables resolves to the RIGHT one (the table
+  // whose headers match what we learned), not just the first in DOM order.
+  const expectedHeaders = opts.columnsTiered
+    ? Object.values(opts.columnsTiered).map((t) => t?.roleName?.name).filter((n): n is string => !!n)
+    : [];
+  const headers = anyRoleName ? await readTableHeaders(page, headerSelector, { isXpath: rowIsXpath, expectedHeaders }) : null;
   const gateOk = headerGateOk(headers);
   const headerIndexByText = new Map<string, number[]>();
   if (gateOk && headers) {

@@ -2147,8 +2147,17 @@ async function captureBoardPreview(
   if (action.parse.mode !== 'table') return undefined;
   const hint = action.parse.hint;
   try {
+    // feature/cua-read-integrity — pass the tiered (header-anchored) selectors so
+    // the preview uses the SAME self-healing + table-disambiguation reader the
+    // runtime does. Otherwise the board showed stale/wrong values (a reordered or
+    // wrong-table read), and a founder driving a takeover never saw it was wrong
+    // and re-emitted the same broken selectors.
     const { rows, totalMatched } = await extractDomRows(
-      page, hint.rowSelector, hint.columns, { cap: BOARD_PREVIEW_MAX_ROWS },
+      page, hint.rowSelector, hint.columns, {
+        cap: BOARD_PREVIEW_MAX_ROWS,
+        ...(hint.columnsTiered ? { columnsTiered: hint.columnsTiered } : {}),
+        ...(hint.rowSelectorTiered ? { rowSelectorTiered: hint.rowSelectorTiered } : {}),
+      },
     );
     return { rowCount: totalMatched, sample: truncatePreviewRows(rows), sampleKind: 'rows' };
   } catch (err) {
@@ -2737,7 +2746,15 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
             'SUPERVISOR OVERRIDE: I (your supervisor) navigated the browser to the correct page ' +
             `for "${args.actionName}". Do NOT navigate away. Read the page you are on NOW and emit the ` +
             'first-line JSON {"url": "<current url>", "rowSelector": "...", "columns": {...}} for THIS page. ' +
-            'If it is a list/table, give the row selector and per-column selectors; capture the columns you can see.',
+            'If it is a list/table, give the row selector and per-column selectors; capture the columns you can see. ' +
+            // feature/cua-read-integrity — DE-BIAS: any selectors you emitted on
+            // earlier attempts were WRONG (they read blank/other-table data) —
+            // DISREGARD them and author fresh ones from THIS page only. The page
+            // often has MORE THAN ONE table (nav, summary, the data grid); a bare
+            // "tbody tr" can match the wrong one. Scope rowSelector to the SPECIFIC
+            // table that holds this feed\'s data (anchor on its id/class or a header
+            // it uniquely contains), and double-check your per-column selectors land '
+            + 'on the right cells (e.g. the guest name column actually shows guest names, not nights/room counts).',
         };
         const last = messages[messages.length - 1];
         if (last && last.role === 'user' && Array.isArray(last.content)) {

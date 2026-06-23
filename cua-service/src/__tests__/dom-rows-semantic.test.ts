@@ -374,3 +374,41 @@ describe('feature/cua-semantic-columns — pure helpers', () => {
     assert.equal(headerGateOk(h), true);
   });
 });
+
+// feature/cua-read-integrity — multi-table disambiguation. A generic rowSelector
+// ("tbody tr") matches rows in TWO tables; without an expectation the reader
+// takes the first (old behaviour), WITH expectedHeaders it picks the table whose
+// headers match — fixing the silent wrong-table read. Also stamps a tableKey.
+describe('readTableHeaders — multi-table disambiguation (feature/cua-read-integrity)', () => {
+  const TWO_TABLES = `
+    <table id="navSummary"><thead><tr><th>Menu</th><th>Count</th></tr></thead>
+      <tbody><tr><td>Arrivals</td><td>9</td></tr><tr><td>Departures</td><td>4</td></tr></tbody></table>
+    <table id="arrivalsGrid"><thead><tr><th>Guest Name</th><th>Room</th><th>Conf #</th></tr></thead>
+      <tbody><tr><td>Banda, Maria</td><td>104</td><td>10507398</td></tr>
+             <tr><td>Charter, Mark</td><td>110</td><td>10523279</td></tr></tbody></table>`;
+
+  test('no expectedHeaders → first matching table (byte-identical old behaviour)', async () => {
+    await page!.goto(dataUrl(TWO_TABLES));
+    const h = await readTableHeaders(page!, 'tbody tr');
+    assert.ok(h);
+    assert.deepEqual(h!.cells.map((c) => c.raw), ['Menu', 'Count']); // the WRONG (nav) table
+    assert.equal(h!.tableKey, 'id:navSummary');
+  });
+
+  test('expectedHeaders picks the table whose headers match (the arrivals grid)', async () => {
+    await page!.goto(dataUrl(TWO_TABLES));
+    const h = await readTableHeaders(page!, 'tbody tr', { expectedHeaders: ['guest name', 'room', 'conf #'] });
+    assert.ok(h);
+    assert.deepEqual(h!.cells.map((c) => c.raw), ['Guest Name', 'Room', 'Conf #']); // the RIGHT table
+    assert.equal(h!.tableKey, 'id:arrivalsGrid');
+    assert.equal(headerGateOk(h), true);
+  });
+
+  test('single-table page is unaffected by expectedHeaders + gets a tableKey', async () => {
+    await page!.goto(dataUrl('<table><thead><tr><th>Room</th><th>Status</th></tr></thead><tbody><tr><td>101</td><td>Clean</td></tr></tbody></table>'));
+    const h = await readTableHeaders(page!, 'tbody tr', { expectedHeaders: ['nonexistent'] });
+    assert.ok(h);
+    assert.deepEqual(h!.cells.map((c) => c.raw), ['Room', 'Status']);
+    assert.ok((h!.tableKey ?? '').startsWith('hdr:'), 'no id/aria → header fingerprint key');
+  });
+});
