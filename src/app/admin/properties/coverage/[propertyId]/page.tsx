@@ -638,9 +638,10 @@ export default function CoveragePage() {
                   })}
                 </div>
 
-                {/* Add a feed — Add via takeover targets a LIVE map; hidden while
-                    reviewing a parked draft (add feeds once it's live). */}
-                {!isDraft && map.editable && data.addableFeeds.length > 0 && (
+                {/* Add a feed — pick from the robot's full catalog of feed types not
+                    yet captured. Works on a live map AND a parked draft (the draft path
+                    seeds from the draft via draftId and stays parked until you publish). */}
+                {map.editable && data.addableFeeds.length > 0 && (
                   <DarkCard style={{ marginTop: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <Plus size={16} color="var(--forest)" />
                     <span style={{ fontSize: 13, color: '#fff' }}>Add a data point</span>
