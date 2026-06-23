@@ -7,6 +7,14 @@
  * the active map captures: its learned columns, its pms_* table, a live row
  * count + small sample FOR THIS PROPERTY, and its trust state.
  *
+ * feature/coverage-show-draft — when there is NO active map for the family, this
+ * route FALLS BACK to the latest non-deleted PARKED DRAFT (status='draft') and
+ * returns it in the SAME activeMap shape, plus `isDraft:true`, `draftId`, and a
+ * small `review` subset (verification score/threshold + a short notes reason —
+ * never selectors / full knowledge). The page then lets the founder review the
+ * draft and "Make live" on one screen. When an active map exists, behaviour is
+ * unchanged (no isDraft). The empty state shows only when there's NEITHER.
+ *
  * Why a new route (vs /api/admin/live-mapper/maps): that route deliberately
  * drops the `knowledge` jsonb, so it can't show per-feed columns or live counts.
  *
@@ -97,8 +105,26 @@ export async function GET(req: NextRequest): Promise<Response> {
   );
   const familyLabel = (PMS_REGISTRY as Record<string, { label?: string } | undefined>)[pmsFamily]?.label ?? pmsFamily;
 
-  if (!activeRow) {
-    // No live map yet (onboarding / all drafts). Page shows an empty state.
+  // 2b. NO active map → fall back to the latest non-deleted PARKED DRAFT, so the
+  //     founder can review a freshly-learned-but-not-yet-live map on this same
+  //     screen (the natural "View what the robot captures →" path) instead of an
+  //     empty "No live map yet" state. Additive: when an active map exists this
+  //     branch is skipped entirely and the response is byte-identical to before.
+  const reviewRow = activeRow ?? await (async () => {
+    const { data: draftRow } = await supabaseAdmin
+      .from('pms_knowledge_files')
+      .select('id, version, status, knowledge, signature, signed_with_key_id, notes, learned_at')
+      .eq('pms_family', pmsFamily)
+      .eq('status', 'draft')
+      .is('deleted_at', null)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return draftRow ?? null;
+  })();
+
+  if (!reviewRow) {
+    // Neither active NOR draft (onboarding not started / all discarded).
     return ok({
       propertyId,
       propertyName: (prop?.display_name as string | undefined) ?? propertyId,
@@ -112,7 +138,8 @@ export async function GET(req: NextRequest): Promise<Response> {
     }, { requestId });
   }
 
-  const knowledge = activeRow.knowledge as unknown;
+  const isDraft = !activeRow; // reviewRow is the parked draft when there's no active.
+  const knowledge = reviewRow.knowledge as unknown;
   const parsed = parseKnowledgeCoverage(knowledge);
 
   // Per-feed trust state from the envelope's feedGaps (gap-listing wins over
@@ -159,10 +186,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     hotelsOnFamily: hotelsOnFamily ?? 0,
     connection,
     activeMap: {
-      id: activeRow.id as string,
-      version: activeRow.version as number,
-      status: activeRow.status as string,
-      signed: activeRow.signature != null && activeRow.signed_with_key_id != null,
+      id: reviewRow.id as string,
+      version: reviewRow.version as number,
+      status: reviewRow.status as string,
+      signed: reviewRow.signature != null && reviewRow.signed_with_key_id != null,
       shape: parsed.shape,
       editable: parsed.editable,
       // self-repair provenance — the worker records a reanchor's origin as a
@@ -170,14 +197,51 @@ export async function GET(req: NextRequest): Promise<Response> {
       // saveDraftKnowledgeFile, `${origin}/${decision}: …`). Surface it so the
       // page can show a "Repaired (auto)" pill. Optional; absent when not a
       // reanchor (fresh learn / founder edit).
-      ...(((activeRow.notes as string | null) ?? '').startsWith('reanchor/')
-        ? { repaired: true, repairedAt: (activeRow.learned_at as string | null) ?? null }
+      ...(((reviewRow.notes as string | null) ?? '').startsWith('reanchor/')
+        ? { repaired: true, repairedAt: (reviewRow.learned_at as string | null) ?? null }
+        : {}),
+      // PARKED DRAFT review — only when there is NO active map and this row is a
+      // not-yet-live draft. The page renders the same feeds/columns but with a
+      // "review before it goes live" banner + a Make-live button. `review` is a
+      // SUBSET of the signed envelope's verification (score/threshold only) plus
+      // a short human reason from `notes` — never selectors or full knowledge.
+      ...(isDraft
+        ? {
+            isDraft: true as const,
+            draftId: reviewRow.id as string,
+            review: buildReview(knowledge, (reviewRow.notes as string | null) ?? null),
+          }
         : {}),
     },
     feeds,
     // Only an actions-shaped (editable) map can have feeds added by takeover.
     addableFeeds: parsed.editable ? addableFeeds(presentKeys) : [],
   }, { requestId });
+}
+
+/**
+ * Build the small `review` subset for a parked draft — the WHY-park summary the
+ * founder sees before promoting. Reads `knowledge.verification.{score,threshold}`
+ * defensively (never selectors / full knowledge) and a short human `reason` from
+ * the draft's `notes`. Every field is optional: a seeded/edit/garbage envelope
+ * simply omits the numbers, and an empty notes omits the reason.
+ */
+function buildReview(
+  knowledge: unknown,
+  notes: string | null,
+): { score?: number; threshold?: number; reason?: string } {
+  const out: { score?: number; threshold?: number; reason?: string } = {};
+  if (knowledge && typeof knowledge === 'object') {
+    const v = (knowledge as { verification?: unknown }).verification;
+    if (v && typeof v === 'object') {
+      const r = v as Record<string, unknown>;
+      if (typeof r.score === 'number') out.score = r.score;
+      if (typeof r.threshold === 'number') out.threshold = r.threshold;
+    }
+  }
+  const reason = (notes ?? '').trim();
+  if (reason) out.reason = reason.length > 200 ? `${reason.slice(0, 197)}…` : reason;
+  return out;
 }
 
 /** Mirror of src/lib/pms/feed-status.ts deriveConnection (paused set + pending). */

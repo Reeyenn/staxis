@@ -35,7 +35,7 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
-  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Camera, Wand2,
+  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Camera, Wand2, Check,
 } from 'lucide-react';
 
 /** Coarse "time ago" for the self-repair pill. Tolerant of null/garbage. */
@@ -81,6 +81,15 @@ interface CoverageResponse {
     // responses simply omit it and no pill renders.
     repaired?: boolean;
     repairedAt?: string | null;
+    // feature/coverage-show-draft — when there is NO live (active) map, the route
+    // falls back to the latest PARKED DRAFT and returns it here with isDraft:true.
+    // The page renders the same feeds/columns but with a "review before it goes
+    // live" banner + a Make-live button. `review` is a small WHY-park subset
+    // (verification score/threshold + a short reason) — never selectors. Absent
+    // on a live map (behaves exactly as before).
+    isDraft?: boolean;
+    draftId?: string;
+    review?: { score?: number; threshold?: number; reason?: string };
   } | null;
   feeds: FeedDetail[];
   addableFeeds: Array<{ actionKey: string; label: string }>;
@@ -173,6 +182,10 @@ export default function CoveragePage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ tone: 'good' | 'warn' | 'bad'; text: string } | null>(null);
+  // feature/coverage-show-draft — Make-live (promote) flow for a parked draft.
+  const [pendingPromote, setPendingPromote] = useState(false);
+  const [promoteBusy, setPromoteBusy] = useState(false);
+  const [promoteError, setPromoteError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -258,10 +271,42 @@ export default function CoveragePage() {
   };
 
   // Delete → enqueue a worker recipe edit, then poll the job to completion.
+  // For a PARKED DRAFT (no live map) the worker/signed-envelope path doesn't
+  // apply — drafts are plain unsigned jsonb verified only at promote time — so
+  // draft removals go through the draft delete-feed route (a direct jsonb edit),
+  // never the active-map worker route.
   const confirmDelete = async () => {
     if (!pendingDelete?.actionKey || !data) return;
     setDeleteBusy(true);
     setDeleteError(null);
+
+    if (data.activeMap?.isDraft) {
+      try {
+        const res = await fetchWithAuth('/api/admin/mapper/draft/delete-feed', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ draftId: data.activeMap.draftId, feedKey: pendingDelete.actionKey }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+          setDeleteError(json.error ?? 'Could not remove the feed.');
+          return;
+        }
+        setPendingDelete(null);
+        if (json.data?.removed) {
+          setToast({ tone: 'good', text: `Removed “${pendingDelete.label}” from the draft.` });
+        } else {
+          setToast({ tone: 'warn', text: 'That feed was already gone from the draft.' });
+        }
+        await load();
+      } catch (err) {
+        setDeleteError((err as Error).message);
+      } finally {
+        setDeleteBusy(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetchWithAuth('/api/admin/mapper/coverage/delete-feed', {
         method: 'POST',
@@ -291,6 +336,34 @@ export default function CoveragePage() {
       setDeleteError((err as Error).message);
     } finally {
       setDeleteBusy(false);
+    }
+  };
+
+  // Make live → promote the parked draft to active for the whole family. Echoes
+  // the version + status we saw so a stale UI can't promote the wrong row.
+  const confirmPromote = async () => {
+    const map = data?.activeMap;
+    if (!map?.isDraft || !map.draftId) return;
+    setPromoteBusy(true);
+    setPromoteError(null);
+    try {
+      const res = await fetchWithAuth('/api/admin/live-mapper/promote', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: map.draftId, expectedVersion: map.version, expectedStatus: 'draft' }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setPromoteError(json.error ?? 'Could not make this map live.');
+        return;
+      }
+      setPendingPromote(false);
+      setToast({ tone: 'good', text: `Map v${map.version} is now live for every ${data?.familyLabel} hotel.` });
+      await load();
+    } catch (err) {
+      setPromoteError((err as Error).message);
+    } finally {
+      setPromoteBusy(false);
     }
   };
 
@@ -336,6 +409,7 @@ export default function CoveragePage() {
 
   const map = data?.activeMap;
   const legacy = map && !map.editable;
+  const isDraft = !!map?.isDraft;
 
   return (
     <AppLayout>
@@ -362,7 +436,7 @@ export default function CoveragePage() {
             {data && (
               <p style={{ fontSize: 13, color: dimWhite(.66), margin: '0 0 18px' }}>
                 {data.propertyName} · <span style={{ fontFamily: FONT_MONO, fontSize: 11.5 }}>{data.familyLabel}</span>
-                {map && <> · map <span style={{ fontFamily: FONT_MONO }}>v{map.version}</span></>}
+                {map && <> · {isDraft ? 'parked draft' : 'map'} <span style={{ fontFamily: FONT_MONO }}>v{map.version}</span></>}
               </p>
             )}
 
@@ -395,7 +469,9 @@ export default function CoveragePage() {
                   <Layers size={18} color="var(--teal)" style={{ flexShrink: 0, marginTop: 2 }} />
                   <div style={{ flex: 1, minWidth: 240 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 600, color: '#fff' }}>
-                      Editing changes the map for every {data.familyLabel} hotel
+                      {isDraft
+                        ? `Making this live affects every ${data.familyLabel} hotel`
+                        : `Editing changes the map for every ${data.familyLabel} hotel`}
                     </div>
                     <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.6), marginTop: 3 }}>
                       one map · {data.hotelsOnFamily} hotel{data.hotelsOnFamily === 1 ? '' : 's'} on this PMS · the counts below are for {data.propertyName}
@@ -406,6 +482,39 @@ export default function CoveragePage() {
                     {data.connection !== 'healthy' && <Pill tone="gold">{data.connection === 'pending' ? 'No reads yet' : 'Paused'}</Pill>}
                   </div>
                 </DarkCard>
+
+                {/* feature/coverage-show-draft — parked-draft review banner. The
+                    family has NO live map; this is the latest learned-but-not-yet-
+                    live draft. The founder reviews the feeds below, then "Make
+                    live" promotes it for every hotel on the PMS. */}
+                {isDraft && map && (
+                  <DarkCard style={{ marginBottom: 16, background: 'var(--gold-dim)', border: '1px solid rgba(201,154,46,.4)' }}>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                      <AlertTriangle size={18} color="var(--gold)" style={{ flexShrink: 0, marginTop: 2 }} />
+                      <div style={{ flex: 1, minWidth: 240 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--gold)' }}>
+                          Parked draft v{map.version} — review before it goes live
+                        </div>
+                        <div style={{ fontSize: 12.5, color: dimWhite(.72), marginTop: 4, lineHeight: 1.55 }}>
+                          The robot learned this map but parked it for you to check. Nothing is live for {data.familyLabel} yet — review every feed below, then make it live.
+                          {(typeof map.review?.score === 'number' && typeof map.review?.threshold === 'number') && (
+                            <span style={{ display: 'block', fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.6), marginTop: 5 }}>
+                              confidence {map.review!.score}/{map.review!.threshold}
+                            </span>
+                          )}
+                          {map.review?.reason && (
+                            <span style={{ display: 'block', fontSize: 12, color: dimWhite(.6), marginTop: 4 }}>
+                              {map.review.reason}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <Btn variant="forest" size="sm" onClick={() => { setPromoteError(null); setPendingPromote(true); }} disabled={promoteBusy}>
+                        {promoteBusy ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={12} />} Make live
+                      </Btn>
+                    </div>
+                  </DarkCard>
+                )}
 
                 {/* Legacy read-only banner */}
                 {legacy && (
@@ -460,14 +569,19 @@ export default function CoveragePage() {
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            {f.source === 'actions' && f.canTakeover && (
+                            {/* Edit / Add re-point a LIVE map via takeover — not
+                                offered while reviewing a parked draft (review +
+                                Make live is the v1 path; per-feed edits happen
+                                once it's live). REMOVE still works on a draft
+                                (routed through the draft delete-feed path). */}
+                            {!isDraft && f.source === 'actions' && f.canTakeover && (
                               <Btn variant="ghost" size="sm" onClick={() => void startEditOrAdd(f.actionKey!, 'edit')} disabled={!!busy} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
                                 {busy === `edit:${f.actionKey}` ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Pencil size={12} />} Edit
                               </Btn>
                             )}
                             {f.source === 'actions' && !f.required && map.editable && (
                               <Btn variant="ghost" size="sm" onClick={() => { setDeleteError(null); setPendingDelete(f); }} disabled={!!busy} style={{ color: 'var(--terracotta)', borderColor: 'rgba(194,86,46,.3)' }}>
-                                <Trash2 size={12} /> Delete
+                                <Trash2 size={12} /> {isDraft ? 'Remove' : 'Delete'}
                               </Btn>
                             )}
                           </div>
@@ -509,8 +623,9 @@ export default function CoveragePage() {
                   })}
                 </div>
 
-                {/* Add a feed */}
-                {map.editable && data.addableFeeds.length > 0 && (
+                {/* Add a feed — Add via takeover targets a LIVE map; hidden while
+                    reviewing a parked draft (add feeds once it's live). */}
+                {!isDraft && map.editable && data.addableFeeds.length > 0 && (
                   <DarkCard style={{ marginTop: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <Plus size={16} color="var(--forest)" />
                     <span style={{ fontSize: 13, color: '#fff' }}>Add a data point</span>
@@ -532,7 +647,9 @@ export default function CoveragePage() {
                 )}
 
                 <div style={{ marginTop: 16, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.4), display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Eye size={11} /> Edit / Add open the live board so you can drive the robot to the right page and press Finish.
+                  <Eye size={11} /> {isDraft
+                    ? 'Review every feed, remove anything wrong, then “Make live” to publish this map for the family.'
+                    : 'Edit / Add open the live board so you can drive the robot to the right page and press Finish.'}
                 </div>
               </>
             )}
@@ -549,11 +666,16 @@ export default function CoveragePage() {
                 Remove “{pendingDelete.label}”?
               </h3>
               <div style={{ fontSize: 13.5, color: 'var(--ink-soft)', lineHeight: 1.6 }}>
-                The robot will stop capturing <b>{pendingDelete.label}</b> for every {data?.familyLabel} hotel. The map is re-published without it — you can re-add it later.
-                <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(194,86,46,.08)', border: '1px solid rgba(194,86,46,.3)', color: 'var(--terracotta-deep)', fontSize: 12.5 }}>
-                  <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-                  <span>This affects all {data?.hotelsOnFamily} hotel{data?.hotelsOnFamily === 1 ? '' : 's'} on this PMS.</span>
-                </span>
+                {isDraft ? (
+                  <>Drop <b>{pendingDelete.label}</b> from this draft so it isn’t carried in when you make the map live. Nothing is live yet — you can re-learn it later.</>
+                ) : (
+                  <>The robot will stop capturing <b>{pendingDelete.label}</b> for every {data?.familyLabel} hotel. The map is re-published without it — you can re-add it later.
+                    <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(194,86,46,.08)', border: '1px solid rgba(194,86,46,.3)', color: 'var(--terracotta-deep)', fontSize: 12.5 }}>
+                      <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                      <span>This affects all {data?.hotelsOnFamily} hotel{data?.hotelsOnFamily === 1 ? '' : 's'} on this PMS.</span>
+                    </span>
+                  </>
+                )}
               </div>
               {deleteError && (
                 <div style={{ marginTop: 14, borderRadius: 10, border: '1px solid rgba(194,86,46,.4)', background: 'rgba(194,86,46,.08)', padding: '9px 12px', fontSize: 12.5, color: 'var(--terracotta-deep)' }}>
@@ -562,7 +684,34 @@ export default function CoveragePage() {
               )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 22 }}>
                 <Btn size="md" variant="ghost" onClick={() => { setPendingDelete(null); setDeleteError(null); }} disabled={deleteBusy}>Cancel</Btn>
-                <Btn size="md" variant="terracotta" onClick={() => void confirmDelete()} disabled={deleteBusy}>{deleteBusy ? 'Removing…' : 'Remove feed'}</Btn>
+                <Btn size="md" variant="terracotta" onClick={() => void confirmDelete()} disabled={deleteBusy}>{deleteBusy ? 'Removing…' : (isDraft ? 'Remove from draft' : 'Remove feed')}</Btn>
+              </div>
+            </div>
+          </Backdrop>
+        )}
+
+        {/* Make live (promote draft) confirm */}
+        {pendingPromote && map?.isDraft && (
+          <Backdrop onClose={promoteBusy ? () => {} : () => { setPendingPromote(false); setPromoteError(null); }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 460 }}>
+              <h3 style={{ fontFamily: FONT_SERIF, fontSize: 21, fontWeight: 500, margin: '0 0 10px', color: 'var(--ink)' }}>
+                Make this map live for every {data?.familyLabel} hotel?
+              </h3>
+              <div style={{ fontSize: 13.5, color: 'var(--ink-soft)', lineHeight: 1.6 }}>
+                The robot will start using map <b>v{map.version}</b> to read every {data?.familyLabel} hotel right away. You can edit or remove individual feeds afterward.
+                <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(60,156,104,.08)', border: '1px solid rgba(60,156,104,.3)', color: 'var(--forest)', fontSize: 12.5 }}>
+                  <Check size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>This goes live for all {data?.hotelsOnFamily} hotel{data?.hotelsOnFamily === 1 ? '' : 's'} on this PMS.</span>
+                </span>
+              </div>
+              {promoteError && (
+                <div style={{ marginTop: 14, borderRadius: 10, border: '1px solid rgba(194,86,46,.4)', background: 'rgba(194,86,46,.08)', padding: '9px 12px', fontSize: 12.5, color: 'var(--terracotta-deep)' }}>
+                  {promoteError}
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 22 }}>
+                <Btn size="md" variant="ghost" onClick={() => { setPendingPromote(false); setPromoteError(null); }} disabled={promoteBusy}>Cancel</Btn>
+                <Btn size="md" variant="forest" onClick={() => void confirmPromote()} disabled={promoteBusy}>{promoteBusy ? 'Making live…' : 'Make live'}</Btn>
               </div>
             </div>
           </Backdrop>

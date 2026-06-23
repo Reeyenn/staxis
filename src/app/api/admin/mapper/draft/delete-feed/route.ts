@@ -1,11 +1,18 @@
 /**
  * POST /api/admin/mapper/draft/delete-feed
- *   body: { jobId, feedKey }
+ *   body: { jobId, feedKey }   — Learning Board path (resolves the run's draft)
+ *      OR { draftId, feedKey } — Coverage Editor path (parked-draft review)
  *
  * Per-feed DELETE on the LIVE Mapping Board, BEFORE the map goes live. A founder
  * reviewing a finished run can drop a feed the robot mis-mapped (a wrong screen,
  * a junk extra feed) so it isn't carried into the live recipe — then either
  * re-run that feed or save the rest.
+ *
+ * feature/coverage-show-draft — the Coverage Editor ("What the robot captures")
+ * now also shows a PARKED DRAFT when there's no live map, and removes feeds from
+ * it. That path knows the draft's id directly (not a jobId), so the route accepts
+ * `draftId` as an alternative to `jobId`. Both resolve to the same draft row and
+ * run the identical plain-jsonb edit + safety checks below.
  *
  * SAFETY (the route refuses, in order):
  *   1. The draft must NOT be active (409) — once live, edits go through the
@@ -30,7 +37,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { resolveDraftForJob } from '@/lib/pms/job-draft';
+import { resolveDraftForJob, type ResolveDraftResult, type DraftRow } from '@/lib/pms/job-draft';
 import { REQUIRED_ACTION_KEYS } from '@/lib/pms/recipe-coverage';
 
 export const runtime = 'nodejs';
@@ -39,17 +46,34 @@ export const dynamic = 'force-dynamic';
 const UUID = /^[0-9a-f-]{36}$/i;
 const FEED_KEY = /^[A-Za-z0-9_.-]{1,80}$/;
 
+/** Resolve a draft row directly by its knowledge-file id (Coverage Editor path).
+ *  Mirror of resolveDraftForJob's success/failure shape so the rest of the route
+ *  is identical regardless of how the draft was identified. */
+async function resolveDraftById(draftId: string): Promise<ResolveDraftResult> {
+  const { data, error: e } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('id, version, status, pms_family')
+    .eq('id', draftId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (e) return { ok: false, status: 500, message: `draft lookup failed: ${e.message}` };
+  if (!data) return { ok: false, status: 404, message: 'The map no longer exists.' };
+  return { ok: true, row: data as DraftRow };
+}
+
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
 
-  let body: { jobId?: unknown; feedKey?: unknown };
+  let body: { jobId?: unknown; draftId?: unknown; feedKey?: unknown };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
   }
-  if (typeof body.jobId !== 'string' || !UUID.test(body.jobId)) {
-    return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });
+  const hasJobId = typeof body.jobId === 'string' && UUID.test(body.jobId);
+  const hasDraftId = typeof body.draftId === 'string' && UUID.test(body.draftId);
+  if (!hasJobId && !hasDraftId) {
+    return err('jobId or draftId (a uuid) is required', { requestId, status: 400, code: 'bad_request' });
   }
   if (typeof body.feedKey !== 'string' || !FEED_KEY.test(body.feedKey)) {
     return err('feedKey is required', { requestId, status: 400, code: 'bad_request' });
@@ -64,7 +88,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const draft = await resolveDraftForJob(body.jobId);
+  const draft = hasDraftId
+    ? await resolveDraftById(body.draftId as string)
+    : await resolveDraftForJob(body.jobId as string);
   if (!draft.ok) return err(draft.message, { requestId, status: draft.status, code: 'bad_request' });
 
   // Once active, edits go through the signed Coverage Editor path — never here.

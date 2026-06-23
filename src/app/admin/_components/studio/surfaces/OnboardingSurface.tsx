@@ -995,7 +995,17 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 14px', flexWrap: 'wrap' }}>
           {typeof pct === 'number' && <Pill tone={pct === 100 ? 'forest' : pct > 0 ? 'gold' : 'neutral'}>{pct}% live</Pill>}
-          <span className="mono" style={{ fontSize: 11, color: 'var(--dim2)' }}>{pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · v{pms.recipe?.version ?? 0}</span>
+          {/* feature/coverage-show-draft — with no live recipe but a parked draft,
+              reflect the draft (was a misleading "Not learned · v0"). The
+              "View what the robot captures →" link below now opens the draft for
+              review on the coverage page. */}
+          {!pms.recipe && pms.pendingReview ? (
+            <span className="mono" style={{ fontSize: 11, color: 'var(--gold)' }}>
+              {pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · ⚠ parked draft v{pms.pendingReview.version} — review
+            </span>
+          ) : (
+            <span className="mono" style={{ fontSize: 11, color: 'var(--dim2)' }}>{pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · v{pms.recipe?.version ?? 0}</span>
+          )}
         </div>
 
         {/* ── Per-feed status — replaces the single "0% captured". ── */}
