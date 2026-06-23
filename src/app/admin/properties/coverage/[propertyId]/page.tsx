@@ -37,7 +37,7 @@ import '@/app/admin/_components/studio/studio.css';
 import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
 import { LiveRobotView } from '@/app/admin/_components/cua/LiveRobotView';
 import {
-  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Wand2, Check, MousePointerClick,
+  ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Wand2, Check, MousePointerClick, X,
 } from 'lucide-react';
 
 /** Coarse "time ago" for the self-repair pill. Tolerant of null/garbage. */
@@ -707,24 +707,39 @@ export default function CoveragePage() {
                           const ColRow = (c: string, selector: string, custom: boolean) => {
                             const locked = !custom && f.undeletableColumns.includes(c);
                             const delKey = `del:${f.key}:${c}`;
+                            const busyThis = colBusy === delKey;
+                            // The remove control sits at the FAR LEFT of every row (an
+                            // X, on every column). Core/anchor columns are LOCKED — the
+                            // X is muted and clicking explains why it can't be removed
+                            // (removing it would stop the feed saving any data).
                             return (
-                              <div key={`${custom ? 'x' : ''}${c}`} style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                              <div key={`${custom ? 'x' : ''}${c}`} style={{ display: 'flex', gap: 9, alignItems: 'baseline' }}>
+                                <button
+                                  onClick={() => {
+                                    if (busyThis || liveJobId || !editable) return;
+                                    if (locked) {
+                                      setToast({ tone: 'warn', text: `“${c}” is a required column — the robot needs it to save this feed, so it can’t be removed.` });
+                                      return;
+                                    }
+                                    void deleteColumn(f, c);
+                                  }}
+                                  disabled={!editable || busyThis || !!liveJobId}
+                                  title={locked ? 'Required — can’t be removed' : 'Remove this column'}
+                                  aria-label={locked ? `${c} is required` : `Remove ${c}`}
+                                  style={{
+                                    flexShrink: 0, marginTop: 1, width: 16, height: 16, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                    background: 'transparent', border: 'none', padding: 0,
+                                    cursor: editable && !busyThis && !liveJobId ? 'pointer' : 'default',
+                                    color: locked ? dimWhite(.32) : 'var(--terracotta)',
+                                  }}
+                                >
+                                  {busyThis ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : locked ? <Lock size={10} /> : <X size={13} />}
+                                </button>
                                 <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: '#fff', minWidth: 150, display: 'flex', alignItems: 'center', gap: 6 }}>
                                   {c}
                                   {custom && <Caps size={8} c="var(--gold)" style={{ letterSpacing: '.1em' }}>custom</Caps>}
-                                  {locked && <Lock size={9} color={dimWhite(.4)} />}
                                 </span>
                                 <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), wordBreak: 'break-all' }}>{selector}</span>
-                                {editable && !locked && (
-                                  <button
-                                    onClick={() => void deleteColumn(f, c)}
-                                    disabled={!!colBusy || !!liveJobId}
-                                    title="Stop capturing this column"
-                                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--terracotta)', opacity: colBusy === delKey ? 1 : .7 }}
-                                  >
-                                    {colBusy === delKey ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={11} />}
-                                  </button>
-                                )}
                               </div>
                             );
                           };
