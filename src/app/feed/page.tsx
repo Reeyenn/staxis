@@ -17,7 +17,7 @@ export const dynamic = 'force-dynamic';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   BedDouble, Wrench, Package, MessageSquare, Droplets, UserRound,
-  Check, ChevronDown, Sparkles, Send, type LucideIcon,
+  Check, ChevronDown, Sparkles, Send, Sunrise, Sun, Moon, type LucideIcon,
 } from 'lucide-react';
 import { AppLayout } from '@/components/layout/AppLayout';
 
@@ -138,6 +138,18 @@ const PREHANDLED: { text: string; at: string }[] = [
 ];
 
 // ─── one decision card ────────────────────────────────────────────────
+// ─── time-of-day phase → the briefing at the top of the feed ──────────
+type Phase = 'morning' | 'afternoon' | 'night';
+
+const BRIEFINGS: Record<Phase, {
+  greeting: string; label: string; icon: LucideIcon; accent: string; tint: string; sub: string;
+}> = {
+  morning:   { greeting: 'Good morning',   label: 'Morning briefing', icon: Sunrise, accent: C.gold,   tint: 'rgba(192,154,60,0.10)',  sub: '86 rooms to turn today · 4 housekeepers ready' },
+  afternoon: { greeting: 'Good afternoon', label: 'Afternoon check',  icon: Sun,     accent: C.green,  tint: 'rgba(53,107,76,0.08)',   sub: 'On track for the day · 78% tonight' },
+  night:     { greeting: 'Good evening',   label: 'Evening wrap-up',  icon: Moon,    accent: C.greenL, tint: 'rgba(157,184,166,0.16)', sub: "Tomorrow's crew is set · night shift briefed" },
+};
+
+// ─── one decision card ────────────────────────────────────────────────
 function Card({ card, exiting, onPrimary, onSecondary }: {
   card: DecisionCard;
   exiting: boolean;
@@ -222,10 +234,15 @@ export default function FeedPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const greeting = useMemo(() => {
+  // Time-of-day phase drives the briefing. Set in an effect (not at first
+  // render) so server + client agree on the initial 'morning' markup — no
+  // hydration mismatch.
+  const [phase, setPhase] = useState<Phase>('morning');
+  useEffect(() => {
     const h = new Date().getHours();
-    return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+    setPhase(h >= 5 && h < 12 ? 'morning' : h >= 12 && h < 17 ? 'afternoon' : 'night');
   }, []);
+  const greeting = BRIEFINGS[phase].greeting;
   const dateLong = useMemo(
     () => new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }),
     [],
@@ -259,6 +276,15 @@ export default function FeedPage() {
   const under = budget - spent;
 
   const allClear = cards.length === 0;
+
+  // ── daily briefing (morning / afternoon / night) ──
+  const brief = BRIEFINGS[phase];
+  const BriefIcon = brief.icon;
+  const briefHeadline = phase === 'morning'
+    ? (allClear ? "You're set for the day." : `Here's your day: ${cards.length} ${cards.length === 1 ? 'thing needs' : 'things need'} you, then you're set.`)
+    : phase === 'afternoon'
+      ? (allClear ? "Everything's covered." : `${cards.length} ${cards.length === 1 ? 'thing' : 'things'} still need you.`)
+      : (allClear ? "Tomorrow's set, nothing pending." : `Wrapping up: ${cards.length} ${cards.length === 1 ? 'item' : 'items'} to clear before you go.`);
 
   return (
     <AppLayout>
@@ -295,6 +321,27 @@ export default function FeedPage() {
               <span>78% occupancy · 22 rooms left to clean · all shifts staffed</span>
             </div>
           </header>
+
+          {/* ── daily briefing: morning / afternoon / night ── */}
+          <section style={{
+            display: 'flex', alignItems: 'center', gap: 14,
+            padding: '14px 16px', borderRadius: 16,
+            background: brief.tint, border: `1px solid ${C.line}`,
+          }}>
+            <div style={{
+              width: 40, height: 40, borderRadius: 12, background: C.paper,
+              display: 'grid', placeItems: 'center', flexShrink: 0,
+            }}>
+              <BriefIcon size={20} color={brief.accent} strokeWidth={2} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ ...LABEL, fontSize: 10, color: brief.accent, marginBottom: 4 }}>{brief.label}</div>
+              <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 'clamp(18px, 3.5vw, 22px)', lineHeight: 1.2, color: C.ink }}>
+                {briefHeadline}
+              </div>
+              <div style={{ fontSize: 13, color: C.ink2, marginTop: 4 }}>{brief.sub}</div>
+            </div>
+          </section>
 
           {/* ── labor scoreboard ── */}
           <section style={{
