@@ -30,6 +30,15 @@ function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: 
   );
 }
 
+// Section pages that live behind the dropdown. The dropdown button labels
+// itself with the last one the user visited (persisted) instead of a
+// generic "Menu".
+const SECTION_HREFS = [
+  '/dashboard', '/housekeeping', '/communications',
+  '/maintenance', '/inventory', '/staff', '/financials',
+];
+const LAST_NAV_KEY = 'staxis-last-nav';
+
 export function Header() {
   const { user, signOut } = useAuth();
   const { properties, activeProperty, setActivePropertyId } = useProperty();
@@ -39,6 +48,22 @@ export function Header() {
   const pathname = usePathname();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
   const [showNavMenu, setShowNavMenu] = React.useState(false);
+  // Remember the last section page visited so the dropdown can label itself
+  // with it (instead of "Menu") when the user is on the Staxis feed.
+  const [lastNav, setLastNav] = React.useState('/dashboard');
+  React.useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(LAST_NAV_KEY);
+      if (saved) setLastNav(saved);
+    } catch { /* localStorage unavailable */ }
+  }, []);
+  React.useEffect(() => {
+    const match = SECTION_HREFS.find(h => pathname.startsWith(h));
+    if (match) {
+      setLastNav(match);
+      try { window.localStorage.setItem(LAST_NAV_KEY, match); } catch { /* ignore */ }
+    }
+  }, [pathname]);
 
   const baseNavLinks = [
     { href: '/feed',         label: 'Staxis' },
@@ -61,11 +86,12 @@ export function Header() {
   const navLinks = [
     ...baseNavLinks,
     ...(showFinancials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),
-    ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
-  // "Staxis" (the decision feed) stays as the one visible tab; every other
-  // page collapses into a single dropdown to its right.
+  // "Staxis" (the decision feed) stays as the one visible tab; the other
+  // pages collapse into a single dropdown to its right. Admin (owner-only)
+  // sits as its own tab on the far right, outside the dropdown.
   const restLinks = navLinks.filter(l => l.href !== '/feed');
+  const adminLink = isAdmin ? { href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' } : null;
 
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
@@ -137,6 +163,8 @@ export function Header() {
           <div style={{ position: 'relative' }}>
             {(() => {
               const activeRest = restLinks.find(l => pathname.startsWith(l.href));
+              const fallback = restLinks.find(l => l.href.startsWith(lastNav)) ?? restLinks[0];
+              const displayLabel = activeRest?.label ?? fallback?.label ?? (lang === 'es' ? 'Menú' : 'Menu');
               return (
                 <button
                   onClick={() => setShowNavMenu(v => !v)}
@@ -150,7 +178,7 @@ export function Header() {
                   }}
                   aria-label={lang === 'es' ? 'Menú' : 'Menu'}
                 >
-                  {activeRest ? activeRest.label : (lang === 'es' ? 'Menú' : 'Menu')}
+                  {displayLabel}
                   <ChevronDown
                     size={14}
                     color={activeRest ? ink : ink3}
@@ -194,6 +222,22 @@ export function Header() {
               </>
             )}
           </div>
+
+          {/* Admin — owner-only, its own tab on the far right of the dropdown */}
+          {adminLink && (
+            <Link
+              href={adminLink.href}
+              style={{
+                fontFamily: sansFont, fontWeight: pathname.startsWith('/admin') ? 600 : 400,
+                fontSize: '13px', color: pathname.startsWith('/admin') ? ink : ink3,
+                textDecoration: 'none',
+                borderBottom: pathname.startsWith('/admin') ? `1.5px solid ${sage}` : 'none',
+                paddingBottom: '2px', transition: 'color 0.15s ease', whiteSpace: 'nowrap',
+              }}
+            >
+              {adminLink.label}
+            </Link>
+          )}
         </nav>
 
         {/* Right: controls */}
