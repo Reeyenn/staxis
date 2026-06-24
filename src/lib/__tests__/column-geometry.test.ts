@@ -5,7 +5,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { pickColumnFromDrag, slugifyHeader, type ColumnGeometry } from '@/lib/pms/column-geometry';
+import { pickColumnFromDrag, resolveDragRegion, slugifyHeader, type ColumnGeometry } from '@/lib/pms/column-geometry';
 
 // A CA-Arrivals-ish strip layout in viewport CSS px (3 columns shown).
 const GEO: ColumnGeometry = {
@@ -41,6 +41,40 @@ describe('pickColumnFromDrag', () => {
   test('zero/negative width drag never throws and returns null', () => {
     assert.equal(pickColumnFromDrag(GEO, { x: 120, w: 0 }), null);
     assert.equal(pickColumnFromDrag(GEO, { x: 120, w: -5 }), null);
+  });
+});
+
+describe('resolveDragRegion', () => {
+  const GEOV: ColumnGeometry = {
+    ...GEO,
+    values: [
+      { selector: '#guestCount', text: 'Guest Count: 39', x: 100, y: 700, w: 140, h: 20 },
+      { selector: '#date', text: 'June 23, 2026', x: 400, y: 700, w: 120, h: 20 },
+    ],
+  };
+
+  test('a box over a column resolves to that column (columns win)', () => {
+    const r = resolveDragRegion(GEOV, { x: 120, y: 60, w: 100, h: 400 });
+    assert.equal(r.kind, 'column');
+    if (r.kind === 'column') assert.equal(r.column.header, 'Guest Name');
+  });
+
+  test('a box over a standalone value (no column overlap) resolves to that value', () => {
+    // x 400..520 overlaps no column (columns end at 820 but none span 400..520),
+    // and the date value sits at 400..520, y 700 → value wins.
+    const r = resolveDragRegion(GEOV, { x: 400, y: 695, w: 110, h: 30 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.selector, '#date');
+  });
+
+  test('a box over empty space resolves to unknown (→ UI asks the founder)', () => {
+    const r = resolveDragRegion(GEOV, { x: 900, y: 695, w: 40, h: 20 });
+    assert.equal(r.kind, 'unknown');
+  });
+
+  test('no values present → still resolves columns, else unknown', () => {
+    assert.equal(resolveDragRegion(GEO, { x: 120, y: 60, w: 100, h: 400 }).kind, 'column');
+    assert.equal(resolveDragRegion(GEO, { x: 450, y: 695, w: 80, h: 20 }).kind, 'unknown');
   });
 });
 

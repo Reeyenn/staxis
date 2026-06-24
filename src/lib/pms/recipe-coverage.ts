@@ -219,8 +219,32 @@ export function customColumnsFromAction(action: unknown): Record<string, string>
   if (!parse || parse.mode !== 'table') return {};
   const hint = parse.hint as Record<string, unknown> | undefined;
   const custom = hint?.customColumns;
-  if (custom && typeof custom === 'object' && !Array.isArray(custom)) return asStringMap(custom);
-  return {};
+  if (!custom || typeof custom !== 'object' || Array.isArray(custom)) return {};
+  // fix/cua-freeform-capture — coerce each entry to its SELECTOR: a flat string
+  // (per-row, original shape) OR an object { selector, scope:'page' } (a one-off
+  // value). Returns selectors either way.
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(custom as Record<string, unknown>)) {
+    if (typeof v === 'string') out[k] = v;
+    else if (v && typeof v === 'object' && typeof (v as { selector?: unknown }).selector === 'string') out[k] = (v as { selector: string }).selector;
+  }
+  return out;
+}
+
+/** fix/cua-freeform-capture — which custom columns are PAGE-scope (one-off
+ *  values). Used by the UI to badge them differently from per-row columns. */
+export function pageScopeCustomColumns(action: unknown): Set<string> {
+  const set = new Set<string>();
+  if (!action || typeof action !== 'object') return set;
+  const parse = (action as Record<string, unknown>).parse as Record<string, unknown> | undefined;
+  const hint = parse?.hint as Record<string, unknown> | undefined;
+  const custom = hint?.customColumns;
+  if (custom && typeof custom === 'object' && !Array.isArray(custom)) {
+    for (const [k, v] of Object.entries(custom as Record<string, unknown>)) {
+      if (v && typeof v === 'object' && (v as { scope?: unknown }).scope === 'page') set.add(k);
+    }
+  }
+  return set;
 }
 
 /** feature/cua-column-editor — every column HEADER the robot saw on the page,

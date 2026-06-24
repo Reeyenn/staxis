@@ -66,6 +66,9 @@ export type RecipeEditJobInput =
       feed_key: string;
       column_key: string;
       selector: string;
+      /** fix/cua-freeform-capture — 'page' = a one-off value (read once, stamped
+       *  on every row); 'row' (default) = a per-row column cell. */
+      scope?: 'row' | 'page';
     };
 
 export type RecipeEditHandlerResult =
@@ -409,7 +412,10 @@ async function runAddCustomColumn(
     return { ok: false, error: `"${columnKey}" is already a custom column on this feed.` };
   }
 
-  customColumns[columnKey] = selector;
+  // fix/cua-freeform-capture — a PAGE-scope value stores the object form
+  // { selector, scope:'page' }; a per-row column stays a flat string (byte-
+  // identical to the original shape).
+  customColumns[columnKey] = input.scope === 'page' ? { selector, scope: 'page' } : selector;
   hint.customColumns = customColumns;
   parse.hint = hint;
   action.parse = parse;

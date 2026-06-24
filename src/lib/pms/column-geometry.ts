@@ -18,10 +18,58 @@ export interface GeomColumn {
   x: number; y: number; w: number; h: number;
 }
 
+/** fix/cua-freeform-capture — a standalone (non-row) value element: a derived
+ *  css selector + sample text + on-screen box (viewport CSS px). */
+export interface GeomValue {
+  selector: string;
+  text: string;
+  x: number; y: number; w: number; h: number;
+}
+
 export interface ColumnGeometry {
   /** The CSS px coordinate space the boxes live in (the captured viewport). */
   viewport: { w: number; h: number };
   columns: GeomColumn[];
+  /** Standalone value elements (fix/cua-freeform-capture); absent on older captures. */
+  values?: GeomValue[];
+}
+
+/** What a freeform drag resolved to: a per-row COLUMN, a one-off VALUE, or
+ *  nothing recognizable (→ the UI asks the founder). */
+export type FreeformResolution =
+  | { kind: 'column'; column: GeomColumn }
+  | { kind: 'value'; value: GeomValue }
+  | { kind: 'unknown' };
+
+/** Area of overlap between a drag box and a target box (px²). */
+function overlapArea(d: { x: number; y: number; w: number; h: number }, t: { x: number; y: number; w: number; h: number }): number {
+  const ox = Math.min(d.x + Math.max(0, d.w), t.x + t.w) - Math.max(d.x, t.x);
+  const oy = Math.min(d.y + Math.max(0, d.h), t.y + t.h) - Math.max(d.y, t.y);
+  return ox > 0 && oy > 0 ? ox * oy : 0;
+}
+
+/**
+ * Resolve a freeform drag box (viewport CSS px) to a COLUMN (snap to the
+ * column whose strip the box most overlaps), else a standalone VALUE (the value
+ * element the box most overlaps), else UNKNOWN. Columns win ties — the founder
+ * answered "snap to the whole column." A VALUE only wins when no column
+ * overlaps. UNKNOWN when nothing overlaps → the UI asks the founder.
+ */
+export function resolveDragRegion(
+  geometry: ColumnGeometry,
+  drag: { x: number; y: number; w: number; h: number },
+): FreeformResolution {
+  // Columns are vertical strips → horizontal overlap decides (existing helper).
+  const col = pickColumnFromDrag(geometry, { x: drag.x, w: drag.w });
+  if (col) return { kind: 'column', column: col };
+  let bestValue: GeomValue | null = null;
+  let bestArea = 0;
+  for (const v of geometry.values ?? []) {
+    const a = overlapArea(drag, v);
+    if (a > bestArea) { bestArea = a; bestValue = v; }
+  }
+  if (bestValue) return { kind: 'value', value: bestValue };
+  return { kind: 'unknown' };
 }
 
 /**

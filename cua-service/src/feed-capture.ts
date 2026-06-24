@@ -83,11 +83,23 @@ export interface ColumnBox {
   x: number; y: number; w: number; h: number;
 }
 
+/** fix/cua-freeform-capture — one standalone (non-row) value element: a derived
+ *  css path + sample text + on-screen box. Captured into raw as a PAGE-scope
+ *  custom column (read once, stamped on every row). */
+export interface ValueBox {
+  selector: string;
+  text: string;
+  x: number; y: number; w: number; h: number;
+}
+
 /** The sibling `{jobId}/feeds/{feedKey}.boxes.json` payload. The viewport dims
  *  are the box coordinate space — the UI scales boxes by renderedImg/viewport. */
 export interface ColumnGeometry {
   viewport: { w: number; h: number };
   columns: ColumnBox[];
+  /** Standalone value elements (fix/cua-freeform-capture). Absent on captures
+   *  taken before this shipped. */
+  values?: ValueBox[];
 }
 
 /** Injection points (mirrors LiveFrameDeps). Production passes none. */
@@ -159,7 +171,46 @@ async function captureColumnGeometry(page: Page, rowSelector: string): Promise<C
         columns.push({ index: i + 1, header, x: r.left, y: tRect.top, w: r.width, h: tRect.height });
       }
       if (columns.length === 0) return null;
-      return { viewport: { w: window.innerWidth, h: window.innerHeight }, columns };
+
+      // fix/cua-freeform-capture — also gather STANDALONE "value" elements (a
+      // text-bearing leaf NOT inside the table's data rows — e.g. "Guest Count:
+      // 39", a heading, a date), each with a derived css path + sample text +
+      // box. These power dragging a one-off single value (page-scope). Bounded +
+      // deduped; inline-only (no closures per the esbuild gotcha).
+      const tbody = table.querySelector('tbody') || table;
+      const values: Array<{ selector: string; text: string; x: number; y: number; w: number; h: number }> = [];
+      const seen: Record<string, number> = {};
+      const cand = document.querySelectorAll('td, th, span, div, label, h1, h2, h3, p, strong, b');
+      for (let i = 0; i < cand.length && values.length < 50; i++) {
+        const el = cand[i]!;
+        if (tbody.contains(el)) continue;                       // per-row cells are columns, not values
+        const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (txt === '' || txt.length > 60) continue;
+        let childHasText = false;
+        for (let c = 0; c < el.children.length; c++) { if ((el.children[c]!.textContent || '').trim() !== '') { childHasText = true; break; } }
+        if (childHasText) continue;                             // leaf-ish only
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0 || r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
+        // Derive a css path (walk up to an id'd ancestor or <body>), nth-of-type.
+        let node: Element | null = el; const parts: string[] = []; let depth = 0;
+        while (node && node.nodeType === 1 && node.tagName.toLowerCase() !== 'body' && depth < 6) {
+          const tag = node.tagName.toLowerCase();
+          const id = node.getAttribute('id');
+          if (id && /^[A-Za-z][\w-]*$/.test(id)) { parts.unshift('#' + id); node = null; break; }
+          let k = 1; let sib = node.previousElementSibling;
+          while (sib) { if (sib.tagName === node.tagName) k++; sib = sib.previousElementSibling; }
+          parts.unshift(tag + ':nth-of-type(' + k + ')');
+          node = node.parentElement; depth++;
+        }
+        const selector = parts.join(' > ');
+        // Skip an over-long path (deeply-nested element) — keeps boxes.json small
+        // and the per-poll querySelector cheap (the route also safe-shape-checks).
+        if (!selector || selector.length > 180 || seen[selector]) continue;
+        seen[selector] = 1;
+        values.push({ selector, text: txt, x: r.left, y: r.top, w: r.width, h: r.height });
+      }
+
+      return { viewport: { w: window.innerWidth, h: window.innerHeight }, columns, values };
     }, rowSelector);
     return (raw as ColumnGeometry | null) ?? null;
   } catch (err) {

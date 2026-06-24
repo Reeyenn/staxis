@@ -1,103 +1,101 @@
 'use client';
 
 /**
- * DragToCaptureView — feature/cua-click-to-map.
+ * DragToCaptureView — feature/cua-click-to-map + fix/cua-freeform-capture.
  *
  * Renders the source screenshot the robot read, with each captured DATA column
- * drawn as a faint strip. The admin DRAGS a box over the column they want; on
- * release we map the dragged rectangle back to viewport px and ask
- * pickColumnFromDrag which column it covers, then call onPick. No re-map, no
- * driving — just "drag the part you want to capture."
+ * AND each standalone VALUE element drawn as a faint box. The admin DRAGS a box
+ * over ANYTHING they want; on release we map the dragged rectangle back to
+ * viewport px and ask resolveDragRegion what it covers: a per-row COLUMN (snap
+ * to the whole column), a one-off VALUE, or UNKNOWN (→ the host asks the admin).
+ * No re-map, no driving — "drag the part you want to capture."
  *
  * Coordinate space: the worker saved boxes in the captured viewport's CSS px
- * (the fullPage:false screenshot's space). The <img> is rendered scaled to fit,
- * so we scale on-image px by geometry.viewport.w / renderedImageWidth.
+ * (the fullPage:false screenshot's space). The <img> renders scaled to fit with
+ * aspect preserved, so on-image px scale to viewport px by one factor
+ * (viewport.w / renderedImageWidth) for both axes.
  */
 
 import React, { useRef, useState } from 'react';
 import { MousePointerClick } from 'lucide-react';
 import { FONT_MONO } from '@/app/admin/_components/studio/kit';
 import { dimWhite } from '@/app/admin/_components/studio/surface-kit';
-import { pickColumnFromDrag, type ColumnGeometry, type GeomColumn } from '@/lib/pms/column-geometry';
+import { resolveDragRegion, type ColumnGeometry, type FreeformResolution } from '@/lib/pms/column-geometry';
 
 export function DragToCaptureView({
   url, geometry, onPick,
 }: {
   url: string;
   geometry: ColumnGeometry;
-  onPick: (c: GeomColumn) => void;
+  onPick: (r: FreeformResolution) => void;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
-  const [drag, setDrag] = useState<{ x0: number; x1: number } | null>(null);
-  const [picked, setPicked] = useState<GeomColumn | null>(null);
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [picked, setPicked] = useState<FreeformResolution | null>(null);
 
-  // px-on-rendered-image → captured-viewport px.
-  const scale = (): number => {
-    const w = boxRef.current?.getBoundingClientRect().width ?? 0;
-    return w > 0 ? geometry.viewport.w / w : 1;
-  };
-  const localX = (clientX: number): number => {
-    const r = boxRef.current?.getBoundingClientRect();
-    return r ? clientX - r.left : 0;
-  };
+  const rect = () => boxRef.current?.getBoundingClientRect();
+  const scale = () => { const w = rect()?.width ?? 0; return w > 0 ? geometry.viewport.w / w : 1; };
+  const local = (clientX: number, clientY: number) => { const r = rect(); return { x: r ? clientX - r.left : 0, y: r ? clientY - r.top : 0 }; };
 
-  const onMove = (e: React.MouseEvent) => {
-    if (!drag) return;
-    setDrag({ ...drag, x1: localX(e.clientX) });
-  };
   const onUp = () => {
     if (!drag) return;
     const s = scale();
-    const left = Math.min(drag.x0, drag.x1) * s;
-    const w = Math.abs(drag.x1 - drag.x0) * s;
-    const col = pickColumnFromDrag(geometry, { x: left, w });
+    const vbox = {
+      x: Math.min(drag.x0, drag.x1) * s,
+      y: Math.min(drag.y0, drag.y1) * s,
+      w: Math.abs(drag.x1 - drag.x0) * s,
+      h: Math.abs(drag.y1 - drag.y0) * s,
+    };
+    const res = resolveDragRegion(geometry, vbox);
     setDrag(null);
-    if (col) { setPicked(col); onPick(col); }
+    setPicked(res);
+    onPick(res);
   };
 
   const s = scale();
-  // Convert a viewport-px column box to on-image px for the overlay strips.
-  const strip = (c: GeomColumn) => ({ left: c.x / s, width: c.w / s });
+  const toImg = (b: { x: number; w: number }) => ({ left: b.x / s, width: b.w / s });
+
+  const label =
+    picked?.kind === 'column' ? `column: ${picked.column.header || `#${picked.column.index}`}`
+    : picked?.kind === 'value' ? `value: ${picked.value.text}`
+    : picked?.kind === 'unknown' ? "couldn't tell what's there — drag over a column of the table, or a labeled value (e.g. a count or a date), then try again"
+    : null;
 
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: 'var(--gold)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <MousePointerClick size={11} /> Drag a box over the column you want to capture
+        <MousePointerClick size={11} /> Drag a box over anything you want the bot to capture
       </div>
       <div
         ref={boxRef}
-        onMouseDown={(e) => { e.preventDefault(); setPicked(null); setDrag({ x0: localX(e.clientX), x1: localX(e.clientX) }); }}
-        onMouseMove={onMove}
+        onMouseDown={(e) => { e.preventDefault(); setPicked(null); const p = local(e.clientX, e.clientY); setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); }}
+        onMouseMove={(e) => { if (drag) { const p = local(e.clientX, e.clientY); setDrag({ ...drag, x1: p.x, y1: p.y }); } }}
         onMouseUp={onUp}
         onMouseLeave={() => setDrag(null)}
         style={{ position: 'relative', width: '100%', maxWidth: 760, border: `1px solid ${dimWhite(.14)}`, borderRadius: 8, overflow: 'hidden', lineHeight: 0, cursor: 'crosshair', userSelect: 'none' }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt="Drag a column to capture it" draggable={false} style={{ width: '100%', height: 'auto', display: 'block', pointerEvents: 'none' }} />
-        {/* faint per-column strips so the admin sees where columns are */}
+        <img src={url} alt="Drag anything to capture it" draggable={false} style={{ width: '100%', height: 'auto', display: 'block', pointerEvents: 'none' }} />
+        {/* faint column strips (full height) */}
         {geometry.columns.map((c) => {
-          const st = strip(c);
-          const isPicked = picked?.index === c.index;
-          return (
-            <div key={c.index} title={c.header || `column ${c.index}`} style={{
-              position: 'absolute', top: 0, bottom: 0, left: st.left, width: st.width,
-              borderLeft: `1px solid ${dimWhite(.12)}`,
-              background: isPicked ? 'rgba(60,156,104,.28)' : 'transparent',
-            }} />
-          );
+          const im = toImg(c);
+          const isPicked = picked?.kind === 'column' && picked.column.index === c.index;
+          return <div key={`c${c.index}`} title={c.header || `column ${c.index}`} style={{ position: 'absolute', top: 0, bottom: 0, left: im.left, width: im.width, borderLeft: `1px solid ${dimWhite(.1)}`, background: isPicked ? 'rgba(60,156,104,.28)' : 'transparent' }} />;
+        })}
+        {/* faint value boxes */}
+        {(geometry.values ?? []).map((v, i) => {
+          const im = toImg(v);
+          const isPicked = picked?.kind === 'value' && picked.value.selector === v.selector;
+          return <div key={`v${i}`} title={v.text} style={{ position: 'absolute', top: v.y / s, height: v.h / s, left: im.left, width: im.width, border: `1px solid ${isPicked ? 'var(--forest)' : 'rgba(201,154,46,.3)'}`, background: isPicked ? 'rgba(60,156,104,.28)' : 'transparent', borderRadius: 2 }} />;
         })}
         {/* live drag rectangle */}
         {drag && (
-          <div style={{
-            position: 'absolute', top: 0, bottom: 0,
-            left: Math.min(drag.x0, drag.x1), width: Math.abs(drag.x1 - drag.x0),
-            background: 'rgba(201,154,46,.22)', border: '1px solid var(--gold)',
-          }} />
+          <div style={{ position: 'absolute', left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1), width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0), background: 'rgba(201,154,46,.22)', border: '1px solid var(--gold)' }} />
         )}
       </div>
-      {picked && (
-        <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 11, color: 'var(--forest)' }}>
-          captured: <b>{picked.header || `column ${picked.index}`}</b>
+      {label && (
+        <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 11, color: picked?.kind === 'unknown' ? 'var(--gold)' : 'var(--forest)' }}>
+          {label}
         </div>
       )}
     </div>

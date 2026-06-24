@@ -37,7 +37,8 @@ import '@/app/admin/_components/studio/studio.css';
 import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
 import { DragToCaptureView } from '@/app/admin/_components/cua/DragToCaptureView';
 import { LiveRobotView } from '@/app/admin/_components/cua/LiveRobotView';
-import type { ColumnGeometry, GeomColumn } from '@/lib/pms/column-geometry';
+import type { ColumnGeometry, FreeformResolution } from '@/lib/pms/column-geometry';
+import { slugifyHeader as slugifyValue } from '@/lib/pms/column-geometry';
 import {
   ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Wand2, Check, MousePointerClick, X,
 } from 'lucide-react';
@@ -165,6 +166,9 @@ export default function CoveragePage() {
   // and the body-cell selector the founder drag-selected (overrides addColIndex).
   const [dragColFeed, setDragColFeed] = useState<string | null>(null);
   const [addColSelector, setAddColSelector] = useState<string>('');
+  // fix/cua-freeform-capture — 'page' when the drag picked a one-off VALUE (read
+  // once + stamped on every row), 'row' for a per-row column.
+  const [addColScope, setAddColScope] = useState<'row' | 'page'>('row');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -452,10 +456,10 @@ export default function CoveragePage() {
 
   const addCustomColumn = (feed: FeedDetail) => {
     const columnKey = slugifyHeader(addColName);
-    // Two ways to choose the column: a drag-selected body selector (click-to-map)
-    // or the dropdown's detected-header index. The selector wins when present.
+    // Three ways to choose the column: a drag-selected per-row COLUMN selector, a
+    // drag-selected one-off VALUE (scope:page), or the dropdown's header index.
     const payload: Record<string, unknown> = addColSelector
-      ? { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, selector: addColSelector }
+      ? { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, selector: addColSelector, ...(addColScope === 'page' ? { scope: 'page' } : {}) }
       : { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, headerIndex: Number(addColIndex) };
     if (!addColSelector && (!Number.isInteger(Number(addColIndex)) || Number(addColIndex) < 1)) {
       setToast({ tone: 'bad', text: 'Pick or drag a column from the page to capture.' });
@@ -463,7 +467,7 @@ export default function CoveragePage() {
     }
     void runColumnEdit(`add:${feed.key}`, payload, `Now capturing “${columnKey}” into this feed.`)
       .then((okFlag) => {
-        if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setDragColFeed(null); }
+        if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); }
       });
   };
 
@@ -767,13 +771,13 @@ export default function CoveragePage() {
                                   feed's "extras" bucket). Editable table feeds only. */}
                               {editable && f.canTakeover && (() => {
                                 const cap = captures[capKey];
-                                const hasDrag = !!(cap && cap.url && cap.geometry && cap.geometry.columns.length > 0);
+                                const hasDrag = !!(cap && cap.url && cap.geometry && (cap.geometry.columns.length > 0 || (cap.geometry.values?.length ?? 0) > 0));
                                 const hasDropdown = f.availablePageColumns.length > 0;
-                                const cancel = () => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setDragColFeed(null); };
+                                const cancel = () => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); };
                                 if (addColFeed !== f.key) {
                                   return (
                                     <button
-                                      onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setDragColFeed(null); if (!cap) void ensureCapture(capKey); }}
+                                      onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); if (!cap) void ensureCapture(capKey); }}
                                       disabled={!!liveJobId}
                                       style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
                                     >
@@ -785,11 +789,21 @@ export default function CoveragePage() {
                                 if (dragColFeed === f.key && hasDrag) {
                                   return (
                                     <div style={{ marginTop: 8, padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
-                                      <DragToCaptureView url={cap!.url!} geometry={cap!.geometry!} onPick={(col: GeomColumn) => {
-                                        setAddColSelector(`td:nth-child(${col.index})`);
-                                        setAddColIndex('');
-                                        if (col.header) setAddColName(slugifyHeader(col.header));
-                                        setDragColFeed(null);
+                                      <DragToCaptureView url={cap!.url!} geometry={cap!.geometry!} onPick={(r: FreeformResolution) => {
+                                        if (r.kind === 'column') {
+                                          setAddColScope('row');
+                                          setAddColSelector(`td:nth-child(${r.column.index})`);
+                                          setAddColIndex('');
+                                          if (r.column.header) setAddColName(slugifyHeader(r.column.header));
+                                          setDragColFeed(null);
+                                        } else if (r.kind === 'value') {
+                                          setAddColScope('page');
+                                          setAddColSelector(r.value.selector);
+                                          setAddColIndex('');
+                                          setAddColName(slugifyValue(r.value.text));
+                                          setDragColFeed(null);
+                                        }
+                                        // unknown → DragToCaptureView shows "couldn't tell…"; stay in drag mode so the founder can re-drag (the human-loop).
                                       }} />
                                       <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(null)} style={{ marginTop: 6, color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel drag</Btn>
                                     </div>
@@ -810,7 +824,7 @@ export default function CoveragePage() {
                                       <select
                                         value={addColIndex}
                                         onChange={(e) => {
-                                          setAddColIndex(e.target.value); setAddColSelector('');
+                                          setAddColIndex(e.target.value); setAddColSelector(''); setAddColScope('row');
                                           const hdr = f.availablePageColumns.find((p) => String(p.index) === e.target.value);
                                           if (hdr) setAddColName(slugifyHeader(hdr.header));
                                         }}
@@ -824,10 +838,10 @@ export default function CoveragePage() {
                                     )}
                                     {hasDrag && (
                                       <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(f.key)} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
-                                        <MousePointerClick size={11} /> {hasDropdown ? 'or drag on screenshot' : 'Drag on screenshot'}
+                                        <MousePointerClick size={11} /> {hasDropdown ? 'Other — pick on the screenshot' : 'Pick anywhere on the screenshot'}
                                       </Btn>
                                     )}
-                                    {addColSelector && <Caps size={8} c="var(--forest)" style={{ letterSpacing: '.08em' }}>dragged</Caps>}
+                                    {addColSelector && <Caps size={8} c="var(--forest)" style={{ letterSpacing: '.08em' }}>{addColScope === 'page' ? 'value' : 'column'}</Caps>}
                                     <input
                                       value={addColName}
                                       onChange={(e) => setAddColName(e.target.value)}

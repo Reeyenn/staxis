@@ -604,6 +604,7 @@ export function actionRecipeToTableTemplate(
   // cells) and never on a drill-down feed (those collapse to a list page and
   // aren't editable here). Absent ⟹ no-op (byte-identical, rawColumns omitted).
   const rawColumns: string[] = [];
+  const pageColumns: Array<{ key: string; selector: string }> = [];
   if (action.parse.mode === 'table' && !action.drillDown) {
     const custom = action.parse.hint.customColumns;
     if (custom && typeof custom === 'object') {
@@ -617,9 +618,17 @@ export function actionRecipeToTableTemplate(
       const contractCols = new Set<string>([
         ...requiredLearnedFor(actionKey), ...contextualColumnsFor(actionKey), ...optionalColumnsFor(actionKey),
       ]);
-      for (const [key, sel] of Object.entries(custom)) {
-        if (typeof sel === 'string' && sel.trim() !== '' && !(key in fields) && !(key in mergedColumns) && !contractCols.has(key)) {
-          mergedColumns[key] = sel;
+      for (const [key, entry] of Object.entries(custom)) {
+        // fix/cua-freeform-capture — coerce: a flat string is a PER-ROW selector
+        // (original shape, byte-identical); an object { selector, scope:'page' }
+        // is a ONE-OFF value read once + stamped on every row.
+        const selector = typeof entry === 'string' ? entry : (entry && typeof entry === 'object' ? String((entry as { selector?: unknown }).selector ?? '') : '');
+        const scope = typeof entry === 'string' ? 'row' : ((entry as { scope?: unknown })?.scope === 'page' ? 'page' : 'row');
+        if (selector.trim() === '' || key in fields || contractCols.has(key)) continue;
+        if (scope === 'page') {
+          pageColumns.push({ key, selector });
+        } else if (!(key in mergedColumns)) {
+          mergedColumns[key] = selector;
           rawColumns.push(key);
         }
       }
@@ -635,6 +644,7 @@ export function actionRecipeToTableTemplate(
     sources,
     fields,
     ...(rawColumns.length > 0 ? { rawColumns } : {}),
+    ...(pageColumns.length > 0 ? { pageColumns } : {}),
     ...(rowDetail ? { rowDetail } : {}),
     // Plan v8 self-repair — bridge template → recipe action_key so
     // session-driver's zero-row failure detector can enqueue a
