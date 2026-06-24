@@ -283,17 +283,14 @@ export default function FeedPage() {
         <div className="stx-feed">
 
           {/* ── pulse ── */}
-          <header style={{ marginTop: 4 }}>
-            <div style={{ ...LABEL, marginBottom: 8 }}>
+          <header style={{
+            marginTop: 4, display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px 16px',
+          }}>
+            <div style={LABEL}>
               {mounted ? `${greeting} · ${dateLong}` : ' '}
             </div>
-            <h1 style={{
-              fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500,
-              fontSize: 'clamp(30px, 5vw, 42px)', lineHeight: 1.05, color: C.ink, letterSpacing: '-0.01em',
-            }}>
-              {allClear ? 'You’re all caught up.' : 'You’re covered for tonight.'}
-            </h1>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, color: C.ink2, fontSize: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: C.ink2, fontSize: 14 }}>
               <span style={{ width: 8, height: 8, borderRadius: 4, background: C.green, flexShrink: 0 }} />
               <span>78% occupancy · 22 rooms left to clean · all shifts staffed</span>
             </div>
