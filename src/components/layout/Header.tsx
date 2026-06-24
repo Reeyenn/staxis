@@ -40,8 +40,8 @@ export function Header() {
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
   const baseNavLinks = [
-    { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/feed',         label: 'Staxis' },
+    { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/housekeeping', label: lang === 'es' ? 'Limpieza' : 'Housekeeping' },
     { href: '/communications', label: lang === 'es' ? 'Comunicación' : 'Communications' },
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
