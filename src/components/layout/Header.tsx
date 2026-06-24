@@ -9,7 +9,7 @@ import { t } from '@/lib/translations';
 import { useCan } from '@/lib/capabilities/useCan';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LogOut, Globe, Settings } from 'lucide-react';
+import { LogOut, Globe, Settings, ChevronDown } from 'lucide-react';
 import { LanguageMenu } from '@/components/i18n/LanguageMenu';
 
 // Snow design system — chevron mark from the locked Dashboard
@@ -38,6 +38,7 @@ export function Header() {
   const router = useRouter();
   const pathname = usePathname();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
+  const [showNavMenu, setShowNavMenu] = React.useState(false);
 
   const baseNavLinks = [
     { href: '/feed',         label: 'Staxis' },
@@ -62,6 +63,9 @@ export function Header() {
     ...(showFinancials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),
     ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
+  // "Staxis" (the decision feed) stays as the one visible tab; every other
+  // page collapses into a single dropdown to its right.
+  const restLinks = navLinks.filter(l => l.href !== '/feed');
 
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
@@ -113,32 +117,83 @@ export function Header() {
           )}
         </div>
 
-        {/* Center: Nav links */}
-        <nav style={{
-          display: 'flex', gap: '24px',
-          minWidth: 0, overflowX: 'auto',
-          scrollbarWidth: 'none', msOverflowStyle: 'none',
-        }} className="header-nav-scroll">
-          {navLinks.map(link => {
-            const isActive = pathname.startsWith(link.href);
-            return (
-              <Link
-                key={link.href}
-                href={link.href}
-                style={{
-                  fontFamily: sansFont, fontWeight: isActive ? 600 : 400,
-                  fontSize: '13px', color: isActive ? ink : ink3,
-                  textDecoration: 'none',
-                  borderBottom: isActive ? `1.5px solid ${sage}` : 'none',
-                  paddingBottom: '2px',
-                  transition: 'color 0.15s ease',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {link.label}
-              </Link>
-            );
-          })}
+        {/* Center: Staxis tab + a dropdown holding every other page */}
+        <nav style={{ display: 'flex', alignItems: 'center', gap: '20px', minWidth: 0 }} className="header-nav-scroll">
+          {/* Staxis (the decision feed) — always visible */}
+          <Link
+            href="/feed"
+            style={{
+              fontFamily: sansFont, fontWeight: pathname.startsWith('/feed') ? 600 : 400,
+              fontSize: '13px', color: pathname.startsWith('/feed') ? ink : ink3,
+              textDecoration: 'none',
+              borderBottom: pathname.startsWith('/feed') ? `1.5px solid ${sage}` : 'none',
+              paddingBottom: '2px', transition: 'color 0.15s ease', whiteSpace: 'nowrap',
+            }}
+          >
+            Staxis
+          </Link>
+
+          {/* Everything else, collapsed into one dropdown */}
+          <div style={{ position: 'relative' }}>
+            {(() => {
+              const activeRest = restLinks.find(l => pathname.startsWith(l.href));
+              return (
+                <button
+                  onClick={() => setShowNavMenu(v => !v)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    fontFamily: sansFont, fontWeight: activeRest ? 600 : 400, fontSize: '13px',
+                    color: activeRest ? ink : ink3,
+                    borderBottom: activeRest ? `1.5px solid ${sage}` : 'none',
+                    paddingBottom: '2px', whiteSpace: 'nowrap',
+                  }}
+                  aria-label={lang === 'es' ? 'Menú' : 'Menu'}
+                >
+                  {activeRest ? activeRest.label : (lang === 'es' ? 'Menú' : 'Menu')}
+                  <ChevronDown
+                    size={14}
+                    color={activeRest ? ink : ink3}
+                    style={{ transition: 'transform 0.2s ease', transform: showNavMenu ? 'rotate(180deg)' : 'none' }}
+                  />
+                </button>
+              );
+            })()}
+
+            {showNavMenu && (
+              <>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 48 }} onClick={() => setShowNavMenu(false)} />
+                <div style={{
+                  position: 'absolute', left: 0, top: 'calc(100% + 10px)',
+                  background: 'var(--snow-bg)', border: `1px solid ${rule}`,
+                  borderRadius: '12px', minWidth: '210px', overflow: 'hidden', zIndex: 50,
+                  boxShadow: '0 8px 24px rgba(31,35,28,0.08)',
+                }}>
+                  {restLinks.map(link => {
+                    const isActive = pathname.startsWith(link.href);
+                    return (
+                      <Link
+                        key={link.href}
+                        href={link.href}
+                        onClick={() => setShowNavMenu(false)}
+                        style={{
+                          display: 'block', padding: '10px 16px',
+                          fontFamily: sansFont, fontSize: '13px',
+                          fontWeight: isActive ? 600 : 400,
+                          color: isActive ? 'var(--snow-sage-deep)' : ink,
+                          background: isActive ? 'rgba(158,183,166,0.12)' : 'transparent',
+                          textDecoration: 'none',
+                          borderBottom: '1px solid var(--snow-rule-soft)',
+                        }}
+                      >
+                        {link.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
         </nav>
 
         {/* Right: controls */}
