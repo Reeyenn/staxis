@@ -3,7 +3,7 @@
  *
  * Mission-control detail for ONE hotel on the admin Onboarding timeline.
  * Powers the click-to-expand panel: everything the founder needs to watch
- * a hotel move through the 9-step journey without page-hopping —
+ * a hotel move through the 8-step journey without page-hopping —
  * especially the PMS connect phase (robot session + 5-feed freshness +
  * blockers), which is the part that actually goes wrong.
  *

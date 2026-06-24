@@ -15,8 +15,8 @@
    Mutations kept: create hotel + signup link (CreateHotelModal), repair PMS
    feed (~$2 re-learn), prospect add/edit/delete, blocker-resolve deep-links.
 
-   Layout: one live 9-step timeline row per onboarding hotel (journeyOf maps
-   wizard onboarding_state + property_sessions.status → a 1-of-9 position).
+   Layout: one live 8-step timeline row per onboarding hotel (journeyOf maps
+   wizard onboarding_state + property_sessions.status → a 1-of-8 position).
    Clicking a row expands a mission-control panel (JourneyPanel) fed by
    /api/admin/onboarding-detail — robot status + 5-feed freshness + blocker
    actions for the PMS phase, person/details for the wizard phase. Blocker
@@ -98,9 +98,9 @@ interface Prospect {
 type HelpKind = 'mfa' | 'mapper' | 'cost' | 'login' | 'stopped';
 const HELP_DOT: Record<HelpKind, DotTone> = { mfa: 'gold', mapper: 'teal', cost: 'gold', login: 'terracotta', stopped: 'terracotta' };
 
-// ── The 9-step onboarding journey (mirrors the /onboard customer wizard) ─
-const STEP_LABELS = ['Welcome', 'Account', 'Email', 'Details', 'Services', 'PMS', 'Connect', 'Team', 'Live'] as const;
-const TOTAL_STEPS = STEP_LABELS.length; // 9
+// ── The 8-step onboarding journey (mirrors the /onboard customer wizard) ─
+const STEP_LABELS = ['Welcome', 'Account', 'Email', 'Details', 'PMS', 'Connect', 'Team', 'Live'] as const;
+const TOTAL_STEPS = STEP_LABELS.length; // 8
 
 interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; kind?: HelpKind; }
 
@@ -119,19 +119,19 @@ function isLive(p: PropertyRow): boolean {
   return !!p.onboardingCompletedAt || p.sessionStatus === 'alive';
 }
 
-// Map a hotel to its 1-of-9 journey position. Back half (steps 6-9) is
-// driven by the live CUA session state; front half (1-5) by the wizard's
+// Map a hotel to its 1-of-8 journey position. Back half (steps 5-8) is
+// driven by the live CUA session state; front half (1-4) by the wizard's
 // saved per-step timestamps. `needsYou` flags steps a chip-click unblocks.
 function journeyOf(p: PropertyRow): Journey {
   const propHref = `/admin/properties/${p.id}`;
   switch (p.sessionStatus) {
-    case 'paused_mfa':  return { step: 7, label: 'Needs your code', sub: 'Robot hit 2-factor — click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
-    case 'paused_no_knowledge_file': return { step: 7, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/property-sessions', needsYou: false, kind: 'mapper' };
-    case 'paused_cost_cap': return { step: 7, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/property-sessions', needsYou: false, kind: 'cost' };
+    case 'paused_mfa':  return { step: 6, label: 'Needs your code', sub: 'Robot hit 2-factor — click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
+    case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/property-sessions', needsYou: false, kind: 'mapper' };
+    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/property-sessions', needsYou: false, kind: 'cost' };
     case 'paused_circuit_breaker':
-    case 'failed_restart': return { step: 7, label: 'Login failing', sub: p.sessionPausedReason ?? 'Sign-in keeps failing — check the credentials.', href: '/admin/property-sessions', needsYou: true, kind: 'login' };
-    case 'stopped': return { step: 7, label: 'Stopped', sub: 'Session stopped — click to restart.', href: '/admin/property-sessions', needsYou: true, kind: 'stopped' };
-    case 'starting': return { step: 7, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
+    case 'failed_restart': return { step: 6, label: 'Login failing', sub: p.sessionPausedReason ?? 'Sign-in keeps failing — check the credentials.', href: '/admin/property-sessions', needsYou: true, kind: 'login' };
+    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Session stopped — click to restart.', href: '/admin/property-sessions', needsYou: true, kind: 'stopped' };
+    case 'starting': return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
   }
   const s = p.onboardingState;
   if (!s || !s.accountCreatedAt) {
@@ -140,11 +140,10 @@ function journeyOf(p: PropertyRow): Journey {
   }
   if (!s.emailVerifiedAt)   return { step: 3, label: 'Verifying email', sub: 'Account made — confirming their email.', href: propHref, needsYou: false };
   if (!s.hotelDetailsAt)    return { step: 4, label: 'Hotel details', sub: 'Entering rooms, brand, timezone.', href: propHref, needsYou: false };
-  if (!s.servicesAt)        return { step: 5, label: 'Choosing services', sub: 'Picking housekeeping, laundry, etc.', href: propHref, needsYou: false };
-  if (!s.pmsCredentialsAt)  return { step: 6, label: 'Connecting PMS', sub: 'About to enter their PMS login.', href: propHref, needsYou: false };
-  if (!s.mappingCompletedAt) return { step: 7, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
-  if (!s.staffAt)           return { step: 8, label: 'Adding team', sub: 'Connected — owner is adding staff.', href: propHref, needsYou: false };
-  return { step: 9, label: 'Wrapping up', sub: 'Final step — almost live.', href: propHref, needsYou: false };
+  if (!s.pmsCredentialsAt)  return { step: 5, label: 'Connecting PMS', sub: 'About to enter their PMS login.', href: propHref, needsYou: false };
+  if (!s.mappingCompletedAt) return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
+  if (!s.staffAt)           return { step: 7, label: 'Adding team', sub: 'Connected — owner is adding staff.', href: propHref, needsYou: false };
+  return { step: 8, label: 'Wrapping up', sub: 'Final step — almost live.', href: propHref, needsYou: false };
 }
 
 
@@ -197,7 +196,7 @@ export function OnboardingSurface() {
   useEffect(() => { void load(); }, []);
   // Auto-refresh while anything is moving: a CUA session in flight OR any
   // hotel still mid-wizard. This keeps the timeline advancing in real time
-  // as a customer walks the 9 steps (the early steps have no CUA session).
+  // as a customer walks the 8 steps (the early steps have no CUA session).
   useEffect(() => {
     const inFlight = (liveJobs?.length ?? 0) > 0;
     const inWizard = (props ?? []).some((p) => !isLive(p));
@@ -610,7 +609,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
 
   const grid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 18 };
   const s = d.session;
-  const pmsPhase = j.step === 6 || j.step === 7;
+  const pmsPhase = j.step === 5 || j.step === 6;
 
   // ── Column: the robot (PMS phase) ──
   const robotCol = (
@@ -740,7 +739,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
       <div style={grid}>
         {pmsPhase
           ? <>{robotCol}{feedsCol}{attentionCol}</>
-          : j.step >= 8
+          : j.step >= 7
             ? <>{teamCol}{robotCol}{feedsCol}</>
             : <>{personCol}{enteredCol}{attentionCol}</>}
       </div>
