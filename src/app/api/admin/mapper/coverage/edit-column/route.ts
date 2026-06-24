@@ -66,7 +66,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   let body: {
     propertyId?: unknown; pmsFamily?: unknown; feedKey?: unknown; op?: unknown;
-    columnName?: unknown; columnKey?: unknown; headerIndex?: unknown; draftId?: unknown;
+    columnName?: unknown; columnKey?: unknown; headerIndex?: unknown; selector?: unknown; draftId?: unknown;
   };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
@@ -190,10 +190,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId, status: 400, code: 'bad_request',
     });
   }
-  if (typeof body.headerIndex !== 'number' || !Number.isInteger(body.headerIndex) || body.headerIndex < 1) {
-    return err('Pick a column from the page to capture.', { requestId, status: 400, code: 'bad_request' });
-  }
-  const headerIndex = body.headerIndex;
   if (columnKey in knownColumns) {
     return err(`"${columnKey}" is already a captured column on this feed.`, { requestId, status: 409, code: 'conflict' });
   }
@@ -204,19 +200,42 @@ export async function POST(req: NextRequest): Promise<Response> {
   // automatically) or a reserved/system name (the worker re-checks this too).
   const conflict = customColumnKeyConflict(feedKey, columnKey);
   if (conflict) return err(conflict, { requestId, status: 409, code: 'conflict' });
-  // The chosen header must be one the robot actually saw on the page.
-  const detected = detectedColumnsFromAction(action);
-  if (detected.length === 0) {
-    return err('The robot hasn’t listed this page’s columns yet — re-map this feed once, then add a column.', {
-      requestId, status: 409, code: 'no_detected_columns',
-    });
+
+  // TWO ways to choose WHICH column to capture:
+  //   - feature/cua-click-to-map: a direct positional `selector` the founder
+  //     drag-selected on the source screenshot (a body cell's nth-child). Used
+  //     verbatim (validated tight to a tag + :nth-child to block injection).
+  //   - the dropdown: a `headerIndex` from the robot's detected page columns,
+  //     authored into a selector here.
+  let selector: string | null = null;
+  const dragSel = typeof body.selector === 'string' ? body.selector.trim() : '';
+  if (dragSel) {
+    // Tight allowlist: a tag + :nth-child(1..999). Bounds are intentional —
+    // nth-child(0) / >=1000 are valid CSS but match no cell (silent empty
+    // capture), and the pattern blocks injecting any other selector into the
+    // signed recipe.
+    if (!/^[a-z]{1,12}:nth-child\(\d{1,3}\)$/.test(dragSel)) {
+      return err('That column selection wasn’t understood — try dragging it again.', { requestId, status: 400, code: 'bad_request' });
+    }
+    selector = dragSel;
+  } else {
+    if (typeof body.headerIndex !== 'number' || !Number.isInteger(body.headerIndex) || body.headerIndex < 1) {
+      return err('Pick or drag a column from the page to capture.', { requestId, status: 400, code: 'bad_request' });
+    }
+    // The chosen header must be one the robot actually saw on the page.
+    const detected = detectedColumnsFromAction(action);
+    if (detected.length === 0) {
+      return err('The robot hasn’t listed this page’s columns yet — re-map this feed once, then add a column.', {
+        requestId, status: 409, code: 'no_detected_columns',
+      });
+    }
+    if (!detected.some((d) => d.index === body.headerIndex)) {
+      return err('That column is no longer on the page — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+    }
+    // Author the positional selector by templating off ANY existing clean
+    // positional column (known OR custom — custom ones are authored this way too).
+    selector = authorSelectorForIndex({ ...knownColumns, ...customColumns }, body.headerIndex);
   }
-  if (!detected.some((d) => d.index === headerIndex)) {
-    return err('That column is no longer on the page — refresh and try again.', { requestId, status: 409, code: 'conflict' });
-  }
-  // Author the positional selector by templating off ANY existing clean
-  // positional column (known OR custom — custom ones are authored this way too).
-  const selector = authorSelectorForIndex({ ...knownColumns, ...customColumns }, headerIndex);
   if (!selector) {
     return err('Could not work out where that column is on the page.', { requestId, status: 409, code: 'conflict' });
   }

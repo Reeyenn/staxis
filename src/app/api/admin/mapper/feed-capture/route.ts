@@ -99,5 +99,33 @@ export async function GET(req: NextRequest): Promise<Response> {
     return ok({ url: null }, { requestId });
   }
 
-  return ok({ url: signed.signedUrl }, { requestId });
+  // feature/cua-click-to-map — also return the per-column geometry (sibling
+  // `.boxes.json`), so the editor can drag-select a column on the screenshot.
+  // Best-effort: any miss (older capture without geometry, parse error) → no
+  // `geometry`, and the editor falls back to the dropdown picker.
+  let geometry: { viewport: { w: number; h: number }; columns: Array<{ index: number; header: string; x: number; y: number; w: number; h: number }> } | null = null;
+  try {
+    const boxesPath = screenshotPath.replace(/\.png$/, '.boxes.json');
+    if (boxesPath !== screenshotPath) {
+      const { data: blob } = await supabaseAdmin.storage.from('mapping-screenshots').download(boxesPath);
+      // Size guard before parsing — our own worker writes this (a few KB even for
+      // hundreds of columns), so anything large is corrupt/hostile; skip it.
+      if (blob && blob.size <= 200_000) {
+        const parsed = JSON.parse(await blob.text());
+        if (parsed && typeof parsed === 'object' && Array.isArray(parsed.columns)
+          && parsed.viewport && typeof parsed.viewport.w === 'number' && typeof parsed.viewport.h === 'number') {
+          const cols = parsed.columns.filter((c: unknown) =>
+            c && typeof c === 'object'
+            && typeof (c as Record<string, unknown>).index === 'number'
+            && typeof (c as Record<string, unknown>).x === 'number'
+            && typeof (c as Record<string, unknown>).w === 'number');
+          if (cols.length > 0) geometry = { viewport: parsed.viewport, columns: cols };
+        }
+      }
+    }
+  } catch {
+    geometry = null;
+  }
+
+  return ok({ url: signed.signedUrl, geometry }, { requestId });
 }

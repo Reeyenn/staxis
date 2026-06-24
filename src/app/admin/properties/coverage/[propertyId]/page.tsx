@@ -35,7 +35,9 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
+import { DragToCaptureView } from '@/app/admin/_components/cua/DragToCaptureView';
 import { LiveRobotView } from '@/app/admin/_components/cua/LiveRobotView';
+import type { ColumnGeometry, GeomColumn } from '@/lib/pms/column-geometry';
 import {
   ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Wand2, Check, MousePointerClick, X,
 } from 'lucide-react';
@@ -159,6 +161,10 @@ export default function CoveragePage() {
   const [addColFeed, setAddColFeed] = useState<string | null>(null);
   const [addColIndex, setAddColIndex] = useState<string>('');   // selected page-header index (as string)
   const [addColName, setAddColName] = useState<string>('');     // editable custom name
+  // feature/cua-click-to-map — drag-on-screenshot flow: which feed has it open,
+  // and the body-cell selector the founder drag-selected (overrides addColIndex).
+  const [dragColFeed, setDragColFeed] = useState<string | null>(null);
+  const [addColSelector, setAddColSelector] = useState<string>('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,16 +204,21 @@ export default function CoveragePage() {
     captureReqRef.current.add(capKey);
     setCaptures((prev) => ({ ...prev, [capKey]: { loading: true, url: null } }));
     let url: string | null = null;
+    let geometry: ColumnGeometry | null = null;
     try {
       const res = await fetchWithAuth(
         `/api/admin/mapper/feed-capture?propertyId=${encodeURIComponent(propertyId)}&feedKey=${encodeURIComponent(capKey)}`,
       );
       const json = await res.json();
       if (res.ok && json.ok && typeof json.data?.url === 'string') url = json.data.url;
+      // feature/cua-click-to-map — the column geometry for drag-to-capture.
+      if (res.ok && json.ok && json.data?.geometry && Array.isArray(json.data.geometry.columns)) {
+        geometry = json.data.geometry as ColumnGeometry;
+      }
     } catch {
       url = null;
     }
-    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url } }));
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry } }));
     if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
   }, [propertyId]);
 
@@ -440,16 +451,20 @@ export default function CoveragePage() {
       `Stopped capturing “${columnName}”.`);
 
   const addCustomColumn = (feed: FeedDetail) => {
-    const headerIndex = Number(addColIndex);
     const columnKey = slugifyHeader(addColName);
-    if (!Number.isInteger(headerIndex) || headerIndex < 1) {
-      setToast({ tone: 'bad', text: 'Pick a column from the page to capture.' });
+    // Two ways to choose the column: a drag-selected body selector (click-to-map)
+    // or the dropdown's detected-header index. The selector wins when present.
+    const payload: Record<string, unknown> = addColSelector
+      ? { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, selector: addColSelector }
+      : { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, headerIndex: Number(addColIndex) };
+    if (!addColSelector && (!Number.isInteger(Number(addColIndex)) || Number(addColIndex) < 1)) {
+      setToast({ tone: 'bad', text: 'Pick or drag a column from the page to capture.' });
       return;
     }
-    void runColumnEdit(`add:${feed.key}`,
-      { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, headerIndex },
-      `Now capturing “${columnKey}” into this feed.`)
-      .then((okFlag) => { if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); } });
+    void runColumnEdit(`add:${feed.key}`, payload, `Now capturing “${columnKey}” into this feed.`)
+      .then((okFlag) => {
+        if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setDragColFeed(null); }
+      });
   };
 
   const relearn = async () => {
@@ -750,14 +765,52 @@ export default function CoveragePage() {
 
                               {/* Add an extra page column (custom → stored in the
                                   feed's "extras" bucket). Editable table feeds only. */}
-                              {editable && f.canTakeover && (
-                                addColFeed === f.key ? (
-                                  f.availablePageColumns.length > 0 ? (
-                                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                              {editable && f.canTakeover && (() => {
+                                const cap = captures[capKey];
+                                const hasDrag = !!(cap && cap.url && cap.geometry && cap.geometry.columns.length > 0);
+                                const hasDropdown = f.availablePageColumns.length > 0;
+                                const cancel = () => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setDragColFeed(null); };
+                                if (addColFeed !== f.key) {
+                                  return (
+                                    <button
+                                      onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setDragColFeed(null); if (!cap) void ensureCapture(capKey); }}
+                                      disabled={!!liveJobId}
+                                      style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
+                                    >
+                                      <Plus size={11} /> Add a column from this page
+                                    </button>
+                                  );
+                                }
+                                // Drag-on-screenshot mode.
+                                if (dragColFeed === f.key && hasDrag) {
+                                  return (
+                                    <div style={{ marginTop: 8, padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                                      <DragToCaptureView url={cap!.url!} geometry={cap!.geometry!} onPick={(col: GeomColumn) => {
+                                        setAddColSelector(`td:nth-child(${col.index})`);
+                                        setAddColIndex('');
+                                        if (col.header) setAddColName(slugifyHeader(col.header));
+                                        setDragColFeed(null);
+                                      }} />
+                                      <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(null)} style={{ marginTop: 6, color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel drag</Btn>
+                                    </div>
+                                  );
+                                }
+                                // Picker row: dropdown (if detected) + drag button (if geometry) + name + Add.
+                                if (!hasDropdown && !hasDrag) {
+                                  return (
+                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                                      The robot hasn’t listed this page’s columns yet — hit <b>Re-map</b> above once, then you can add one.
+                                      {' '}<button onClick={cancel} style={{ background: 'transparent', border: 'none', color: dimWhite(.5), textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5 }}>cancel</button>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                                    {hasDropdown && (
                                       <select
                                         value={addColIndex}
                                         onChange={(e) => {
-                                          setAddColIndex(e.target.value);
+                                          setAddColIndex(e.target.value); setAddColSelector('');
                                           const hdr = f.availablePageColumns.find((p) => String(p.index) === e.target.value);
                                           if (hdr) setAddColName(slugifyHeader(hdr.header));
                                         }}
@@ -768,32 +821,26 @@ export default function CoveragePage() {
                                           <option key={p.index} value={p.index} style={{ color: '#000' }}>{p.header}</option>
                                         ))}
                                       </select>
-                                      <input
-                                        value={addColName}
-                                        onChange={(e) => setAddColName(e.target.value)}
-                                        placeholder="name (e.g. rate_plan)"
-                                        style={{ background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '6px 8px', fontFamily: FONT_MONO, fontSize: 11.5, width: 150 }}
-                                      />
-                                      <Btn variant="forest" size="sm" disabled={!addColIndex || !addColName.trim() || colBusy === `add:${f.key}`} onClick={() => addCustomColumn(f)}>
-                                        {colBusy === `add:${f.key}` ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={11} />} Add
+                                    )}
+                                    {hasDrag && (
+                                      <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(f.key)} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
+                                        <MousePointerClick size={11} /> {hasDropdown ? 'or drag on screenshot' : 'Drag on screenshot'}
                                       </Btn>
-                                      <Btn variant="ghost" size="sm" onClick={() => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); }} style={{ color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel</Btn>
-                                    </div>
-                                  ) : (
-                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
-                                      The robot hasn’t listed this page’s columns yet — hit <b>Re-map</b> above once, then you can add one.
-                                    </div>
-                                  )
-                                ) : (
-                                  <button
-                                    onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); }}
-                                    disabled={!!liveJobId}
-                                    style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
-                                  >
-                                    <Plus size={11} /> Add a column from this page
-                                  </button>
-                                )
-                              )}
+                                    )}
+                                    {addColSelector && <Caps size={8} c="var(--forest)" style={{ letterSpacing: '.08em' }}>dragged</Caps>}
+                                    <input
+                                      value={addColName}
+                                      onChange={(e) => setAddColName(e.target.value)}
+                                      placeholder="name (e.g. rate_plan)"
+                                      style={{ background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '6px 8px', fontFamily: FONT_MONO, fontSize: 11.5, width: 150 }}
+                                    />
+                                    <Btn variant="forest" size="sm" disabled={(!addColIndex && !addColSelector) || !addColName.trim() || colBusy === `add:${f.key}`} onClick={() => addCustomColumn(f)}>
+                                      {colBusy === `add:${f.key}` ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={11} />} Add
+                                    </Btn>
+                                    <Btn variant="ghost" size="sm" onClick={cancel} style={{ color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel</Btn>
+                                  </div>
+                                );
+                              })()}
 
                               {/* feature/cua-admin-mapper-visibility — the source
                                   screen the robot read, ABOVE the row sample. */}

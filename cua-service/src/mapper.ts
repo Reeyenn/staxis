@@ -2317,6 +2317,9 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
         propertyId: args.propertyId,
         pmsFamily: args.pmsFamily ?? null,
         feedKey: args.actionName,
+        // feature/cua-click-to-map — table feeds also get per-column geometry so
+        // the admin can drag-select a column on the provenance screenshot.
+        ...(result.action.parse.mode === 'table' ? { rowSelector: result.action.parse.hint.rowSelector } : {}),
       });
     }
     // feature/cua-column-recovery — an action that gained a drillDown block
