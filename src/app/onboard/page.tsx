@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
  *
  * URL: /onboard?code=XXXX
  *
- * Single page, 9 steps. Replaces the scattered /signup → /signin/verify
+ * Single page, 8 steps. Replaces the scattered /signup → /signin/verify
  * → /onboarding → /settings/pms flow with one resumable wizard. Each
  * step's "Next" handler PATCHes /api/onboard/wizard so the user can
  * close the tab and resume later from the same link.
@@ -17,12 +17,15 @@ export const dynamic = 'force-dynamic';
  *   2. Create account — email/name/password (POSTs /api/auth/use-join-code)
  *   3. Verify email — 6-digit OTP (Supabase verifyOtp)
  *   4. Hotel details — confirm/edit name, rooms, timezone, brand, etc.
- *   5. Services — toggle inventory/housekeeping/etc.
- *   6. Connect PMS — credentials + test (POSTs /api/pms/save-credentials
+ *   5. Connect PMS — credentials + test (POSTs /api/pms/save-credentials
  *      + /api/pms/onboard)
- *   7. Mapping — live progress bar of CUA job (polls /api/pms/job-status)
- *   8. Add team — optional 0-5 staff rows
- *   9. All set — celebration screen + "Go to Dashboard" finalize
+ *   6. Mapping — live progress bar of CUA job (polls /api/pms/job-status)
+ *   7. Add team — optional 0-5 staff rows
+ *   8. All set — celebration screen + "Go to Dashboard" finalize
+ *
+ * (The former Step 5 "Which services?" toggle screen was removed — every
+ * app now always appears in the nav and auto-lights based on real usage,
+ * so there's nothing to pick up front.)
  *
  * Multi-tenancy: the page itself doesn't read property data directly.
  * All reads/writes go through the wizard API which validates the join
@@ -34,7 +37,7 @@ import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
-import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles, ChevronLeft } from 'lucide-react';
+import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Users, Sparkles, ChevronLeft } from 'lucide-react';
 import { PLACEHOLDER_HOTEL_NAME, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronMark } from '@/components/AuthShell';
@@ -182,11 +185,10 @@ function OnboardWizard() {
       {wizard.currentStep === 2 && <Step2CreateAccount code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 3 && <Step3VerifyEmail code={code} wizard={wizard} onNext={advance} />}
       {wizard.currentStep === 4 && <Step4HotelDetails code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 5 && <Step5Services code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 6 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 7 && <Step7Mapping code={code} onNext={advance} />}
-      {wizard.currentStep === 8 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 9 && <Step9AllSet code={code} wizard={wizard} />}
+      {wizard.currentStep === 5 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
+      {wizard.currentStep === 6 && <Step7Mapping code={code} onNext={advance} />}
+      {wizard.currentStep === 7 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
+      {wizard.currentStep === 8 && <Step9AllSet code={code} wizard={wizard} />}
     </WizardLayout>
   );
 }
@@ -194,7 +196,7 @@ function OnboardWizard() {
 // ─── Layout (progress bar + container) ──────────────────────────────────
 
 const STEP_LABELS = [
-  'Welcome', 'Account', 'Verify email', 'Hotel', 'Services',
+  'Welcome', 'Account', 'Verify email', 'Hotel',
   'PMS', 'Mapping', 'Team', 'Done',
 ];
 
@@ -687,85 +689,7 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
   );
 }
 
-// ─── Step 5: Services ───────────────────────────────────────────────────
-
-const SERVICES = [
-  { key: 'housekeeping', label: 'Housekeeping', hint: 'Daily room cleaning + assignments' },
-  { key: 'laundry', label: 'Laundry', hint: 'Linens, towels, washroom rotation' },
-  { key: 'maintenance', label: 'Maintenance', hint: 'Repairs + work orders' },
-  { key: 'deep_cleaning', label: 'Deep cleaning', hint: 'Periodic room/area refresh' },
-  { key: 'public_areas', label: 'Public areas', hint: 'Lobby, hallways, breakfast' },
-  { key: 'inventory', label: 'Inventory', hint: 'Auto-reorder + counts' },
-];
-
-function Step5Services({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
-  // Hydrate from saved selections so navigating BACK to this step doesn't reset
-  // every toggle to ON and silently overwrite the operator's prior choices on
-  // the next Continue. Cold start (nothing saved) → all on. A service key
-  // absent from the saved map also defaults on (forward-compat with new
-  // services added after the hotel first saved).
-  const savedServices = wizard.hotelDefaults?.servicesEnabled ?? null;
-  const [selected, setSelected] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(SERVICES.map((s) => [s.key, savedServices ? savedServices[s.key] !== false : true])),
-  );
-  const [submitting, setSubmitting] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = async () => {
-    setErr(null);
-    setSubmitting(true);
-    try {
-      const res = await fetchWithAuth('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          partialState: { servicesAt: new Date().toISOString() },
-          propertyUpdates: { services_enabled: selected },
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) { setErr(json.error || 'Save failed'); return; }
-      await onNext();
-    } catch (e) {
-      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
-      setErr(e instanceof Error ? e.message : 'Save failed');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div>
-      <WizardBackButton code={code} clearKeys={['hotelDetailsAt']} onNext={onNext} />
-      <SettingsIcon size={28} color="#C99644" style={{ marginBottom: '12px' }} />
-      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Which services do you want?</h2>
-      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
-        Toggle off anything you don&apos;t need. You can change these later in settings.
-      </p>
-      {err && <ErrorBox msg={err} />}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
-        {SERVICES.map((s) => (
-          <label key={s.key} style={{
-            display: 'flex', alignItems: 'flex-start', gap: '12px',
-            padding: '12px', border: '1px solid rgba(31,35,28,0.12)', borderRadius: '8px', cursor: 'pointer',
-          }}>
-            <input type="checkbox" checked={selected[s.key]} onChange={(e) => setSelected({ ...selected, [s.key]: e.target.checked })} style={{ marginTop: '2px', width: 16, height: 16, accentColor: '#C99644' }} />
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '14px' }}>{s.label}</div>
-              <div style={{ fontSize: '12px', color: '#5C625C' }}>{s.hint}</div>
-            </div>
-          </label>
-        ))}
-      </div>
-      <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ width: '100%', justifyContent: 'center' }}>
-        {submitting ? 'Saving…' : 'Continue →'}
-      </button>
-    </div>
-  );
-}
-
-// ─── Step 6: Connect PMS ────────────────────────────────────────────────
+// ─── Step 5: Connect PMS ────────────────────────────────────────────────
 
 function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
   const [pmsType, setPmsType] = useState(wizard.hotelDefaults?.pmsType ?? 'choice_advantage');
@@ -821,7 +745,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
 
   return (
     <div>
-      <WizardBackButton code={code} clearKeys={['servicesAt']} onNext={onNext} />
+      <WizardBackButton code={code} clearKeys={['hotelDetailsAt']} onNext={onNext} />
       <KeyRound size={28} color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Connect your PMS</h2>
       <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
@@ -973,7 +897,7 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
     setAdvancing(true);
     setAdvanceError(null);
     try {
-      // Mark mapping complete so deriveCurrentStep moves to step 8. All three
+      // Mark mapping complete so deriveCurrentStep moves to step 7. All three
       // done-outcomes advance — onboarding must not block on an admin review
       // (park_draft / quarantine finish wiring up in the background). Verify
       // the save landed before advancing, else the click would look dead.
@@ -996,9 +920,9 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
     }
   };
 
-  // "Re-enter login" on a failed mapping → walk back to Step 6 (Connect PMS)
+  // "Re-enter login" on a failed mapping → walk back to Step 5 (Connect PMS)
   // so the operator can fix the credentials and retry. clearStateKeys removes
-  // the PMS completion markers server-side (deriveCurrentStep → 6) and onNext()
+  // the PMS completion markers server-side (deriveCurrentStep → 5) and onNext()
   // refetches, which re-renders Step6ConnectPms. The corrected-creds save then
   // clears the stale failed mapper job (see /api/pms/save-credentials), so the
   // driver enqueues a fresh learn against the new login.
@@ -1272,7 +1196,6 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             propertyId: wizard.propertyId,
-            servicesEnabled: {},  // already set in step 5
             staff: filtered,
           }),
         });

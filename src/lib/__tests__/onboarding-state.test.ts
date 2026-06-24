@@ -24,7 +24,7 @@ describe('deriveCurrentStep — fresh wizard', () => {
     // the completion timestamps. (Exception: step 2, the welcome hop —
     // see the dedicated describe below.)
     assert.equal(deriveCurrentStep({ step: 5 }), 1);
-    assert.equal(deriveCurrentStep({ step: 9 }), 1);
+    assert.equal(deriveCurrentStep({ step: 8 }), 1);
   });
 });
 
@@ -70,7 +70,9 @@ describe('deriveCurrentStep — sequential progress', () => {
     assert.equal(deriveCurrentStep(s), 4);
   });
 
-  test('after hotel details → step 5 (services)', () => {
+  test('after hotel details → step 5 (PMS)', () => {
+    // The old Step 5 "Which services?" screen was removed — hotel details now
+    // hands straight off to Connect PMS.
     const s: OnboardingState = {
       step: 1,
       accountCreatedAt: '2026-05-14T00:00:00Z',
@@ -80,57 +82,56 @@ describe('deriveCurrentStep — sequential progress', () => {
     assert.equal(deriveCurrentStep(s), 5);
   });
 
-  test('after services → step 6 (PMS)', () => {
+  test('after PMS creds → step 6 (mapping)', () => {
     const s: OnboardingState = {
       step: 1,
       accountCreatedAt: '2026-05-14T00:00:00Z',
       emailVerifiedAt: '2026-05-14T00:01:00Z',
       hotelDetailsAt: '2026-05-14T00:02:00Z',
-      servicesAt: '2026-05-14T00:03:00Z',
+      pmsCredentialsAt: '2026-05-14T00:04:00Z',
+      pmsJobId: 'job-uuid',
     };
     assert.equal(deriveCurrentStep(s), 6);
   });
 
-  test('after PMS creds → step 7 (mapping)', () => {
+  test('after mapping completes → step 7 (team)', () => {
     const s: OnboardingState = {
       step: 1,
       accountCreatedAt: '2026-05-14T00:00:00Z',
       emailVerifiedAt: '2026-05-14T00:01:00Z',
       hotelDetailsAt: '2026-05-14T00:02:00Z',
-      servicesAt: '2026-05-14T00:03:00Z',
-      pmsCredentialsAt: '2026-05-14T00:04:00Z',
-      pmsJobId: 'job-uuid',
-    };
-    assert.equal(deriveCurrentStep(s), 7);
-  });
-
-  test('after mapping completes → step 8 (team)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      servicesAt: '2026-05-14T00:03:00Z',
       pmsCredentialsAt: '2026-05-14T00:04:00Z',
       pmsJobId: 'job-uuid',
       mappingCompletedAt: '2026-05-14T00:08:00Z',
     };
-    assert.equal(deriveCurrentStep(s), 8);
+    assert.equal(deriveCurrentStep(s), 7);
   });
 
-  test('after team added → step 9 (all set)', () => {
+  test('after team added → step 8 (all set)', () => {
     const s: OnboardingState = {
       step: 1,
       accountCreatedAt: '2026-05-14T00:00:00Z',
       emailVerifiedAt: '2026-05-14T00:01:00Z',
       hotelDetailsAt: '2026-05-14T00:02:00Z',
-      servicesAt: '2026-05-14T00:03:00Z',
       pmsCredentialsAt: '2026-05-14T00:04:00Z',
       pmsJobId: 'job-uuid',
       mappingCompletedAt: '2026-05-14T00:08:00Z',
       staffAt: '2026-05-14T00:09:00Z',
     };
-    assert.equal(deriveCurrentStep(s), 9);
+    assert.equal(deriveCurrentStep(s), 8);
+  });
+
+  test('a legacy servicesAt timestamp is ignored (no longer a gate)', () => {
+    // Wizard states persisted before the Services step was removed still
+    // carry servicesAt — it must not change where derive lands.
+    const s: OnboardingState = {
+      step: 1,
+      accountCreatedAt: '2026-05-14T00:00:00Z',
+      emailVerifiedAt: '2026-05-14T00:01:00Z',
+      hotelDetailsAt: '2026-05-14T00:02:00Z',
+      servicesAt: '2026-05-14T00:03:00Z',
+    };
+    assert.equal(deriveCurrentStep(s), 5); // PMS, exactly as without servicesAt
   });
 });
 
@@ -160,6 +161,7 @@ describe('isValidPartialState', () => {
 
   test('rejects step out of range', () => {
     assert.equal(isValidPartialState({ step: 0 }), false);
+    assert.equal(isValidPartialState({ step: 9 }), false); // wizard is now 8 steps
     assert.equal(isValidPartialState({ step: 10 }), false);
     assert.equal(isValidPartialState({ step: -1 }), false);
   });
@@ -200,11 +202,11 @@ describe('isOnboardingInProgress — login-funnel gate', () => {
   test('mid-onboarding at a later step (e.g. PMS) → still true', () => {
     assert.equal(
       isOnboardingInProgress(null, {
-        step: 6,
+        step: 5,
         accountCreatedAt: '2026-06-15T19:28:43Z',
         emailVerifiedAt: '2026-06-15T19:29:00Z',
         hotelDetailsAt: '2026-06-15T19:30:00Z',
-        servicesAt: '2026-06-15T19:31:00Z',
+        pmsCredentialsAt: '2026-06-15T19:31:00Z',
       }),
       true,
     );
@@ -213,7 +215,7 @@ describe('isOnboardingInProgress — login-funnel gate', () => {
   test('COMPLETED onboarding → false (normal login to dashboard)', () => {
     assert.equal(
       isOnboardingInProgress('2026-06-15T20:00:00Z', {
-        step: 9,
+        step: 8,
         accountCreatedAt: '2026-06-15T19:28:43Z',
       }),
       false,
@@ -233,7 +235,7 @@ describe('isOnboardingInProgress — login-funnel gate', () => {
 
   test('completed wins even if accountCreatedAt is also present', () => {
     assert.equal(
-      isOnboardingInProgress('2026-06-15T20:00:00Z', { step: 9, accountCreatedAt: 'x' }),
+      isOnboardingInProgress('2026-06-15T20:00:00Z', { step: 8, accountCreatedAt: 'x' }),
       false,
     );
   });
