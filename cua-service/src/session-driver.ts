@@ -42,6 +42,7 @@ import {
 // the generic-table-writer driven by mapper-produced TableTemplates
 // is the only write path now.
 import { saveGenericTable } from './persistence/generic-table-writer.js';
+import { captureLiveFeedProvenance } from './feed-capture.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
@@ -162,6 +163,10 @@ export class SessionDriver {
   private credentials: { username: string; password: string; loginUrl: string } | null = null;
   private allowedHost: string | null = null;
   private pollHandle: NodeJS.Timeout | null = null;
+  /** fix/cua-freeform-capture-live — last live screenshot+drag-map refresh per
+   *  feed (epoch ms). Throttles the poll-time capture so the drag-on-screenshot
+   *  map stays fresh without re-mapping, at ~1/feed/hour. */
+  private lastProvenanceMs = new Map<string, number>();
   private heartbeatHandle: NodeJS.Timeout | null = null;
   private running = false;
   private stopping = false;
@@ -1158,6 +1163,34 @@ export class SessionDriver {
         // when threshold tripped. Non-zero row count resets the streak.
         // Suppress on a logged-out poll (fix 2).
         this.maybeFireSelfRepair(template, runResult.rows.length, loggedOutThisPoll);
+
+        // fix/cua-freeform-capture-live — refresh the drag-on-screenshot map
+        // while the page is ON this feed (throttled ~1/feed/hour, first time
+        // immediate). This is why a founder never has to re-map to drag: every
+        // healthy feed keeps a fresh screenshot + geometry. Awaited so the shot
+        // is THIS feed's page before the loop navigates on; best-effort (never
+        // throws); only when the feed actually produced rows.
+        const liveFeedKey = template.sourceActionKey;
+        if (this.page && liveFeedKey && runResult.rows.length > 0) {
+          const last = this.lastProvenanceMs.get(liveFeedKey) ?? 0;
+          if (Date.now() - last > 3_600_000) {
+            this.lastProvenanceMs.set(liveFeedKey, Date.now());
+            const liveRowSelector = template.sources[0]?.selectors?.rowSelector;
+            // HARD TIMEOUT so a hung screenshot/upload can NEVER stall the 30s
+            // poll for the paying hotel — abandon after 12s (best-effort; the
+            // next throttle window retries). captureLiveFeedProvenance itself
+            // never throws, so the race only guards against a hang.
+            await Promise.race([
+              captureLiveFeedProvenance({
+                page: this.page,
+                propertyId: this.propertyId,
+                feedKey: liveFeedKey,
+                ...(liveRowSelector ? { rowSelector: liveRowSelector } : {}),
+              }),
+              new Promise<void>((resolve) => setTimeout(resolve, 12_000)),
+            ]);
+          }
+        }
       } catch (err) {
         log.warn('session-driver: template run threw', {
           propertyId: this.propertyId,
@@ -1412,6 +1445,11 @@ export class SessionDriver {
       // heartbeat note) under the new version, and a fixed one stops being
       // flagged. Repopulated on the next poll from the new templates.
       this.loggedIncompleteFeeds.clear();
+      // fix/cua-freeform-capture-live — drop the drag-map throttle so the NEXT
+      // poll immediately re-captures a fresh screenshot + geometry for the new
+      // recipe (a re-map changed the layout). Also bounds this map to the current
+      // recipe's ~20 action keys (no unbounded growth across months).
+      this.lastProvenanceMs.clear();
       // No browser restart needed — next pollOnce uses the new feeds.
     } catch (err) {
       log.warn('session-driver: knowledge hot-reload check failed', {

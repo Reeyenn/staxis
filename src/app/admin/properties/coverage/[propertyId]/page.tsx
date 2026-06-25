@@ -813,7 +813,8 @@ export default function CoveragePage() {
                                 if (!hasDropdown && !hasDrag) {
                                   return (
                                     <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
-                                      The robot hasn’t listed this page’s columns yet — hit <b>Re-map</b> above once, then you can add one.
+                                      The robot is capturing this page so you can drag on it — give it about a minute, then
+                                      {' '}<button onClick={() => { captureReqRef.current.delete(capKey); void ensureCapture(capKey); }} style={{ background: 'transparent', border: 'none', color: 'var(--gold)', textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5 }}>check again</button>.
                                       {' '}<button onClick={cancel} style={{ background: 'transparent', border: 'none', color: dimWhite(.5), textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5 }}>cancel</button>
                                     </div>
                                   );

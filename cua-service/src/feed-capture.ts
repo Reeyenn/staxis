@@ -136,6 +136,52 @@ export function feedColumnBoxesPath(jobId: string, feedKey: string): string {
   return `${jobId}/feeds/${sanitizeFeedKey(feedKey)}.boxes.json`;
 }
 
+/** fix/cua-freeform-capture-live — STABLE per-property keys for the screenshot +
+ *  drag-map the SESSION refreshes during normal polls (no mapping job, no DB
+ *  row — job_id is a NOT-NULL FK). The web feed-capture route serves these
+ *  (fresher) when present, so the drag works without ever re-mapping. */
+export function liveFeedScreenshotPath(propertyId: string, feedKey: string): string {
+  return `live/${propertyId}/${sanitizeFeedKey(feedKey)}.png`;
+}
+export function liveFeedBoxesPath(propertyId: string, feedKey: string): string {
+  return `live/${propertyId}/${sanitizeFeedKey(feedKey)}.boxes.json`;
+}
+
+/**
+ * Refresh the live (poll-time) screenshot + drag geometry for one feed, while
+ * the session page is ALREADY on the feed (after a successful poll). Upserts to
+ * the stable `live/{propertyId}/...` keys — NO mapping_feed_captures row (that
+ * table's job_id is a NOT-NULL FK to a real job). Best-effort: never throws,
+ * withholds when a reliably-masked image can't be produced. Table feeds get
+ * geometry; pass rowSelector for that.
+ */
+export async function captureLiveFeedProvenance(
+  args: { page: Page; propertyId: string; feedKey: string; rowSelector?: string },
+  deps?: FeedCaptureDeps,
+): Promise<void> {
+  const { page, propertyId, feedKey, rowSelector } = args;
+  const capture = deps?.capture ?? captureHardenedScreenshot;
+  const clearMarks = deps?.clearMarks ?? ((p: Page) => clearSetOfMark(p));
+  const upload = deps?.upload ?? defaultUpload;
+  const captureGeometry = deps?.captureGeometry ?? captureColumnGeometry;
+  const uploadBoxes = deps?.uploadBoxes ?? defaultUploadBoxes;
+  try {
+    await clearMarks(page).catch(() => {});
+    const png = await capture(page);
+    if (!png) return;
+    await upload(liveFeedScreenshotPath(propertyId, feedKey), png);
+    if (rowSelector) {
+      try {
+        const geometry = await captureGeometry(page, rowSelector);
+        if (geometry && geometry.columns.length > 0) await uploadBoxes(liveFeedBoxesPath(propertyId, feedKey), geometry);
+      } catch { /* geometry is best-effort */ }
+    }
+    log.info('feed-capture: live provenance refreshed', { propertyId, feedKey });
+  } catch (err) {
+    log.warn('feed-capture: live provenance capture failed (non-fatal)', { propertyId, feedKey, err: (err as Error).message });
+  }
+}
+
 /**
  * Capture each DATA column's on-screen box from the table `rowSelector` points
  * at, in viewport CSS px (the fullPage:false screenshot's coordinate space).

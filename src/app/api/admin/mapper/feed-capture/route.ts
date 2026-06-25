@@ -64,68 +64,72 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
   }
 
-  // The capture table is worker-owned (0283) and may not exist yet — treat ANY
-  // failure as "no capture" so the editor degrades to its empty state.
-  let screenshotPath: string | null = null;
+  // fix/cua-freeform-capture-live — RESOLVE the screenshot. Prefer the LIVE
+  // per-property key the session refreshes during normal polls (so the drag
+  // works WITHOUT re-mapping); fall back to the job/mapping-time capture row.
+  let resolved = byProperty ? await signAndGeometry(`live/${propertyId}/${sanitizeKey(feedKey)}.png`) : null;
+  if (!resolved) {
+    // The capture table is worker-owned (0283) and may not exist yet — treat ANY
+    // failure as "no capture" so the editor degrades to its empty state.
+    let screenshotPath: string | null = null;
+    try {
+      let q = supabaseAdmin
+        .from('mapping_feed_captures')
+        .select('screenshot_path, created_at')
+        .eq('feed_key', feedKey);
+      q = byJob ? q.eq('job_id', jobId) : q.eq('property_id', propertyId);
+      const { data, error } = await q.order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (!error && data && typeof data.screenshot_path === 'string' && data.screenshot_path.length > 0) {
+        screenshotPath = data.screenshot_path;
+      }
+    } catch { screenshotPath = null; }
+    if (screenshotPath) resolved = await signAndGeometry(screenshotPath);
+  }
+
+  if (!resolved) return ok({ url: null }, { requestId });
+  return ok({ url: resolved.url, geometry: resolved.geometry }, { requestId });
+}
+
+const sanitizeKey = (k: string): string => k.replace(/[^a-z0-9_-]/gi, '_');
+
+interface ResolvedCapture {
+  url: string;
+  geometry: {
+    viewport: { w: number; h: number };
+    columns: Array<{ index: number; header: string; x: number; y: number; w: number; h: number }>;
+    values?: Array<{ selector: string; text: string; x: number; y: number; w: number; h: number }>;
+  } | null;
+}
+
+/** Sign a screenshot path (1h) + best-effort fetch its sibling `.boxes.json`
+ *  geometry (columns + freeform values). Returns null when the object isn't
+ *  there (so the caller can fall back / degrade). Never throws. */
+async function signAndGeometry(path: string): Promise<ResolvedCapture | null> {
+  const { data: signed, error } = await supabaseAdmin.storage.from('mapping-screenshots').createSignedUrl(path, 3600);
+  if (error || !signed?.signedUrl) return null;
+  let geometry: ResolvedCapture['geometry'] = null;
   try {
-    let q = supabaseAdmin
-      .from('mapping_feed_captures')
-      .select('screenshot_path, created_at')
-      .eq('feed_key', feedKey);
-    q = byJob ? q.eq('job_id', jobId) : q.eq('property_id', propertyId);
-    const { data, error } = await q
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (!error && data && typeof data.screenshot_path === 'string' && data.screenshot_path.length > 0) {
-      screenshotPath = data.screenshot_path;
-    }
-  } catch {
-    screenshotPath = null;
-  }
-
-  if (!screenshotPath) {
-    return ok({ url: null }, { requestId });
-  }
-
-  // A per-feed capture is a STATIC object, so a 1h signature is fine (mirrors
-  // the help-screenshot signing in the sibling live route). A sign failure —
-  // object swept by the expire-help cron, transient storage 5xx — also degrades
-  // to the empty state rather than erroring the whole editor.
-  const { data: signed, error: signErr } = await supabaseAdmin.storage
-    .from('mapping-screenshots')
-    .createSignedUrl(screenshotPath, 3600);
-  if (signErr || !signed?.signedUrl) {
-    return ok({ url: null }, { requestId });
-  }
-
-  // feature/cua-click-to-map — also return the per-column geometry (sibling
-  // `.boxes.json`), so the editor can drag-select a column on the screenshot.
-  // Best-effort: any miss (older capture without geometry, parse error) → no
-  // `geometry`, and the editor falls back to the dropdown picker.
-  let geometry: { viewport: { w: number; h: number }; columns: Array<{ index: number; header: string; x: number; y: number; w: number; h: number }> } | null = null;
-  try {
-    const boxesPath = screenshotPath.replace(/\.png$/, '.boxes.json');
-    if (boxesPath !== screenshotPath) {
+    const boxesPath = path.replace(/\.png$/, '.boxes.json');
+    if (boxesPath !== path) {
       const { data: blob } = await supabaseAdmin.storage.from('mapping-screenshots').download(boxesPath);
-      // Size guard before parsing — our own worker writes this (a few KB even for
-      // hundreds of columns), so anything large is corrupt/hostile; skip it.
+      // Size guard before parsing — our own worker writes this (a few KB), so
+      // anything large is corrupt/hostile; skip it.
       if (blob && blob.size <= 200_000) {
         const parsed = JSON.parse(await blob.text());
         if (parsed && typeof parsed === 'object' && Array.isArray(parsed.columns)
           && parsed.viewport && typeof parsed.viewport.w === 'number' && typeof parsed.viewport.h === 'number') {
-          const cols = parsed.columns.filter((c: unknown) =>
-            c && typeof c === 'object'
-            && typeof (c as Record<string, unknown>).index === 'number'
-            && typeof (c as Record<string, unknown>).x === 'number'
-            && typeof (c as Record<string, unknown>).w === 'number');
-          if (cols.length > 0) geometry = { viewport: parsed.viewport, columns: cols };
+          const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+          const box = (b: Record<string, unknown>) => num(b.x) && num(b.y) && num(b.w) && num(b.h);
+          // Require ALL box fields (a truncated/corrupt boxes.json must not yield
+          // a half-box that renders at NaN), and cap value selector length.
+          const cols = parsed.columns.filter((c: Record<string, unknown>) => c && num(c.index) && box(c));
+          const vals = Array.isArray(parsed.values)
+            ? parsed.values.filter((v: Record<string, unknown>) => v && typeof v.selector === 'string' && v.selector.length <= 200 && typeof v.text === 'string' && box(v))
+            : [];
+          if (cols.length > 0) geometry = { viewport: parsed.viewport, columns: cols, ...(vals.length > 0 ? { values: vals } : {}) };
         }
       }
     }
-  } catch {
-    geometry = null;
-  }
-
-  return ok({ url: signed.signedUrl, geometry }, { requestId });
+  } catch { geometry = null; }
+  return { url: signed.signedUrl, geometry };
 }
