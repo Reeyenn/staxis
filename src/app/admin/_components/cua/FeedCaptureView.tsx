@@ -21,7 +21,7 @@ import type { ColumnGeometry } from '@/lib/pms/column-geometry';
  *  `geometry` (feature/cua-click-to-map) carries each column's on-screen box so
  *  the editor can drag-select a column on the screenshot; null when the capture
  *  predates geometry or the feed isn't a table. */
-export interface CaptureState { loading: boolean; url: string | null; geometry?: ColumnGeometry | null }
+export interface CaptureState { loading: boolean; url: string | null; geometry?: ColumnGeometry | null; capturing?: boolean; captureError?: string | null }
 
 export function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
   return (

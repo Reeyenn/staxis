@@ -67,7 +67,7 @@ function pickMapperTimeoutMs(job: WorkflowJobRow): number {
 // feature/cua-coverage-editor — `mapper.edit_recipe` is a non-browser recipe
 // edit (delete a feed); it never needs an alive SessionDriver, so it shares the
 // no-driver claim lane + handler dispatch with mapper.learn_pms_family.
-const NO_DRIVER_KINDS = new Set<string>(['mapper.learn_pms_family', 'mapper.edit_recipe']);
+const NO_DRIVER_KINDS = new Set<string>(['mapper.learn_pms_family', 'mapper.edit_recipe', 'mapper.capture_feed']);
 
 interface WorkflowJobRow {
   id: string;

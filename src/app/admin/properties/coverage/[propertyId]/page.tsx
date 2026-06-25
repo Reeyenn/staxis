@@ -126,6 +126,26 @@ function DarkScope({ children }: { children: React.ReactNode }) {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// fix/cua-freeform-capture-live — map a worker capture reason (or 'no_table' /
+// 'timeout' tokens) to a plain-English founder message. Keeps the failure
+// HONEST + fast instead of every failure collapsing to a misleading "timeout"
+// (review MEDIUMs). Returns the special tokens unchanged for the message block.
+const captureReason = (reason: string): string => {
+  if (reason === 'no_table' || reason === 'timeout') return reason;
+  if (reason.startsWith('unsafe_url')) return "Couldn't safely open this feed's page.";
+  switch (reason) {
+    case 'no_stored_session': return "The robot hasn't finished logging into this hotel yet — Re-map this feed first.";
+    case 'no_credentials': return 'This hotel has no saved PMS login yet.';
+    case 'no_recipe': return "There's no map for this hotel yet — Re-map first.";
+    case 'no_pms_family': return "This hotel's PMS isn't set up yet.";
+    case 'feed_incomplete':
+    case 'feed_not_in_recipe': return "The robot doesn't fully know this feed yet — Re-map it.";
+    case 'multi_source_unsupported': return "This feed has several sources, so drag-capture isn't supported — use Re-map.";
+    case 'aborted': return 'The capture was cancelled — try again.';
+    default: return "Couldn't capture this page — try Re-map above.";
+  }
+};
+
 export default function CoveragePage() {
   const params = useParams<{ propertyId: string }>();
   const propertyId = params?.propertyId ?? '';
@@ -203,10 +223,9 @@ export default function CoveragePage() {
   // Resolved per-property + feed key — the latest capture the robot took for
   // this hotel's feed. Failures land as url:null → the empty state, and stay
   // retryable.
-  const ensureCapture = useCallback(async (capKey: string) => {
-    if (captureReqRef.current.has(capKey)) return;
-    captureReqRef.current.add(capKey);
-    setCaptures((prev) => ({ ...prev, [capKey]: { loading: true, url: null } }));
+  // Raw fetch of the latest capture for one feed — no state, no de-dupe. The
+  // building block both ensureCapture and the live-capture poll loop use.
+  const fetchCapture = useCallback(async (capKey: string): Promise<{ url: string | null; geometry: ColumnGeometry | null }> => {
     let url: string | null = null;
     let geometry: ColumnGeometry | null = null;
     try {
@@ -222,9 +241,85 @@ export default function CoveragePage() {
     } catch {
       url = null;
     }
+    return { url, geometry };
+  }, [propertyId]);
+
+  const hasGeometry = (g: ColumnGeometry | null | undefined): boolean =>
+    !!(g && (g.columns.length > 0 || (g.values?.length ?? 0) > 0));
+
+  const ensureCapture = useCallback(async (capKey: string) => {
+    if (captureReqRef.current.has(capKey)) return;
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? {}), loading: true, url: null } }));
+    const { url, geometry } = await fetchCapture(capKey);
     setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry } }));
     if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
-  }, [propertyId]);
+  }, [fetchCapture]);
+
+  // fix/cua-freeform-capture-live — trigger an ON-DEMAND capture for one feed,
+  // then poll until the drag-map (geometry) lands. This is what lets the founder
+  // drag on a hotel whose map is still a PARKED DRAFT (no live session, never
+  // polls) — the robot logs in cheaply, reads the page, and writes the geometry.
+  const liveCapReqRef = useRef<Set<string>>(new Set());
+  const requestLiveCapture = useCallback(async (capKey: string) => {
+    if (liveCapReqRef.current.has(capKey)) return;
+    liveCapReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? { url: null }), loading: false, capturing: true, captureError: null } }));
+    const fail = (msg: string) => {
+      setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? { url: null }), loading: false, capturing: false, captureError: msg } }));
+      liveCapReqRef.current.delete(capKey);
+    };
+    const succeed = (url: string | null, geometry: ColumnGeometry | null) => {
+      captureReqRef.current.add(capKey); // mark cached so a re-expand doesn't refetch
+      setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry, capturing: false, captureError: null } }));
+      liveCapReqRef.current.delete(capKey);
+    };
+    let jobId: string | null = null;
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/coverage/capture-feed', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ propertyId, feedKey: capKey }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) { fail(captureReason(typeof json?.error === 'string' ? json.error : 'capture_failed')); return; }
+      if (typeof json.data?.jobId === 'string') jobId = json.data.jobId;
+    } catch { fail(captureReason('capture_failed')); return; }
+    // Poll the geometry AND the job's real outcome (~3s × 30 ≈ 90s ceiling). The
+    // worker writes geometry BEFORE it finishes, so any honest failure
+    // (no stored login, nav failed, non-table feed) surfaces in seconds with a
+    // real message instead of a misleading full-length "timeout" (review MEDIUMs).
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const { url, geometry } = await fetchCapture(capKey);
+      if (hasGeometry(geometry)) { succeed(url, geometry); return; }
+      if (jobId) {
+        try {
+          const jres = await fetchWithAuth(`/api/admin/mapper/live/${jobId}`);
+          const job = (await jres.json())?.data?.job as { status?: string; error?: string } | undefined;
+          if (job?.status === 'failed' || job?.status === 'cancelled') { fail(captureReason(job.error ?? 'capture_failed')); return; }
+          if (job?.status === 'completed') {
+            // Job done but geometry never landed → not an on-screen table, or the
+            // robot's stored login went stale and it never reached the table.
+            const fin = await fetchCapture(capKey);
+            if (hasGeometry(fin.geometry)) { succeed(fin.url, fin.geometry); return; }
+            fail('no_table'); return;
+          }
+        } catch { /* keep polling */ }
+      }
+    }
+    fail('timeout');
+  }, [propertyId, fetchCapture]);
+
+  // Open the add-column flow for a feed: fetch any existing drag-map; if there
+  // is none, kick off an on-demand capture so the founder can drag right away.
+  const openAddColumn = useCallback(async (capKey: string) => {
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? {}), loading: true, url: prev[capKey]?.url ?? null } }));
+    const { url, geometry } = await fetchCapture(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry } }));
+    if (!hasGeometry(geometry)) void requestLiveCapture(capKey);
+  }, [fetchCapture, requestLiveCapture]);
 
   // A stale/broken signed URL (1h signature lapsed, or the object was swept)
   // falls back to the empty state and frees the key so a re-expand refetches.
@@ -777,7 +872,7 @@ export default function CoveragePage() {
                                 if (addColFeed !== f.key) {
                                   return (
                                     <button
-                                      onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); if (!cap) void ensureCapture(capKey); }}
+                                      onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); if (!hasDrag) void openAddColumn(capKey); }}
                                       disabled={!!liveJobId}
                                       style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
                                     >
@@ -811,11 +906,29 @@ export default function CoveragePage() {
                                 }
                                 // Picker row: dropdown (if detected) + drag button (if geometry) + name + Add.
                                 if (!hasDropdown && !hasDrag) {
+                                  const capturing = !!cap?.capturing;
+                                  const capErr = cap?.captureError;
+                                  const linkStyle: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--gold)', textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5, padding: 0 };
+                                  const remap = f.actionKey ? (
+                                    <button onClick={() => { cancel(); void startEditOrAdd(f.actionKey!, 'edit'); }} disabled={!!liveJobId} style={{ ...linkStyle, opacity: liveJobId ? .5 : 1 }}>Re-map this feed</button>
+                                  ) : null;
                                   return (
-                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
-                                      The robot is capturing this page so you can drag on it — give it about a minute, then
-                                      {' '}<button onClick={() => { captureReqRef.current.delete(capKey); void ensureCapture(capKey); }} style={{ background: 'transparent', border: 'none', color: 'var(--gold)', textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5 }}>check again</button>.
-                                      {' '}<button onClick={cancel} style={{ background: 'transparent', border: 'none', color: dimWhite(.5), textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5 }}>cancel</button>
+                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      {capturing ? (
+                                        <>
+                                          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', color: 'var(--gold)' }} />
+                                          The robot is reading this page so you can drag on it — a few seconds…
+                                        </>
+                                      ) : capErr === 'no_table' ? (
+                                        <>Couldn&apos;t find a table to drag on this page — it may not be an on-screen table, or the robot&apos;s login expired.{remap && <>{' '}{remap}.</>}</>
+                                      ) : capErr === 'timeout' ? (
+                                        <>This took too long.{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>try again</button>{remap && <>, or {remap}</>}.</>
+                                      ) : capErr ? (
+                                        <>{capErr}{remap && <>{' '}{remap}.</>}</>
+                                      ) : (
+                                        <>No drag-map yet —{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>capture this page</button> so you can drag on it.</>
+                                      )}
+                                      {' '}<button onClick={cancel} style={{ ...linkStyle, color: dimWhite(.5) }}>cancel</button>
                                     </div>
                                   );
                                 }
