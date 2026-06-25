@@ -32,7 +32,7 @@ import { log, makeWorkerId } from './log.js';
 import { env } from './env.js';
 import { SessionSupervisor } from './session-supervisor.js';
 import { WorkflowRuntime } from './workflow-runtime.js';
-import { runMappingJob, mappingJobResultToWorkflowResult, type MappingJobInput } from './mapping-driver.js';
+import { runMappingJob, mappingJobResultToWorkflowResult, captureFeedOnDemand, type MappingJobInput } from './mapping-driver.js';
 import { runRecipeEditJob, type RecipeEditJobInput } from './recipe-edit.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
 import { writeJobHandler } from './write-job-handler.js';
@@ -126,6 +126,25 @@ async function main(): Promise<void> {
   runtime.registerHandler('mapper.edit_recipe', async (ctx) => {
     const input = ctx.payload as unknown as RecipeEditJobInput;
     return runRecipeEditJob(input, ctx.jobId);
+  });
+
+  // ─── fix/cua-freeform-capture-live — mapper.capture_feed handler ──────
+  // CHEAP on-demand drag-map capture (NO vision, NO Claude). A hotel whose
+  // map is still a parked DRAFT has no live session and never polls, so the
+  // freeform "drag on the screenshot" editor has no screenshot+geometry to
+  // drag. This logs in via the STORED session, navigates to the one feed,
+  // and writes screenshot+geometry to the stable live/{property}/{feed} keys
+  // the coverage editor reads. No-driver kind: owns its own browser.
+  runtime.registerHandler('mapper.capture_feed', async (ctx) => {
+    const p = ctx.payload as { pms_family?: string; feed_key?: string };
+    if (!p.pms_family || !p.feed_key) {
+      return { ok: false, error: 'pms_family and feed_key are required' };
+    }
+    const res = await captureFeedOnDemand({
+      propertyId: ctx.propertyId, pmsFamily: p.pms_family, feedKey: p.feed_key, signal: ctx.signal,
+    });
+    if (!res.ok) return { ok: false, error: res.reason ?? 'capture failed' };
+    return { ok: true, result: { captured: true } };
   });
 
   // Phase 3 — PMS write-back handler. Alive-driver kind: the runtime hands it

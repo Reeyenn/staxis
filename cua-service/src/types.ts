@@ -195,7 +195,11 @@ export interface TableRowHint {
    *  bucket (recipe-adapter → template-runner), so they're captured + visible
    *  WITHOUT ever entering the field contract / validator. Absent ⟹ byte-
    *  identical replay. NEVER includes a key already in `columns`. */
-  customColumns?: Record<string, string>;
+  /** A value is the SELECTOR (flat string = per-ROW, captured within each row —
+   *  the original shape, byte-identical). fix/cua-freeform-capture adds an object
+   *  form `{ selector, scope:'page' }` for a ONE-OFF single value (read ONCE and
+   *  stamped on every row's raw). Readers coerce: string ⟹ {selector, scope:'row'}. */
+  customColumns?: Record<string, string | { selector: string; scope: 'page' }>;
   /** feature/cua-column-editor — EVERY column header the audit saw on the page
    *  (not just the mapped ones), with its 1-based cell index. Powers the
    *  "add a column from what's on the page" dropdown in the Coverage Editor:
@@ -581,6 +585,11 @@ export interface TableTemplate {
    *  instead of a typed field — so they never touch the field contract / writer
    *  validation. undefined ⟹ no custom columns (byte-identical). */
   rawColumns?: string[];
+  /** fix/cua-freeform-capture — PAGE-scope custom columns: a one-off value read
+   *  ONCE per poll (document.querySelector) and stamped on EVERY row's raw, vs
+   *  rawColumns which read a cell WITHIN each row. undefined ⟹ none (byte-
+   *  identical). Keyed name → css selector of the standalone element. */
+  pageColumns?: Array<{ key: string; selector: string }>;
 }
 
 // ─── Job + recipe storage shapes ──────────────────────────────────────────

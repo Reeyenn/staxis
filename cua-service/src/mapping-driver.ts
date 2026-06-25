@@ -59,6 +59,8 @@ import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 // feature/cua-self-heal-reach — one-fix-generalizes (sample-verify) + golden-fixture gates.
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
+import { captureLiveFeedProvenance } from './feed-capture.js';
+import { loadActive } from './knowledge-file.js';
 // rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
 // from here, so this is a cycle — but BOTH cross-module references are call-time
 // (inside functions/methods), never load-time, so it resolves safely under CJS+ESM.
@@ -1317,6 +1319,133 @@ async function replaySiblingFeedReadOnly(
     return out('pass', `${run.rows.length} rows, required columns present`);
   } catch (err) {
     return out('inconclusive', (err as Error).message);
+  } finally {
+    if (browser) await browser.close().catch(() => { /* best-effort */ });
+  }
+}
+
+/** fix/cua-freeform-capture-live — recipe to drive an on-demand capture. Prefer
+ *  the ACTIVE map; for a hotel whose map is still a PARKED DRAFT (no active map,
+ *  paused_no_knowledge_file → never polls) fall back to the latest non-deleted
+ *  draft — exactly what the coverage editor renders its feeds from, so the
+ *  capture matches the feed the founder is editing. */
+async function loadActiveOrLatestDraftRecipe(pmsFamily: string): Promise<Recipe | null> {
+  const active = await loadActive(pmsFamily);
+  if (active) return active.knowledge as unknown as Recipe;
+  const { data } = await supabase
+    .from('pms_knowledge_files')
+    .select('knowledge')
+    .eq('pms_family', pmsFamily)
+    .eq('status', 'draft')
+    .is('deleted_at', null)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const knowledge = (data as { knowledge?: unknown } | null)?.knowledge;
+  return knowledge ? (knowledge as Recipe) : null;
+}
+
+const ON_DEMAND_CAPTURE_LAUNCH_TIMEOUT_MS = 30_000;
+const ON_DEMAND_CAPTURE_NAV_TIMEOUT_MS = 45_000;
+const ON_DEMAND_CAPTURE_SHOT_TIMEOUT_MS = 20_000;
+
+/**
+ * fix/cua-freeform-capture-live — ON-DEMAND drag-map capture.
+ *
+ * The freeform "drag on the screenshot" editor needs a screenshot + per-column
+ * geometry (the sibling .boxes.json) for a feed. Normally the session-driver
+ * refreshes that during polls — but a hotel whose map is still a PARKED DRAFT
+ * has NO active session (paused_no_knowledge_file) and never polls, so the
+ * drag-map never appears and the founder literally can't drag anything (the
+ * exact Comfort Suites / Choice Advantage case).
+ *
+ * This logs in CHEAPLY via the STORED session (scraper_session.state — NO fresh
+ * login, NO vision, NO Claude $), navigates to the ONE feed using its (active or
+ * latest-draft) recipe, and writes screenshot + geometry to the STABLE
+ * live/{property}/{feed} keys the coverage editor reads. Best-effort: any
+ * failure returns a reason and the editor degrades to "try Re-map".
+ *
+ * Reuses the exact storageState pattern as replaySiblingFeedReadOnly — never a
+ * fresh login (which could evict a single-session PMS), fresh isolated browser,
+ * read-only.
+ */
+export async function captureFeedOnDemand(args: {
+  propertyId: string;
+  pmsFamily: string;
+  feedKey: string;
+  /** The job-level abort signal (workflow-runtime fires it on the job timeout).
+   *  Threaded into the nav + checked before launch so a hung browser can't pin
+   *  the shared no-driver lane past the job budget (review P-MEDIUM-1). */
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; reason?: string }> {
+  const { propertyId, pmsFamily, feedKey, signal } = args;
+  if (signal?.aborted) return { ok: false, reason: 'aborted' };
+  const credentials = await loadCredentials(propertyId);
+  if (!credentials) return { ok: false, reason: 'no_credentials' };
+
+  const { data: sess } = await supabase
+    .from('scraper_session').select('state').eq('property_id', propertyId).maybeSingle();
+  const storageState = (sess as { state?: Record<string, unknown> } | null)?.state;
+  if (!storageState) return { ok: false, reason: 'no_stored_session' };
+
+  const recipe = await loadActiveOrLatestDraftRecipe(pmsFamily);
+  if (!recipe) return { ok: false, reason: 'no_recipe' };
+
+  const { templates } = recipeToTableTemplates(recipe);
+  const template = templates.find((t) => t.sourceActionKey === feedKey);
+  if (!template) return { ok: false, reason: 'feed_not_in_recipe' };
+  if (template.incomplete) return { ok: false, reason: 'feed_incomplete' };
+  if (template.sources.length !== 1) return { ok: false, reason: 'multi_source_unsupported' };
+
+  // Re-host the feed URL onto THIS hotel's tenant origin (per-subdomain PMS);
+  // same-host PMS (Choice Advantage) → no-op. Without it safeGoto's same-site
+  // guard could read the wrong tenant.
+  const familyStartUrl = recipe.login?.startUrl ?? '';
+  for (const source of template.sources) {
+    source.url = rehostFeedUrl(source.url, familyStartUrl, credentials.loginUrl);
+  }
+  const rowSelector = template.sources[0]?.selectors?.rowSelector;
+
+  let browser: Browser | null = null;
+  try {
+    // Bound the launch so a stuck Chromium spawn can't pin the shared no-driver
+    // lane (review P-MEDIUM-1). newContext/newPage are fast; the nav + screenshot
+    // below are independently bounded.
+    browser = await chromium.launch({ headless: true, timeout: ON_DEMAND_CAPTURE_LAUNCH_TIMEOUT_MS });
+    const context = await browser.newContext({
+      // Reuse the STORED session (jsonb) — never a fresh login.
+      storageState: storageState as BrowserContextOptions['storageState'],
+      acceptDownloads: true,
+      viewport: { width: 1280, height: 800 },
+    });
+    const page = await context.newPage();
+    const allowedHost = new URL(credentials.loginUrl).host;
+    // Navigate to the feed (goto + preSteps). The EXTRACTION result is ignored —
+    // we just need the page sitting ON the feed table so the capture sees it. A
+    // failed extraction still usually lands us on the right page. The nav budget
+    // is combined with the job signal so the job timeout can cancel it too.
+    const navTimeout = AbortSignal.timeout(ON_DEMAND_CAPTURE_NAV_TIMEOUT_MS);
+    const navSignal = signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([signal, navTimeout])
+      : navTimeout;
+    const run = await runSingleSourceTemplate({
+      page, template, allowedHost, signal: navSignal,
+    });
+    if (!run.ok) {
+      log.warn('capture-feed: feed run not ok — capturing current page anyway', {
+        propertyId, feedKey, reason: run.reason,
+      });
+    }
+    // captureLiveFeedProvenance is best-effort + never throws; bound it anyway so
+    // a hung screenshot can't pin the job past its budget.
+    await Promise.race([
+      captureLiveFeedProvenance({ page, propertyId, feedKey, ...(rowSelector ? { rowSelector } : {}) }),
+      new Promise<void>((resolve) => setTimeout(resolve, ON_DEMAND_CAPTURE_SHOT_TIMEOUT_MS)),
+    ]);
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof UnsafeNavigationError) return { ok: false, reason: `unsafe_url:${err.reason}` };
+    return { ok: false, reason: (err as Error).message.slice(0, 200) };
   } finally {
     if (browser) await browser.close().catch(() => { /* best-effort */ });
   }

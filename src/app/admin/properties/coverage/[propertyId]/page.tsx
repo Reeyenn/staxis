@@ -35,7 +35,10 @@ import {
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
+import { DragToCaptureView } from '@/app/admin/_components/cua/DragToCaptureView';
 import { LiveRobotView } from '@/app/admin/_components/cua/LiveRobotView';
+import type { ColumnGeometry, FreeformResolution } from '@/lib/pms/column-geometry';
+import { slugifyHeader as slugifyValue } from '@/lib/pms/column-geometry';
 import {
   ChevronLeft, RefreshCw, Pencil, Trash2, Plus, AlertTriangle, Eye, Loader2, Layers, Lock, Wand2, Check, MousePointerClick, X,
 } from 'lucide-react';
@@ -123,6 +126,26 @@ function DarkScope({ children }: { children: React.ReactNode }) {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// fix/cua-freeform-capture-live — map a worker capture reason (or 'no_table' /
+// 'timeout' tokens) to a plain-English founder message. Keeps the failure
+// HONEST + fast instead of every failure collapsing to a misleading "timeout"
+// (review MEDIUMs). Returns the special tokens unchanged for the message block.
+const captureReason = (reason: string): string => {
+  if (reason === 'no_table' || reason === 'timeout') return reason;
+  if (reason.startsWith('unsafe_url')) return "Couldn't safely open this feed's page.";
+  switch (reason) {
+    case 'no_stored_session': return "The robot hasn't finished logging into this hotel yet — Re-map this feed first.";
+    case 'no_credentials': return 'This hotel has no saved PMS login yet.';
+    case 'no_recipe': return "There's no map for this hotel yet — Re-map first.";
+    case 'no_pms_family': return "This hotel's PMS isn't set up yet.";
+    case 'feed_incomplete':
+    case 'feed_not_in_recipe': return "The robot doesn't fully know this feed yet — Re-map it.";
+    case 'multi_source_unsupported': return "This feed has several sources, so drag-capture isn't supported — use Re-map.";
+    case 'aborted': return 'The capture was cancelled — try again.';
+    default: return "Couldn't capture this page — try Re-map above.";
+  }
+};
+
 export default function CoveragePage() {
   const params = useParams<{ propertyId: string }>();
   const propertyId = params?.propertyId ?? '';
@@ -159,6 +182,13 @@ export default function CoveragePage() {
   const [addColFeed, setAddColFeed] = useState<string | null>(null);
   const [addColIndex, setAddColIndex] = useState<string>('');   // selected page-header index (as string)
   const [addColName, setAddColName] = useState<string>('');     // editable custom name
+  // feature/cua-click-to-map — drag-on-screenshot flow: which feed has it open,
+  // and the body-cell selector the founder drag-selected (overrides addColIndex).
+  const [dragColFeed, setDragColFeed] = useState<string | null>(null);
+  const [addColSelector, setAddColSelector] = useState<string>('');
+  // fix/cua-freeform-capture — 'page' when the drag picked a one-off VALUE (read
+  // once + stamped on every row), 'row' for a per-row column.
+  const [addColScope, setAddColScope] = useState<'row' | 'page'>('row');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -193,23 +223,103 @@ export default function CoveragePage() {
   // Resolved per-property + feed key — the latest capture the robot took for
   // this hotel's feed. Failures land as url:null → the empty state, and stay
   // retryable.
-  const ensureCapture = useCallback(async (capKey: string) => {
-    if (captureReqRef.current.has(capKey)) return;
-    captureReqRef.current.add(capKey);
-    setCaptures((prev) => ({ ...prev, [capKey]: { loading: true, url: null } }));
+  // Raw fetch of the latest capture for one feed — no state, no de-dupe. The
+  // building block both ensureCapture and the live-capture poll loop use.
+  const fetchCapture = useCallback(async (capKey: string): Promise<{ url: string | null; geometry: ColumnGeometry | null }> => {
     let url: string | null = null;
+    let geometry: ColumnGeometry | null = null;
     try {
       const res = await fetchWithAuth(
         `/api/admin/mapper/feed-capture?propertyId=${encodeURIComponent(propertyId)}&feedKey=${encodeURIComponent(capKey)}`,
       );
       const json = await res.json();
       if (res.ok && json.ok && typeof json.data?.url === 'string') url = json.data.url;
+      // feature/cua-click-to-map — the column geometry for drag-to-capture.
+      if (res.ok && json.ok && json.data?.geometry && Array.isArray(json.data.geometry.columns)) {
+        geometry = json.data.geometry as ColumnGeometry;
+      }
     } catch {
       url = null;
     }
-    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url } }));
-    if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
+    return { url, geometry };
   }, [propertyId]);
+
+  const hasGeometry = (g: ColumnGeometry | null | undefined): boolean =>
+    !!(g && (g.columns.length > 0 || (g.values?.length ?? 0) > 0));
+
+  const ensureCapture = useCallback(async (capKey: string) => {
+    if (captureReqRef.current.has(capKey)) return;
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? {}), loading: true, url: null } }));
+    const { url, geometry } = await fetchCapture(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry } }));
+    if (!url) captureReqRef.current.delete(capKey); // no capture (yet) → let it retry
+  }, [fetchCapture]);
+
+  // fix/cua-freeform-capture-live — trigger an ON-DEMAND capture for one feed,
+  // then poll until the drag-map (geometry) lands. This is what lets the founder
+  // drag on a hotel whose map is still a PARKED DRAFT (no live session, never
+  // polls) — the robot logs in cheaply, reads the page, and writes the geometry.
+  const liveCapReqRef = useRef<Set<string>>(new Set());
+  const requestLiveCapture = useCallback(async (capKey: string) => {
+    if (liveCapReqRef.current.has(capKey)) return;
+    liveCapReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? { url: null }), loading: false, capturing: true, captureError: null } }));
+    const fail = (msg: string) => {
+      setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? { url: null }), loading: false, capturing: false, captureError: msg } }));
+      liveCapReqRef.current.delete(capKey);
+    };
+    const succeed = (url: string | null, geometry: ColumnGeometry | null) => {
+      captureReqRef.current.add(capKey); // mark cached so a re-expand doesn't refetch
+      setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry, capturing: false, captureError: null } }));
+      liveCapReqRef.current.delete(capKey);
+    };
+    let jobId: string | null = null;
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/coverage/capture-feed', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ propertyId, feedKey: capKey }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) { fail(captureReason(typeof json?.error === 'string' ? json.error : 'capture_failed')); return; }
+      if (typeof json.data?.jobId === 'string') jobId = json.data.jobId;
+    } catch { fail(captureReason('capture_failed')); return; }
+    // Poll the geometry AND the job's real outcome (~3s × 30 ≈ 90s ceiling). The
+    // worker writes geometry BEFORE it finishes, so any honest failure
+    // (no stored login, nav failed, non-table feed) surfaces in seconds with a
+    // real message instead of a misleading full-length "timeout" (review MEDIUMs).
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const { url, geometry } = await fetchCapture(capKey);
+      if (hasGeometry(geometry)) { succeed(url, geometry); return; }
+      if (jobId) {
+        try {
+          const jres = await fetchWithAuth(`/api/admin/mapper/live/${jobId}`);
+          const job = (await jres.json())?.data?.job as { status?: string; error?: string } | undefined;
+          if (job?.status === 'failed' || job?.status === 'cancelled') { fail(captureReason(job.error ?? 'capture_failed')); return; }
+          if (job?.status === 'completed') {
+            // Job done but geometry never landed → not an on-screen table, or the
+            // robot's stored login went stale and it never reached the table.
+            const fin = await fetchCapture(capKey);
+            if (hasGeometry(fin.geometry)) { succeed(fin.url, fin.geometry); return; }
+            fail('no_table'); return;
+          }
+        } catch { /* keep polling */ }
+      }
+    }
+    fail('timeout');
+  }, [propertyId, fetchCapture]);
+
+  // Open the add-column flow for a feed: fetch any existing drag-map; if there
+  // is none, kick off an on-demand capture so the founder can drag right away.
+  const openAddColumn = useCallback(async (capKey: string) => {
+    captureReqRef.current.add(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { ...(prev[capKey] ?? {}), loading: true, url: prev[capKey]?.url ?? null } }));
+    const { url, geometry } = await fetchCapture(capKey);
+    setCaptures((prev) => ({ ...prev, [capKey]: { loading: false, url, geometry } }));
+    if (!hasGeometry(geometry)) void requestLiveCapture(capKey);
+  }, [fetchCapture, requestLiveCapture]);
 
   // A stale/broken signed URL (1h signature lapsed, or the object was swept)
   // falls back to the empty state and frees the key so a re-expand refetches.
@@ -440,16 +550,20 @@ export default function CoveragePage() {
       `Stopped capturing “${columnName}”.`);
 
   const addCustomColumn = (feed: FeedDetail) => {
-    const headerIndex = Number(addColIndex);
     const columnKey = slugifyHeader(addColName);
-    if (!Number.isInteger(headerIndex) || headerIndex < 1) {
-      setToast({ tone: 'bad', text: 'Pick a column from the page to capture.' });
+    // Three ways to choose the column: a drag-selected per-row COLUMN selector, a
+    // drag-selected one-off VALUE (scope:page), or the dropdown's header index.
+    const payload: Record<string, unknown> = addColSelector
+      ? { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, selector: addColSelector, ...(addColScope === 'page' ? { scope: 'page' } : {}) }
+      : { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, headerIndex: Number(addColIndex) };
+    if (!addColSelector && (!Number.isInteger(Number(addColIndex)) || Number(addColIndex) < 1)) {
+      setToast({ tone: 'bad', text: 'Pick or drag a column from the page to capture.' });
       return;
     }
-    void runColumnEdit(`add:${feed.key}`,
-      { feedKey: feed.actionKey ?? feed.key, op: 'add-custom', columnKey, headerIndex },
-      `Now capturing “${columnKey}” into this feed.`)
-      .then((okFlag) => { if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); } });
+    void runColumnEdit(`add:${feed.key}`, payload, `Now capturing “${columnKey}” into this feed.`)
+      .then((okFlag) => {
+        if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); }
+      });
   };
 
   const relearn = async () => {
@@ -750,14 +864,81 @@ export default function CoveragePage() {
 
                               {/* Add an extra page column (custom → stored in the
                                   feed's "extras" bucket). Editable table feeds only. */}
-                              {editable && f.canTakeover && (
-                                addColFeed === f.key ? (
-                                  f.availablePageColumns.length > 0 ? (
-                                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                              {editable && f.canTakeover && (() => {
+                                const cap = captures[capKey];
+                                const hasDrag = !!(cap && cap.url && cap.geometry && (cap.geometry.columns.length > 0 || (cap.geometry.values?.length ?? 0) > 0));
+                                const hasDropdown = f.availablePageColumns.length > 0;
+                                const cancel = () => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); };
+                                if (addColFeed !== f.key) {
+                                  return (
+                                    <button
+                                      onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); if (!hasDrag) void openAddColumn(capKey); }}
+                                      disabled={!!liveJobId}
+                                      style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
+                                    >
+                                      <Plus size={11} /> Add a column from this page
+                                    </button>
+                                  );
+                                }
+                                // Drag-on-screenshot mode.
+                                if (dragColFeed === f.key && hasDrag) {
+                                  return (
+                                    <div style={{ marginTop: 8, padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                                      <DragToCaptureView url={cap!.url!} geometry={cap!.geometry!} onPick={(r: FreeformResolution) => {
+                                        if (r.kind === 'column') {
+                                          setAddColScope('row');
+                                          setAddColSelector(`td:nth-child(${r.column.index})`);
+                                          setAddColIndex('');
+                                          if (r.column.header) setAddColName(slugifyHeader(r.column.header));
+                                          setDragColFeed(null);
+                                        } else if (r.kind === 'value') {
+                                          setAddColScope('page');
+                                          setAddColSelector(r.value.selector);
+                                          setAddColIndex('');
+                                          setAddColName(slugifyValue(r.value.text));
+                                          setDragColFeed(null);
+                                        }
+                                        // unknown → DragToCaptureView shows "couldn't tell…"; stay in drag mode so the founder can re-drag (the human-loop).
+                                      }} />
+                                      <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(null)} style={{ marginTop: 6, color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel drag</Btn>
+                                    </div>
+                                  );
+                                }
+                                // Picker row: dropdown (if detected) + drag button (if geometry) + name + Add.
+                                if (!hasDropdown && !hasDrag) {
+                                  const capturing = !!cap?.capturing;
+                                  const capErr = cap?.captureError;
+                                  const linkStyle: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--gold)', textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT_MONO, fontSize: 10.5, padding: 0 };
+                                  const remap = f.actionKey ? (
+                                    <button onClick={() => { cancel(); void startEditOrAdd(f.actionKey!, 'edit'); }} disabled={!!liveJobId} style={{ ...linkStyle, opacity: liveJobId ? .5 : 1 }}>Re-map this feed</button>
+                                  ) : null;
+                                  return (
+                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      {capturing ? (
+                                        <>
+                                          <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', color: 'var(--gold)' }} />
+                                          The robot is reading this page so you can drag on it — a few seconds…
+                                        </>
+                                      ) : capErr === 'no_table' ? (
+                                        <>Couldn&apos;t find a table to drag on this page — it may not be an on-screen table, or the robot&apos;s login expired.{remap && <>{' '}{remap}.</>}</>
+                                      ) : capErr === 'timeout' ? (
+                                        <>This took too long.{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>try again</button>{remap && <>, or {remap}</>}.</>
+                                      ) : capErr ? (
+                                        <>{capErr}{remap && <>{' '}{remap}.</>}</>
+                                      ) : (
+                                        <>No drag-map yet —{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>capture this page</button> so you can drag on it.</>
+                                      )}
+                                      {' '}<button onClick={cancel} style={{ ...linkStyle, color: dimWhite(.5) }}>cancel</button>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: dimWhite(.04), borderRadius: 8 }}>
+                                    {hasDropdown && (
                                       <select
                                         value={addColIndex}
                                         onChange={(e) => {
-                                          setAddColIndex(e.target.value);
+                                          setAddColIndex(e.target.value); setAddColSelector(''); setAddColScope('row');
                                           const hdr = f.availablePageColumns.find((p) => String(p.index) === e.target.value);
                                           if (hdr) setAddColName(slugifyHeader(hdr.header));
                                         }}
@@ -768,32 +949,26 @@ export default function CoveragePage() {
                                           <option key={p.index} value={p.index} style={{ color: '#000' }}>{p.header}</option>
                                         ))}
                                       </select>
-                                      <input
-                                        value={addColName}
-                                        onChange={(e) => setAddColName(e.target.value)}
-                                        placeholder="name (e.g. rate_plan)"
-                                        style={{ background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '6px 8px', fontFamily: FONT_MONO, fontSize: 11.5, width: 150 }}
-                                      />
-                                      <Btn variant="forest" size="sm" disabled={!addColIndex || !addColName.trim() || colBusy === `add:${f.key}`} onClick={() => addCustomColumn(f)}>
-                                        {colBusy === `add:${f.key}` ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={11} />} Add
+                                    )}
+                                    {hasDrag && (
+                                      <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(f.key)} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
+                                        <MousePointerClick size={11} /> {hasDropdown ? 'Other — pick on the screenshot' : 'Pick anywhere on the screenshot'}
                                       </Btn>
-                                      <Btn variant="ghost" size="sm" onClick={() => { setAddColFeed(null); setAddColIndex(''); setAddColName(''); }} style={{ color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel</Btn>
-                                    </div>
-                                  ) : (
-                                    <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
-                                      The robot hasn’t listed this page’s columns yet — hit <b>Re-map</b> above once, then you can add one.
-                                    </div>
-                                  )
-                                ) : (
-                                  <button
-                                    onClick={() => { setAddColFeed(f.key); setAddColIndex(''); setAddColName(''); }}
-                                    disabled={!!liveJobId}
-                                    style={{ marginTop: 6, alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${dimWhite(.25)}`, borderRadius: 7, cursor: 'pointer', padding: '5px 9px', fontFamily: FONT_SANS, fontSize: 11.5, color: dimWhite(.7) }}
-                                  >
-                                    <Plus size={11} /> Add a column from this page
-                                  </button>
-                                )
-                              )}
+                                    )}
+                                    {addColSelector && <Caps size={8} c="var(--forest)" style={{ letterSpacing: '.08em' }}>{addColScope === 'page' ? 'value' : 'column'}</Caps>}
+                                    <input
+                                      value={addColName}
+                                      onChange={(e) => setAddColName(e.target.value)}
+                                      placeholder="name (e.g. rate_plan)"
+                                      style={{ background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '6px 8px', fontFamily: FONT_MONO, fontSize: 11.5, width: 150 }}
+                                    />
+                                    <Btn variant="forest" size="sm" disabled={(!addColIndex && !addColSelector) || !addColName.trim() || colBusy === `add:${f.key}`} onClick={() => addCustomColumn(f)}>
+                                      {colBusy === `add:${f.key}` ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Check size={11} />} Add
+                                    </Btn>
+                                    <Btn variant="ghost" size="sm" onClick={cancel} style={{ color: dimWhite(.6), borderColor: dimWhite(.2) }}>Cancel</Btn>
+                                  </div>
+                                );
+                              })()}
 
                               {/* feature/cua-admin-mapper-visibility — the source
                                   screen the robot read, ABOVE the row sample. */}

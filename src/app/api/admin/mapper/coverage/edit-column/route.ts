@@ -66,7 +66,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   let body: {
     propertyId?: unknown; pmsFamily?: unknown; feedKey?: unknown; op?: unknown;
-    columnName?: unknown; columnKey?: unknown; headerIndex?: unknown; draftId?: unknown;
+    columnName?: unknown; columnKey?: unknown; headerIndex?: unknown; selector?: unknown; scope?: unknown; draftId?: unknown;
   };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
@@ -190,10 +190,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId, status: 400, code: 'bad_request',
     });
   }
-  if (typeof body.headerIndex !== 'number' || !Number.isInteger(body.headerIndex) || body.headerIndex < 1) {
-    return err('Pick a column from the page to capture.', { requestId, status: 400, code: 'bad_request' });
-  }
-  const headerIndex = body.headerIndex;
   if (columnKey in knownColumns) {
     return err(`"${columnKey}" is already a captured column on this feed.`, { requestId, status: 409, code: 'conflict' });
   }
@@ -204,31 +200,119 @@ export async function POST(req: NextRequest): Promise<Response> {
   // automatically) or a reserved/system name (the worker re-checks this too).
   const conflict = customColumnKeyConflict(feedKey, columnKey);
   if (conflict) return err(conflict, { requestId, status: 409, code: 'conflict' });
-  // The chosen header must be one the robot actually saw on the page.
-  const detected = detectedColumnsFromAction(action);
-  if (detected.length === 0) {
-    return err('The robot hasn’t listed this page’s columns yet — re-map this feed once, then add a column.', {
-      requestId, status: 409, code: 'no_detected_columns',
-    });
+
+  // TWO ways to choose WHICH column to capture:
+  //   - feature/cua-click-to-map: a direct positional `selector` the founder
+  //     drag-selected on the source screenshot (a body cell's nth-child). Used
+  //     verbatim (validated tight to a tag + :nth-child to block injection).
+  //   - the dropdown: a `headerIndex` from the robot's detected page columns,
+  //     authored into a selector here.
+  const scope: 'row' | 'page' = body.scope === 'page' ? 'page' : 'row';
+  let selector: string | null = null;
+  const dragSel = typeof body.selector === 'string' ? body.selector.trim() : '';
+  if (scope === 'page') {
+    // fix/cua-freeform-capture — a one-off VALUE dragged on the screenshot. Its
+    // selector is an arbitrary css path, so it CANNOT use the nth-child allowlist;
+    // instead we bind it to the worker-derived geometry: the selector MUST exactly
+    // match one of the captured value elements (no client-supplied raw selector
+    // ever reaches the signed recipe).
+    if (!dragSel) return err('Drag a value on the screenshot to capture it.', { requestId, status: 400, code: 'bad_request' });
+    // SECURITY: bound the selector to a SAFE SHAPE before it can be stored in the
+    // signed recipe + run via document.querySelector every poll. The worker
+    // derives only `tag:nth-of-type(n)` / `#id` chains joined by ' > ', so this
+    // allowlist accepts every real value selector while blocking pathological /
+    // expensive CSS (`:has()`, `*`, attribute traversals) — no O(n²) query.
+    if (!isSafeValueSelector(dragSel)) {
+      return err('That selection wasn’t understood — try dragging it again.', { requestId, status: 400, code: 'bad_request' });
+    }
+    // CORRECTNESS: it must also be one the worker actually captured for this feed.
+    const trusted = await fetchFeedValueSelectors(body.propertyId, feedKey);
+    if (!trusted.has(dragSel)) {
+      return err('That selection wasn’t recognized — re-map this feed or try dragging it again.', { requestId, status: 409, code: 'conflict' });
+    }
+    selector = dragSel;
+  } else if (dragSel) {
+    // A per-row column drag: tight allowlist — a tag + :nth-child(1..999). Bounds
+    // are intentional (0 / >=1000 match no cell) and block selector injection.
+    if (!/^[a-z]{1,12}:nth-child\(\d{1,3}\)$/.test(dragSel)) {
+      return err('That column selection wasn’t understood — try dragging it again.', { requestId, status: 400, code: 'bad_request' });
+    }
+    selector = dragSel;
+  } else {
+    if (typeof body.headerIndex !== 'number' || !Number.isInteger(body.headerIndex) || body.headerIndex < 1) {
+      return err('Pick or drag a column from the page to capture.', { requestId, status: 400, code: 'bad_request' });
+    }
+    // The chosen header must be one the robot actually saw on the page.
+    const detected = detectedColumnsFromAction(action);
+    if (detected.length === 0) {
+      return err('The robot hasn’t listed this page’s columns yet — re-map this feed once, then add a column.', {
+        requestId, status: 409, code: 'no_detected_columns',
+      });
+    }
+    if (!detected.some((d) => d.index === body.headerIndex)) {
+      return err('That column is no longer on the page — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+    }
+    // Author the positional selector by templating off ANY existing clean
+    // positional column (known OR custom — custom ones are authored this way too).
+    selector = authorSelectorForIndex({ ...knownColumns, ...customColumns }, body.headerIndex);
   }
-  if (!detected.some((d) => d.index === headerIndex)) {
-    return err('That column is no longer on the page — refresh and try again.', { requestId, status: 409, code: 'conflict' });
-  }
-  // Author the positional selector by templating off ANY existing clean
-  // positional column (known OR custom — custom ones are authored this way too).
-  const selector = authorSelectorForIndex({ ...knownColumns, ...customColumns }, headerIndex);
   if (!selector) {
     return err('Could not work out where that column is on the page.', { requestId, status: 409, code: 'conflict' });
   }
 
   if (hasDraftId) {
-    const next = mutateAddCustomColumn(sourceRow.knowledge, feedKey, columnKey, selector);
+    const next = mutateAddCustomColumn(sourceRow.knowledge, feedKey, columnKey, selector, scope);
     if (!next) return err('This feed isn’t a page table, so a custom column can’t be added.', { requestId, status: 409, code: 'conflict' });
     return persistDraft(sourceRow.id, next, { added: true, feedKey, columnKey }, requestId);
   }
   return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version, {
-    edit_op: 'add_custom_column', feed_key: feedKey, column_key: columnKey, selector,
+    edit_op: 'add_custom_column', feed_key: feedKey, column_key: columnKey, selector, ...(scope === 'page' ? { scope } : {}),
   }, `column_add:${pmsFamily}:${feedKey}:${columnKey}`, 'Adding the column and re-publishing the map…', requestId);
+}
+
+/** fix/cua-freeform-capture — a page-scope VALUE selector is SAFE iff it is a
+ *  chain of `tag:nth-of-type(n)` / `#id` segments joined by ' > ', ≤200 chars.
+ *  This is EXACTLY the shape the worker's geometry deriver emits, and it
+ *  provably excludes expensive/pathological CSS (`:has()`, `*`, `[attr]`), so the
+ *  per-poll document.querySelector can never be turned into an O(n²) DOM walk. */
+function isSafeValueSelector(sel: string): boolean {
+  if (sel.length === 0 || sel.length > 200) return false;
+  const segs = sel.split(' > ');
+  for (const s of segs) {
+    if (!/^#[A-Za-z][\w-]*$/.test(s) && !/^[a-z]+:nth-of-type\(\d{1,3}\)$/.test(s)) return false;
+  }
+  return true;
+}
+
+/** fix/cua-freeform-capture — the SET of value-element selectors the worker
+ *  captured for this feed (the geometry's `values`). A page-scope add is only
+ *  allowed for a selector in this trusted set. Best-effort: returns empty on any
+ *  miss so the caller refuses the add. */
+async function fetchFeedValueSelectors(propertyId: string, feedKey: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const { data } = await supabaseAdmin
+      .from('mapping_feed_captures')
+      .select('screenshot_path, created_at')
+      .eq('feed_key', feedKey)
+      .eq('property_id', propertyId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const sp = (data as { screenshot_path?: unknown } | null)?.screenshot_path;
+    if (typeof sp !== 'string' || !sp) return out;
+    const boxesPath = sp.replace(/\.png$/, '.boxes.json');
+    if (boxesPath === sp) return out;
+    const { data: blob } = await supabaseAdmin.storage.from('mapping-screenshots').download(boxesPath);
+    if (!blob || blob.size > 200_000) return out;
+    const parsed = JSON.parse(await blob.text());
+    if (parsed && Array.isArray(parsed.values)) {
+      for (const v of parsed.values) {
+        if (v && typeof v === 'object' && typeof (v as { selector?: unknown }).selector === 'string') out.add((v as { selector: string }).selector);
+      }
+    }
+  } catch { /* refuse the add on any failure */ }
+  return out;
 }
 
 /** Enqueue a re-signing worker job for a LIVE map edit. */
@@ -317,7 +401,7 @@ function mutateDeleteColumn(knowledge: unknown, feedKey: string, columnName: str
 /** Draft mutation: add a custom column to one TABLE feed's parse hint. Returns
  *  null when the feed isn't a page table (custom columns are DOM cells). */
 function mutateAddCustomColumn(
-  knowledge: unknown, feedKey: string, columnKey: string, selector: string,
+  knowledge: unknown, feedKey: string, columnKey: string, selector: string, scope: 'row' | 'page' = 'row',
 ): Record<string, unknown> | null {
   const next = cloneKnowledge(knowledge);
   const actions = (next.actions ?? {}) as Record<string, unknown>;
@@ -326,7 +410,9 @@ function mutateAddCustomColumn(
   if (parse.mode !== 'table') return null;
   const hint = (parse.hint ?? {}) as Record<string, unknown>;
   const custom = (hint.customColumns ?? {}) as Record<string, unknown>;
-  custom[columnKey] = selector;
+  // fix/cua-freeform-capture — page-scope value stores the object form; a per-row
+  // column stays a flat string (byte-identical to the original shape).
+  custom[columnKey] = scope === 'page' ? { selector, scope: 'page' } : selector;
   hint.customColumns = custom;
   parse.hint = hint;
   action.parse = parse;

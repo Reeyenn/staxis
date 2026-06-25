@@ -171,11 +171,11 @@ export async function GET(req: NextRequest) {
     return ok({
       propertyId: prop.id,
       propertyName: prop.name,
-      currentStep: 9 as const,
+      currentStep: 8 as const,
       completed: true,
       state: isOwnerSession
-        ? ((prop.onboarding_state as OnboardingState) ?? { step: 9 })
-        : { step: 9 } as OnboardingState,
+        ? ((prop.onboarding_state as OnboardingState) ?? { step: 8 })
+        : { step: 8 } as OnboardingState,
       hotelDefaults: null,
       inviteRole: resolved.codeRow.role,
     }, { requestId });

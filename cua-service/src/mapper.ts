@@ -2317,6 +2317,9 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
         propertyId: args.propertyId,
         pmsFamily: args.pmsFamily ?? null,
         feedKey: args.actionName,
+        // feature/cua-click-to-map — table feeds also get per-column geometry so
+        // the admin can drag-select a column on the provenance screenshot.
+        ...(result.action.parse.mode === 'table' ? { rowSelector: result.action.parse.hint.rowSelector } : {}),
       });
     }
     // feature/cua-column-recovery — an action that gained a drillDown block
@@ -4079,6 +4082,10 @@ function buildColumnHeaderAnchors(
   for (const c of headers.cells) {
     if (c.index >= 1 && c.raw.trim() !== '') textByIndex.set(c.index, c.raw);
   }
+  // fix/cua-header-offset — a column's BODY css index is bodyOffset positions to
+  // the RIGHT of its HEADER cell (leading action/icon cells), so map back to the
+  // header by subtracting the offset. 0 for aligned tables (byte-identical).
+  const off = headers.bodyOffset ?? 0;
   const tiered: Record<string, TieredSelector> = {};
   let any = false;
   for (const [field, cssRaw] of Object.entries(columns)) {
@@ -4086,7 +4093,7 @@ function buildColumnHeaderAnchors(
     if (css === '') continue;            // blanked/dead column — no anchor
     const idx = parseFirstNthIndex(css);
     if (idx == null) continue;            // non-positional (class/attr) — reorder-immune
-    const headerText = textByIndex.get(idx);
+    const headerText = textByIndex.get(idx - off);
     if (!headerText) continue;            // no header text at that column index
     tiered[field] = { roleName: { role: headers.roleKind, name: headerText }, css };
     any = true;

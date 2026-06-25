@@ -111,6 +111,15 @@ export interface CapturedTableHeaders {
    *  confirm it is reading the SAME table the map learned (vs a different table a
    *  generic rowSelector also matches). Empty when no table ancestor. */
   tableKey?: string;
+  /** fix/cua-header-offset — body rows often carry a few LEADING cells the header
+   *  row lacks (a checkbox / "Check In" action column, status icons), so a body
+   *  cell sits `bodyOffset` positions to the RIGHT of its header cell. Detected as
+   *  bodyChildCount − headerChildCount when small (1..MAX) AND uniform across the
+   *  sampled rows. Header-anchoring adds it when rebasing (header index → body
+   *  index = headerIndex + bodyOffset) and authoring subtracts it. 0/undefined =
+   *  aligned table (byte-identical to before). The runtime re-derives it each poll
+   *  (never persisted), so a layout change can't leave a stale offset. */
+  bodyOffset?: number;
 }
 
 /**
@@ -269,13 +278,49 @@ export async function readTableHeaders(
           else if (tal && tal.trim() !== '') tableKey = 'aria:' + tal.trim();
           else { let fp = ''; for (let i = 0; i < cells.length; i++) { fp += (i ? '|' : '') + cells[i]!.text; } tableKey = 'hdr:' + fp.slice(0, 200); }
         }
+        // fix/cua-header-offset — LEADING-cell offset: the body has a few more
+        // cells than the header (checkbox / action / icon columns at the front).
+        // Accept only a SMALL (1..4) offset that is UNIFORM across the sampled
+        // rows of the chosen table — else 0 (treat as misaligned, gate fails).
+        const headerCount = headerRow ? headerRow.children.length : 0;
+        let bodyOffset = 0;
+        const off = bodyChildCount - headerCount;
+        if (headerCount > 0 && off >= 1 && off <= 4 && firstRow) {
+          // (a) the gap must be UNIFORM across the chosen table's sampled rows.
+          let uniform = true; let counted = 0;
+          for (let i = 0; i < allRows.length && counted < 5; i++) {
+            if (table && table.contains(allRows[i]!)) {
+              counted++;
+              if (allRows[i]!.children.length !== bodyChildCount) { uniform = false; break; }
+            }
+          }
+          // (b) the extra cells must be LEADING ACTION/ICON cells (button / input /
+          //     checkbox / link / icon / empty) — NOT real data columns. This is
+          //     what makes the offset safe + general: it only fires for the common
+          //     "checkbox/action column at the front" shape, and refuses a table
+          //     whose front cells hold actual data (where the gap is trailing /
+          //     interleaved and a +offset shift would read the WRONG cell).
+          let leadingAreControls = uniform;
+          if (uniform) {
+            const kids = firstRow.children;
+            for (let i = 0; i < off; i++) {
+              const cell = kids[i];
+              if (!cell) { leadingAreControls = false; break; }
+              const txt = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+              const hasControl = cell.querySelector('button, input, a, svg, img, i, [role="button"], [type="checkbox"]') !== null;
+              if (txt !== '' && !hasControl) { leadingAreControls = false; break; }
+            }
+          }
+          if (uniform && leadingAreControls) bodyOffset = off;
+        }
         return {
           cells,
           roleKind,
           hasSpan,
-          headerChildCount: headerRow ? headerRow.children.length : 0,
+          headerChildCount: headerCount,
           bodyChildCount,
           tableKey,
+          bodyOffset,
         };
       },
       { rowSelector, isXpath: !!opts?.isXpath, expectedHeaders: (opts?.expectedHeaders ?? []).map((h) => h.toLowerCase()) },
@@ -291,11 +336,15 @@ export async function readTableHeaders(
  *  header row, no spanning header cell, and the header/body cell counts agree
  *  (rejects the "body has a checkbox column the header lacks" misalignment). */
 export function headerGateOk(h: CapturedTableHeaders | null): boolean {
-  return !!h
-    && h.cells.length > 0
-    && !h.hasSpan
-    && h.headerChildCount > 0
-    && h.headerChildCount === h.bodyChildCount;
+  if (!h || h.cells.length === 0 || h.hasSpan || h.headerChildCount <= 0) return false;
+  // Aligned table — the original gate (byte-identical).
+  if (h.headerChildCount === h.bodyChildCount) return true;
+  // fix/cua-header-offset — tolerate a small, validated LEADING offset (body has
+  // a few extra front cells the header lacks). Only when readTableHeaders proved
+  // it uniform (bodyOffset>0) AND it exactly accounts for the count gap — so a
+  // genuine colspan/structural misalignment still fails the gate.
+  const off = h.bodyOffset ?? 0;
+  return off >= 1 && off === h.bodyChildCount - h.headerChildCount;
 }
 
 /** Which tier resolved a column this scrape (telemetry for CSS-drift watch). */
@@ -535,7 +584,10 @@ async function extractDomRowsTiered(
     if (tiered.roleName && gateOk && origIdx != null) {
       const matches = headerIndexByText.get(normalizeHeaderText(tiered.roleName.name)) ?? [];
       if (matches.length === 1) {
-        const targetIdx = matches[0]!;
+        // fix/cua-header-offset — the header cell sits at header-index matches[0];
+        // the matching BODY cell is bodyOffset positions to its right (leading
+        // action/icon cells). 0 for aligned tables (byte-identical).
+        const targetIdx = matches[0]! + (headers!.bodyOffset ?? 0);
         cssEffective[field] = rebaseNthIndex(flatCss, targetIdx);
         resolution.push({ field, tier: 'roleName', drift: targetIdx !== origIdx, fromIndex: origIdx, toIndex: targetIdx });
         continue;

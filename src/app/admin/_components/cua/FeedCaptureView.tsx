@@ -15,9 +15,13 @@
 import { Camera, Loader2 } from 'lucide-react';
 import { FONT_MONO } from '@/app/admin/_components/studio/kit';
 import { dimWhite } from '@/app/admin/_components/studio/surface-kit';
+import type { ColumnGeometry } from '@/lib/pms/column-geometry';
 
-/** Per-feed source-screenshot fetch state (lazy — populated on first expand). */
-export interface CaptureState { loading: boolean; url: string | null }
+/** Per-feed source-screenshot fetch state (lazy — populated on first expand).
+ *  `geometry` (feature/cua-click-to-map) carries each column's on-screen box so
+ *  the editor can drag-select a column on the screenshot; null when the capture
+ *  predates geometry or the feed isn't a table. */
+export interface CaptureState { loading: boolean; url: string | null; geometry?: ColumnGeometry | null; capturing?: boolean; captureError?: string | null }
 
 export function FeedCaptureView({ state, onError }: { state?: CaptureState; onError?: () => void }) {
   return (

@@ -7,6 +7,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { useCan } from '@/lib/capabilities/useCan';
+import { APP_KEY_BY_HREF } from '@/lib/app-usage/registry';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LogOut, Globe, Settings, ChevronDown } from 'lucide-react';
@@ -41,7 +42,7 @@ const LAST_NAV_KEY = 'staxis-last-nav';
 
 export function Header() {
   const { user, signOut } = useAuth();
-  const { properties, activeProperty, setActivePropertyId } = useProperty();
+  const { properties, activeProperty, setActivePropertyId, appUsage } = useProperty();
   const can = useCan();
   const { lang, setLang } = useLang();
   const router = useRouter();
@@ -92,6 +93,36 @@ export function Header() {
   // sits as its own tab on the far right, outside the dropdown.
   const restLinks = navLinks.filter(l => l.href !== '/feed');
   const adminLink = isAdmin ? { href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' } : null;
+
+  // Auto-light the nav: every app always shows, but the ones the hotel is
+  // actually USING (real activity — see /api/app-usage) stay full-strength with
+  // a small "live" dot, while not-yet-used apps go greyed and sink toward the
+  // end. Dashboard is pinned first and Admin last; both are always "in use".
+  // An app is greyed ONLY when its usage is an explicit `false`, so while the
+  // map is loading (or a fetch failed → {}) nothing greys or reorders — no flash.
+  // The page you're currently on is never greyed or sunk (so you can open an
+  // unused app and start using it).
+  const decoratedLinks = navLinks.map((link, i) => {
+    const appKey = APP_KEY_BY_HREF[link.href];
+    const isApp = !!appKey;
+    const isActive = pathname.startsWith(link.href);
+    const used = (appKey ? appUsage[appKey] !== false : true) || isActive;
+    return {
+      link,
+      isApp,
+      isActive,
+      used,
+      pinFirst: link.href === '/dashboard',
+      pinLast: link.href.startsWith('/admin'),
+      i,
+    };
+  });
+  const orderedLinks = [...decoratedLinks].sort((a, b) => {
+    if (a.pinFirst !== b.pinFirst) return a.pinFirst ? -1 : 1;
+    if (a.pinLast !== b.pinLast) return a.pinLast ? 1 : -1;
+    if (a.used !== b.used) return a.used ? -1 : 1;
+    return a.i - b.i;
+  });
 
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
@@ -197,23 +228,38 @@ export function Header() {
                   borderRadius: '12px', minWidth: '210px', overflow: 'hidden', zIndex: 50,
                   boxShadow: '0 8px 24px rgba(31,35,28,0.08)',
                 }}>
-                  {restLinks.map(link => {
-                    const isActive = pathname.startsWith(link.href);
+                  {/* Items ordered + greyed by real app usage (carried over from
+                      the auto-lighting nav): in-use apps first with a sage live
+                      dot, not-yet-used apps greyed and sunk to the bottom. */}
+                  {orderedLinks.filter(o => o.link.href !== '/feed').map(({ link, isApp, isActive, used }) => {
+                    const greyed = isApp && !used;
+                    const showDot = isApp && used;
                     return (
                       <Link
                         key={link.href}
                         href={link.href}
                         onClick={() => setShowNavMenu(false)}
+                        title={greyed
+                          ? (lang === 'es' ? 'Aún no se usa — ábrelo para empezar' : 'Not in use yet — open it to get started')
+                          : undefined}
                         style={{
-                          display: 'block', padding: '10px 16px',
+                          display: 'flex', alignItems: 'center', gap: '7px',
+                          padding: '10px 16px',
                           fontFamily: sansFont, fontSize: '13px',
                           fontWeight: isActive ? 600 : 400,
                           color: isActive ? 'var(--snow-sage-deep)' : ink,
+                          opacity: greyed ? 0.55 : 1,
                           background: isActive ? 'rgba(158,183,166,0.12)' : 'transparent',
                           textDecoration: 'none',
                           borderBottom: '1px solid var(--snow-rule-soft)',
                         }}
                       >
+                        {showDot && (
+                          <span aria-hidden="true" style={{
+                            width: 5, height: 5, borderRadius: '50%',
+                            background: sage, flexShrink: 0,
+                          }} />
+                        )}
                         {link.label}
                       </Link>
                     );

@@ -4,7 +4,7 @@
 // dashboard) detects that the signed-in owner's property is mid-onboarding
 // (isOnboardingInProgress), it points the browser here. We resolve the
 // owner's incomplete property + a usable join code and 302-redirect into
-// the wizard, so they finish the 9 steps instead of being dropped on an
+// the wizard, so they finish the 8 steps instead of being dropped on an
 // empty dashboard with no PMS connected.
 //
 // This is the server side of the fix for the 2026-06-15 bug: "I create the

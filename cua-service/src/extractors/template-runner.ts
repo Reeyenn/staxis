@@ -570,6 +570,32 @@ export async function runSingleSourceTemplate(args: {
     };
   }
 
+  // fix/cua-freeform-capture — PAGE-scope custom columns: a one-off value read
+  // ONCE from the page and stamped on every row's `raw`. Best-effort: a missing
+  // selector just yields no value (the column is omitted), never fails the feed.
+  // Skipped entirely when there are no page columns (byte-identical).
+  if (template.pageColumns && template.pageColumns.length > 0 && parsedRows.length > 0) {
+    try {
+      const pageVals = await page.evaluate((cols: Array<{ key: string; selector: string }>) => {
+        const out: Record<string, string> = {};
+        for (let i = 0; i < cols.length; i++) {
+          let el: Element | null = null;
+          try { el = document.querySelector(cols[i]!.selector); } catch { el = null; }
+          if (el) { const t = (el.textContent || '').replace(/\s+/g, ' ').trim(); if (t !== '') out[cols[i]!.key] = t; }
+        }
+        return out;
+      }, template.pageColumns);
+      if (pageVals && Object.keys(pageVals).length > 0) {
+        for (const row of parsedRows) {
+          const existing = (row.raw && typeof row.raw === 'object') ? (row.raw as Record<string, unknown>) : {};
+          row.raw = { ...existing, ...pageVals };
+        }
+      }
+    } catch (err) {
+      log.warn('template-runner: page-scope value read failed (non-fatal)', { tableName: template.tableName, message: (err as Error).message });
+    }
+  }
+
   log.info('template-runner: single-source run complete', {
     tableName: template.tableName,
     sourceName: source.name,

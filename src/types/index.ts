@@ -52,7 +52,7 @@ export interface Property {
   roomInventory?: string[];
   /**
    * Onboarding tracking (M1.5 wizard). `onboardingCompletedAt` is set only
-   * when the 9-step wizard finishes; `onboardingState` carries the in-progress
+   * when the 8-step wizard finishes; `onboardingState` carries the in-progress
    * step markers. The login funnel (property-selector + dashboard) reads these
    * via `isOnboardingInProgress` to keep a mid-onboarding owner inside the
    * wizard instead of dropping them on an empty dashboard. Legacy / imported

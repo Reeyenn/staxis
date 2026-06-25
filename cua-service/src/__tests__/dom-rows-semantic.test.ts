@@ -412,3 +412,72 @@ describe('readTableHeaders — multi-table disambiguation (feature/cua-read-inte
     assert.ok((h!.tableKey ?? '').startsWith('hdr:'), 'no id/aria → header fingerprint key');
   });
 });
+
+// fix/cua-header-offset — body rows carry LEADING cells the header lacks (a
+// "Check In" button + a status icon BEFORE the data columns), so a body cell
+// sits +N to the right of its header cell. The strict header==body gate used to
+// reject these (no anchoring → wrong-cell reads). Now a small uniform offset is
+// tolerated and applied on rebase. (This is the Choice Advantage Arrivals shape.)
+describe('readTableHeaders + offset body (fix/cua-header-offset)', () => {
+  const OFFSET_TABLE = `
+    <table id="arr"><thead><tr><th>Guest Name</th><th>Room</th><th>Conf</th></tr></thead>
+      <tbody>
+        <tr><td><button>Check In</button></td><td><i>x</i></td><td>Banda, Maria</td><td>104</td><td>10507</td></tr>
+        <tr><td><button>Check In</button></td><td><i>x</i></td><td>Charter, Mark</td><td>110</td><td>10523</td></tr>
+      </tbody></table>`;
+
+  test('detects a uniform +2 leading offset and the gate now passes', async () => {
+    await page!.goto(dataUrl(OFFSET_TABLE));
+    const h = await readTableHeaders(page!, 'tbody tr');
+    assert.ok(h);
+    assert.deepEqual(h!.cells.map((c) => c.raw), ['Guest Name', 'Room', 'Conf']);
+    assert.equal(h!.headerChildCount, 3);
+    assert.equal(h!.bodyChildCount, 5);
+    assert.equal(h!.bodyOffset, 2);
+    assert.equal(headerGateOk(h), true, 'gate tolerates the validated offset');
+  });
+
+  test('header-anchoring rebases a STALE css to the right body cell via header+offset', async () => {
+    await page!.goto(dataUrl(OFFSET_TABLE));
+    // css is deliberately WRONG (nth-child(99)); roleName "Guest Name" must
+    // resolve header index 1, add the +2 offset → body nth-child(3) → real name.
+    const r = await extractDomRows(page!, 'tbody tr', { guest_name: 'td:nth-child(99)' }, {
+      cap: 50,
+      columnsTiered: { guest_name: { roleName: { role: 'cell', name: 'Guest Name' }, css: 'td:nth-child(99)' } },
+    });
+    assert.deepEqual(r.rows.map((row) => row.guest_name), ['Banda, Maria', 'Charter, Mark']);
+  });
+
+  test('an offset of 0 (aligned table) is byte-identical — no offset applied', async () => {
+    await page!.goto(dataUrl('<table><thead><tr><th>Guest Name</th><th>Room</th></tr></thead><tbody><tr><td>Banda</td><td>104</td></tr></tbody></table>'));
+    const h = await readTableHeaders(page!, 'tbody tr');
+    assert.ok(h);
+    assert.equal(h!.bodyOffset, 0);
+    assert.equal(headerGateOk(h), true);
+  });
+
+  test('a too-large / non-uniform gap is NOT treated as an offset (gate fails)', async () => {
+    // body has 10 leading junk cells (>4 cap) → not a tolerated offset.
+    const wide = '<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr>' +
+      Array.from({ length: 12 }, (_, i) => `<td>${i}</td>`).join('') + '</tr></tbody></table>';
+    await page!.goto(dataUrl(wide));
+    const h = await readTableHeaders(page!, 'tbody tr');
+    assert.ok(h);
+    assert.equal(h!.bodyOffset, 0, 'gap > 4 is not a leading offset');
+    assert.equal(headerGateOk(h), false);
+  });
+
+  test('leading extra cells holding DATA (not controls) are NOT a safe offset — gate fails', async () => {
+    // The +2 gap is real, but the leading cells are DATA (text), not action/icon
+    // columns. Treating this as a leading offset would shift columns the WRONG way
+    // (the gap may be trailing/interleaved), so we refuse it and fall back safely.
+    await page!.goto(dataUrl(`
+      <table><thead><tr><th>Guest</th><th>Room</th></tr></thead>
+        <tbody><tr><td>Mobile</td><td>36695</td><td>Banda</td><td>104</td></tr>
+               <tr><td>Greenville</td><td>29607</td><td>Brown</td><td>103</td></tr></tbody></table>`));
+    const h = await readTableHeaders(page!, 'tbody tr');
+    assert.ok(h);
+    assert.equal(h!.bodyOffset, 0, 'leading DATA cells are not a trusted action/icon offset');
+    assert.equal(headerGateOk(h), false);
+  });
+});

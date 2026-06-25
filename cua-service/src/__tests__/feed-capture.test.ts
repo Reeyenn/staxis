@@ -6,26 +6,42 @@ import assert from 'node:assert/strict';
 import type { Page } from 'playwright';
 import {
   captureFeedProvenanceScreenshot,
+  captureLiveFeedProvenance,
   feedScreenshotPath,
+  feedColumnBoxesPath,
+  liveFeedScreenshotPath,
+  liveFeedBoxesPath,
   type FeedCaptureRow,
+  type ColumnGeometry,
 } from '../feed-capture.js';
 
 // A fake Page — every real page interaction is routed through injected deps,
 // so the object is never actually touched.
 const PAGE = {} as Page;
 
+const GEO: ColumnGeometry = {
+  viewport: { w: 1280, h: 800 },
+  columns: [
+    { index: 3, header: 'Guest Name', x: 100, y: 50, w: 180, h: 600 },
+    { index: 8, header: 'Room #', x: 300, y: 50, w: 80, h: 600 },
+  ],
+};
+
 interface Rec {
   uploads: Array<{ key: string; bytes: number }>;
   rows: FeedCaptureRow[];
   cleared: number;
+  boxes: Array<{ key: string; columns: number }>;
 }
 
 function makeDeps(opts: {
   png: Buffer | null;
   uploadThrows?: boolean;
   insertThrows?: boolean;
+  geometry?: ColumnGeometry | null;
+  uploadBoxesThrows?: boolean;
 }): { deps: Parameters<typeof captureFeedProvenanceScreenshot>[1]; rec: Rec } {
-  const rec: Rec = { uploads: [], rows: [], cleared: 0 };
+  const rec: Rec = { uploads: [], rows: [], cleared: 0, boxes: [] };
   return {
     rec,
     deps: {
@@ -38,6 +54,11 @@ function makeDeps(opts: {
       insertRow: async (row) => {
         if (opts.insertThrows) throw new Error('insert boom');
         rec.rows.push(row);
+      },
+      captureGeometry: async () => opts.geometry ?? null,
+      uploadBoxes: async (key, geometry) => {
+        if (opts.uploadBoxesThrows) throw new Error('boxes boom');
+        rec.boxes.push({ key, columns: geometry.columns.length });
       },
     },
   };
@@ -104,4 +125,63 @@ test('row-insert failure never throws (best-effort)', async () => {
 test('feedScreenshotPath sanitizes the feed key into the feeds/ prefix', () => {
   assert.equal(feedScreenshotPath('job-1', 'getArrivals'), 'job-1/feeds/getArrivals.png');
   assert.equal(feedScreenshotPath('job-1', 'weird/key with spaces'), 'job-1/feeds/weird_key_with_spaces.png');
+});
+
+// ── feature/cua-click-to-map — column geometry alongside the screenshot ──
+
+test('with a rowSelector + geometry, uploads the sibling .boxes.json', async () => {
+  const { deps, rec } = makeDeps({ png: Buffer.from('PNG'), geometry: GEO });
+  await captureFeedProvenanceScreenshot({ ...FULL_ARGS, rowSelector: 'tbody tr' }, deps);
+  assert.equal(rec.uploads.length, 1, 'screenshot still uploaded');
+  assert.equal(rec.boxes.length, 1);
+  assert.equal(rec.boxes[0]!.key, feedColumnBoxesPath('job-1', 'getRoomStatus'));
+  assert.equal(rec.boxes[0]!.columns, 2);
+});
+
+test('no rowSelector → no geometry capture (non-table feed)', async () => {
+  const { deps, rec } = makeDeps({ png: Buffer.from('PNG'), geometry: GEO });
+  await captureFeedProvenanceScreenshot(FULL_ARGS, deps);
+  assert.equal(rec.uploads.length, 1);
+  assert.equal(rec.boxes.length, 0, 'geometry only captured when a rowSelector is passed');
+});
+
+test('a geometry/boxes failure never breaks the screenshot+row', async () => {
+  const { deps, rec } = makeDeps({ png: Buffer.from('PNG'), geometry: GEO, uploadBoxesThrows: true });
+  await assert.doesNotReject(() => captureFeedProvenanceScreenshot({ ...FULL_ARGS, rowSelector: 'tbody tr' }, deps));
+  assert.equal(rec.uploads.length, 1, 'screenshot still uploaded');
+  assert.equal(rec.rows.length, 1, 'row still recorded despite geometry failure');
+  assert.equal(rec.boxes.length, 0);
+});
+
+test('rowSelector present but geometry null (headerless/odd table) → no boxes, no throw', async () => {
+  const { deps, rec } = makeDeps({ png: Buffer.from('PNG'), geometry: null });
+  await captureFeedProvenanceScreenshot({ ...FULL_ARGS, rowSelector: 'tbody tr' }, deps);
+  assert.equal(rec.uploads.length, 1);
+  assert.equal(rec.boxes.length, 0);
+});
+
+// ── fix/cua-freeform-capture-live — poll-time refresh to the stable live keys ──
+
+test('live capture uploads screenshot + geometry to the per-property live keys, NO row', async () => {
+  const { deps, rec } = makeDeps({ png: Buffer.from('LIVE'), geometry: GEO });
+  await captureLiveFeedProvenance({ page: PAGE, propertyId: 'prop-1', feedKey: 'getDepartures', rowSelector: 'tbody tr' }, deps);
+  assert.equal(rec.uploads.length, 1);
+  assert.equal(rec.uploads[0]!.key, liveFeedScreenshotPath('prop-1', 'getDepartures'));
+  assert.equal(rec.boxes.length, 1);
+  assert.equal(rec.boxes[0]!.key, liveFeedBoxesPath('prop-1', 'getDepartures'));
+  assert.equal(rec.rows.length, 0, 'live capture never inserts a mapping_feed_captures row (job_id is a FK)');
+});
+
+test('live capture withholds when masking fails; never throws on geometry error', async () => {
+  const a = makeDeps({ png: null, geometry: GEO });
+  await captureLiveFeedProvenance({ page: PAGE, propertyId: 'p', feedKey: 'getArrivals', rowSelector: 'tbody tr' }, a.deps);
+  assert.equal(a.rec.uploads.length, 0);
+  const b = makeDeps({ png: Buffer.from('x'), geometry: GEO, uploadBoxesThrows: true });
+  await assert.doesNotReject(() => captureLiveFeedProvenance({ page: PAGE, propertyId: 'p', feedKey: 'getArrivals', rowSelector: 'tbody tr' }, b.deps));
+  assert.equal(b.rec.uploads.length, 1, 'screenshot still uploaded despite geometry failure');
+});
+
+test('liveFeedScreenshotPath/liveFeedBoxesPath are stable per-property keys', () => {
+  assert.equal(liveFeedScreenshotPath('prop-1', 'getArrivals'), 'live/prop-1/getArrivals.png');
+  assert.equal(liveFeedBoxesPath('prop-1', 'getArrivals'), 'live/prop-1/getArrivals.boxes.json');
 });
