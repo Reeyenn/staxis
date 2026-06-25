@@ -10,11 +10,13 @@
  * session-driver normally refreshes that during polls — but a hotel whose map is
  * still a PARKED DRAFT has no active session (paused_no_knowledge_file) and never
  * polls, so the drag-map never appears (the Comfort Suites / Choice Advantage
- * case). This enqueues a CHEAP `mapper.capture_feed` worker job: it logs in via
- * the stored session (no fresh login, NO vision/Claude $), navigates to the one
- * feed, and writes screenshot+geometry to the stable live/{property}/{feed} keys
- * that GET /api/admin/mapper/feed-capture reads. The UI then polls feed-capture
- * until the geometry appears.
+ * case). This enqueues a `mapper.capture_feed` worker job: it reuses the stored
+ * session (FREE, no Claude) to navigate to the one feed and write
+ * screenshot+geometry to the stable live/{property}/{feed} keys that
+ * GET /api/admin/mapper/feed-capture reads. If that stored session is expired it
+ * falls back to ONE vision re-login (org-daily-cap-gated), so this route enforces
+ * a short per-(property,feed) COOLDOWN to stop repeated clicks re-firing logins.
+ * The UI then polls feed-capture until the geometry appears.
  *
  * RECIPE_SIGNING_KEY is Fly-only and this never re-signs anything (read-only
  * capture), so unlike edit-column there's no draft/live split — it's always a
@@ -36,6 +38,9 @@ export const dynamic = 'force-dynamic';
 const UUID = /^[0-9a-f-]{36}$/i;
 const FEED_KEY = /^[A-Za-z0-9_.-]{1,80}$/;
 const PMS_FAMILY = /^[a-z][a-z0-9_]{0,48}$/;
+// Min gap between on-demand captures of the SAME feed — the expired-session
+// fallback spends a vision re-login, so this stops "try again" mashing.
+const CAPTURE_COOLDOWN_MS = 60_000;
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -75,18 +80,30 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // De-dupe: if a capture for this exact feed is already queued/running, reuse it
   // rather than launching a second browser. Best-effort — a missed dedupe just
-  // costs one extra cheap capture.
-  const { data: existing } = await supabaseAdmin
+  // costs one extra cheap capture. AND a COOLDOWN: the expired-session fallback
+  // spends a vision re-login, so a founder mashing "try again" against a broken
+  // login must not re-fire one every ~90s. Reuse an in-flight job; refuse a fresh
+  // one within CAPTURE_COOLDOWN_MS of the last attempt (the relogin_needed message
+  // steers them to Re-map anyway, not to re-click).
+  const { data: latest } = await supabaseAdmin
     .from('workflow_jobs')
-    .select('id')
+    .select('id, status, created_at')
     .eq('property_id', propertyId)
     .eq('kind', 'mapper.capture_feed')
-    .in('status', ['queued', 'running'])
     .contains('payload', { feed_key: feedKey })
+    .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (existing && typeof existing.id === 'string') {
-    return ok({ jobId: existing.id, reused: true }, { requestId });
+  if (latest && typeof latest.id === 'string') {
+    if (latest.status === 'queued' || latest.status === 'running') {
+      return ok({ jobId: latest.id, reused: true }, { requestId });
+    }
+    const ageMs = Date.now() - new Date(latest.created_at as string).getTime();
+    if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < CAPTURE_COOLDOWN_MS) {
+      return err('The robot just tried reading this page — give it a few seconds, or use Re-map.', {
+        requestId, status: 429, code: 'cooldown',
+      });
+    }
   }
 
   const { data: inserted, error: insErr } = await supabaseAdmin

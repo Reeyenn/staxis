@@ -840,7 +840,7 @@ async function acquireMfaCode(
  * the SAME trusted-device state and (usually) skips MFA entirely on its
  * first poll login. Same row shape as SessionDriver.saveStorageState.
  */
-async function saveTrustedSession(propertyId: string | null, page: Page): Promise<void> {
+export async function saveTrustedSession(propertyId: string | null, page: Page): Promise<void> {
   if (!propertyId) return;
   try {
     const state = await page.context().storageState();
@@ -1358,7 +1358,7 @@ interface LoginMapFailure {
   detail: Record<string, unknown>;
 }
 
-async function mapLogin(
+export async function mapLogin(
   page: Page,
   creds: PMSCredentials,
   ctx: {
@@ -1537,10 +1537,16 @@ async function mapLogin(
       const mfaDetected = await detectMfaScreen(page);
       if (mfaDetected) {
         mfaResolutions += 1;
-        if (!ctx.propertyId || mfaResolutions > 2) {
-          // No property to look codes up for (one-off dev run), or the PMS
-          // re-prompted after two resolved codes — give up with the
-          // distinct reason the admin UI knows.
+        // A null jobId means the JOBLESS on-demand capture re-login (coverage
+        // editor drag-map). There is NO 2FA box wired to it, so entering
+        // acquireMfaCode would (a) text the founder to type a code into a screen
+        // that isn't connected, and (b) leave a detached ~10-min pms_auth_codes
+        // poll that can CONSUME the single-use code a later Re-map mints — making
+        // the Re-map we steer them to ALSO fail. Abstain immediately instead.
+        if (!ctx.jobId || !ctx.propertyId || mfaResolutions > 2) {
+          // No job/property to look codes up for (jobless capture or one-off dev
+          // run), or the PMS re-prompted after two resolved codes — give up with
+          // the distinct reason the admin UI knows.
           log.warn('login mapper aborting — MFA unresolvable', {
             jobId: ctx.jobId ?? undefined, stepIdx, mfaResolutions, hasProperty: Boolean(ctx.propertyId),
           });

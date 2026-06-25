@@ -28,11 +28,11 @@
  * from the per-hotel daily cost cap.
  */
 
-import type { Browser, BrowserContextOptions } from 'playwright';
+import type { Browser, BrowserContextOptions, Page } from 'playwright';
 import { chromium } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
-import { mapPMS, type MapperResult } from './mapper.js';
+import { mapPMS, mapLogin, saveTrustedSession, type MapperResult } from './mapper.js';
 import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
@@ -1348,6 +1348,23 @@ async function loadActiveOrLatestDraftRecipe(pmsFamily: string): Promise<Recipe 
 const ON_DEMAND_CAPTURE_LAUNCH_TIMEOUT_MS = 30_000;
 const ON_DEMAND_CAPTURE_NAV_TIMEOUT_MS = 45_000;
 const ON_DEMAND_CAPTURE_SHOT_TIMEOUT_MS = 20_000;
+// Nominal per-login cap passed to mapLogin. NOTE: this is INERT on the jobless
+// capture path (mapLogin's per-turn budget gate keys on jobId, which is null
+// here), so the REAL cost bounds are: the 90s wall-clock race below, mapLogin's
+// internal step/token budget, the immediate MFA abstain (jobless logins never
+// enter the 10-min code poll), and the org-wide daily mapping cap checked before
+// we spend. A single re-login is ~$0.05-0.20. Kept for when a real jobId is wired.
+const ON_DEMAND_CAPTURE_RELOGIN_CAP_MICROS = 1_000_000; // $1.00 (nominal)
+const ON_DEMAND_CAPTURE_RELOGIN_TIMEOUT_MS = 90_000;
+
+/** Universal "we got bounced to the PMS login form" signal — a visible password
+ *  field. Data feed pages never render one; every PMS login page does. Best-
+ *  effort, never throws. */
+async function isOnLoginPage(page: Page): Promise<boolean> {
+  try {
+    return await page.locator('input[type="password"]').first().isVisible({ timeout: 2_000 });
+  } catch { return false; }
+}
 
 /**
  * fix/cua-freeform-capture-live — ON-DEMAND drag-map capture.
@@ -1359,15 +1376,15 @@ const ON_DEMAND_CAPTURE_SHOT_TIMEOUT_MS = 20_000;
  * drag-map never appears and the founder literally can't drag anything (the
  * exact Comfort Suites / Choice Advantage case).
  *
- * This logs in CHEAPLY via the STORED session (scraper_session.state — NO fresh
- * login, NO vision, NO Claude $), navigates to the ONE feed using its (active or
- * latest-draft) recipe, and writes screenshot + geometry to the STABLE
- * live/{property}/{feed} keys the coverage editor reads. Best-effort: any
- * failure returns a reason and the editor degrades to "try Re-map".
- *
- * Reuses the exact storageState pattern as replaySiblingFeedReadOnly — never a
- * fresh login (which could evict a single-session PMS), fresh isolated browser,
- * read-only.
+ * This first tries the STORED session (scraper_session.state — FREE, no Claude),
+ * navigates to the ONE feed using its (active or latest-draft) recipe, and writes
+ * screenshot + geometry to the STABLE live/{property}/{feed} keys the coverage
+ * editor reads. If the stored session is EXPIRED (the feed nav bounces to the PMS
+ * login page — common for a parked-draft hotel that never polls), it falls back
+ * to ONE vision re-login (the only Claude-spending branch), gated by the org
+ * daily mapping cap + bounded by a 90s race + immediate MFA abstain, then refreshes
+ * the stored cookies so the NEXT capture is free again. Best-effort: any failure
+ * returns a reason and the editor degrades to "try Re-map".
  */
 export async function captureFeedOnDemand(args: {
   propertyId: string;
@@ -1420,17 +1437,52 @@ export async function captureFeedOnDemand(args: {
     });
     const page = await context.newPage();
     const allowedHost = new URL(credentials.loginUrl).host;
+    const navSignal = (): AbortSignal => {
+      const navTimeout = AbortSignal.timeout(ON_DEMAND_CAPTURE_NAV_TIMEOUT_MS);
+      return signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, navTimeout]) : navTimeout;
+    };
     // Navigate to the feed (goto + preSteps). The EXTRACTION result is ignored —
-    // we just need the page sitting ON the feed table so the capture sees it. A
-    // failed extraction still usually lands us on the right page. The nav budget
-    // is combined with the job signal so the job timeout can cancel it too.
-    const navTimeout = AbortSignal.timeout(ON_DEMAND_CAPTURE_NAV_TIMEOUT_MS);
-    const navSignal = signal && typeof AbortSignal.any === 'function'
-      ? AbortSignal.any([signal, navTimeout])
-      : navTimeout;
-    const run = await runSingleSourceTemplate({
-      page, template, allowedHost, signal: navSignal,
-    });
+    // we just need the page sitting ON the feed table so the capture sees it.
+    let run = await runSingleSourceTemplate({ page, template, allowedHost, signal: navSignal() });
+
+    // The STORED session can be expired (a parked-draft hotel never polls, so its
+    // cookies are never refreshed) — the feed nav then bounces to the PMS login
+    // page and we'd screenshot THAT (no table → the founder's "no_table"). If we
+    // landed on a login form, log in fresh via the PROVEN mapper login (handles
+    // CA's Okta nag + trusted-device, so it usually skips MFA), REFRESH the stored
+    // cookies so the next capture is free, then re-navigate to the feed.
+    if (await isOnLoginPage(page)) {
+      // This is the ONE branch that spends Claude $ (a vision re-login). Gate it
+      // behind the org-wide daily mapping-spend net BEFORE spending, mirroring
+      // runMappingJob — the cheap stored-cookie path above never reaches here.
+      const dailyCap = await checkDailyMappingSpend();
+      if (dailyCap.over) {
+        log.warn('capture-feed: refusing re-login — org daily mapping spend cap exceeded', {
+          propertyId, feedKey, spentDollars: microsToDollars(dailyCap.spentMicros),
+        });
+        return { ok: false, reason: 'daily_cap' };
+      }
+      log.info('capture-feed: stored session expired — re-logging in', { propertyId, feedKey });
+      // Bound the login so it can't hang the shared no-driver lane. CA's
+      // trusted-device cookie usually skips MFA; a jobless login abstains
+      // IMMEDIATELY on a real MFA screen (mapper.ts) rather than polling for a
+      // code, so the 90s race is the wall-clock bound, not a 10-min MFA wait.
+      // .catch keeps the background promise from becoming an unhandled rejection
+      // when the timeout wins (finally closes the browser, unwinding mapLogin).
+      const loginPromise = mapLogin(page, credentials, {
+        propertyId, jobId: null, signal,
+        jobCostCapMicros: ON_DEMAND_CAPTURE_RELOGIN_CAP_MICROS,
+      }).then((r) => ({ ok: r.ok })).catch(() => ({ ok: false }));
+      const login = await Promise.race([
+        loginPromise,
+        new Promise<{ ok: boolean }>((resolve) => setTimeout(() => resolve({ ok: false }), ON_DEMAND_CAPTURE_RELOGIN_TIMEOUT_MS)),
+      ]);
+      if (!login.ok) return { ok: false, reason: 'relogin_needed' };
+      await saveTrustedSession(propertyId, page);
+      run = await runSingleSourceTemplate({ page, template, allowedHost, signal: navSignal() });
+      // Still on the login wall after a "successful" login → MFA/credentials issue.
+      if (await isOnLoginPage(page)) return { ok: false, reason: 'relogin_needed' };
+    }
     if (!run.ok) {
       log.warn('capture-feed: feed run not ok — capturing current page anyway', {
         propertyId, feedKey, reason: run.reason,

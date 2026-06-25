@@ -135,14 +135,18 @@ const captureReason = (reason: string): string => {
   if (reason.startsWith('unsafe_url')) return "Couldn't safely open this feed's page.";
   switch (reason) {
     case 'no_stored_session': return "The robot hasn't finished logging into this hotel yet — Re-map this feed first.";
+    case 'relogin_needed': return "The robot's login expired and it couldn't get back in (it may need a 2FA code) — Re-map this feed to refresh it.";
     case 'no_credentials': return 'This hotel has no saved PMS login yet.';
     case 'no_recipe': return "There's no map for this hotel yet — Re-map first.";
     case 'no_pms_family': return "This hotel's PMS isn't set up yet.";
     case 'feed_incomplete':
     case 'feed_not_in_recipe': return "The robot doesn't fully know this feed yet — Re-map it.";
     case 'multi_source_unsupported': return "This feed has several sources, so drag-capture isn't supported — use Re-map.";
+    case 'daily_cap': return "The robot's hit its daily limit for reading pages — try again tomorrow, or Re-map.";
     case 'aborted': return 'The capture was cancelled — try again.';
-    default: return "Couldn't capture this page — try Re-map above.";
+    // Route-level errors arrive as full human sentences (cooldown, no PMS set up,
+    // etc.) — show them as-is. An unknown single-token code → the generic line.
+    default: return /\s/.test(reason) ? reason : "Couldn't capture this page — try Re-map above.";
   }
 };
 
