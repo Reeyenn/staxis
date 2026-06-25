@@ -59,7 +59,7 @@ import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 // feature/cua-self-heal-reach — one-fix-generalizes (sample-verify) + golden-fixture gates.
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
-import { captureLiveFeedProvenance } from './feed-capture.js';
+import { captureLiveFeedProvenance, uploadLiveFeedSample } from './feed-capture.js';
 import { loadActive } from './knowledge-file.js';
 // rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
 // from here, so this is a cycle — but BOTH cross-module references are call-time
@@ -1494,6 +1494,10 @@ export async function captureFeedOnDemand(args: {
       captureLiveFeedProvenance({ page, propertyId, feedKey, ...(rowSelector ? { rowSelector } : {}) }),
       new Promise<void>((resolve) => setTimeout(resolve, ON_DEMAND_CAPTURE_SHOT_TIMEOUT_MS)),
     ]);
+    // Persist a small live SAMPLE of what was read (the "Captured" preview).
+    // sampleRows survives the contract gate (blank required cols), so the founder
+    // still sees the values — including a blank column they then drag to fix.
+    await uploadLiveFeedSample(propertyId, feedKey, run.sampleRows ?? run.rows);
     return { ok: true };
   } catch (err) {
     if (err instanceof UnsafeNavigationError) return { ok: false, reason: `unsafe_url:${err.reason}` };

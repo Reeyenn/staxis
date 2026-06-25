@@ -284,12 +284,41 @@ function isSafeValueSelector(sel: string): boolean {
   return true;
 }
 
-/** fix/cua-freeform-capture — the SET of value-element selectors the worker
+const sanitizeFeedKey = (k: string): string => k.replace(/[^a-z0-9_-]/gi, '_');
+
+/** Value-element selectors recorded in a `.boxes.json` geometry artifact.
+ *  Best-effort: empty on any miss. */
+async function valueSelectorsFromBoxes(boxesPath: string): Promise<string[]> {
+  try {
+    const { data: blob } = await supabaseAdmin.storage.from('mapping-screenshots').download(boxesPath);
+    if (!blob || blob.size > 200_000) return [];
+    const parsed = JSON.parse(await blob.text());
+    if (parsed && Array.isArray(parsed.values)) {
+      return parsed.values
+        .filter((v: unknown) => v && typeof v === 'object' && typeof (v as { selector?: unknown }).selector === 'string')
+        .map((v: { selector: string }) => v.selector);
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+/** fix/cua-freeform-capture — the SET of value-element selectors the robot
  *  captured for this feed (the geometry's `values`). A page-scope add is only
- *  allowed for a selector in this trusted set. Best-effort: returns empty on any
- *  miss so the caller refuses the add. */
+ *  allowed for a selector in this trusted set.
+ *
+ *  BUG FIX (review BLOCKER): the page drags off the LIVE per-property geometry
+ *  key (live/{property}/{feed}.boxes.json — written by the on-demand capture job,
+ *  which never inserts a mapping_feed_captures row), so certifying ONLY against
+ *  mapping_feed_captures rejected every legitimate value-drag on a parked-draft
+ *  hotel ("That selection wasn't recognized — re-map"). Resolve the SAME way the
+ *  feed-capture route serves geometry: prefer the live key, fall back to the
+ *  mapping-time capture row. Best-effort: empty → caller refuses the add. */
 async function fetchFeedValueSelectors(propertyId: string, feedKey: string): Promise<Set<string>> {
   const out = new Set<string>();
+  // 1) Prefer the live key the page actually drags off.
+  for (const s of await valueSelectorsFromBoxes(`live/${propertyId}/${sanitizeFeedKey(feedKey)}.boxes.json`)) out.add(s);
+  if (out.size > 0) return out;
+  // 2) Fall back to the latest mapping-time capture row.
   try {
     const { data } = await supabaseAdmin
       .from('mapping_feed_captures')
@@ -300,16 +329,9 @@ async function fetchFeedValueSelectors(propertyId: string, feedKey: string): Pro
       .limit(1)
       .maybeSingle();
     const sp = (data as { screenshot_path?: unknown } | null)?.screenshot_path;
-    if (typeof sp !== 'string' || !sp) return out;
-    const boxesPath = sp.replace(/\.png$/, '.boxes.json');
-    if (boxesPath === sp) return out;
-    const { data: blob } = await supabaseAdmin.storage.from('mapping-screenshots').download(boxesPath);
-    if (!blob || blob.size > 200_000) return out;
-    const parsed = JSON.parse(await blob.text());
-    if (parsed && Array.isArray(parsed.values)) {
-      for (const v of parsed.values) {
-        if (v && typeof v === 'object' && typeof (v as { selector?: unknown }).selector === 'string') out.add((v as { selector: string }).selector);
-      }
+    if (typeof sp === 'string' && sp) {
+      const boxesPath = sp.replace(/\.png$/, '.boxes.json');
+      if (boxesPath !== sp) for (const s of await valueSelectorsFromBoxes(boxesPath)) out.add(s);
     }
   } catch { /* refuse the add on any failure */ }
   return out;

@@ -107,6 +107,9 @@ interface CoverageResponse {
   addableFeeds: Array<{ actionKey: string; label: string }>;
 }
 
+// fix/cua-freeform-capture — the "Captured" panel's per-feed live sample.
+interface FeedSampleData { capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }> }
+
 const STATE_PILL: Record<FeedDetail['state'], { tone: PillTone; label: string }> = {
   live: { tone: 'forest', label: 'Live' },
   learning: { tone: 'gold', label: 'Still learning' },
@@ -125,6 +128,19 @@ function DarkScope({ children }: { children: React.ReactNode }) {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// "read 5 min ago" for the Captured panel. Tolerates a bad/empty timestamp.
+const timeAgo = (iso: string): string => {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  return `${Math.round(h / 24)} d ago`;
+};
 
 // fix/cua-freeform-capture-live — map a worker capture reason (or 'no_table' /
 // 'timeout' tokens) to a plain-English founder message. Keeps the failure
@@ -164,6 +180,9 @@ export default function CoveragePage() {
   // feature/cua-admin-mapper-visibility — per-feed source screenshots, keyed by
   // the capture feed key (actionKey ?? row key). Lazily filled on first expand.
   const [captures, setCaptures] = useState<Record<string, CaptureState>>({});
+  // "Captured" panel — per-feed live sample of what the robot read.
+  const [samples, setSamples] = useState<Record<string, FeedSampleData | null>>({});
+  const [recapturing, setRecapturing] = useState<Record<string, boolean>>({});
   const [addKey, setAddKey] = useState<string>('');
   const [pendingDelete, setPendingDelete] = useState<FeedDetail | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -216,6 +235,57 @@ export default function CoveragePage() {
     if (!user || !propertyId) return;
     void load();
   }, [user, propertyId, load]);
+
+  // "Captured" panel — fetch one feed's live sample.
+  const loadOneSample = useCallback(async (feedKey: string): Promise<FeedSampleData | null> => {
+    try {
+      const res = await fetchWithAuth(`/api/admin/mapper/feed-sample?propertyId=${encodeURIComponent(propertyId)}&feedKeys=${encodeURIComponent(feedKey)}`);
+      const json = await res.json();
+      if (res.ok && json.ok && json.data?.samples) return (json.data.samples[feedKey] as FeedSampleData | null) ?? null;
+    } catch { /* leave as-is */ }
+    return null;
+  }, [propertyId]);
+
+  // Fetch all feeds' samples in one call (called when the map loads).
+  const loadSamples = useCallback(async () => {
+    const keys = (data?.feeds ?? []).map((f) => f.actionKey ?? f.key).filter(Boolean);
+    if (keys.length === 0) return;
+    try {
+      const res = await fetchWithAuth(`/api/admin/mapper/feed-sample?propertyId=${encodeURIComponent(propertyId)}&feedKeys=${encodeURIComponent(keys.join(','))}`);
+      const json = await res.json();
+      if (res.ok && json.ok && json.data?.samples) setSamples(json.data.samples as Record<string, FeedSampleData | null>);
+    } catch { /* leave as-is */ }
+  }, [propertyId, data]);
+
+  // Trigger a fresh robot read of one feed, then refresh its sample.
+  const recaptureFeed = useCallback(async (feedKey: string) => {
+    if (recapturing[feedKey]) return;
+    setRecapturing((prev) => ({ ...prev, [feedKey]: true }));
+    const before = samples[feedKey]?.capturedAt;
+    try {
+      const res = await fetchWithAuth('/api/admin/mapper/coverage/capture-feed', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ propertyId, feedKey }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) { setToast({ tone: 'bad', text: captureReason(typeof json?.error === 'string' ? json.error : 'capture_failed') }); return; }
+      for (let i = 0; i < 30; i++) {
+        await sleep(3000);
+        const s = await loadOneSample(feedKey);
+        if (s && s.capturedAt && s.capturedAt !== before) {
+          setSamples((prev) => ({ ...prev, [feedKey]: s }));
+          setToast({ tone: 'good', text: 'Re-read from the robot.' });
+          return;
+        }
+      }
+      setToast({ tone: 'warn', text: "Still reading — check back in a moment." });
+    } catch { setToast({ tone: 'bad', text: "Couldn't re-read this feed." }); }
+    finally { setRecapturing((prev) => ({ ...prev, [feedKey]: false })); }
+  }, [propertyId, recapturing, samples, loadOneSample]);
+
+  useEffect(() => {
+    if (data?.feeds?.length) void loadSamples();
+  }, [data, loadSamples]);
 
   // De-dupe guard: keys with a fetch in flight or a SUCCESSFUL result. We keep
   // successes cached (re-expanding is free) but deliberately drop empties +
@@ -564,9 +634,14 @@ export default function CoveragePage() {
       setToast({ tone: 'bad', text: 'Pick or drag a column from the page to capture.' });
       return;
     }
-    void runColumnEdit(`add:${feed.key}`, payload, `Now capturing “${columnKey}” into this feed.`)
+    // Honest confirmation: on a PARKED DRAFT nothing collects until the map is
+    // made live, so don't claim "now capturing" — say it's saved to the draft.
+    const okText = data?.activeMap?.isDraft
+      ? `Saved “${columnKey}” to your draft map — it'll start collecting once you make this map live.`
+      : `Now capturing “${columnKey}” into this feed.`;
+    void runColumnEdit(`add:${feed.key}`, payload, okText)
       .then((okFlag) => {
-        if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); }
+        if (okFlag) { setAddColFeed(null); setAddColIndex(''); setAddColName(''); setAddColSelector(''); setAddColScope('row'); setDragColFeed(null); void loadSamples(); }
       });
   };
 
@@ -1040,6 +1115,55 @@ export default function CoveragePage() {
             <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
           </div>
         </SurfaceShell>
+
+        {/* fix/cua-freeform-capture — "Captured": what the robot last read off each
+            feed (field name → current value), so the founder can SEE what's being
+            captured (incl. blanks + dragged custom columns) before the map is live. */}
+        {data && data.feeds.length > 0 && (
+          <div style={{ marginTop: 18, padding: '18px 20px', background: dimWhite(.03), border: `1px solid ${dimWhite(.08)}`, borderRadius: 14 }}>
+            <Caps size={11} c="var(--gold)" style={{ letterSpacing: '.14em' }}>Captured</Caps>
+            <div style={{ fontFamily: FONT_SANS, fontSize: 12, color: dimWhite(.5), margin: '5px 0 16px' }}>
+              What the robot last read off each feed — field name and its current value.{' '}
+              {data.activeMap?.isDraft && <span style={{ color: dimWhite(.62) }}>This map isn’t live yet, so these are one-time previews — make it live to keep collecting.</span>}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {data.feeds.map((f) => {
+                const key = f.actionKey ?? f.key;
+                const s = samples[key];
+                const busy = !!recapturing[key];
+                return (
+                  <div key={key} style={{ padding: '12px 14px', background: dimWhite(.04), borderRadius: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: s && s.fields.length ? 10 : 0, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: FONT_SERIF, fontSize: 15, color: '#fff' }}>{f.label}</span>
+                      {s && <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>{s.rowCount} row{s.rowCount === 1 ? '' : 's'}{s.capturedAt && timeAgo(s.capturedAt) ? ` · ${timeAgo(s.capturedAt)}` : ''}</span>}
+                      <button
+                        onClick={() => void recaptureFeed(key)}
+                        disabled={busy || !!liveJobId}
+                        style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', color: 'var(--gold)', cursor: busy ? 'default' : 'pointer', fontFamily: FONT_MONO, fontSize: 10.5, textDecoration: 'underline', padding: 0, opacity: busy || liveJobId ? .6 : 1 }}
+                      >
+                        {busy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={11} />} {busy ? 'Reading…' : 'Re-read'}
+                      </button>
+                    </div>
+                    {s && s.fields.length > 0 ? (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: '5px 16px' }}>
+                        {s.fields.map((fld, i) => (
+                          <div key={i} style={{ display: 'flex', gap: 8, fontFamily: FONT_MONO, fontSize: 11.5, minWidth: 0 }}>
+                            <span style={{ color: dimWhite(.5), whiteSpace: 'nowrap' }}>{fld.name}</span>
+                            <span title={fld.value} style={{ color: fld.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fld.value || '— blank'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
+                        {busy ? 'Reading the page…' : 'Not read yet — hit Re-read to pull the live values.'}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Delete confirm */}
         {pendingDelete && (

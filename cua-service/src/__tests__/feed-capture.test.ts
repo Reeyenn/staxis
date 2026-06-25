@@ -11,6 +11,9 @@ import {
   feedColumnBoxesPath,
   liveFeedScreenshotPath,
   liveFeedBoxesPath,
+  liveFeedSamplePath,
+  buildFeedSample,
+  uploadLiveFeedSample,
   type FeedCaptureRow,
   type ColumnGeometry,
 } from '../feed-capture.js';
@@ -184,4 +187,60 @@ test('live capture withholds when masking fails; never throws on geometry error'
 test('liveFeedScreenshotPath/liveFeedBoxesPath are stable per-property keys', () => {
   assert.equal(liveFeedScreenshotPath('prop-1', 'getArrivals'), 'live/prop-1/getArrivals.png');
   assert.equal(liveFeedBoxesPath('prop-1', 'getArrivals'), 'live/prop-1/getArrivals.boxes.json');
+});
+
+// ── fix/cua-freeform-capture — the "Captured" panel live sample ──
+
+test('liveFeedSamplePath is a stable per-property .sample.json key', () => {
+  assert.equal(liveFeedSamplePath('prop-1', 'getArrivals'), 'live/prop-1/getArrivals.sample.json');
+});
+
+test('buildFeedSample flattens the first row (top-level cols then raw extras), keeps rowCount', () => {
+  const rows = [
+    { guest_name: 'Molina, Felix', room_number: '208', raw: { rate_plan: 'SBOOK', group: 'X' } },
+    { guest_name: 'Xie, Songtao', room_number: '300', raw: { rate_plan: 'LOPQ2' } },
+  ];
+  const s = buildFeedSample(rows, '2026-06-25T20:00:00Z');
+  assert.equal(s.rowCount, 2);
+  assert.equal(s.capturedAt, '2026-06-25T20:00:00Z');
+  assert.deepEqual(s.fields, [
+    { name: 'guest_name', value: 'Molina, Felix' },
+    { name: 'room_number', value: '208' },
+    { name: 'rate_plan', value: 'SBOOK' },
+    { name: 'group', value: 'X' },
+  ]);
+});
+
+test('buildFeedSample renders a blank required column as empty string (so the panel can flag it)', () => {
+  const s = buildFeedSample([{ guest_name: '', room_number: '208' }], 'now');
+  assert.equal(s.fields[0]!.name, 'guest_name');
+  assert.equal(s.fields[0]!.value, '');
+});
+
+test('buildFeedSample clamps long values + coerces non-strings; empty rows → no fields', () => {
+  const long = 'x'.repeat(300);
+  const s = buildFeedSample([{ note: long, n: 5, b: true, nope: null }], 'now');
+  const byName = Object.fromEntries(s.fields.map((f) => [f.name, f.value]));
+  assert.ok(byName.note!.length <= 141 && byName.note!.endsWith('…'));
+  assert.equal(byName.n, '5');
+  assert.equal(byName.b, 'true');
+  assert.equal(byName.nope, '');
+  assert.deepEqual(buildFeedSample([], 'now'), { capturedAt: 'now', rowCount: 0, fields: [] });
+});
+
+test('uploadLiveFeedSample writes the sample key for non-empty rows; no-op + never throws otherwise', async () => {
+  const writes: Array<{ key: string; body: string }> = [];
+  const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: 'A', raw: { x: '1' } }], deps);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0]!.key, 'live/prop-1/getArrivals.sample.json');
+  const parsed = JSON.parse(writes[0]!.body);
+  assert.equal(parsed.rowCount, 1);
+  assert.equal(parsed.fields.length, 2);
+
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [], deps);
+  assert.equal(writes.length, 1, 'empty rows upload nothing');
+
+  const boom = { uploadJson: async () => { throw new Error('boom'); }, now: () => 'T' };
+  await assert.doesNotReject(() => uploadLiveFeedSample('p', 'f', [{ a: '1' }], boom));
 });

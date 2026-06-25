@@ -45,6 +45,12 @@ export interface TemplateRunResult {
   /** Per-source extraction outcomes for diagnostics. */
   sourceResults: Array<{ name: string; ok: boolean; rowCount: number; reason?: string }>;
   reason?: string;
+  /** fix/cua-freeform-capture — the parsed rows even when the contract gate
+   *  REJECTS the run (blank required columns) and clears `rows`. Lets the
+   *  coverage editor's "Captured" preview show the live values the robot read —
+   *  including a blank required column the founder then needs to fix — BEFORE the
+   *  map is made live. Never consumed by the warehouse writer. */
+  sampleRows?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -567,6 +573,9 @@ export async function runSingleSourceTemplate(args: {
       rows: [],
       sourceResults: [{ name: source.name, ok: false, rowCount: parsedRows.length, reason }],
       reason,
+      // Carry the parsed rows for the coverage editor's "Captured" preview — the
+      // founder sees the live values (incl. the blank required column to fix).
+      sampleRows: parsedRows,
     };
   }
 
@@ -607,6 +616,7 @@ export async function runSingleSourceTemplate(args: {
     ok: true,
     rows: parsedRows,
     sourceResults: [{ name: source.name, ok: true, rowCount: parsedRows.length }],
+    sampleRows: parsedRows,
   };
 }
 

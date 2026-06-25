@@ -146,6 +146,65 @@ export function liveFeedScreenshotPath(propertyId: string, feedKey: string): str
 export function liveFeedBoxesPath(propertyId: string, feedKey: string): string {
   return `live/${propertyId}/${sanitizeFeedKey(feedKey)}.boxes.json`;
 }
+export function liveFeedSamplePath(propertyId: string, feedKey: string): string {
+  return `live/${propertyId}/${sanitizeFeedKey(feedKey)}.sample.json`;
+}
+
+/** fix/cua-freeform-capture — a small live SAMPLE of what the robot just read
+ *  off a feed: each captured field name + its current value (from the first
+ *  row), so the coverage editor's "Captured" panel can show the founder exactly
+ *  what's being captured (incl. blanks + custom columns) BEFORE the map is live. */
+export interface FeedSampleField { name: string; value: string }
+export interface FeedSample { capturedAt: string; rowCount: number; fields: FeedSampleField[] }
+
+/** PURE. Flatten the first row into [{name,value}] — top-level columns first,
+ *  then the `raw` jsonb sub-keys (custom/extra columns), values clamped. */
+export function buildFeedSample(rows: Array<Record<string, unknown>>, capturedAt: string): FeedSample {
+  const fields: FeedSampleField[] = [];
+  const first = rows[0];
+  const clamp = (v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    const s = typeof v === 'string' ? v : (typeof v === 'number' || typeof v === 'boolean') ? String(v) : '';
+    return s.length > 140 ? s.slice(0, 140) + '…' : s;
+  };
+  if (first && typeof first === 'object') {
+    for (const [k, v] of Object.entries(first)) {
+      if (k === 'raw') continue;
+      fields.push({ name: k, value: clamp(v) });
+    }
+    const raw = first.raw;
+    if (raw && typeof raw === 'object') {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        fields.push({ name: k, value: clamp(v) });
+      }
+    }
+  }
+  return { capturedAt, rowCount: rows.length, fields };
+}
+
+/** Upsert the live sample for one feed. Best-effort: never throws. No-op when
+ *  there are no rows (nothing to preview). */
+export async function uploadLiveFeedSample(
+  propertyId: string,
+  feedKey: string,
+  rows: Array<Record<string, unknown>>,
+  deps?: { uploadJson?: (key: string, body: string) => Promise<void>; now?: () => string },
+): Promise<void> {
+  try {
+    if (!rows || rows.length === 0) return;
+    const now = deps?.now ? deps.now() : new Date().toISOString();
+    const sample = buildFeedSample(rows, now);
+    const body = JSON.stringify(sample);
+    if (deps?.uploadJson) { await deps.uploadJson(liveFeedSamplePath(propertyId, feedKey), body); return; }
+    const { supabase } = await import('./supabase.js');
+    const { error } = await supabase.storage.from(BUCKET).upload(liveFeedSamplePath(propertyId, feedKey), Buffer.from(body), {
+      contentType: 'application/json', cacheControl: '30', upsert: true,
+    });
+    if (error) throw new Error(error.message);
+  } catch (err) {
+    log.warn('feed-capture: live sample upload failed (non-fatal)', { propertyId, feedKey, err: (err as Error).message });
+  }
+}
 
 /**
  * Refresh the live (poll-time) screenshot + drag geometry for one feed, while
