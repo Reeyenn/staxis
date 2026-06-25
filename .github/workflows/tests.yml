@@ -115,7 +115,15 @@ jobs:
           # CRON_SECRET is optional in the schema but some tests poke
           # requireCronSecret directly. Min length matches the schema rules.
           CRON_SECRET: 'placeholder-cron-secret-min-16'
-        run: npx tsx --test src/lib/__tests__/*.test.ts
+        # `--conditions=react-server` MUST match the `test` script in
+        # package.json. Without it, tsx resolves the default export
+        # condition and `server-only` throws "cannot be imported from a
+        # Client Component" the moment a test transitively imports
+        # src/lib/supabase-admin.ts — crashing the runner and cascading
+        # into ~115 spurious failures. The npm script gained this flag on
+        # 2026-06-10 but this CI step was missed, leaving `test` red on
+        # main. Keep the two invocations in lock-step.
+        run: npx tsx --conditions=react-server --test src/lib/__tests__/*.test.ts
 
       # Phase M3.1 (2026-05-14): static check for undefined names. F821
       # would have caught the demand.py:214 NameError on `property_meta`

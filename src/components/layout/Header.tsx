@@ -10,7 +10,7 @@ import { useCan } from '@/lib/capabilities/useCan';
 import { APP_KEY_BY_HREF } from '@/lib/app-usage/registry';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LogOut, Globe, Settings } from 'lucide-react';
+import { LogOut, Globe, Settings, ChevronDown } from 'lucide-react';
 import { LanguageMenu } from '@/components/i18n/LanguageMenu';
 
 // Snow design system — chevron mark from the locked Dashboard
@@ -31,6 +31,15 @@ function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: 
   );
 }
 
+// Section pages that live behind the dropdown. The dropdown button labels
+// itself with the last one the user visited (persisted) instead of a
+// generic "Menu".
+const SECTION_HREFS = [
+  '/dashboard', '/housekeeping', '/communications',
+  '/maintenance', '/inventory', '/staff', '/financials',
+];
+const LAST_NAV_KEY = 'staxis-last-nav';
+
 export function Header() {
   const { user, signOut } = useAuth();
   const { properties, activeProperty, setActivePropertyId, appUsage } = useProperty();
@@ -39,8 +48,26 @@ export function Header() {
   const router = useRouter();
   const pathname = usePathname();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
+  const [showNavMenu, setShowNavMenu] = React.useState(false);
+  // Remember the last section page visited so the dropdown can label itself
+  // with it (instead of "Menu") when the user is on the Staxis feed.
+  const [lastNav, setLastNav] = React.useState('/dashboard');
+  React.useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(LAST_NAV_KEY);
+      if (saved) setLastNav(saved);
+    } catch { /* localStorage unavailable */ }
+  }, []);
+  React.useEffect(() => {
+    const match = SECTION_HREFS.find(h => pathname.startsWith(h));
+    if (match) {
+      setLastNav(match);
+      try { window.localStorage.setItem(LAST_NAV_KEY, match); } catch { /* ignore */ }
+    }
+  }, [pathname]);
 
   const baseNavLinks = [
+    { href: '/feed',         label: 'Staxis' },
     { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/housekeeping', label: lang === 'es' ? 'Limpieza' : 'Housekeeping' },
     { href: '/communications', label: lang === 'es' ? 'Comunicación' : 'Communications' },
@@ -60,8 +87,12 @@ export function Header() {
   const navLinks = [
     ...baseNavLinks,
     ...(showFinancials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),
-    ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
+  // "Staxis" (the decision feed) stays as the one visible tab; the other
+  // pages collapse into a single dropdown to its right. Admin (owner-only)
+  // sits as its own tab on the far right, outside the dropdown.
+  const restLinks = navLinks.filter(l => l.href !== '/feed');
+  const adminLink = isAdmin ? { href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' } : null;
 
   // Auto-light the nav: every app always shows, but the ones the hotel is
   // actually USING (real activity — see /api/app-usage) stay full-strength with
@@ -143,51 +174,116 @@ export function Header() {
           )}
         </div>
 
-        {/* Center: Nav links */}
-        <nav style={{
-          display: 'flex', gap: '24px',
-          minWidth: 0, overflowX: 'auto',
-          scrollbarWidth: 'none', msOverflowStyle: 'none',
-        }} className="header-nav-scroll">
-          {orderedLinks.map(({ link, isApp, isActive, used }) => {
-            // Greyed = a real app the hotel hasn't used yet (never the page
-            // you're on). In-use apps get a small sage "live" dot.
-            const greyed = isApp && !used;
-            const showDot = isApp && used;
-            return (
-              <Link
-                key={link.href}
-                href={link.href}
-                title={greyed
-                  ? (lang === 'es' ? 'Aún no se usa — ábrelo para empezar' : 'Not in use yet — open it to get started')
-                  : undefined}
-                aria-label={isApp
-                  ? `${link.label} — ${used
-                      ? (lang === 'es' ? 'en uso' : 'in use')
-                      : (lang === 'es' ? 'aún no se usa' : 'not in use yet')}`
-                  : undefined}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '6px',
-                  fontFamily: sansFont, fontWeight: isActive ? 600 : 400,
-                  fontSize: '13px', color: isActive ? ink : ink3,
-                  opacity: greyed ? 0.55 : 1,
-                  textDecoration: 'none',
-                  borderBottom: isActive ? `1.5px solid ${sage}` : 'none',
-                  paddingBottom: '2px',
-                  transition: 'color 0.15s ease, opacity 0.15s ease',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {showDot && (
-                  <span aria-hidden="true" style={{
-                    width: 5, height: 5, borderRadius: '50%',
-                    background: sage, flexShrink: 0,
-                  }} />
-                )}
-                {link.label}
-              </Link>
-            );
-          })}
+        {/* Center: Staxis tab + a dropdown holding every other page */}
+        <nav style={{ display: 'flex', alignItems: 'center', gap: '20px', minWidth: 0 }} className="header-nav-scroll">
+          {/* Staxis (the decision feed) — always visible */}
+          <Link
+            href="/feed"
+            style={{
+              fontFamily: sansFont, fontWeight: pathname.startsWith('/feed') ? 600 : 400,
+              fontSize: '13px', color: pathname.startsWith('/feed') ? ink : ink3,
+              textDecoration: 'none',
+              borderBottom: pathname.startsWith('/feed') ? `1.5px solid ${sage}` : 'none',
+              paddingBottom: '2px', transition: 'color 0.15s ease', whiteSpace: 'nowrap',
+            }}
+          >
+            Staxis
+          </Link>
+
+          {/* Everything else, collapsed into one dropdown */}
+          <div style={{ position: 'relative' }}>
+            {(() => {
+              const activeRest = restLinks.find(l => pathname.startsWith(l.href));
+              const fallback = restLinks.find(l => l.href.startsWith(lastNav)) ?? restLinks[0];
+              const displayLabel = activeRest?.label ?? fallback?.label ?? (lang === 'es' ? 'Menú' : 'Menu');
+              return (
+                <button
+                  onClick={() => setShowNavMenu(v => !v)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    fontFamily: sansFont, fontWeight: activeRest ? 600 : 400, fontSize: '13px',
+                    color: activeRest ? ink : ink3,
+                    borderBottom: activeRest ? `1.5px solid ${sage}` : 'none',
+                    paddingBottom: '2px', whiteSpace: 'nowrap',
+                  }}
+                  aria-label={lang === 'es' ? 'Menú' : 'Menu'}
+                >
+                  {displayLabel}
+                  <ChevronDown
+                    size={14}
+                    color={activeRest ? ink : ink3}
+                    style={{ transition: 'transform 0.2s ease', transform: showNavMenu ? 'rotate(180deg)' : 'none' }}
+                  />
+                </button>
+              );
+            })()}
+
+            {showNavMenu && (
+              <>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 48 }} onClick={() => setShowNavMenu(false)} />
+                <div style={{
+                  position: 'absolute', left: 0, top: 'calc(100% + 10px)',
+                  background: 'var(--snow-bg)', border: `1px solid ${rule}`,
+                  borderRadius: '12px', minWidth: '210px', overflow: 'hidden', zIndex: 50,
+                  boxShadow: '0 8px 24px rgba(31,35,28,0.08)',
+                }}>
+                  {/* Items ordered + greyed by real app usage (carried over from
+                      the auto-lighting nav): in-use apps first with a sage live
+                      dot, not-yet-used apps greyed and sunk to the bottom. */}
+                  {orderedLinks.filter(o => o.link.href !== '/feed').map(({ link, isApp, isActive, used }) => {
+                    const greyed = isApp && !used;
+                    const showDot = isApp && used;
+                    return (
+                      <Link
+                        key={link.href}
+                        href={link.href}
+                        onClick={() => setShowNavMenu(false)}
+                        title={greyed
+                          ? (lang === 'es' ? 'Aún no se usa — ábrelo para empezar' : 'Not in use yet — open it to get started')
+                          : undefined}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '7px',
+                          padding: '10px 16px',
+                          fontFamily: sansFont, fontSize: '13px',
+                          fontWeight: isActive ? 600 : 400,
+                          color: isActive ? 'var(--snow-sage-deep)' : ink,
+                          opacity: greyed ? 0.55 : 1,
+                          background: isActive ? 'rgba(158,183,166,0.12)' : 'transparent',
+                          textDecoration: 'none',
+                          borderBottom: '1px solid var(--snow-rule-soft)',
+                        }}
+                      >
+                        {showDot && (
+                          <span aria-hidden="true" style={{
+                            width: 5, height: 5, borderRadius: '50%',
+                            background: sage, flexShrink: 0,
+                          }} />
+                        )}
+                        {link.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Admin — owner-only, its own tab on the far right of the dropdown */}
+          {adminLink && (
+            <Link
+              href={adminLink.href}
+              style={{
+                fontFamily: sansFont, fontWeight: pathname.startsWith('/admin') ? 600 : 400,
+                fontSize: '13px', color: pathname.startsWith('/admin') ? ink : ink3,
+                textDecoration: 'none',
+                borderBottom: pathname.startsWith('/admin') ? `1.5px solid ${sage}` : 'none',
+                paddingBottom: '2px', transition: 'color 0.15s ease', whiteSpace: 'nowrap',
+              }}
+            >
+              {adminLink.label}
+            </Link>
+          )}
         </nav>
 
         {/* Right: controls */}
