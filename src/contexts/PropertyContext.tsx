@@ -383,19 +383,26 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   }, [activePropertyId]);
 
   // Load which apps the active hotel is USING, so the nav can light the in-use
-  // ones and grey + sink the rest. Same identity-primitive deps + mid-onboarding
-  // guard as capabilities above (don't fire the protected call while the 2FA
-  // device-trust is still settling; {} = nothing greyed in the meantime).
+  // ones and grey + sink the rest.
   //
-  // Refresh cadence (v1): this fires on sign-in and on every active-property
-  // switch. It does NOT live-refresh mid-session, so an app the owner first
-  // starts using lights up on the next reload / property switch — not instantly.
-  // That's fine because the app you're currently ON is always shown lit (the
-  // Header treats the active route as in-use), and an app stays lit permanently
-  // once used. refreshAppUsage() is exposed for a future explicit re-pull, the
-  // same way refreshCapabilities is.
+  // NOTE: unlike the capabilities effect above, this deliberately does NOT gate
+  // on activeOnboardingInProgress. A live, operational hotel can still have
+  // onboarding_completed_at = null (e.g. Comfort Suites was never formally
+  // "finished") → isOnboardingInProgress stays true forever → the guard would
+  // permanently suppress auto-light for exactly the hotels that need it, leaving
+  // every app falsely lit. The 2FA-trust-window logout risk that motivates the
+  // capabilities guard is already neutralised here by fetchAppUsageFor's
+  // self-Authorization fail-soft (a transient `requires_2fa` 401 → {} = nothing
+  // greyed, never a forced sign-out), so firing during onboarding is harmless.
+  //
+  // Refresh cadence (v1): fires on sign-in and on every active-property switch.
+  // It does NOT live-refresh mid-session, so an app the owner first starts using
+  // lights up on the next reload / property switch — fine, because the app you're
+  // currently ON is always shown lit (the Header treats the active route as in
+  // use) and an app stays lit permanently once used. refreshAppUsage() is exposed
+  // for a future explicit re-pull, the same way refreshCapabilities is.
   useEffect(() => {
-    if (!user || !activePropertyId || activeOnboardingInProgress) {
+    if (!user || !activePropertyId) {
       setAppUsage({});
       return;
     }
@@ -410,7 +417,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, activePropertyId, activeOnboardingInProgress]);
+  }, [userUid, activePropertyId]);
 
   const refreshAppUsage = useCallback(async () => {
     if (!activePropertyId) { setAppUsage({}); return; }
