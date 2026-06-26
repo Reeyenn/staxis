@@ -470,3 +470,109 @@ Staxis has built a **strong foundation** for the Phase 1 MVP housekeeping schedu
 **Discovery Source:**
 - `[C] Customer Discovery Findings — Comfort Suites (April 2026).md` (43KB, comprehensive field notes)
 
+---
+
+# SECURITY AUDIT — 2026-06-26 (pre-onboarding)
+
+Multi-agent security audit of the whole codebase (web `src/`, CUA worker
+`cua-service/`, ML service `ml-service/`, migrations) run before onboarding
+real hotels. 55 agents across access-control/IDOR, multi-tenancy, secrets,
+injection/SSRF, session/2FA, rate-limit/cost-abuse, PII, CUA, ML, and
+dependencies; every finding adversarially re-verified against the real code.
+**59 confirmed findings: 4 high, 9 medium, 46 low.**
+
+All fixes landed on branch `fix/security-hardening` (5 commits, off live
+`origin/main` @ b442e60). Verification per commit: `tsc --noEmit`, `eslint`
+(+ the repo's own tenant-scope / RLS-coverage / MFA-gate audit scripts),
+2388 web tests, 1059 cua-service tests, and a full production build — all green.
+
+## Fixed & shipped (branch `fix/security-hardening`)
+
+HIGH
+- **Cron/admin auth fail-open on Vercel preview** (`api-auth.ts requireCronSecret`).
+  Preview deploys carry the prod service-role key and are publicly reachable;
+  unsigned requests passed through, exposing destructive cron endpoints. Now
+  fails closed on preview (mirrors `requireHeartbeatSecret`). Commit 0f48559.
+- **Rate-limit key spoofable via leftmost `X-Forwarded-For`** on auth/onboarding/
+  housekeeper endpoints — defeated join-code/invite brute-force + cost caps. New
+  `trustedClientIp()`/`clientIpRateLimitKey()` use the platform-trusted source;
+  all 7 call sites routed through it. Commit 0f48559.
+- **AI agent ignored per-hotel Access-tab capability restrictions** — a manager an
+  admin had switched OFF for financials could still ask the copilot for
+  revenue/budgets/wages. Added `requiresCapability` to the tool registry +
+  `canForProperty` gate in `executeTool`; tagged finance/reports/payments/
+  compliance tools. Commit 0f48559.
+- (#1 root cause — public staff-page `staffId` enumeration via `/api/staff-list` —
+  see "Remaining" below; the structural fix is a documented follow-up.)
+
+MEDIUM
+- **sms/callout webhook fail-open** when `TWILIO_AUTH_TOKEN` unset/blank — now
+  fails closed + rejects unsigned JSON (mirrors `sms-reply`). Commit 0f48559.
+- **inventory/accounting-summary** leaked spend/budget to any same-tenant role —
+  now routes through `requireFinanceAccess`. Commit 0f48559.
+- **inventory/ai-mode** writable by any property-scoped role — now via
+  `requireOrderingAccess` (manage_inventory_orders). Commit dac9e53.
+- **CUA `extractFetchApi` SSRF** — the one credentialed (`credentials:'include'`)
+  egress that bypassed `safeGoto`; now refuses private/loopback/link-local hosts
+  + optional DNS-rebinding preflight. Commit 3625185.
+- **CapEx attachment**: projectId validated as UUID (kills path traversal into the
+  storage key) + magic-byte / `%PDF-` validation. Commit dac9e53.
+- **axios/form-data/qs/ws** advisories patched (`npm audit fix`, non-breaking) in
+  root + cua-service; cua-service → 0 vulns. Commit 3b670d4.
+
+LOW (selected)
+- complaints/draft 403-vs-404 cross-tenant existence oracle → single 404. dac9e53.
+- onboarding_state PATCH: reject unknown keys + length-cap strings (bounds jsonb). dac9e53.
+- Sentry `includeLocalVariables:false` (don't serialize secrets in stack locals). dac9e53.
+- Stripe portal `return_url` from canonical `NEXT_PUBLIC_APP_URL`, not Origin header. dac9e53.
+- UUID validation on agent conversations/nudges id params (500→400). dac9e53.
+- Stop echoing raw Postgres `error.message` to clients (agent convo, staff-schedule
+  ×3, feedback). dac9e53 + eab45e3.
+- **CI gate**: new `.github/workflows/dependency-audit.yml` fails build on HIGH/
+  CRITICAL prod advisories (npm root+cua, pip-audit ml), per-PR + weekly. 3b670d4.
+
+## Remaining — recommended follow-ups (not yet fixed)
+
+1. **HIGH — public staff-page `staffId` enumeration.** `GET /api/staff-list?pid=`
+   returns live `staffId`s with no auth; the whole housekeeper/laundry/engineer
+   public surface trusts the `(pid, staffId)` tuple as its only credential, and
+   `pid` leaks via SMS links. Fix: stop emitting `staff.id` from any
+   unauthenticated endpoint AND bind those public routes to a per-staff token
+   minted at SMS-send time (a `staff_magic_codes`-style bearer) verified
+   server-side, instead of a raw `staffId`. Multi-route change + migration; needs
+   its own focused build + signed-in QA.
+2. **MEDIUM — staff phone readable by any same-tenant user via the anon client**
+   (`STAFF_COLS` in `src/lib/db/staff.ts`). Insider-only (requires a valid hotel
+   account). Fix mirrors the shipped `hourly_wage` pattern: strip `phone` from the
+   anon read projection (and anon write helpers), add a manager-gated
+   `GET/PUT /api/staff/contact` (verifyTeamManager + `manage_team`), and rewire
+   `ManagerDirectory.tsx` to a `phones` map with the same `wageTouched`-style
+   race-guard so a save can't clear a phone before the async map loads. Deferred
+   because it touches the live staff-management write path and needs signed-in
+   browser QA — a rushed version risks clearing staff phone numbers on save.
+3. **MEDIUM — pms-feeds money tools still allow `front_desk`** for guest-balance/
+   future-booking aggregates. `get_payments_summary` is now gated; decide per-tool
+   whether front desk needs the others operationally before tightening.
+4. **MEDIUM — CUA recipe signing ships in `warn` mode** (read/login path). Ops:
+   `fly secrets set RECIPE_SIGNING_KEY=<32+ bytes> RECIPE_SIGNING_ENFORCE=enforce -a staxis-cua`,
+   then run the resign-knowledge-files backfill, so the read path fails closed like
+   the write path already does.
+5. **LOW (hardening, ~30 items)** — full list in the audit run output. Highlights:
+   CSP uses `unsafe-inline` (no nonce) and `img-src https:` wildcard; CSRF relies on
+   SameSite=Lax only; remaining admin routes echo `error.message`; `validateNumber`
+   accepts hex/exponential; `validateString` permits control chars into SMS; pms-inbox
+   trusts caller-supplied DKIM/DMARC verdicts; sentry-webhook has no replay window.
+   None are unauthenticated data-exfil; schedule alongside normal work.
+
+## Ops actions required (config — cannot be done in code)
+
+- **Set `CRON_SECRET` on ALL Vercel environments (Production AND Preview).** With
+  the fail-closed fix an unset secret on preview now returns 500 (safe) instead of
+  exposing endpoints — but preview cron/admin smoke tests need the secret set.
+  Strongly consider a SEPARATE Supabase project (or disabled preview deploys) so
+  preview never carries the production service-role key.
+- **Redeploy the Fly CUA worker** (`flyctl deploy staxis-cua`) to ship the patched
+  `ws`, the `extractFetchApi` SSRF guard, and (with #4 above) recipe-signing enforce.
+- **Rotate any secret** that may have been exposed via a publicly-reachable preview
+  deploy during the pass-through window (precautionary).
+
