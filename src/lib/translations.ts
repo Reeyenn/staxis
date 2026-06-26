@@ -2221,6 +2221,7 @@ const translations: TranslationMaps = {
     hkAreaFinal: 'Tchekap final',
     // Exceptions
     hkException: 'Eksepsyon',
+    hkClose: 'Fèmen',
     hkExceptionDnd: 'Pa Deranje',
     hkExceptionNsr: 'Pa Bezwen Sèvis',
     hkExceptionDla: 'Pòt Doub-Kloure',
@@ -2460,6 +2461,7 @@ const translations: TranslationMaps = {
     hkAreaAmenities: 'Mga supply',
     hkAreaFinal: 'Huling tsek',
     hkException: 'Eksepsiyon',
+    hkClose: 'Isara',
     hkExceptionDnd: 'Huwag Istorbohin',
     hkExceptionNsr: 'Walang Serbisyo',
     hkExceptionDla: 'Doble-Kandado',
@@ -2686,6 +2688,7 @@ const translations: TranslationMaps = {
     hkAreaAmenities: 'Tiện nghi',
     hkAreaFinal: 'Kiểm tra cuối',
     hkException: 'Ngoại lệ',
+    hkClose: 'Đóng',
     hkExceptionDnd: 'Đừng Làm Phiền',
     hkExceptionNsr: 'Không Cần Dịch Vụ',
     hkExceptionDla: 'Khóa Đôi',
