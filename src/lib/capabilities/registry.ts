@@ -153,7 +153,7 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   {
     key: 'use_lost_and_found', adminOnly: false, deptScoped: false, group: 'front_desk',
     label_en: 'Lost & Found', label_es: 'Objetos perdidos',
-    desc_en: 'Log found items and notify guests', desc_es: 'Registrar objetos y notificar a huéspedes',
+    desc_en: 'Log and track found items', desc_es: 'Registrar y rastrear objetos perdidos',
   },
   {
     key: 'use_complaints', adminOnly: false, deptScoped: false, group: 'front_desk',
