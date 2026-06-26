@@ -82,6 +82,11 @@ export function InventoryShell() {
   const tx = t(L);
   const can = useCan();
   const canManage = !!user && can('manage_inventory_orders');
+  // Money capability — gates every budget/spend surface (sidebar spend strip,
+  // Reports + Budgets panels, the reorder budget meters) AND the budget/spend
+  // data fetch below, so the figures never reach a line-staff browser. Stock
+  // counts + low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.)
+  const canViewFinancials = !!user && can('view_financials');
 
   // ── Core data state ────────────────────────────────────────────────
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -131,8 +136,14 @@ export function InventoryShell() {
             getInventoryAutoFillMap(activePropertyId, initialMode).catch(() => [] as AutoFillItem[]),
             listInventoryCounts(user.uid, activePropertyId, 200),
             listInventoryOrders(user.uid, activePropertyId, 200),
-            listInventoryBudgets(user.uid, activePropertyId),
-            monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd),
+            // Budget + spend are money — only fetch them for the money capability
+            // so the dollar figures never reach a line-staff browser.
+            canViewFinancials
+              ? listInventoryBudgets(user.uid, activePropertyId)
+              : Promise.resolve([] as InventoryBudget[]),
+            canViewFinancials
+              ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
+              : Promise.resolve({} as Record<string, number>),
           ]);
         if (cancelled) return;
         setOccupancy(occ);
@@ -152,7 +163,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, canViewFinancials]);
 
   // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
   useEffect(() => {
@@ -168,11 +179,14 @@ export function InventoryShell() {
   useEffect(() => {
     const action = searchParams.get('action');
     if (action && VALID_QUERY_ACTIONS.includes(action as Exclude<OverlayKey, null>)) {
+      // The budget/spend overlays are money — never honour a ?action= deep link
+      // to them for a non-money role (closes the deep-link back door).
+      if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
       setOverlay(action as OverlayKey);
     }
     // Run only on initial mount + param changes — we want sticky URLs.
 
-  }, [searchParams]);
+  }, [searchParams, canViewFinancials]);
 
   // ── Derived display items ──────────────────────────────────────────
   const autoFillGraduated = useMemo(() => {
@@ -279,8 +293,12 @@ export function InventoryShell() {
       const [ct, od, bd, spend, occ, avg, rates] = await Promise.all([
         listInventoryCounts(user.uid, activePropertyId, 200),
         listInventoryOrders(user.uid, activePropertyId, 200),
-        listInventoryBudgets(user.uid, activePropertyId),
-        monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd),
+        canViewFinancials
+          ? listInventoryBudgets(user.uid, activePropertyId)
+          : Promise.resolve([] as InventoryBudget[]),
+        canViewFinancials
+          ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
+          : Promise.resolve({} as Record<string, number>),
         fetchOccupancyBundle(activePropertyId, daysAgo(14)),
         fetchDailyAverages(activePropertyId, 14),
         fetchMlPredictedRates(activePropertyId),
@@ -295,7 +313,7 @@ export function InventoryShell() {
     } catch (err) {
       console.error('[inventory] refresh failed', err);
     }
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, canViewFinancials]);
 
   const updateAiMode = useCallback(async (mode: AiMode) => {
     if (!activePropertyId) return;
@@ -378,6 +396,7 @@ export function InventoryShell() {
           spendSpent={totalSpent}
           spendCap={totalCap}
           canManage={canManage}
+          canViewFinancials={canViewFinancials}
           onAction={openOverlay}
         />
         <div>
@@ -426,6 +445,7 @@ export function InventoryShell() {
         averages={averages}
         mlRateMap={mlRateMap}
         canManage={canManage}
+        canViewFinancials={canViewFinancials}
         orderingMode={orderingMode}
         onViewOrders={() => setOverlay('orders')}
       />
@@ -449,7 +469,7 @@ export function InventoryShell() {
 
       <ReportsPanel
         lang={L}
-        open={overlay === 'reports'}
+        open={overlay === 'reports' && canViewFinancials}
         onClose={closeOverlay}
         display={display}
       />
@@ -464,7 +484,7 @@ export function InventoryShell() {
 
       <BudgetsPanel
         lang={L}
-        open={overlay === 'budgets'}
+        open={overlay === 'budgets' && canViewFinancials}
         onClose={() => { closeOverlay(); void refreshData(); }}
         budgets={budgets}
       />

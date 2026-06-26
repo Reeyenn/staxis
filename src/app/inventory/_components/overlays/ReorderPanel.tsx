@@ -34,6 +34,10 @@ interface ReorderPanelProps {
   /** Only management can place orders (owner/GM/admin). Non-managers see the
    *  reorder list but the place button is disabled. */
   canManage: boolean;
+  /** Money capability (view_financials) — gates the per-category budget-vs-spend
+   *  meters. The reorder list itself (what to order) stays visible to staff.
+   *  (Access cleanup 2026-06-26.) */
+  canViewFinancials: boolean;
   orderingMode: OrderingMode;
   /** Jump to the Orders panel after placing. */
   onViewOrders: () => void;
@@ -65,6 +69,7 @@ export function ReorderPanel({
   averages,
   mlRateMap,
   canManage,
+  canViewFinancials,
   orderingMode,
   onViewOrders,
 }: ReorderPanelProps) {
@@ -309,24 +314,27 @@ export function ReorderPanel({
           <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{TT.proNote}</div>
         )}
 
-        {/* Budget meters */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-          {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((cat) => {
-            const monthly = budgetFor(budgets, cat as InventoryCategory);
-            const spentCents = spendByCat[cat] ?? 0;
-            return (
-              <BudgetMeter
-                key={cat}
-                lang={L}
-                tt={TT}
-                cat={cat}
-                capDollars={monthly}
-                spentDollars={spentCents / 100}
-                projectedDollars={projectedByCat[cat]}
-              />
-            );
-          })}
-        </div>
+        {/* Budget meters — budget vs spend dollars, money-capability only.
+            Line staff still see the reorder list below; just not the budget. */}
+        {canViewFinancials && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((cat) => {
+              const monthly = budgetFor(budgets, cat as InventoryCategory);
+              const spentCents = spendByCat[cat] ?? 0;
+              return (
+                <BudgetMeter
+                  key={cat}
+                  lang={L}
+                  tt={TT}
+                  cat={cat}
+                  capDollars={monthly}
+                  spentDollars={spentCents / 100}
+                  projectedDollars={projectedByCat[cat]}
+                />
+              );
+            })}
+          </div>
+        )}
 
         {/* Honesty-audit Phase 4 onboarding banner: when EVERY rec is from
             the par/60 fallback (no ML model AND no operator-configured

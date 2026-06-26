@@ -27,12 +27,15 @@ export interface DayCardData {
 
 interface Props {
   data: DayCardData;
+  /** When false (a wage-restricted manager), the labor-cost ($) row is hidden.
+   *  Defaults to visible. (Access cleanup 2026-06-26.) */
+  laborCostVisible?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   lang: 'en' | 'es';
 }
 
-export function ForecastDayCard({ data, isExpanded, onToggle, lang }: Props) {
+export function ForecastDayCard({ data, laborCostVisible = true, isExpanded, onToggle, lang }: Props) {
   const accent = data.gapStatus === 'green'
     ? T.sageDeep
     : data.gapStatus === 'yellow' ? T.caramelDeep : T.warm;
@@ -131,26 +134,28 @@ export function ForecastDayCard({ data, isExpanded, onToggle, lang }: Props) {
             / {data.housekeepersRecommended} {lang === 'es' ? 'recomendado' : 'recommended'}
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-          <span style={{
-            fontFamily: FONT_MONO, fontSize: 12, color: T.ink2,
-          }}>
-            {lang === 'es' ? 'Costo' : 'Labor'}: ${(data.projectedLaborCents / 100).toFixed(0)}
-          </span>
-          {data.wagePending && (
-            <span
-              title={lang === 'es'
-                ? 'Salario por defecto. Configure los salarios del personal para una proyección exacta.'
-                : 'Default wage. Set per-staff wages for an accurate projection.'}
-              style={{
-                fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
-                border: `1px dashed ${T.rule}`, padding: '1px 6px', borderRadius: 6,
-              }}
-            >
-              {lang === 'es' ? 'salario pendiente' : 'wage pending'}
+        {laborCostVisible && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+            <span style={{
+              fontFamily: FONT_MONO, fontSize: 12, color: T.ink2,
+            }}>
+              {lang === 'es' ? 'Costo' : 'Labor'}: ${(data.projectedLaborCents / 100).toFixed(0)}
             </span>
-          )}
-        </div>
+            {data.wagePending && (
+              <span
+                title={lang === 'es'
+                  ? 'Salario por defecto. Configure los salarios del personal para una proyección exacta.'
+                  : 'Default wage. Set per-staff wages for an accurate projection.'}
+                style={{
+                  fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
+                  border: `1px dashed ${T.rule}`, padding: '1px 6px', borderRadius: 6,
+                }}
+              >
+                {lang === 'es' ? 'salario pendiente' : 'wage pending'}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Gap badge + expand caret */}

@@ -19,6 +19,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { accountCanForProperty } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
@@ -121,21 +122,22 @@ export async function POST(req: NextRequest) {
     return err('invalid pmsType', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // ─── Capability: caller must own this property ──────────────────────────
+  // ─── Capability: manager-tier (owner / GM / admin) with hotel access ─────
+  // PMS credentials sit behind manage_settings — a MANAGER_FLOOR capability, so
+  // line staff (front_desk / housekeeping / maintenance) are denied here even
+  // with a stray override. A GM can now save credentials, matching the
+  // /settings/pms page gate, instead of the old owner-id-only check that 403'd
+  // every non-owner manager. (Access cleanup 2026-06-26.)
   const { data: property } = await supabaseAdmin
     .from('properties')
-    .select('id, owner_id')
+    .select('id')
     .eq('id', pidV.value!)
     .maybeSingle();
 
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
-  // Explicit null check — a property with owner_id=NULL (orphaned, e.g.
-  // from a manual data fix or pre-auth migration) shouldn't pass
-  // ownership. Without this check the !== comparison would still return
-  // true (NULL !== userId) but the semantics are murky; be explicit.
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
+  if (!(await accountCanForProperty(session.userId, 'manage_settings', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

@@ -933,6 +933,7 @@ export default function HousekeeperRoomPage({
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
               <LanguageSwitcher
+                variant="light"
                 current={lang}
                 onChange={async (next) => {
                   setLang(next);

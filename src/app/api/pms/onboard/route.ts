@@ -29,6 +29,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { accountCanForProperty } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
@@ -57,16 +58,19 @@ export async function POST(req: NextRequest) {
     return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // Ownership: caller must own the property.
+  // Authorization: manager-tier (owner / GM / admin) with access to this hotel.
+  // manage_settings is a MANAGER_FLOOR capability (line staff denied even with an
+  // override); a GM can now kick off onboarding, matching /settings/pms and the
+  // credentials-save route. (Access cleanup 2026-06-26.)
   const { data: property } = await supabaseAdmin
     .from('properties')
-    .select('id, owner_id')
+    .select('id')
     .eq('id', pidV.value!)
     .maybeSingle();
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
+  if (!(await accountCanForProperty(session.userId, 'manage_settings', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

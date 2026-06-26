@@ -8,7 +8,7 @@
 // All reads go through the same property-scoped financials/db helpers the API
 // uses, so the agent can never see another hotel's books (ctx.propertyId scope).
 
-import { registerTool, type ToolResult } from '../tools';
+import { registerTool, type ToolContext, type ToolResult } from '../tools';
 import {
   monthKey,
   priorMonthKey,
@@ -19,9 +19,23 @@ import {
   type Department,
 } from '@/lib/financials/shared';
 import { getFinanceSummary, budgetVsActual, sumExpensesByDepartment } from '@/lib/financials/db';
+import { canForProperty } from '@/lib/capabilities/server';
 
 type Period = 'this_month' | 'last_month';
 const FINANCE_ROLES = ['admin', 'owner', 'general_manager'] as const;
+
+// Per-hotel money gate. `allowedRoles: FINANCE_ROLES` (enforced in executeTool)
+// is a STATIC role check — it can't see a per-hotel override that an admin used
+// to RESTRICT a specific manager from Financials. This honors that override at
+// THIS property, so a manager pulled off the books can't get the numbers by
+// asking the assistant. view_financials is a MANAGER_FLOOR cap, so line staff
+// are denied here too (defense in depth). (Access cleanup 2026-06-26.)
+async function financeGuard(ctx: ToolContext): Promise<ToolResult | null> {
+  if (await canForProperty({ role: ctx.user.role }, 'view_financials', ctx.propertyId)) {
+    return null;
+  }
+  return { ok: false, error: 'Financials are restricted for your role at this property.' };
+}
 
 function resolveMonth(period?: Period): { month: string; label: string } {
   const now = new Date();
@@ -45,6 +59,8 @@ registerTool<{ period?: Period }>({
   },
   allowedRoles: FINANCE_ROLES,
   handler: async ({ period }, ctx): Promise<ToolResult> => {
+    const denied = await financeGuard(ctx);
+    if (denied) return denied;
     const { month, label } = resolveMonth(period);
     const s = await getFinanceSummary(ctx.propertyId, month);
     return {
@@ -80,6 +96,8 @@ registerTool<{ period?: Period }>({
   },
   allowedRoles: FINANCE_ROLES,
   handler: async ({ period }, ctx): Promise<ToolResult> => {
+    const denied = await financeGuard(ctx);
+    if (denied) return denied;
     const { month, label } = resolveMonth(period);
     const rows = await budgetVsActual(ctx.propertyId, month);
     const budgeted = rows.filter((r) => r.budgetCents > 0);
@@ -133,6 +151,8 @@ registerTool<{ department?: string; period?: Period }>({
   },
   allowedRoles: FINANCE_ROLES,
   handler: async ({ department, period }, ctx): Promise<ToolResult> => {
+    const denied = await financeGuard(ctx);
+    if (denied) return denied;
     const { month, label } = resolveMonth(period);
     const byDept = await sumExpensesByDepartment(ctx.propertyId, month);
     if (department && isDepartment(department)) {

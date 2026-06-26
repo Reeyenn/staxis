@@ -28,6 +28,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
+import { accountCanForProperty } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
@@ -59,15 +60,13 @@ export async function GET(req: NextRequest) {
     return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // In v4 jobId == propertyId. Ownership check first — never leak the
-  // existence of another owner's session via 404 vs 403 ambiguity.
-  const { data: property } = await supabaseAdmin
-    .from('properties')
-    .select('owner_id')
-    .eq('id', idV.value!)
-    .maybeSingle();
-
-  if (!property || !property.owner_id || (property.owner_id as string) !== session.userId) {
+  // In v4 jobId == propertyId. Manager-tier + property-scope check first — a
+  // caller who lacks access to this hotel gets 403 whether or not the property
+  // exists (non-admins never learn another hotel's session existence via a
+  // 404-vs-403 difference). manage_settings is owner/GM/admin only and
+  // override-proof, so a GM may now poll onboarding like the page does. (Access
+  // cleanup 2026-06-26.)
+  if (!(await accountCanForProperty(session.userId, 'manage_settings', idV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

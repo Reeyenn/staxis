@@ -52,11 +52,18 @@ const PROPERTY_ID = '22222222-2222-2222-2222-222222222222';
 let nextRpcResult: { data: unknown; error: { message: string; code?: string } | null } = {
   data: null, error: null,
 };
+// The calling account's role + property scope, read by both validateDeviceTrust
+// (2FA) and accountCanForProperty (the manage_settings gate). Tests override
+// these to exercise GM-allowed / line-staff-denied / no-access paths.
+let accountRole = 'owner';
+let accountPropertyAccess: string[] = [PROPERTY_ID];
 
 beforeEach(() => {
   rpcCalls = [];
   fromCalls = [];
   nextRpcResult = { data: null, error: null };
+  accountRole = 'owner';
+  accountPropertyAccess = [PROPERTY_ID];
 
   // ── getUser: requireSession path ──
   supabaseAdmin.auth.getUser = (async () => ({
@@ -107,7 +114,7 @@ beforeEach(() => {
         // both reads so the route reaches its actual handler logic.
         if (table === 'accounts') {
           return {
-            data: { id: 'account-id', skip_2fa: false, role: 'owner', property_access: [PROPERTY_ID] },
+            data: { id: 'account-id', skip_2fa: false, role: accountRole, property_access: accountPropertyAccess },
             error: null,
           };
         }
@@ -291,5 +298,40 @@ describe('POST /api/pms/save-credentials — RPC contract', () => {
     assert.equal(upsertCalls.length, 1);
     assert.equal(upsertCalls[0].args.p_password, distinctivePassword,
       'password must reach the RPC unmodified — encryption happens in plpgsql');
+  });
+});
+
+describe('POST /api/pms/save-credentials — manage_settings authorization', () => {
+  // The route gates on manage_settings (owner / GM / admin) + property scope,
+  // replacing the old owner-id-only check. A GM can now save; line staff cannot.
+  // (Access cleanup 2026-06-26.)
+  test('a general_manager with access to the hotel CAN save (200, RPC called)', async () => {
+    accountRole = 'general_manager';
+    accountPropertyAccess = [PROPERTY_ID];
+    const { POST } = await import('@/app/api/pms/save-credentials/route');
+    const res = await POST(makeRequest(VALID_BODY));
+    assert.equal(res.status, 200);
+    const upsertCalls = rpcCalls.filter(c => c.fn === 'staxis_upsert_scraper_credentials');
+    assert.equal(upsertCalls.length, 1, 'GM save must reach the upsert RPC');
+  });
+
+  test('a line-staff role (housekeeping) is DENIED (403, no RPC)', async () => {
+    accountRole = 'housekeeping';
+    accountPropertyAccess = [PROPERTY_ID];
+    const { POST } = await import('@/app/api/pms/save-credentials/route');
+    const res = await POST(makeRequest(VALID_BODY));
+    assert.equal(res.status, 403);
+    const upsertCalls = rpcCalls.filter(c => c.fn === 'staxis_upsert_scraper_credentials');
+    assert.equal(upsertCalls.length, 0, 'line staff must never reach the upsert RPC');
+  });
+
+  test('a manager WITHOUT access to this hotel is DENIED (403, no RPC)', async () => {
+    accountRole = 'general_manager';
+    accountPropertyAccess = []; // GM, but not assigned to this property
+    const { POST } = await import('@/app/api/pms/save-credentials/route');
+    const res = await POST(makeRequest(VALID_BODY));
+    assert.equal(res.status, 403);
+    const upsertCalls = rpcCalls.filter(c => c.fn === 'staxis_upsert_scraper_credentials');
+    assert.equal(upsertCalls.length, 0, 'a GM without property access must be denied');
   });
 });
