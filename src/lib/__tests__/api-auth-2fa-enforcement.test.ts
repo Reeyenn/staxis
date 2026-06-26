@@ -106,7 +106,9 @@ beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   delete process.env.DISABLE_SERVER_2FA_ENFORCEMENT;
   delete process.env.VERCEL_ENV;
-  process.env.NODE_ENV = 'test';
+  // Cast: @types/node types NODE_ENV as a readonly literal union; assign via an
+  // index signature (same pattern as the afterEach restore loop below).
+  (process.env as Record<string, string>).NODE_ENV = 'test';
 
   supabaseAdmin.auth.getUser = (async () => ({
     data: { user: state.user as { id: string; email?: string | null } | null },
@@ -523,7 +525,7 @@ describe('requireSession — opt-out + break-glass', () => {
   test('FAIL-SAFE: DISABLE="true" + NODE_ENV=production, no VERCEL_ENV (Fly/Railway prod) + no cookie → 401', async () => {
     process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
     delete process.env.VERCEL_ENV;
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string>).NODE_ENV = 'production';
     ok();
     state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
     const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}` }));
