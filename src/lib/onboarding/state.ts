@@ -130,26 +130,43 @@ export function isOnboardingInProgress(
  */
 export const RESUME_GUARD_KEY = 'staxis-onboard-resume-tried';
 
+/** Every key the PATCH endpoint will accept into onboarding_state. */
+const ONBOARDING_STATE_STRING_KEYS = [
+  'accountCreatedAt', 'emailVerifiedAt', 'hotelDetailsAt',
+  'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
+  'mappingCompletedAt', 'staffAt', 'pmsOtherName',
+] as const;
+const ONBOARDING_STATE_KEYS = new Set<string>(['step', ...ONBOARDING_STATE_STRING_KEYS]);
+/** Generous upper bound on any single persisted string field. Timestamps (~30),
+ *  job UUIDs (36) and the free-text pmsOtherName all fit comfortably; this only
+ *  exists to bound the jsonb so a caller can't grow the row unboundedly. */
+const ONBOARDING_STATE_MAX_STRING = 200;
+
 /**
  * Validate that an arbitrary input matches the OnboardingState shape.
  * Used by the PATCH endpoint to reject malformed client submissions.
  *
- * Permissive: only validates that present fields are the right type.
- * Doesn't require any field. Doesn't reject extra fields (forward-
- * compat with future steps).
+ * Security audit 2026-06-26: now REJECTS unknown keys and length-caps every
+ * string field. Previously it accepted arbitrary extra keys ("forward-compat"),
+ * which let a holder of a valid join code grow properties.onboarding_state
+ * (unbounded jsonb) with attacker-chosen keys/values. A genuinely new wizard
+ * field just needs adding to ONBOARDING_STATE_STRING_KEYS.
  */
 export function isValidPartialState(value: unknown): value is Partial<OnboardingState> {
   if (typeof value !== 'object' || value === null) return false;
   const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!ONBOARDING_STATE_KEYS.has(key)) return false;
+  }
   if (obj.step !== undefined) {
     if (typeof obj.step !== 'number' || obj.step < 1 || obj.step > 8) return false;
   }
-  for (const key of [
-    'accountCreatedAt', 'emailVerifiedAt', 'hotelDetailsAt',
-    'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-    'mappingCompletedAt', 'staffAt', 'pmsOtherName',
-  ]) {
-    if (obj[key] !== undefined && typeof obj[key] !== 'string') return false;
+  for (const key of ONBOARDING_STATE_STRING_KEYS) {
+    const v = obj[key];
+    if (v !== undefined) {
+      if (typeof v !== 'string') return false;
+      if (v.length > ONBOARDING_STATE_MAX_STRING) return false;
+    }
   }
   return true;
 }

@@ -63,19 +63,21 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {
+    // Scope the read by BOTH id AND property_id and return a single 404 for
+    // any miss — so a complaint belonging to another hotel is indistinguishable
+    // from a nonexistent one (no 403-vs-404 existence oracle). Mirrors the
+    // hardened complaints/update pattern. (Security audit 2026-06-26.)
     const { data: row, error: readErr } = await supabaseAdmin
       .from('complaints')
       .select('*')
       .eq('id', complaintId)
+      .eq('property_id', pid)
       .maybeSingle();
     if (readErr) {
       log.error('complaints/draft: read failed', { requestId, err: errToString(readErr) });
       return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
     }
     if (!row) return err('complaint not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
-    if ((row.property_id as string) !== pid) {
-      return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
-    }
 
     const c = fromComplaintRow(row as Record<string, unknown>);
     const draft = await draftServiceRecovery({

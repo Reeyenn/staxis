@@ -14,7 +14,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireOrderingAccess } from '@/lib/ordering/api-gate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { err, ApiErrorCode } from '@/lib/api-response';
@@ -23,9 +23,6 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
-
 const VALID_MODES = ['off', 'auto', 'always-on'] as const;
 type AiMode = typeof VALID_MODES[number];
 const isMode = (s: unknown): s is AiMode =>
@@ -33,8 +30,6 @@ const isMode = (s: unknown): s is AiMode =>
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
-  const session = await requireSession(req);
-  if (!session.ok) return session.response;
 
   let body: { propertyId?: unknown; mode?: unknown };
   try {
@@ -42,21 +37,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   } catch {
     return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!isUuid(body.propertyId)) {
-    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
   if (!isMode(body.mode)) {
     return err('invalid_mode', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!(await userHasPropertyAccess(session.userId, body.propertyId))) {
-    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
+  // Auth: route through the SAME management gate as the other inventory-config
+  // endpoints (vendors/catalog/orders) instead of the weaker
+  // requireSession + userHasPropertyAccess. Previously ANY property-scoped role
+  // could flip the property-wide AI mode; now it honors the
+  // manage_inventory_orders capability + per-hotel Access-tab toggle.
+  // (Security audit 2026-06-26.)
+  const gate = await requireOrderingAccess(
+    req,
+    typeof body.propertyId === 'string' ? body.propertyId : null,
+  );
+  if (!gate.ok) return gate.response;
+  const pid = gate.pid;
 
   try {
     const { error } = await supabaseAdmin
       .from('properties')
       .update({ inventory_ai_mode: body.mode })
-      .eq('id', body.propertyId);
+      .eq('id', pid);
     if (error) {
       log.error('inventory/ai-mode: update failed', { requestId, err: error });
       return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });

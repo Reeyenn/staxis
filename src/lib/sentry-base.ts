@@ -22,6 +22,13 @@ export function getBaseSentryOptions() {
   return {
     sendDefaultPii: false,
     debug: false,
+    // Never serialize stack-frame local variables into events. Without this,
+    // Sentry's Node localVariablesIntegration can capture in-scope locals — e.g.
+    // a supabaseAdmin service-role key, a CRON_SECRET, or a Twilio token held in
+    // a variable at the throw site — and ship them to Sentry. Enforce it in code
+    // rather than relying on the SDK default, which can change on a bump.
+    // (Security audit 2026-06-26.)
+    includeLocalVariables: false,
     beforeSend: scrubSentryEvent,
     ignoreErrors: ['failed to pipe response', /other side closed/] as (string | RegExp)[],
   };

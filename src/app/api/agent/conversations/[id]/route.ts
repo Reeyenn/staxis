@@ -5,6 +5,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { validateUuid } from '@/lib/api-validate';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { loadConversation, deleteConversation } from '@/lib/agent/memory';
 
@@ -28,7 +29,9 @@ export async function GET(
     return err('account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  const { id } = await params;
+  const idV = validateUuid((await params).id, 'id');
+  if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const id = idV.value!;
   try {
     const convo = await loadConversation(id, account.id as string);
     if (!convo) {
@@ -36,10 +39,10 @@ export async function GET(
     }
     return ok({ conversation: convo }, { requestId });
   } catch (e) {
+    // Log the detail server-side; don't echo the raw error to the client.
     log.error('[agent/conversations/get] failed to load', { requestId, id, e });
     return err('failed to load conversation', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
-      details: e instanceof Error ? e.message : String(e),
     });
   }
 }
@@ -61,7 +64,9 @@ export async function DELETE(
     return err('account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  const { id } = await params;
+  const idV = validateUuid((await params).id, 'id');
+  if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const id = idV.value!;
   try {
     const deleted = await deleteConversation(id, account.id as string);
     if (!deleted) {
@@ -71,10 +76,10 @@ export async function DELETE(
     }
     return ok({ deleted: true }, { requestId });
   } catch (e) {
+    // Log the detail server-side; don't echo the raw error to the client.
     log.error('[agent/conversations/delete] failed', { requestId, id, e });
     return err('failed to delete conversation', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
-      details: e instanceof Error ? e.message : String(e),
     });
   }
 }

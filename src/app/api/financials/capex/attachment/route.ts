@@ -13,7 +13,8 @@ import type { NextRequest } from 'next/server';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err } from '@/lib/api-response';
-import { validateString } from '@/lib/api-validate';
+import { validateUuid } from '@/lib/api-validate';
+import { declaredMimeMatchesBytes } from '@/lib/inspections';
 import { getCapexProject, setCapexAttachment } from '@/lib/financials/db';
 import { log } from '@/lib/log';
 
@@ -37,8 +38,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const gate = await requireFinanceAccess(req, body.pid as string | undefined);
   if (!gate.ok) return gate.response;
 
-  const projCheck = validateString(body.projectId, { max: 40, label: 'projectId' });
-  if (projCheck.error || !projCheck.value) return err('projectId is required', { requestId: gate.requestId, status: 400, code: 'invalid_project' });
+  // projectId is a UUID column — validate it strictly so it can never carry
+  // path separators / '..' into the storage object key below. (Security audit
+  // 2026-06-26.)
+  const projCheck = validateUuid(body.projectId, 'projectId');
+  if (projCheck.error || !projCheck.value) return err('projectId must be a valid UUID', { requestId: gate.requestId, status: 400, code: 'invalid_project' });
 
   const mediaType = typeof body.mediaType === 'string' ? body.mediaType : '';
   const ext = MIME_EXT[mediaType];
@@ -56,6 +60,20 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   if (buffer.length === 0 || buffer.length > MAX_BYTES) {
     return err('attachment too large', { requestId: gate.requestId, status: 400, code: 'too_large' });
+  }
+
+  // Don't trust the client-declared mediaType: confirm the bytes match.
+  // Images get a magic-byte sniff; PDFs must start with the %PDF- header.
+  // (heic/heif have no cheap header sniff and the uploader is already a
+  // gated manager, so they're accepted as declared.) (Security audit 2026-06-26.)
+  if (mediaType === 'application/pdf') {
+    if (buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      return err('attachment bytes do not match declared type', { requestId: gate.requestId, status: 400, code: 'content_mismatch' });
+    }
+  } else if (mediaType === 'image/jpeg' || mediaType === 'image/png' || mediaType === 'image/webp') {
+    if (!declaredMimeMatchesBytes(mediaType, new Uint8Array(buffer))) {
+      return err('attachment bytes do not match declared type', { requestId: gate.requestId, status: 400, code: 'content_mismatch' });
+    }
   }
 
   // Project must belong to this property.
@@ -80,8 +98,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   const gate = await requireFinanceAccess(req, pid);
   if (!gate.ok) return gate.response;
 
-  const projectId = req.nextUrl.searchParams.get('projectId');
-  if (!projectId) return err('projectId is required', { requestId: gate.requestId, status: 400, code: 'invalid_project' });
+  const projCheck = validateUuid(req.nextUrl.searchParams.get('projectId'), 'projectId');
+  if (projCheck.error || !projCheck.value) return err('projectId must be a valid UUID', { requestId: gate.requestId, status: 400, code: 'invalid_project' });
+  const projectId = projCheck.value;
 
   const project = await getCapexProject(gate.pid, projectId);
   if (!project) return err('project not found', { requestId: gate.requestId, status: 404, code: 'not_found' });

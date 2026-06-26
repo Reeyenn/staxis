@@ -175,8 +175,17 @@ describe('isValidPartialState', () => {
     assert.equal(isValidPartialState({ pmsJobId: { id: 'x' } }), false);
   });
 
-  test('accepts unknown extra fields (forward-compat)', () => {
-    assert.equal(isValidPartialState({ futureField: 'whatever' }), true);
+  // Security audit 2026-06-26: unknown keys are now REJECTED (previously
+  // accepted for forward-compat), to bound the onboarding_state jsonb against
+  // attacker-chosen keys. A genuinely new field must be added to the allowlist.
+  test('rejects unknown extra fields', () => {
+    assert.equal(isValidPartialState({ futureField: 'whatever' }), false);
+    assert.equal(isValidPartialState({ step: 5, sneaky: 'x' }), false);
+  });
+
+  test('rejects over-long string fields', () => {
+    assert.equal(isValidPartialState({ pmsOtherName: 'a'.repeat(201) }), false);
+    assert.equal(isValidPartialState({ pmsOtherName: 'a'.repeat(50) }), true);
   });
 
   test('rejects null and arrays', () => {

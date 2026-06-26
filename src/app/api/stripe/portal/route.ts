@@ -17,6 +17,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { createPortalSession, stripeIsConfigured } from '@/lib/stripe';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,10 +61,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const origin = req.headers.get('origin') ?? new URL(req.url).origin;
+  // Build the return URL from the fixed canonical origin, NOT the caller's
+  // Origin header (which is attacker-controllable and could point the
+  // post-portal redirect at an arbitrary site). (Security audit 2026-06-26.)
   const portal = await createPortalSession({
     customerId,
-    returnUrl: `${origin}/settings`,
+    returnUrl: `${env.NEXT_PUBLIC_APP_URL}/settings`,
   });
   if (!('ok' in portal) || !portal.ok) {
     return err(

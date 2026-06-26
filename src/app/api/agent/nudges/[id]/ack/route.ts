@@ -5,6 +5,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { validateUuid } from '@/lib/api-validate';
 import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
@@ -27,7 +28,10 @@ export async function POST(
     return err('account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idV = validateUuid(rawId, 'id');
+  if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const id = idV.value!;
   // Ownership check before the update.
   const { data: nudge } = await supabaseAdmin
     .from('agent_nudges')
