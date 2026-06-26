@@ -51,8 +51,14 @@ export const maxDuration = 60;
 const DEFAULT_VOICE_USD_PER_MINUTE = 0.10;
 
 // How many sessions to settle per tick. Each does one ElevenLabs GET; 50 fits
-// comfortably inside the 60s function cap.
+// comfortably inside the 60s function cap when ElevenLabs is healthy.
 const BATCH = 50;
+
+// Wall-time budget for the sequential GET loop. If ElevenLabs is degraded
+// (slow-but-not-erroring, ~10s/GET), 50 GETs would blow past maxDuration=60 and
+// Vercel would kill the function mid-batch. Break cleanly before that so we
+// return a summary; unsettled rows are claimed idempotently next tick.
+const MAX_LOOP_MS = 45_000;
 
 // A session whose last webhook turn was older than this is treated as ended
 // (the idle-expiry on voice sessions is 5 min). Pre-filter so we don't hammer
@@ -124,9 +130,15 @@ export async function GET(req: NextRequest) {
   let scanned = 0;
   let billed = 0;
   let pending = 0; // still-active or transient-fetch-failure → retry next tick
+  let deferred = 0; // not reached this tick (wall-time budget) → next tick
   let totalUsd = 0;
 
   for (const s of sessions) {
+    if (Date.now() - startedAt > MAX_LOOP_MS) {
+      deferred = sessions.length - scanned;
+      log.warn('[cron/ingest-voice-costs] wall-time budget hit — deferring rest', { requestId, deferred });
+      break;
+    }
     scanned++;
     try {
       // 1. Fetch the conversation to get the authoritative duration + status.
@@ -213,7 +225,7 @@ export async function GET(req: NextRequest) {
 
   const durationMs = Date.now() - startedAt;
   totalUsd = Math.round(totalUsd * 1_000_000) / 1_000_000;
-  log.info('[cron/ingest-voice-costs] tick', { requestId, scanned, billed, pending, totalUsd, durationMs });
-  await writeCronHeartbeat('ingest-voice-costs', { requestId, notes: { scanned, billed, pending, totalUsd } });
-  return ok({ scanned, billed, pending, totalUsd, durationMs }, { requestId });
+  log.info('[cron/ingest-voice-costs] tick', { requestId, scanned, billed, pending, deferred, totalUsd, durationMs });
+  await writeCronHeartbeat('ingest-voice-costs', { requestId, notes: { scanned, billed, pending, deferred, totalUsd } });
+  return ok({ scanned, billed, pending, deferred, totalUsd, durationMs }, { requestId });
 }
