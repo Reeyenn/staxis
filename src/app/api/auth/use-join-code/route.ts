@@ -23,6 +23,7 @@ import { writeAudit, logSecurityEvent } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
+import { deriveCurrentStep, type OnboardingState } from '@/lib/onboarding/state';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -375,6 +376,56 @@ export async function POST(req: NextRequest) {
         hotelId: row.hotel_id,
         newOwner: authUser.id,
         err: ownerXferErr,
+      });
+    }
+  }
+
+  // Persist accountCreatedAt server-side, atomically with the slot we just
+  // consumed (Fix 3 — dropped-tab lockout, 2026-06-26). The client ALSO PATCHes
+  // this after we return, but a tab closed in that gap left the code consumed
+  // with NO onboarding progress saved → reopening the link bricked at "code
+  // already used". Writing it here means a reopen derives the verify-email step
+  // (never back on account creation), and the login funnel can route a returning
+  // signed-in owner back into the wizard (isOnboardingInProgress keys on
+  // accountCreatedAt).
+  //
+  // Gated to owner/GM onboarding ONLY — staff signups via shared multi-use codes
+  // must never touch the hotel's onboarding_state. Idempotent (skips if already
+  // set), so a second legitimate redemption / replay can't yank a mid-onboarding
+  // owner backward. Non-fatal: the account already exists; on failure we Sentry
+  // it and rely on the client PATCH + the wizard's "sign in to continue" path.
+  if (finalRole === 'owner' || finalRole === 'general_manager') {
+    try {
+      const { data: propRow } = await supabaseAdmin
+        .from('properties')
+        .select('onboarding_state')
+        .eq('id', row.hotel_id)
+        .maybeSingle();
+      const cur = (propRow?.onboarding_state as OnboardingState | null) ?? { step: 1 };
+      if (!cur.accountCreatedAt) {
+        const next: OnboardingState = { ...cur, accountCreatedAt: new Date().toISOString() };
+        next.step = deriveCurrentStep(next);
+        const { error: stErr } = await supabaseAdmin
+          .from('properties')
+          .update({ onboarding_state: next })
+          .eq('id', row.hotel_id);
+        if (stErr) {
+          log.warn('[use-join-code] onboarding_state accountCreatedAt persist failed (non-fatal)', {
+            requestId, hotelId: row.hotel_id, err: stErr.message,
+          });
+          captureException(new Error(`onboarding_state persist failed: ${stErr.message}`), {
+            subsystem: 'auth',
+            failure_mode: 'onboarding_state_persist_failed',
+            flow: 'use-join-code',
+          });
+        }
+      }
+    } catch (persistErr) {
+      log.warn('[use-join-code] onboarding_state persist threw (non-fatal)', { requestId });
+      captureException(persistErr, {
+        subsystem: 'auth',
+        failure_mode: 'onboarding_state_persist_threw',
+        flow: 'use-join-code',
       });
     }
   }

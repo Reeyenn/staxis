@@ -63,6 +63,14 @@ const STRINGS = {
     reenterLoginBtn: 'Re-enter login →',
     reenterError: "Couldn't go back just now — tap to try again.",
     continueError: "Couldn't save just now — tap to try again.",
+    // taking-longer-than-expected (client timeout — robot quiet for a while)
+    slowTitle: 'This is taking longer than usual',
+    slowBody:
+      "Your system can take a few minutes to read, and we're still working on it in the background — this page will update on its own when it's ready. If you think the login details were wrong, you can re-enter them.",
+    // cost-cap pause (honest — auto-resumes overnight)
+    pausedTitle: 'Paused for now — picking back up tonight',
+    pausedBody:
+      "We've hit today's safe usage limit while reading your system, so we've paused. It resumes automatically overnight and finishes on its own — nothing needed from you. You can close this page and come back later, or check again now.",
     // failed
     failTitle: "We couldn't finish connecting",
     failLogin:
@@ -110,6 +118,12 @@ const STRINGS = {
     reenterLoginBtn: 'Volver a ingresar →',
     reenterError: 'No se pudo regresar — toca para reintentar.',
     continueError: 'No se pudo guardar — toca para reintentar.',
+    slowTitle: 'Esto está tardando más de lo normal',
+    slowBody:
+      'Leer tu sistema puede tomar unos minutos y seguimos trabajando en segundo plano — esta página se actualizará sola cuando esté lista. Si crees que los datos de inicio de sesión estaban mal, puedes volver a ingresarlos.',
+    pausedTitle: 'En pausa por ahora — continuará esta noche',
+    pausedBody:
+      'Alcanzamos el límite de uso seguro de hoy mientras leíamos tu sistema, así que pausamos. Se reanuda automáticamente durante la noche y termina solo — no necesitas hacer nada. Puedes cerrar esta página y volver más tarde, o revisar de nuevo ahora.',
     failTitle: 'No pudimos terminar la conexión',
     failLogin:
       'No pudimos iniciar sesión en tu sistema — verifica el usuario y la contraseña que ingresaste.',

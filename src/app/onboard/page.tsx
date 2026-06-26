@@ -42,6 +42,17 @@ import { PLACEHOLDER_HOTEL_NAME, RESUME_GUARD_KEY } from '@/lib/onboarding/state
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronMark } from '@/components/AuthShell';
 import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
+import { ot } from './_onboard-i18n';
+import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
+
+// PMS dropdown options come from the registry (src/lib/pms/registry.ts) — the
+// same single source of truth /settings/pms uses, so the wizard, the type
+// system, and the DB constraint stay in sync. Includes "Other / Not Listed".
+const PMS_PICKER_OPTIONS = PMS_DROPDOWN_OPTIONS.map((d) => ({
+  value: d.id,
+  label: `${d.label}${d.hint ? ` (${d.hint})` : ''}`,
+  defaultLoginUrl: d.defaultLoginUrl,
+}));
 
 // ─── Types mirroring the wizard API response ───────────────────────────
 
@@ -407,6 +418,8 @@ function WizardBackButton({ code, clearKeys, onNext }: {
 // ─── Step 1: Welcome ────────────────────────────────────────────────────
 
 function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+  const { lang } = useLang();
+  const o = ot(lang);
   const role = wizard.inviteRole === 'general_manager' ? 'General Manager' : 'Owner';
   const [starting, setStarting] = useState(false);
   // The welcome→account hop has no completion timestamp, so "Begin"
@@ -436,7 +449,7 @@ function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardSt
         You&apos;ve been added as the <strong>{role}</strong> for {wizard.propertyName} on Staxis — the AI-powered operations platform that runs your housekeeping, inventory, and labor planning in the background.
       </p>
       <p style={{ color: '#5C625C', marginBottom: '32px', lineHeight: 1.5, fontSize: '13px' }}>
-        We&apos;ll walk you through 9 quick steps (account, hotel info, services, PMS connection). Takes about 10 minutes.
+        {o.welcomeSteps}
       </p>
       <button className="btn btn-primary" onClick={begin} disabled={starting} style={{ width: '100%', justifyContent: 'center' }}>
         {starting ? 'Starting…' : 'Begin →'}
@@ -448,15 +461,25 @@ function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardSt
 // ─── Step 2: Create account ─────────────────────────────────────────────
 
 function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+  const { lang } = useLang();
+  const o = ot(lang);
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // When the account already exists (e.g. the operator dropped the tab right
+  // after creating it, then reopened the link), the redeem returns "already
+  // exists / code used up". Instead of a dead-end error, offer to sign in —
+  // signing in routes them back into the wizard at the right step via the
+  // login funnel (/api/onboard/resume), now that account creation persists
+  // accountCreatedAt server-side.
+  const [showSignIn, setShowSignIn] = useState(false);
 
   const submit = async () => {
     setErr(null);
+    setShowSignIn(false);
     if (!email.includes('@')) { setErr('Valid email required.'); return; }
     if (displayName.trim().length < 2) { setErr('Name required.'); return; }
     if (password.length < 8) { setErr('Password must be at least 8 characters.'); return; }
@@ -473,7 +496,16 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
       });
       const json = await res.json();
       if (!res.ok || !json.ok) {
-        setErr(json.error || `Sign-up failed (${res.status})`);
+        const msg: string = json.error || `Sign-up failed (${res.status})`;
+        // "already exists" / "used up" → the account is already created; route
+        // to sign-in (a resumable recovery). A CAS-race "being used by another
+        // signup" is NOT this case — keep that as a plain retry error.
+        const lower = msg.toLowerCase();
+        if ((lower.includes('already exists') || lower.includes('used up')) &&
+            !lower.includes('another signup')) {
+          setShowSignIn(true);
+        }
+        setErr(msg);
         return;
       }
       // Trigger the OTP email send.
@@ -504,6 +536,16 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         This is the login you&apos;ll use to manage {wizard.propertyName}.
       </p>
       {err && <ErrorBox msg={err} />}
+      {showSignIn && (
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => { window.location.href = '/signin'; }}
+          style={{ width: '100%', justifyContent: 'center', marginBottom: '14px' }}
+        >
+          {o.resumeSignInBtn}
+        </button>
+      )}
       <Field label="Email *">
         <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@hotel.com" />
       </Field>
@@ -527,13 +569,25 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
 // ─── Step 3: Verify email ───────────────────────────────────────────────
 
 function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+  const { lang } = useLang();
+  const o = ot(lang);
   const [otp, setOtp] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showSignIn, setShowSignIn] = useState(false);
   const pendingEmail = typeof window !== 'undefined' ? sessionStorage.getItem('onboard:pendingEmail') ?? '' : '';
+  // Tab closed + reopened → sessionStorage email is gone and there's no active
+  // session. We can't re-issue the OTP (the password proof minted at account
+  // creation expires in 60 min, so a stale OTP would 403 at trust-device).
+  // Route them to sign in instead: password sign-in writes a fresh proof, and
+  // the wizard GET's emailVerified backfill auto-advances a signed-in owner
+  // past this step. (accountCreatedAt is now persisted server-side at signup,
+  // so the login funnel routes them right back here.)
+  const recovered = !pendingEmail;
 
   const submit = async () => {
     setErr(null);
+    setShowSignIn(false);
     if (otp.length < 6) { setErr('Enter the 6-digit code from your email.'); return; }
     if (!pendingEmail) { setErr('Missing email — refresh and try again.'); return; }
     setSubmitting(true);
@@ -559,8 +613,12 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
         await supabase.auth.refreshSession();
       } catch (trustErr) {
         // Surface, don't swallow — a failed trust here is exactly what
-        // caused the silent "session ended" before.
-        setErr('Could not finish securing your session — refresh and re-enter the code.');
+        // caused the silent "session ended" before. The most common real
+        // cause is an expired sign-up password proof (>60 min after account
+        // creation), which OTP can't refresh — point them at sign-in, which
+        // mints a fresh proof and resumes the wizard via the login funnel.
+        setErr(o.sessionExpiredError);
+        setShowSignIn(true);
         console.warn('onboard trust-device failed', trustErr);
         return;
       }
@@ -582,6 +640,28 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
     }
   };
 
+  // Recovered tab: no email + no session to verify against. Offer sign-in,
+  // which resumes the wizard cleanly (see `recovered` note above).
+  if (recovered) {
+    return (
+      <div>
+        <Mail size={32} color="#C99644" style={{ marginBottom: '16px' }} />
+        <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{o.resumeTitle}</h2>
+        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px', lineHeight: 1.5 }}>
+          {o.resumeBody}
+        </p>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => { window.location.href = '/signin'; }}
+          style={{ width: '100%', justifyContent: 'center' }}
+        >
+          {o.resumeSignInBtn}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div>
       <Mail size={32} color="#C99644" style={{ marginBottom: '16px' }} />
@@ -590,6 +670,16 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
         We sent a 6-digit code to <strong>{pendingEmail || 'your email'}</strong>.
       </p>
       {err && <ErrorBox msg={err} />}
+      {showSignIn && (
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => { window.location.href = '/signin'; }}
+          style={{ width: '100%', justifyContent: 'center', marginBottom: '14px' }}
+        >
+          {o.resumeSignInBtn}
+        </button>
+      )}
       <Field label="Code *">
         <input className="input" value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
           placeholder="000000" inputMode="numeric" maxLength={6}
@@ -692,15 +782,36 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
 // ─── Step 5: Connect PMS ────────────────────────────────────────────────
 
 function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
-  const [pmsType, setPmsType] = useState(wizard.hotelDefaults?.pmsType ?? 'choice_advantage');
+  const { lang } = useLang();
+  const o = ot(lang);
+  // Default to the saved choice (back-nav) or the empty placeholder so the
+  // operator must consciously pick — the picker now lists every supported PMS
+  // plus "Other / Not Listed", not just Choice Advantage.
+  const [pmsType, setPmsType] = useState(wizard.hotelDefaults?.pmsType ?? '');
+  // Free-text name when "Other" is chosen — re-hydrated on back-nav from the
+  // persisted onboarding_state (owner sessions get the full state on GET).
+  const [otherName, setOtherName] = useState(
+    typeof wizard.state?.pmsOtherName === 'string' ? wizard.state.pmsOtherName : '',
+  );
   const [loginUrl, setLoginUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Picking a PMS prefills its standard login URL (mirrors /settings/pms) when
+  // the field is still empty — saves typing for the common case; editable after.
+  const handlePmsTypeChange = (value: string) => {
+    setPmsType(value);
+    const def = PMS_PICKER_OPTIONS.find((p) => p.value === value);
+    if (def?.defaultLoginUrl && !loginUrl) setLoginUrl(def.defaultLoginUrl);
+  };
+
   const submit = async () => {
     setErr(null);
+    if (!pmsType) { setErr(o.pmsRequired); return; }
+    const customName = otherName.trim();
+    if (pmsType === 'other' && !customName) { setErr(o.pmsOtherRequired); return; }
     if (!loginUrl || !username || !password) { setErr('All PMS fields required.'); return; }
     setSubmitting(true);
     try {
@@ -722,7 +833,9 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       const jobJson = await jobRes.json();
       if (!jobRes.ok || !jobJson.ok) { setErr(jobJson.error || 'Onboarding queue failed'); return; }
 
-      // 3. PATCH wizard state with the job ID
+      // 3. PATCH wizard state with the job ID (+ the typed name when "Other",
+      //    so it's persisted — the registry only knows the generic `other` id).
+      //    Server clamps pmsOtherName length defensively.
       await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -731,6 +844,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
           partialState: {
             pmsCredentialsAt: new Date().toISOString(),
             pmsJobId: jobJson.data.jobId,
+            ...(pmsType === 'other' ? { pmsOtherName: customName } : {}),
           },
         }),
       });
@@ -752,11 +866,26 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
         We&apos;ll log into your PMS in a remote browser to learn your room layout. Read-only — we never make changes there.
       </p>
       {err && <ErrorBox msg={err} />}
-      <Field label="PMS *">
-        <select className="input" value={pmsType} onChange={(e) => setPmsType(e.target.value)}>
-          <option value="choice_advantage">Choice Advantage</option>
+      <Field label={o.pmsLabel}>
+        <select className="input" value={pmsType} onChange={(e) => handlePmsTypeChange(e.target.value)}>
+          <option value="">{o.pmsSelectPlaceholder}</option>
+          {PMS_PICKER_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>{p.label}</option>
+          ))}
         </select>
       </Field>
+      {pmsType === 'other' && (
+        <Field label={o.pmsOtherLabel}>
+          <input
+            className="input"
+            value={otherName}
+            onChange={(e) => setOtherName(e.target.value)}
+            placeholder={o.pmsOtherPlaceholder}
+            maxLength={120}
+          />
+          <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '4px' }}>{o.pmsOtherHint}</p>
+        </Field>
+      )}
       <Field label="Login URL *">
         <input className="input" value={loginUrl} onChange={(e) => setLoginUrl(e.target.value)} placeholder="https://..." />
       </Field>
@@ -811,6 +940,10 @@ interface MappingStatus {
   failReason: 'login' | 'login_url' | 'stopped' | 'generic' | null;
   numbers: MappingNumbers | null;
   feeds: FeedStatus[] | null;
+  // Additive (2026-06-26): the hotel hit its daily safe-usage cap mid-learn
+  // and auto-paused (resumes overnight). Optional so an older server response
+  // (no field) degrades to a plain spinner. Only honored while non-terminal.
+  paused?: 'cost_cap' | null;
 }
 
 function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<void>; }) {
@@ -828,6 +961,33 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
   const advancingRef = useRef(false);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
+
+  // Stuck-screen watchdog (audit P1 2026-06-26): the learning screen used to
+  // be an endless spinner with no escape if the robot was slow / down / cost-
+  // capped. Flip a "taking longer than expected" card after TIMEOUT_MS of NO
+  // forward progress (bar / milestone / phase all frozen). Polling continues
+  // underneath, so a robot that recovers still auto-advances to done/failed.
+  const TIMEOUT_MS = 5 * 60 * 1000; // 5 min of no progress → offer buttons
+  const [timedOut, setTimedOut] = useState(false);
+  const lastProgressAtRef = useRef<number>(Date.now());
+  const respPhase = resp?.phase ?? 'preparing';
+  // Any forward movement (bar %, milestone, or phase change) restarts the
+  // clock and clears the warning — a slow-but-progressing learn never trips it.
+  useEffect(() => {
+    lastProgressAtRef.current = Date.now();
+    setTimedOut(false);
+  }, [barPct, maxMilestone, respPhase]);
+  // Watchdog ticker — while non-terminal, flip `timedOut` once we've gone
+  // TIMEOUT_MS with no progress. Re-created on phase change (which also resets
+  // the clock above). Cleared on unmount.
+  useEffect(() => {
+    if (respPhase === 'done' || respPhase === 'failed') return;
+    const id = setInterval(() => {
+      if (Date.now() - lastProgressAtRef.current > TIMEOUT_MS) setTimedOut(true);
+    }, 10_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [respPhase]);
 
   // Poll the bridge endpoint BY CODE (not the legacy pmsJobId — the route
   // resolves the property + mapper job from the code itself, so the step is
@@ -946,6 +1106,17 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
     }
   };
 
+  // Reset the view + the watchdog clock and force a fresh poll. Used by the
+  // failed-branch + the new "taking longer" / "paused" cards.
+  const checkAgain = () => {
+    setResp(null);
+    setBarPct(0);
+    setMaxMilestone(-1);
+    setTimedOut(false);
+    lastProgressAtRef.current = Date.now();
+    setPollNonce((n) => n + 1);
+  };
+
   if (phase === 'done') {
     return <Step7Done t={t} lang={lang} resp={resp as MappingStatus} advancing={advancing} error={advanceError} onContinue={advance} />;
   }
@@ -994,6 +1165,46 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
       : t.learningBody;
   const showChecklist = phase === 'learning' && maxMilestone >= 0;
   const indeterminate = !showChecklist; // no real milestone yet → animated bar
+
+  // Cost-cap pause — honest "paused, resumes overnight" card. Checked before
+  // the timeout card (it's the more specific, more reassuring signal). We're
+  // already past the done/failed early-returns, so this never hides a result.
+  if (resp?.paused === 'cost_cap') {
+    return (
+      <div>
+        <AlertCircle size={28} color="#C99644" style={{ marginBottom: '12px' }} />
+        <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.pausedTitle}</h2>
+        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{t.pausedBody}</p>
+        <button className="btn btn-primary" onClick={checkAgain} style={{ justifyContent: 'center' }}>
+          {t.checkAgainBtn}
+        </button>
+      </div>
+    );
+  }
+
+  // Stuck-screen escape — robot quiet for TIMEOUT_MS. "Check again" is the
+  // primary (least destructive) action; "Re-enter login" is secondary because
+  // it abandons a possibly-still-healthy in-flight learn. Polling continues
+  // underneath, so a recovered run auto-replaces this with the done screen.
+  if (timedOut) {
+    return (
+      <div>
+        <AlertCircle size={28} color="#C99644" style={{ marginBottom: '12px' }} />
+        <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.slowTitle}</h2>
+        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{t.slowBody}</p>
+        {reenterError && <ErrorBox msg={reenterError} />}
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button className="btn btn-primary" onClick={checkAgain} disabled={reentering} style={{ justifyContent: 'center' }}>
+            {t.checkAgainBtn}
+          </button>
+          <button className="btn btn-secondary" onClick={reenterPms} disabled={reentering} style={{ justifyContent: 'center' }}>
+            {reentering ? <Loader2 size={14} className="spin" /> : null}
+            {reentering ? '…' : t.reenterLoginBtn}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

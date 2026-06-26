@@ -47,6 +47,15 @@ export interface OnboardingState {
   staffAt?: string;
 
   /**
+   * Step 5: when the operator picks "Other / Not Listed" as their PMS, the
+   * free-text name they typed for their booking system. Persisted so it isn't
+   * lost (the registry only knows the generic `other` id) and so whoever maps
+   * the new PMS later can see what it is. Length-capped server-side in the
+   * wizard PATCH handler.
+   */
+  pmsOtherName?: string;
+
+  /**
    * Legacy field — the old Step 5 "Which services?" toggle screen wrote a
    * `servicesAt` timestamp. That step was removed (apps now auto-light in the
    * nav based on real usage), so we no longer read or require this. Kept here,
@@ -138,7 +147,7 @@ export function isValidPartialState(value: unknown): value is Partial<Onboarding
   for (const key of [
     'accountCreatedAt', 'emailVerifiedAt', 'hotelDetailsAt',
     'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-    'mappingCompletedAt', 'staffAt',
+    'mappingCompletedAt', 'staffAt', 'pmsOtherName',
   ]) {
     if (obj[key] !== undefined && typeof obj[key] !== 'string') return false;
   }

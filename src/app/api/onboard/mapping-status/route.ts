@@ -339,6 +339,11 @@ export async function GET(req: NextRequest) {
       .maybeSingle(),
   ]);
   const sessionStatus = (sessionRow?.status as string | null) ?? null;
+  // Cost-cap pause is surfaced to the wizard as an honest "paused — resumes
+  // overnight" card. Computed UNCONDITIONALLY from the session status (it can
+  // be paused_cost_cap whether or not a mapper job row exists / is mid-run), and
+  // the client only honors it while the phase is non-terminal.
+  const paused: 'cost_cap' | null = sessionStatus === 'paused_cost_cap' ? 'cost_cap' : null;
 
   let phase: Phase;
   let outcome: Outcome | null = null;
@@ -446,7 +451,7 @@ export async function GET(req: NextRequest) {
   }
 
   return ok(
-    { phase, outcome, workflowJobId, channel, pmsLabel, feedsFound, pct, failReason, numbers, feeds },
+    { phase, outcome, workflowJobId, channel, pmsLabel, feedsFound, pct, failReason, numbers, feeds, paused },
     { requestId },
   );
 }

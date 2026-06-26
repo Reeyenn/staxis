@@ -57,6 +57,19 @@ interface Body {
 const PHONE_RX = /^[+()\d\s.\-]{7,20}$/;
 const LANG_VALUES = ['en', 'es'] as const;
 
+// Normalise a phone to E.164 for staff.phone_lookup — byte-identical to the
+// helper in /api/sms-reply (and /api/admin/backfill-phonelookup) so inbound
+// SMS reverse-lookup resolves. sms-reply matches a SET of variants
+// ([E.164, raw, last-10, 1+last-10]), so the E.164 form is the canonical match.
+// Returns null for anything unnormalizable (can't be SMS-routed anyway).
+function toE164(raw: string): string | null {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (raw.startsWith('+')) return raw.trim();
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
@@ -100,6 +113,7 @@ export async function POST(req: NextRequest) {
     property_id: string;
     name: string;
     phone: string | null;
+    phone_lookup: string | null;
     language: 'en' | 'es';
     department: 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
     is_active: boolean;
@@ -149,6 +163,10 @@ export async function POST(req: NextRequest) {
       property_id: pidV.value!,
       name: nameV.value!.trim(),
       phone,
+      // Set phone_lookup at creation so inbound SMS replies resolve immediately
+      // (Fix 5). Without this, a staff member added during onboarding couldn't
+      // be matched by /api/sms-reply until a later shift text backfilled it.
+      phone_lookup: phone ? toE164(phone) : null,
       language: langV.value,
       department: normalizeDept(typeof s.role === 'string' ? s.role : undefined),
       is_active: true,

@@ -372,6 +372,13 @@ export async function PATCH(req: NextRequest) {
     ...currentState,
     ...partialState,
   };
+  // Defensive server-side cap on the free-text "Other" PMS name (Fix 1):
+  // isValidPartialState accepts any string here, so without this a hostile
+  // client could PATCH a multi-MB value straight into the onboarding_state
+  // jsonb (read on every wizard GET). Trim + clamp to a sane label length.
+  if (typeof mergedState.pmsOtherName === 'string') {
+    mergedState.pmsOtherName = mergedState.pmsOtherName.trim().slice(0, 120);
+  }
   // Back-navigation (2026-06-13): the "← Back" buttons (and "Re-enter login"
   // on a failed mapping) send clearStateKeys to walk the operator back to an
   // earlier form. We can't express "clear a key" through partialState
