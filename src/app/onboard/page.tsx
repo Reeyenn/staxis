@@ -977,11 +977,14 @@ function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<vo
     lastProgressAtRef.current = Date.now();
     setTimedOut(false);
   }, [barPct, maxMilestone, respPhase]);
-  // Watchdog ticker — while non-terminal, flip `timedOut` once we've gone
+  // Watchdog ticker — while preparing/learning, flip `timedOut` once we've gone
   // TIMEOUT_MS with no progress. Re-created on phase change (which also resets
-  // the clock above). Cleared on unmount.
+  // the clock above). Cleared on unmount. MFA is excluded: a genuine PMS 2FA
+  // wait legitimately sits with no progress and has its own calm "nothing
+  // needed from you" copy — we must not nudge the operator to needlessly
+  // re-enter login during a healthy security check. (done/failed are terminal.)
   useEffect(() => {
-    if (respPhase === 'done' || respPhase === 'failed') return;
+    if (respPhase === 'done' || respPhase === 'failed' || respPhase === 'mfa') return;
     const id = setInterval(() => {
       if (Date.now() - lastProgressAtRef.current > TIMEOUT_MS) setTimedOut(true);
     }, 10_000);
