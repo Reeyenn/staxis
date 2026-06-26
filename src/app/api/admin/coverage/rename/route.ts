@@ -55,8 +55,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('displayName cannot be blank', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // display_name ONLY — never knowledge/signature. Scope to the active row.
-  const { data: updated, error } = await supabaseAdmin
+  // display_name ONLY — never knowledge/signature (it lives OUTSIDE the HMAC
+  // envelope, so writing it never invalidates a signed recipe).
+  // Prefer the ACTIVE row; if the family has no active map yet (it's a PARKED
+  // DRAFT — e.g. Choice Advantage before it's made live), rename the latest
+  // non-deleted DRAFT instead, so a draft-only coverage can still be renamed.
+  // (The list reader resolves display_name from active-OR-latest-draft to match.)
+  const { data: activeUpdated, error } = await supabaseAdmin
     .from('pms_knowledge_files')
     .update({ display_name: displayName })
     .eq('pms_family', pmsFamily)
@@ -66,8 +71,35 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (error) {
     return err('could not rename coverage', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
   }
-  if (!updated || updated.length === 0) {
-    return err(`no active coverage for ${pmsFamily} — nothing to rename yet`, {
+
+  let renamedCount = activeUpdated?.length ?? 0;
+  if (renamedCount === 0) {
+    // No active map — fall back to the latest parked draft for this family.
+    const { data: latestDraft } = await supabaseAdmin
+      .from('pms_knowledge_files')
+      .select('id')
+      .eq('pms_family', pmsFamily)
+      .eq('status', 'draft')
+      .is('deleted_at', null)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const draftId = (latestDraft as { id?: string } | null)?.id;
+    if (draftId) {
+      const { data: draftUpdated, error: draftErr } = await supabaseAdmin
+        .from('pms_knowledge_files')
+        .update({ display_name: displayName })
+        .eq('id', draftId)
+        .select('id');
+      if (draftErr) {
+        return err('could not rename coverage', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
+      }
+      renamedCount = draftUpdated?.length ?? 0;
+    }
+  }
+
+  if (renamedCount === 0) {
+    return err(`no coverage for ${pmsFamily} yet — learn or map it first, then rename`, {
       requestId, status: 404, code: ApiErrorCode.NotFound,
     });
   }

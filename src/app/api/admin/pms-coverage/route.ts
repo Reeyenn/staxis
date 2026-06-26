@@ -201,6 +201,7 @@ interface DraftRow {
   version: number;
   knowledge: unknown;
   notes: string | null;
+  display_name: string | null;
 }
 
 /**
@@ -304,7 +305,7 @@ export async function GET(req: NextRequest) {
   //     never the full knowledge/selectors (see PendingReview).
   const { data: draftRowsRaw, error: draftErr } = await supabaseAdmin
     .from('pms_knowledge_files')
-    .select('pms_family, version, knowledge, notes')
+    .select('pms_family, version, knowledge, notes, display_name')
     .eq('status', 'draft')
     .is('deleted_at', null)
     .order('version', { ascending: false });
@@ -423,7 +424,10 @@ export async function GET(req: NextRequest) {
       ? computeFamilyCoverage(kf.knowledge)
       : { perFeed: [] as PerFeed[], coveragePct: 0 };
 
-    const displayName = kf?.display_name || def.label;
+    // Resolve the friendly name from active-OR-latest-draft (matches the rename
+    // route): a draft-only family (no active map yet, e.g. a parked Choice
+    // Advantage) still shows its renamed label instead of the registry default.
+    const displayName = kf?.display_name || latestDraftByFamily.get(pmsType)?.display_name || def.label;
 
     const recipe = kf
       ? {
