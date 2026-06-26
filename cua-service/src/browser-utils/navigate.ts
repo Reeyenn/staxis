@@ -46,7 +46,7 @@ export function isDnsTimeout(err: unknown): boolean {
  *  window (often 30+ seconds, OS-dependent) before any other code runs.
  *  Playwright's own 30s navigation timeout is downstream of this await
  *  and only starts once safeGoto resumes. */
-async function dnsLookupWithTimeout(
+export async function dnsLookupWithTimeout(
   hostname: string,
   budgetMs: number,
   rawUrl: string,

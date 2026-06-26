@@ -24,7 +24,8 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
-import { hostsAreSameSite } from '../browser-utils/navigate.js';
+import { hostsAreSameSite, isPrivateOrLocalHost, dnsLookupWithTimeout, isDnsTimeout } from '../browser-utils/navigate.js';
+import { env } from '../env.js';
 import type { FeedSpec } from '../knowledge-file.js';
 import type { LearnedDateFormat } from '../types.js';
 import { renderDatePlaceholders, renderBodyDatePlaceholders, looksLikeLiteralDateValue } from './date-template.js';
@@ -128,22 +129,66 @@ export async function extractFetchApi(opts: FetchApiOptions): Promise<FetchApiRe
     return { ok: false, data: null, reason: `refused non-http(s) scheme "${schemeMatch[1]}"` };
   }
   const isProtocolRelative = !schemeMatch && /^[/\\]{2}/.test(trimmedUrl);
-  if ((schemeMatch || isProtocolRelative) && allowedHost) {
-    let host: string;
+  if (schemeMatch || isProtocolRelative) {
+    let parsed: URL;
     try {
-      host = schemeMatch
-        ? new URL(trimmedUrl).host
-        : new URL(`https://${trimmedUrl.replace(/^[/\\]+/, '')}`).host;
+      parsed = schemeMatch
+        ? new URL(trimmedUrl)
+        : new URL(`https://${trimmedUrl.replace(/^[/\\]+/, '')}`);
     } catch {
       return { ok: false, data: null, reason: 'unparseable absolute url' };
     }
-    if (!fetchHostAllowed(host, allowedHost)) {
+    const host = parsed.host;
+
+    // SSRF guard (security audit 2026-06-26). This in-page fetch runs with
+    // credentials:'include' — it rides the hotel's authenticated PMS session
+    // cookies — and is the ONE credentialed network egress in cua-service that
+    // bypasses safeGoto. A poisoned/tampered recipe URL on the same
+    // registrable domain as allowedHost but pointing at an internal address
+    // would otherwise reach internal targets with the hotel's cookies. Refuse
+    // private/loopback/link-local hosts, the same policy validateNavigationUrl
+    // enforces for navigations.
+    if (isPrivateOrLocalHost(parsed.hostname)) {
+      log.warn('extractor:fetch_api: refused fetch to private/local host', { host: parsed.hostname });
+      return {
+        ok: false,
+        data: null,
+        reason: `refused fetch to private/local host "${parsed.hostname}"`,
+      };
+    }
+
+    if (allowedHost && !fetchHostAllowed(host, allowedHost)) {
       log.warn('extractor:fetch_api: refused cross-site fetch', { host, allowedHost });
       return {
         ok: false,
         data: null,
         reason: `refused cross-site fetch: "${host}" is outside the recipe's pinned site "${allowedHost}"`,
       };
+    }
+
+    // Optional DNS preflight — catches a public-looking FQDN that resolves to
+    // a private IP (DNS-rebinding). Mirrors safeGoto; gated by CUA_DNS_PREFLIGHT
+    // and lenient on DNS noise so it never bricks a legitimate feed.
+    if (env.CUA_DNS_PREFLIGHT === 'true') {
+      try {
+        const lookup = await dnsLookupWithTimeout(parsed.hostname, env.CUA_DNS_PREFLIGHT_TIMEOUT_MS, trimmedUrl);
+        if (isPrivateOrLocalHost(lookup.address)) {
+          log.warn('extractor:fetch_api: refused fetch — host resolves to private IP', {
+            host: parsed.hostname, ip: lookup.address,
+          });
+          return {
+            ok: false,
+            data: null,
+            reason: `refused: "${parsed.hostname}" resolves to private IP ${lookup.address}`,
+          };
+        }
+      } catch (err) {
+        if (!isDnsTimeout(err)) {
+          log.warn('extractor:fetch_api: dns preflight lookup failed (proceeding)', {
+            host: parsed.hostname,
+          });
+        }
+      }
     }
   }
 
