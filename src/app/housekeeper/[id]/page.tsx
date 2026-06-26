@@ -26,7 +26,7 @@ import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 import InspectorView from './_components/InspectorView';
 import VoiceIssueButton from './_components/VoiceIssueButton';
 import { SickReportButton } from './SickReportButton';
-import { LanguageSwitcher } from './_components/LanguageSwitcher';
+import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
 import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
 import { AddNoteButton, MarkForInspectionButton } from './_components/RoomCardActionButtons';
@@ -938,13 +938,9 @@ export default function HousekeeperRoomPage({
                   setLang(next);
                   if (housekeeperId && pid) {
                     try {
-                      // server accepts the wider locale set (migration 0225);
-                      // helper is typed to the bilingual Language for legacy callers.
-                      await saveStaffLanguagePublic(
-                        pid,
-                        housekeeperId,
-                        next as 'en' | 'es',
-                      );
+                      // Helper + server both accept the full housekeeper locale
+                      // set (migration 0225) — no cast needed.
+                      await saveStaffLanguagePublic(pid, housekeeperId, next);
                     } catch {
                       // silent
                     }

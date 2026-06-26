@@ -79,9 +79,11 @@ export async function POST(req: NextRequest) {
   const completedAreaIds = cleanStringArray(body.completedAreaIds);
   const completedLoadCategories = cleanStringArray(body.completedLoadCategories);
 
-  // Rate-limit on the RAW pid (api_limits.property_id has an FK to properties;
-  // a hashed key would FK-violate). Matches laundry-bootstrap.
-  const rl = await checkAndIncrementRateLimit('laundry-complete', pid);
+  // Per-staff bucket: RAW pid keeps the api_limits.property_id FK valid (a hashed
+  // composite key would FK-violate); staffId folds into the endpoint column so
+  // one worker / a replayed SMS link can't 429 the whole property. Matches
+  // laundry-bootstrap.
+  const rl = await checkAndIncrementRateLimit('laundry-complete', pid, { subKey: staffId });
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }

@@ -32,7 +32,9 @@ export async function GET(req: NextRequest) {
   const pid = pidV.value!;
   const staffId = staffV.value!;
 
-  const rl = await checkAndIncrementRateLimit('engineer-bootstrap', pid);
+  // Per-staff bucket (raw pid keeps the api_limits FK valid; staffId folds into
+  // the endpoint column) so one worker / a replayed link can't 429 the property.
+  const rl = await checkAndIncrementRateLimit('engineer-bootstrap', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const staff = await checkStaffCapability(pid, staffId);

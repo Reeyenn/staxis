@@ -749,17 +749,29 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
 export async function checkAndIncrementRateLimit(
   endpoint: RateLimitEndpoint,
   pid: string,
+  opts?: { subKey?: string },
 ): Promise<
   | { allowed: true }
   | { allowed: false; retryAfterSec: number; current: number; cap: number }
 > {
+  // The cap and the billing-fail-closed decision ALWAYS key on the BASE
+  // endpoint (the typed union value) — never the composite below.
   const cap = HOURLY_CAPS[endpoint];
+  // Per-staff (or other sub-identity) bucketing WITHOUT breaking the
+  // api_limits.property_id FK to properties(id): `pid` stays a REAL property id
+  // (FK-valid), and the sub-key is folded into the endpoint TEXT column (no FK)
+  // instead. This lets a public SMS-link route limit per (pid, staffId) so one
+  // staffer or a replayed link can't exhaust the whole property's bucket, while
+  // keeping real enforcement (raw pid never FK-violates) and the fail-CLOSED
+  // guarantee for billing endpoints. When no subKey is passed the DB endpoint
+  // is the base string verbatim (backward-compatible).
+  const dbEndpoint = opts?.subKey ? `${endpoint}:${opts.subKey}` : endpoint;
   const hourBucket = new Date().toISOString().slice(0, 13);  // "2026-04-27T17"
   try {
     // Atomic upsert: increment count, return new value.
     const { data, error } = await supabaseAdmin.rpc('staxis_api_limit_hit', {
       p_property_id: pid,
-      p_endpoint: endpoint,
+      p_endpoint: dbEndpoint,
       p_hour_bucket: hourBucket,
     });
     if (error) {

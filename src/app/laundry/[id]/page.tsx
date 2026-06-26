@@ -13,9 +13,10 @@ import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
-import { CheckCircle, Globe, AlertTriangle } from 'lucide-react';
-import { t } from '@/lib/translations';
-import type { Language } from '@/lib/translations';
+import { CheckCircle, AlertTriangle } from 'lucide-react';
+import { t, SUPPORTED_LOCALES } from '@/lib/translations';
+import type { HousekeeperLocale } from '@/lib/translations';
+import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 
 export default function LaundryPersonPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: laundryPersonId } = React.use(params);
@@ -31,7 +32,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // See the matching comment block on /housekeeper/[id]. Using the global
   // LanguageContext here was flipping Maria's admin UI to Spanish any time
   // she opened a staff member's personal link.
-  const [lang, setLang] = useState<Language>('en');
+  const [lang, setLang] = useState<HousekeeperLocale>('en');
 
   const [laundryPersonName, setLaundryPersonName] = useState('');
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
@@ -66,7 +67,9 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     void (async () => {
       try {
         const s = await getStaffSelfPublic(pid, laundryPersonId);
-        if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
+        // Full housekeeper locale set (en/es/ht/tl/vi) — the /api/housekeeper/me
+        // read now round-trips ht/tl/vi instead of collapsing them to English.
+        if (!cancelled && s && s.language && (SUPPORTED_LOCALES as readonly string[]).includes(s.language)) {
           setLang(s.language);
         }
       } catch (err) {
@@ -191,8 +194,29 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     // heavy and not latency-sensitive).
     seededRef.current = false;
     void loadBootstrap();
-    const interval = setInterval(() => { void loadBootstrap(); }, 60_000);
+    // Pause the poll while the tab/screen is hidden so a worker who leaves the
+    // page open (iPad on a shelf between shifts) doesn't burn data/battery on a
+    // screen they're not looking at. Mirrors the housekeeper poll's visibility
+    // skip (src/lib/db/housekeeper-helpers.ts).
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void loadBootstrap();
+    }, 60_000);
     return () => clearInterval(interval);
+  }, [loadBootstrap]);
+
+  // Refresh immediately when the worker returns to the tab — the poll may have
+  // skipped several cycles while hidden, so the visible data could be stale.
+  // Separate effect + direct loadBootstrap() (never resets seededRef, so it
+  // can't clobber in-progress checkmarks; loadBootstrap leaves the seeded sets
+  // alone once seededRef.current is true).
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void loadBootstrap();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, [loadBootstrap]);
 
   // Flush any pending save timer on unmount.
@@ -204,10 +228,15 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // Filter public areas due today
   const areasDueToday = publicAreas.filter(area => isAreaDueToday(area, todayDate));
 
-  // Count checkouts, stayovers, and two-bed checkouts from rooms
+  // Count checkouts and stayovers from real PMS room data. We do NOT split
+  // checkouts into one-bed / two-bed: the PMS feeds carry no per-room bed count,
+  // so the old `Math.floor(checkouts * 0.3)` was a fabricated guess presented to
+  // the worker as fact. Treat every checkout as one-bed — an honest floor from
+  // real counts, never an invented multiplier. (Two-bed weighting would need a
+  // real bed-count source before it could be shown as real.)
   const checkouts = rooms.filter(r => r.type === 'checkout').length;
-  const twoBedCheckouts = Math.floor(checkouts * 0.3); // estimate, adjust as needed
-  const oneBedCheckouts = checkouts - twoBedCheckouts;
+  const twoBedCheckouts = 0;
+  const oneBedCheckouts = checkouts;
   const stayovers = rooms.filter(r => r.type === 'stayover').length;
 
   // Calculate laundry loads
@@ -332,9 +361,9 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             </p>
           </div>
 
-          <button
-            onClick={async () => {
-              const next: Language = lang === 'en' ? 'es' : 'en';
+          <LanguageSwitcher
+            current={lang}
+            onChange={async (next) => {
               setLang(next);
               if (laundryPersonId && pid) {
                 // Service-role write — same reasoning as the housekeeper
@@ -348,20 +377,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                 }
               }
             }}
-            style={{
-              background: 'rgba(255,255,255,0.18)',
-              border: '1.5px solid rgba(255,255,255,0.35)',
-              borderRadius: '12px', color: 'white',
-              fontWeight: 700, fontSize: '13px',
-              padding: '10px 16px', cursor: 'pointer',
-              letterSpacing: '0.03em', flexShrink: 0,
-              WebkitTapHighlightColor: 'transparent',
-              display: 'flex', alignItems: 'center', gap: '6px',
-            }}
-          >
-            <Globe size={14} />
-            {lang === 'en' ? 'Español' : 'English'}
-          </button>
+          />
         </div>
 
         {/* Progress bar */}
@@ -408,9 +424,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
               lineHeight: 1.45,
             }}
           >
-            {lang === 'es'
-              ? 'Algunos datos del sistema del hotel aún se están sincronizando — los conteos de cargas pueden estar incompletos.'
-              : 'Some hotel-system data is still syncing — load counts may be incomplete.'}
+            {t('lndSyncingBanner', lang)}
           </div>
         )}
 
@@ -443,9 +457,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
             color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.5,
           }}>
-            {lang === 'es'
-              ? 'Las cargas de hoy aparecerán cuando el sistema del hotel termine de sincronizar.'
-              : "Today's loads will appear once the hotel system finishes syncing."}
+            {t('lndLoadsAppearWhenSynced', lang)}
           </div>
         ) : totalTasks === 0 ? (
           <div style={{
@@ -538,7 +550,7 @@ function AreaTaskCard({
   onToggle,
 }: {
   area: PublicArea;
-  lang: Language;
+  lang: HousekeeperLocale;
   isCompleted: boolean;
   onToggle: () => void;
 }) {
@@ -596,7 +608,7 @@ function LaundryLoadCard({
   onToggle,
 }: {
   load: { id: string; category: string; loads: number; minutes: number };
-  lang: Language;
+  lang: HousekeeperLocale;
   isCompleted: boolean;
   onToggle: () => void;
 }) {

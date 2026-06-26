@@ -10,6 +10,7 @@
 
 import type { Room, StaffMember } from '@/types';
 import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
+import type { HousekeeperLocale } from '@/lib/translations';
 import { supabase, logErr, subscribeTable, asRecordRow } from './_common';
 import { fromRoomRow, fromStaffRow } from '../db-mappers';
 import { STAFF_COLS } from './staff';
@@ -138,7 +139,7 @@ export async function getStaffMember(pid: string, sid: string): Promise<StaffMem
 export async function getStaffSelfPublic(
   pid: string,
   sid: string,
-): Promise<{ id: string; name: string; language: 'en' | 'es' | null } | null> {
+): Promise<{ id: string; name: string; language: HousekeeperLocale | null } | null> {
   try {
     const res = await fetch(
       `/api/housekeeper/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(sid)}`,
@@ -150,7 +151,7 @@ export async function getStaffSelfPublic(
       return null;
     }
     const json = (await res.json().catch(() => null)) as
-      | { ok?: boolean; data?: { id: string; name: string; language: 'en' | 'es' | null } }
+      | { ok?: boolean; data?: { id: string; name: string; language: HousekeeperLocale | null } }
       | null;
     return json?.ok && json.data ? json.data : null;
   } catch (err) {
@@ -185,7 +186,7 @@ export async function saveStaffLanguage(sid: string, language: 'en' | 'es'): Pro
 export async function saveStaffLanguagePublic(
   pid: string,
   sid: string,
-  language: 'en' | 'es',
+  language: HousekeeperLocale,
 ): Promise<void> {
   try {
     const res = await fetch('/api/housekeeper/save-language', {

@@ -197,6 +197,46 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
   });
 });
 
+// ─── per-staff subKey (public SMS-link routes) ───────────────────────────
+//
+// 2026-06-26 — laundry/engineer public routes moved from per-PROPERTY (raw pid)
+// to per-STAFF buckets so one worker / a replayed link can't 429 the whole
+// hotel. The FK-safe mechanism: keep pid RAW (api_limits.property_id FK to
+// properties stays valid) and fold staffId into the endpoint TEXT column. The
+// cap + the billing-fail-closed decision MUST still key on the BASE endpoint —
+// if they keyed on the composite, HOURLY_CAPS[composite] is undefined (cap
+// silently disabled) and BILLING_IMPACTING.has(composite) is false (a billing
+// route silently flips fail-OPEN). These tests pin that.
+
+describe('checkAndIncrementRateLimit — per-staff subKey', () => {
+  test('subKey folds into p_endpoint while pid stays the RAW property id (FK-safe)', async () => {
+    nextRpcResult = { data: 1, error: null };
+    await checkAndIncrementRateLimit('engineer-bootstrap', 'real-pid', { subKey: 'staff-uuid' });
+    assert.equal(rpcCalls.length, 1);
+    assert.equal(rpcCalls[0].args.p_property_id, 'real-pid', 'pid must stay raw (FK to properties)');
+    assert.equal(rpcCalls[0].args.p_endpoint, 'engineer-bootstrap:staff-uuid');
+  });
+
+  test('cap still resolves from the BASE endpoint when a subKey is present', async () => {
+    nextRpcResult = { data: 1201, error: null }; // engineer-bootstrap cap = 1200
+    const result = await checkAndIncrementRateLimit('engineer-bootstrap', 'pid', { subKey: 'staff' });
+    assert.equal(result.allowed, false, 'cap must come from the base endpoint, not the (undefined) composite');
+    if (!result.allowed) assert.equal(result.cap, 1200);
+  });
+
+  test('billing endpoint still FAILS CLOSED on RPC error even with a subKey', async () => {
+    nextRpcResult = { data: null, error: { message: 'connection terminated' } };
+    const result = await checkAndIncrementRateLimit('engineer-vision', 'pid', { subKey: 'staff' });
+    assert.equal(result.allowed, false, 'engineer-vision is billing — subKey must not bypass fail-closed');
+  });
+
+  test('no subKey → p_endpoint is the base string verbatim (backward-compatible)', async () => {
+    nextRpcResult = { data: 1, error: null };
+    await checkAndIncrementRateLimit('laundry-bootstrap', 'pid');
+    assert.equal(rpcCalls[0].args.p_endpoint, 'laundry-bootstrap');
+  });
+});
+
 // ─── rateLimitedResponse ─────────────────────────────────────────────────
 
 describe('rateLimitedResponse — 429 builder', () => {

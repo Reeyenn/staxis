@@ -15,7 +15,11 @@
  *   page actually uses (no PII, no payroll). Mirrors /api/staff-list's
  *   security posture.
  *
- * Response: { id, name, language: 'en' | 'es' | null }
+ * Response: { id, name, language: 'en' | 'es' | 'ht' | 'tl' | 'vi' | null }
+ *
+ * The read MUST round-trip the full housekeeper locale set (migration 0225) —
+ * an earlier version collapsed any non-'es' value to null, so a worker who saved
+ * Haitian Creole / Tagalog / Vietnamese silently reverted to English on reload.
  */
 
 import { NextRequest } from 'next/server';
@@ -24,6 +28,7 @@ import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { SUPPORTED_LOCALES, type HousekeeperLocale } from '@/lib/translations';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,7 +66,13 @@ export async function GET(req: NextRequest) {
     return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  // Tight projection: only what the public page actually consumes.
-  const lang = data.language === 'es' || data.language === 'en' ? data.language : null;
+  // Tight projection: only what the public page actually consumes. Round-trip
+  // the FULL housekeeper locale set (en/es/ht/tl/vi) so a saved ht/tl/vi choice
+  // survives reload; narrow any unknown/stale value to null (page keeps 'en').
+  const lang: HousekeeperLocale | null =
+    typeof data.language === 'string' &&
+    (SUPPORTED_LOCALES as readonly string[]).includes(data.language)
+      ? (data.language as HousekeeperLocale)
+      : null;
   return ok({ id: data.id, name: data.name, language: lang }, { requestId });
 }

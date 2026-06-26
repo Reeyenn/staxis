@@ -61,7 +61,10 @@ export async function GET(req: NextRequest) {
   const pid = pidV.value!;
   const staffId = staffV.value!;
 
-  const rl = await checkAndIncrementRateLimit('laundry-bootstrap', pid);
+  // Per-staff bucket: RAW pid keeps the api_limits.property_id FK valid; staffId
+  // folds into the endpoint column so one worker / a replayed SMS link can't 429
+  // the whole property's laundry workers.
+  const rl = await checkAndIncrementRateLimit('laundry-bootstrap', pid, { subKey: staffId });
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }

@@ -273,6 +273,32 @@ describe('POST /api/housekeeper/room-action — capability model', () => {
     assert.equal(res.status, 403, 'unknown staff returns same response as cross-property mismatch');
   });
 
+  test('malformed (non-UUID) staffId → clean 403, never a 500', async () => {
+    // A truncated / garbled SMS link sends a non-UUID staffId. Before the fix it
+    // reached `.eq('id', staffId)` on a uuid column → Postgres invalid-input-
+    // syntax → the catch returned 500. It must now short-circuit to the same
+    // opaque 403 as an unknown staff (no DB round-trip, no scary error).
+    const { POST } = await import('@/app/api/housekeeper/room-action/route');
+    const res = await POST(makeRequest({
+      pid: PROPERTY_A,
+      staffId: 'not-a-real-uuid',
+      roomId: ROOM_UNASSIGNED,
+      action: 'finish',
+    }));
+    assert.equal(res.status, 403, 'malformed staffId must return a clean 403, not 500');
+  });
+
+  test('malformed (non-UUID) pid → clean 403, never a 500', async () => {
+    const { POST } = await import('@/app/api/housekeeper/room-action/route');
+    const res = await POST(makeRequest({
+      pid: 'garbled-pid',
+      staffId: STAFF_A_AT_PROPERTY_A,
+      roomId: ROOM_UNASSIGNED,
+      action: 'finish',
+    }));
+    assert.equal(res.status, 403, 'malformed pid must return a clean 403, not 500');
+  });
+
   test('unknown roomId → 404', async () => {
     const { POST } = await import('@/app/api/housekeeper/room-action/route');
     const res = await POST(makeRequest({

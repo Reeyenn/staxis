@@ -9,13 +9,21 @@
 // RLS bug class: this is a PUBLIC page. It reads/writes ONLY through
 // /api/engineer/* (supabaseAdmin + pid+staffId capability check) — never the
 // browser supabase client. Mirrors the laundry page (bootstrap fetch + poll).
+//
+// i18n: all UI strings go through the shared translation system (`t()` from
+// src/lib/translations) and follow the worker's saved account language across
+// the FULL housekeeper locale set (en/es/ht/tl/vi) via the LanguageSwitcher —
+// like the housekeeper + laundry pages. Dynamic DB content (reading-type names,
+// units, anomaly reasons, period labels) stays as-is.
 
 export const dynamic = 'force-dynamic';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { AlertTriangle } from 'lucide-react';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Btn, Pill, Caps } from '@/app/housekeeping/_components/_snow';
+import { T, FONT_SANS, FONT_SERIF, Btn, Pill, Caps } from '@/app/housekeeping/_components/_snow';
+import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
+import { t, SUPPORTED_LOCALES, type HousekeeperLocale } from '@/lib/translations';
 import {
   engineerBootstrap,
   engineerLogReading,
@@ -26,9 +34,6 @@ import {
   type EngineerBootstrap,
 } from '@/lib/db/compliance';
 import type { ReadingTypeStatus, PmTaskStatus } from '@/lib/compliance/types';
-
-type Lang = 'en' | 'es';
-const tr = (lang: Lang, en: string, es: string) => (lang === 'es' ? es : en);
 
 function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
   return new Promise((resolve, reject) => {
@@ -64,7 +69,7 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
 
   const [data, setData] = useState<EngineerBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lang, setLang] = useState<Lang>('en');
+  const [lang, setLang] = useState<HousekeeperLocale>('en');
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -97,7 +102,12 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
     if (!pid || !staffId) return;
     const d = await engineerBootstrap(pid, staffId);
     setData(d);
-    if (d && (d.staff.language === 'es' || d.staff.language === 'en')) setLang(d.staff.language as Lang);
+    // Follow the worker's saved account language across the full locale set
+    // (en/es/ht/tl/vi). The bootstrap returns the raw staff.language; narrow it
+    // defensively so a stale/unknown value falls back to EN.
+    if (d && d.staff.language && (SUPPORTED_LOCALES as readonly string[]).includes(d.staff.language)) {
+      setLang(d.staff.language as HousekeeperLocale);
+    }
     setLoading(false);
   }, [pid, staffId]);
 
@@ -108,7 +118,7 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
     return () => clearInterval(iv);
   }, [pid, staffId, load]);
 
-  const toggleLang = async (next: Lang) => {
+  const toggleLang = async (next: HousekeeperLocale) => {
     setLang(next);
     if (pid && staffId) { try { await engineerSaveLanguage(pid, staffId, next); } catch { /* best-effort */ } }
   };
@@ -118,8 +128,8 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
     return (
       <Centered>
         <AlertTriangle size={32} color={T.warm} />
-        <p style={{ fontSize: 16, fontWeight: 600, color: T.ink, marginTop: 12 }}>{tr(lang, 'Incomplete link', 'Enlace incompleto')}</p>
-        <p style={{ fontSize: 14, color: T.ink2, marginTop: 4, textAlign: 'center' }}>{tr(lang, 'Please open the link from your text message again.', 'Abre el enlace de tu mensaje de nuevo.')}</p>
+        <p style={{ fontSize: 16, fontWeight: 600, color: T.ink, marginTop: 12 }}>{t('cxIncompleteLink', lang)}</p>
+        <p style={{ fontSize: 14, color: T.ink2, marginTop: 4, textAlign: 'center' }}>{t('cxIncompleteLinkHelp', lang)}</p>
       </Centered>
     );
   }
@@ -135,13 +145,13 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
     return (
       <Centered>
         <AlertTriangle size={32} color={T.warm} />
-        <p style={{ fontSize: 15, color: T.ink2, marginTop: 12, textAlign: 'center' }}>{tr(lang, "Couldn't load your checklist. Pull to refresh or reopen the link.", 'No se pudo cargar. Recarga o reabre el enlace.')}</p>
+        <p style={{ fontSize: 15, color: T.ink2, marginTop: 12, textAlign: 'center' }}>{t('engCouldntLoad', lang)}</p>
       </Centered>
     );
   }
 
   const o = data.overview;
-  const firstName = (data.staff.name || '').split(' ')[0] || tr(lang, 'there', 'hola');
+  const firstName = (data.staff.name || '').split(' ')[0] || t('engThere', lang);
   const pct = o.readingsCompletePct;
   const pctColor = pct >= 70 ? T.sageDeep : pct >= 30 ? T.caramelDeep : T.warm;
 
@@ -151,25 +161,16 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
       <div style={{ position: 'sticky', top: 0, zIndex: 10, background: T.bg, borderBottom: `1px solid ${T.rule}`, padding: '16px 18px 12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
           <div>
-            <Caps c={T.ink3}>{tr(lang, 'Compliance', 'Cumplimiento')}</Caps>
+            <Caps c={T.ink3}>{t('engCompliance', lang)}</Caps>
             <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 24, color: T.ink, marginTop: 2 }}>
-              {tr(lang, `Hi ${firstName}`, `Hola ${firstName}`)}
+              {`${t('engHi', lang)} ${firstName}`}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 4 }}>
-            {(['en', 'es'] as Lang[]).map((l) => (
-              <button key={l} onClick={() => toggleLang(l)} style={{
-                padding: '6px 10px', borderRadius: 999, cursor: 'pointer',
-                fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
-                background: lang === l ? T.ink : 'transparent', color: lang === l ? T.bg : T.ink2,
-                border: `1px solid ${lang === l ? T.ink : T.rule}`,
-              }}>{l}</button>
-            ))}
-          </div>
+          <LanguageSwitcher variant="light" current={lang} onChange={(next) => toggleLang(next)} />
         </div>
         <div style={{ marginTop: 10, display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 30, color: pctColor, letterSpacing: '-0.03em' }}>{pct}%</span>
-          <span style={{ fontSize: 13, color: T.ink2 }}>{tr(lang, `readings done · ${o.pmOverdueCount} checks overdue`, `lecturas hechas · ${o.pmOverdueCount} revisiones vencidas`)}</span>
+          <span style={{ fontSize: 13, color: T.ink2 }}>{`${t('engReadingsDoneLabel', lang)} · ${o.pmOverdueCount} ${t('engChecksOverdueLabel', lang)}`}</span>
         </div>
       </div>
 
@@ -178,7 +179,7 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
         <VoicePanel pid={pid} staffId={staffId} lang={lang} onLogged={(msg) => { flash(msg); void load(); }} />
 
         {/* Readings */}
-        <SectionLabel>{tr(lang, 'Readings due', 'Lecturas pendientes')}</SectionLabel>
+        <SectionLabel>{t('engReadingsDue', lang)}</SectionLabel>
         {o.readings.length === 0 && <Empty lang={lang} />}
         {o.readings.map((r) => (
           <ReadingCard key={r.type.id} pid={pid} staffId={staffId} r={r} lang={lang}
@@ -186,7 +187,7 @@ export default function EngineerPage({ params }: { params: Promise<{ id: string 
         ))}
 
         {/* Checks */}
-        <SectionLabel>{tr(lang, 'Safety checks', 'Revisiones de seguridad')}</SectionLabel>
+        <SectionLabel>{t('engSafetyChecks', lang)}</SectionLabel>
         {o.pmTasks.length === 0 && <Empty lang={lang} />}
         {o.pmTasks.map((p) => (
           <PmCard key={p.task.id} pid={pid} staffId={staffId} p={p} lang={lang}
@@ -218,14 +219,14 @@ function Centered({ children }: { children: React.ReactNode }) {
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div style={{ margin: '22px 2px 8px' }}><Caps c={T.ink2}>{children}</Caps></div>;
 }
-function Empty({ lang }: { lang: Lang }) {
-  return <div style={{ color: T.ink3, fontSize: 13.5, padding: '10px 2px' }}>{tr(lang, 'Nothing assigned right now.', 'Nada asignado ahora.')}</div>;
+function Empty({ lang }: { lang: HousekeeperLocale }) {
+  return <div style={{ color: T.ink3, fontSize: 13.5, padding: '10px 2px' }}>{t('engNothingAssigned', lang)}</div>;
 }
 
 // ─── Reading card (tap to log; snap-to-log) ──────────────────────────────────
 
 function ReadingCard({ pid, staffId, r, lang, onSaved }: {
-  pid: string; staffId: string; r: ReadingTypeStatus; lang: Lang; onSaved: (msg: string) => void;
+  pid: string; staffId: string; r: ReadingTypeStatus; lang: HousekeeperLocale; onSaved: (msg: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState('');
@@ -235,11 +236,11 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
   const fileRef = useRef<HTMLInputElement>(null);
 
   let pill: React.ReactNode;
-  if (r.anomaly) pill = <Pill tone="warm">⚠️ {tr(lang, 'Anomaly', 'Anomalía')}</Pill>;
-  else if (r.latestOutOfRange) pill = <Pill tone="warm">{tr(lang, 'Out of range', 'Fuera de rango')}</Pill>;
-  else if (r.learning) pill = <Pill tone="neutral">{tr(lang, 'Learning…', 'Aprendiendo…')}</Pill>;
-  else if (r.doneThisPeriod) pill = <Pill tone="sage">{tr(lang, 'Done', 'Hecho')}</Pill>;
-  else pill = <Pill tone="caramel">{tr(lang, 'Due', 'Pendiente')}</Pill>;
+  if (r.anomaly) pill = <Pill tone="warm">⚠️ {t('engAnomaly', lang)}</Pill>;
+  else if (r.latestOutOfRange) pill = <Pill tone="warm">{t('engOutOfRange', lang)}</Pill>;
+  else if (r.learning) pill = <Pill tone="neutral">{t('engLearning', lang)}</Pill>;
+  else if (r.doneThisPeriod) pill = <Pill tone="sage">{t('engDone', lang)}</Pill>;
+  else pill = <Pill tone="caramel">{t('engDue', lang)}</Pill>;
 
   const onPhoto = async (file: File | null) => {
     if (!file) return;
@@ -249,12 +250,12 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
       const res = await engineerVisionReading({ pid, staffId, readingTypeId: r.type.id, imageBase64: base64, mediaType });
       if (res.ok && res.data && res.data.value !== null) {
         setValue(String(res.data.value));
-        setScanNote(tr(lang, `Read ${res.data.value}${r.type.unit}`, `Leído ${res.data.value}${r.type.unit}`));
+        setScanNote(`${t('engReadPrefix', lang)} ${res.data.value}${r.type.unit}`);
       } else {
-        setScanNote(tr(lang, 'Could not read — enter manually.', 'No se pudo leer — ingresa manual.'));
+        setScanNote(t('engCouldNotReadManual', lang));
       }
     } catch {
-      setScanNote(tr(lang, 'Scan failed.', 'Escaneo falló.'));
+      setScanNote(t('engScanFailed', lang));
     } finally {
       setScanBusy(false);
       if (fileRef.current) fileRef.current.value = '';
@@ -270,8 +271,8 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
       if (res.ok) {
         setOpen(false); setValue(''); setScanNote(null);
         onSaved(res.data?.outOfRange
-          ? tr(lang, `Logged — out of range, manager alerted`, `Registrado — fuera de rango, gerente avisado`)
-          : tr(lang, 'Logged ✓', 'Registrado ✓'));
+          ? t('engLoggedOutOfRange', lang)
+          : t('engLogged', lang));
       } else setBusy(false);
     } catch { setBusy(false); }
   };
@@ -285,7 +286,7 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
         <span style={{ minWidth: 0 }}>
           <span style={{ display: 'block', fontSize: 15, fontWeight: 600, color: T.ink }}>{r.type.name}</span>
           <span style={{ display: 'block', fontSize: 12, color: T.ink3, marginTop: 2 }}>
-            {r.periodLabel}{range ? ` · ${tr(lang, 'safe', 'seguro')} ${range}` : ''}
+            {r.periodLabel}{range ? ` · ${t('engSafe', lang)} ${range}` : ''}
           </span>
           {r.anomaly && (
             <span style={{ display: 'block', fontSize: 12, color: T.warm, marginTop: 3, lineHeight: 1.35 }}>
@@ -312,7 +313,7 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
           </div>
           {scanNote && <div style={{ fontSize: 12, color: T.ink2 }}>{scanNote}</div>}
           <Btn variant="sage" size="lg" onClick={save} disabled={busy || value.trim() === ''} style={{ width: '100%', justifyContent: 'center', height: 48 }}>
-            {busy ? '…' : tr(lang, 'Save reading', 'Guardar lectura')}
+            {busy ? '…' : t('engSaveReading', lang)}
           </Btn>
         </div>
       )}
@@ -323,14 +324,14 @@ function ReadingCard({ pid, staffId, r, lang, onSaved }: {
 // ─── PM check card (pass / fail) ─────────────────────────────────────────────
 
 function PmCard({ pid, staffId, p, lang, onSaved }: {
-  pid: string; staffId: string; p: PmTaskStatus; lang: Lang; onSaved: (msg: string) => void;
+  pid: string; staffId: string; p: PmTaskStatus; lang: HousekeeperLocale; onSaved: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [override, setOverride] = useState(false);
   let pill: React.ReactNode;
-  if (p.overdue) pill = <Pill tone="warm">{tr(lang, 'Overdue', 'Vencida')}</Pill>;
-  else if (p.doneThisPeriod) pill = <Pill tone="sage">{tr(lang, 'Done', 'Hecho')}</Pill>;
-  else pill = <Pill tone="caramel">{tr(lang, 'Due', 'Pendiente')}</Pill>;
+  if (p.overdue) pill = <Pill tone="warm">{t('engOverdue', lang)}</Pill>;
+  else if (p.doneThisPeriod) pill = <Pill tone="sage">{t('engDone', lang)}</Pill>;
+  else pill = <Pill tone="caramel">{t('engDue', lang)}</Pill>;
 
   const submit = async (status: 'pass' | 'fail') => {
     setBusy(true);
@@ -338,8 +339,8 @@ function PmCard({ pid, staffId, p, lang, onSaved }: {
       const res = await engineerLogPmCheck({ pid, staffId, pmTaskId: p.task.id, status, unitsChecked: p.task.unitCount });
       if (res.ok) {
         onSaved(status === 'fail'
-          ? tr(lang, 'Marked failed — manager alerted', 'Marcado falla — gerente avisado')
-          : tr(lang, 'Checked off ✓', 'Marcado ✓'));
+          ? t('engMarkedFailedAlerted', lang)
+          : t('engCheckedOff', lang));
       } else setBusy(false);
     } catch { setBusy(false); }
   };
@@ -349,23 +350,23 @@ function PmCard({ pid, staffId, p, lang, onSaved }: {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: T.ink }}>{p.task.name}</div>
-          <div style={{ fontSize: 12, color: T.ink3, marginTop: 2 }}>{p.task.unitCount} {tr(lang, 'units', 'unidades')} · {p.periodLabel}</div>
+          <div style={{ fontSize: 12, color: T.ink3, marginTop: 2 }}>{p.task.unitCount} {t('engUnits', lang)} · {p.periodLabel}</div>
         </div>
         {pill}
       </div>
       {(!p.doneThisPeriod || override) && (
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <Btn variant="sage" size="lg" onClick={() => submit('pass')} disabled={busy} style={{ flex: 1, justifyContent: 'center', height: 46 }}>
-            {tr(lang, 'All good ✓', 'Todo bien ✓')}
+            {t('engAllGood', lang)}
           </Btn>
           <Btn variant="paper" size="lg" onClick={() => submit('fail')} disabled={busy} style={{ flex: 1, justifyContent: 'center', height: 46, color: T.warm, borderColor: 'rgba(184,92,61,0.4)' }}>
-            {tr(lang, 'Problem', 'Problema')}
+            {t('engProblem', lang)}
           </Btn>
         </div>
       )}
       {p.doneThisPeriod && !override && (
         <button onClick={() => setOverride(true)} style={{ marginTop: 10, background: 'transparent', border: 'none', cursor: 'pointer', color: T.ink3, fontFamily: FONT_SANS, fontSize: 12.5, textDecoration: 'underline', padding: 0 }}>
-          {tr(lang, 'Re-check / fix this', 'Volver a revisar')}
+          {t('engRecheck', lang)}
         </button>
       )}
     </div>
@@ -375,7 +376,7 @@ function PmCard({ pid, staffId, p, lang, onSaved }: {
 // ─── Voice panel (hands-free reading logging) ────────────────────────────────
 
 function VoicePanel({ pid, staffId, lang, onLogged }: {
-  pid: string; staffId: string; lang: Lang; onLogged: (msg: string) => void;
+  pid: string; staffId: string; lang: HousekeeperLocale; onLogged: (msg: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
@@ -389,6 +390,8 @@ function VoicePanel({ pid, staffId, lang, onLogged }: {
     if (!SRClass) return;
     try {
       const sr = new SRClass();
+      // Web Speech has no reliable ht/tl/vi models — fall back to en-US STT for
+      // those (the textarea still lets the worker type). es → es-US.
       sr.lang = lang === 'es' ? 'es-US' : 'en-US';
       sr.continuous = false;
       sr.interimResults = false;
@@ -416,8 +419,8 @@ function VoicePanel({ pid, staffId, lang, onLogged }: {
         const oor = res.data.logged.filter((l) => l.outOfRange).length;
         setText(''); setOpen(false);
         onLogged(n === 0
-          ? tr(lang, "Didn't catch a reading — try again or type it.", 'No se entendió — intenta de nuevo.')
-          : tr(lang, `Logged ${n} reading${n === 1 ? '' : 's'}${oor ? ` · ${oor} out of range` : ''} ✓`, `${n} lectura(s) registradas${oor ? ` · ${oor} fuera de rango` : ''} ✓`));
+          ? t('engVoiceNotCaught', lang)
+          : `${t('engLoggedWord', lang)}: ${n} ${t(n === 1 ? 'engReadingWord' : 'engReadingsWord', lang)}${oor ? ` · ${oor} ${t('engOutOfRangeLower', lang)}` : ''} ✓`);
       } else setBusy(false);
     } catch { setBusy(false); }
   };
@@ -426,24 +429,24 @@ function VoicePanel({ pid, staffId, lang, onLogged }: {
     <div style={{ background: T.sageDim, border: `1px solid rgba(104,131,114,0.25)`, borderRadius: 14, padding: '14px 16px', marginBottom: 6 }}>
       {!open ? (
         <button onClick={() => setOpen(true)} style={{ width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: T.sageDeep, fontFamily: FONT_SANS, fontSize: 14, fontWeight: 600 }}>
-          🎙️ {tr(lang, 'Log readings by voice', 'Registrar por voz')}
+          🎙️ {t('engLogByVoice', lang)}
         </button>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 12.5, color: T.ink2 }}>
-            {tr(lang, 'Say e.g. "pool pH 7.4, chlorine 3, alkalinity 90". Then Log.', 'Di p. ej. "piscina pH 7.4, cloro 3, alcalinidad 90". Luego Registrar.')}
+            {t('engVoiceHint', lang)}
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2}
-            placeholder={tr(lang, 'Speak or type readings…', 'Habla o escribe lecturas…')}
+            placeholder={t('engSpeakOrType', lang)}
             style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_SANS, fontSize: 15, color: T.ink, outline: 'none', boxSizing: 'border-box', resize: 'vertical' }} />
           <div style={{ display: 'flex', gap: 8 }}>
             {supported && (
               <Btn variant={listening ? 'primary' : 'paper'} size="lg" onClick={listening ? stopListening : startListening} style={{ justifyContent: 'center', height: 46 }}>
-                {listening ? tr(lang, '● Listening… stop', '● Escuchando… parar') : tr(lang, '🎙️ Speak', '🎙️ Hablar')}
+                {listening ? t('engListeningStop', lang) : t('engSpeak', lang)}
               </Btn>
             )}
             <Btn variant="sage" size="lg" onClick={submit} disabled={busy || !text.trim()} style={{ flex: 1, justifyContent: 'center', height: 46 }}>
-              {busy ? '…' : tr(lang, 'Log', 'Registrar')}
+              {busy ? '…' : t('engLog', lang)}
             </Btn>
           </div>
         </div>

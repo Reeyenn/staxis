@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
     return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const rl = await checkAndIncrementRateLimit('engineer-vision', pid);
+  const rl = await checkAndIncrementRateLimit('engineer-vision', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const staff = await checkStaffCapability(pid, staffId);

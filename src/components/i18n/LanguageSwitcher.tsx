@@ -12,22 +12,27 @@ import {
 /**
  * LanguageSwitcher — globe icon button + bottom-sheet picker with search.
  *
- * Replaces the EN/ES toggle that lived inline in the housekeeper page
- * header. Tapping the globe opens a list of every supported locale with
- * a search box that filters by english/native name + ISO code +
- * pre-registered aliases (so typing "creole" finds Haitian).
+ * Replaces the EN/ES toggle that lived inline in the staff-facing pages
+ * (housekeeper, laundry, engineer). Tapping the globe opens a list of every
+ * supported locale with a search box that filters by english/native name +
+ * ISO code + pre-registered aliases (so typing "creole" finds Haitian).
  *
- * Native names render in the language's own script so a housekeeper
- * who can't read English still recognizes their language. The flag pill
- * on machine-translated locales tells the user the translation may be
- * imperfect.
+ * Native names render in the language's own script so a worker who can't read
+ * English still recognizes their language. The BETA pill on machine-translated
+ * locales tells the user the translation may be imperfect.
+ *
+ * `variant` themes ONLY the trigger button (the bottom-sheet dialog is
+ * white/dark-text and theme-independent):
+ *   - 'dark'  — white-on-translucent, for the navy housekeeper/laundry headers.
+ *   - 'light' — snow tokens, for the engineer page's light _snow header.
  */
 interface Props {
   current: HousekeeperLocale;
   onChange: (next: HousekeeperLocale) => void | Promise<void>;
+  variant?: 'dark' | 'light';
 }
 
-export function LanguageSwitcher({ current, onChange }: Props) {
+export function LanguageSwitcher({ current, onChange, variant = 'dark' }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -76,13 +81,27 @@ export function LanguageSwitcher({ current, onChange }: Props) {
 
   const meta = LOCALE_META[current];
 
-  return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        aria-label={t('langPickerTitle', current)}
-        title={meta.nativeName}
-        style={{
+  // Trigger-button theming. The dialog below is intentionally NOT themed.
+  const triggerStyle: React.CSSProperties =
+    variant === 'light'
+      ? {
+          background: 'transparent',
+          border: '1px solid var(--snow-rule, #E7E3DA)',
+          color: 'var(--snow-ink2, #6B6456)',
+          fontWeight: 600,
+          fontSize: '13px',
+          padding: '8px 12px',
+          cursor: 'pointer',
+          letterSpacing: '0.04em',
+          flexShrink: 0,
+          WebkitTapHighlightColor: 'transparent',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          borderRadius: '999px',
+          fontFamily: 'var(--font-geist-mono), ui-monospace, monospace',
+        }
+      : {
           background: 'rgba(255,255,255,0.18)',
           border: '1.5px solid rgba(255,255,255,0.35)',
           borderRadius: '12px',
@@ -97,9 +116,18 @@ export function LanguageSwitcher({ current, onChange }: Props) {
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-        }}
+        };
+  const triggerIconColor = variant === 'light' ? 'var(--snow-ink2, #6B6456)' : undefined;
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        aria-label={t('langPickerTitle', current)}
+        title={meta.nativeName}
+        style={triggerStyle}
       >
-        <Globe size={18} aria-hidden />
+        <Globe size={variant === 'light' ? 15 : 18} color={triggerIconColor} aria-hidden />
         <span style={{ fontSize: '12px', fontWeight: 700, lineHeight: 1 }}>
           {meta.code.toUpperCase()}
         </span>
@@ -114,7 +142,7 @@ export function LanguageSwitcher({ current, onChange }: Props) {
             position: 'fixed',
             inset: 0,
             background: 'rgba(15,23,42,0.55)',
-            zIndex: 260,
+            zIndex: 2147483000,
             display: 'flex',
             alignItems: 'flex-end',
           }}
@@ -188,6 +216,7 @@ export function LanguageSwitcher({ current, onChange }: Props) {
                   outline: 'none',
                   fontFamily: 'inherit',
                   boxSizing: 'border-box',
+                  color: '#0F172A',
                 }}
               />
             </div>

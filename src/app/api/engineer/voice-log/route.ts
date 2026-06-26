@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
   const pid = pidV.value!, staffId = staffV.value!, text = textV.value!;
   const idemBase = typeof body.idempotencyKey === 'string' && body.idempotencyKey.length <= 80 ? body.idempotencyKey : null;
 
-  const rl = await checkAndIncrementRateLimit('engineer-voice', pid);
+  const rl = await checkAndIncrementRateLimit('engineer-voice', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const staff = await checkStaffCapability(pid, staffId);

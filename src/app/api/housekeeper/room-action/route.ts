@@ -37,6 +37,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { validateUuid } from '@/lib/api-validate';
 // Plan v4 bridge: deriveCleaningEventFeatures reads from the
 // today_room_work_v1 + today_property_counts_v1 RPCs (derived live from
 // pms_room_status_log + pms_reservations + pms_in_house_snapshot +
@@ -269,6 +270,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!['finish', 'reset', 'dnd_on', 'dnd_off', 'issue'].includes(action)) {
     log.warn('room-action: invalid action', { requestId, route: 'housekeeper/room-action', action });
     return err('invalid action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+  }
+
+  // A malformed (non-UUID) pid/staffId must NOT reach the staff lookup: a bad
+  // staffId hits `.eq('id', staffId)` on a uuid column → Postgres raises
+  // invalid-input-syntax → the catch below would hand the worker a scary 500.
+  // A typo'd / truncated SMS link is the realistic source. Validate the shape up
+  // front and return the SAME opaque 403 as a staff/property mismatch (don't
+  // leak which side was wrong, and never 500 on a bad link). roomId is a
+  // `date:number` composite, not a UUID — parseRoomId handles it below (→ 404).
+  if (validateUuid(pid, 'pid').error || validateUuid(staffId, 'staffId').error) {
+    log.warn('room-action: malformed pid/staffId', { requestId, route: 'housekeeper/room-action' });
+    return err('not allowed', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
   }
 
   // 2026-05-20 audit M3 — rate-limit per (pid, staffId). The SMS-link

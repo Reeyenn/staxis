@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     note = nv.value || null;
   }
 
-  const rl = await checkAndIncrementRateLimit('engineer-log', pid);
+  const rl = await checkAndIncrementRateLimit('engineer-log', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const staff = await checkStaffCapability(pid, staffId);

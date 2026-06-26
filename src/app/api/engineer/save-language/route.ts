@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   }
   const pid = pidV.value!, staffId = staffV.value!, language = body.language;
 
-  const rl = await checkAndIncrementRateLimit('engineer-save-language', pid);
+  const rl = await checkAndIncrementRateLimit('engineer-save-language', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   // Capability gate also rejects inactive staff (stale-link), matching the
