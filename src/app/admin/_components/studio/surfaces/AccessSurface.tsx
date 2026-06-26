@@ -26,12 +26,19 @@ interface CapMeta {
   key: string;
   adminOnly: boolean;
   live: boolean;
+  managerFloor?: boolean;
   group: string;
   label_en: string;
   label_es: string;
   desc_en: string;
   desc_es: string;
 }
+
+// Roles that keep a manager-floor capability (owner / GM). Line-staff columns
+// (front_desk / housekeeping / maintenance) are locked OFF for those caps — the
+// resolver ignores any override that tries to grant them, so the grid shows a
+// disabled cell rather than a toggle that silently does nothing.
+const MANAGER_FLOOR_ROLES = new Set(['owner', 'general_manager']);
 interface GroupMeta { key: string; label_en: string; label_es: string }
 type OverrideMap = Record<string, Record<string, boolean>>;
 interface Matrix {
@@ -297,24 +304,29 @@ function CapRow({
       <CapLabel label={label} desc={desc} pending={!cap.live} es={es} />
       {roles.map((role) => {
         const key = `${cap.key}:${role}`;
+        // A manager-floor cap is locked OFF for line-staff columns — the resolver
+        // can never grant it to them, so the cell is a fixed, disabled "no".
+        const floorLocked = !!cap.managerFloor && !MANAGER_FLOOR_ROLES.has(role);
         const restricted = isRestricted(cap.key, role);
-        const allowed = !restricted;
+        const allowed = floorLocked ? false : !restricted;
         const saving = savingKey === key;
         const saved = savedKey === key;
         return (
           <div key={role} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px 8px' }}>
             <Toggle
               allowed={allowed}
-              disabled={!cap.live || saving}
+              disabled={floorLocked || !cap.live || saving}
               saving={saving}
               saved={saved}
               onClick={() => onToggle(cap.key, role, restricted /* next = allow if currently restricted */)}
               title={
-                !cap.live
-                  ? (es ? 'Predeterminado para gerentes' : 'Manager default')
-                  : allowed
-                    ? (es ? 'Permitido — clic para restringir' : 'Allowed — click to restrict')
-                    : (es ? 'Restringido — clic para permitir' : 'Restricted — click to allow')
+                floorLocked
+                  ? (es ? 'Solo gerentes — no se puede otorgar al personal' : 'Managers only — can’t be granted to line staff')
+                  : !cap.live
+                    ? (es ? 'Predeterminado para gerentes' : 'Manager default')
+                    : allowed
+                      ? (es ? 'Permitido — clic para restringir' : 'Allowed — click to restrict')
+                      : (es ? 'Restringido — clic para permitir' : 'Restricted — click to allow')
               }
             />
           </div>

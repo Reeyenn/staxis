@@ -19,6 +19,7 @@ import {
   CAPABILITY_KEYS,
   CAPABILITY_META,
   HOTEL_ROLES,
+  MANAGER_FLOOR_CAPABILITIES,
   ROLE_DEFAULTS,
   isHotelRole,
   type CapabilityKey,
@@ -34,9 +35,9 @@ function reference(
   const meta = CAPABILITY_META[cap];
   if (!meta || meta.adminOnly) return role === 'admin';
   if (role === 'admin') return true;
-  // Manager floor: account/credential-management caps are owner/GM only and an
-  // override cannot lift it (mirrors can() step b.5).
-  if ((cap === 'manage_team' || cap === 'manage_users') && role !== 'owner' && role !== 'general_manager') return false;
+  // Manager floor: sensitive caps (money / pay / audit / settings / team mgmt)
+  // are owner/GM only and an override cannot lift it (mirrors can() step b.5).
+  if (MANAGER_FLOOR_CAPABILITIES.has(cap) && role !== 'owner' && role !== 'general_manager') return false;
   if (overrides && role && isHotelRole(role)) {
     const r = overrides[cap];
     if (r && Object.prototype.hasOwnProperty.call(r, role)) return r[role] === true;
@@ -59,6 +60,9 @@ const OVERRIDE_MAPS: CapabilityOverrideMap[] = [
   // An attempt to GRANT team/user management to line staff — the manager floor
   // must beat the override (both can() and reference return false here).
   { manage_team: { housekeeping: true }, manage_users: { front_desk: true } },
+  // An attempt to GRANT money / pay / audit / PMS-settings to line staff — the
+  // manager floor must beat the override for these too.
+  { view_financials: { housekeeping: true }, view_wages: { front_desk: true }, view_activity_log: { maintenance: true }, manage_settings: { housekeeping: true } },
 ];
 
 describe('resolver parity: can() matches the reference across the full matrix', () => {
@@ -78,10 +82,15 @@ describe('resolver parity: can() matches the reference across the full matrix', 
   });
 
   it('is a pure function of (role, capability, overrides) — deterministic', () => {
-    const overrides: CapabilityOverrideMap = { view_financials: { housekeeping: false } };
+    const overrides: CapabilityOverrideMap = { view_financials: { housekeeping: false }, use_packages: { housekeeping: false } };
     for (let i = 0; i < 5; i++) {
+      // view_financials is a manager-floor cap — line staff are denied regardless
+      // of the override (restricted housekeeping AND un-restricted front_desk).
       assert.equal(can({ role: 'housekeeping' }, 'view_financials', overrides), false);
-      assert.equal(can({ role: 'front_desk' }, 'view_financials', overrides), true);
+      assert.equal(can({ role: 'front_desk' }, 'view_financials', overrides), false);
+      // A non-floored cap still follows the override/default for line staff.
+      assert.equal(can({ role: 'housekeeping' }, 'use_packages', overrides), false);
+      assert.equal(can({ role: 'front_desk' }, 'use_packages', overrides), true);
     }
   });
 });

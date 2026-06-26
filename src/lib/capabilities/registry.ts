@@ -37,10 +37,12 @@ export function isHotelRole(s: unknown): s is HotelRole {
 // the legacy `staff` so a stray legacy account still gets the everyone-default.
 const DEFAULT_GRANTED_ROLES: readonly AppRole[] = [...HOTEL_ROLES, 'admin', 'staff'];
 
-// Manager tier. The default grant for account/credential-management capabilities
-// (manage_team, manage_users) that must NEVER fall to line staff even under the
+// Manager tier. The default grant for sensitive capabilities (account/credential
+// management AND money / pay / audit-history / PMS-settings — see
+// MANAGER_FLOOR_CAPABILITIES) that must NEVER fall to line staff even under the
 // everyone-everything default — otherwise a housekeeper could reset the owner's
-// password or promote a coworker to owner. (Security audit 2026-06-18.)
+// password, read the payroll, or open the books. (Security audit 2026-06-18,
+// extended pre-onboarding 2026-06-26.)
 const MANAGER_ROLES: readonly AppRole[] = ['owner', 'general_manager', 'admin'];
 
 // ── Capability keys ──────────────────────────────────────────────────────────
@@ -127,11 +129,13 @@ export interface CapabilityMeta {
 export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   {
     key: 'view_financials', adminOnly: false, deptScoped: false, group: 'money',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Financials', label_es: 'Finanzas',
     desc_en: 'Checkbook, budget, CapEx, revenue & profit', desc_es: 'Chequera, presupuesto, CapEx, ingresos y ganancias',
   },
   {
     key: 'view_wages', adminOnly: false, deptScoped: false, group: 'money',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Wages & labor cost', label_es: 'Salarios y costo laboral',
     desc_en: 'Hourly pay, wage settings, labor-cost % tile', desc_es: 'Pago por hora, salarios, % de costo laboral',
   },
@@ -189,6 +193,7 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   },
   {
     key: 'manage_settings', adminOnly: false, deptScoped: false, group: 'team_settings',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Hotel & PMS settings', label_es: 'Configuración del hotel y PMS',
     desc_en: "Edit the hotel's PMS connection settings", desc_es: 'Editar la conexión PMS del hotel',
   },
@@ -219,6 +224,7 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   },
   {
     key: 'view_activity_log', adminOnly: false, deptScoped: false, group: 'team_settings',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Activity log', label_es: 'Registro de actividad',
     desc_en: 'Searchable audit timeline of changes', desc_es: 'Línea de tiempo de auditoría de cambios',
   },
@@ -245,6 +251,32 @@ export const ADMIN_ONLY_CAPABILITIES: ReadonlySet<CapabilityKey> = new Set(
 
 export function isAdminOnlyCapability(cap: CapabilityKey): boolean {
   return ADMIN_ONLY_CAPABILITIES.has(cap);
+}
+
+// ── Manager-floor capabilities ───────────────────────────────────────────────
+//
+// Sensitive hotel-facing capabilities that are MANAGER-TIER ONLY (owner / GM /
+// admin) and OVERRIDE-PROOF: a per-hotel `allowed:true` override can never grant
+// them to line staff (front_desk / housekeeping / maintenance / legacy staff).
+// This is the HARD floor — the resolver (can() step b.5) enforces it BEFORE the
+// override check, so it cannot be lifted by any toggle. It pairs with each cap's
+// `defaultRoles: MANAGER_ROLES` (the soft default floor) for defense in depth.
+//
+//   - manage_team / manage_users — account & credential management (a housekeeper
+//     resetting the owner's password is catastrophic). (Security audit 2026-06-18.)
+//   - view_wages / view_financials — payroll, revenue, budgets, CapEx.
+//   - view_activity_log — the full searchable/exportable audit history.
+//   - manage_settings — the hotel's PMS connection / credentials surface.
+//     (Pre-onboarding lockdown 2026-06-26.)
+//
+// Derived from each meta's `defaultRoles === MANAGER_ROLES` so it can never drift
+// from the registry (manage_* and the sensitive view caps all carry that floor).
+export const MANAGER_FLOOR_CAPABILITIES: ReadonlySet<CapabilityKey> = new Set(
+  CAPABILITY_LIST.filter((m) => !m.adminOnly && m.defaultRoles === MANAGER_ROLES).map((m) => m.key),
+);
+
+export function isManagerFloorCapability(cap: CapabilityKey): boolean {
+  return MANAGER_FLOOR_CAPABILITIES.has(cap);
 }
 
 // Every hotel-facing capability is live — its gates consult the resolver, so an

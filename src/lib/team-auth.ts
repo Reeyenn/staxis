@@ -13,11 +13,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { requireSession } from '@/lib/api-auth';
 import { canForProperty } from '@/lib/capabilities/server';
-import type { CapabilityKey } from '@/lib/capabilities/registry';
-
-// Account/credential-management capabilities that must stay admin/owner/GM only,
-// regardless of per-hotel overrides (security audit 2026-06-18).
-const TEAM_MANAGEMENT_CAPABILITIES: ReadonlySet<CapabilityKey> = new Set(['manage_team', 'manage_users']);
+import { MANAGER_FLOOR_CAPABILITIES, type CapabilityKey } from '@/lib/capabilities/registry';
 
 export interface TeamCaller {
   accountId: string;
@@ -56,14 +52,15 @@ export async function verifyTeamManager(
   // replaces the old manager-only role comparison. Legacy callers that pass no
   // capability keep the manager-only check unchanged.
   if (opts?.capability) {
-    // Hard floor for account/credential-management capabilities: team & user
-    // management is admin/owner/GM ONLY, always — a per-hotel override (or a
-    // future everyone-default regression) can RESTRICT a manager further but can
-    // never grant team/user management to line staff (front_desk/housekeeping/
-    // maintenance). This sits on top of the manager-tier default in the registry
-    // (defense in depth). Other capabilities (manage_shifts, manage_checklists,
-    // run_reports, view_activity_log) keep the everyone-default.
-    if (TEAM_MANAGEMENT_CAPABILITIES.has(opts.capability) && !canManageTeam(role)) return null;
+    // Hard floor for manager-tier capabilities: account/credential management,
+    // money/pay, the audit log, and PMS settings are admin/owner/GM ONLY, always
+    // — a per-hotel override (or a future everyone-default regression) can
+    // RESTRICT a manager further but can never grant them to line staff
+    // (front_desk/housekeeping/maintenance). This mirrors can()'s step b.5 and
+    // sits on top of each cap's manager-tier default in the registry (defense in
+    // depth). Other capabilities (manage_shifts, manage_checklists, run_reports)
+    // keep the everyone-default.
+    if (MANAGER_FLOOR_CAPABILITIES.has(opts.capability) && !canManageTeam(role)) return null;
     if (!(await canForProperty({ role }, opts.capability, opts.propertyId ?? null))) return null;
   } else if (!canManageTeam(role)) {
     return null;

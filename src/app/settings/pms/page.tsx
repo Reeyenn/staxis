@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
+import { useCan } from '@/lib/capabilities/useCan';
 import { t } from '@/lib/translations';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { parsePmsJobStatusResponse, parsePmsOnboardResult } from '@/lib/api-validate';
@@ -35,6 +36,7 @@ export default function PMSPage() {
   const { user } = useAuth();
   const { activePropertyId, activeProperty, refreshProperty } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
   const [pmsType, setPmsType] = useState(activeProperty?.pmsType ?? '');
   const [pmsUrl, setPmsUrl] = useState(activeProperty?.pmsUrl ?? '');
@@ -294,6 +296,34 @@ export default function PMSPage() {
     // STALLED_WARN_MS / STALLED_STOP_MS are module-level constants.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, refreshProperty, userStopped]);
+
+  // ─── Access gate ──────────────────────────────────────────────────────────
+  // The PMS connection holds the hotel's PMS login credentials and drives the
+  // CUA sync — manager-tier only (manage_settings is a MANAGER_FLOOR capability:
+  // owner / GM / admin). Line staff who deep-link here see a clean "manager
+  // access only" notice instead of the credentials form. The underlying write
+  // routes (save-credentials / onboard / job-status) are additionally
+  // owner-locked server-side, so this gate is the UI half of that lock.
+  if (!user || !can('manage_settings')) {
+    return (
+      <AppLayout>
+        <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
+          <Wifi size={28} color="var(--text-muted)" style={{ marginBottom: 12 }} />
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 20, marginBottom: 12 }}>
+            {lang === 'es' ? 'Acceso restringido' : 'You don’t have access'}
+          </h1>
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 20 }}>
+            {lang === 'es'
+              ? 'La conexión PMS solo está disponible para gerentes, propietarios y administradores.'
+              : 'The PMS connection is restricted to managers, owners, and admins.'}
+          </p>
+          <Link href="/settings" style={{ color: 'var(--amber)', textDecoration: 'none', fontSize: 14, fontWeight: 600 }}>
+            ← {t('settings', lang)}
+          </Link>
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>

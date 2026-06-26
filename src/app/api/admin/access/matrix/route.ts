@@ -18,6 +18,7 @@ import {
   GROUP_LABELS,
   HOTEL_ROLES,
   isLiveCapability,
+  isManagerFloorCapability,
 } from '@/lib/capabilities/registry';
 
 export const runtime = 'nodejs';
@@ -44,6 +45,10 @@ export async function GET(req: NextRequest): Promise<Response> {
         key: m.key,
         adminOnly: m.adminOnly,
         live: isLiveCapability(m.key),
+        // Manager-floor caps (money / pay / audit / settings / team mgmt) are
+        // owner/GM only and override-proof — the grid disables the line-staff
+        // columns so an admin is never shown a toggle that silently does nothing.
+        managerFloor: isManagerFloorCapability(m.key),
         group: m.group,
         label_en: m.label_en,
         label_es: m.label_es,

@@ -1,12 +1,14 @@
 /**
  * Legacy canManageTeam helper — pins the original manager-only trio.
  *
- * NOTE: as of the per-hotel access-control work, the activity-log surface no
- * longer routes through canManageTeam — it uses the `view_activity_log`
- * capability, which defaults to EVERY role and is restricted per hotel from the
- * Access tab (see capabilities-resolver.test.ts). This file now just keeps the
- * legacy canManageTeam helper honest for the callers that still use it
- * (verifyTeamManager's legacy path, display logic).
+ * NOTE: as of the per-hotel access-control work, the activity-log surface routes
+ * through the `view_activity_log` capability. That cap is a MANAGER_FLOOR
+ * capability (owner/GM/admin only, override-proof) and is enforced via
+ * verifyTeamManager({ capability: 'view_activity_log' }) — so the effective gate
+ * is the same manager trio as canManageTeam (see capabilities-resolver.test.ts
+ * for the floor invariants). This file keeps the legacy canManageTeam helper
+ * honest for the callers that still use it (verifyTeamManager's floor + legacy
+ * path, display logic).
  *
  *   admin / owner / general_manager → true
  *   front_desk / housekeeping / maintenance / staff → false

@@ -11,6 +11,7 @@
 import type { AppRole } from '@/lib/roles';
 import {
   CAPABILITY_META,
+  MANAGER_FLOOR_CAPABILITIES,
   ROLE_DEFAULTS,
   isHotelRole,
   type CapabilityKey,
@@ -29,14 +30,6 @@ export type CapabilityOverrideMap = Partial<
 export interface CapUser {
   role: AppRole | string | null | undefined;
 }
-
-/** Account/credential-management capabilities. These are manager-tier ONLY at
- *  every step of the resolver — a per-hotel `allowed:true` override can never
- *  grant team/user management to line staff (a housekeeper resetting the owner's
- *  password is catastrophic). The floor lives HERE so it applies to every caller
- *  of can()/canForProperty (server routes AND the client useCan), not just
- *  verifyTeamManager. (Security audit 2026-06-18.) */
-const TEAM_MANAGEMENT_FLOOR: ReadonlySet<CapabilityKey> = new Set(['manage_team', 'manage_users']);
 
 /**
  * Decide whether `user` may use `capability` at a hotel, given that hotel's
@@ -68,11 +61,14 @@ export function can(
   // (b) Admin gets every hotel-facing capability.
   if (role === 'admin') return true;
 
-  // (b.5) Manager floor for account/credential-management caps. Owner / GM only
-  // (admin already returned above). An `allowed:true` override CANNOT lift this —
-  // it can only ever RESTRICT a manager further. Closes the override-bypass on
-  // direct canForProperty callers (e.g. /api/settings/users).
-  if (TEAM_MANAGEMENT_FLOOR.has(capability) && role !== 'owner' && role !== 'general_manager') {
+  // (b.5) Manager floor for sensitive caps — account/credential management AND
+  // money / pay / audit-history / PMS-settings (see MANAGER_FLOOR_CAPABILITIES).
+  // Owner / GM only (admin already returned above). An `allowed:true` override
+  // CANNOT lift this — it can only ever RESTRICT a manager further. Closes the
+  // override-bypass on every direct can()/canForProperty caller (the finance
+  // gate, the wage routes, /api/settings/users, the activity log, useCan), not
+  // just verifyTeamManager. (Security audit 2026-06-18; extended 2026-06-26.)
+  if (MANAGER_FLOOR_CAPABILITIES.has(capability) && role !== 'owner' && role !== 'general_manager') {
     return false;
   }
 

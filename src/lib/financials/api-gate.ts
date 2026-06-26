@@ -22,7 +22,7 @@ import { requireSession } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { type AppRole } from '@/lib/roles';
+import { canViewFinancials, type AppRole } from '@/lib/roles';
 import { canForProperty } from '@/lib/capabilities/server';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -83,9 +83,26 @@ export async function requireFinanceAccess(
   }
   const role = ((account.role as string) ?? 'staff') as AppRole;
 
-  // 4) Capability gate — view_financials, honoring this hotel's Access-tab
-  //    restrictions (default: every role; an admin can switch a role OFF per
-  //    hotel). Admin always passes; admin-only caps are unaffected here.
+  // 4a) Manager floor (defense in depth): finance is owner / GM / admin only.
+  //     view_financials is a MANAGER_FLOOR capability, so the per-hotel resolver
+  //     in (4b) already enforces this — but we assert it explicitly at the most
+  //     sensitive choke point so it never rides on a single mechanism. Line-staff
+  //     roles (front_desk / housekeeping / maintenance / legacy staff) are denied
+  //     here before any override is even consulted.
+  if (!canViewFinancials(role)) {
+    return {
+      ok: false,
+      response: err('forbidden: financials are restricted for your role', {
+        requestId,
+        status: 403,
+        code: 'forbidden_role',
+      }),
+    };
+  }
+
+  // 4b) Per-hotel capability gate — view_financials, honoring this hotel's
+  //     Access-tab restrictions (an admin can switch a manager OFF per hotel).
+  //     Admin always passes; admin-only caps are unaffected here.
   if (!(await canForProperty({ role }, 'view_financials', pid))) {
     return {
       ok: false,
@@ -158,6 +175,23 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
     return { ok: false, response: err('account not found for session', { requestId, status: 403, code: 'no_account' }) };
   }
   const role = ((account.role as string) ?? 'staff') as AppRole;
+
+  // Manager floor (defense in depth): finance is owner / GM / admin only. A
+  // line-staff caller gets an empty rollup — no money leaks via aggregation —
+  // without even resolving their property list. The per-property loop below would
+  // also yield [] via the resolver floor; this is the explicit fast path that
+  // mirrors requireFinanceAccess.
+  if (role !== 'admin' && !canViewFinancials(role)) {
+    return {
+      ok: true,
+      userId: session.userId,
+      accountId: account.id as string,
+      role,
+      name: (account.display_name as string | null) ?? null,
+      propertyIds: [],
+      requestId,
+    };
+  }
 
   const access = (account.property_access ?? []) as string[];
   let propertyIds: string[];
