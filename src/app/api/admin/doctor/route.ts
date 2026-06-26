@@ -2026,7 +2026,8 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
   // service is gone. The new `vercel-watchdog` (5-min, listed at the
   // bottom) replaces it.
-  { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron)' },
+  { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron; GH sms-jobs-cron.yml kept as redundant backup, audit 2026-06-26)' },
+  { name: 'ingest-voice-costs',            cadenceHours: 15/60, description: '15-min ElevenLabs voice-minute → agent_costs ledger ingest so the daily $ cap includes voice (Vercel native cron, audit 2026-06-26)' },
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   { name: 'compliance-reminders',          cadenceHours: 1,     description: 'hourly engineering-compliance reminders + GM overdue escalation by SMS (Vercel native cron) — feature #19' },
   { name: 'compliance-anomaly-sweep',      cadenceHours: 30/60, description: 'every-30-min leak/spike anomaly sweep — slow-trend + stuck-meter detection + AI phrasing (Vercel native cron) — feature #19 v2' },
@@ -2784,12 +2785,28 @@ async function checkLayerPredictionsFresh(opts: {
 // ─── CUA checks (Plan v4 universal CUA rebuild — 2026-05-23) ──────────────
 
 const CUA_HEARTBEAT_STALE_MS = 5 * 60_000;
+// A 'starting' session that never reaches 'alive' within this window is a
+// stuck boot (Playwright wedged / crash-loop) — surfaced as a warn, never a
+// 503. Generous so a normal cold boot across US timezones never trips it.
+const CUA_STARTING_STUCK_MS = 15 * 60_000;
 
+// Only an 'alive' session asserts "a polling driver is running and MUST
+// heartbeat" — so it is the ONLY state that can produce the deploy-gate FAIL.
+// Every other non-stopped state is human-gated or non-driver and is excluded
+// from the 503 (2026-06-26 pre-onboarding audit fix):
+//   paused_mfa / paused_cost_cap          — normal mid-onboarding; each has a
+//                                            dedicated warn check below.
+//   paused_no_knowledge_file / starting   — normal during onboarding.
+//   paused_circuit_breaker / failed_restart — real problems, surfaced as WARN.
+// Before this, ANY non-stopped row with a stale heartbeat hard-failed the
+// doctor → the deploy smoke gate 503'd and paged the founder every time a
+// hotel was paused for MFA/cost or mid-onboarding (a stale heartbeat is
+// EXPECTED for a paused, non-running driver).
 async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const { data, error } = await supabaseAdmin
       .from('property_sessions')
-      .select('property_id, status, last_alive_at, pms_family')
+      .select('property_id, status, last_alive_at, created_at, pms_family')
       .neq('status', 'stopped');
     if (error) {
       return { status: 'warn', detail: `property_sessions read failed: ${errToString(error)}` };
@@ -2801,22 +2818,62 @@ async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs
       };
     }
     const now = Date.now();
-    type SessionRow = { property_id: string; status: string; last_alive_at: string | null; pms_family: string };
-    const stale: string[] = [];
-    for (const row of data as SessionRow[]) {
-      const lastAlive = row.last_alive_at ? new Date(row.last_alive_at).getTime() : 0;
-      if (now - lastAlive > CUA_HEARTBEAT_STALE_MS) {
-        stale.push(`${row.property_id} (${row.pms_family}, status=${row.status}, last_alive=${row.last_alive_at ?? 'never'})`);
-      }
-    }
-    if (stale.length > 0) {
+    type SessionRow = { property_id: string; status: string; last_alive_at: string | null; created_at: string | null; pms_family: string };
+    const rows = data as SessionRow[];
+    const aliveRows = rows.filter((r) => r.status === 'alive');
+
+    // 1. Stale 'alive' sessions = a real driver crash → the ONLY fail path.
+    const staleAlive = aliveRows.filter((r) => {
+      const lastAlive = r.last_alive_at ? new Date(r.last_alive_at).getTime() : 0;
+      return now - lastAlive > CUA_HEARTBEAT_STALE_MS;
+    });
+    if (staleAlive.length > 0) {
       return {
         status: 'fail',
-        detail: `${stale.length}/${data.length} CUA sessions missed heartbeat (>5min stale): ${stale.slice(0, 5).join('; ')}`,
+        detail: `${staleAlive.length}/${aliveRows.length} live CUA session(s) missed heartbeat (>5min stale): ${staleAlive
+          .slice(0, 5)
+          .map((r) => `${r.property_id} (${r.pms_family}, last_alive=${r.last_alive_at ?? 'never'})`)
+          .join('; ')}`,
         fix: 'Check Fly machine logs for the affected property. Likely a Playwright crash; supervisor should respawn within 30s.',
       };
     }
-    return { status: 'ok', detail: `all ${data.length} CUA sessions heartbeating within ${CUA_HEARTBEAT_STALE_MS / 60_000} min` };
+
+    // 2. Non-fatal attention states → WARN (never a 503): dead-letter
+    //    (failed_restart), tripped circuit breaker, or a boot stuck in
+    //    'starting' past the generous boot window.
+    const attention = rows.filter((r) => {
+      if (r.status === 'failed_restart' || r.status === 'paused_circuit_breaker') return true;
+      if (r.status === 'starting') {
+        const sinceTs = r.last_alive_at
+          ? new Date(r.last_alive_at).getTime()
+          : r.created_at
+            ? new Date(r.created_at).getTime()
+            : now;
+        return now - sinceTs > CUA_STARTING_STUCK_MS;
+      }
+      return false;
+    });
+    if (attention.length > 0) {
+      return {
+        status: 'warn',
+        detail: `${attention.length} CUA session(s) need attention (not a deploy-blocker): ${attention
+          .slice(0, 5)
+          .map((r) => `${r.property_id} (${r.pms_family}, status=${r.status})`)
+          .join('; ')}`,
+        fix: 'failed_restart → check Fly logs, restart via /admin/property-sessions. paused_circuit_breaker → repeated read failures; inspect the feed. stuck "starting" → driver never reached alive; check the worker.',
+      };
+    }
+
+    const humanGated = rows.filter(
+      (r) => r.status === 'paused_mfa' || r.status === 'paused_cost_cap' || r.status === 'paused_no_knowledge_file',
+    );
+    const note = humanGated.length > 0
+      ? ` (${humanGated.length} human-gated/onboarding session(s) excluded — see cua_cost_cap_paused / cua_mfa_pending checks)`
+      : '';
+    return {
+      status: 'ok',
+      detail: `all ${aliveRows.length} live CUA session(s) heartbeating within ${CUA_HEARTBEAT_STALE_MS / 60_000} min${note}`,
+    };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
   }

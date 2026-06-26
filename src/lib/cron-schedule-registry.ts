@@ -31,10 +31,19 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
-  // process-sms-jobs + scraper-health stayed on GH Actions per audit-02
-  // (single-source-of-truth doctrine: all SMS-firing crons in one
-  // observable channel).
-  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'github', workflowFile: 'sms-jobs-cron.yml' },                       cronExpr: '*/5 * * * *' },
+  // process-sms-jobs MOVED to Vercel native (2026-06-26 pre-onboarding
+  // audit): the GH Actions schedule was throttled ~17× (observed 1.4h-stale
+  // heartbeat on a 5-min cron), so SMS-link delivery drained late — exactly
+  // the failure FAILSAFES.md warns about for sub-30-min GH crons. The GH
+  // workflow .github/workflows/sms-jobs-cron.yml is KEPT as a redundant
+  // backup scheduler (failsafe #4 — don't disable workflows); dual-firing is
+  // safe because staxis_claim_sms_jobs uses FOR UPDATE SKIP LOCKED (no
+  // double-send). This entry is the scheduler of record (Vercel).
+  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },                  cronExpr: '*/5 * * * *' },
+  // Voice-cost ingest (2026-06-26 audit): every 15 min, pulls ended
+  // ElevenLabs Conversational AI sessions and books their platform minutes
+  // into the agent_costs ledger so the daily $ cap includes voice.
+  { heartbeatName: 'ingest-voice-costs',                source: { kind: 'vercel', cronPath: '/api/cron/ingest-voice-costs' },                cronExpr: '*/15 * * * *' },
   // Plan v4 (2026-05-24): removed `scraper-health` cron entry — Railway
   // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
   // its replacement.

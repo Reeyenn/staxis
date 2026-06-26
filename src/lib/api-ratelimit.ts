@@ -37,7 +37,6 @@ export type RateLimitEndpoint =
   // compromised account or a runaway UI loop can't fire thousands of PMS
   // writes. Billing-impacting (fails CLOSED below).
   | 'pms-writeback-enqueue'
-  | 'notify-housekeepers-sms'
   // PMS onboarding endpoints — tight caps because each onboarding
   // job spawns a Fly worker that potentially burns Claude tokens.
   // A malicious authenticated user shouldn't be able to queue 1000
@@ -139,6 +138,16 @@ export type RateLimitEndpoint =
   // properties). MUST also be added to BILLING_IMPACTING_ENDPOINTS below
   // so an RPC failure fails closed.
   | 'agent-tts-speak'
+  // Voice-session mint (2026-06-26 pre-onboarding audit). POST
+  // /api/agent/voice-session opens an ElevenLabs Conversational AI socket
+  // (metered platform minutes + a DB row + a conversation row per call).
+  // The route had NO rate limit, so a compromised/looping client could
+  // spam signed-URL mints. Keyed on accountId (one bucket per user across
+  // properties), same shape as agent-tts-speak. Fail-OPEN: the mint itself
+  // is cheap and the audio-budget gate (which fails CLOSED) already guards
+  // real spend — blocking all voice on a Supabase blip is worse than
+  // letting a few extra mints through. NOT in BILLING_IMPACTING_ENDPOINTS.
+  | 'agent-voice-session'
   // Sick-callout coverage flow (feature #6, 2026-05-24). Each entry point
   // gets its own bucket so a runaway in one channel doesn't lock the
   // others. Caps tuned to "this is a person tapping a button" — anything
@@ -367,9 +376,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // busy 74-room checkout morning is ~100-150 changes/hr; 300/hr/property
   // gives headroom while bounding abuse.
   'pms-writeback-enqueue':    300,
-  // SMS fan-out to housekeepers — Maria might re-broadcast after schedule
-  // tweaks. 30/hr covers normal use and stops a runaway loop dead.
-  'notify-housekeepers-sms':   30,
   // Public signup — 5/hour per source IP. Real signups are rare; a
   // legitimate person filling out the form 5 times in an hour is
   // already a customer-support situation, not a happy path. Anything
@@ -463,6 +469,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // long before the $5 daily budget cap trips. Easy to bump if a real
   // user hits it.
   'agent-tts-speak':             30,
+  // Voice-session mint per user/hour. A real user opens voice a handful of
+  // times an hour; 20/hr is generous headroom while bounding signed-URL /
+  // metered-session spam. Keyed on accountId. Fail-open (not billing-set).
+  'agent-voice-session':         20,
   // Sick-callout buckets — see RateLimitEndpoint union comment for rationale.
   'callout-housekeeper':          10,
   'callout-manager':              30,
@@ -672,7 +682,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'photo-count',
   // Twilio SMS fan-out (per-recipient charge).
   'send-shift-confirmations',
-  'notify-housekeepers-sms',
   'sms-reply-resend',
   'test-sms-flow',
   // Resend transactional email (per-recipient charge).

@@ -40,7 +40,7 @@ import {
   sanitizeForSms, redactPhone, safeBaseUrl, LIMITS,
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
+import { enqueueSms, processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
 import { logSecurityEvent } from '@/lib/audit';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
@@ -519,15 +519,18 @@ export async function POST(req: NextRequest) {
     // work without blocking the user. This means the first Twilio sends
     // start within a couple of seconds of Mario clicking — instead of
     // waiting for the every-5-min cron tick. If Vercel cuts us off
-    // mid-drain (60s function cap on Hobby), the GitHub Actions cron
-    // (.github/workflows/sms-jobs-cron.yml) picks up whatever's left
-    // within 5 min. Either way, no SMS is lost.
+    // mid-drain (60s function cap on Hobby), the process-sms-jobs cron
+    // (now Vercel-native, with .github/workflows/sms-jobs-cron.yml as a
+    // backup) picks up whatever's left within 5 min. Either way, no SMS is lost.
     after(async () => {
       try {
+        // Recover rows a crashed worker left stuck in 'sending' first, so a
+        // manual send self-heals the queue rather than waiting on the cron.
+        await resetStuckSmsJobs();
         // Drain up to 200 (was 50). At ~150ms per Twilio call the inline
         // drain comfortably fits inside Vercel's 60s function cap for
         // crews of 60+ housekeepers — previously the last 10+ recipients
-        // waited up to 5 min for the GitHub Actions cron tick. Audit Flow 3 #12.
+        // waited up to 5 min for the cron tick. Audit Flow 3 #12.
         await processSmsJobs(200);
       } catch (workerErr) {
         // Don't surface this to the user — they already got their

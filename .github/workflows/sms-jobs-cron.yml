@@ -1,11 +1,18 @@
-# SMS Jobs Worker — GitHub Actions cron
+# SMS Jobs Worker — GitHub Actions cron (REDUNDANT BACKUP)
 #
-# Single scheduler of record for /api/cron/process-sms-jobs. The route
-# was previously listed in vercel.json crons; audit-02 moved it here
-# so all SMS-firing crons live behind one observable channel (Actions
-# UI). Don't re-add to vercel.json without removing this workflow —
-# the doctor's `cron_single_source_of_truth` check will fail if both
-# schedulers reference the same path.
+# As of the 2026-06-26 pre-onboarding audit, the SCHEDULER OF RECORD for
+# /api/cron/process-sms-jobs is the Vercel native cron (vercel.json +
+# SCHEDULE_REGISTRY source 'vercel'). GitHub Actions was throttling this
+# 5-min job ~17× (observed 1.4h-stale heartbeat), draining worker-pressed
+# SMS links late — exactly what FAILSAFES.md warns about for sub-30-min GH
+# crons. Vercel Pro runs it on time.
+#
+# This workflow is KEPT as a redundant backup scheduler (failsafe #4 — don't
+# disable workflows): if Vercel cron ever stalls, GH still drains the queue.
+# Dual-firing is SAFE — the endpoint claims rows via staxis_claim_sms_jobs
+# (FOR UPDATE SKIP LOCKED), so the two schedulers can never double-send.
+# There is no single-source check; the registry points at the Vercel entry
+# and this file is the orphaned-but-live backup.
 #
 # What it does:
 #   Every 5 minutes, curls /api/cron/process-sms-jobs. That endpoint

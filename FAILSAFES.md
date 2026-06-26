@@ -63,6 +63,8 @@ We deliberately split crons across two schedulers because they have different re
 
 Vercel Pro guarantees per-minute precision. We moved `process-sms-jobs` and `scraper-health` here in May 2026 audit pass-6 after observing GitHub Actions throttle them by 7-17×. Moved `seal-daily` here 2026-05-17 after a 4-tick GH scheduler stall turned the doctor red.
 
+> **`process-sms-jobs` (2026-06-26 pre-onboarding audit):** the config had drifted back onto GitHub Actions (`sms-jobs-cron.yml`) and was throttled ~17× (1.4h-stale heartbeat on a 5-min cron → SMS links arrived late). Restored to Vercel native cron (`vercel.json` + `SCHEDULE_REGISTRY` source `vercel`). The GH workflow is **kept as a redundant backup scheduler** — dual-firing is safe because `staxis_claim_sms_jobs` uses `FOR UPDATE SKIP LOCKED` (no double-send). Worker-pressed staff links also drain inline via `after(processSmsJobs)` in the send routes, so first-send never depends on the cron.
+
 ### GitHub Actions workflows (`.github/workflows/`)
 **Use for:** daily/weekly cadences where hour-scale precision is fine.
 

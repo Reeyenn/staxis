@@ -40,6 +40,7 @@ import {
   elevenLabsFetch,
   ELEVENLABS_SHORT_TIMEOUT_MS,
 } from '@/lib/elevenlabs-client';
+import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -157,6 +158,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   } catch (e) {
     log.error('[voice-session] audio budget check failed', { requestId, e });
     return NextResponse.json({ ok: false, error: 'audio budget check failed', requestId }, { status: 500 });
+  }
+
+  // Per-user rate limit (2026-06-26 audit): the mint route had none, so a
+  // compromised/looping client could spam ElevenLabs signed-URL mints +
+  // metered sessions. Keyed on accountId. Runs AFTER the budget check so a
+  // budget-denied user doesn't consume a rate-limit slot (mirrors /speak).
+  // Fail-open — the audio budget gate above already fails closed on spend.
+  const voiceRl = await checkAndIncrementRateLimit('agent-voice-session', accountId);
+  if (!voiceRl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: `Too many voice sessions — try again in ${voiceRl.retryAfterSec}s.`, code: 'rate_limited', requestId },
+      { status: 429, headers: { 'Retry-After': String(voiceRl.retryAfterSec) } },
+    );
   }
 
   let staffId: string | null = null;

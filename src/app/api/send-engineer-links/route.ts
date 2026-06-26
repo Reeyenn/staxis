@@ -16,7 +16,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
+import { enqueueSms, processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 import { buildEngineerLink, CrossTenantStaffError } from '@/lib/staff-auth';
 import { toE164 } from '@/lib/compliance/autoact';
 
@@ -100,7 +100,11 @@ export async function POST(req: NextRequest) {
   const failed = perStaff.filter((p) => p.status === 'failed').length;
 
   after(async () => {
-    try { await processSmsJobs(50); }
+    // Recover any rows a crashed worker left stuck in 'sending' before
+    // draining, so a manual send self-heals the queue rather than waiting on
+    // the cron. resetStuckSmsJobs + processSmsJobs are both idempotent
+    // (FOR UPDATE SKIP LOCKED) so this is safe alongside the cron.
+    try { await resetStuckSmsJobs(); await processSmsJobs(50); }
     catch (e) { log.error('[send-engineer-links] drain failed', { requestId, pid, msg: errToString(e) }); }
   });
 

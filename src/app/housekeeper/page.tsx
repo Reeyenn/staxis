@@ -20,7 +20,8 @@ interface StaffMember {
 // phone number on file, and the PWA "add to home screen" dance required for
 // iOS push was a hostile onboarding step that nobody completed. This page
 // now just pairs the phone with a staff id — room assignments and alerts
-// arrive via SMS from /api/notify-housekeepers-sms.
+// arrive via SMS sent when a manager presses a send button (the per-staff
+// link routes drain the sms_jobs queue; there is no auto-send).
 type Step = 'loading' | 'select' | 'saving' | 'done' | 'error' | 'bad-link';
 
 export default function HousekeeperPage() {

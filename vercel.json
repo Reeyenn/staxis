@@ -128,6 +128,14 @@
     {
       "path": "/api/cron/financials-alert-sweep",
       "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cron/process-sms-jobs",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/ingest-voice-costs",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

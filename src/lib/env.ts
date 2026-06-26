@@ -136,6 +136,11 @@ const ServerSchema = z.object({
   // src/lib/agent/voice-session.ts falls back to 5 min when unset.
   // Routed through here to satisfy scripts/check-env-access.mjs.
   STAXIS_VOICE_SESSION_IDLE_MS: z.coerce.number().int().positive().optional(),
+  // USD per minute booked for ElevenLabs Conversational AI platform time by
+  // /api/cron/ingest-voice-costs (so the daily $ cap includes voice). Default
+  // 0.10 (src/app/api/cron/ingest-voice-costs) — a deterministic guardrail
+  // rate; tune per the actual ElevenLabs plan without a code change.
+  STAXIS_VOICE_USD_PER_MINUTE: z.coerce.number().positive().optional(),
 
   // ── AI data-retention posture stamp (Plan v2 F-AI-1) ───
   // Freeform stamp set by the operator after confirming Zero Data

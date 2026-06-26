@@ -18,7 +18,7 @@
  * fields. SMS dedup is left to /api/sms-send's rate limit.
  */
 
-import type { NextRequest } from 'next/server';
+import { after, type NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
@@ -31,7 +31,7 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
-import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
+import { enqueueSms, processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -238,10 +238,21 @@ export async function POST(req: NextRequest): Promise<Response> {
             ),
           );
           smsQueued = enqueued.some((r) => r.status === 'fulfilled');
-          // Drain promptly in the background — a rush is time-sensitive; don't
-          // block the response on Twilio. Failures stay queued for the cron.
+          // Drain promptly AFTER the response — a rush is time-sensitive; don't
+          // block the response on Twilio. after() (not a bare `void`) keeps the
+          // serverless function alive so the drain actually completes instead of
+          // being frozen when the response returns. resetStuckSmsJobs first so a
+          // row a crashed worker left in 'sending' gets recovered on this press,
+          // not on the next (now-Vercel) cron tick. Failures stay queued.
           if (recipients.length > 0) {
-            void processSmsJobs(20).catch(() => { /* cron will retry */ });
+            after(async () => {
+              try {
+                await resetStuckSmsJobs();
+                await processSmsJobs(20);
+              } catch (e) {
+                log.warn('front-desk/rush: drain failed', { requestId, err: errToString(e) });
+              }
+            });
           }
         } catch (smsErr) {
           log.warn('front-desk/rush: sms enqueue failed', {
