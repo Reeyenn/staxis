@@ -31,6 +31,15 @@ export interface DisplayItem {
   burnSource: BurnSource;
   graduated: boolean;
   status: StockStatus;
+  /**
+   * True when this item has never had a physical count AND its stock is 0 —
+   * i.e. a brand-new hotel's seeded item. Such an item has no real signal, so
+   * the UI renders a neutral "not counted yet" state instead of a red
+   * "below par / critical" (which would falsely imply it's running out). It is
+   * also excluded from Order-now / reorder counts + the reorder list. Once a
+   * count is recorded (lastCountedAt set), it rejoins the normal triage.
+   */
+  uncounted: boolean;
   daysLeft: number;
   value: number;
   lastCountedAt: Date | null;

@@ -86,6 +86,11 @@ const STRINGS = {
     subUnderPar: 'under par',
     subAtOrAbovePar: 'at or above par',
     nothingHere: 'Nothing here.',
+    // ── Not-counted-yet (new-hotel day 1) ──
+    notCountedTitle: 'Not counted yet',
+    notCountedSub: 'Count these to see what to reorder',
+    notCountedHint: 'No counts yet — start your first inventory count to see what needs ordering.',
+    countInventory: 'Count inventory',
     // ── BoardCard ──
     daysLeft: 'd left', // suffix → "5d left"
     daysLeft90: '90+d left',
@@ -144,6 +149,11 @@ const STRINGS = {
     subUnderPar: 'bajo el par',
     subAtOrAbovePar: 'en o sobre el par',
     nothingHere: 'Nada aquí.',
+    // ── Not-counted-yet (new-hotel day 1) ──
+    notCountedTitle: 'Sin contar aún',
+    notCountedSub: 'Cuéntalos para ver qué reordenar',
+    notCountedHint: 'Aún sin conteos — inicia tu primer conteo de inventario para ver qué hay que pedir.',
+    countInventory: 'Contar inventario',
     // ── BoardCard ──
     daysLeft: 'd restantes',
     daysLeft90: '90+d restantes',
@@ -169,6 +179,13 @@ const STRINGS = {
 };
 
 export type InvStrings = (typeof STRINGS)['en'];
+
+// Compile-time drift guard: every EN key MUST also exist in ES. Because t() is
+// typed as the EN shape, a key added to `en` but forgotten in `es` would return
+// `undefined` at runtime with NO build error (lint + build both stay green).
+// This assignment makes that mistake a type error instead.
+const _esKeyParity: Record<keyof InvStrings, string> = STRINGS.es;
+void _esKeyParity;
 
 export function t(lang: Lang): InvStrings {
   return STRINGS[lang] ?? STRINGS.en;

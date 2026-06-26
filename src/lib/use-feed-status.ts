@@ -4,9 +4,16 @@
  * useFeedStatus — per-property PMS feed trust for SESSION surfaces
  * (feat/cua-partial-promotion).
  *
- * Fetches /api/pms/feed-status once per property and refreshes every 60s
- * (matches the CUA's knowledge hot-reload cadence — a recovered feed clears
- * its "still learning" state within ~2 minutes end-to-end).
+ * Fetches /api/pms/feed-status once per property and refreshes every 30s.
+ *
+ * Why 30s: for PMS (CUA) hotels, realtime is dead on the robot's pms_* tables,
+ * so this poll is the ONLY refresh path for the live In House / Arrivals /
+ * Departures counts on the dashboard tiles AND the Housekeeping → Schedule
+ * strip (both read feedStatus.derived). The route is backed by a 30s server
+ * cache, so a 30s client poll keeps those counts advancing on their own —
+ * without a manual reload — at the freshest cadence the cache allows.
+ * Consumers: dashboard, ScheduleTab, QualityTab (QualityTab uses it for a
+ * learning flag only, so the extra polls are harmless there).
  *
  * Containment rules:
  *  - Until the first response arrives → null. Consumers MUST treat null as
@@ -25,7 +32,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 
-const REFRESH_MS = 60_000;
+const REFRESH_MS = 30_000;
 
 export function useFeedStatus(pid: string | null | undefined): PropertyFeedStatus | null {
   const [status, setStatus] = useState<PropertyFeedStatus | null>(null);

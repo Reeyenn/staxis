@@ -31,15 +31,6 @@ function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: 
   );
 }
 
-// Section pages that live behind the dropdown. The dropdown button labels
-// itself with the last one the user visited (persisted) instead of a
-// generic "Menu".
-const SECTION_HREFS = [
-  '/dashboard', '/housekeeping', '/communications',
-  '/maintenance', '/inventory', '/staff', '/financials',
-];
-const LAST_NAV_KEY = 'staxis-last-nav';
-
 export function Header() {
   const { user, signOut } = useAuth();
   const { properties, activeProperty, setActivePropertyId, appUsage } = useProperty();
@@ -49,22 +40,6 @@ export function Header() {
   const pathname = usePathname();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
   const [showNavMenu, setShowNavMenu] = React.useState(false);
-  // Remember the last section page visited so the dropdown can label itself
-  // with it (instead of "Menu") when the user is on the Staxis feed.
-  const [lastNav, setLastNav] = React.useState('/dashboard');
-  React.useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(LAST_NAV_KEY);
-      if (saved) setLastNav(saved);
-    } catch { /* localStorage unavailable */ }
-  }, []);
-  React.useEffect(() => {
-    const match = SECTION_HREFS.find(h => pathname.startsWith(h));
-    if (match) {
-      setLastNav(match);
-      try { window.localStorage.setItem(LAST_NAV_KEY, match); } catch { /* ignore */ }
-    }
-  }, [pathname]);
 
   const baseNavLinks = [
     { href: '/feed',         label: 'Staxis' },
@@ -194,8 +169,12 @@ export function Header() {
           <div style={{ position: 'relative' }}>
             {(() => {
               const activeRest = restLinks.find(l => pathname.startsWith(l.href));
-              const fallback = restLinks.find(l => l.href.startsWith(lastNav)) ?? restLinks[0];
-              const displayLabel = activeRest?.label ?? fallback?.label ?? (lang === 'es' ? 'Menú' : 'Menu');
+              // Label the dropdown with the section you're actually on. When
+              // you're NOT on a section page (Settings, the Staxis feed, an
+              // Admin sub-page), show a neutral "Menu" instead of impersonating
+              // the last-visited section — that made the menu read as
+              // "Housekeeping" while you were really sitting on Settings.
+              const displayLabel = activeRest?.label ?? (lang === 'es' ? 'Menú' : 'Menu');
               return (
                 <button
                   onClick={() => setShowNavMenu(v => !v)}
@@ -292,18 +271,20 @@ export function Header() {
           {/* Language menu — app-wide 5-language switcher */}
           <LanguageMenu compact />
 
-          {/* Settings gear */}
+          {/* Settings gear — highlights when you're actually on Settings */}
           <button
             onClick={() => router.push('/settings')}
             style={{
               padding: '8px', borderRadius: '8px', border: 'none',
-              background: 'transparent', cursor: 'pointer',
+              background: pathname.startsWith('/settings') ? 'rgba(158,183,166,0.16)' : 'transparent',
+              cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.15s',
             }}
             aria-label={lang === 'es' ? 'Configuración' : 'Settings'}
+            aria-current={pathname.startsWith('/settings') ? 'page' : undefined}
           >
-            <Settings size={18} color={ink2} />
+            <Settings size={18} color={pathname.startsWith('/settings') ? ink : ink2} />
           </button>
 
           {/* User avatar + dropdown */}

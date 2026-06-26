@@ -14,6 +14,7 @@ export function StockBar({
   height = 6,
   showPar = true,
   track = T.ruleSoft,
+  neutral = false,
 }: {
   current: number;
   par: number;
@@ -22,9 +23,12 @@ export function StockBar({
   height?: number;
   showPar?: boolean;
   track?: string;
+  /** Never-counted item: render an empty grey track (no status color, no par
+   *  tick) so a brand-new item reads as "unknown", not red "critical". */
+  neutral?: boolean;
 }) {
-  const c = statusColor[status];
-  const pct = par > 0 ? Math.min(1.15, current / par) : 0;
+  const c = neutral ? T.dim : statusColor[status];
+  const pct = neutral ? 0 : (par > 0 ? Math.min(1.15, current / par) : 0);
   const over = pct > 1;
   return (
     <span

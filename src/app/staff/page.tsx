@@ -17,6 +17,7 @@ export const dynamic = 'force-dynamic';
 // level planning + the staff-facing "Am I working?" view.
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
@@ -34,13 +35,26 @@ const PREVIEW_STAFF_STORAGE_KEY = 'staxis-staff-previewid';
 
 export default function StaffPage() {
   const { user, loading } = useAuth();
+  const { activePropertyId, loading: propLoading } = useProperty();
+  const router = useRouter();
 
-  if (loading) {
+  // No property selected (an account with zero accessible hotels, or the active
+  // hotel was deleted) → route to the property picker / setup instead of
+  // rendering a confusing empty Staff page. Mirrors the dashboard / housekeeping
+  // guards. All hooks run unconditionally, above every early return.
+  useEffect(() => {
+    if (!loading && !propLoading && user && !activePropertyId) {
+      router.replace('/property-selector');
+    }
+  }, [loading, propLoading, user, activePropertyId, router]);
+
+  if (loading || propLoading) {
     return <AppLayout><LoadingState/></AppLayout>;
   }
-  if (!user) {
-    // AppLayout already redirects unauthenticated users, but render a tidy
-    // empty state in case the guard hasn't kicked in yet.
+  if (!user || !activePropertyId) {
+    // Not signed in, or mid-redirect to the property picker — render a tidy
+    // loading state until it lands. (The signin gate lives in middleware;
+    // AppLayout does not itself redirect.)
     return <AppLayout><LoadingState/></AppLayout>;
   }
 

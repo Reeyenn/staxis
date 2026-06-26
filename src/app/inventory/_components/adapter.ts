@@ -91,6 +91,11 @@ export function toDisplayItem(
     burnSource: selected.burnSource,
     graduated: opts.autoFillGraduated.has(item.id),
     status,
+    // Never counted + empty = brand-new seeded item (current_stock 0, no
+    // last_counted_at). No real signal yet → render neutral "not counted yet",
+    // not a red "critical". A real zero COUNT (last_counted_at set) stays
+    // critical — that's a genuine stockout, not an unknown.
+    uncounted: item.lastCountedAt == null && item.currentStock === 0,
     daysLeft: Math.max(0, Math.min(90, Math.round(daysLeft))),
     value: item.currentStock * (item.unitCost ?? 0),
     lastCountedAt: item.lastCountedAt ?? null,

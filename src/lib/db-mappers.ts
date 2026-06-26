@@ -229,6 +229,11 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     onboardingState: (r.onboarding_state && typeof r.onboarding_state === 'object' && !Array.isArray(r.onboarding_state))
       ? (r.onboarding_state as OnboardingState)
       : null,
+    // Demo/showcase flag (properties.is_test). The owner dashboard shows the
+    // full synthetic chart/KPI showcase only on a demo property; real hotels
+    // see an honest "learning from your PMS" state until real data exists.
+    // Absent (e.g. anon RLS hides the column) → false → honest, never fabricated.
+    isTest: Boolean(r.is_test),
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }

@@ -469,6 +469,18 @@ export default function DashboardPage() {
   // the synthetic trend) — used to keep the ring consistent with the figure.
   const displayOcc = history.length ? history[history.length - 1].occ : 0;
 
+  // ── honesty gate ─────────────────────────────────────────────────────
+  // A brand-new hotel with NO real PMS data must never show fabricated
+  // revenue / ADR / RevPAR / profit / occupancy. The synthetic series (see
+  // today-series.ts) renders ONLY when we have a real occupancy reading to
+  // anchor it (occPct), OR on an explicit demo property (properties.is_test).
+  // Otherwise the KPI strip, chart, and month-to-date are replaced with an
+  // honest "learning from your PMS" state and the occupancy ring goes neutral.
+  // The LIVE hotel (real occupancy) keeps its exact current behavior.
+  const hasRealData = occPct != null;
+  const isDemo = !!activeProperty?.isTest;
+  const analyticsReady = hasRealData || isDemo;
+
   // FULL roster of the property's rooms — one tick = one specific room, each
   // with a stable floor-based number (101.., 201..) and a unique idx. Sized to
   // the property's room count (set at onboarding). Real status counts from the
@@ -482,7 +494,11 @@ export default function DashboardPage() {
     // learned, NEVER synthesize a plausible-looking board (the mock fill
     // below would paint clean/occupied rooms out of thin air). Every tick
     // renders the neutral 'none' ("no data") state instead.
-    if (roomStatusLearning) {
+    // Honesty gate: also go fully neutral when there's no real data at all
+    // (a manual / no-PMS / zero-data hotel where roomStatusLearning is false) —
+    // otherwise the fill below would paint a fake ~80%-occupied ring from the
+    // synthetic occupancy trend.
+    if (roomStatusLearning || !analyticsReady) {
       const floorsL = Math.max(1, Math.ceil(total / 20));
       const perFloorL = Math.ceil(total / floorsL);
       return Array.from({ length: total }, (_, i) => ({
@@ -519,7 +535,7 @@ export default function DashboardPage() {
       num: String((Math.floor(i / perFloor) + 1) * 100 + (i % perFloor) + 1),
       status,
     }));
-  }, [counts, rooms, totalRooms, displayOcc, roomStatusLearning]);
+  }, [counts, rooms, totalRooms, displayOcc, roomStatusLearning, analyticsReady]);
 
   // ring distribution for the legend
   const ringCounts = useMemo(() => {
@@ -641,11 +657,17 @@ export default function DashboardPage() {
 
   const STATUS = ES ? STATUS_ES : STATUS_EN;
 
-  // ring center: hovered room → its number+status; else the active metric
+  // ring center: hovered room → its number+status; else the active metric.
+  // When there's no real data (and not a demo), force the neutral occupancy
+  // state REGARDLESS of `metric` — a stale non-occ metric (e.g. carried over
+  // from a prior demo property this session) must never paint a fabricated
+  // "$8.2k" in the center.
   const center = room
     ? (room.num
       ? { big: room.num, label: ES ? 'HABITACIÓN' : 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
       : { big: STATUS[room.status], label: ES ? 'ESTADO' : 'STATUS', sub: '', color: RING[room.status] })
+    : !analyticsReady
+      ? { big: '—', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: ES ? 'aprendiendo del PMS' : 'learning from your PMS', color: C.ink3 }
     : metric === 'occ'
       ? { big: Math.round(live.occ) + '%', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: hov ? hov.d : (ES ? `${soldNow} de ${totalRooms} habitaciones` : `${soldNow} of ${totalRooms} rooms`), color: C.green }
       : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : (ES ? 'hoy' : 'today'), color: def.color };
@@ -696,21 +718,39 @@ export default function DashboardPage() {
             </div>
 
             <div style={{ width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ ...LABEL, marginBottom: 6 }}>{def.label} · {RG.full}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <button onClick={togglePlay} title={playing ? (ES ? 'Pausar' : 'Pause') : (ES ? 'Reproducir' : 'Play through ' + RG.full)}
-                    style={{ width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer', flexShrink: 0, background: playing ? C.rust : def.color, color: '#fff', display: 'grid', placeItems: 'center', transition: 'background .15s' }}>
-                    {playing
-                      ? <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.6" height="12" rx="1" /><rect x="9.4" y="2" width="3.6" height="12" rx="1" /></svg>
-                      : <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z" /></svg>}
-                  </button>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {RANGES.map(r => <button key={r.key} onClick={() => setRange(r.key)} style={pill(range === r.key)}>{r.label}</button>)}
+              {analyticsReady ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
+                    <div style={{ ...LABEL, marginBottom: 6 }}>{def.label} · {RG.full}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <button onClick={togglePlay} title={playing ? (ES ? 'Pausar' : 'Pause') : (ES ? 'Reproducir' : 'Play through ' + RG.full)}
+                        style={{ width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer', flexShrink: 0, background: playing ? C.rust : def.color, color: '#fff', display: 'grid', placeItems: 'center', transition: 'background .15s' }}>
+                        {playing
+                          ? <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.6" height="12" rx="1" /><rect x="9.4" y="2" width="3.6" height="12" rx="1" /></svg>
+                          : <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z" /></svg>}
+                      </button>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {RANGES.map(r => <button key={r.key} onClick={() => setRange(r.key)} style={pill(range === r.key)}>{r.label}</button>)}
+                      </div>
+                    </div>
+                  </div>
+                  <MetricChart key={metric + range} series={series} color={def.color} onHover={setHi} marker={playing ? playIdx : null} />
+                </>
+              ) : (
+                // Honest "no data yet" state — no fabricated trend line for a
+                // hotel that has no real occupancy/revenue history.
+                <div style={{
+                  height: 236, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  textAlign: 'center', gap: 10, border: `1px dashed ${C.line2}`, borderRadius: 16, padding: '24px',
+                }}>
+                  <div style={{ ...LABEL }}>{ES ? 'Aprendiendo de tu PMS' : 'Learning from your PMS'}</div>
+                  <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink2, maxWidth: 460, lineHeight: 1.3 }}>
+                    {ES
+                      ? 'Tus tendencias de ocupación e ingresos aparecerán aquí en cuanto tu PMS tenga datos en vivo — normalmente en uno o dos días.'
+                      : 'Your occupancy and revenue trends will appear here once your PMS has live data — usually within a day or two.'}
                   </div>
                 </div>
-              </div>
-              <MetricChart key={metric + range} series={series} color={def.color} onHover={setHi} marker={playing ? playIdx : null} />
+              )}
             </div>
           </section>
 
@@ -724,7 +764,8 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          {/* KPI strip */}
+          {/* KPI strip — hidden until there's real data (no fabricated KPIs) */}
+          {analyticsReady && (
           <section className="stx-kpis">
             {kpis.map((k, i) => {
               const mdef = METRIC_DEFS.find(m => m.key === k.key)!;
@@ -754,6 +795,7 @@ export default function DashboardPage() {
               );
             })}
           </section>
+          )}
 
           {/* right now + needs attention */}
           <section className="stx-now">
@@ -810,8 +852,8 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* month to date */}
-          {mtd && (
+          {/* month to date — hidden until there's real data (no fabricated totals) */}
+          {analyticsReady && mtd && (
             <section className="stx-mtd" style={{ borderTop: `1px solid ${C.line}`, paddingTop: 22 }}>
               <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: C.ink2, width: 200, flexShrink: 0, textTransform: 'capitalize' }}>
                 {ES ? `${monthFull}, hasta hoy` : `${monthFull}, month to date`}

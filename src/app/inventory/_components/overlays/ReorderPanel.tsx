@@ -78,6 +78,11 @@ export function ReorderPanel({
     if (!open) return [];
     const out: Array<ReorderRec & { display: DisplayItem }> = [];
     for (const d of display) {
+      // Never-counted items (new-hotel day 1: 0 stock, no count) have no real
+      // signal — don't recommend ordering "par" of something nobody has
+      // counted. They appear in the board's neutral "not counted yet" section
+      // instead; count them first, then they rejoin the reorder list.
+      if (d.uncounted) continue;
       const { urgency, reason } = recommendReorder(d, averages, mlRateMap, L);
       // Hide truly fine items (status=good AND urgency=ok AND not below par) from the panel.
       if (urgency === 'ok' && d.status === 'good') continue;

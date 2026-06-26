@@ -60,6 +60,12 @@ export interface Property {
    */
   onboardingCompletedAt?: string | null;
   onboardingState?: OnboardingState | null;
+  /**
+   * Demo/showcase property (properties.is_test). Real hotels see an honest
+   * "learning from your PMS" dashboard until real occupancy/revenue exists;
+   * only a demo property shows the full synthetic chart/KPI showcase.
+   */
+  isTest?: boolean;
   createdAt: Date;
 }
 

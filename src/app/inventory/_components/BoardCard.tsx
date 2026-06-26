@@ -25,6 +25,7 @@ interface BoardCardProps {
 // a forecast, so render the days-left as an em-dash — only ml / rule-occupancy
 // items show a real number. Mirrors ItemRow's behaviour + selectBurnRate.
 function daysLeftLabel(it: DisplayItem, lang: Lang): string {
+  if (it.uncounted) return '—';
   if (it.burnSource === 'fallback-60d' || it.burnSource === 'no-data') return '—';
   const tx = t(lang);
   if (it.daysLeft >= 90) return tx.daysLeft90;
@@ -37,7 +38,8 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
   const tx = t(lang);
   const [flipped, setFlipped] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const c = statusColor[it.status];
+  const uncounted = it.uncounted;
+  const c = uncounted ? T.dim : statusColor[it.status];
   const flip = () =>
     Motion.flip(ref.current, () => setFlipped((f) => !f), { axis: 'y', d1: 145, d2: 215 });
 
@@ -83,7 +85,7 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
               </span>
             </div>
             <div style={{ marginTop: 10 }}>
-              <StockBar current={it.estimated} par={it.par} status={it.status} height={6} />
+              <StockBar current={it.estimated} par={it.par} status={it.status} height={6} neutral={uncounted} />
             </div>
             <div
               style={{
@@ -94,7 +96,7 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
               }}
             >
               <span style={{ display: 'flex', alignItems: 'baseline', gap: 3 }}>
-                <Serif size={21} color={c}>{fmtInt(it.estimated)}</Serif>
+                <Serif size={21} color={c}>{uncounted ? '—' : fmtInt(it.estimated)}</Serif>
                 <span style={{ fontFamily: fonts.sans, fontSize: 10.5, color: T.dim }}>
                   / {it.par} {it.unit}
                 </span>
@@ -152,7 +154,7 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
               <CardAct label={tx.count} onClick={() => onCount?.()} />
               <CardAct
                 label={tx.reorder}
-                tone={it.status === 'critical' ? 'terra' : undefined}
+                tone={!uncounted && it.status === 'critical' ? 'terra' : undefined}
                 onClick={() => onReorder?.()}
               />
               <CardAct label={tx.edit} onClick={() => onEdit?.(it)} />

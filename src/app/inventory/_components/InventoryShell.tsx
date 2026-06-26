@@ -199,18 +199,26 @@ export function InventoryShell() {
   const totalItems = display.length;
   const generalCount = display.filter((d) => d.cat !== 'breakfast').length;
   const breakfastCount = display.filter((d) => d.cat === 'breakfast').length;
+  // Never-counted items (new-hotel day 1) have no real status — exclude them
+  // from the triage stats so they don't read as "16 to order now". They still
+  // count toward totalItems / the "All" filter (they ARE items in the catalog).
+  const countedItems = useMemo(() => display.filter((d) => !d.uncounted), [display]);
 
   const statusCounts = useMemo(() => {
     const acc: Record<StockStatus, number> = { good: 0, low: 0, critical: 0 };
-    for (const d of display) acc[d.status] += 1;
+    for (const d of countedItems) acc[d.status] += 1;
     return acc;
-  }, [display]);
-  const stockHealth = totalItems > 0 ? Math.round((100 * statusCounts.good) / totalItems) : 0;
+  }, [countedItems]);
+  // Stock health over COUNTED items only; null → "—" until a first count exists
+  // (avoids a misleading 0% on a hotel that simply hasn't counted yet).
+  const stockHealth = countedItems.length > 0
+    ? Math.round((100 * statusCounts.good) / countedItems.length)
+    : null;
   const shelfValue = useMemo(() => display.reduce((s, d) => s + d.value, 0), [display]);
 
   const reorderCount = useMemo(
-    () => display.filter((d) => d.status !== 'good').length,
-    [display],
+    () => countedItems.filter((d) => d.status !== 'good').length,
+    [countedItems],
   );
   // Group count rows by countedAt timestamp so the sidebar shows distinct
   // count events (one per session), not raw row count. Matches HistoryPanel.
@@ -349,7 +357,7 @@ export function InventoryShell() {
             justifyContent: 'center',
           }}
         >
-          <HStat eyebrow={tx.stockHealth} big={`${stockHealth}%`} dot="good" />
+          <HStat eyebrow={tx.stockHealth} big={stockHealth == null ? '—' : `${stockHealth}%`} dot="good" />
           <HStat eyebrow={tx.orderNow} big={String(statusCounts.critical)} dot="critical" />
           <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />
           <div style={{ paddingTop: 2 }}>
