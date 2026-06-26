@@ -419,7 +419,13 @@ const TARGET_STEP_CAPS: Record<string, number> = {
 // only; required feeds (and any legacy caller that can't prove optionality) keep
 // the full budget, so this can NEVER starve a promotion-gating feed. Keyed purely
 // off the optional flag — zero PMS-specific logic.
-const OPTIONAL_BUDGET_FRACTION = 0.5;
+// fix/cua-discovery-budget (2026-06-26): bumped 0.5 → 0.75. At 0.5 the optional
+// BURIED report feeds (revenue, channel performance) were halved BELOW the cost of
+// navigating Reports → submenu → date picker, so they cost-capped while the core
+// feeds finished. 0.75 (× the model factor) gives them enough room to land without
+// letting optional feeds approach a required feed's full budget. Still well under
+// the per-job + daily caps.
+const OPTIONAL_BUDGET_FRACTION = 0.75;
 const MIN_OPTIONAL_STEP_CAP = 12; // floor so the fraction can't make a feed un-mappable
 
 type TargetClassification = 'list_page' | 'report_menu' | 'drilldown_sample';

@@ -91,16 +91,16 @@ describe('targetBudget (FIX 2) — optional feeds get a tighter budget', () => {
     assert.deepEqual(targetBudget('drilldown_sample', false, 'claude-opus-4-8'), { stepCap: 60, costCapMicros: 2_880_000 });
   });
 
-  test('optional feeds get exactly half the cost cap (Sonnet baseline)', () => {
-    assert.equal(targetBudget('list_page', true, 'claude-sonnet-4-6').costCapMicros, 300_000);
-    assert.equal(targetBudget('report_menu', true, 'claude-sonnet-4-6').costCapMicros, 600_000);
-    assert.equal(targetBudget('drilldown_sample', true, 'claude-sonnet-4-6').costCapMicros, 720_000);
+  test('optional feeds get 0.75 of the cost cap (Sonnet baseline)', () => {
+    assert.equal(targetBudget('list_page', true, 'claude-sonnet-4-6').costCapMicros, 450_000);
+    assert.equal(targetBudget('report_menu', true, 'claude-sonnet-4-6').costCapMicros, 900_000);
+    assert.equal(targetBudget('drilldown_sample', true, 'claude-sonnet-4-6').costCapMicros, 1_080_000);
   });
 
-  test('optional feeds get half the step cap (floored)', () => {
-    assert.equal(targetBudget('list_page', true).stepCap, 40);
-    assert.equal(targetBudget('report_menu', true).stepCap, 50);
-    assert.equal(targetBudget('drilldown_sample', true).stepCap, 30); // ×3 samples = 90 total
+  test('optional feeds get 0.75 of the step cap (floored)', () => {
+    assert.equal(targetBudget('list_page', true).stepCap, 60);
+    assert.equal(targetBudget('report_menu', true).stepCap, 75);
+    assert.equal(targetBudget('drilldown_sample', true).stepCap, 45); // ×3 samples = 135 total
   });
 
   test('optional is ALWAYS strictly cheaper than required, never zero', () => {
