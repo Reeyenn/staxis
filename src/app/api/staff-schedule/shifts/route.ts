@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
       .eq('property_id', hotelId).select('*').single();
     if (error) {
       log.error('[shifts:POST] update failed', { requestId, msg: errToString(error) });
-      return err(error.message || 'Failed to update shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Failed to update shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     savedId = String(data.id);
     return ok({ shift: fromScheduledShiftRow(data) }, { requestId });
@@ -127,7 +127,7 @@ export async function POST(req: NextRequest) {
         return ok({ shift: fromScheduledShiftRow(upd) }, { requestId });
       }
       log.error('[shifts:POST] insert failed', { requestId, msg: errToString(error) });
-      return err(error.message || 'Failed to create shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Failed to create shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     savedId = String(data.id);
     return ok({ shift: fromScheduledShiftRow(data) }, { requestId });

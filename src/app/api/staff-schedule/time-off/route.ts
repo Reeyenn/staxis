@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
     }).select('*').single();
   if (error) {
     log.error('[time-off:POST] insert failed', { requestId, msg: errToString(error) });
-    return err(error.message || 'Failed to submit request', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err('Failed to submit request', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
   return ok({ request: fromTimeOffRequestRow(data) }, { requestId });
