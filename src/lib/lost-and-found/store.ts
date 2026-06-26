@@ -24,7 +24,7 @@ import {
 const APP_COLS =
   'id, property_id, type, item_description, category, location, room_number, ' +
   'photo_path, status, found_by, found_by_staff_id, reported_by, guest_name, ' +
-  'guest_contact, matched_item_id, occurred_at, hold_until, claimed_at, ' +
+  'matched_item_id, occurred_at, hold_until, claimed_at, ' +
   'returned_at, shipping_info, source, notes, created_by_account_id, created_at';
 
 const PMS_COLS =
@@ -85,7 +85,6 @@ function normalizeAppRow(r: Record<string, unknown>): LostFoundItem {
     foundBy: asStr(r.found_by),
     reportedBy: asStr(r.reported_by),
     guestName: asStr(r.guest_name),
-    guestContact: asStr(r.guest_contact),
     matchedItemId: asStr(r.matched_item_id),
     occurredAt: toIso(r.occurred_at),
     holdUntil: toIso(r.hold_until),
@@ -112,7 +111,6 @@ function normalizePmsRow(r: Record<string, unknown>): LostFoundItem {
     foundBy: asStr(r.found_by),
     reportedBy: null,
     guestName: asStr(r.claimed_by_guest),
-    guestContact: null,
     matchedItemId: null,
     occurredAt: toIso(r.found_at),
     holdUntil: null,
@@ -253,7 +251,6 @@ export interface CreateItemInput {
   foundByStaffId?: string | null;
   reportedBy?: string | null;
   guestName?: string | null;
-  guestContact?: string | null;
   occurredAt?: string | null;
   source: LostFoundOrigin;
   notes?: string | null;
@@ -286,7 +283,6 @@ export async function createItem(
     found_by_staff_id: input.foundByStaffId ?? null,
     reported_by: input.reportedBy ?? null,
     guest_name: input.guestName ?? null,
-    guest_contact: input.guestContact ?? null,
     occurred_at: occurredAt,
     hold_until: holdUntil,
     source: input.source,
@@ -314,7 +310,6 @@ export interface UpdateItemPatch {
   location?: string | null;
   roomNumber?: string | null;
   guestName?: string | null;
-  guestContact?: string | null;
   notes?: string | null;
   claimedAt?: string | null;
   returnedAt?: string | null;
@@ -334,7 +329,6 @@ export async function updateAppItem(
   if (patch.location !== undefined) row.location = patch.location;
   if (patch.roomNumber !== undefined) row.room_number = patch.roomNumber;
   if (patch.guestName !== undefined) row.guest_name = patch.guestName;
-  if (patch.guestContact !== undefined) row.guest_contact = patch.guestContact;
   if (patch.notes !== undefined) row.notes = patch.notes;
   if (patch.claimedAt !== undefined) row.claimed_at = toIso(patch.claimedAt);
   if (patch.returnedAt !== undefined) row.returned_at = toIso(patch.returnedAt);

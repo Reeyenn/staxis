@@ -23,15 +23,14 @@ import type {
 
 const COLS =
   'id, property_id, guest_name, room_number, carrier, tracking_number, ' +
-  'guest_phone, notes, photo_path, status, logged_by_account_id, logged_at, ' +
-  'picked_up_at, picked_up_by_account_id, guest_notified_at';
+  'notes, photo_path, status, logged_by_account_id, logged_at, ' +
+  'picked_up_at, picked_up_by_account_id';
 
 const PHOTO_BUCKET = 'package-label-photos';
 
 /**
- * Internal record — the full row including guest_phone (PII the browser must
- * never receive raw). Routes map this to the client-facing PackageRow via
- * toClientRow, which collapses the phone to a `hasGuestPhone` boolean.
+ * Internal record for an incoming package. Routes map this to the
+ * client-facing PackageRow via toClientRow before responding.
  */
 export interface PackageRecord {
   id: string;
@@ -39,14 +38,12 @@ export interface PackageRecord {
   roomNumber: string | null;
   carrier: PackageCarrier | null;
   trackingNumber: string | null;
-  guestPhone: string | null;
   notes: string | null;
   photoPath: string | null;
   photoUrl: string | null;
   status: PackageStatus;
   loggedAt: string;
   pickedUpAt: string | null;
-  guestNotifiedAt: string | null;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -96,18 +93,17 @@ function normalizeRow(r: Record<string, unknown>): PackageRecord {
     roomNumber: asStr(r.room_number),
     carrier,
     trackingNumber: asStr(r.tracking_number),
-    guestPhone: asStr(r.guest_phone),
     notes: asStr(r.notes),
     photoPath: asStr(r.photo_path),
     photoUrl: null,
     status: r.status === 'picked_up' ? 'picked_up' : 'held',
     loggedAt: toIso(r.logged_at) ?? new Date(0).toISOString(),
     pickedUpAt: toIso(r.picked_up_at),
-    guestNotifiedAt: toIso(r.guest_notified_at),
   };
 }
 
-/** Strip server-only PII (guest_phone) before returning to the browser. */
+/** Shape the internal record for the browser (drops nothing sensitive now —
+ *  kept as the single mapping seam between the DB row and the API row). */
 export function toClientRow(r: PackageRecord): PackageRow {
   return {
     id: r.id,
@@ -115,22 +111,20 @@ export function toClientRow(r: PackageRecord): PackageRow {
     roomNumber: r.roomNumber,
     carrier: r.carrier,
     trackingNumber: r.trackingNumber,
-    hasGuestPhone: !!r.guestPhone,
     notes: r.notes,
     photoPath: r.photoPath,
     photoUrl: r.photoUrl,
     status: r.status,
     loggedAt: r.loggedAt,
     pickedUpAt: r.pickedUpAt,
-    guestNotifiedAt: r.guestNotifiedAt,
   };
 }
 
 // ─── reads ──────────────────────────────────────────────────────────────────
 
 /**
- * All packages for a property, newest-first. Returns full internal records
- * (incl. guest_phone) — the route strips PII via toClientRow before responding.
+ * All packages for a property, newest-first. Returns internal records; the
+ * route maps them to the client shape via toClientRow before responding.
  * Throws on a hard read error so the route returns 500 rather than rendering a
  * silently-empty list.
  */
@@ -148,7 +142,7 @@ export async function listPackages(propertyId: string): Promise<PackageRecord[]>
   return asRecordRows(data).map(normalizeRow);
 }
 
-/** Read a single package (property-scoped) — full record incl. guest_phone. */
+/** Read a single package (property-scoped). */
 export async function getPackage(
   propertyId: string,
   id: string,
@@ -206,20 +200,6 @@ export async function signLabelPhotos(records: PackageRecord[]): Promise<Package
   }
 }
 
-/** Property display name for the SMS body. Falls back to a generic label. */
-export async function getPropertyName(propertyId: string): Promise<string> {
-  try {
-    const { data } = await supabaseAdmin
-      .from('properties')
-      .select('name')
-      .eq('id', propertyId)
-      .maybeSingle();
-    return typeof data?.name === 'string' && data.name ? data.name : 'the hotel';
-  } catch {
-    return 'the hotel';
-  }
-}
-
 // ─── writes ─────────────────────────────────────────────────────────────────
 
 export interface CreatePackageInput {
@@ -227,7 +207,6 @@ export interface CreatePackageInput {
   roomNumber?: string | null;
   carrier?: PackageCarrier | null;
   trackingNumber?: string | null;
-  guestPhone?: string | null;
   notes?: string | null;
   photoPath?: string | null;
   loggedByAccountId?: string | null;
@@ -243,7 +222,6 @@ export async function createPackage(
     room_number: input.roomNumber ?? null,
     carrier: input.carrier ?? null,
     tracking_number: input.trackingNumber ?? null,
-    guest_phone: input.guestPhone ?? null,
     notes: input.notes ?? null,
     photo_path: input.photoPath ?? null,
     status: 'held',
@@ -288,19 +266,6 @@ export async function markPickedUp(
   }
   if (!data || data.length === 0) return { ok: false, error: 'not_found' };
   return { ok: true };
-}
-
-/** Stamp the guest-notified time after an SMS is enqueued. Property-scoped. */
-export async function markGuestNotified(
-  propertyId: string,
-  id: string,
-): Promise<void> {
-  const { error } = await supabaseAdmin
-    .from('packages')
-    .update({ guest_notified_at: new Date().toISOString() })
-    .eq('property_id', propertyId)
-    .eq('id', id);
-  if (error) logErr('packages.markGuestNotified', error);
 }
 
 /** Delete a package (property-scoped) — for an immediate log-mistake undo. */

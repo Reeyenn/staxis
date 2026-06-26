@@ -146,7 +146,6 @@ export interface LogItemInput {
   roomNumber?: string | null;
   photoPath?: string | null;
   guestName?: string | null;
-  guestContact?: string | null;
   foundBy?: string | null;
   reportedBy?: string | null;
   notes?: string | null;
@@ -164,7 +163,6 @@ export function updateLostFoundItem(
     status?: string;
     notes?: string | null;
     guestName?: string | null;
-    guestContact?: string | null;
     category?: string | null;
     shippingInfo?: Record<string, unknown> | null;
   },
@@ -215,14 +213,6 @@ export interface AutoMatchResult {
 
 export function autoMatchLost(pid: string, lostId: string): Promise<ActionResult<AutoMatchResult>> {
   return postAction<AutoMatchResult>(`${BASE}/auto-match`, { pid, lostId });
-}
-
-export function notifyGuestLostFound(
-  pid: string,
-  id: string,
-  message?: string,
-): Promise<ActionResult<{ queued: boolean; jobId: string }>> {
-  return postAction(`${BASE}/notify-guest`, { pid, id, ...(message ? { message } : {}) });
 }
 
 export interface PresignResult {

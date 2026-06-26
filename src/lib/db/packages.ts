@@ -125,7 +125,6 @@ export interface CreatePackageInput {
   roomNumber?: string | null;
   carrier?: string | null;
   trackingNumber?: string | null;
-  guestPhone?: string | null;
   notes?: string | null;
   photoPath?: string | null;
 }
@@ -157,14 +156,6 @@ export function scanPackageLabel(
   mediaType: string,
 ): Promise<ActionResult<ScannedLabel>> {
   return sendAction<ScannedLabel>(`${BASE}/scan-label`, 'POST', { pid, imageBase64, mediaType });
-}
-
-export function notifyPackageGuest(
-  pid: string,
-  id: string,
-  message?: string,
-): Promise<ActionResult<{ queued: boolean; jobId: string }>> {
-  return sendAction(`${BASE}/notify-guest`, 'POST', { pid, id, ...(message ? { message } : {}) });
 }
 
 export interface PresignResult {

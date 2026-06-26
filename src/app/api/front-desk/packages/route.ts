@@ -15,7 +15,7 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { validateString, validateEnum, validatePhone } from '@/lib/api-validate';
+import { validateString, validateEnum } from '@/lib/api-validate';
 import { gatePackagesRead, gatePackagesWrite } from '@/lib/packages/api-gate';
 import {
   listPackages,
@@ -78,7 +78,6 @@ interface CreateBody {
   roomNumber?: string | null;
   carrier?: string | null;
   trackingNumber?: string | null;
-  guestPhone?: string | null;
   notes?: string | null;
   photoPath?: string | null;
 }
@@ -113,14 +112,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   const notesV = optStr(body.notes, 1000, 'notes');
   if (notesV.error) return bad(notesV.error);
 
-  // Optional guest phone — stored to enable the notify-guest SMS. Empty → null.
-  let guestPhone: string | null = null;
-  if (body.guestPhone !== undefined && body.guestPhone !== null && body.guestPhone !== '') {
-    const ph = validatePhone(body.guestPhone, 'guestPhone');
-    if (ph.error) return bad(ph.error);
-    guestPhone = ph.value || null;
-  }
-
   // Photo path must match the EXACT shape our presign route mints under this
   // property — never an arbitrary, traversal, or cross-tenant key.
   let photoPath: string | null = null;
@@ -135,7 +126,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       roomNumber: roomV.value,
       carrier,
       trackingNumber: trackingV.value,
-      guestPhone,
       notes: notesV.value,
       photoPath,
       loggedByAccountId: accountId,

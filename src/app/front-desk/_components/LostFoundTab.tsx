@@ -29,7 +29,6 @@ import {
   matchLostFound,
   describeFoundPhoto,
   autoMatchLost,
-  notifyGuestLostFound,
   presignFoundPhoto,
   type LostFoundItem,
   type LostFoundCounts,
@@ -578,9 +577,6 @@ function ItemCard({
                     act(() => updateLostFoundItem(pid, item.id, { status: 'shipped' }), tr(lang, 'Marked shipped', 'Marcado enviado')), T.sageDeep)}
                   {smallBtn(tr(lang, 'Dispose', 'Desechar'), () =>
                     act(() => updateLostFoundItem(pid, item.id, { status: 'disposed' }), tr(lang, 'Marked disposed', 'Marcado desechado')), T.ink3)}
-                  {(item.guestContact || matchedItem?.guestContact) &&
-                    smallBtn('✉ ' + tr(lang, 'Notify guest', 'Avisar al huésped'), () =>
-                      act(() => notifyGuestLostFound(pid, item.id), tr(lang, 'Guest texted', 'Huésped notificado')), T.caramelDeep)}
                 </>
               )}
               {!isFound && item.status === 'open' && (
@@ -665,7 +661,6 @@ function LogModal({
   const [location, setLocation] = useState('');
   const [room, setRoom] = useState('');
   const [guestName, setGuestName] = useState('');
-  const [guestContact, setGuestContact] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [describing, setDescribing] = useState(false);
@@ -736,7 +731,6 @@ function LogModal({
         location: location.trim() || null,
         roomNumber: room.trim() || null,
         guestName: guestName.trim() || null,
-        guestContact: guestContact.trim() || null,
         foundBy: type === 'found' ? tr(lang, 'Front desk', 'Recepción') : null,
         reportedBy: type === 'lost' ? tr(lang, 'Front desk', 'Recepción') : null,
         notes: notes.trim() || null,
@@ -847,18 +841,9 @@ function LogModal({
           </Field>
         </div>
 
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <Field label={tr(lang, 'Guest name', 'Nombre del huésped')} style={{ flex: '1 1 160px' }}>
-            <TextInput value={guestName} onChange={setGuestName} placeholder={tr(lang, 'optional', 'opcional')} maxLength={120} />
-          </Field>
-          <Field
-            label={tr(lang, 'Guest phone / email', 'Tel. / correo del huésped')}
-            hint={tr(lang, 'phone enables SMS', 'el teléfono permite SMS')}
-            style={{ flex: '1 1 180px' }}
-          >
-            <TextInput value={guestContact} onChange={setGuestContact} placeholder="+1 555 123 4567" maxLength={200} />
-          </Field>
-        </div>
+        <Field label={tr(lang, 'Guest name', 'Nombre del huésped')}>
+          <TextInput value={guestName} onChange={setGuestName} placeholder={tr(lang, 'optional', 'opcional')} maxLength={120} />
+        </Field>
 
         <Field label={tr(lang, 'Notes', 'Notas')}>
           <TextArea value={notes} onChange={setNotes} placeholder={tr(lang, 'anything else…', 'algo más…')} rows={2} />

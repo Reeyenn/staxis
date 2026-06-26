@@ -69,7 +69,6 @@ export interface LostFoundItem {
   foundBy: string | null;
   reportedBy: string | null;
   guestName: string | null;
-  guestContact: string | null;
   matchedItemId: string | null;
   occurredAt: string | null;
   holdUntil: string | null;

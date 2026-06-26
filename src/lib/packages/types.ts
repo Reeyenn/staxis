@@ -22,9 +22,6 @@ export interface PackageRow {
   roomNumber: string | null;
   carrier: PackageCarrier | null;
   trackingNumber: string | null;
-  /** Whether a guest phone is on file — drives the "Notify guest" button.
-   *  The raw phone is NOT returned to the browser (PII minimization). */
-  hasGuestPhone: boolean;
   notes: string | null;
   photoPath: string | null;
   /** Short-lived signed view URL for the label photo, when present. */
@@ -32,7 +29,6 @@ export interface PackageRow {
   status: PackageStatus;
   loggedAt: string;
   pickedUpAt: string | null;
-  guestNotifiedAt: string | null;
 }
 
 export interface PackageCounts {

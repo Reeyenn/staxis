@@ -3,8 +3,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Front-desk Packages — incoming guest-delivery log.
 //
-// Log parcels held behind the desk (Amazon/FedEx/UPS), optionally text the
-// guest, and mark them picked up. AI touch: snap the shipping label → Claude
+// Log parcels held behind the desk (Amazon/FedEx/UPS) and mark them picked up.
+// AI touch: snap the shipping label → Claude
 // Vision pre-fills guest name / room / carrier / tracking (scan only; the clerk
 // confirms before saving). Snow design system. Visible to ALL front-desk staff
 // (same access level as the Rooms tab — not management-gated like Lost & Found).
@@ -29,7 +29,6 @@ import {
   markPackagePickedUp,
   deletePackage,
   scanPackageLabel,
-  notifyPackageGuest,
   presignPackagePhoto,
   type PackageRow,
   type PackageCounts,
@@ -171,8 +170,8 @@ export function PackagesTab({ pid, lang }: { pid: string; lang: Lang }) {
           <p style={{ margin: '4px 0 0', fontSize: 13.5, color: T.ink2, fontFamily: FONT_SANS }}>
             {tr(
               lang,
-              'Parcels held at the front desk for guests — log, notify, and hand off.',
-              'Paquetes guardados en recepción para huéspedes — registra, avisa y entrega.',
+              'Parcels held at the front desk for guests — log and hand off.',
+              'Paquetes guardados en recepción para huéspedes — registra y entrega.',
             )}
           </p>
         </div>
@@ -426,7 +425,6 @@ function PackageCard({
               ? tag(tr(lang, 'HELD', 'EN ESPERA'), T.caramel, `${T.caramel}14`)
               : tag(tr(lang, 'PICKED UP', 'ENTREGADO'), T.sageDeep, `${T.sageDeep}14`)}
             {pkg.carrier && tag(carrierLabel(pkg.carrier, lang), T.ink2, `${T.ink2}10`)}
-            {pkg.guestNotifiedAt && isHeld && tag('✓ ' + tr(lang, 'Notified', 'Avisado'), T.sageDeep, `${T.sageDeep}12`)}
           </div>
 
           <div style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
@@ -455,9 +453,6 @@ function PackageCard({
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
               {smallBtn('✓ ' + tr(lang, 'Picked up', 'Entregado'), () =>
                 act(() => markPackagePickedUp(pid, pkg.id), tr(lang, 'Marked picked up', 'Marcado entregado')), T.sageDeep)}
-              {pkg.hasGuestPhone &&
-                smallBtn('✉ ' + tr(lang, 'Notify guest', 'Avisar al huésped'), () =>
-                  act(() => notifyPackageGuest(pid, pkg.id), tr(lang, 'Guest texted', 'Huésped notificado')), T.caramelDeep)}
               {confirmDel
                 ? smallBtn(tr(lang, 'Confirm delete?', '¿Eliminar?'), () => {
                     setConfirmDel(false);
@@ -499,7 +494,6 @@ function AddPackageModal({
   const [room, setRoom] = useState('');
   const [carrier, setCarrier] = useState('');
   const [tracking, setTracking] = useState('');
-  const [guestPhone, setGuestPhone] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -585,7 +579,6 @@ function AddPackageModal({
         roomNumber: room.trim() || null,
         carrier: carrier || null,
         trackingNumber: tracking.trim() || null,
-        guestPhone: guestPhone.trim() || null,
         notes: notes.trim() || null,
         photoPath,
       });
@@ -691,13 +684,6 @@ function AddPackageModal({
 
         <Field label={tr(lang, 'Carrier', 'Transportista')}>
           <ChipChoose value={carrier} onChange={setCarrier} options={CARRIER_OPTIONS(lang)} />
-        </Field>
-
-        <Field
-          label={tr(lang, 'Guest phone', 'Tel. del huésped')}
-          hint={tr(lang, 'enables “Notify guest” SMS', 'permite avisar por SMS')}
-        >
-          <TextInput value={guestPhone} onChange={setGuestPhone} placeholder="+1 555 123 4567" maxLength={20} />
         </Field>
 
         <Field label={tr(lang, 'Notes', 'Notas')}>

@@ -7,9 +7,9 @@
  *   2. Open FOUND items within 7 days of hold_until → an in-app nudge to the
  *      property's owners/GMs so nothing is tossed without a heads-up.
  *
- * Staff get in-app nudges (they're signed in); guests get SMS via the separate
- * notify-guest route. Idempotent: one nudge per property per UTC day
- * (dedupe_key), and re-running can't double-expire (status flips to 'expired').
+ * Staff get in-app nudges (they're signed in). Idempotent: one nudge per
+ * property per UTC day (dedupe_key), and re-running can't double-expire
+ * (status flips to 'expired').
  */
 
 import type { NextRequest } from 'next/server';

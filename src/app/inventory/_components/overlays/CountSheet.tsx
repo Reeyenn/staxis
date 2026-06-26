@@ -330,28 +330,13 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
         ),
       );
 
-      // 4. Fire-and-forget: ML post-count processing + SMS alerts.
+      // 4. Fire-and-forget: ML post-count processing.
       const itemIds = rows.map((r) => r.itemId);
       void fetchWithAuth('/api/inventory/post-count-process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ propertyId: activePropertyId, itemIds }),
       }).catch(() => {});
-      // Trigger SMS only for items that landed in critical territory.
-      const criticalItemIds = scopedDisplay
-        .filter((d) => {
-          const counted = Number(entries[d.id]?.value);
-          if (!Number.isFinite(counted) || d.par <= 0) return false;
-          return counted / d.par < 0.5;
-        })
-        .map((d) => d.id);
-      if (criticalItemIds.length > 0) {
-        void fetchWithAuth('/api/inventory/check-alerts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pid: activePropertyId, criticalItemIds }),
-        }).catch(() => {});
-      }
 
       onClose();
     } catch (err) {

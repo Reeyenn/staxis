@@ -20,8 +20,6 @@ import {
   validateString,
   validateUuid,
   validateEnum,
-  validatePhone,
-  isValidEmail,
 } from '@/lib/api-validate';
 import { gateFrontDeskRead, gateFrontDeskWrite } from '@/lib/lost-and-found/api-gate';
 import {
@@ -75,7 +73,6 @@ interface MutationBody {
   roomNumber?: string | null;
   photoPath?: string | null;
   guestName?: string | null;
-  guestContact?: string | null;
   foundBy?: string | null;
   reportedBy?: string | null;
   notes?: string | null;
@@ -97,20 +94,6 @@ function optStr(v: unknown, max: number, label: string): { error?: string; value
   const r = validateString(v, { max, label });
   if (r.error) return { error: r.error };
   return { value: r.value! };
-}
-
-/** Guest contact: a phone OR an email, capped. Empty → null. */
-function validateGuestContact(v: unknown): { error?: string; value?: string | null } {
-  if (v === undefined || v === null || v === '') return { value: null };
-  if (typeof v !== 'string') return { error: 'guestContact must be a string' };
-  const trimmed = v.trim();
-  if (trimmed.length > 200) return { error: 'guestContact too long (max 200)' };
-  if (trimmed.includes('@')) {
-    return isValidEmail(trimmed) ? { value: trimmed } : { error: 'guestContact is not a valid email' };
-  }
-  const ph = validatePhone(trimmed, 'guestContact');
-  if (ph.error) return { error: ph.error };
-  return { value: ph.value || null };
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -144,8 +127,6 @@ export async function POST(req: NextRequest): Promise<Response> {
         if (roomV.error) return bad(roomV.error);
         const guestNameV = optStr(body.guestName, 120, 'guestName');
         if (guestNameV.error) return bad(guestNameV.error);
-        const contactV = validateGuestContact(body.guestContact);
-        if (contactV.error) return bad(contactV.error);
         const foundByV = optStr(body.foundBy, 120, 'foundBy');
         if (foundByV.error) return bad(foundByV.error);
         const reportedByV = optStr(body.reportedBy, 120, 'reportedBy');
@@ -177,7 +158,6 @@ export async function POST(req: NextRequest): Promise<Response> {
           roomNumber: roomV.value,
           photoPath,
           guestName: guestNameV.value,
-          guestContact: contactV.value,
           foundBy: foundByV.value,
           reportedBy: reportedByV.value,
           notes: notesV.value,
@@ -214,11 +194,6 @@ export async function POST(req: NextRequest): Promise<Response> {
           const n = optStr(body.notes, 1000, 'notes');
           if (n.error) return bad(n.error);
           patch.notes = n.value;
-        }
-        if (body.guestContact !== undefined) {
-          const c = validateGuestContact(body.guestContact);
-          if (c.error) return bad(c.error);
-          patch.guestContact = c.value;
         }
         if (body.guestName !== undefined) {
           const g = optStr(body.guestName, 120, 'guestName');
