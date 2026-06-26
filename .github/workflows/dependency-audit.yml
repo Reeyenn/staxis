@@ -1,0 +1,60 @@
+name: Dependency audit
+
+# Security audit 2026-06-26: there was no CI gate on dependency advisories, so
+# a vulnerable transitive dep (e.g. axios SSRF via twilio, ws DoS via
+# @supabase/realtime-js) could reach prod undetected. This job fails the build
+# on any HIGH/CRITICAL production advisory in the web app, the CUA worker, and
+# the Python ML service.
+#
+# Why --audit-level=high (not moderate): a few moderate advisories
+# (next/postcss, @opentelemetry baggage) only have fixes behind major bumps and
+# are tracked separately; gating on moderate would block every PR. Raise to
+# 'moderate' once those are resolved.
+#
+# Runs on every PR/push to main AND weekly, so a newly-disclosed CVE surfaces
+# even without a dependency change.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 9 * * 1' # Mondays 09:17 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ['.', 'cua-service']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: npm audit (${{ matrix.dir }}) — fail on high/critical prod advisories
+        working-directory: ${{ matrix.dir }}
+        run: npm audit --omit=dev --audit-level=high
+
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: pip-audit ml-service
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          if [ -f ml-service/requirements.txt ]; then
+            pip-audit -r ml-service/requirements.txt
+          else
+            echo "no ml-service/requirements.txt — skipping"
+          fi
