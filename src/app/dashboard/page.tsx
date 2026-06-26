@@ -470,16 +470,28 @@ export default function DashboardPage() {
   const displayOcc = history.length ? history[history.length - 1].occ : 0;
 
   // ── honesty gate ─────────────────────────────────────────────────────
-  // A brand-new hotel with NO real PMS data must never show fabricated
-  // revenue / ADR / RevPAR / profit / occupancy. The synthetic series (see
-  // today-series.ts) renders ONLY when we have a real occupancy reading to
-  // anchor it (occPct), OR on an explicit demo property (properties.is_test).
-  // Otherwise the KPI strip, chart, and month-to-date are replaced with an
-  // honest "learning from your PMS" state and the occupancy ring goes neutral.
-  // The LIVE hotel (real occupancy) keeps its exact current behavior.
+  // Two distinct signals, because occupancy and the financial showcase have
+  // very different "is this real?" answers:
+  //
+  //  • ringReady — do we have a real occupancy reading (or a demo)? When yes,
+  //    the occupancy RING shows a real picture (today's occupied rooms). When
+  //    no, the ring goes neutral.
+  //
+  //  • showFinancials — should we show the synthetic KPI strip / chart /
+  //    month-to-date? These are built ENTIRELY from generated numbers
+  //    (today-series.ts): revenue / ADR / RevPAR / profit have NO real source
+  //    for ANY hotel yet, and the multi-month history is fabricated, not
+  //    measured. So we show them ONLY on an explicit demo property. Every real
+  //    hotel — even one already running with live occupancy — gets the honest
+  //    "trends appear as history builds" state instead of fabricated KPIs.
+  //    (A brand-new 1-room hotel reads 100% occupancy, which is REAL, but its
+  //    revenue/$ are still invented — gating the showcase on occupancy alone
+  //    would let those fabricated dollars through. So the showcase is
+  //    demo-only; real occupancy still drives the ring above.)
   const hasRealData = occPct != null;
   const isDemo = !!activeProperty?.isTest;
-  const analyticsReady = hasRealData || isDemo;
+  const ringReady = hasRealData || isDemo;
+  const showFinancials = isDemo;
 
   // FULL roster of the property's rooms — one tick = one specific room, each
   // with a stable floor-based number (101.., 201..) and a unique idx. Sized to
@@ -494,11 +506,12 @@ export default function DashboardPage() {
     // learned, NEVER synthesize a plausible-looking board (the mock fill
     // below would paint clean/occupied rooms out of thin air). Every tick
     // renders the neutral 'none' ("no data") state instead.
-    // Honesty gate: also go fully neutral when there's no real data at all
+    // Honesty gate: also go fully neutral when there's no real occupancy at all
     // (a manual / no-PMS / zero-data hotel where roomStatusLearning is false) —
     // otherwise the fill below would paint a fake ~80%-occupied ring from the
-    // synthetic occupancy trend.
-    if (roomStatusLearning || !analyticsReady) {
+    // synthetic occupancy trend. (ringReady is true on a real-occupancy hotel
+    // AND on a demo, so both keep a populated ring.)
+    if (roomStatusLearning || !ringReady) {
       const floorsL = Math.max(1, Math.ceil(total / 20));
       const perFloorL = Math.ceil(total / floorsL);
       return Array.from({ length: total }, (_, i) => ({
@@ -535,7 +548,7 @@ export default function DashboardPage() {
       num: String((Math.floor(i / perFloor) + 1) * 100 + (i % perFloor) + 1),
       status,
     }));
-  }, [counts, rooms, totalRooms, displayOcc, roomStatusLearning, analyticsReady]);
+  }, [counts, rooms, totalRooms, displayOcc, roomStatusLearning, ringReady]);
 
   // ring distribution for the legend
   const ringCounts = useMemo(() => {
@@ -658,17 +671,17 @@ export default function DashboardPage() {
   const STATUS = ES ? STATUS_ES : STATUS_EN;
 
   // ring center: hovered room → its number+status; else the active metric.
-  // When there's no real data (and not a demo), force the neutral occupancy
-  // state REGARDLESS of `metric` — a stale non-occ metric (e.g. carried over
-  // from a prior demo property this session) must never paint a fabricated
-  // "$8.2k" in the center.
+  // When there's no real occupancy (and not a demo) → neutral "—". On a real
+  // hotel (occupancy real, financials hidden) ALWAYS show occupancy, regardless
+  // of a stale `metric` carried over from a prior demo property — otherwise a
+  // leftover "revenue" metric could paint a fabricated "$8.2k" in the center.
   const center = room
     ? (room.num
       ? { big: room.num, label: ES ? 'HABITACIÓN' : 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
       : { big: STATUS[room.status], label: ES ? 'ESTADO' : 'STATUS', sub: '', color: RING[room.status] })
-    : !analyticsReady
+    : !ringReady
       ? { big: '—', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: ES ? 'aprendiendo del PMS' : 'learning from your PMS', color: C.ink3 }
-    : metric === 'occ'
+    : (!showFinancials || metric === 'occ')
       ? { big: Math.round(live.occ) + '%', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: hov ? hov.d : (ES ? `${soldNow} de ${totalRooms} habitaciones` : `${soldNow} of ${totalRooms} rooms`), color: C.green }
       : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : (ES ? 'hoy' : 'today'), color: def.color };
 
@@ -718,7 +731,7 @@ export default function DashboardPage() {
             </div>
 
             <div style={{ width: '100%' }}>
-              {analyticsReady ? (
+              {showFinancials ? (
                 <>
                   <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
                     <div style={{ ...LABEL, marginBottom: 6 }}>{def.label} · {RG.full}</div>
@@ -737,17 +750,19 @@ export default function DashboardPage() {
                   <MetricChart key={metric + range} series={series} color={def.color} onHover={setHi} marker={playing ? playIdx : null} />
                 </>
               ) : (
-                // Honest "no data yet" state — no fabricated trend line for a
-                // hotel that has no real occupancy/revenue history.
+                // Honest "no data yet" state — no fabricated trend line. The
+                // occupancy ring + "Right now" tiles above still show today's
+                // real numbers; only the multi-month financial trend (which has
+                // no real source yet) waits for history.
                 <div style={{
                   height: 236, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   textAlign: 'center', gap: 10, border: `1px dashed ${C.line2}`, borderRadius: 16, padding: '24px',
                 }}>
-                  <div style={{ ...LABEL }}>{ES ? 'Aprendiendo de tu PMS' : 'Learning from your PMS'}</div>
+                  <div style={{ ...LABEL }}>{ES ? 'Aún sin historial' : 'No history yet'}</div>
                   <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink2, maxWidth: 460, lineHeight: 1.3 }}>
                     {ES
-                      ? 'Tus tendencias de ocupación e ingresos aparecerán aquí en cuanto tu PMS tenga datos en vivo — normalmente en uno o dos días.'
-                      : 'Your occupancy and revenue trends will appear here once your PMS has live data — usually within a day or two.'}
+                      ? 'Tus tendencias de ocupación e ingresos aparecerán aquí a medida que se acumule el historial diario de tu hotel.'
+                      : 'Your occupancy and revenue trends will appear here as your hotel’s daily history builds up.'}
                   </div>
                 </div>
               )}
@@ -764,8 +779,9 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          {/* KPI strip — hidden until there's real data (no fabricated KPIs) */}
-          {analyticsReady && (
+          {/* KPI strip — synthetic financials; shown on a demo property only,
+              never fabricated for a real hotel (no fabricated KPIs) */}
+          {showFinancials && (
           <section className="stx-kpis">
             {kpis.map((k, i) => {
               const mdef = METRIC_DEFS.find(m => m.key === k.key)!;
@@ -852,8 +868,8 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* month to date — hidden until there's real data (no fabricated totals) */}
-          {analyticsReady && mtd && (
+          {/* month to date — synthetic totals; demo property only (no fabricated totals) */}
+          {showFinancials && mtd && (
             <section className="stx-mtd" style={{ borderTop: `1px solid ${C.line}`, paddingTop: 22 }}>
               <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: C.ink2, width: 200, flexShrink: 0, textTransform: 'capitalize' }}>
                 {ES ? `${monthFull}, hasta hoy` : `${monthFull}, month to date`}
