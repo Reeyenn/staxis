@@ -377,7 +377,8 @@ export function InventoryShell() {
         >
           <HStat eyebrow={tx.stockHealth} big={stockHealth == null ? '—' : `${stockHealth}%`} dot="good" />
           <HStat eyebrow={tx.orderNow} big={String(statusCounts.critical)} dot="critical" />
-          <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />
+          {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
+          {canViewFinancials && <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />}
           <div style={{ paddingTop: 2 }}>
             <Caps size={9}>{todayLabel(L)}</Caps>
             <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim, marginTop: 2 }}>

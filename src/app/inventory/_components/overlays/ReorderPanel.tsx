@@ -263,7 +263,7 @@ export function ReorderPanel({
       open={open}
       onClose={onClose}
       eyebrow={`${TT.reorder} · ${recs.length} ${recs.length === 1 ? TT.item : TT.items}`}
-      italic={fmtMoney(cartTotal)}
+      italic={canViewFinancials ? fmtMoney(cartTotal) : ''}
       suffix={`${cartItems.length} ${TT.inCart} · ${distinctVendors} ${distinctVendors === 1 ? TT.vendor : TT.vendors}`}
       accent={statusColor.critical}
       width={1080}
@@ -403,6 +403,7 @@ export function ReorderPanel({
                     key={rec.itemId}
                     daysLeftSuffix={TT.daysLeftSuffix}
                     leadLabel={TT.lead}
+                    showCost={canViewFinancials}
                     rec={rec}
                     line={state[rec.itemId] || { checked: false, qty: rec.suggestQty }}
                     onToggle={() =>
@@ -573,6 +574,7 @@ function BudgetMeter({
 function ReorderRow({
   daysLeftSuffix,
   leadLabel,
+  showCost,
   rec,
   line,
   onToggle,
@@ -580,6 +582,9 @@ function ReorderRow({
 }: {
   daysLeftSuffix: string;
   leadLabel: string;
+  /** Show the per-line dollar cost. False for non-financial roles — they still
+   *  see the item, quantity, urgency and days-left, just not the money. */
+  showCost: boolean;
   rec: ReorderRec & { display: DisplayItem };
   line: LineState;
   onToggle: () => void;
@@ -750,6 +755,8 @@ function ReorderRow({
           {rec.reason}
         </span>
       </div>
+      {/* Per-line cost ($) — money-capability only. The grid cell stays so the
+          row layout is unchanged; only the dollar amount is withheld. */}
       <span
         style={{
           fontFamily: fonts.serif,
@@ -761,7 +768,7 @@ function ReorderRow({
           textAlign: 'right',
         }}
       >
-        {fmtMoney(lineTotal)}
+        {showCost ? fmtMoney(lineTotal) : ''}
       </span>
     </div>
   );
