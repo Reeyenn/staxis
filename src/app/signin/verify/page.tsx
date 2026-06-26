@@ -70,34 +70,41 @@ function VerifyInner() {
       return;
     }
 
-    if (trust) {
-      try {
-        await fetch('/api/auth/trust-device', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${data.session.access_token}` },
-          credentials: 'include',
-        });
-      } catch (err) {
-        // Non-fatal — we still log the user in, they'll just get prompted
-        // again on their next sign-in from this device.
-        console.warn('trust-device call failed', err);
-      }
+    // ALWAYS secure the session, regardless of the "Trust this device" box.
+    // The checkbox only controls the DURABLE remember-this-device cookie
+    // (passed as `remember`); the per-session verification (the
+    // mfa_verified_sessions row that mints the `mfa_verified` JWT claim) is
+    // written either way. Without it the user is "signed in" but every page
+    // is blank — no claim → RLS denies all reads, and /api/* routes 401.
+    // Audit 2026-06-26 P1 (the unchecked-box → empty-app trap). This mirrors
+    // the onboarding OTP path, which always trusts the device.
+    try {
+      const res = await fetch('/api/auth/trust-device', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          Authorization: `Bearer ${data.session.access_token}`,
+        },
+        credentials: 'include',
+        body: JSON.stringify({ remember: trust }),
+      });
+      if (!res.ok) throw new Error(`trust-device responded ${res.status}`);
 
-      // Phase 2B (audit 2026-05-22): force a token refresh so the new
-      // JWT carries the `mfa_verified=true` claim minted by the auth hook
-      // (it reads the freshly-written mfa_verified_sessions row). Without
-      // this, the user's first batch of PostgREST/Realtime calls after
-      // sign-in would be rejected by RLS until the natural ~1h refresh
-      // — empty dashboard / no live updates until then.
-      //
-      // Non-fatal: if the refresh fails, the natural refresh will pick
-      // it up eventually. Subsequent fetch retries will succeed at that
-      // point.
-      try {
-        await supabase.auth.refreshSession();
-      } catch (err) {
-        console.warn('refreshSession after trust-device failed', err);
-      }
+      // Force a token refresh so the new JWT carries `mfa_verified=true` (the
+      // auth hook reads the freshly-written mfa_verified_sessions row). Without
+      // this the first batch of PostgREST/Realtime reads after sign-in is
+      // rejected by RLS until the natural ~1h refresh — empty dashboard.
+      const { error: refreshErr } = await supabase.auth.refreshSession();
+      if (refreshErr) throw refreshErr;
+    } catch (err) {
+      // Fix: do NOT navigate into a half-secured (blank) app. The OTP code
+      // is already consumed, so the clean recovery is a fresh sign-in.
+      setSubmitting(false);
+      setError(lang === 'es'
+        ? 'No pudimos terminar de proteger tu sesión. Inicia sesión de nuevo.'
+        : "Couldn't finish securing your session — please sign in again.");
+      console.warn('verify: securing session failed', err);
+      return;
     }
 
     router.replace(redirectTarget);

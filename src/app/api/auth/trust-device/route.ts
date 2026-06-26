@@ -85,6 +85,22 @@ export async function POST(req: NextRequest) {
     return err('Unauthorized', { requestId, status: 401, code: ApiErrorCode.Unauthorized });
   }
 
+  // `remember` gates ONLY the durable "remember this device" artifacts (the
+  // trusted_devices row + the long-lived staxis_device cookie). It defaults to
+  // TRUE so existing callers that send no body keep today's behavior (the
+  // onboarding OTP step posts with no body; an empty/absent body makes
+  // req.json() throw → caught → remember=true). When the /signin/verify user
+  // UNCHECKS "Trust this device", the page posts { remember: false }: we still
+  // mint the per-session verification (mfa_verified_sessions row) below so the
+  // app actually loads, but we skip the durable cookie. Audit 2026-06-26 P1.
+  let remember = true;
+  try {
+    const body = (await req.json()) as { remember?: unknown } | null;
+    if (body && typeof body.remember === 'boolean') remember = body.remember;
+  } catch {
+    // No body / invalid JSON → keep the default (remember = true).
+  }
+
   // Session-age guard. Audit Flow 1 #5: the /signin/verify postSignup=1
   // path auto-trusts the device without showing the "Trust this device"
   // checkbox. That's correct UX (user just proved email ownership), but
@@ -159,121 +175,163 @@ export async function POST(req: NextRequest) {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  const newToken = generateDeviceToken();
-  const tokenHash = hashDeviceToken(newToken);
-  const expiresAt = new Date(Date.now() + TRUST_DURATION_DB_MS).toISOString();
+  // ua/ip are diagnostic fields on the mfa_verified_sessions row too, so we
+  // compute them regardless of `remember`. The durable trusted_devices token
+  // is only minted when the user opted to remember this device.
   const ua = req.headers.get('user-agent') ?? null;
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
     ?? req.headers.get('x-real-ip')
     ?? null;
 
-  // Dedup-by-fingerprint within the last 7 days. The original code only
-  // INSERTed, so every "Trust this device" tap accumulated a new row
-  // (cleared cookies, incognito, browser reset, OS reinstall — all the
-  // common reasons a user re-trusts the "same" device). Audit Flow 1 #1
-  // flagged the unbounded growth: a single account using 3-4 browsers
-  // over a year could rack up 50+ rows. The check-trust path scans them
-  // all on every sign-in, so the lookup degrades silently as rows
-  // accumulate. Deleting matching-fingerprint rows from the last week
-  // before insert keeps the table small without losing legitimate
-  // multi-device entries (a phone vs laptop have different UA + IP).
-  if (ua || ip) {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const dedup = supabaseAdmin
-      .from('trusted_devices')
-      .delete()
-      .eq('account_id', account.id)
-      .gte('created_at', sevenDaysAgo);
-    if (ua) dedup.eq('user_agent', ua);
-    if (ip) dedup.eq('ip', ip);
-    const { error: dedupErr } = await dedup;
-    if (dedupErr) {
-      // Non-fatal — the insert below will still succeed; we just accept
-      // the row growth for this account. Surface to Sentry via log.warn.
-      log.warn('[trust-device] dedup delete failed (non-fatal)', {
-        requestId, accountId: account.id, err: dedupErr.message,
+  let newToken: string | null = null;
+
+  if (remember) {
+    newToken = generateDeviceToken();
+    const tokenHash = hashDeviceToken(newToken);
+    const expiresAt = new Date(Date.now() + TRUST_DURATION_DB_MS).toISOString();
+
+    // Dedup-by-fingerprint within the last 7 days. The original code only
+    // INSERTed, so every "Trust this device" tap accumulated a new row
+    // (cleared cookies, incognito, browser reset, OS reinstall — all the
+    // common reasons a user re-trusts the "same" device). Audit Flow 1 #1
+    // flagged the unbounded growth: a single account using 3-4 browsers
+    // over a year could rack up 50+ rows. The check-trust path scans them
+    // all on every sign-in, so the lookup degrades silently as rows
+    // accumulate. Deleting matching-fingerprint rows from the last week
+    // before insert keeps the table small without losing legitimate
+    // multi-device entries (a phone vs laptop have different UA + IP).
+    if (ua || ip) {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const dedup = supabaseAdmin
+        .from('trusted_devices')
+        .delete()
+        .eq('account_id', account.id)
+        .gte('created_at', sevenDaysAgo);
+      if (ua) dedup.eq('user_agent', ua);
+      if (ip) dedup.eq('ip', ip);
+      const { error: dedupErr } = await dedup;
+      if (dedupErr) {
+        // Non-fatal — the insert below will still succeed; we just accept
+        // the row growth for this account. Surface to Sentry via log.warn.
+        log.warn('[trust-device] dedup delete failed (non-fatal)', {
+          requestId, accountId: account.id, err: dedupErr.message,
+        });
+      }
+    }
+
+    const { error: insErr } = await supabaseAdmin.from('trusted_devices').insert({
+      account_id: account.id,
+      token_hash: tokenHash,
+      user_agent: ua,
+      ip,
+      expires_at: expiresAt,
+    });
+    if (insErr) {
+      log.error('[trust-device] insert failed', { requestId, accountId: account.id, err: insErr.message });
+      // Release the claimed proof so the user can retry without re-doing
+      // their password sign-in. Otherwise a transient DB error burns the
+      // proof and forces them all the way back to /signin.
+      try {
+        await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
+      } catch {
+        // Best-effort.
+      }
+      return err('Failed to register trusted device', {
+        requestId, status: 500, code: ApiErrorCode.InternalError,
       });
     }
   }
 
-  const { error: insErr } = await supabaseAdmin.from('trusted_devices').insert({
-    account_id: account.id,
-    token_hash: tokenHash,
-    user_agent: ua,
-    ip,
-    expires_at: expiresAt,
-  });
-  if (insErr) {
-    log.error('[trust-device] insert failed', { requestId, accountId: account.id, err: insErr.message });
-    // Release the claimed proof so the user can retry without re-doing
-    // their password sign-in. Otherwise a transient DB error burns the
-    // proof and forces them all the way back to /signin.
-    try {
-      await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
-    } catch {
-      // Best-effort.
-    }
-    return err('Failed to register trusted device', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-
-  // Phase 2B (audit 2026-05-22): bind THIS session to the trust we just
-  // established. The custom_access_token_hook reads session_id from the
-  // JWT event payload and checks mfa_verified_sessions to compute
-  // mfa_verified=true. An attacker calling supabase.auth.signInWithPassword
-  // directly with a stolen password would get a NEW session_id with no
-  // matching row → hook computes mfa_verified=false → RLS denies via
-  // public.mfa_verified_or_grace(). Closes Door B (PostgREST/Realtime
-  // bypass) for users with existing trust — the original user-bound design
-  // was theater because a user with any trusted device anywhere had every
-  // JWT flagged.
+  // Phase 2B (audit 2026-05-22): bind THIS session to the verification we just
+  // performed. The custom_access_token_hook reads session_id from the JWT event
+  // payload and checks mfa_verified_sessions to compute mfa_verified=true. An
+  // attacker calling supabase.auth.signInWithPassword directly with a stolen
+  // password would get a NEW session_id with no matching row → hook computes
+  // mfa_verified=false → RLS denies via public.mfa_verified_or_grace().
   //
-  // Idempotent on conflict (a repeat trust-device call for the same session
-  // should not 500). Non-fatal on other errors — the trusted_devices row
-  // is in place; worst case the user hits RLS denials and re-runs OTP.
+  // This ALWAYS runs now (both remember values) — it's the per-session
+  // verification that makes the app actually load after OTP (it mints the
+  // mfa_verified claim Door A / RLS and Door B / validateDeviceTrust both
+  // gate on). When the user UNCHECKED "Trust this device" there is NO durable
+  // cookie, so this row is the ONLY thing opening both doors: we retry once on
+  // a transient blip and treat a persistent failure as fatal rather than
+  // dropping the user into a blank app (audit 2026-06-26 empty-app P1).
   //
   // Note: the password proof was already marked consumed inside the
   // staxis_claim_password_signin_proof RPC at the top of this handler
   // (atomic UPDATE returning the claimed id), so no separate mark-used
   // step is needed here.
+  let mfaVerified = false;
   const sessionId = decodeJwtSessionId(token);
   if (sessionId) {
-    const { error: mfaErr } = await supabaseAdmin
-      .from('mfa_verified_sessions')
-      .insert({
-        session_id: sessionId,
-        user_id: userData.user.id,
-        verified_from_ip: ip,
-        verified_from_ua: ua,
+    const insertMfaSession = async (): Promise<boolean> => {
+      const { error: mfaErr } = await supabaseAdmin
+        .from('mfa_verified_sessions')
+        .insert({
+          session_id: sessionId,
+          user_id: userData.user.id,
+          verified_from_ip: ip,
+          verified_from_ua: ua,
+        });
+      // 23505 = duplicate session_id → a repeat call for the same session;
+      // idempotent success, not a failure.
+      if (!mfaErr || mfaErr.code === '23505') return true;
+      log.warn('[trust-device] mfa_verified_sessions insert failed', {
+        requestId, sessionId, userId: userData.user.id, remember,
+        err: mfaErr.message, code: mfaErr.code ?? null,
       });
-    if (mfaErr && mfaErr.code !== '23505') {
-      log.warn('[trust-device] mfa_verified_sessions insert failed (non-fatal)', {
-        requestId, sessionId, userId: userData.user.id, err: mfaErr.message,
-      });
+      return false;
+    };
+    mfaVerified = await insertMfaSession();
+    // remember=false has no trusted_devices cookie covering Door B, so the
+    // row is load-bearing — retry once to ride out a transient blip.
+    if (!mfaVerified && !remember) {
+      mfaVerified = await insertMfaSession();
     }
   } else {
     // JWT has no session_id claim — shouldn't happen with current Supabase
     // versions (added 2024-ish). Log so we notice if Supabase ever changes
     // the claim shape and the hook stops binding correctly.
     log.warn('[trust-device] JWT missing session_id claim — mfa_verified_sessions skipped', {
-      requestId, userId: userData.user.id,
+      requestId, userId: userData.user.id, remember,
+    });
+  }
+
+  // remember=false depends entirely on the per-session verification row. If we
+  // couldn't write it, fail loudly (release the proof so a fresh sign-in isn't
+  // blocked) instead of returning 200 into an empty app. remember=true still
+  // has the trusted_devices cookie covering Door B, so a missing row there is
+  // non-fatal — the user re-OTPs naturally on the next RLS denial.
+  if (!remember && !mfaVerified) {
+    try {
+      await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
+    } catch {
+      // Best-effort.
+    }
+    return err('Could not finish securing your session. Please sign in again.', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
 
   const response = NextResponse.json(
-    { ok: true, requestId, data: { success: true } },
+    { ok: true, requestId, data: { success: true, remembered: remember } },
     { status: 200 },
   );
-  const opts = trustCookieOptions();
-  response.cookies.set({
-    name: opts.name,
-    value: newToken,
-    httpOnly: opts.httpOnly,
-    secure: opts.secure,
-    sameSite: opts.sameSite,
-    path: opts.path,
-    maxAge: opts.maxAge,
-  });
+  // Durable "remember this device" cookie — set ONLY when the user opted in.
+  // remember=false relies purely on the per-session mfa_verified_sessions row
+  // above (cleared on sign-out / session end), so the next sign-in correctly
+  // re-prompts for OTP.
+  if (remember && newToken) {
+    const opts = trustCookieOptions();
+    response.cookies.set({
+      name: opts.name,
+      value: newToken,
+      httpOnly: opts.httpOnly,
+      secure: opts.secure,
+      sameSite: opts.sameSite,
+      path: opts.path,
+      maxAge: opts.maxAge,
+    });
+  }
   return response;
 }

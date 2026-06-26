@@ -79,6 +79,17 @@ const state: MockState = {
   insertedEvents: [],
 };
 
+// tsx --test runs every file in ONE process, so any process.env mutation here
+// can leak into sibling files (and back). Save/restore the env we touch — and
+// pin a clean, non-prod baseline each test so the break-glass honoring (which
+// is now env-gated) is deterministic regardless of a leaked VERCEL_ENV or a
+// CI that exports NODE_ENV=production. Mirrors api-auth-heartbeat-secret.test.
+const ENV_KEYS = [
+  'DISABLE_SERVER_2FA_ENFORCEMENT', 'SKIP_2FA_ENABLED', 'SKIP_2FA_USER_IDS',
+  'VERCEL_ENV', 'NODE_ENV',
+] as const;
+const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
 beforeEach(() => {
   state.user = null;
   state.userError = null;
@@ -89,8 +100,13 @@ beforeEach(() => {
   state.throwOnAccountsQuery = false;
   state.throwOnDevicesQuery = false;
   state.insertedEvents = [];
-  // Preserve env state but ensure break-glass is OFF by default.
+  // Snapshot, then pin a clean non-prod baseline: break-glass OFF, no Vercel
+  // env, NODE_ENV=test (so the dev/test break-glass branch is honored unless a
+  // test explicitly opts into a protected env).
+  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   delete process.env.DISABLE_SERVER_2FA_ENFORCEMENT;
+  delete process.env.VERCEL_ENV;
+  process.env.NODE_ENV = 'test';
 
   supabaseAdmin.auth.getUser = (async () => ({
     data: { user: state.user as { id: string; email?: string | null } | null },
@@ -142,9 +158,10 @@ beforeEach(() => {
 afterEach(() => {
   supabaseAdmin.auth.getUser = originalGetUser;
   supabaseAdmin.from = originalFrom;
-  delete process.env.DISABLE_SERVER_2FA_ENFORCEMENT;
-  delete process.env.SKIP_2FA_ENABLED;
-  delete process.env.SKIP_2FA_USER_IDS;
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else (process.env as Record<string, string>)[k] = savedEnv[k]!;
+  }
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -179,6 +196,15 @@ const validJwt = () => mintJwt({
   sub: USER_ID,
   exp: Math.floor(Date.now() / 1000) + 3600,
   iss: process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co',
+});
+// A JWT that carries the hook-minted `mfa_verified=true` claim — i.e. a session
+// that completed OTP (a mfa_verified_sessions row exists). The Door-B
+// per-session fallback accepts this for NON-skip_2fa accounts.
+const verifiedJwt = (claim: unknown = true) => mintJwt({
+  sub: USER_ID,
+  exp: Math.floor(Date.now() / 1000) + 3600,
+  iss: process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co',
+  mfa_verified: claim,
 });
 
 function ok(user = { id: USER_ID, email: 'staff@example.com' }): void {
@@ -254,6 +280,81 @@ describe('requireSession — device-trust enforcement', () => {
     state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
     state.device = { id: 'dev-1', expires_at: FUTURE(), absolute_expires_at: null };
     const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}`, deviceCookie: 'x'.repeat(64) }));
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.reason, 'absolute_cap_reached');
+    }
+  });
+});
+
+// ─── Tests: per-session verification (mfa_session) Door-B fallback ───────
+
+describe('requireSession — per-session mfa_verified fallback (unchecked "Trust this device")', () => {
+  test('valid JWT WITH mfa_verified=true + NO cookie + non-skip_2fa → 200 via mfa_session', async () => {
+    // The remember=false flow: the user completed OTP (so the JWT carries the
+    // claim) but has no durable trusted_devices cookie. The app must still work.
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${verifiedJwt()}` }));
+    assert.equal(result.ok, true, 'a verified session must pass Door B without a cookie');
+    if (result.ok) assert.equal(result.userId, USER_ID);
+  });
+
+  test('valid JWT WITH mfa_verified=true + cookie present but NO matching row → 200 (fall-through then fallback)', async () => {
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    state.device = null;
+    const result = await requireSession(mockReq({ auth: `Bearer ${verifiedJwt()}`, deviceCookie: 'no-such-row' }));
+    assert.equal(result.ok, true);
+  });
+
+  test('valid JWT WITHOUT the claim + no cookie → 401 no_cookie (fallback is claim-gated, not open)', async () => {
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}` }));
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.reason, 'no_cookie');
+    }
+  });
+
+  test('mfa_verified claim as STRING "true" + no cookie → 401 (strict boolean; string is not accepted)', async () => {
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${verifiedJwt('true')}` }));
+    assert.equal(result.ok, false, 'a string "true" claim must NOT satisfy the strict boolean check');
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.reason, 'no_cookie');
+    }
+  });
+
+  test('skip_2fa account NOT allowlisted + JWT WITH mfa_verified=true + no cookie → 401 (guard: fallback must NOT fire for skip_2fa)', async () => {
+    // BLOCKER guard: the hook mints mfa_verified=true for any non-admin
+    // skip_2fa account from the DB column alone (no env-gate). If the fallback
+    // fired here it would bypass the env-allowlist kill-switch. It must instead
+    // fall through to the skip_2fa block and be blocked when not allowlisted.
+    process.env.SKIP_2FA_ENABLED = 'true';
+    process.env.SKIP_2FA_USER_IDS = '99999999-9999-9999-9999-999999999999';  // different uuid
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: true, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${verifiedJwt()}` }));
+    assert.equal(result.ok, false, 'skip_2fa account must not slip through Door B via the claim');
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.reason, 'skip_2fa_not_allowlisted');
+    }
+  });
+
+  test('absolute_cap_reached row + matching cookie + JWT WITH mfa_verified=true → still 401 (fallback does not override the cap)', async () => {
+    // The cap early-returns BEFORE the fallback, so a capped device is still
+    // forced to re-OTP even though the live JWT carries the claim.
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    state.device = { id: 'dev-1', expires_at: FUTURE(), absolute_expires_at: PAST() };
+    const result = await requireSession(mockReq({ auth: `Bearer ${verifiedJwt()}`, deviceCookie: 'x'.repeat(64) }));
     assert.equal(result.ok, false);
     if (!result.ok) {
       const body = await result.response.json();
@@ -382,12 +483,55 @@ describe('requireSession — opt-out + break-glass', () => {
     assert.equal(result.ok, true);
   });
 
-  test('DISABLE_SERVER_2FA_ENFORCEMENT="true" + no device cookie → 200 (break-glass)', async () => {
+  test('DISABLE_SERVER_2FA_ENFORCEMENT="true" in local dev/test + no device cookie → 200 (break-glass honored off-prod)', async () => {
+    // beforeEach pins NODE_ENV='test' + no VERCEL_ENV, so this is the dev/test
+    // branch — the only place the break-glass is still honored.
     process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
     ok();
     state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
     const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}` }));
-    assert.equal(result.ok, true, 'break-glass var should disable enforcement entirely');
+    assert.equal(result.ok, true, 'break-glass should bypass enforcement on a dev/test host');
+  });
+
+  test('FAIL-SAFE: DISABLE="true" + VERCEL_ENV=production + no cookie → 401 (flag IGNORED in prod)', async () => {
+    process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
+    process.env.VERCEL_ENV = 'production';
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}` }));
+    assert.equal(result.ok, false, 'production must NEVER silently disable 2FA via this flag');
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.code, 'requires_2fa');
+      assert.equal(body.reason, 'no_cookie');
+    }
+  });
+
+  test('FAIL-SAFE: DISABLE="true" + VERCEL_ENV=preview + no cookie → 401 (flag IGNORED in preview)', async () => {
+    process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
+    process.env.VERCEL_ENV = 'preview';
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}` }));
+    assert.equal(result.ok, false, 'preview deploys are publicly reachable — flag must be ignored');
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.reason, 'no_cookie');
+    }
+  });
+
+  test('FAIL-SAFE: DISABLE="true" + NODE_ENV=production, no VERCEL_ENV (Fly/Railway prod) + no cookie → 401', async () => {
+    process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
+    delete process.env.VERCEL_ENV;
+    process.env.NODE_ENV = 'production';
+    ok();
+    state.account = { id: ACCOUNT_ID, skip_2fa: false, role: 'general_manager', property_access: ['hotel-1'] };
+    const result = await requireSession(mockReq({ auth: `Bearer ${validJwt()}` }));
+    assert.equal(result.ok, false, 'non-Vercel prod must also ignore the flag');
+    if (!result.ok) {
+      const body = await result.response.json();
+      assert.equal(body.reason, 'no_cookie');
+    }
   });
 });
 

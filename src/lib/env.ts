@@ -240,18 +240,18 @@ const ServerSchema = z.object({
   // in the DB. Set in Vercel; rotate when the demo account set changes.
   SKIP_2FA_USER_IDS: z.string().optional(),
 
-  // Break-glass kill switch for the Phase-1 server-side 2FA enforcement in
-  // requireSession() / requireSessionOrCron(). When set to literal 'true',
-  // those helpers skip the validateDeviceTrust check and accept any valid
-  // Supabase JWT (the pre-Phase-1 behavior). Default unset = enforced.
+  // Break-glass switch for the server-side 2FA enforcement in
+  // requireSession() / requireSessionOrCron(). Now FAILS SAFE: when set to
+  // literal 'true' it is HONORED only on local dev/test hosts; on Vercel
+  // production, Vercel preview, and any other NODE_ENV=production host it is
+  // IGNORED and enforcement stays fully on (the secure default wins). A single
+  // stray env var can no longer silently disable all server-side 2FA in prod.
+  // Default unset = enforced everywhere.
   //
-  // Existence rationale: if validateDeviceTrust ever misfires in prod
-  // (false-positive 401s locking users out), flip this in Vercel and the
-  // gate disables without a redeploy. Every request hit with the var on
-  // emits a CRITICAL log line + a doctor warning, so leaving it on past
-  // an incident triage window will surface in monitoring.
-  //
-  // Never set this in preview or production absent an active incident.
+  // Recovery note: because prod/preview no longer honor this flag, recovery
+  // from a validateDeviceTrust regression that 401s real users is a code
+  // revert + redeploy (~3 min on Vercel), NOT an env-flip. The doctor
+  // hard-flags the var (status:'fail') whenever it's set so it can't hide.
   DISABLE_SERVER_2FA_ENFORCEMENT: z.string().optional(),
 
   // Codex review #7 (audit 2026-05-22): the doctor's

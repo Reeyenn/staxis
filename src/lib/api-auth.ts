@@ -95,6 +95,33 @@ function decodeJwtClaimsUnverified(token: string): DecodedClaims | null {
 }
 
 /**
+ * Decode the `mfa_verified` claim from a Supabase JWT WITHOUT verifying the
+ * signature. Safe here because the caller has ALREADY validated the token via
+ * `supabaseAdmin.auth.getUser` before passing it in — we're only reading what
+ * the (now-trusted) JWT carries.
+ *
+ * The custom_access_token_hook (migration 0163) emits this claim ONLY when
+ * true, as a JSON boolean. We therefore require a strict boolean `=== true`:
+ * an absent claim, the string "true", or any other value all read as NOT
+ * verified. This is the same claim every RLS policy gates on
+ * (`mfa_verified_or_grace()`), so Door B agrees with Door A.
+ *
+ * Returns false on any parse failure. Never throws.
+ */
+function decodeJwtMfaVerified(token: string): boolean {
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const obj = JSON.parse(json) as Record<string, unknown>;
+    return obj.mfa_verified === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Classify a session-validation failure into one of the codes above so the
  * client can decide between refresh-and-retry vs. hard sign-out, and so
  * server logs/Sentry have an actionable tag.
@@ -203,20 +230,51 @@ async function validateDeviceTrust(
   userId: string,
   route: string,
   requestId: string | null,
+  // The already-validated bearer access token (when the caller authenticated
+  // via the Authorization header). Used to read the `mfa_verified` claim for
+  // the per-session-verification Door-B path below. Null on the cookie-session
+  // path (intentional — that path degrades to the cookie/skip_2fa checks; all
+  // 171 fetchWithAuth call sites send a bearer header, so the per-session
+  // path is always available to real app traffic).
+  accessToken: string | null = null,
 ): Promise<
-  | { ok: true; via: 'device' | 'skip_2fa' }
+  | { ok: true; via: 'device' | 'skip_2fa' | 'mfa_session' }
   | { ok: false; reason: DeviceTrustReason }
 > {
-  // Break-glass kill switch. When set, the entire enforcement is bypassed
-  // (the pre-Phase-1 behavior). Logs CRITICAL on every request so leaving
-  // it on past an incident-triage window surfaces in monitoring.
+  // Break-glass kill switch — now FAILS SAFE. Setting this env var on any
+  // publicly-reachable deploy (Vercel production, Vercel preview, or any other
+  // NODE_ENV=production host) must NEVER silently disable the whole 2FA gate:
+  // we IGNORE it there and keep enforcing (the secure default wins). It is
+  // honored ONLY in local dev/test, where it's a convenience, not a security
+  // boundary. The doctor hard-flags it (status:'fail') whenever set so its
+  // presence can't hide. Mirrors requireHeartbeatSecret's prod+preview posture.
+  //
+  // Recovery note: because prod no longer honors this flag, recovery from a
+  // validateDeviceTrust regression that 401s real users is now revert+redeploy
+  // (~3 min on Vercel), NOT an env-flip. Accepted tradeoff for not leaving a
+  // single env var able to turn off all server-side 2FA in production.
   if (env.DISABLE_SERVER_2FA_ENFORCEMENT === 'true') {
-    log.error('[validateDeviceTrust] enforcement bypassed via DISABLE_SERVER_2FA_ENFORCEMENT — break-glass active', {
-      route,
-      userId,
-      requestId: requestId ?? undefined,
-    });
-    return { ok: true, via: 'device' };
+    const isVercelProd = env.VERCEL_ENV === 'production';
+    const isVercelPreview = env.VERCEL_ENV === 'preview';
+    const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
+    if (isVercelProd || isVercelPreview || isOtherProd) {
+      log.error('[validateDeviceTrust] DISABLE_SERVER_2FA_ENFORCEMENT set on a protected (prod/preview) deploy — IGNORING and enforcing 2FA (fail-safe). Unset this env var.', {
+        route,
+        userId,
+        requestId: requestId ?? undefined,
+        vercelEnv: env.VERCEL_ENV ?? null,
+      });
+      // Fall through to normal enforcement — do NOT bypass.
+    } else {
+      // Local dev / test only: honor the bypass for engineers iterating
+      // without a trusted-device cookie.
+      log.warn('[validateDeviceTrust] 2FA enforcement bypassed (local dev/test break-glass)', {
+        route,
+        userId,
+        requestId: requestId ?? undefined,
+      });
+      return { ok: true, via: 'device' };
+    }
   }
 
   try {
@@ -282,7 +340,28 @@ async function validateDeviceTrust(
       }
       // Cookie present but no matching row — treat as cookie_invalid
       // (likely revoked, expired-and-deleted, or forged). Fall through
-      // to skip_2fa check.
+      // to the per-session-verification / skip_2fa checks.
+    }
+
+    // Per-session-verification (Door B) fallback. This is what lets a user who
+    // completed OTP but UNCHECKED "Trust this device" use /api/* this session
+    // without a durable trusted_devices cookie (audit 2026-06-26 empty-app P1).
+    //
+    // The `mfa_verified=true` claim is minted by the auth hook ONLY when a
+    // mfa_verified_sessions row exists for this session (or for the skip_2fa
+    // demo branch). For a NON-skip_2fa account the row is the only source, and
+    // that row is written only by the password-proof-gated trust-device path —
+    // so accepting the claim here is exactly as strong as the trusted_devices
+    // cookie, and it makes Door B agree with Door A (RLS gates on the same
+    // claim). A stolen-password signInWithPassword session has a fresh
+    // session_id with no row → no claim → this is inert → still blocked.
+    //
+    // GATED on !account.skip_2fa on purpose: for skip_2fa accounts the hook
+    // sets the claim from the DB flag WITHOUT checking the env allowlist, so
+    // accepting the claim here would bypass the allowlist/privileged-refusal
+    // defense-in-depth below. skip_2fa accounts must go through that block.
+    if (accessToken && !account.skip_2fa && decodeJwtMfaVerified(accessToken)) {
+      return { ok: true, via: 'mfa_session' };
     }
 
     // Skip-2FA fallback. Mirrors check-trust's gate (env var + allowlist)
@@ -615,7 +694,7 @@ export async function requireSession(
     // JWT is valid. Run server-side 2FA enforcement unless explicitly
     // opted out (e.g. auth-flow routes that must work before OTP).
     if (enforce2FA) {
-      const trust = await validateDeviceTrust(req, data.user.id, route, requestId);
+      const trust = await validateDeviceTrust(req, data.user.id, route, requestId, token);
       if (!trust.ok) {
         log.warn('requireSession: 2FA enforcement rejected bearer session', {
           route, userId: data.user.id, reason: trust.reason,
@@ -763,7 +842,7 @@ export async function requireSessionOrCron(
     // JWT is valid. Apply server-side 2FA enforcement on the session path
     // (cron path returned earlier — secret-bearer callers are trusted).
     if (enforce2FA) {
-      const trust = await validateDeviceTrust(req, data.user.id, route, requestId);
+      const trust = await validateDeviceTrust(req, data.user.id, route, requestId, token);
       if (!trust.ok) {
         log.warn('requireSessionOrCron: 2FA enforcement rejected bearer session', {
           route, userId: data.user.id, reason: trust.reason,

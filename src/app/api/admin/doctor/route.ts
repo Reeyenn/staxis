@@ -545,12 +545,15 @@ async function checkServer2faEnforcementActive(): Promise<Omit<Check, 'name' | '
     return {
       status: 'fail',
       detail:
-        'DISABLE_SERVER_2FA_ENFORCEMENT=true is active — server-side 2FA enforcement in '
-        + 'requireSession() is BYPASSED. The OTP gate is currently security theater. This '
-        + 'switch is for emergency triage only.',
+        'DISABLE_SERVER_2FA_ENFORCEMENT=true is set. This break-glass flag now FAILS SAFE: on '
+        + 'production/preview deploys it is IGNORED and server-side 2FA stays fully enforced (the '
+        + 'gate is NOT disabled here). But its presence is still a misconfiguration — it has no '
+        + 'legitimate reason to be set in prod/preview, and it WOULD disable enforcement on a local '
+        + 'dev/test host. Hard-flagged so it can never hide.',
       fix: 'Vercel → Project Settings → Environment Variables → unset DISABLE_SERVER_2FA_ENFORCEMENT '
-        + '(or set to anything other than the literal string "true") and redeploy. After unsetting, '
-        + 'confirm a normal user can still sign in from a new browser without errors.',
+        + '(or set to anything other than the literal string "true") and redeploy. Note: prod/preview '
+        + 'no longer honor this flag, so recovery from a real 2FA lockout is a code revert + redeploy, '
+        + 'not an env-flip.',
     };
   }
   return { status: 'ok', detail: 'server-side 2FA enforcement active (DISABLE_SERVER_2FA_ENFORCEMENT unset)' };

@@ -18,6 +18,7 @@ import type { NextRequest } from 'next/server';
 
 import { POST } from '@/app/api/auth/trust-device/route';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { TRUST_COOKIE_NAME } from '@/lib/trusted-device';
 
 // ─── Mock infrastructure ─────────────────────────────────────────────────
 
@@ -37,6 +38,8 @@ interface MockState {
     session_id: string;
     user_id: string;
   }>;
+  /** How many times trusted_devices.insert was called (0 when remember=false). */
+  trustedDevicesInserts: number;
   /**
    * Phase A + atomic-claim RPC (Codex finding #3, migration 0164). The
    * RPC returns a proof id when one was atomically claimed, null when
@@ -54,6 +57,7 @@ const state: MockState = {
   trustedDevicesInsertError: null,
   mfaSessionsInsertError: null,
   mfaSessionsInserts: [],
+  trustedDevicesInserts: 0,
   claimedProofId: 'proof-id-from-rpc',
   claimRpcError: null,
   claimRpcCalls: 0,
@@ -66,6 +70,7 @@ beforeEach(() => {
   state.trustedDevicesInsertError = null;
   state.mfaSessionsInsertError = null;
   state.mfaSessionsInserts = [];
+  state.trustedDevicesInserts = 0;
   state.claimedProofId = 'proof-id-from-rpc';
   state.claimRpcError = null;
   state.claimRpcCalls = 0;
@@ -113,7 +118,10 @@ beforeEach(() => {
           return chain;
         },
         // The insert
-        insert: async () => ({ error: state.trustedDevicesInsertError }),
+        insert: async () => {
+          state.trustedDevicesInserts += 1;
+          return { error: state.trustedDevicesInsertError };
+        },
       };
     }
     if (table === 'mfa_verified_sessions') {
@@ -157,9 +165,9 @@ function freshJwt(extraClaims: Record<string, unknown> = {}): string {
   });
 }
 
-function mockReq(opts: { jwt?: string } = {}): NextRequest {
+function mockReq(opts: { jwt?: string; body?: unknown } = {}): NextRequest {
   const jwt = opts.jwt ?? freshJwt({ session_id: SESSION_ID });
-  return {
+  const base: Record<string, unknown> = {
     url: 'https://staxis.test/api/auth/trust-device',
     method: 'POST',
     headers: new Headers({
@@ -169,7 +177,14 @@ function mockReq(opts: { jwt?: string } = {}): NextRequest {
       'x-forwarded-for': '203.0.113.7',
     }),
     cookies: { get: () => undefined },
-  } as unknown as NextRequest;
+  };
+  // Only attach a json() method when a body is supplied. With no body, calling
+  // req.json() throws (no such method) → the route falls back to remember=true,
+  // matching the real onboarding caller that posts with no body.
+  if (opts.body !== undefined) {
+    base.json = async () => opts.body;
+  }
+  return base as unknown as NextRequest;
 }
 
 function ok(): void {
@@ -230,6 +245,74 @@ describe('trust-device — mfa_verified_sessions write (Phase 2B / Door B)', () 
     state.mfaSessionsInsertError = { message: 'unexpected db error', code: '42P01' };
     const res = await POST(mockReq());
     assert.equal(res.status, 200);
+  });
+});
+
+describe('trust-device — remember flag (unchecked "Trust this device")', () => {
+  test('remember:false → mfa_verified_sessions row written, NO trusted_devices row, NO durable cookie, 200', async () => {
+    ok();
+    const res = await POST(mockReq({ body: { remember: false } }));
+    assert.equal(res.status, 200);
+    assert.equal(state.mfaSessionsInserts.length, 1, 'per-session verification must still be written');
+    assert.equal(state.mfaSessionsInserts[0].session_id, SESSION_ID);
+    assert.equal(state.trustedDevicesInserts, 0, 'no durable trusted_devices row when remember=false');
+    assert.equal(res.cookies.get(TRUST_COOKIE_NAME), undefined, 'no durable staxis_device cookie when remember=false');
+  });
+
+  test('remember:true (explicit) → trusted_devices row + durable cookie + mfa_verified_sessions row, 200', async () => {
+    ok();
+    const res = await POST(mockReq({ body: { remember: true } }));
+    assert.equal(res.status, 200);
+    assert.equal(state.trustedDevicesInserts, 1);
+    assert.equal(state.mfaSessionsInserts.length, 1);
+    const cookie = res.cookies.get(TRUST_COOKIE_NAME);
+    assert.ok(cookie && cookie.value, 'durable cookie must be set when remember=true');
+  });
+
+  test('no body (legacy/onboard caller) → defaults to remember=true (cookie + trusted_devices)', async () => {
+    ok();
+    const res = await POST(mockReq());  // no body → req.json() throws → remember=true
+    assert.equal(res.status, 200);
+    assert.equal(state.trustedDevicesInserts, 1);
+    assert.ok(res.cookies.get(TRUST_COOKIE_NAME), 'no-body callers keep today durable-trust behavior');
+  });
+
+  test('remember:false + persistent mfa_verified_sessions error → retried once then 500 + proof released', async () => {
+    // No cookie covers Door B, so a row we cannot write means the app would be
+    // blank → fail loudly (and un-burn the proof) instead.
+    ok();
+    state.mfaSessionsInsertError = { message: 'db down', code: '42P01' };
+    const res = await POST(mockReq({ body: { remember: false } }));
+    assert.equal(res.status, 500);
+    assert.equal(state.mfaSessionsInserts.length, 2, 'must retry the insert once before giving up');
+    assert.equal(state.releaseRpcCalls, 1, 'proof must be released so a fresh sign-in is not blocked');
+    assert.equal(state.trustedDevicesInserts, 0);
+  });
+
+  test('remember:false + transient mfa error that clears on retry → 200', async () => {
+    // First insert fails, second succeeds. We model this by failing once.
+    ok();
+    let calls = 0;
+    // @ts-expect-error monkey-patch within test
+    supabaseAdmin.from = ((table: string) => {
+      if (table === 'accounts') {
+        return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: state.account, error: null }) }) }) };
+      }
+      if (table === 'mfa_verified_sessions') {
+        return {
+          insert: async (row: { session_id: string; user_id: string }) => {
+            calls += 1;
+            state.mfaSessionsInserts.push({ session_id: row.session_id, user_id: row.user_id });
+            return { error: calls === 1 ? { message: 'transient', code: '40001' } : null };
+          },
+        };
+      }
+      throw new Error(`unexpected table: ${table}`);
+    });
+    const res = await POST(mockReq({ body: { remember: false } }));
+    assert.equal(res.status, 200);
+    assert.equal(calls, 2, 'second attempt should succeed');
+    assert.equal(state.releaseRpcCalls, 0, 'no proof release on eventual success');
   });
 });
 
