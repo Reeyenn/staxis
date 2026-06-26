@@ -1079,7 +1079,11 @@ export default function LiveMappingPage() {
                     {summary.stuck > 0 && <Pill tone="terracotta"><AlertTriangle size={11} /> {summary.stuck} needs your help</Pill>}
                     {searchingRow && <Pill tone="gold"><Loader2 size={11} style={{ animation: 'spin 1.5s linear infinite' }} /> searching: {searchingRow.label}</Pill>}
                     {summary.unavailable > 0 && <Pill tone="neutral">{summary.unavailable} not in this PMS</Pill>}
-                    {summary.failed > 0 && <Pill tone="terracotta">{summary.failed} not found</Pill>}
+                    {/* fix/cua-discovery-budget — split FAILED by cause: budget (raise
+                        the limit) vs findability (needs navigation help, not money). */}
+                    {summary.budgetFailed > 0 && <Pill tone="terracotta">{summary.budgetFailed} ran out of budget</Pill>}
+                    {summary.findabilityFailed > 0 && <Pill tone="terracotta">{summary.findabilityFailed} couldn’t be found</Pill>}
+                    {(summary.partialFailed + summary.otherFailed) > 0 && <Pill tone="terracotta">{summary.partialFailed + summary.otherFailed} not finished</Pill>}
                     {summary.waiting > 0 && !jobTerminal && <Pill tone="neutral">{summary.waiting} waiting</Pill>}
                   </div>
                 </div>

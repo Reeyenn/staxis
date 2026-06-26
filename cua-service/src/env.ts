@@ -25,13 +25,14 @@ const Schema = z.object({
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
-  // Budget for one FULL learning run (login + all 12 targets) when the
-  // trigger didn't set payload.cost_cap_micros. Sized 2026-06-09 for
-  // Opus 4.8 at ~2x the expected $20-40 spend of a clean full learn —
-  // the generic $5 CUA_JOB_COST_CAP_MICROS is per-phase/repair-scale
-  // and would kill a full learn half-way. Org-wide daily wall below
-  // (CUA_DAILY_MAPPING_SPEND_CAP_MICROS) still bounds the aggregate.
-  CUA_FULL_LEARN_COST_CAP_MICROS: z.coerce.number().int().positive().default(40_000_000),
+  // BASE budget (Sonnet 1.0) for one FULL learning run (login + all targets)
+  // when the trigger didn't set payload.cost_cap_micros. fix/cua-discovery-budget
+  // (2026-06-26): now the BASE — mapping-driver.ts scales it by the run model's
+  // cost factor (Opus 4.8 ×2 → $60, Fable ×3 → $90). Was a flat $40; lowered to
+  // $30 base so the ×2 lands at $60, not $80. The generic $5 CUA_JOB_COST_CAP_MICROS
+  // is per-phase/repair-scale and would kill a full learn half-way. Org-wide daily
+  // wall (CUA_DAILY_MAPPING_SPEND_CAP_MICROS, $100) still bounds the aggregate.
+  CUA_FULL_LEARN_COST_CAP_MICROS: z.coerce.number().int().positive().default(30_000_000),
 
   // How long a learning run waits at a 2FA screen for a one-time code
   // to show up in pms_auth_codes (emailed codes land in seconds; codes

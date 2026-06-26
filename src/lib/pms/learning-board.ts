@@ -45,6 +45,9 @@ export interface BoardTargetState {
   finishedAt?: string;
   carried?: boolean;
   reason?: string;
+  /** fix/cua-discovery-budget — coarse cause set by the worker
+   *  (budget|findability|unavailable|partial|other). Optional. */
+  failureClass?: string;
   preview?: BoardPreview;
   /** feature/cua-mapper-cost — per-feed Claude spend (micros). startCostMicros =
    *  total spend when the feed started (active-feed live cost = live total −
@@ -110,6 +113,8 @@ export interface FeedRow {
   sample?: Array<Record<string, string>>;
   sampleKind?: 'rows' | 'records';
   reason?: string;
+  /** fix/cua-discovery-budget — coarse failure cause (budget|findability|…). */
+  failureClass?: string;
   carried?: boolean;
   /** feature/cua-mapper-cost — per-feed Claude spend (micros). costMicros once
    *  finished; startCostMicros to compute the active feed's live running cost. */
@@ -139,6 +144,14 @@ export interface FeedSummary {
   unavailable: number;
   failed: number;
   waiting: number;
+  /** fix/cua-discovery-budget — breakdown of the FAILED feeds by cause, so the
+   *  operator summary reads "X ran out of budget · Y couldn't be found". These
+   *  sum to `failed` (every failed row gets a class; unclassified → otherFailed),
+   *  so the tally always reconciles. `unavailable` stays its own bucket. */
+  budgetFailed: number;
+  findabilityFailed: number;
+  partialFailed: number;
+  otherFailed: number;
 }
 
 const TERMINAL_JOB_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -249,6 +262,7 @@ export function deriveFeedRows(inputs: DeriveInputs): FeedRow[] {
         ? { sampleKind: preview.sampleKind }
         : {}),
       ...(typeof state.reason === 'string' && state.reason.length > 0 ? { reason: state.reason } : {}),
+      ...(typeof state.failureClass === 'string' ? { failureClass: state.failureClass } : {}),
       ...(state.carried === true ? { carried: true } : {}),
       ...(typeof state.costMicros === 'number' ? { costMicros: state.costMicros } : {}),
       ...(typeof state.startCostMicros === 'number' ? { startCostMicros: state.startCostMicros } : {}),
@@ -260,13 +274,22 @@ export function summarizeFeedRows(rows: FeedRow[]): FeedSummary {
   const summary: FeedSummary = {
     total: rows.length, found: 0, searching: 0, stuck: 0,
     unavailable: 0, failed: 0, waiting: 0,
+    budgetFailed: 0, findabilityFailed: 0, partialFailed: 0, otherFailed: 0,
   };
   for (const r of rows) {
     if (r.glyph === 'found') summary.found++;
     else if (r.glyph === 'searching') summary.searching++;
     else if (r.glyph === 'stuck') summary.stuck++;
     else if (r.glyph === 'unavailable') summary.unavailable++;
-    else if (r.glyph === 'failed' || r.glyph === 'didnt_finish') summary.failed++;
+    else if (r.glyph === 'failed' || r.glyph === 'didnt_finish') {
+      summary.failed++;
+      // Bucket by cause so the operator summary reconciles to `failed`. A
+      // didnt_finish row (terminal run, still searching) has no class → other.
+      if (r.failureClass === 'budget') summary.budgetFailed++;
+      else if (r.failureClass === 'findability') summary.findabilityFailed++;
+      else if (r.failureClass === 'partial') summary.partialFailed++;
+      else summary.otherFailed++;
+    }
     else summary.waiting++;
   }
   return summary;

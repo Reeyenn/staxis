@@ -196,6 +196,35 @@ export function createPruneState(): PruneState {
  *    just `messages.pop()`), we re-prune unconditionally to avoid
  *    splicing a stale cached prefix onto a now-different array.
  */
+/**
+ * fix/cua-discovery-budget — return a COPY of the byte-stable prefix with ONE
+ * ephemeral cache_control breakpoint on the LAST content block of its LAST
+ * message, so the replayed history bills at the cache-read rate (~10× cheaper)
+ * instead of full input every turn.
+ *
+ * COPY-ON-WRITE: never mutates the input (so `state.cachedPrunedMessages` stays
+ * UNMARKED — a stale marker carried onto a later-grown prefix would defeat the
+ * cache). The marker is re-applied to a fresh copy each turn; because the input
+ * bytes are identical turn-to-turn, the marked prefix is byte-identical too →
+ * cache hit. cache_control attaches to a content BLOCK, not the message object;
+ * a string `content` is normalized to a single text block to give it a home.
+ */
+function withPrefixCacheBreakpoint(
+  prefix: Anthropic.Messages.MessageParam[],
+): Anthropic.Messages.MessageParam[] {
+  if (prefix.length === 0) return prefix;
+  const out = prefix.slice();
+  const last = out[out.length - 1]!;
+  const blocks: Array<Record<string, unknown>> =
+    typeof last.content === 'string'
+      ? [{ type: 'text', text: last.content }]
+      : (last.content as unknown as Array<Record<string, unknown>>).slice();
+  if (blocks.length === 0) return prefix;
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
+  out[out.length - 1] = { ...last, content: blocks as unknown as Anthropic.Messages.MessageParam['content'] };
+  return out;
+}
+
 export function maybePruneHistory(
   messages: Anthropic.Messages.MessageParam[],
   state: PruneState,
@@ -233,16 +262,20 @@ export function maybePruneHistory(
     // last turn (assuming the same messages were in the tail then).
     const cached = state.cachedPrunedMessages!;
     const rawTail = messages.slice(state.messagesLengthAtLastPrune);
-    if (rawTail.length === 0) return cached;
+    // Mark the stable prefix's last block for caching (copy-on-write — `cached`
+    // stays unmarked in state). The fresh tail after the breakpoint bills full.
+    if (rawTail.length === 0) return withPrefixCacheBreakpoint(cached);
     const trimmedTail = rawTail.map(trimBigTextInMessage);
-    return [...cached, ...trimmedTail];
+    return [...withPrefixCacheBreakpoint(cached), ...trimmedTail];
   }
 
   const pruned = pruneOldHistory(messages, keepLast);
+  // Store the UNMARKED snapshot (the byte-stable prefix); the breakpoint is added
+  // to the returned copy only, so the next prune cycle never sees a stale marker.
   state.cachedPrunedMessages = pruned;
   state.lastPruneTurn = turn;
   state.messagesLengthAtLastPrune = messages.length;
   state.lastMessageRefAtPrune =
     messages.length > 0 ? messages[messages.length - 1] : null;
-  return pruned;
+  return withPrefixCacheBreakpoint(pruned);
 }

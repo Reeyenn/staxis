@@ -662,6 +662,11 @@ export interface BoardPreview {
 
 export type BoardTargetStatus = 'searching' | 'found' | 'unavailable' | 'failed';
 
+// fix/cua-discovery-budget — coarse WHY a feed didn't land, so an operator can
+// tell budget (raise caps) from findability (needs navigation help) at a glance,
+// without parsing reason text. 'partial' = a table was found but recovery gave up.
+export type BoardFailureClass = 'budget' | 'findability' | 'unavailable' | 'partial' | 'other';
+
 // feature/cua-mapper-phases-captures — finer LIVE phase the mapper surfaces so
 // the admin board can show "finding the page" vs "gathering rows" vs
 // "verifying" instead of just searching/found/failed. Strictly additive +
@@ -703,6 +708,9 @@ export interface BoardTargetState {
   carried?: boolean;
   /** Failure/unavailable explanation (truncated). */
   reason?: string;
+  /** fix/cua-discovery-budget — coarse cause (budget vs findability vs …) derived
+   *  from status+reason at write time. Additive; absent on older/found rows. */
+  failureClass?: BoardFailureClass;
   preview?: BoardPreview;
   /** feature/cua-mapper-cost — per-feed Claude spend (micros). startCostMicros =
    *  the run's total spend when this feed STARTED (so the live board can show

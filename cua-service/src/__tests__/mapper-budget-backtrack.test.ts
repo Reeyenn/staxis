@@ -23,25 +23,78 @@ import './_bootstrap-env.js';
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { targetBudget, isDashboardUrl, DashboardReturnTracker } from '../mapper.js';
+import { targetBudget, scaleCostCapForModel, modelCostFactor, deriveFailureClass, isDashboardUrl, DashboardReturnTracker } from '../mapper.js';
 
 const DASH = 'https://pms.example.com/dashboard';
+
+// ── fix/cua-discovery-budget — model-aware DEFAULT cap scaling ───────────────
+describe('scaleCostCapForModel — DEFAULT caps follow the run model', () => {
+  test('an undefined model resolves to the DEFAULT (Opus 4.8 → ×2), NOT Sonnet ×1', () => {
+    // The critical case: regenerate + auto-enqueue pass model=undefined. If this
+    // resolved to factor 1.0 the job cap would stay at the Sonnet base and re-
+    // introduce the mid-navigation kill.
+    assert.equal(modelCostFactor(undefined), 2.0);
+    assert.equal(scaleCostCapForModel(30_000_000, undefined), 60_000_000);
+  });
+  test('explicit models scale by their factor', () => {
+    assert.equal(scaleCostCapForModel(30_000_000, 'claude-sonnet-4-6'), 30_000_000);
+    assert.equal(scaleCostCapForModel(30_000_000, 'claude-opus-4-8'), 60_000_000);
+    assert.equal(scaleCostCapForModel(30_000_000, 'claude-fable-5'), 90_000_000);
+  });
+  test('the recovery-drill base ($0.60) scales to $1.20 on Opus', () => {
+    assert.equal(scaleCostCapForModel(600_000, 'claude-opus-4-8'), 1_200_000);
+  });
+  test('an infinite base is never scaled (no NaN)', () => {
+    assert.equal(scaleCostCapForModel(Number.POSITIVE_INFINITY, 'claude-opus-4-8'), Number.POSITIVE_INFINITY);
+  });
+});
+
+// ── fix/cua-discovery-budget — failure classification (budget vs findability) ─
+describe('deriveFailureClass — budget vs findability vs …', () => {
+  test('unavailable comes from STATUS only, never reason text', () => {
+    assert.equal(deriveFailureClass('unavailable', 'loop detector tripped'), 'unavailable');
+  });
+  test('budget catches cost-cap AND token/wallclock budget reasons', () => {
+    assert.equal(deriveFailureClass('failed', 'per-target cost cap exceeded for list_page ($1.20)'), 'budget');
+    assert.equal(deriveFailureClass('failed', 'token budget exceeded'), 'budget');
+    assert.equal(deriveFailureClass('failed', 'wallclock budget exceeded'), 'budget');
+  });
+  test('findability catches loop / dashboard / step / no-JSON / exhausted', () => {
+    assert.equal(deriveFailureClass('failed', 'loop detector tripped'), 'findability');
+    assert.equal(deriveFailureClass('failed', 'exhausted 5 dashboard returns without locating arrivals'), 'findability');
+    assert.equal(deriveFailureClass('failed', 'mapper exhausted step budget'), 'findability');
+    assert.equal(deriveFailureClass('failed', 'no usable JSON after recovery re-ask'), 'findability');
+  });
+  test('table-found-then-gave-up → partial; unmatched → other', () => {
+    assert.equal(deriveFailureClass('failed', 'agent claimed unavailable after a table was already found (recovery fatigue)'), 'partial');
+    assert.equal(deriveFailureClass('failed', 'something unexpected'), 'other');
+  });
+});
 
 // ── FIX 2 — targetBudget ────────────────────────────────────────────────────
 describe('targetBudget (FIX 2) — optional feeds get a tighter budget', () => {
   const CLASSES = ['list_page', 'report_menu', 'drilldown_sample'] as const;
 
-  test('required feeds keep the FULL by-classification budget', () => {
-    // These are the documented base caps (cost in micros, steps per record).
-    assert.deepEqual(targetBudget('list_page', false), { stepCap: 80, costCapMicros: 600_000 });
-    assert.deepEqual(targetBudget('report_menu', false), { stepCap: 100, costCapMicros: 1_200_000 });
-    assert.deepEqual(targetBudget('drilldown_sample', false), { stepCap: 60, costCapMicros: 1_440_000 });
+  test('required feeds keep the FULL by-classification budget (Sonnet baseline)', () => {
+    // Documented base caps, at the Sonnet 1.0 cost factor.
+    assert.deepEqual(targetBudget('list_page', false, 'claude-sonnet-4-6'), { stepCap: 80, costCapMicros: 600_000 });
+    assert.deepEqual(targetBudget('report_menu', false, 'claude-sonnet-4-6'), { stepCap: 100, costCapMicros: 1_200_000 });
+    assert.deepEqual(targetBudget('drilldown_sample', false, 'claude-sonnet-4-6'), { stepCap: 60, costCapMicros: 1_440_000 });
   });
 
-  test('optional feeds get exactly half the cost cap', () => {
-    assert.equal(targetBudget('list_page', true).costCapMicros, 300_000);
-    assert.equal(targetBudget('report_menu', true).costCapMicros, 600_000);
-    assert.equal(targetBudget('drilldown_sample', true).costCapMicros, 720_000);
+  // fix/cua-discovery-budget — Opus 4.8 costs ~2x/turn, so its COST cap scales 2x
+  // (the STEP cap does not — turns ≠ dollars). This is what lets buried feeds
+  // finish navigating instead of cost-capping mid-search.
+  test('Opus scales the COST cap 2x (step cap unchanged)', () => {
+    assert.deepEqual(targetBudget('list_page', false, 'claude-opus-4-8'), { stepCap: 80, costCapMicros: 1_200_000 });
+    assert.deepEqual(targetBudget('report_menu', false, 'claude-opus-4-8'), { stepCap: 100, costCapMicros: 2_400_000 });
+    assert.deepEqual(targetBudget('drilldown_sample', false, 'claude-opus-4-8'), { stepCap: 60, costCapMicros: 2_880_000 });
+  });
+
+  test('optional feeds get exactly half the cost cap (Sonnet baseline)', () => {
+    assert.equal(targetBudget('list_page', true, 'claude-sonnet-4-6').costCapMicros, 300_000);
+    assert.equal(targetBudget('report_menu', true, 'claude-sonnet-4-6').costCapMicros, 600_000);
+    assert.equal(targetBudget('drilldown_sample', true, 'claude-sonnet-4-6').costCapMicros, 720_000);
   });
 
   test('optional feeds get half the step cap (floored)', () => {

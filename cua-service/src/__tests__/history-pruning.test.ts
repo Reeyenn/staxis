@@ -113,6 +113,18 @@ function countImageBlocks(messages: Msg[]): number {
   return n;
 }
 
+/** Count cache_control breakpoints across a message array's content blocks. */
+function countCacheControl(msgs: Anthropic.Messages.MessageParam[]): number {
+  let n = 0;
+  for (const m of msgs) {
+    if (typeof m.content === 'string') continue;
+    for (const b of m.content) {
+      if ((b as { cache_control?: unknown }).cache_control) n++;
+    }
+  }
+  return n;
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────
 
 describe('maybePruneHistory — no-op between batched prunes (cache-friendly)', () => {
@@ -136,17 +148,22 @@ describe('maybePruneHistory — no-op between batched prunes (cache-friendly)', 
     const turn5Result = maybePruneHistory(messages, state, 5, KEEP_LAST);
     assert.equal(state.lastPruneTurn, 0, 'lastPruneTurn must NOT advance — no prune fired');
 
-    // The prefix (everything that was in messages at turn 0) must be
-    // referentially identical between turn0Result and turn5Result.
-    // Reference equality is the strongest possible no-op guarantee — if
-    // the same JS objects are sent, serialized bytes are identical.
-    for (let i = 0; i < turn0Result.length; i++) {
+    // fix/cua-discovery-budget — the prefix is now a copy-on-write clone carrying
+    // ONE cache breakpoint on its last block. So all prefix elements EXCEPT the
+    // last stay shared references (slice), and the last is BYTE-STABLE (deep-equal)
+    // across turns — which is what the prompt cache keys on (a hit, not ref===).
+    for (let i = 0; i < turn0Result.length - 1; i++) {
       assert.strictEqual(
         turn5Result[i],
         turn0Result[i],
         `prefix element ${i} must be referentially identical between calls`,
       );
     }
+    assert.deepEqual(
+      turn5Result[turn0Result.length - 1],
+      turn0Result[turn0Result.length - 1],
+      'last prefix block must be byte-stable (deep-equal) across turns for the cache hit',
+    );
 
     // The newer tail (turns 10-14 worth = 10 messages) should be appended.
     assert.equal(
@@ -164,10 +181,27 @@ describe('maybePruneHistory — no-op between batched prunes (cache-friendly)', 
     const t1 = maybePruneHistory(messages, state, 1, 3);
     const t2 = maybePruneHistory(messages, state, 2, 3);
 
-    // No new messages → all three calls return the same cached array.
-    assert.strictEqual(t1, t0, 'turn 1 returns cached array as-is');
-    assert.strictEqual(t2, t0, 'turn 2 returns cached array as-is');
+    // No new messages → byte-identical (deep-equal) marked prefix each turn
+    // (copy-on-write means a fresh array instance, but identical content → cache hit).
+    assert.deepEqual(t1, t0, 'turn 1 returns byte-identical marked prefix');
+    assert.deepEqual(t2, t0, 'turn 2 returns byte-identical marked prefix');
     assert.equal(state.lastPruneTurn, 0, 'no re-prune fired');
+  });
+
+  test('marks exactly ONE ephemeral cache breakpoint on the last prefix block; stored state stays unmarked', () => {
+    const state = createPruneState();
+    const messages = buildMessages(8);
+    const result = maybePruneHistory(messages, state, 0, 3);
+    assert.equal(countCacheControl(result), 1, 'exactly one breakpoint on the returned prefix');
+    const last = result[result.length - 1]!;
+    const blocks = Array.isArray(last.content) ? last.content : [];
+    assert.ok(
+      (blocks[blocks.length - 1] as { cache_control?: unknown } | undefined)?.cache_control,
+      'breakpoint is on the LAST block of the LAST prefix message',
+    );
+    // The stored snapshot must stay UNMARKED so a later-grown prefix never carries
+    // a stale marker (which would defeat the cache).
+    assert.equal(countCacheControl(state.cachedPrunedMessages!), 0, 'stored prefix stays unmarked');
   });
 });
 

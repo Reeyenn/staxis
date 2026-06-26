@@ -111,11 +111,10 @@ export async function POST(req: NextRequest) {
       payload: {
         pms_family: creds.pms_type as string,
         property_id: pidV.value!,
-        // Full-learn budget — matches CUA_FULL_LEARN_COST_CAP_MICROS
-        // ($40, ~2x a clean Opus 4.8 full learn). Explicit here so the
-        // admin path is self-documenting; the worker would apply the
-        // same default if omitted.
-        cost_cap_micros: 40_000_000,
+        // fix/cua-discovery-budget — DO NOT set an explicit cost_cap_micros here.
+        // The worker applies the MODEL-AWARE default (CUA_FULL_LEARN_COST_CAP_MICROS
+        // base × the run model's factor → $60 on Opus). A hard-coded $40 here would
+        // bypass that scaling and cost-cap a full Opus re-learn mid-navigation.
         regen_reason: reasonV.value ?? null,
       },
     })

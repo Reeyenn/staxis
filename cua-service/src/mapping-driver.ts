@@ -32,7 +32,7 @@ import type { Browser, BrowserContextOptions, Page } from 'playwright';
 import { chromium } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
-import { mapPMS, mapLogin, saveTrustedSession, type MapperResult } from './mapper.js';
+import { mapPMS, mapLogin, saveTrustedSession, scaleCostCapForModel, type MapperResult } from './mapper.js';
 import { safeGoto, UnsafeNavigationError } from './browser-utils/navigate.js';
 import { env } from './env.js';
 import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
@@ -577,7 +577,12 @@ export async function runMappingJob(
     jobId,
     signal,
     model: input.model,
-    jobCostCapMicros: input.cost_cap_micros ?? env.CUA_FULL_LEARN_COST_CAP_MICROS,
+    // fix/cua-discovery-budget — scale ONLY the absent-cap DEFAULT by the run
+    // model (Opus ×2 → $60). An explicit cost_cap_micros (repair/edit/backfill) is
+    // a deliberate tight cap and is NEVER scaled. scaleCostCapForModel resolves an
+    // undefined model to the actual default (Opus), so the cap can't silently stay
+    // at the Sonnet base.
+    jobCostCapMicros: input.cost_cap_micros ?? scaleCostCapForModel(env.CUA_FULL_LEARN_COST_CAP_MICROS, input.model),
     // Plan v8 self-repair — pre-seed the actions accumulator so the
     // mapper only iterates targets NOT in this set. Empty for full
     // mappings (fresh PMS family); populated for repairs.

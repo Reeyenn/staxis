@@ -43,7 +43,7 @@ import { sendAdminSms } from './admin-sms.js';
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
 const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
-import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, CsvHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState, BoardTargetPhase, BoardCurrentActivity } from './types.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe, ApiHint, TableRowHint, CsvHint, TieredSelector, BoardPreview, BoardTargetDescriptor, BoardTargetState, BoardTargetStatus, BoardTargetPhase, BoardFailureClass, BoardCurrentActivity } from './types.js';
 import { captureFeedProvenanceScreenshot } from './feed-capture.js';
 import { inferUrlTemplate, mapPlaceholdersToColumns, templateFromSample, substituteTemplate } from './url-template.js';
 import { requiredLearnedFor, missingRequiredColumns, MAX_COMPLETENESS_REASKS, TARGET_VALUE_CONTRACTS, CORE_TARGET_CONTRACTS, coreTargetSharesRequiredSchema } from './target-contract.js';
@@ -433,18 +433,55 @@ type TargetClassification = 'list_page' | 'report_menu' | 'drilldown_sample';
  * used before (full step cap, infinite cost cap), and an infinite cost cap is
  * never scaled (no NaN). Exported for unit tests.
  */
+// fix/cua-discovery-budget — the per-target COST caps were calibrated for
+// Sonnet-era economics ("Plan v7 base +20%, 2026-06-16") and never re-scaled
+// when Opus 4.8 became the default model. Opus costs ~2x/turn, so a flat $0.60
+// list_page cap buys only ~10-13 Opus turns — not enough to navigate to a buried
+// feed (menu → submenu → date picker → table) — and a fresh full re-learn
+// cost-capped every buried feed at once (found only 2/14). Scale the COST cap by
+// the resolved model's relative per-turn cost. Step caps are NOT scaled (turns ≠
+// dollars). Sonnet is the 1.0 baseline; unknown models default to 1.0. A full
+// Opus learn at 2x still lands ~$15-25, well under the $40 full-learn job cap.
+const MODEL_COST_FACTOR: Record<string, number> = {
+  'claude-sonnet-4-6': 1.0,
+  'claude-opus-4-8': 2.0,
+  'claude-fable-5': 3.0,
+};
+
+/** The per-turn cost factor for the resolved run model. CRITICAL: resolves an
+ *  absent/undefined model through getModeConfig to the ACTUAL run model (default
+ *  Opus 4.8 → 2.0) — a caller that omits the model must NOT silently get the
+ *  Sonnet 1.0 factor (that would leave the whole-job cap at the Sonnet base while
+ *  the per-feed caps resolve to Opus + sum past it → the exact mid-navigation
+ *  job-cap kill this fix removes). */
+export function modelCostFactor(model?: MapperModelId): number {
+  return MODEL_COST_FACTOR[getModeConfig(model).model] ?? 1.0;
+}
+
+/** Scale a DEFAULT cost cap (per-feed / recovery / whole-job) by the resolved
+ *  model's cost factor. ONLY for default caps — explicit per-job caps
+ *  (repair/edit/backfill/relogin) stay as authored. Infinite caps never scale. */
+export function scaleCostCapForModel(baseMicros: number, model?: MapperModelId): number {
+  return Number.isFinite(baseMicros) ? Math.floor(baseMicros * modelCostFactor(model)) : baseMicros;
+}
+
 export function targetBudget(
   classification: TargetClassification,
   optional: boolean,
+  model?: MapperModelId,
 ): { stepCap: number; costCapMicros: number } {
   const baseStep = TARGET_STEP_CAPS[classification] ?? MAX_AGENT_STEPS_PER_ACTION;
   const baseCost = TARGET_BUDGET_MICROS[classification] ?? Number.POSITIVE_INFINITY;
-  if (!optional) return { stepCap: baseStep, costCapMicros: baseCost };
+  // Resolve the actual model the run uses (undefined → the default CLAUDE_MODEL),
+  // then scale the finite cost cap by its cost factor. Infinite caps never scale.
+  const modelFactor = modelCostFactor(model);
+  const scaleCost = (c: number): number => (Number.isFinite(c) ? Math.floor(c * modelFactor) : c);
+  if (!optional) return { stepCap: baseStep, costCapMicros: scaleCost(baseCost) };
   return {
     stepCap: Math.max(MIN_OPTIONAL_STEP_CAP, Math.floor(baseStep * OPTIONAL_BUDGET_FRACTION)),
-    costCapMicros: Number.isFinite(baseCost)
-      ? Math.floor(baseCost * OPTIONAL_BUDGET_FRACTION)
-      : baseCost,
+    costCapMicros: scaleCost(
+      Number.isFinite(baseCost) ? Math.floor(baseCost * OPTIONAL_BUDGET_FRACTION) : baseCost,
+    ),
   };
 }
 // (Plan v9 trialed a REQUIRED_TARGET_BUDGET_MULTIPLIER here — a bigger per-target
@@ -760,6 +797,25 @@ async function consumePendingNotes(jobId: string | null | undefined): Promise<st
  *  the only structured terminal flag; this is a narrow reason-text read. */
 export function isCostCapReason(reason: string | null | undefined): boolean {
   return !!reason && /cost cap/i.test(reason);
+}
+
+/** fix/cua-discovery-budget — coarse WHY a feed didn't land, for the operator
+ *  summary (budget = raise caps; findability = navigation help, NOT more money).
+ *  Keys on literal reason SUBSTRINGS, not line numbers. NOTE: budget must also
+ *  catch 'token budget exceeded' / 'wallclock budget exceeded' (a bare /cost cap/
+ *  would dump them into 'other' and undercount the budget tally that IS the
+ *  signal). `unavailable` comes from status, never reason text. */
+export function deriveFailureClass(
+  status: BoardTargetStatus,
+  reason: string | null | undefined,
+): BoardFailureClass {
+  if (status === 'unavailable') return 'unavailable';
+  const r = reason ?? '';
+  // table-found-then-gave-up → partial (so the summary tally reconciles).
+  if (/after a table was already found/i.test(r)) return 'partial';
+  if (/cost cap|budget exceeded|wallclock/i.test(r)) return 'budget';
+  if (/loop detector|dashboard returns|step budget|no usable JSON|premature unavailable|exhausted/i.test(r)) return 'findability';
+  return 'other';
 }
 
 /**
@@ -1232,6 +1288,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           startCostMicros: targetStartCostMicros,
           ...(feedCostMicros !== undefined ? { costMicros: feedCostMicros } : {}),
           reason: result.reason.slice(0, 300),
+          failureClass: deriveFailureClass(result.unavailable ? 'unavailable' : 'failed', result.reason),
         };
         await mergeJobResult(opts.jobId, {
           boardTargets,
@@ -2442,7 +2499,7 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // explicit `required === false` tightens, so this can never starve a required
   // feed.
   const { stepCap: targetStepCap, costCapMicros: targetCostCapMicros } =
-    targetBudget(classification, args.required === false);
+    targetBudget(classification, args.required === false, args.model);
 
   // fix/cua-two-oracle (build #4) — per-target cost ENVELOPE. Starts at the base
   // per-classification cap. ONLY after a committable, structurally-sound table
@@ -2459,7 +2516,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
     if (!isRequiredCoreFeed) return;
     if (effectiveTargetCostCapMicros === Number.POSITIVE_INFINITY) return;
     if (!structurallySoundForDiscovery(audit, args.actionName as keyof Recipe['actions'])) return;
-    const widened = targetCostCapMicros + RECOVERY_DRILL_COST_CAP_MICROS;
+    // fix/cua-discovery-budget — widen by the MODEL-SCALED recovery cap (Opus ×2).
+    const widened = targetCostCapMicros + scaleCostCapForModel(RECOVERY_DRILL_COST_CAP_MICROS, args.model);
     if (widened > effectiveTargetCostCapMicros) {
       effectiveTargetCostCapMicros = widened;
       log.info('mapper: committable core table found — widening per-target certification envelope', {
@@ -4348,8 +4406,11 @@ async function mapMissingColumnsViaDrilldown(args: {
     // turn's cost.
     if (args.jobId) {
       const spent = await getJobCostMicros(args.jobId);
-      if (spent - costBaseline > RECOVERY_DRILL_COST_CAP_MICROS) {
-        return fail(`recovery drill cost cap ($${(RECOVERY_DRILL_COST_CAP_MICROS / 1_000_000).toFixed(2)}) exceeded`);
+      // fix/cua-discovery-budget — scale the drill cap by the run model (Opus ×2)
+      // so recovery isn't guillotined on the pricier model after the main feed found.
+      const drillCapMicros = scaleCostCapForModel(RECOVERY_DRILL_COST_CAP_MICROS, args.model);
+      if (spent - costBaseline > drillCapMicros) {
+        return fail(`recovery drill cost cap ($${(drillCapMicros / 1_000_000).toFixed(2)}) exceeded`);
       }
     }
 
@@ -5927,7 +5988,7 @@ async function mapDrillDownAction(args: {
   // cap is PER record; effectiveStepCap below multiplies by SAMPLE_COUNT
   // (optional: 30/sample → 90 total; required: 60/sample → 180 total).
   const { stepCap: targetStepCap, costCapMicros: targetCostCapMicros } =
-    targetBudget(classification, args.required === false);
+    targetBudget(classification, args.required === false, args.model);
   // Drill-down samples = 3; cost scales roughly with sample count.
   const SAMPLE_COUNT = 3;
 

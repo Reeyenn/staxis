@@ -28,6 +28,7 @@ import {
   parseCurrentActivity,
   phaseLabel,
   isInProgressPhase,
+  type FeedRow,
 } from '@/lib/pms/learning-board';
 
 const CATALOG = [
@@ -252,7 +253,25 @@ describe('summarizeFeedRows / prettifyTargetKey', () => {
     const s = summarizeFeedRows(rows);
     assert.deepEqual(s, {
       total: 4, found: 1, searching: 1, stuck: 1, unavailable: 1, failed: 0, waiting: 0,
+      // fix/cua-discovery-budget — failure-cause breakdown (reconciles to `failed`).
+      budgetFailed: 0, findabilityFailed: 0, partialFailed: 0, otherFailed: 0,
     });
+  });
+
+  test('failed rows bucket by failureClass and reconcile to `failed`', () => {
+    const rows: FeedRow[] = [
+      { key: 'a', label: 'A', goal: '', optional: false, glyph: 'failed', failureClass: 'budget' },
+      { key: 'b', label: 'B', goal: '', optional: false, glyph: 'failed', failureClass: 'findability' },
+      { key: 'c', label: 'C', goal: '', optional: true, glyph: 'failed', failureClass: 'partial' },
+      { key: 'd', label: 'D', goal: '', optional: true, glyph: 'didnt_finish' }, // no class → other
+    ];
+    const s = summarizeFeedRows(rows);
+    assert.equal(s.failed, 4);
+    assert.equal(s.budgetFailed, 1);
+    assert.equal(s.findabilityFailed, 1);
+    assert.equal(s.partialFailed, 1);
+    assert.equal(s.otherFailed, 1);
+    assert.equal(s.budgetFailed + s.findabilityFailed + s.partialFailed + s.otherFailed, s.failed);
   });
 
   test('prettifyTargetKey humanizes mapper keys generically', () => {
