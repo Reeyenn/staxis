@@ -42,7 +42,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString, todayStr } from '@/lib/utils';
 import { PMS_REGISTRY } from '@/lib/pms/registry';
 import type { PMSType } from '@/lib/pms/types';
-import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey, trustedClientIp } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -105,9 +105,9 @@ function num(v: unknown): number | null {
 /** Best-effort client IP for rate-limit keying (Vercel sets x-forwarded-for).
  *  Mirrors the helper in the wizard route. */
 function clientIp(req: NextRequest): string | null {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  return req.headers.get('x-real-ip');
+  // Non-spoofable client IP (security audit 2026-06-26 — leftmost XFF is
+  // attacker-controlled on Vercel).
+  return trustedClientIp(req) || null;
 }
 
 /** Count pms_reservations rows for a property with optional extra filters.

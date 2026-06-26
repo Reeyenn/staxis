@@ -84,6 +84,12 @@ registerTool<{ date?: string }>({
     properties: { date: { type: 'string', description: 'YYYY-MM-DD; defaults to today (property-local).' } },
   },
   allowedRoles: FEED_ROLES,
+  // Daily cashier collection totals are revenue figures the manager-floor
+  // view_financials capability keeps from line staff. The static FEED_ROLES
+  // includes front_desk for operational guest lookups, but this aggregate is
+  // financial — gate it. front_desk fails the manager floor; managers honor
+  // the per-hotel Access-tab toggle. (Security audit 2026-06-26.)
+  requiresCapability: 'view_financials',
   mutates: false,
   handler: async ({ date }, ctx): Promise<ToolResult> => {
     const today = await getPropertyToday(ctx.propertyId);

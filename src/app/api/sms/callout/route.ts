@@ -152,19 +152,43 @@ export async function POST(req: NextRequest) {
       text = formParams.Body;
     }
 
-    // Signature validation. Skip when TWILIO_AUTH_TOKEN is missing (local
-    // dev / unit tests) — production deployments must have it set.
-    if (env.TWILIO_AUTH_TOKEN) {
-      const url = reconstructWebhookUrl(req);
-      const sig = req.headers.get('x-twilio-signature');
-      const valid = verifyTwilioSignature(url, sig, formParams);
-      if (!valid) {
-        await logHit({
-          stage: 'signature_failed',
-          fromHeader: fromNumber ?? null,
-          contentType, url,
-        });
-        return forbidden('invalid signature');
+    // ── Webhook authentication (security audit 2026-06-26) ─────────────────
+    // middleware skips /api/*, so this signature check is the ONLY auth on
+    // the inbound webhook. The previous version skipped verification entirely
+    // whenever TWILIO_AUTH_TOKEN was unset/blank — so during a config-drift
+    // window (token dropped mid-rotation) an attacker could POST
+    // `From=<real staff phone>&Body=SICK` to spoof a call-out, trigger room
+    // reassignment, and fan out SMS. Mirror sms-reply's fail-closed posture.
+    const isFormEncoded = !contentType.includes('application/json');
+
+    // Twilio never signs JSON — only accept it when explicitly opted in
+    // (local test rigs set ALLOW_UNSIGNED_SMS_WEBHOOK=1).
+    if (!isFormEncoded && env.ALLOW_UNSIGNED_SMS_WEBHOOK !== '1') {
+      await logHit({ stage: 'json_rejected', fromHeader: fromNumber ?? null, contentType });
+      return forbidden('json payloads not accepted without ALLOW_UNSIGNED_SMS_WEBHOOK=1');
+    }
+
+    if (isFormEncoded) {
+      const twilioWired = !!env.TWILIO_ACCOUNT_SID;
+      const haveToken = !!env.TWILIO_AUTH_TOKEN;
+      // Config drift: Twilio is wired up (SID present) but the auth token is
+      // missing/blank → refuse rather than process unsigned.
+      if (twilioWired && !haveToken) {
+        await logHit({ stage: 'config_drift_missing_auth_token', fromHeader: fromNumber ?? null });
+        return forbidden('callout webhook not configured (auth token missing)');
+      }
+      if (haveToken) {
+        const url = reconstructWebhookUrl(req);
+        const sig = req.headers.get('x-twilio-signature');
+        const valid = verifyTwilioSignature(url, sig, formParams);
+        if (!valid) {
+          await logHit({
+            stage: 'signature_failed',
+            fromHeader: fromNumber ?? null,
+            contentType, url,
+          });
+          return forbidden('invalid signature');
+        }
       }
     }
 

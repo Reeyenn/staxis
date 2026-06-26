@@ -505,21 +505,25 @@ async function tryCookieSession(route: string): Promise<
 export function requireCronSecret(req: NextRequest): NextResponse | null {
   const secret = env.CRON_SECRET;
   if (!secret) {
-    // Fail-closed in TRUE production only. A missing CRON_SECRET on a
-    // real prod deploy is config drift (env var dropped during a redeploy)
-    // — historically this would silently open every admin/cron endpoint.
+    // Fail-closed in production AND on Vercel preview.
     //
-    // Vercel preview deploys also have NODE_ENV='production' but are not
-    // a security boundary; gating on VERCEL_ENV lets previews still pass
-    // through unsigned for smoke tests. Railway/Fly prod (no VERCEL_ENV)
-    // falls through to the NODE_ENV check.
+    // Security audit 2026-06-26: the previous version passed through on
+    // Vercel *preview* deploys ("for smoke tests"). But preview deploys
+    // inherit the production env — including SUPABASE_SERVICE_ROLE_KEY —
+    // and are publicly reachable at a guessable <project>-<hash>.vercel.app
+    // URL. An unsigned pass-through there let anyone on the internet call
+    // destructive cron/admin endpoints (delete auth.users, purge rows,
+    // drain the SMS queue, email a hotel's report) against LIVE customer
+    // data. Now mirrors requireHeartbeatSecret exactly: preview is treated
+    // as a production-grade security boundary, not as dev.
     const isVercelProd = env.VERCEL_ENV === 'production';
+    const isVercelPreview = env.VERCEL_ENV === 'preview';
     const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
-    if (isVercelProd || isOtherProd) {
-      console.error('[api-auth] CRON_SECRET unset in production — refusing request');
+    if (isVercelProd || isVercelPreview || isOtherProd) {
+      console.error('[api-auth] CRON_SECRET unset in prod/preview — refusing request');
       return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
     }
-    return null;  // dev / preview — no secret configured
+    return null;  // dev / test — no secret configured
   }
   const auth = req.headers.get('authorization') ?? '';
   const expected = `Bearer ${secret}`;

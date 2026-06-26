@@ -16,7 +16,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInventoryAccountingSummary } from '@/lib/db/inventory-accounting';
 import { errToString } from '@/lib/utils';
@@ -25,28 +25,27 @@ import { log } from '@/lib/log';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
-
 const isMonthString = (s: unknown): s is string =>
   typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 
 export async function GET(req: NextRequest) {
-  const session = await requireSession(req);
-  if (!session.ok) return session.response;
-
   const url = new URL(req.url);
   const propertyId = url.searchParams.get('propertyId');
   const monthParam = url.searchParams.get('month');
 
-  if (!isUuid(propertyId)) {
-    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
-  }
+  // Auth: route through the SAME gate as /api/financials/* — session + finance
+  // role floor + the per-hotel Access-tab `view_financials` capability +
+  // property scope. Previously this checked only requireSession +
+  // userHasPropertyAccess (no role check), so any signed-in line-staff member
+  // (front desk, housekeeping, maintenance) with the property in their access
+  // list could read month spend/budget value-by-category. (Security audit
+  // 2026-06-26.)
+  const gate = await requireFinanceAccess(req, propertyId);
+  if (!gate.ok) return gate.response;
+  const pid = gate.pid;
+
   if (monthParam != null && !isMonthString(monthParam)) {
     return NextResponse.json({ ok: false, error: 'invalid_month' }, { status: 400 });
-  }
-  if (!(await userHasPropertyAccess(session.userId, propertyId))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
 
   // Resolve monthStart in UTC. The page sends YYYY-MM; we anchor to day 1.
@@ -57,7 +56,7 @@ export async function GET(req: NextRequest) {
   const monthStart = new Date(Date.UTC(Number(yearStr), Number(mStr) - 1, 1));
 
   try {
-    const summary = await getInventoryAccountingSummary(supabaseAdmin, propertyId, monthStart);
+    const summary = await getInventoryAccountingSummary(supabaseAdmin, pid, monthStart);
     return NextResponse.json({
       ok: true,
       data: summary,

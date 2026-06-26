@@ -37,6 +37,7 @@ import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
   ipToRateLimitKey,
+  trustedClientIp,
 } from '@/lib/api-ratelimit';
 import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
@@ -58,9 +59,12 @@ import {
  * stretches an exhaustive search to ~10⁴ years before a successful hit.
  */
 function clientIp(req: NextRequest): string | null {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  return req.headers.get('x-real-ip');
+  // Security audit 2026-06-26: the leftmost X-Forwarded-For token is
+  // attacker-controlled on Vercel (the platform appends the real IP to the
+  // right), which let an attacker rotate it for a fresh rate-limit bucket
+  // per request — defeating the join-code brute-force cap entirely. Use the
+  // platform-trusted source instead.
+  return trustedClientIp(req) || null;
 }
 
 export const runtime = 'nodejs';

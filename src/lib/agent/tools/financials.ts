@@ -44,6 +44,7 @@ registerTool<{ period?: Period }>({
     },
   },
   allowedRoles: FINANCE_ROLES,
+  requiresCapability: 'view_financials',
   handler: async ({ period }, ctx): Promise<ToolResult> => {
     const { month, label } = resolveMonth(period);
     const s = await getFinanceSummary(ctx.propertyId, month);
@@ -79,6 +80,7 @@ registerTool<{ period?: Period }>({
     },
   },
   allowedRoles: FINANCE_ROLES,
+  requiresCapability: 'view_financials',
   handler: async ({ period }, ctx): Promise<ToolResult> => {
     const { month, label } = resolveMonth(period);
     const rows = await budgetVsActual(ctx.propertyId, month);
@@ -132,6 +134,7 @@ registerTool<{ department?: string; period?: Period }>({
     },
   },
   allowedRoles: FINANCE_ROLES,
+  requiresCapability: 'view_financials',
   handler: async ({ department, period }, ctx): Promise<ToolResult> => {
     const { month, label } = resolveMonth(period);
     const byDept = await sumExpensesByDepartment(ctx.propertyId, month);

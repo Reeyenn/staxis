@@ -27,7 +27,7 @@ import { NextRequest } from 'next/server';
 import { ok } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, clientIpRateLimitKey } from '@/lib/api-ratelimit';
 import { logSecurityEvent } from '@/lib/audit';
 
 export const runtime = 'nodejs';
@@ -41,10 +41,8 @@ interface Body {
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || req.headers.get('x-real-ip')?.trim()
-    || '';
-  const ipKey = ipToRateLimitKey(ip);
+  // Non-spoofable client IP (security audit 2026-06-26).
+  const ipKey = clientIpRateLimitKey(req);
   const rl = await checkAndIncrementRateLimit('housekeeper-log-legacy-token', ipKey);
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

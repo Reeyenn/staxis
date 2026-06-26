@@ -35,7 +35,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString } from '@/lib/api-validate';
-import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, clientIpRateLimitKey } from '@/lib/api-ratelimit';
 import { logSecurityEvent } from '@/lib/audit';
 
 export const runtime = 'nodejs';
@@ -53,10 +53,8 @@ export async function POST(req: NextRequest) {
   // Rate limit by source IP. Codes are ~40 bits of entropy; combined
   // with this cap the brute-force space is millennia-deep per real
   // code. Same shape as the auth-use-join-code limiter.
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || req.headers.get('x-real-ip')?.trim()
-    || '';
-  const ipKey = ipToRateLimitKey(ip);
+  // Non-spoofable client IP (security audit 2026-06-26).
+  const ipKey = clientIpRateLimitKey(req);
   const rl = await checkAndIncrementRateLimit('housekeeper-exchange-code', ipKey);
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

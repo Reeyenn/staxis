@@ -87,3 +87,4 @@ CLAUDE.md
 /.staxis-push-patches/
 /.audit-fix-tmp/
 /audit-fix/
+.audit-findings.json

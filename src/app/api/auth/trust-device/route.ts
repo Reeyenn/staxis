@@ -22,6 +22,7 @@ import {
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { logSecurityEvent } from '@/lib/audit';
+import { trustedClientIp } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -179,9 +180,10 @@ export async function POST(req: NextRequest) {
   // compute them regardless of `remember`. The durable trusted_devices token
   // is only minted when the user opted to remember this device.
   const ua = req.headers.get('user-agent') ?? null;
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    ?? req.headers.get('x-real-ip')
-    ?? null;
+  // Use the platform-trusted client IP, not the spoofable leftmost XFF token,
+  // so the value stored on the trust/audit row can't be poisoned for
+  // forensics (security audit 2026-06-26).
+  const ip = trustedClientIp(req) || null;
 
   let newToken: string | null = null;
 

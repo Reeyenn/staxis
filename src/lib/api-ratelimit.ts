@@ -643,6 +643,45 @@ export function hashToRateLimitKey(s: string | null | undefined): string {
 export const ipToRateLimitKey = hashToRateLimitKey;
 
 /**
+ * Derive a NON-SPOOFABLE client IP for rate-limit keying.
+ *
+ * Security audit 2026-06-26: callers were reading
+ * `x-forwarded-for`.split(',')[0] — the LEFTMOST token. On Vercel the
+ * client cannot overwrite the platform-trusted IP, but Vercel APPENDS it
+ * to the RIGHT of whatever `X-Forwarded-For` the client sent, so the
+ * leftmost value is fully attacker-controlled. Rotating it gave a fresh
+ * rate-limit bucket per request and defeated every per-IP cap (join-code
+ * brute force, account-creation/cost abuse, etc.).
+ *
+ * Trust order:
+ *   1. `x-vercel-forwarded-for` — set by the Vercel proxy, NOT forwardable
+ *      by the client. This is the real client IP on Vercel.
+ *   2. `x-real-ip` — also set by the Vercel edge (and most reverse proxies).
+ *   3. `x-forwarded-for` RIGHTMOST entry — the hop our trusted proxy
+ *      appended, never the leftmost client-supplied one.
+ *
+ * Returns '' when no header is present (local dev): hashToRateLimitKey
+ * then collapses to a single shared bucket, which is the safe default.
+ */
+export function trustedClientIp(req: { headers: { get(name: string): string | null } }): string {
+  const vercel = req.headers.get('x-vercel-forwarded-for');
+  if (vercel) return vercel.split(',')[0]?.trim() ?? '';
+  const realIp = req.headers.get('x-real-ip');
+  if (realIp && realIp.trim()) return realIp.trim();
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const parts = xff.split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+  }
+  return '';
+}
+
+/** Convenience: trusted client IP already hashed into a rate-limit key. */
+export function clientIpRateLimitKey(req: { headers: { get(name: string): string | null } }): string {
+  return hashToRateLimitKey(trustedClientIp(req));
+}
+
+/**
  * Sentinel UUID used as the property_id when an SMS-fan-out endpoint accepts
  * a payload without a `pid` (legacy callers). The zero-UUID is reserved for
  * "no specific property" and will rate-limit such calls in a single global

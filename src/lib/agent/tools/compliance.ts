@@ -174,6 +174,10 @@ registerTool<{ fromDate?: string; toDate?: string }>({
     },
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
+  // Mirror the HTTP Reports gate: honors the per-hotel run_reports Access-tab
+  // toggle so the agent can't generate reports for a restricted manager.
+  // (Security audit 2026-06-26.)
+  requiresCapability: 'run_reports',
   surfaces: ['chat'],
   handler: async ({ fromDate, toDate }, ctx): Promise<ToolResult> => {
     const dateRx = /^\d{4}-\d{2}-\d{2}$/;

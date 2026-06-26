@@ -107,11 +107,25 @@ describe('requireCronSecret — env behavior', () => {
     assert.equal(body.error, 'server misconfigured');
   });
 
-  test('Vercel preview with CRON_SECRET unset passes through (smoke tests)', () => {
+  // Security audit 2026-06-26: preview now FAILS CLOSED. Preview deploys
+  // carry the production service-role key and are publicly reachable, so an
+  // unsigned pass-through exposed destructive cron/admin endpoints against
+  // live data. Smoke tests must now supply CRON_SECRET.
+  test('Vercel preview with CRON_SECRET unset returns 500 (fails closed)', async () => {
     delete process.env.CRON_SECRET;
     process.env.VERCEL_ENV = 'preview';
     (process.env as Record<string, string>).NODE_ENV = 'production';
     const result = requireCronSecret(reqWith('Bearer whatever'));
+    assert.equal(result!.status, 500);
+    const body = await result!.json();
+    assert.equal(body.error, 'server misconfigured');
+  });
+
+  test('Vercel preview WITH a correct CRON_SECRET still passes', () => {
+    process.env.CRON_SECRET = 'preview-secret-123';
+    process.env.VERCEL_ENV = 'preview';
+    (process.env as Record<string, string>).NODE_ENV = 'production';
+    const result = requireCronSecret(reqWith('Bearer preview-secret-123'));
     assert.equal(result, null);
   });
 

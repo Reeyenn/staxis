@@ -13,6 +13,8 @@
 // Just import their module from agent/index.ts and the registration fires.
 
 import type { AppRole } from '@/lib/roles';
+import type { CapabilityKey } from '@/lib/capabilities/registry';
+import { canForProperty } from '@/lib/capabilities/server';
 import type { VoiceMode } from './voice-session';
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -132,6 +134,16 @@ export interface ToolDefinition<TArgs = unknown> {
    * having to update a separate hardcoded list. Codex review fix D3.
    */
   mutates?: boolean;
+  /**
+   * Per-hotel capability this tool requires (e.g. 'view_financials',
+   * 'run_reports', 'view_wages'). When set, executeTool() enforces the SAME
+   * Access-tab capability gate the HTTP layer uses (canForProperty), honoring
+   * the manager-floor AND any per-hotel override an admin has set. Without
+   * this the agent surface ignored the per-hotel restrictions the rest of the
+   * app honors, so a manager an admin had switched OFF for financials could
+   * still ask the copilot for revenue/budgets/wages. Security audit 2026-06-26.
+   */
+  requiresCapability?: CapabilityKey;
   /** Implementation — typically wraps an existing API handler. */
   handler: (args: TArgs, ctx: ToolContext) => Promise<ToolResult>;
 }
@@ -251,6 +263,25 @@ export async function executeTool(
       ok: false,
       error: 'Property access for this conversation is not in your account. The user must restart the conversation from a property they currently have access to.',
     };
+  }
+  // Per-hotel capability gate (security audit 2026-06-26). Mirrors the HTTP
+  // finance/reports gates (requireFinanceAccess → canForProperty) so the agent
+  // surface can't be used to read data an admin has restricted for this role
+  // at this property. Admin short-circuits to allowed inside canForProperty;
+  // manager-floor caps (view_financials/view_wages/...) are refused for
+  // line-staff roles regardless of overrides.
+  if (tool.requiresCapability) {
+    const allowed = await canForProperty(
+      { role: ctx.user.role },
+      tool.requiresCapability,
+      ctx.propertyId,
+    );
+    if (!allowed) {
+      return {
+        ok: false,
+        error: `Access to ${name} is restricted for your role at this property. Tell the user this information is limited to managers with the matching permission; do not attempt to retrieve it another way.`,
+      };
+    }
   }
   try {
     return await tool.handler(args, ctx);

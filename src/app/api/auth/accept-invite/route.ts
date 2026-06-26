@@ -15,7 +15,7 @@ import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
-import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, clientIpRateLimitKey } from '@/lib/api-ratelimit';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
 
@@ -37,10 +37,8 @@ export async function POST(req: NextRequest) {
   // auth.users on hit. Without a cap an attacker could spray candidate
   // tokens to enumerate live invites. 10/hour per source IP allows the
   // legitimate one-shot accept flow with retry headroom.
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || req.headers.get('x-real-ip')?.trim()
-    || '';
-  const ipKey = ipToRateLimitKey(ip);
+  // Non-spoofable client IP (security audit 2026-06-26).
+  const ipKey = clientIpRateLimitKey(req);
   const rl = await checkAndIncrementRateLimit('auth-accept-invite', ipKey);
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

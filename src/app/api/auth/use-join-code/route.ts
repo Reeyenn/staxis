@@ -20,7 +20,7 @@ import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit, logSecurityEvent } from '@/lib/audit';
-import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, trustedClientIp, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
 import { deriveCurrentStep, type OnboardingState } from '@/lib/onboarding/state';
@@ -60,10 +60,11 @@ export async function POST(req: NextRequest) {
   // brute-force low-entropy join codes or just hammer the create-user
   // path. 10/hour per source IP covers any legitimate human while
   // shutting down bot abuse.
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || req.headers.get('x-real-ip')?.trim()
-    || '';
-  const ipKey = ipToRateLimitKey(ip);
+  // Non-spoofable client IP (security audit 2026-06-26: leftmost XFF is
+  // attacker-controlled on Vercel — see trustedClientIp). Reused below as the
+  // diagnostic `ip` on the password-signin-proof row.
+  const clientIp = trustedClientIp(req);
+  const ipKey = ipToRateLimitKey(clientIp);
   const rl = await checkAndIncrementRateLimit('auth-use-join-code', ipKey);
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -346,7 +347,7 @@ export async function POST(req: NextRequest) {
       user_id: authUser.id,
       expires_at: proofExpiresAt,
       user_agent: req.headers.get('user-agent') ?? null,
-      ip: ip || null,
+      ip: clientIp || null,
     });
   if (proofErr) {
     log.warn('[use-join-code] password_signin_proofs write failed (non-fatal)', {
