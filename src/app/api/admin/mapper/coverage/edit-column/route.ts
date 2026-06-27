@@ -37,6 +37,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import {
   DRILLDOWN_ACTION_KEYS,
   UNDELETABLE_COLUMNS_BY_FEED,
+  CONTRACT_COLUMNS_BY_FEED,
   columnsFromAction,
   customColumnsFromAction,
   detectedColumnsFromAction,
@@ -77,8 +78,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (typeof body.feedKey !== 'string' || !FEED_KEY.test(body.feedKey)) {
     return err('feedKey is required', { requestId, status: 400, code: 'bad_request' });
   }
-  const op = body.op === 'delete' ? 'delete' : body.op === 'add-custom' ? 'add-custom' : null;
-  if (!op) return err("op must be 'delete' or 'add-custom'", { requestId, status: 400, code: 'bad_request' });
+  const op = body.op === 'delete' ? 'delete'
+    : body.op === 'add-custom' ? 'add-custom'
+    : body.op === 'set-selector' ? 'set-selector'
+    : null;
+  if (!op) return err("op must be 'delete', 'add-custom' or 'set-selector'", { requestId, status: 400, code: 'bad_request' });
   const feedKey = body.feedKey;
   const hasDraftId = typeof body.draftId === 'string' && UUID.test(body.draftId);
   if (body.draftId !== undefined && !hasDraftId) {
@@ -181,6 +185,48 @@ export async function POST(req: NextRequest): Promise<Response> {
     return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version, {
       edit_op: 'delete_column', feed_key: feedKey, column_name: columnName,
     }, `column_delete:${pmsFamily}:${feedKey}:${columnName}`, 'Removing the column and re-publishing the map…', requestId);
+  }
+
+  // ── op: set-selector (RE-POINT an existing built-in/custom column) ─────────
+  // fix/cua-repoint-column — fix a mis-mapped column (e.g. guest_name reading the
+  // wrong cell or no cell) by pointing it at the correct page column. Unlike
+  // add-custom this ALLOWS a contract column name and REPLACES its selector.
+  if (op === 'set-selector') {
+    const columnName = typeof body.columnName === 'string' ? body.columnName : '';
+    if (!columnName) return err('columnName is required', { requestId, status: 400, code: 'bad_request' });
+
+    // The column must be one the feed already knows — a known/custom column (incl.
+    // a contract column whose selector is currently empty) or a contract column.
+    const isKnown = columnName in knownColumns;
+    const isCustom = columnName in customColumns;
+    const isContract = CONTRACT_COLUMNS_BY_FEED[feedKey]?.has(columnName) ?? false;
+    if (!isKnown && !isCustom && !isContract) {
+      return err(`"${columnName}" isn't a column on this feed.`, { requestId, status: 409, code: 'conflict' });
+    }
+
+    // The new target: a pre-authored per-row positional selector (the UI authors
+    // `td:nth-child(N)` from the picked page column) OR a headerIndex to author here.
+    let selector: string | null = null;
+    const dragSel = typeof body.selector === 'string' ? body.selector.trim() : '';
+    if (dragSel) {
+      if (!/^[a-z]{1,12}:nth-child\(\d{1,3}\)$/.test(dragSel)) {
+        return err('That column selection wasn’t understood — pick it again.', { requestId, status: 400, code: 'bad_request' });
+      }
+      selector = dragSel;
+    } else if (typeof body.headerIndex === 'number' && Number.isInteger(body.headerIndex) && body.headerIndex >= 1 && body.headerIndex <= 999) {
+      selector = authorSelectorForIndex({ ...knownColumns, ...customColumns }, body.headerIndex);
+    } else {
+      return err('Pick which page column this field should read from.', { requestId, status: 400, code: 'bad_request' });
+    }
+    if (!selector) return err('Could not work out where that column is on the page.', { requestId, status: 409, code: 'conflict' });
+
+    if (hasDraftId) {
+      const next = mutateSetColumnSelector(sourceRow.knowledge, feedKey, columnName, selector, isCustom);
+      return persistDraft(sourceRow.id, next, { repointed: true, feedKey, columnName }, requestId);
+    }
+    return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version, {
+      edit_op: 'set_column', feed_key: feedKey, column_name: columnName, selector,
+    }, `column_set:${pmsFamily}:${feedKey}:${columnName}`, 'Re-pointing the column and re-publishing the map…', requestId);
   }
 
   // ── op: add-custom ──────────────────────────────────────────────────────
@@ -436,6 +482,40 @@ function mutateAddCustomColumn(
   // column stays a flat string (byte-identical to the original shape).
   custom[columnKey] = scope === 'page' ? { selector, scope: 'page' } : selector;
   hint.customColumns = custom;
+  parse.hint = hint;
+  action.parse = parse;
+  actions[feedKey] = action;
+  next.actions = actions;
+  return next;
+}
+
+/** Draft mutation: RE-POINT an existing column (core or custom) at a new selector.
+ *  A custom column updates customColumns; a core/contract column updates columns
+ *  AND clears any stale columnsTiered[field] (the runtime prefers the tiered
+ *  header-anchor, so a leftover would silently override the founder's pick). */
+function mutateSetColumnSelector(
+  knowledge: unknown, feedKey: string, columnName: string, selector: string, isCustom: boolean,
+): Record<string, unknown> {
+  const next = cloneKnowledge(knowledge);
+  const actions = (next.actions ?? {}) as Record<string, unknown>;
+  const action = (actions[feedKey] ?? {}) as Record<string, unknown>;
+  const parse = (action.parse ?? {}) as Record<string, unknown>;
+  const hint = (parse.hint ?? {}) as Record<string, unknown>;
+
+  if (isCustom) {
+    const custom = (hint.customColumns ?? {}) as Record<string, unknown>;
+    custom[columnName] = selector; // re-pointed custom columns stay a flat string (per-row)
+    hint.customColumns = custom;
+  } else {
+    const columns = (hint.columns ?? {}) as Record<string, unknown>;
+    columns[columnName] = selector;
+    hint.columns = columns;
+    const tiered = (hint.columnsTiered ?? {}) as Record<string, unknown>;
+    if (columnName in tiered) {
+      delete tiered[columnName];
+      if (Object.keys(tiered).length > 0) hint.columnsTiered = tiered; else delete hint.columnsTiered;
+    }
+  }
   parse.hint = hint;
   action.parse = parse;
   actions[feedKey] = action;

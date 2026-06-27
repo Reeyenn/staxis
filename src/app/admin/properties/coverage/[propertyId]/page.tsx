@@ -623,6 +623,17 @@ export default function CoveragePage() {
       { feedKey: feed.actionKey ?? feed.key, op: 'delete', columnName },
       `Stopped capturing “${columnName}”.`);
 
+  // fix/cua-repoint-column — point a built-in field at the correct page column
+  // (fixes a mis-mapped column, e.g. Guest Name reading the wrong/no cell). The
+  // geometry index IS the body cell index, so td:nth-child(index) is the selector.
+  const repointColumn = (feed: FeedDetail, columnName: string, geometryIndex: number) =>
+    void runColumnEdit(`set:${feed.key}:${columnName}`,
+      { feedKey: feed.actionKey ?? feed.key, op: 'set-selector', columnName, selector: `td:nth-child(${geometryIndex})` },
+      data?.activeMap?.isDraft
+        ? `Pointed “${columnName}” at the right column — saved to your draft (re-read to preview).`
+        : `Pointed “${columnName}” at the right column.`)
+      .then((okFlag) => { if (okFlag) void loadSamples(); });
+
   const addCustomColumn = (feed: FeedDetail) => {
     const columnKey = slugifyHeader(addColName);
     // Three ways to choose the column: a drag-selected per-row COLUMN selector, a
@@ -932,7 +943,31 @@ export default function CoveragePage() {
                                   {c}
                                   {custom && <Caps size={8} c="var(--gold)" style={{ letterSpacing: '.1em' }}>custom</Caps>}
                                 </span>
-                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), wordBreak: 'break-all' }}>{selector}</span>
+                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: (selector && selector.trim()) ? dimWhite(.5) : 'var(--gold)', wordBreak: 'break-all' }}>{(selector && selector.trim()) ? selector : '— unassigned'}</span>
+                                {/* fix/cua-repoint-column — point a BUILT-IN field at the right
+                                    page column. Options = ALL captured page columns (the geometry),
+                                    not just unassigned ones. */}
+                                {!custom && editable && (() => {
+                                  const setBusy = colBusy === `set:${f.key}:${c}`;
+                                  if (setBusy) return <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', color: dimWhite(.5), flexShrink: 0 }} />;
+                                  const geoCols = (captures[capKey]?.geometry?.columns ?? []).filter((g) => g.header && g.header.trim().length > 0);
+                                  if (geoCols.length === 0) {
+                                    return (
+                                      <button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} disabled={!!liveJobId}
+                                        title="Read the page so you can re-point this field"
+                                        style={{ flexShrink: 0, background: 'transparent', border: 'none', color: 'var(--gold)', textDecoration: 'underline', cursor: liveJobId ? 'default' : 'pointer', fontFamily: FONT_MONO, fontSize: 10, padding: 0, opacity: liveJobId ? .5 : 1 }}>re-read to fix</button>
+                                    );
+                                  }
+                                  return (
+                                    <select value="" disabled={!!liveJobId}
+                                      onChange={(e) => { const idx = Number(e.target.value); if (Number.isInteger(idx) && idx >= 1) repointColumn(f, c, idx); }}
+                                      title="Point this field at the correct page column"
+                                      style={{ flexShrink: 0, background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '2px 6px', fontFamily: FONT_SANS, fontSize: 10.5, cursor: 'pointer' }}>
+                                      <option value="" style={{ color: '#000' }}>fix → point at…</option>
+                                      {geoCols.map((g) => <option key={g.index} value={g.index} style={{ color: '#000' }}>{g.header}</option>)}
+                                    </select>
+                                  );
+                                })()}
                               </div>
                             );
                           };
