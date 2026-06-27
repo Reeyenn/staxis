@@ -518,6 +518,14 @@ function mutateSetColumnSelector(
   }
   parse.hint = hint;
   action.parse = parse;
+  // The founder's explicit re-point proves the column — drop it from the action's
+  // unproven list so the feed isn't badged "parked/unproven" after the fix.
+  const unproven = action.unprovenRequiredColumns;
+  if (Array.isArray(unproven)) {
+    const kept = unproven.filter((u) => u !== columnName);
+    if (kept.length > 0) action.unprovenRequiredColumns = kept;
+    else delete action.unprovenRequiredColumns;
+  }
   actions[feedKey] = action;
   next.actions = actions;
   return next;

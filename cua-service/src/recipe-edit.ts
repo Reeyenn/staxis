@@ -431,6 +431,16 @@ async function runSetColumnSelector(
   if (Object.keys(inlineFields).length > 0 || 'fields' in parse) parse.fields = inlineFields;
   action.parse = parse;
 
+  // The founder's explicit re-point IS the proof — drop this column from the
+  // action's unproven list so the feed doesn't stay badged "parked/unproven"
+  // after they fixed it (promote runs no value-cert re-check).
+  const unproven = action.unprovenRequiredColumns;
+  if (Array.isArray(unproven)) {
+    const kept = unproven.filter((u) => u !== columnName);
+    if (kept.length > 0) action.unprovenRequiredColumns = kept;
+    else delete action.unprovenRequiredColumns;
+  }
+
   const newActions: Record<string, unknown> = { ...actions, [feedKey]: action };
 
   return saveAndPromote({
