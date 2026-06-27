@@ -50,18 +50,33 @@ function overlapArea(d: { x: number; y: number; w: number; h: number }, t: { x: 
 
 /**
  * Resolve a freeform drag box (viewport CSS px) to a COLUMN (snap to the
- * column whose strip the box most overlaps), else a standalone VALUE (the value
- * element the box most overlaps), else UNKNOWN. Columns win ties — the founder
- * answered "snap to the whole column." A VALUE only wins when no column
- * overlaps. UNKNOWN when nothing overlaps → the UI asks the founder.
+ * column whose strip the box most overlaps AND whose vertical band the box sits
+ * in), else a standalone VALUE (the value element the box most overlaps), else
+ * UNKNOWN. A column only wins when the drag overlaps the table's vertical band;
+ * a drag in the page header/footer falls through to the VALUE check. UNKNOWN
+ * when nothing overlaps → the UI asks the founder.
  */
 export function resolveDragRegion(
   geometry: ColumnGeometry,
   drag: { x: number; y: number; w: number; h: number },
 ): FreeformResolution {
-  // Columns are vertical strips → horizontal overlap decides (existing helper).
+  // Columns are vertical strips → horizontal overlap picks the candidate column.
   const col = pickColumnFromDrag(geometry, { x: drag.x, w: drag.w });
-  if (col) return { kind: 'column', column: col };
+  // Y-GATE: only treat it as a column if the drag actually overlaps that
+  // column's VERTICAL band (the table). Without this, a drag in the page
+  // header/footer (e.g. the "Guest Count: 23" total sitting ABOVE the table)
+  // that merely lines up left-to-right with a column below would be wrongly
+  // captured as that column's per-row cell. A header/footer drag fails the gate
+  // and falls through to the standalone-VALUE check, where it correctly snaps to
+  // the page value (e.g. #guestCount). In-table drags (header row or body) sit
+  // inside the band — column boxes span the full table height — so they are
+  // unchanged. (column-geometry.test.ts pins both directions.)
+  if (col) {
+    const dragBottom = drag.y + Math.max(0, drag.h);
+    if (drag.y < col.y + col.h && dragBottom > col.y) {
+      return { kind: 'column', column: col };
+    }
+  }
   let bestValue: GeomValue | null = null;
   let bestArea = 0;
   for (const v of geometry.values ?? []) {

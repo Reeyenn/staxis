@@ -76,6 +76,48 @@ describe('resolveDragRegion', () => {
     assert.equal(resolveDragRegion(GEO, { x: 120, y: 60, w: 100, h: 400 }).kind, 'column');
     assert.equal(resolveDragRegion(GEO, { x: 450, y: 695, w: 80, h: 20 }).kind, 'unknown');
   });
+
+  // Regression: the "Guest Count: 23" bug. A page total in the header sits ABOVE
+  // the table but lines up left-to-right with a column below it. The X-only pick
+  // used to mis-resolve it to that column's per-row cell (→ "Check In"). The
+  // Y-gate must make it fall through to the header VALUE (#guestCount) instead.
+  const GEO_HEADER: ColumnGeometry = {
+    ...GEO, // columns span y 50..650
+    values: [
+      { selector: '#guestCount', text: 'Guest Count: 23', x: 110, y: 10, w: 90, h: 25 }, // ABOVE the table
+      { selector: '#roomCount',  text: 'Room Count: 10',  x: 310, y: 10, w: 70, h: 25 }, // ABOVE, over Room #
+    ],
+  };
+
+  test('a header total ABOVE the table, x-aligned over a column, resolves to the VALUE not the column', () => {
+    // y 8..36 is entirely above the column band (50..650); x 110..200 lines up with Guest Name (100..280).
+    const r = resolveDragRegion(GEO_HEADER, { x: 110, y: 8, w: 90, h: 28 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.selector, '#guestCount');
+  });
+
+  test('a second header total above a different column also resolves to its value', () => {
+    const r = resolveDragRegion(GEO_HEADER, { x: 312, y: 8, w: 66, h: 28 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.selector, '#roomCount');
+  });
+
+  test('an in-table drag (header row or body) still resolves to the column — Y-gate does not regress it', () => {
+    // y 60 sits inside the band → column wins even though a header value is x-aligned above.
+    const r = resolveDragRegion(GEO_HEADER, { x: 120, y: 60, w: 100, h: 200 });
+    assert.equal(r.kind, 'column');
+    if (r.kind === 'column') assert.equal(r.column.header, 'Guest Name');
+  });
+
+  test('a drag below the table that x-overlaps a column resolves to a below-table value, not the column', () => {
+    const geo: ColumnGeometry = {
+      ...GEO,
+      values: [{ selector: '#footerTotal', text: 'Total: 23', x: 110, y: 700, w: 90, h: 20 }], // y 700 > band 650
+    };
+    const r = resolveDragRegion(geo, { x: 110, y: 698, w: 90, h: 24 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.selector, '#footerTotal');
+  });
 });
 
 describe('slugifyHeader', () => {
