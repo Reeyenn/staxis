@@ -108,7 +108,7 @@ interface CoverageResponse {
 }
 
 // fix/cua-freeform-capture — the "Captured" panel's per-feed live sample.
-interface FeedSampleData { capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }> }
+interface FeedSampleData { capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }>; pageValues?: Array<{ name: string; value: string }> }
 
 const STATE_PILL: Record<FeedDetail['state'], { tone: PillTone; label: string }> = {
   live: { tone: 'forest', label: 'Live' },
@@ -1168,7 +1168,7 @@ export default function CoveragePage() {
                 const busy = !!recapturing[key];
                 return (
                   <div key={key} style={{ padding: '12px 14px', background: dimWhite(.04), borderRadius: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: s && s.fields.length ? 10 : 0, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: s && (s.fields.length || (s.pageValues?.length ?? 0)) ? 10 : 0, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: FONT_SERIF, fontSize: 15, color: '#fff' }}>{f.label}</span>
                       {s && <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>{s.rowCount} row{s.rowCount === 1 ? '' : 's'}{s.capturedAt && timeAgo(s.capturedAt) ? ` · ${timeAgo(s.capturedAt)}` : ''}</span>}
                       <button
@@ -1179,6 +1179,21 @@ export default function CoveragePage() {
                         {busy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={11} />} {busy ? 'Reading…' : 'Re-read'}
                       </button>
                     </div>
+                    {/* Feed-level PAGE totals (e.g. "Guest Count: 23") — one per feed, shown
+                        distinctly above the per-row columns. */}
+                    {s && s.pageValues && s.pageValues.length > 0 && (
+                      <div style={{ marginBottom: s.fields.length > 0 ? 10 : 0, padding: '7px 10px', background: 'rgba(212,175,55,0.07)', border: '1px solid rgba(212,175,55,0.22)', borderRadius: 8 }}>
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 9.5, letterSpacing: .5, textTransform: 'uppercase', color: 'var(--gold)', marginBottom: 5 }}>Page totals · one per feed</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '4px 16px' }}>
+                          {s.pageValues.map((pv, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 8, fontFamily: FONT_MONO, fontSize: 11.5, minWidth: 0 }}>
+                              <span style={{ color: dimWhite(.55), whiteSpace: 'nowrap' }}>{pv.name}</span>
+                              <span title={pv.value} style={{ color: pv.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pv.value || '— blank'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {s && s.fields.length > 0 ? (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: '5px 16px' }}>
                         {s.fields.map((fld, i) => (
@@ -1188,11 +1203,11 @@ export default function CoveragePage() {
                           </div>
                         ))}
                       </div>
-                    ) : (
+                    ) : (!s || !s.pageValues || s.pageValues.length === 0) ? (
                       <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
                         {busy ? 'Reading the page…' : 'Not read yet — hit Re-read to pull the live values.'}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}

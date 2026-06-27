@@ -621,7 +621,8 @@ export function actionRecipeToTableTemplate(
       for (const [key, entry] of Object.entries(custom)) {
         // fix/cua-freeform-capture — coerce: a flat string is a PER-ROW selector
         // (original shape, byte-identical); an object { selector, scope:'page' }
-        // is a ONE-OFF value read once + stamped on every row.
+        // is a ONE-OFF feed-level value read once and stored ONCE per feed
+        // (pms_feed_values / the sample's pageValues block) — NOT stamped per row.
         const selector = typeof entry === 'string' ? entry : (entry && typeof entry === 'object' ? String((entry as { selector?: unknown }).selector ?? '') : '');
         const scope = typeof entry === 'string' ? 'row' : ((entry as { scope?: unknown })?.scope === 'page' ? 'page' : 'row');
         if (selector.trim() === '' || key in fields || contractCols.has(key)) continue;

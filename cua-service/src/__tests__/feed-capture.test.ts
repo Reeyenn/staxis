@@ -14,6 +14,7 @@ import {
   liveFeedSamplePath,
   buildFeedSample,
   uploadLiveFeedSample,
+  upsertFeedValues,
   type FeedCaptureRow,
   type ColumnGeometry,
 } from '../feed-capture.js';
@@ -231,16 +232,76 @@ test('buildFeedSample clamps long values + coerces non-strings; empty rows → n
 test('uploadLiveFeedSample writes the sample key for non-empty rows; no-op + never throws otherwise', async () => {
   const writes: Array<{ key: string; body: string }> = [];
   const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
-  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: 'A', raw: { x: '1' } }], deps);
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: 'A', raw: { x: '1' } }], undefined, deps);
   assert.equal(writes.length, 1);
   assert.equal(writes[0]!.key, 'live/prop-1/getArrivals.sample.json');
   const parsed = JSON.parse(writes[0]!.body);
   assert.equal(parsed.rowCount, 1);
   assert.equal(parsed.fields.length, 2);
 
-  await uploadLiveFeedSample('prop-1', 'getArrivals', [], deps);
-  assert.equal(writes.length, 1, 'empty rows upload nothing');
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [], undefined, deps);
+  assert.equal(writes.length, 1, 'empty rows + no page values upload nothing');
 
   const boom = { uploadJson: async () => { throw new Error('boom'); }, now: () => 'T' };
-  await assert.doesNotReject(() => uploadLiveFeedSample('p', 'f', [{ a: '1' }], boom));
+  await assert.doesNotReject(() => uploadLiveFeedSample('p', 'f', [{ a: '1' }], undefined, boom));
+});
+
+test('page values ride in a separate pageValues block, NOT mixed into per-row fields', () => {
+  const s = buildFeedSample(
+    [{ guest_name: 'Molina, Felix', room_number: '208' }],
+    'now',
+    { guest_count: '23', room_count: '10' },
+  );
+  // per-row columns unchanged
+  assert.deepEqual(s.fields, [
+    { name: 'guest_name', value: 'Molina, Felix' },
+    { name: 'room_number', value: '208' },
+  ]);
+  // feed-level totals are distinct
+  assert.deepEqual(s.pageValues, [
+    { name: 'guest_count', value: '23' },
+    { name: 'room_count', value: '10' },
+  ]);
+  // no page values → no pageValues key (back-compat)
+  assert.equal('pageValues' in buildFeedSample([{ a: '1' }], 'now'), false);
+});
+
+test('uploadLiveFeedSample previews an EMPTY feed that still has page totals (e.g. "Guest Count: 0")', async () => {
+  const writes: Array<{ key: string; body: string }> = [];
+  const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
+  await uploadLiveFeedSample('p', 'getArrivals', [], { guest_count: '0' }, deps);
+  assert.equal(writes.length, 1, 'empty rows but page totals → still previewed');
+  const parsed = JSON.parse(writes[0]!.body);
+  assert.equal(parsed.rowCount, 0);
+  assert.deepEqual(parsed.pageValues, [{ name: 'guest_count', value: '0' }]);
+});
+
+test('upsertFeedValues: captured → stores fresh; configured-but-empty → flags error preserving last-good; no page columns → no-op; never throws', async () => {
+  const rows: Array<Record<string, unknown>> = [];
+  const deps = { upsert: async (row: Record<string, unknown>) => { rows.push(row); }, now: () => 'T' };
+
+  // captured values → fresh upsert
+  await upsertFeedValues('prop-1', 'getArrivals', { guest_count: '23', room_count: '10' }, true, deps);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.property_id, 'prop-1');
+  assert.equal(rows[0]!.feed_key, 'getArrivals');
+  assert.deepEqual(rows[0]!.values, { guest_count: '23', room_count: '10' });
+  assert.equal(rows[0]!.has_error, false);
+  assert.equal(rows[0]!.last_good_at, 'T');
+
+  // feed HAS page columns but captured nothing → error marker, NO values/last_good_at
+  // in the payload (so the prior good capture is preserved on conflict).
+  await upsertFeedValues('prop-1', 'getArrivals', {}, true, deps);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1]!.has_error, true);
+  assert.equal(rows[1]!.last_error, 'no page values captured');
+  assert.equal('values' in rows[1]!, false, 'error path omits values → preserved on conflict');
+  assert.equal('last_good_at' in rows[1]!, false, 'error path omits last_good_at → preserved');
+
+  // no page columns configured → nothing to track
+  await upsertFeedValues('prop-1', 'getArrivals', undefined, false, deps);
+  assert.equal(rows.length, 2, 'no page columns → no write');
+
+  const boom = { upsert: async () => { throw new Error('boom'); }, now: () => 'T' };
+  await assert.doesNotReject(() => upsertFeedValues('p', 'f', { a: '1' }, true, boom));
 });

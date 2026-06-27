@@ -42,7 +42,7 @@ import {
 // the generic-table-writer driven by mapper-produced TableTemplates
 // is the only write path now.
 import { saveGenericTable } from './persistence/generic-table-writer.js';
-import { captureLiveFeedProvenance } from './feed-capture.js';
+import { captureLiveFeedProvenance, upsertFeedValues } from './feed-capture.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
@@ -1150,6 +1150,13 @@ export class SessionDriver {
           // sees a partial view ('delta') must never trigger auto-resolve.
           { snapshotScope: template.snapshotScope },
         );
+        // Feed-level PAGE values (e.g. "Guest Count: 23") — store ONCE per
+        // (property, feed) in pms_feed_values, NOT stamped onto every row.
+        // Best-effort, never throws; a poll that captured none preserves the
+        // previous good row (last-good semantics).
+        if (template.sourceActionKey) {
+          await upsertFeedValues(this.propertyId, template.sourceActionKey, runResult.feedValues, (template.pageColumns?.length ?? 0) > 0);
+        }
         results.push({
           table: template.tableName,
           ok: saveResult.ok,

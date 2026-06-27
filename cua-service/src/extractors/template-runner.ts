@@ -51,6 +51,12 @@ export interface TemplateRunResult {
    *  including a blank required column the founder then needs to fix — BEFORE the
    *  map is made live. Never consumed by the warehouse writer. */
   sampleRows?: Array<Record<string, unknown>>;
+  /** PAGE-scope custom columns: feed-level scalars (e.g. "Guest Count: 23")
+   *  read ONCE from the page. They describe the whole feed, so the caller stores
+   *  them ONCE per (property, feed) — NOT stamped onto every row — and they're
+   *  read even when the feed has 0 rows. Absent when the feed has no page columns
+   *  (byte-identical with the no-custom path). */
+  feedValues?: Record<string, string>;
 }
 
 /**
@@ -579,11 +585,15 @@ export async function runSingleSourceTemplate(args: {
     };
   }
 
-  // fix/cua-freeform-capture — PAGE-scope custom columns: a one-off value read
-  // ONCE from the page and stamped on every row's `raw`. Best-effort: a missing
-  // selector just yields no value (the column is omitted), never fails the feed.
-  // Skipped entirely when there are no page columns (byte-identical).
-  if (template.pageColumns && template.pageColumns.length > 0 && parsedRows.length > 0) {
+  // fix/cua-freeform-capture — PAGE-scope custom columns: one-off values read
+  // ONCE from the page (e.g. the "Guest Count: 23" header total). They describe
+  // the WHOLE feed, so they're returned as feedValues for the caller to store
+  // ONCE per (property, feed) — NOT stamped onto every row — and they're read
+  // even when the feed has 0 rows (an empty arrivals page still has "Guest
+  // Count: 0"). Best-effort: a missing selector just omits that value, never
+  // fails the feed. Skipped entirely when there are no page columns (byte-identical).
+  let feedValues: Record<string, string> | undefined;
+  if (template.pageColumns && template.pageColumns.length > 0) {
     try {
       const pageVals = await page.evaluate((cols: Array<{ key: string; selector: string }>) => {
         const out: Record<string, string> = {};
@@ -594,12 +604,7 @@ export async function runSingleSourceTemplate(args: {
         }
         return out;
       }, template.pageColumns);
-      if (pageVals && Object.keys(pageVals).length > 0) {
-        for (const row of parsedRows) {
-          const existing = (row.raw && typeof row.raw === 'object') ? (row.raw as Record<string, unknown>) : {};
-          row.raw = { ...existing, ...pageVals };
-        }
-      }
+      if (pageVals && Object.keys(pageVals).length > 0) feedValues = pageVals;
     } catch (err) {
       log.warn('template-runner: page-scope value read failed (non-fatal)', { tableName: template.tableName, message: (err as Error).message });
     }
@@ -617,6 +622,7 @@ export async function runSingleSourceTemplate(args: {
     rows: parsedRows,
     sourceResults: [{ name: source.name, ok: true, rowCount: parsedRows.length }],
     sampleRows: parsedRows,
+    ...(feedValues ? { feedValues } : {}),
   };
 }
 

@@ -155,18 +155,31 @@ export function liveFeedSamplePath(propertyId: string, feedKey: string): string 
  *  row), so the coverage editor's "Captured" panel can show the founder exactly
  *  what's being captured (incl. blanks + custom columns) BEFORE the map is live. */
 export interface FeedSampleField { name: string; value: string }
-export interface FeedSample { capturedAt: string; rowCount: number; fields: FeedSampleField[] }
+export interface FeedSample {
+  capturedAt: string;
+  rowCount: number;
+  fields: FeedSampleField[];
+  /** Feed-level PAGE values (e.g. "Guest Count: 23") — one per feed, shown
+   *  distinctly from per-row columns. Absent when the feed has none. */
+  pageValues?: FeedSampleField[];
+}
 
 /** PURE. Flatten the first row into [{name,value}] — top-level columns first,
- *  then the `raw` jsonb sub-keys (custom/extra columns), values clamped. */
-export function buildFeedSample(rows: Array<Record<string, unknown>>, capturedAt: string): FeedSample {
-  const fields: FeedSampleField[] = [];
-  const first = rows[0];
+ *  then the `raw` jsonb sub-keys (custom/extra columns), values clamped. Feed-
+ *  level page values (if any) go in a separate `pageValues` block, NOT mixed
+ *  into the per-row fields. */
+export function buildFeedSample(
+  rows: Array<Record<string, unknown>>,
+  capturedAt: string,
+  feedValues?: Record<string, string>,
+): FeedSample {
   const clamp = (v: unknown): string => {
     if (v === null || v === undefined) return '';
     const s = typeof v === 'string' ? v : (typeof v === 'number' || typeof v === 'boolean') ? String(v) : '';
     return s.length > 140 ? s.slice(0, 140) + '…' : s;
   };
+  const fields: FeedSampleField[] = [];
+  const first = rows[0];
   if (first && typeof first === 'object') {
     for (const [k, v] of Object.entries(first)) {
       if (k === 'raw') continue;
@@ -179,21 +192,32 @@ export function buildFeedSample(rows: Array<Record<string, unknown>>, capturedAt
       }
     }
   }
-  return { capturedAt, rowCount: rows.length, fields };
+  const pageValues: FeedSampleField[] = feedValues
+    ? Object.entries(feedValues).map(([name, v]) => ({ name, value: clamp(v) }))
+    : [];
+  return {
+    capturedAt,
+    rowCount: rows.length,
+    fields,
+    ...(pageValues.length > 0 ? { pageValues } : {}),
+  };
 }
 
-/** Upsert the live sample for one feed. Best-effort: never throws. No-op when
- *  there are no rows (nothing to preview). */
+/** Upsert the live sample for one feed. Best-effort: never throws. No-op only
+ *  when there is nothing to preview (no rows AND no feed-level page values — so
+ *  an empty feed that still has a "Guest Count: 0" total IS previewed). */
 export async function uploadLiveFeedSample(
   propertyId: string,
   feedKey: string,
   rows: Array<Record<string, unknown>>,
+  feedValues?: Record<string, string>,
   deps?: { uploadJson?: (key: string, body: string) => Promise<void>; now?: () => string },
 ): Promise<void> {
   try {
-    if (!rows || rows.length === 0) return;
+    const hasPage = !!feedValues && Object.keys(feedValues).length > 0;
+    if ((!rows || rows.length === 0) && !hasPage) return;
     const now = deps?.now ? deps.now() : new Date().toISOString();
-    const sample = buildFeedSample(rows, now);
+    const sample = buildFeedSample(rows ?? [], now, feedValues);
     const body = JSON.stringify(sample);
     if (deps?.uploadJson) { await deps.uploadJson(liveFeedSamplePath(propertyId, feedKey), body); return; }
     const { supabase } = await import('./supabase.js');
@@ -203,6 +227,64 @@ export async function uploadLiveFeedSample(
     if (error) throw new Error(error.message);
   } catch (err) {
     log.warn('feed-capture: live sample upload failed (non-fatal)', { propertyId, feedKey, err: (err as Error).message });
+  }
+}
+
+/** Durably store a feed's PAGE values ONCE per (property, feed) in
+ *  pms_feed_values (migration 0291) — the feed-level home for one-off totals
+ *  like "Guest Count: 23", instead of stamping them onto every data row.
+ *  Best-effort: never throws.
+ *
+ *  Three cases (mirrors pms_in_house_snapshot's last-good semantics):
+ *   - captured values → upsert them fresh (has_error=false, refresh last_good_at).
+ *   - the feed HAS page columns but captured NOTHING (selector drift / layout
+ *     change) → flag has_error=true WITHOUT clobbering the previous good `values`
+ *     or `last_good_at` (partial upsert: those columns are omitted, so they're
+ *     preserved on conflict and just default on a first-ever insert). So the
+ *     durable store says "stale-but-true" instead of silently looking fresh.
+ *   - the feed has NO page columns → nothing to track, no-op. */
+export async function upsertFeedValues(
+  propertyId: string,
+  feedKey: string,
+  feedValues?: Record<string, string>,
+  hasPageColumns?: boolean,
+  deps?: { upsert?: (row: Record<string, unknown>) => Promise<void>; now?: () => string },
+): Promise<void> {
+  try {
+    const captured = !!feedValues && Object.keys(feedValues).length > 0;
+    if (!captured && !hasPageColumns) return; // no page columns → nothing to store
+    const now = deps?.now ? deps.now() : new Date().toISOString();
+    // Bound the jsonb defensively (the DB path, unlike the sample, isn't clamped
+    // upstream): cap key count + per-value length so a runaway page element can't
+    // bloat the row.
+    let values: Record<string, string> | undefined;
+    if (captured) {
+      values = {};
+      for (const [k, v] of Object.entries(feedValues!)) {
+        if (Object.keys(values).length >= 50) break;
+        const s = typeof v === 'string' ? v : String(v ?? '');
+        values[k] = s.length > 500 ? s.slice(0, 500) : s;
+      }
+    }
+    const row: Record<string, unknown> = captured
+      ? {
+          property_id: propertyId, feed_key: feedKey, values,
+          captured_at: now, last_good_at: now,
+          has_error: false, last_error: null, last_error_at: null, last_synced_at: now,
+        }
+      // configured-but-empty → flag error, OMIT values + last_good_at so the
+      // previous good capture is preserved (and just defaults on first insert).
+      : {
+          property_id: propertyId, feed_key: feedKey,
+          captured_at: now,
+          has_error: true, last_error: 'no page values captured', last_error_at: now, last_synced_at: now,
+        };
+    if (deps?.upsert) { await deps.upsert(row); return; }
+    const { supabase } = await import('./supabase.js');
+    const { error } = await supabase.from('pms_feed_values').upsert(row, { onConflict: 'property_id,feed_key' });
+    if (error) throw new Error(error.message);
+  } catch (err) {
+    log.warn('feed-capture: feed-values upsert failed (non-fatal)', { propertyId, feedKey, err: (err as Error).message });
   }
 }
 
