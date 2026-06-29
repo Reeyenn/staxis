@@ -151,16 +151,23 @@ describe('resolveDragRegion — label vs. datum (the "Guest Count: 13" bug)', ()
     assert.equal(r.kind === 'value' && r.value.selector, '#guestCount');
   });
 
-  test('a drag on only the label (no datum under it) falls back to the label', () => {
+  test('dragging ONLY the words "Guest Count:" redirects to the number beside it', () => {
+    // The founder's real failure: dragging the prominent caption, not the tiny number.
     const r = resolveDragRegion(PAIR, { x: 52, y: 165, w: 70, h: 30 }); // 52-122, ends before the number at 126
     assert.equal(r.kind, 'value');
-    if (r.kind === 'value') assert.equal(r.value.text, 'Guest Count:');
+    if (r.kind === 'value') {
+      assert.equal(r.value.selector, '#guestCount'); // captured the value the caption describes
+      assert.equal(r.value.text, '13');
+      assert.equal(r.labelText, 'Guest Count:');     // named from the caption
+    }
   });
 
-  test('a drag that only edge-clips a neighbouring number does not steal it (threshold)', () => {
-    const r = resolveDragRegion(PAIR, { x: 52, y: 165, w: 77, h: 30 }); // 52-129: clips only ~3px of the number
-    assert.equal(r.kind, 'value');
-    if (r.kind === 'value') assert.equal(r.value.text, 'Guest Count:');
+  test('label-redirect picks the NEAREST datum to the right, not a far one', () => {
+    // Dragging "Guest Count:" must yield its OWN number (13), never Room Count\'s (8).
+    const r = resolveDragRegion(PAIR, { x: 52, y: 165, w: 74, h: 30 });
+    assert.equal(r.kind === 'value' && r.value.selector, '#guestCount');
+    const r2 = resolveDragRegion(PAIR, { x: 158, y: 165, w: 74, h: 30 }); // "Room Count:"
+    assert.equal(r2.kind === 'value' && r2.value.selector, '#roomCount');
   });
 
   test('a lone colon-label with no datum nearby still resolves to it (not unknown)', () => {
@@ -203,6 +210,42 @@ describe('resolveDragRegion — label vs. datum (the "Guest Count: 13" bug)', ()
     const r = resolveDragRegion(PAIR, { x: 156, y: 162, w: 97, h: 36 }); // "Room Count: 8"
     assert.equal(r.kind, 'value');
     if (r.kind === 'value') { assert.equal(r.value.selector, '#roomCount'); assert.equal(r.labelText, 'Room Count:'); }
+  });
+
+  // Codex guards — the redirect must NOT over-reach.
+  test('a label whose only datum is FAR to the right does not redirect to it (stays the label)', () => {
+    const geo: ColumnGeometry = { viewport: { w: 1280, h: 800 }, columns: PAIR.columns, values: [
+      { selector: 'div > label', text: 'Guest Count:', x: 52,  y: 166, w: 74, h: 30 }, // ends at x126
+      { selector: '#far',         text: '999',          x: 600, y: 166, w: 30, h: 30 }, // gap 474 >> cap
+    ] };
+    const r = resolveDragRegion(geo, { x: 52, y: 165, w: 70, h: 30 }); // drag only the caption
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.text, 'Guest Count:'); // no adjacent datum → keep the label
+  });
+
+  test('a datum stacked BELOW a label (not beside it) does not redirect', () => {
+    const geo: ColumnGeometry = { viewport: { w: 1280, h: 800 }, columns: PAIR.columns, values: [
+      { selector: 'div > label', text: 'Guest Count:', x: 52, y: 166, w: 74, h: 30 },
+      { selector: '#below',       text: '13',           x: 52, y: 210, w: 25, h: 30 }, // directly below, no vertical overlap
+    ] };
+    const r = resolveDragRegion(geo, { x: 52, y: 165, w: 74, h: 30 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.text, 'Guest Count:'); // below ≠ beside → keep the label
+  });
+
+  test('two captions in a row: dragging the FIRST does not claim the SECOND caption\'s value', () => {
+    const geo: ColumnGeometry = { viewport: { w: 1280, h: 800 }, columns: PAIR.columns, values: [
+      { selector: 'l1', text: 'Room Type:', x: 52,  y: 166, w: 90, h: 30 }, // ends 142
+      { selector: 'l2', text: 'Guests:',    x: 150, y: 166, w: 60, h: 30 }, // ends 210
+      { selector: '#g', text: '4',          x: 215, y: 166, w: 20, h: 30 }, // belongs to "Guests:"
+    ] };
+    // drag "Room Type:" → "4" sits past the next caption "Guests:" → no redirect, keep the label
+    const r1 = resolveDragRegion(geo, { x: 52, y: 165, w: 90, h: 30 });
+    assert.equal(r1.kind === 'value' && r1.value.text, 'Room Type:');
+    // drag "Guests:" → "4" is its adjacent datum → redirect, named "Guests:"
+    const r2 = resolveDragRegion(geo, { x: 150, y: 165, w: 60, h: 30 });
+    assert.equal(r2.kind, 'value');
+    if (r2.kind === 'value') { assert.equal(r2.value.selector, '#g'); assert.equal(r2.labelText, 'Guests:'); }
   });
 });
 

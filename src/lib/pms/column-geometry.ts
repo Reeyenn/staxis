@@ -115,22 +115,63 @@ export function resolveDragRegion(
     const lbl = nearestLeftLabel(bestDatum, geometry.values ?? []) ?? bestLabel?.text;
     return lbl ? { kind: 'value', value: bestDatum, labelText: lbl } : { kind: 'value', value: bestDatum };
   }
-  if (bestLabel) return { kind: 'value', value: bestLabel };
+  if (bestLabel) {
+    // A caption ("Guest Count:") is NEVER the thing the founder wants — they want
+    // the value it describes. So when the drag landed only on a label, REDIRECT
+    // to the datum beside it (the non-label value to its right on the same row).
+    // This is what makes dragging the prominent words "Guest Count:" still
+    // capture "13". Only a lone label with nothing beside it stays a label.
+    const adj = nearestRightDatum(bestLabel, geometry.values ?? []);
+    if (adj) return { kind: 'value', value: adj, labelText: bestLabel.text };
+    return { kind: 'value', value: bestLabel };
+  }
   if (bestAnyDatum) return { kind: 'value', value: bestAnyDatum };
   return { kind: 'unknown' };
 }
 
+/** Two boxes share a ROW when their vertical extents overlap by at least half the
+ *  shorter box — a real overlap test, so a box stacked ABOVE/BELOW (no vertical
+ *  overlap) is never treated as same-row. */
+function sameRow(a: GeomValue, b: GeomValue): boolean {
+  const overlapY = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return overlapY >= 0.5 * Math.min(a.h, b.h);
+}
+
+/** The DATUM a label describes: the nearest non-label value IMMEDIATELY to the
+ *  label's right on the same row ("13" for "Guest Count:"). Lets a drag that
+ *  landed only on the caption still capture the value beside it. Guards (Codex):
+ *  must be on the same row (vertical overlap), within an adjacency gap (so a
+ *  far-off cell isn't grabbed), and not past the NEXT caption to the right (so
+ *  "Room Type: Guests: 4" doesn't name "4" as "Room Type"). Undefined → the
+ *  caller keeps the label. */
+function nearestRightDatum(label: GeomValue, values: GeomValue[]): GeomValue | undefined {
+  const labelRight = label.x + label.w;
+  const gapCap = Math.max(80, label.h, ...values.map((v) => v.h));
+  // the next caption to the right bounds how far this label's value can sit.
+  let boundaryX = Infinity;
+  for (const v of values) {
+    if (v === label || !isLabelText(v.text) || !sameRow(label, v)) continue;
+    if (v.x > label.x && v.x < boundaryX) boundaryX = v.x;
+  }
+  let best: GeomValue | null = null;
+  for (const v of values) {
+    if (v === label || isLabelText(v.text) || !sameRow(label, v)) continue; // a real datum, same row
+    if (v.x < label.x || v.x >= boundaryX) continue;     // to the right, before the next caption
+    if (v.x - labelRight > gapCap) continue;             // adjacent, not a distant cell
+    if (!best || v.x < best.x) best = v;                 // nearest from the left
+  }
+  return best ?? undefined;
+}
+
 /** The colon-label sitting just LEFT of a datum on the same row ("Guest Count:"
  *  for "13") — the caption to name the captured value after, even when the drag
- *  wrapped only the number. Same row = vertical centres within the datum's
- *  height; nearest = greatest x at-or-left of the datum. */
+ *  wrapped only the number. Nearest = greatest x at-or-left of the datum. */
 function nearestLeftLabel(datum: GeomValue, values: GeomValue[]): string | undefined {
   let best: GeomValue | null = null;
   for (const v of values) {
-    if (v === datum || !isLabelText(v.text)) continue;
-    if (Math.abs(v.y - datum.y) > Math.max(datum.h, v.h)) continue; // same row
-    if (v.x > datum.x) continue;                                    // to the left
-    if (!best || v.x > best.x) best = v;                            // closest from the left
+    if (v === datum || !isLabelText(v.text) || !sameRow(datum, v)) continue;
+    if (v.x > datum.x) continue;                  // to the left
+    if (!best || v.x > best.x) best = v;          // closest from the left
   }
   return best?.text;
 }
