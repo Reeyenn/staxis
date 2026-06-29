@@ -38,8 +38,16 @@ export interface ColumnGeometry {
  *  nothing recognizable (→ the UI asks the founder). */
 export type FreeformResolution =
   | { kind: 'column'; column: GeomColumn }
-  | { kind: 'value'; value: GeomValue }
+  | { kind: 'value'; value: GeomValue; labelText?: string }
   | { kind: 'unknown' };
+
+/** A "label" is the static caption text beside a datum — it ends in a colon
+ *  ("Guest Count:", "Room Count:"). The thing the founder actually wants is the
+ *  datum next to it ("13"), not the caption. Handles the full-width colon used
+ *  in some localized PMS UIs. */
+function isLabelText(t: string): boolean {
+  return /[:：]\s*$/.test(t.trim());
+}
 
 /** Area of overlap between a drag box and a target box (px²). */
 function overlapArea(d: { x: number; y: number; w: number; h: number }, t: { x: number; y: number; w: number; h: number }): number {
@@ -77,14 +85,54 @@ export function resolveDragRegion(
       return { kind: 'column', column: col };
     }
   }
-  let bestValue: GeomValue | null = null;
-  let bestArea = 0;
+  // A header total renders as TWO boxes side by side: a wide LABEL ("Guest
+  // Count:") and the narrow DATUM next to it ("13"). Raw max-overlap would pick
+  // the wider label, so prefer a NON-label datum — but only one that's
+  // MEANINGFULLY covered (≥half its own box, or ≥15% of the drag), so a stray
+  // edge-clip of a neighbour can't win. The threshold is judged PER candidate:
+  // track the best *qualifying* datum separately from the best by raw overlap,
+  // so a big edge-clipped value can't shadow a small fully-covered one.
+  const dragArea = Math.max(1, Math.max(0, drag.w) * Math.max(0, drag.h));
+  let bestDatum: GeomValue | null = null, bestDatumArea = 0;       // qualifying non-label, max overlap
+  let bestAnyDatum: GeomValue | null = null, bestAnyDatumArea = 0; // any non-label (clip-only fallback)
+  let bestLabel: GeomValue | null = null, bestLabelArea = 0;
   for (const v of geometry.values ?? []) {
     const a = overlapArea(drag, v);
-    if (a > bestArea) { bestArea = a; bestValue = v; }
+    if (a <= 0) continue;
+    if (isLabelText(v.text)) {
+      if (a > bestLabelArea) { bestLabelArea = a; bestLabel = v; }
+      continue;
+    }
+    if (a > bestAnyDatumArea) { bestAnyDatumArea = a; bestAnyDatum = v; }
+    const valArea = Math.max(1, v.w * v.h);
+    if ((a >= 0.5 * valArea || a >= 0.15 * dragArea) && a > bestDatumArea) { bestDatumArea = a; bestDatum = v; }
   }
-  if (bestValue) return { kind: 'value', value: bestValue };
+  // Order: a qualifying datum wins; else a label the founder dragged; else a
+  // clip-only datum (better than nothing); else unknown. On a datum, carry the
+  // adjacent caption as a NAMING hint so "13" auto-names "guest_count" not
+  // "c_13" — even on a tight drag that didn't cover the label itself.
+  if (bestDatum) {
+    const lbl = nearestLeftLabel(bestDatum, geometry.values ?? []) ?? bestLabel?.text;
+    return lbl ? { kind: 'value', value: bestDatum, labelText: lbl } : { kind: 'value', value: bestDatum };
+  }
+  if (bestLabel) return { kind: 'value', value: bestLabel };
+  if (bestAnyDatum) return { kind: 'value', value: bestAnyDatum };
   return { kind: 'unknown' };
+}
+
+/** The colon-label sitting just LEFT of a datum on the same row ("Guest Count:"
+ *  for "13") — the caption to name the captured value after, even when the drag
+ *  wrapped only the number. Same row = vertical centres within the datum's
+ *  height; nearest = greatest x at-or-left of the datum. */
+function nearestLeftLabel(datum: GeomValue, values: GeomValue[]): string | undefined {
+  let best: GeomValue | null = null;
+  for (const v of values) {
+    if (v === datum || !isLabelText(v.text)) continue;
+    if (Math.abs(v.y - datum.y) > Math.max(datum.h, v.h)) continue; // same row
+    if (v.x > datum.x) continue;                                    // to the left
+    if (!best || v.x > best.x) best = v;                            // closest from the left
+  }
+  return best?.text;
 }
 
 /**

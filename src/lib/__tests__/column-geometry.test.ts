@@ -120,6 +120,92 @@ describe('resolveDragRegion', () => {
   });
 });
 
+// A header total renders as a wide LABEL ("Guest Count:") + the narrow DATUM next
+// to it ("13") as two separate boxes. The real-page proof: dragging the whole
+// "Guest Count: 13" must capture the NUMBER, not the wider label. (The other
+// fixtures collapse label+number into one box and can't exercise this.)
+describe('resolveDragRegion — label vs. datum (the "Guest Count: 13" bug)', () => {
+  const PAIR: ColumnGeometry = {
+    viewport: { w: 1280, h: 800 },
+    columns: [{ index: 3, header: 'Guest Name', x: 100, y: 280, w: 180, h: 400 }], // table below the header
+    values: [
+      { selector: 'div:nth-of-type(1) > label', text: 'Guest Count:', x: 52,  y: 166, w: 74, h: 30 },
+      { selector: '#guestCount',                 text: '13',           x: 126, y: 166, w: 25, h: 30 },
+      { selector: 'div:nth-of-type(3) > label', text: 'Room Count:',  x: 158, y: 166, w: 74, h: 30 },
+      { selector: '#roomCount',                  text: '8',            x: 232, y: 166, w: 19, h: 30 },
+    ],
+  };
+
+  test('dragging the WHOLE "Guest Count: 13" captures the NUMBER, not the label', () => {
+    const r = resolveDragRegion(PAIR, { x: 50, y: 162, w: 103, h: 36 }); // covers label(52-126) + number(126-151)
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') {
+      assert.equal(r.value.selector, '#guestCount');
+      assert.equal(r.value.text, '13');
+      assert.equal(r.labelText, 'Guest Count:'); // naming hint → "guest_count", not "c_13"
+    }
+  });
+
+  test('a tight drag on just the number also captures it', () => {
+    const r = resolveDragRegion(PAIR, { x: 125, y: 165, w: 27, h: 32 });
+    assert.equal(r.kind === 'value' && r.value.selector, '#guestCount');
+  });
+
+  test('a drag on only the label (no datum under it) falls back to the label', () => {
+    const r = resolveDragRegion(PAIR, { x: 52, y: 165, w: 70, h: 30 }); // 52-122, ends before the number at 126
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.text, 'Guest Count:');
+  });
+
+  test('a drag that only edge-clips a neighbouring number does not steal it (threshold)', () => {
+    const r = resolveDragRegion(PAIR, { x: 52, y: 165, w: 77, h: 30 }); // 52-129: clips only ~3px of the number
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.text, 'Guest Count:');
+  });
+
+  test('a lone colon-label with no datum nearby still resolves to it (not unknown)', () => {
+    const geo: ColumnGeometry = { viewport: { w: 1280, h: 800 }, columns: PAIR.columns,
+      values: [{ selector: 'div > label', text: 'Helpful Information:', x: 1093, y: 200, w: 107, h: 20 }] };
+    const r = resolveDragRegion(geo, { x: 1095, y: 202, w: 100, h: 16 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.text, 'Helpful Information:');
+  });
+
+  test('a single combined "Guest Count: 39" box (no trailing colon) resolves unchanged', () => {
+    const geo: ColumnGeometry = { viewport: { w: 1280, h: 800 }, columns: PAIR.columns,
+      values: [{ selector: '#guestCount', text: 'Guest Count: 39', x: 100, y: 166, w: 140, h: 20 }] };
+    const r = resolveDragRegion(geo, { x: 100, y: 165, w: 140, h: 22 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.selector, '#guestCount');
+  });
+
+  test('a fully-covered small datum beats a big edge-clipped value with MORE raw overlap', () => {
+    const geo: ColumnGeometry = { viewport: { w: 1280, h: 800 }, columns: PAIR.columns, values: [
+      { selector: 'div > span', text: 'Some Wide Header', x: 50, y: 166, w: 180, h: 30 }, // big non-label, box 5400
+      { selector: '#guestCount', text: '13',              x: 500, y: 166, w: 25, h: 30 }, // small, box 750
+    ] };
+    // drag 200..800: clips the wide one (200-230 = 900px², fails threshold) but fully covers "13" (qualifies).
+    const r = resolveDragRegion(geo, { x: 200, y: 160, w: 600, h: 30 });
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') assert.equal(r.value.selector, '#guestCount'); // the qualifying datum, not the bigger clip
+  });
+
+  test('a tight drag on just the number still auto-names from the adjacent label', () => {
+    const r = resolveDragRegion(PAIR, { x: 125, y: 165, w: 27, h: 32 }); // wraps only "13", not the caption
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') {
+      assert.equal(r.value.selector, '#guestCount');
+      assert.equal(r.labelText, 'Guest Count:'); // found the caption to its left → "guest_count"
+    }
+  });
+
+  test('Room Count "8" names from the NEAREST left caption (Room Count:), not Guest Count:', () => {
+    const r = resolveDragRegion(PAIR, { x: 156, y: 162, w: 97, h: 36 }); // "Room Count: 8"
+    assert.equal(r.kind, 'value');
+    if (r.kind === 'value') { assert.equal(r.value.selector, '#roomCount'); assert.equal(r.labelText, 'Room Count:'); }
+  });
+});
+
 describe('slugifyHeader', () => {
   test('humanizes common headers', () => {
     assert.equal(slugifyHeader('Rate Plan'), 'rate_plan');

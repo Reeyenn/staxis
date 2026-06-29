@@ -1009,7 +1009,9 @@ export default function CoveragePage() {
                                           setAddColScope('page');
                                           setAddColSelector(r.value.selector);
                                           setAddColIndex('');
-                                          setAddColName(slugifyValue(r.value.text));
+                                          // Name from the label beside the datum when present ("Guest
+                                          // Count:" → guest_count), else the value text. (Editable.)
+                                          setAddColName(slugifyValue(r.labelText ?? r.value.text));
                                           setDragColFeed(null);
                                         }
                                         // unknown → DragToCaptureView shows "couldn't tell…"; stay in drag mode so the founder can re-drag (the human-loop).
