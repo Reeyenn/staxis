@@ -164,6 +164,7 @@ function fakeCsvPage(csvText: string) {
     async selectOption() { /* noop */ },
     async fill() { /* noop */ },
     async waitForSelector() { /* noop */ },
+    async waitForFunction() { return true; },
     async waitForTimeout() { /* noop */ },
     async waitForEvent() { return { createReadStream: async () => Readable.from([Buffer.from(csvText, 'utf8')]) }; },
   };
@@ -275,6 +276,7 @@ function fakeInlinePage(bySelector: Record<string, string>) {
       return out;
     },
     async waitForSelector() { /* noop */ },
+    async waitForFunction() { return true; },
   } as unknown as Page;
 }
 

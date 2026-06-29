@@ -419,7 +419,23 @@ async function scrapeCssRows(
   return page.$$eval(
     rowSelector,
     (els: Element[], args: { pairs: Array<{ field: string; css: string; attr: string | null }>; cap: number }) => {
-      const rows = els.slice(0, args.cap).map((el: Element) => {
+      // Skip NON-RENDERED rows BEFORE the cap. A PMS commonly keeps a hidden
+      // JS template/prototype row as the first child of the tbody (e.g. Choice
+      // Advantage's <tr id="roomConditionRow"> display:none) — reading it would
+      // inject a blank junk row AND consume a cap slot. Drop display:none /
+      // visibility:hidden / [hidden] / zero-box rows. A rect-only check misses
+      // visibility:hidden (it keeps a layout box), so check computed style too.
+      // Never drop on a predicate error (fault-isolate, like the per-cell try).
+      const rendered = els.filter((el: Element) => {
+        try {
+          if (el.hasAttribute('hidden')) return false;
+          const s = getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 || r.height > 0;
+        } catch { return true; }
+      });
+      const rows = rendered.slice(0, args.cap).map((el: Element) => {
         const out: Record<string, string> = {};
         for (const p of args.pairs) {
           // Per-selector fault isolation: one syntactically-invalid CSS
@@ -441,7 +457,10 @@ async function scrapeCssRows(
         }
         return out;
       });
-      return { rows, totalMatched: els.length };
+      // Report the VISIBLE count so the over-cap (too_many_rows) branch and the
+      // mapper's deadness/row-count telemetry classify on real rows, not a phantom
+      // inflated by hidden template rows.
+      return { rows, totalMatched: rendered.length };
     },
     { pairs, cap },
   );
@@ -461,7 +480,18 @@ async function scrapeXpathColumns(
   return page.$$eval(
     rowSelector,
     (els: Element[], args: { entries: Array<[string, string]>; cap: number }) => {
-      return els.slice(0, args.cap).map((el: Element) => {
+      // Same visible-row filter as scrapeCssRows so the xpath read stays index-
+      // aligned with the css read (the two are merged by row index downstream).
+      const rendered = els.filter((el: Element) => {
+        try {
+          if (el.hasAttribute('hidden')) return false;
+          const s = getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 || r.height > 0;
+        } catch { return true; }
+      });
+      return rendered.slice(0, args.cap).map((el: Element) => {
         const out: Record<string, string> = {};
         for (const [field, xp] of args.entries) {
           let val = '';
@@ -528,7 +558,20 @@ async function extractDomRowsTiered(
   let rowIsXpath = false;
   if (opts.rowSelectorTiered?.xpath) {
     let cssCount = -1;
-    try { cssCount = await page.$$eval(rowSelector, (els: Element[]) => els.length); } catch { cssCount = -1; }
+    // Count VISIBLE rows, not raw matches: if the css matches ONLY a hidden
+    // template/prototype row (raw 1, visible 0), the reader would filter it to 0 —
+    // so the xpath tier must engage to self-heal, exactly as on a real css break.
+    try {
+      cssCount = await page.$$eval(rowSelector, (els: Element[]) => els.filter((el: Element) => {
+        try {
+          if (el.hasAttribute('hidden')) return false;
+          const s = getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 || r.height > 0;
+        } catch { return true; }
+      }).length);
+    } catch { cssCount = -1; }
     if (cssCount <= 0) {
       effectiveRowSelector = `xpath=${opts.rowSelectorTiered.xpath}`;
       rowSelectorTier = 'xpath';

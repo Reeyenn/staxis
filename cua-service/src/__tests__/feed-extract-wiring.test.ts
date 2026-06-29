@@ -189,6 +189,7 @@ function fakeDomPage(rows: Array<Record<string, string>>) {
     async selectOption(sel: string, value: string) { calls.push(`select:${sel}=${value}`); },
     async fill(sel: string, value: string) { calls.push(`fill:${sel}=${value}`); },
     async waitForSelector(sel: string) { calls.push(`wait_for:${sel}`); },
+    async waitForFunction() { return true; }, // render-settle (degrades to read); intentionally not pushed to calls
     async waitForTimeout(ms: number) { calls.push(`wait_ms:${ms}`); },
     keyboard: {
       async type(t: string) { calls.push(`type:${t}`); },

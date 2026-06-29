@@ -29,7 +29,8 @@ export interface DomInlineResult {
   reason?: string;
 }
 
-const WAIT_TIMEOUT_MS = 15_000;
+const WAIT_TIMEOUT_MS = Number(process.env.CUA_ROW_WAIT_MS) || 15_000;
+const RENDER_SETTLE_MS = Number(process.env.CUA_ROW_RENDER_MS) || 5_000;
 
 export async function extractDomInline(opts: DomInlineOptions): Promise<DomInlineResult> {
   const { page, feedSpec, allowedHost, signal } = opts;
@@ -54,20 +55,57 @@ export async function extractDomInline(opts: DomInlineOptions): Promise<DomInlin
   // Wait for at least one of the requested selectors to materialize.
   const firstSelector = Object.values(fields)[0];
   if (firstSelector) {
+    // Gate on PRESENCE (state:'attached'), not the default 'visible' — a hidden
+    // template node first in the match set (PMS-agnostic, the dom-table twin) would
+    // otherwise hang the full timeout. Then a bounded best-effort wait for a
+    // visible node to render (degrade to read); the read below picks the first
+    // visible node.
     try {
-      await page.waitForSelector(firstSelector, { timeout: WAIT_TIMEOUT_MS });
+      await page.waitForSelector(firstSelector, { state: 'attached', timeout: WAIT_TIMEOUT_MS });
     } catch (err) {
       return { ok: false, data: {}, reason: `selector did not appear: ${(err as Error).message}` };
     }
+    await page.waitForFunction(
+      (sel: string) => {
+        let els: Element[] = [];
+        try { els = Array.from(document.querySelectorAll(sel)); } catch { return true; }
+        return els.some((el: Element) => {
+          try {
+            if (el.hasAttribute('hidden')) return false;
+            const s = getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 || r.height > 0;
+          } catch { return true; }
+        });
+      },
+      firstSelector,
+      { timeout: RENDER_SETTLE_MS },
+    ).catch(() => { /* degrade to read */ });
   }
 
   if (signal?.aborted) return { ok: false, data: {}, reason: 'aborted' };
 
   try {
     const data = await page.evaluate((fieldsMap: Record<string, string>) => {
+      // Pick the first VISIBLE matching node, not just the first match (which can
+      // be a hidden template node), falling back to the first match if none render.
+      const isRendered = (el: Element): boolean => {
+        try {
+          if (el.hasAttribute('hidden')) return false;
+          const s = getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden') return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 || r.height > 0;
+        } catch { return true; }
+      };
       const out: Record<string, string | null> = {};
       for (const [field, sel] of Object.entries(fieldsMap)) {
-        const el = document.querySelector(sel);
+        let el: Element | null = null;
+        try {
+          const all = Array.from(document.querySelectorAll(sel));
+          el = all.find(isRendered) ?? all[0] ?? null;
+        } catch { el = null; }
         out[field] = el ? (el.textContent ?? '').trim() : null;
       }
       return out;

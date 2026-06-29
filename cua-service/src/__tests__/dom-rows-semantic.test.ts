@@ -481,3 +481,71 @@ describe('readTableHeaders + offset body (fix/cua-header-offset)', () => {
     assert.equal(headerGateOk(h), false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hidden template/prototype row filtering (PMS-AGNOSTIC). A PMS commonly keeps a
+// hidden JS-cloned template row as the FIRST child of the tbody (e.g. Choice
+// Advantage's <tr id="roomConditionRow">). The reader must skip it so it never
+// becomes a blank junk row, never consumes a cap slot, and never poisons the
+// first-row preview sample — for EVERY PMS, not just CA.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('hidden template-row filtering', () => {
+  const COLS = { room: 'td:nth-child(1)', status: 'td:nth-child(2)' };
+  const go = async (html: string) => { await page!.goto(dataUrl(`<table><tbody>${html}</tbody></table>`)); };
+
+  test('display:none leading template row is skipped; only the real rows read', async () => {
+    await go(`<tr id="proto" style="display:none"><td>X</td><td>X</td></tr>
+              <tr><td>101</td><td>Clean</td></tr><tr><td>102</td><td>Dirty</td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 50 });
+    assert.equal(r.rows.length, 2);
+    assert.equal(r.totalMatched, 2, 'totalMatched counts VISIBLE rows only');
+    assert.deepEqual(r.rows.map((x) => x.room), ['101', '102']);
+    assert.ok(!r.rows.some((x) => x.room === '' || x.room === 'X'), 'no blank/template junk row');
+  });
+
+  test('visibility:hidden leading template row is skipped (a rect-only filter would MISS it)', async () => {
+    await go(`<tr id="proto" style="visibility:hidden"><td>X</td><td>X</td></tr>
+              <tr><td>201</td><td>Vacant</td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 50 });
+    assert.equal(r.rows.length, 1);
+    assert.equal(r.rows[0]!.room, '201');
+  });
+
+  test('an opacity:0 leading template row is skipped (matches the house visibility predicate)', async () => {
+    await go(`<tr id="proto" style="opacity:0"><td>X</td><td>X</td></tr>
+              <tr><td>501</td><td>Clean</td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 50 });
+    assert.equal(r.rows.length, 1);
+    assert.equal(r.rows[0]!.room, '501');
+  });
+
+  test('the [hidden] attribute also filters a template row', async () => {
+    await go(`<tr hidden><td>X</td><td>X</td></tr><tr><td>401</td><td>OOO</td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 50 });
+    assert.equal(r.rows.length, 1);
+    assert.equal(r.rows[0]!.room, '401');
+  });
+
+  test('a genuinely empty table (only the hidden template) reads 0 rows — not a junk row', async () => {
+    await go(`<tr id="proto" style="display:none"><td></td><td></td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 50 });
+    assert.equal(r.rows.length, 0);
+    assert.equal(r.totalMatched, 0);
+  });
+
+  test('all-visible baseline is byte-identical (no template row → no behaviour change)', async () => {
+    await go(`<tr><td>301</td><td>Clean</td></tr><tr><td>302</td><td>Dirty</td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 50 });
+    assert.equal(r.rows.length, 2);
+    assert.equal(r.totalMatched, 2);
+    assert.deepEqual(r.rows.map((x) => x.room), ['301', '302']);
+  });
+
+  test('hidden template does not consume a cap slot (cap counts real rows)', async () => {
+    await go(`<tr id="proto" style="display:none"><td>X</td><td>X</td></tr>
+              <tr><td>1</td><td>a</td></tr><tr><td>2</td><td>b</td></tr><tr><td>3</td><td>c</td></tr>`);
+    const r = await extractDomRows(page!, 'tbody tr', COLS, { cap: 2 });
+    assert.equal(r.rows.length, 2, 'cap applies AFTER filtering — 2 real rows, not 1 real + the template');
+    assert.deepEqual(r.rows.map((x) => x.room), ['1', '2']);
+  });
+});

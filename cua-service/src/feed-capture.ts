@@ -335,8 +335,25 @@ export async function captureLiveFeedProvenance(
 async function captureColumnGeometry(page: Page, rowSelector: string): Promise<ColumnGeometry | null> {
   try {
     const raw = await page.evaluate((sel: string) => {
+      // Anchor on the first VISIBLE/rendered row, not just the first match. A
+      // hidden template/prototype row first in the tbody (e.g. CA's
+      // <tr id="roomConditionRow"> display:none) would otherwise anchor the
+      // geometry, every cell reads 0-width, and we emit nothing. Use width>0 AND
+      // height>0 (a not-yet-laid-out row can have 0 height); if no row is
+      // rendered, skip geometry (null) rather than anchoring the hidden row.
       let firstRow: Element | null = null;
-      try { firstRow = document.querySelector(sel); } catch { firstRow = null; }
+      try {
+        const all = Array.from(document.querySelectorAll(sel));
+        for (const el of all) {
+          try {
+            if (el.hasAttribute('hidden')) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
+            const rr = el.getBoundingClientRect();
+            if (rr.width > 0 && rr.height > 0) { firstRow = el; break; }
+          } catch { firstRow = el; break; }
+        }
+      } catch { firstRow = null; }
       if (!firstRow) return null;
       const table = firstRow.closest('table, [role="table"], [role="grid"], [role="treegrid"]');
       if (!table) return null;
