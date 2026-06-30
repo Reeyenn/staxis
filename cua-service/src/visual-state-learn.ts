@@ -60,6 +60,13 @@ export async function learnVisualStateColumn(opts: {
   if (dom.length < minRows) {
     return { ok: false, reason: `only ${dom.length} visible rows (<${minRows}) — too few to learn safely` };
   }
+  // Duplicate row keys (two rows reading the same room number) make the vision↔DOM
+  // join ambiguous — a label could bind to the wrong cell. Park rather than guess.
+  const keyCounts = new Map<string, number>();
+  for (const d of dom) keyCounts.set(d.rowKey, (keyCounts.get(d.rowKey) ?? 0) + 1);
+  if ([...keyCounts.values()].some((n) => n > 1)) {
+    return { ok: false, reason: 'duplicate row keys on the page — cannot bind vision labels safely' };
+  }
   const domByKey = new Map(dom.map((d) => [d.rowKey, d]));
 
   // 2. Vision pass A → learn labels, joined to DOM signals by room number.

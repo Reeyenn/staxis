@@ -48,7 +48,11 @@ function buildVisionLabeler(o: {
   col: string;
 }): VisionLabeler {
   return async (pass) => {
-    const b64 = (await o.page.screenshot({ type: 'png' })).toString('base64');
+    // fullPage so vision sees EVERY row the DOM gatherer reads (not just the ~13 in
+    // the viewport): a viewport sample misses off-screen enum codes (→ runtime
+    // stamps those rooms 'unknown') and can be single-class on grouped/sorted grids
+    // (→ spurious park). (Adversarial review HIGH.)
+    const b64 = (await o.page.screenshot({ type: 'png', fullPage: true })).toString('base64');
     const tool = {
       name: 'report_rows',
       description: `Report each visible data row's ${o.keyColName} and its value.`,
@@ -89,6 +93,9 @@ function buildVisionLabeler(o: {
     const resp = await anthropic.messages.create({
       model,
       max_tokens: 4000,
+      // Learn deterministic (accurate); certify varied (independence) so a
+      // systematic misread is less likely to repeat identically. (Codex/review HIGH.)
+      temperature: pass === 'certify' ? 0.6 : 0,
       system,
       tools: [tool as never],
       tool_choice: { type: 'tool', name: 'report_rows' },
@@ -122,7 +129,8 @@ function buildVisionLabeler(o: {
         if (Array.isArray(rows)) {
           for (const r of rows) {
             if (r && typeof r.key === 'string' && typeof r.value === 'string') {
-              const k = r.key.trim();
+              // MUST match visual-state-dom.ts key normalization or the join shrinks.
+              const k = r.key.replace(/\s+/g, ' ').trim();
               if (k) out.set(k, r.value);
             }
           }

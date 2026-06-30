@@ -2723,6 +2723,12 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   // visual-state learning (vision label → readable signal). Tracked across re-ask
   // cycles so a column that parked is not re-paid for on every subsequent audit.
   const visualStateTried = new Set<string>();
+  // Successful visual-state recoveries, run-scoped so a recovery proven on an
+  // EARLIER turn is re-applied to whichever candidate ultimately finalizes (the
+  // model re-emits columns each re-ask; without this the patch is lost if a later
+  // candidate wins). Keyed by column; rowSelector pins it to the feed it was
+  // learned against.
+  const visualStateRecovered = new Map<string, { selector: string; valueMap: Record<string, string>; rowSelector: string }>();
   let bestCandidate: { success: ActionMapSuccess; audit: PageAudit } | null = null;
   let recoveryDrillAttempted = false;
   // fix/cua-two-oracle — captured-calls snapshot taken at the FIRST committable
@@ -3119,30 +3125,35 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           pendingRecovery,
         });
 
-        // feature/visual-state — before queueing dead columns for the text-based
-        // re-ask recovery, try to AUTO-LEARN any dead contract-ENUM column whose
-        // value is encoded in a hidden READABLE signal (an attribute) rather than
-        // textContent — e.g. a clean/dirty badge that renders the same text for
-        // every row. Map-time Claude vision labels the rows by the canonical
-        // vocabulary, then a no-vision replay CERTIFIES a single signal reproduces
-        // those labels (anti-inversion). On success we author the `css@attr`
-        // selector + raw→canonical value map and clear the column from
-        // `outstanding`, so finalizeRecoveredSuccess keeps it (not blanked, not
-        // stamped unproven). PMS-agnostic; a fused/ambiguous column finds no single
-        // signal and stays dead → parked for founder review. learnedColumns IS
-        // success.action.parse.hint.columns (same ref), so the patch reaches the
-        // finalized recipe.
+        // feature/visual-state — AUTO-LEARN a contract-ENUM column whose value is
+        // encoded in a hidden READABLE signal (an attribute) rather than textContent
+        // (e.g. a clean/dirty badge that renders the same "Ready" text every row).
+        // Map-time Claude vision labels the rows by the canonical vocabulary, then a
+        // no-vision replay (+ an independent 2nd vision pass) CERTIFIES a single
+        // signal reproduces those labels (anti-inversion). On success we author the
+        // `css@attr` selector + raw→canonical value map AND flag the column unproven
+        // (audit.uncertain) so the feed PARKS for one founder glance — an
+        // auto-learned clean/dirty map never auto-promotes to live blind. PMS-
+        // agnostic; a fused/ambiguous column finds no single signal and stays parked.
+        // learnedColumns IS success.action.parse.hint.columns (same ref).
+        const applyVisualPatch = (col: string, selector: string, valueMap: Record<string, string>): void => {
+          learnedColumns[col] = selector;
+          success.enumMappings = { ...(success.enumMappings ?? {}), [col]: valueMap };
+          audit.outstanding.delete(col); // author it (not blanked)…
+          audit.uncertain = new Set([...(audit.uncertain ?? []), col]); // …but flag for review
+        };
+        // Re-apply recoveries proven on a prior turn to THIS candidate (same feed).
+        for (const [col, p] of visualStateRecovered) {
+          if (p.rowSelector === parsed.rowSelector) applyVisualPatch(col, p.selector, p.valueMap);
+        }
         // Trigger on DEAD (every row blank) OR UNPARSEABLE (extracts text the enum
-        // parser can't use — e.g. Choice Advantage maps `status` onto a column that
-        // reads a constant "Ready", or the wrong column). Both mean the text reader
-        // can't produce the canonical value; a hidden signal might. `missing` (no
-        // selector at all) is excluded — there's no cell to read attributes from.
+        // parser can't use — CA maps `status` onto a constant "Ready" column or the
+        // wrong column). `missing` (no selector) is excluded — no cell to read.
         const recoverableEnumCols = [...audit.outstanding]
           .filter(([, cls]) => cls === 'dead' || cls === 'unparseable')
           .map(([col]) => col)
-          .filter((col) => !visualStateTried.has(col));
-        // Don't spend vision once the job is already over its cost cap (the recovery
-        // is post-mapping, so the cap may already be crossed). (Codex MED.)
+          .filter((col) => !visualStateTried.has(col) && !visualStateRecovered.has(col));
+        // Don't spend vision once the job is already over its cost cap. (Codex MED.)
         const overCapBeforeVisual = args.jobId
           ? (await isJobOverBudget(args.jobId, args.jobCostCapMicros)).over
           : false;
@@ -3160,9 +3171,8 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
             jobId: args.jobId,
           });
           for (const r of recovered) {
-            learnedColumns[r.col] = r.selector;
-            success.enumMappings = { ...(success.enumMappings ?? {}), [r.col]: r.valueMap };
-            audit.outstanding.delete(r.col);
+            visualStateRecovered.set(r.col, { selector: r.selector, valueMap: r.valueMap, rowSelector: parsed.rowSelector });
+            applyVisualPatch(r.col, r.selector, r.valueMap);
           }
         }
 

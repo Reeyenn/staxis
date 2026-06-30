@@ -122,6 +122,23 @@ describe('learnVisualStateColumn', () => {
     assert.match(out.reason, /<2 distinct/);
   });
 
+  test('duplicate room numbers park (ambiguous binding)', async () => {
+    // Two rows reading room "101" — the vision↔DOM join would be ambiguous.
+    const dup: Row[] = [
+      ['101', 'clean', false, false], ['101', 'dirty', true, true],
+      ['103', 'clean', false, false], ['104', 'dirty', true, true],
+      ['105', 'clean', false, false], ['106', 'clean', true, true],
+    ];
+    await page!.goto(dataUrl(caTable(dup)));
+    const labels = new Map<string, string>([['101', 'clean'], ['103', 'clean'], ['104', 'dirty'], ['105', 'clean'], ['106', 'clean']]);
+    const out = await learnVisualStateColumn({
+      page: page!, rowSelector: 'tbody tr', keyCellCss: KEY_CSS, targetCellCss: CONDITION_CSS,
+      label: mockLabeler(labels),
+    });
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /duplicate row keys/);
+  });
+
   test('too-few-rows parks', async () => {
     const few = ROWS.slice(0, 3);
     await page!.goto(dataUrl(caTable(few)));

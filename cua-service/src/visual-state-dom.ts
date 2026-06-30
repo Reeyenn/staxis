@@ -74,7 +74,9 @@ export async function gatherCellSignals(
             continue;
           }
           if (!keyEl || !tgtEl) continue;
-          const rowKey = (keyEl.textContent ?? '').trim();
+          // Collapse internal whitespace + trim — MUST match the vision-side key
+          // normalization (mapper-visual-recover.ts) or the join silently shrinks.
+          const rowKey = (keyEl.textContent ?? '').replace(/\s+/g, ' ').trim();
           if (!rowKey) continue;
           const attrs: Record<string, string> = {};
           for (const a of Array.from(tgtEl.attributes)) attrs[a.name] = a.value;

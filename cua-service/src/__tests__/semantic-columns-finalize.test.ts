@@ -163,3 +163,39 @@ describe('recipe-adapter — tiered forwarding onto the runtime source', () => {
     assert.equal(src.extra?.rowSelectorTiered, undefined);
   });
 });
+
+describe('finalizeRecoveredSuccess — visual-state founder-review routing', () => {
+  // A visual-state-recovered enum column is authored in `columns` (the css@attr
+  // selector) + `enumMappings`, and flagged via audit.uncertain (NOT outstanding).
+  // finalize must KEEP the selector AND mark it unprovenRequiredColumns so the
+  // promotion gate parks the feed for one founder glance (Repaired auto, pending).
+  test('auto-learned column keeps its @attr selector AND is flagged for founder review', () => {
+    const success = {
+      ok: true as const,
+      action: {
+        steps: [],
+        parse: {
+          mode: 'table' as const,
+          hint: {
+            rowSelector: 'tbody tr',
+            columns: { room_number: 'td:nth-child(1)', status: 'td:nth-child(6)@tablesort_sortvalue' },
+          },
+        },
+      },
+      enumMappings: { status: { C: 'clean', D: 'dirty' } },
+    };
+    const audit = auditWith({ uncertain: new Set(['status']) });
+    const out = finalizeRecoveredSuccess({ success, audit });
+    assert.equal(out.action.parse.mode, 'table');
+    if (out.action.parse.mode !== 'table') return;
+    // selector kept, not blanked
+    assert.equal(out.action.parse.hint.columns.status, 'td:nth-child(6)@tablesort_sortvalue');
+    // value map carried into the recipe
+    assert.deepEqual(out.enumMappings?.status, { C: 'clean', D: 'dirty' });
+    // flagged for founder review (the promotion gate parks on this)
+    assert.deepEqual(
+      (out.action as ActionRecipe & { unprovenRequiredColumns?: string[] }).unprovenRequiredColumns,
+      ['status'],
+    );
+  });
+});
