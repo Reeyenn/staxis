@@ -64,6 +64,7 @@ import {
   type RecoveryProblem,
   type ColumnProofCarrier,
 } from './column-recovery.js';
+import { recoverDeadEnumColumnsViaVisualState } from './mapper-visual-recover.js';
 import {
   extractDomRows,
   extractDetailFields,
@@ -2718,6 +2719,10 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   //  - recoveryDrillAttempted: stage-2 (single-record detail drill) runs at
   //    most ONCE per action per mapping run.
   const pendingRecovery = new Set<string>();
+  // feature/visual-state — dead contract-enum columns already attempted via
+  // visual-state learning (vision label → readable signal). Tracked across re-ask
+  // cycles so a column that parked is not re-paid for on every subsequent audit.
+  const visualStateTried = new Set<string>();
   let bestCandidate: { success: ActionMapSuccess; audit: PageAudit } | null = null;
   let recoveryDrillAttempted = false;
   // fix/cua-two-oracle — captured-calls snapshot taken at the FIRST committable
@@ -3113,6 +3118,43 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           provisionalDateFormat: args.provisionalDateFormat,
           pendingRecovery,
         });
+
+        // feature/visual-state — before queueing dead columns for the text-based
+        // re-ask recovery, try to AUTO-LEARN any dead contract-ENUM column whose
+        // value is encoded in a hidden READABLE signal (an attribute) rather than
+        // textContent — e.g. a clean/dirty badge that renders the same text for
+        // every row. Map-time Claude vision labels the rows by the canonical
+        // vocabulary, then a no-vision replay CERTIFIES a single signal reproduces
+        // those labels (anti-inversion). On success we author the `css@attr`
+        // selector + raw→canonical value map and clear the column from
+        // `outstanding`, so finalizeRecoveredSuccess keeps it (not blanked, not
+        // stamped unproven). PMS-agnostic; a fused/ambiguous column finds no single
+        // signal and stays dead → parked for founder review. learnedColumns IS
+        // success.action.parse.hint.columns (same ref), so the patch reaches the
+        // finalized recipe.
+        const deadEnumCols = [...audit.outstanding]
+          .filter(([, cls]) => cls === 'dead')
+          .map(([col]) => col)
+          .filter((col) => !visualStateTried.has(col));
+        if (deadEnumCols.length > 0) {
+          const recovered = await recoverDeadEnumColumnsViaVisualState({
+            page: args.page,
+            actionKey: args.actionName as keyof Recipe['actions'],
+            rowSelector: parsed.rowSelector,
+            columns: learnedColumns,
+            deadCols: deadEnumCols,
+            tried: visualStateTried,
+            ...(args.model ? { model: args.model } : {}),
+            ...(args.propertyId ? { propertyId: args.propertyId } : {}),
+            jobId: args.jobId,
+          });
+          for (const r of recovered) {
+            learnedColumns[r.col] = r.selector;
+            success.enumMappings = { ...(success.enumMappings ?? {}), [r.col]: r.valueMap };
+            audit.outstanding.delete(r.col);
+          }
+        }
+
         for (const col of audit.outstanding.keys()) pendingRecovery.add(col);
         // feature/cua-mapper-phases-captures — columns audited / value-certified.
         await recordCurrentActivity(args.jobId, args.actionName, 'certifying', 'Verifying columns', args.progressPct ?? 0);
