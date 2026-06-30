@@ -3148,10 +3148,23 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         }
         // Trigger on DEAD (every row blank) OR UNPARSEABLE (extracts text the enum
         // parser can't use — CA maps `status` onto a constant "Ready" column or the
-        // wrong column). `missing` (no selector) is excluded — no cell to read.
-        const recoverableEnumCols = [...audit.outstanding]
-          .filter(([, cls]) => cls === 'dead' || cls === 'unparseable')
-          .map(([col]) => col)
+        // wrong column) OR UNCERTAIN (a structural-only/degraded audit — e.g. CA's
+        // HousekeepingCenter emits a URL that mismatches, so the value audit is
+        // skipped and every selector-bearing required column lands in `uncertain`
+        // with NO value evidence). All three mean the text reader hasn't produced a
+        // certified canonical value, so a hidden signal is worth trying. `missing`
+        // (no selector) is excluded — no cell to read. Safe to widen because every
+        // visual-state recovery is flagged for founder review (applyVisualPatch),
+        // never auto-promoted — so even firing on a degraded/uncertain page cannot
+        // ship wrong data; the worst case is a founder-reviewed park. The recover
+        // fn filters to contract ENUMs (non-enum uncertain cols like room_number are
+        // skipped) and the gatherer parks when <5 visible rows (a truly wandered
+        // page yields nothing). (Found by the live CA robot run.)
+        const recoverableEnumCols = [
+          ...[...audit.outstanding].filter(([, cls]) => cls === 'dead' || cls === 'unparseable').map(([col]) => col),
+          ...[...(audit.uncertain ?? [])],
+        ]
+          .filter((col, i, a) => a.indexOf(col) === i) // dedup
           .filter((col) => !visualStateTried.has(col) && !visualStateRecovered.has(col));
         // Don't spend vision once the job is already over its cost cap. (Codex MED.)
         const overCapBeforeVisual = args.jobId
