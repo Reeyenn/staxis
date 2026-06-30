@@ -88,10 +88,19 @@ describe('learnVisualStateColumn', () => {
   });
 
   test('FUSED status (occupied/vacant x clean/dirty) parks — no single signal partitions', async () => {
-    await page!.goto(dataUrl(caTable(ROWS)));
-    // Vision returns the fused canonical (reads BOTH the occupancy + condition columns).
+    // 8 rows, ≥2 per fused label, so the per-class floor passes and we actually
+    // reach findDiscriminator — which must return null because tablesort C/D maps
+    // C to BOTH vacant_clean and occupied_clean (the occupancy half lives in a
+    // different column the single attr can't see).
+    const fusedRows: Row[] = [
+      ['101', 'clean', false, false], ['102', 'clean', false, true],
+      ['103', 'dirty', false, false], ['104', 'dirty', false, true],
+      ['105', 'clean', true, false], ['106', 'clean', true, true],
+      ['107', 'dirty', true, false], ['108', 'dirty', true, true],
+    ];
+    await page!.goto(dataUrl(caTable(fusedRows)));
     const fused = new Map(
-      ROWS.map(([room, cond, occ]) => [room, `${occ ? 'occupied' : 'vacant'}_${cond}`] as const),
+      fusedRows.map(([room, cond, occ]) => [room, `${occ ? 'occupied' : 'vacant'}_${cond}`] as const),
     );
     const out = await learnVisualStateColumn({
       page: page!, rowSelector: 'tbody tr', keyCellCss: KEY_CSS, targetCellCss: CONDITION_CSS,

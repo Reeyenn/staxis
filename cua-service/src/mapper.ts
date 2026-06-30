@@ -3132,18 +3132,29 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // signal and stays dead → parked for founder review. learnedColumns IS
         // success.action.parse.hint.columns (same ref), so the patch reaches the
         // finalized recipe.
-        const deadEnumCols = [...audit.outstanding]
-          .filter(([, cls]) => cls === 'dead')
+        // Trigger on DEAD (every row blank) OR UNPARSEABLE (extracts text the enum
+        // parser can't use — e.g. Choice Advantage maps `status` onto a column that
+        // reads a constant "Ready", or the wrong column). Both mean the text reader
+        // can't produce the canonical value; a hidden signal might. `missing` (no
+        // selector at all) is excluded — there's no cell to read attributes from.
+        const recoverableEnumCols = [...audit.outstanding]
+          .filter(([, cls]) => cls === 'dead' || cls === 'unparseable')
           .map(([col]) => col)
           .filter((col) => !visualStateTried.has(col));
-        if (deadEnumCols.length > 0) {
+        // Don't spend vision once the job is already over its cost cap (the recovery
+        // is post-mapping, so the cap may already be crossed). (Codex MED.)
+        const overCapBeforeVisual = args.jobId
+          ? (await isJobOverBudget(args.jobId, args.jobCostCapMicros)).over
+          : false;
+        if (recoverableEnumCols.length > 0 && !overCapBeforeVisual) {
           const recovered = await recoverDeadEnumColumnsViaVisualState({
             page: args.page,
             actionKey: args.actionName as keyof Recipe['actions'],
             rowSelector: parsed.rowSelector,
             columns: learnedColumns,
-            deadCols: deadEnumCols,
+            deadCols: recoverableEnumCols,
             tried: visualStateTried,
+            ...(args.jobId ? { isOverBudget: () => isJobOverBudget(args.jobId!, args.jobCostCapMicros).then((b) => b.over) } : {}),
             ...(args.model ? { model: args.model } : {}),
             ...(args.propertyId ? { propertyId: args.propertyId } : {}),
             jobId: args.jobId,

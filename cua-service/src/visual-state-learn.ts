@@ -69,8 +69,20 @@ export async function learnVisualStateColumn(opts: {
     const d = domByKey.get(key);
     if (d && lab) learnRows.push({ ...d, visionLabel: lab });
   }
-  if (new Set(learnRows.map((r) => r.visionLabel)).size < 2) {
+  // Gate on the JOINED rows, not the raw DOM count: findDiscriminator's row-unique
+  // guard only kicks in at ≥5 rows, so a thin join (vision labeled few rows, or few
+  // matched a DOM key) could otherwise learn a coincidental/row-unique signal.
+  // Require ≥minRows joined AND ≥2 rows per label (both classes substantiated).
+  if (learnRows.length < minRows) {
+    return { ok: false, reason: `only ${learnRows.length} of ${dom.length} rows got a usable vision label (<${minRows})` };
+  }
+  const labelCounts: Record<string, number> = {};
+  for (const r of learnRows) labelCounts[r.visionLabel] = (labelCounts[r.visionLabel] ?? 0) + 1;
+  if (Object.keys(labelCounts).length < 2) {
     return { ok: false, reason: 'vision saw <2 distinct values — not a visual-state column (or all rows same state)' };
+  }
+  if (Object.values(labelCounts).some((n) => n < 2)) {
+    return { ok: false, reason: 'a value appears on only 1 labeled row — too thin to learn safely' };
   }
 
   // 3. Learn the single readable signal that partitions the labels.

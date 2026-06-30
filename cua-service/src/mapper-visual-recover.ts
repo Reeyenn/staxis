@@ -71,15 +71,25 @@ function buildVisionLabeler(o: {
       },
     };
     const model = getModeConfig(o.model).model;
+    // The 'certify' pass is the anti-inversion check — frame it as an INDEPENDENT
+    // fresh re-read (different wording, value list order reversed) so a systematic
+    // misread is less likely to repeat the learn pass's exact error. (Codex HIGH.)
+    const system =
+      pass === 'certify'
+        ? `Independently and from scratch, read this ONE screenshot of a hotel PMS table. ` +
+          `Do not assume any prior reading. For EACH visible data row, determine its ` +
+          `${o.keyColName} and which allowed value it actually shows — the value may be a ` +
+          `colored badge, highlighted button, checkbox, dropdown selection, or icon, not plain ` +
+          `text. Judge each row on its own. Report ONLY rows you can clearly see; never guess.`
+        : `You are reading ONE screenshot of a hotel PMS table. For EACH visible data row, ` +
+          `report its ${o.keyColName} and the single best-matching value from the allowed list. ` +
+          `The value may be shown as a COLORED BADGE, a highlighted/selected button, a checkbox, ` +
+          `a dropdown selection, or an icon — not necessarily plain text. Read each row carefully ` +
+          `and independently. Report ONLY rows you can clearly see; never invent a row or a value.`;
     const resp = await anthropic.messages.create({
       model,
       max_tokens: 4000,
-      system:
-        `You are reading ONE screenshot of a hotel PMS table. For EACH visible data row, ` +
-        `report its ${o.keyColName} and the single best-matching value from the allowed list. ` +
-        `The value may be shown as a COLORED BADGE, a highlighted/selected button, a checkbox, ` +
-        `a dropdown selection, or an icon — not necessarily plain text. Read each row carefully ` +
-        `and independently. Report ONLY rows you can clearly see; never invent a row or a value.`,
+      system,
       tools: [tool as never],
       tool_choice: { type: 'tool', name: 'report_rows' },
       messages: [
@@ -87,7 +97,13 @@ function buildVisionLabeler(o: {
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } },
-            { type: 'text', text: `Report each row's ${o.keyColName} and value.` },
+            {
+              type: 'text',
+              text:
+                pass === 'certify'
+                  ? `Independently report each visible row's ${o.keyColName} and the value it shows.`
+                  : `Report each row's ${o.keyColName} and value.`,
+            },
           ],
         },
       ],
@@ -129,6 +145,9 @@ export async function recoverDeadEnumColumnsViaVisualState(opts: {
   columns: Record<string, string>;
   deadCols: string[];
   tried: Set<string>;
+  /** Returns true when the job is over its cost cap — checked before each column
+   *  so a multi-column feed can't keep spending vision past the cap. */
+  isOverBudget?: () => Promise<boolean>;
   model?: MapperModelId;
   propertyId?: string;
   jobId?: string | null;
@@ -141,6 +160,13 @@ export async function recoverDeadEnumColumnsViaVisualState(opts: {
   const recovered: VisualRecovery[] = [];
   for (const col of opts.deadCols) {
     if (opts.tried.has(col)) continue;
+    if (opts.isOverBudget && (await opts.isOverBudget())) {
+      log.info('visual-state: stopping — job over cost cap', {
+        jobId: opts.jobId ?? undefined,
+        actionName: opts.actionKey,
+      });
+      break;
+    }
     const enumValues = contractEnumValues(opts.actionKey, col);
     if (!enumValues || enumValues.length === 0) continue; // visual-state only for enum columns
     const targetSel = parseColumnSelector(opts.columns[col] ?? '').css;

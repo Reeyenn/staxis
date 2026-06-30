@@ -116,9 +116,20 @@ export function findDiscriminator(rows: RowSignals[]): DiscriminatorResult | nul
   const labels = rows.map((r) => r.visionLabel);
   if (new Set(labels).size < 2) return null; // need both classes to learn (and to not invert)
 
-  // 1) Attribute candidates (preferred): every attribute name seen on any row.
+  // 1) Attribute candidates (preferred): every attribute name seen on any row,
+  //    EXCEPT `class` and `style` — those are presentation surfaces handled
+  //    separately (class via the stripe-filtered class loop below; style is
+  //    computed-style territory, deferred). Critically, the `class` ATTRIBUTE
+  //    value is the full class string, which on a zebra-striped table carries the
+  //    row-parity class (CA's CHI_EvenRowCell). On a perfectly-alternating
+  //    viewport that string would partition clean/dirty by luck and — being read
+  //    here as a plain attr BEFORE the stripe filter — get authored as `@class`,
+  //    a parity signal that's wrong on every non-alternating row. Excluding it is
+  //    the load-bearing guard; the partition-over-a-non-alternating-sample check
+  //    is the backstop. (Codex review BLOCKER.)
+  const PRESENTATION_ATTRS = new Set(['class', 'style']);
   const attrNames = new Set<string>();
-  for (const r of rows) for (const k of Object.keys(r.attrs)) attrNames.add(k);
+  for (const r of rows) for (const k of Object.keys(r.attrs)) if (!PRESENTATION_ATTRS.has(k)) attrNames.add(k);
   // Deterministic order so a tie picks the same attr every run.
   for (const name of [...attrNames].sort()) {
     const valuesByRow = rows.map((r) => (r.attrs[name] ?? '').trim());

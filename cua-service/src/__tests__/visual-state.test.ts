@@ -58,6 +58,29 @@ describe('findDiscriminator — learns the real signal, rejects parity', () => {
     assert.equal(res.via, '@tablesort_sortvalue');
   });
 
+  test('perfectly-alternating viewport: picks @tablesort_sortvalue, NOT @class (parity laundered into the class string)', () => {
+    // clean=odd(no parity class), dirty=even(parity class) — perfectly alternating,
+    // so the full `class` ATTRIBUTE string partitions clean/dirty by luck. The
+    // `class` attr must be excluded from attr candidates or it ships as a wrong
+    // parity signal. (Codex BLOCKER fixture.)
+    const mk = (room: string, label: 'clean' | 'dirty'): RowSignals => {
+      const parity = label === 'dirty';
+      const classStr = parity ? 'UBcontainer CHI_EvenCell CHI_EvenRowCell' : 'UBcontainer CHI_EvenCell';
+      return {
+        rowKey: room,
+        visionLabel: label,
+        text: 'Ready',
+        attrs: { tablesort_sortvalue: label === 'clean' ? 'C' : 'D', class: classStr },
+        classes: classStr.split(' '),
+      };
+    };
+    const alternating = [mk('101', 'clean'), mk('102', 'dirty'), mk('103', 'clean'), mk('104', 'dirty'), mk('105', 'clean'), mk('106', 'dirty')];
+    const res = findDiscriminator(alternating);
+    assert.ok(res);
+    assert.equal(res!.rule.kind, 'attr');
+    if (res!.rule.kind === 'attr') assert.equal(res!.rule.attr, 'tablesort_sortvalue'); // never 'class'
+  });
+
   test('the parity class alone (no real attr) is rejected → null (abstain)', () => {
     // Strip the genuine attr; only the zebra class is left as a "signal".
     const stripped = CA_SAMPLE.map((r) => ({ ...r, attrs: { edit: 'false' } }));
