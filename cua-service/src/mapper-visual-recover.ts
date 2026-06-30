@@ -93,9 +93,10 @@ function buildVisionLabeler(o: {
     const resp = await anthropic.messages.create({
       model,
       max_tokens: 4000,
-      // Learn deterministic (accurate); certify varied (independence) so a
-      // systematic misread is less likely to repeat identically. (Codex/review HIGH.)
-      temperature: pass === 'certify' ? 0.6 : 0,
+      // NB: NO `temperature` — it's deprecated on Opus 4.8 (the default mapper
+      // model) and returns 400 (caught live by the CA robot run). Certify-pass
+      // independence comes from the reworded prompt below + the founder-review
+      // backstop, not from a temperature delta.
       system,
       tools: [tool as never],
       tool_choice: { type: 'tool', name: 'report_rows' },
