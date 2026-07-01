@@ -2315,11 +2315,13 @@ async function promoteDraft(
  * Anthropic, so the worst case is ~$0 + 20s of compute vs the mapper
  * agent's $4-10 + 5-45min when it fails the same way deeper in.
  *
- * Note on the selector check: we look for `input[type="password"]` as
- * proof of a real login form. This is the single workhorse signal — a
- * 404 page, T&C wall, maintenance page, or redirect to a vendor's
- * marketing site all reliably fail it. A correct login page always
- * exposes one.
+ * Note on the selector check: we accept a page as a login page if it
+ * shows ANY of three signals — an `input[type="password"]` (classic
+ * form), a canvas-rendered login, or an email-first / SSO login (an
+ * identifier field + a Continue/Next/Sign-in affordance, as used by
+ * Okta / Azure AD / Google, where the password comes on step 2). A 404
+ * page, T&C wall, maintenance page, or redirect to a vendor's marketing
+ * site reliably fails all three.
  */
 async function preflightLoginPage(
   loginUrl: string,
@@ -2381,10 +2383,41 @@ async function preflightLoginPage(
         if (isCanvasLogin) {
           return { ok: true };
         }
+
+        // Email-first / SSO login (Okta / Azure AD / Google): the first
+        // step shows only a username/email field + a Continue/Next/Sign-in
+        // button — the password field appears on step 2. Accept these too,
+        // otherwise a modern identity-provider login fails pre-flight and
+        // the whole onboarding aborts at $0 before vision mode ever runs.
+        // Pre-flight is only a cheap "is this a login page at all" gate, so
+        // loosening it cannot ship wrong data — the real login is done by
+        // vision later.
+        const isEmailFirstLogin = await page.evaluate(() => {
+          const hasIdentifierField = document.querySelector(
+            'input[type="email"], input[type="text"], ' +
+            'input[name*="user" i], input[name*="email" i], ' +
+            'input[id*="user" i], input[id*="email" i]',
+          ) !== null;
+          if (!hasIdentifierField) return false;
+          const affordanceRe = /continue|next|sign.?in|log.?in|submit/i;
+          const buttons = Array.from(
+            document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]'),
+          );
+          return buttons.some((el) => {
+            const label = (el.textContent ?? '') + ' ' +
+              (el.getAttribute('value') ?? '') + ' ' +
+              (el.getAttribute('aria-label') ?? '');
+            return affordanceRe.test(label);
+          });
+        }).catch(() => false);
+        if (isEmailFirstLogin) {
+          return { ok: true };
+        }
+
         const finalUrl = page.url().slice(0, 120);
         return {
           ok: false,
-          reason: `no password input AND no canvas login on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+          reason: `no password input, canvas login, or email-first/SSO login on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
         };
       }
     } finally {

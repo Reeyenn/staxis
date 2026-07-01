@@ -161,6 +161,15 @@ export function actionFingerprint(input: unknown): string {
  * re-renders that don't change content; varies across actual
  * navigations / dialog opens / submenu expansions.
  *
+ * Robust to time-like / rotating content: before hashing we strip
+ * clocks, dates, "last refreshed/updated ..." lines, and standalone
+ * long digit runs (see `stripVolatileText`). Without this, a page with
+ * a live clock or a refresh timestamp changes its body text every turn,
+ * so a genuinely-STUCK feed never trips the loop-abort — it grinds to
+ * its per-target cost cap + 15-min wall instead. Two turns of the SAME
+ * page that differ ONLY by a clock/timestamp must produce the SAME
+ * fingerprint.
+ *
  * Fail-safe behavior: if the page eval errors (page closing or
  * navigating mid-flight), we fall back to URL-only. That way two
  * consecutive errored fingerprints on the same URL still compare
@@ -185,11 +194,36 @@ export async function pageFingerprint(page: Page): Promise<string> {
         ? (document.body.innerText ?? '').slice(0, 500)
         : '',
     }));
-    return `${url}::${data.title}::${hashString(data.bodyText)}`;
+    return `${url}::${stripVolatileText(data.title)}::${hashString(stripVolatileText(data.bodyText))}`;
   } catch {
     // Mid-navigation evaluate failure — fall back to URL-only.
     return `${url}::eval-failed`;
   }
+}
+
+/**
+ * Remove time-like / rotating tokens so a live clock, a "last refreshed"
+ * timestamp, or a rotating counter does not make an otherwise-identical
+ * page fingerprint differently every turn. Order matters: strip the
+ * longer/more-specific patterns (refresh lines, ISO datetimes) before the
+ * generic digit-run catch-all. Identity-only — never load-bearing beyond
+ * the loop detector.
+ */
+function stripVolatileText(s: string): string {
+  return s
+    // "last refreshed/updated: ..." (to end of that line)
+    .replace(/last\s+(?:refreshed|updated|synced|modified)[^\n]*/gi, '')
+    // clock times: 3:04, 03:04:05, 3:04 pm
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b/gi, '')
+    // ISO-ish dates/datetimes: 2026-06-30, 2026-06-30T12:34:56
+    .replace(/\b\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?\b/gi, '')
+    // slash/dot dates: 06/30/2026, 30.06.2026
+    .replace(/\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, '')
+    // standalone long digit runs (rotating counters, epoch ms, etc.)
+    .replace(/\b\d{4,}\b/g, '')
+    // collapse whitespace left behind so spacing changes don't leak through
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

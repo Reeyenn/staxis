@@ -229,6 +229,39 @@ describe('pageFingerprint', () => {
     assert.equal(fpA, 'closed-page');
     assert.equal(fpB, 'closed-page');
   });
+
+  test('two turns differing ONLY by a clock time produce the same fingerprint (so a stuck feed can trip)', async () => {
+    // A page with a live clock changes its body text every turn. Without
+    // volatile-token stripping, a genuinely-stuck feed would never trip
+    // the loop-abort. These two must fingerprint EQUAL.
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Rooms clean: 42  Current time 3:04:05 pm' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Rooms clean: 42  Current time 3:04:06 pm' });
+    assert.equal(await pageFingerprint(a), await pageFingerprint(b),
+      'a live clock must not change the fingerprint');
+  });
+
+  test('two turns differing ONLY by a "last refreshed" timestamp fingerprint equal', async () => {
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Occupancy 88%\nLast refreshed: 2026-06-30 14:22:01' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Occupancy 88%\nLast refreshed: 2026-06-30 14:23:47' });
+    assert.equal(await pageFingerprint(a), await pageFingerprint(b),
+      'a rotating "last refreshed" timestamp must not change the fingerprint');
+  });
+
+  test('two turns differing ONLY by a rotating long counter fingerprint equal', async () => {
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Session token 100045 · queue idle' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Session token 998877 · queue idle' });
+    assert.equal(await pageFingerprint(a), await pageFingerprint(b),
+      'a rotating long digit run must not change the fingerprint');
+  });
+
+  test('REAL content changes still produce different fingerprints (stripping is not over-broad)', async () => {
+    // Guard against the strip being so aggressive it masks genuine
+    // navigation. Same clock, different real content → must differ.
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Arrivals list — Smith, Jones  3:04 pm' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Departures list — Lee, Kim  3:04 pm' });
+    assert.notEqual(await pageFingerprint(a), await pageFingerprint(b),
+      'a genuine content change must still change the fingerprint');
+  });
 });
 
 describe('actionFingerprint — robustness', () => {

@@ -882,14 +882,17 @@ async function acquireMfaCode(
   })();
 
   try {
-    // notBefore 2 min back: the PMS sends the code AFTER the login attempt
-    // that landed us here, so anything older is a stale/foreign code. The
-    // 15-min maxAge covers slow human round-trips within the wait window.
+    // notBefore = the full MFA wait window back (was a tight 120s). A 120s floor
+    // permanently orphaned a valid code whenever polling started >2 min after the
+    // code arrived (slow login phase / the mapper doing other work first) — the
+    // code landed before `now-120s` and was unclaimable. Widening to the wait
+    // window can't ship a stale/foreign code: codes are single-use AND the 15-min
+    // maxAge already bounds staleness. (New-PMS bug-hunt H7.)
     const code = await fetchLatestAuthCode(ctx.propertyId, {
       maxAgeSeconds: 900,
       timeoutMs: env.CUA_MFA_CODE_WAIT_MS,
       pollMs: 3_000,
-      notBefore: new Date(Date.now() - 120_000).toISOString(),
+      notBefore: new Date(Date.now() - env.CUA_MFA_CODE_WAIT_MS).toISOString(),
     });
     return code;
   } finally {
@@ -1182,7 +1185,15 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       // un-masked guest text (names/emails/addresses are policy-visible — only
       // credentials/SSN/CC are masked) than a list page, so we withhold by
       // default. The board treats "a found feed with no capture row" as normal.
-      const result = target.classification === 'drilldown_sample'
+      // New-PMS bug-hunt B2+B3 — a per-target THROW (the 90-min AbortController
+      // timeout, an admin abort, or the help-request flood) must NOT discard the
+      // feeds already mapped this run. Catch it, mark this feed, and BREAK to the
+      // partial-emit path below (the same route the cost-cap break above uses), so
+      // the promotion gate parks what we've mapped instead of the whole run
+      // returning ok:false and throwing away the spend.
+      let result: ActionMapSuccess | ActionMapFailure;
+      try {
+        result = target.classification === 'drilldown_sample'
         ? await mapDrillDownAction({
             page,
             actionName: target.key,
@@ -1227,6 +1238,27 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
             // feeds). Drill-down feeds use mapDrillDownAction (no gate in v1).
             takeover: opts.takeover,
           });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn('mapper: target threw — preserving partial recipe, stopping loop', {
+          jobId: opts.jobId ?? undefined,
+          actionName: target.key,
+          completedTargets: Object.keys(actions),
+          err: msg.slice(0, 200),
+        });
+        const startedAt = boardTargets[target.key]?.startedAt;
+        boardTargets[target.key] = {
+          status: 'failed',
+          phase: 'failed',
+          ...(startedAt ? { startedAt } : {}),
+          finishedAt: new Date().toISOString(),
+          startCostMicros: targetStartCostMicros,
+          reason: msg.slice(0, 300),
+          failureClass: deriveFailureClass('failed', msg),
+        };
+        await mergeJobResult(opts.jobId, { boardTargets }).catch(() => {});
+        break;
+      }
       if (result.ok) {
         actions[target.key] = result.action;
         // feat/pms-universal-translate — fold this target's observed values
@@ -1489,7 +1521,10 @@ export async function mapLogin(
     `the real username before it hits the page.\n` +
     `4. left_click on the password field's coordinate.\n` +
     `5. Send {action: "type", text: "$password"}.\n` +
-    `6. Click the submit / log-in button.\n` +
+    `6. If a "remember me" / "keep me signed in" / "trust this device" checkbox ` +
+    `is visible on the login form and NOT already checked, click it now — it ` +
+    `reduces repeat two-factor prompts on later runs. Then click the submit / ` +
+    `log-in button.\n` +
     `7. Wait for the next page (use {action: "wait", duration: 2} if slow), ` +
     `then take a fresh screenshot.\n` +
     `8. If you land on an interstitial, splash, "welcome", or property-picker ` +
@@ -1509,6 +1544,12 @@ export async function mapLogin(
   const pruneState = createPruneState();
 
   const phaseStartedAt = Date.now();
+  // New-PMS bug-hunt B4 — time spent WAITING for an MFA code (up to
+  // CUA_MFA_CODE_WAIT_MS ≈ 10 min) must not count against the 15-min login
+  // wall-clock, or two MFA prompts fail the whole run at $0 feeds. Accumulated at
+  // the acquireMfaCode wait below and credited back in the wall-clock check.
+  // (Mirrors the helpWaitMs pattern in mapAction.)
+  let mfaWaitMs = 0;
 
   // Login-phase action-loop detector — same guard mapAction uses. Without
   // it, a login that keeps re-clicking the same (often misaligned) field
@@ -1549,7 +1590,7 @@ export async function mapLogin(
         detail: { phase: 'login_mapping', reason: 'token_budget_exceeded', totalInputTokens },
       };
     }
-    if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
+    if (Date.now() - phaseStartedAt - mfaWaitMs > PHASE_WALLCLOCK_BUDGET_MS) {
       log.warn('mapper exceeded wall-clock budget', { stepIdx });
       return {
         ok: false,
@@ -1625,7 +1666,9 @@ export async function mapLogin(
         log.info('login mapper: 2FA screen detected — waiting for a code', {
           jobId: ctx.jobId ?? undefined, stepIdx, attempt: mfaResolutions,
         });
+        const mfaWaitStart = Date.now();
         const code = await acquireMfaCode(page, { propertyId: ctx.propertyId, jobId: ctx.jobId });
+        mfaWaitMs += Date.now() - mfaWaitStart; // B4 — credit this wait back to the login wall-clock
         if (!code) {
           log.warn('login mapper aborting — no 2FA code arrived in time', {
             jobId: ctx.jobId ?? undefined, stepIdx, waitedMs: env.CUA_MFA_CODE_WAIT_MS,
@@ -4042,18 +4085,24 @@ async function auditLearnedColumnsOnPage(args: {
     return { verified: false, pageUrl, probeRows: [], totalMatched: 0, outstanding, uncertain, problems, ...(capturedHeaders ? { headers: capturedHeaders } : {}) };
   };
 
-  // Wandered-page guard: the model can emit its JSON after navigating away;
-  // probing the wrong page would poison every classification below.
-  // fix/cua-two-oracle (build #3) — normalize BOTH urls (drop hash, trailing
-  // slash, inert cache-buster/session params) before comparing, so a SPURIOUS
-  // diff (the model reported the URL with a stale cache-buster / session id)
-  // no longer demotes the audit to structural-only and silently blocks the
-  // detail-drill. A genuine page difference (different path, or a SEMANTIC
-  // query param like type=arrival) still demotes — we never audit a wandered
-  // page, and never re-scrape the current one (that would bless a wrong page).
+  // URL-mismatch is ADVISORY, not fatal (was: demote to structural-only).
+  // This audit runs on the model's end_turn — it did NOT navigate this turn — so
+  // args.page.url() IS the page it just mapped. A differing emittedUrl therefore
+  // means the model MIS-REPORTED its own URL (paraphrase, stale param, SPA route,
+  // iframe), NOT that we're on a wrong page. Demoting here parked EVERY correctly-
+  // mapped feed on any PMS whose URL the model doesn't echo verbatim — observed
+  // LIVE on Choice Advantage (HousekeepingCenter_start.init), and expected to be
+  // the NORMAL case on an unknown PMS. Fall through to extraction + the VALUE
+  // audit instead: that is the real safety net — a genuinely-wrong page cannot
+  // value-certify the feed's required columns and parks anyway (unprovenRequired-
+  // Columns), and the zero-rows path below still demotes an empty/non-DOM page.
   if (args.emittedUrl) {
-    if (normalizeUrlForAudit(args.page.url()) !== normalizeUrlForAudit(args.emittedUrl)) {
-      return structuralOnly(`page url ${args.page.url().slice(0, 80)} differs from emitted url`);
+    const liveU = normalizeUrlForAudit(args.page.url());
+    const emitU = normalizeUrlForAudit(args.emittedUrl);
+    if (liveU !== emitU) {
+      log.info('mapper: emitted url differs from live url — auditing the LIVE page (advisory)', {
+        actionName: args.actionKey, liveUrl: liveU.slice(0, 100), emittedUrl: emitU.slice(0, 100),
+      });
     }
   }
 

@@ -92,7 +92,10 @@ function buildVisionLabeler(o: {
           `and independently. Report ONLY rows you can clearly see; never invent a row or a value.`;
     const resp = await anthropic.messages.create({
       model,
-      max_tokens: 4000,
+      // 8000 (not 4000) so a large unknown-PMS feed (many rows / long room keys)
+      // can't truncate the row list mid-JSON. 75 CA rows ≈ 900 tokens; this is
+      // headroom insurance for tomorrow's unknown PMS. (Review LOW.)
+      max_tokens: 8000,
       // NB: NO `temperature` — it's deprecated on Opus 4.8 (the default mapper
       // model) and returns 400 (caught live by the CA robot run). Certify-pass
       // independence comes from the reworded prompt below + the founder-review
@@ -177,9 +180,15 @@ export async function recoverDeadEnumColumnsViaVisualState(opts: {
       break;
     }
     const enumValues = contractEnumValues(opts.actionKey, col);
-    if (!enumValues || enumValues.length === 0) continue; // visual-state only for enum columns
+    if (!enumValues || enumValues.length === 0) {
+      // Not a contract enum (e.g. room_number lands in `uncertain` too) — it can
+      // never be a visual-state candidate, so record it as tried to avoid re-
+      // evaluating it on every subsequent re-ask turn. (Review LOW.)
+      opts.tried.add(col);
+      continue;
+    }
     const targetSel = parseColumnSelector(opts.columns[col] ?? '').css;
-    if (!targetSel || targetSel === '.') continue;
+    if (!targetSel || targetSel === '.') continue; // no readable cell YET — allow a later re-ask to retry
     opts.tried.add(col); // mark attempted up-front (cost is about to be spent)
 
     try {
