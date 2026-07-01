@@ -219,8 +219,10 @@ function stripVolatileText(s: string): string {
     .replace(/\b\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?\b/gi, '')
     // slash/dot dates: 06/30/2026, 30.06.2026
     .replace(/\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, '')
-    // standalone long digit runs (rotating counters, epoch ms, etc.)
-    .replace(/\b\d{4,}\b/g, '')
+    // standalone LONG digit runs (rotating counters, epoch ms, etc.). 6+ digits,
+    // not 4+ — so two pages that differ only by a 4-5 digit record/room id don't
+    // strip to the same fingerprint and cause a false loop-abort. (Re-review LOW.)
+    .replace(/\b\d{6,}\b/g, '')
     // collapse whitespace left behind so spacing changes don't leak through
     .replace(/\s+/g, ' ')
     .trim();

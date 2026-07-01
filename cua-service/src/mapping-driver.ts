@@ -696,6 +696,22 @@ export async function runMappingJob(
     gate.reason = 'parked: founder re-mapped a draft feed — review before live';
   }
 
+  // 3.2. Re-review fix (B2/B3 belt-and-suspenders) — an INCOMPLETE run must never
+  //      auto-promote to live. The target loop preserves its partial recipe when
+  //      it breaks abnormally (90-min timeout / admin clicked Abort / help-flood /
+  //      an unexpected throw) and flags it via result.aborted; the workflow signal
+  //      may also already be aborted. In either case, DOWNGRADE auto_promote to
+  //      park_draft: the partial is still saved for founder review, but an aborted
+  //      or timed-out map can never silently go live on the hotel. Post-gate clamp
+  //      only — park_partial / park_draft / quarantine already wait for a human.
+  if ((result.aborted || signal.aborted) && gate.decision === 'auto_promote') {
+    log.info('mapping-driver: run aborted/incomplete — parking partial instead of auto-promoting', {
+      jobId, was: gate.reason, resultAborted: Boolean(result.aborted), signalAborted: signal.aborted,
+    });
+    gate.decision = 'park_draft';
+    gate.reason = 'parked: mapping run was aborted or timed out — review the partial before going live';
+  }
+
   // 3.5. feat/cua-partial-promotion — promote-time guards for SEEDED jobs.
   //      A seeded job's seed snapshot can go stale: another repair/backfill
   //      may have promoted a better active while this job sat queued (the

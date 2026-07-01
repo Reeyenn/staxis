@@ -958,6 +958,10 @@ export type MapperResult =
        *  index.ts adapter) or the board blanks the moment a run succeeds. */
       targetCatalog: BoardTargetDescriptor[];
       boardTargets: Record<string, BoardTargetState>;
+      /** Re-review fix — the target loop broke abnormally (timeout / admin abort /
+       *  help-flood / unexpected throw), so this is an INCOMPLETE partial. The
+       *  driver preserves it as a parked draft but never auto-promotes it live. */
+      aborted?: boolean;
     }
   | { ok: false; userMessage: string; detail: Record<string, unknown> };
 
@@ -1132,6 +1136,13 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       });
     }
 
+    // Re-review fix — set when the target loop breaks abnormally (a caught throw:
+    // 90-min timeout, admin abort, help-flood, or an unexpected error). An
+    // incomplete run must NEVER auto-promote to live — the driver downgrades
+    // auto_promote to park_draft when this is set, preserving the partial as a
+    // parked draft for founder review instead of silently shipping it.
+    let loopAborted = false;
+
     for (const target of TARGETS) {
       // Skip targets already mapped in a prior attempt (B6 reclaim path).
       if (actions[target.key]) {
@@ -1240,6 +1251,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
           });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // Mark the run as incomplete so the partial NEVER auto-promotes to live
+        // (the driver clamps auto_promote -> park_draft on this). Covers the
+        // 90-min timeout, admin abort, help-flood, and any unexpected throw.
+        loopAborted = true;
         log.warn('mapper: target threw — preserving partial recipe, stopping loop', {
           jobId: opts.jobId ?? undefined,
           actionName: target.key,
@@ -1382,7 +1397,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     };
 
     opts.onProgress?.('Recipe saved — running first extraction…', 65);
-    return { ok: true, recipe, targetCatalog, boardTargets };
+    return { ok: true, recipe, targetCatalog, boardTargets, ...(loopAborted ? { aborted: true as const } : {}) };
   } catch (err) {
     const e = err as Error;
     log.error('mapper crashed', { err: e.message, stack: e.stack });
