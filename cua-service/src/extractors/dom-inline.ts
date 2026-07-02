@@ -13,6 +13,7 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
+import { env } from '../env.js';
 import { safeGoto } from '../browser-utils/navigate.js';
 import type { FeedSpec } from '../knowledge-file.js';
 
@@ -29,8 +30,8 @@ export interface DomInlineResult {
   reason?: string;
 }
 
-const WAIT_TIMEOUT_MS = Number(process.env.CUA_ROW_WAIT_MS) || 15_000;
-const RENDER_SETTLE_MS = Number(process.env.CUA_ROW_RENDER_MS) || 5_000;
+const WAIT_TIMEOUT_MS = env.CUA_ROW_WAIT_MS;
+const RENDER_SETTLE_MS = env.CUA_ROW_RENDER_MS;
 
 export async function extractDomInline(opts: DomInlineOptions): Promise<DomInlineResult> {
   const { page, feedSpec, allowedHost, signal } = opts;

@@ -13,6 +13,7 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
+import { env } from '../env.js';
 import { safeGoto } from '../browser-utils/navigate.js';
 import { extractDomRows } from './dom-rows.js';
 import { parsePreSteps, replayPreSteps } from './pre-steps.js';
@@ -38,10 +39,10 @@ const DEFAULT_MAX_ROWS = 5000;
 const ROW_SELECTOR_KEY = 'rowSelector';
 // Presence wait (how long to wait for ANY matching row to attach). Env-overridable
 // as a live ops escape hatch (read at module load).
-const WAIT_TIMEOUT_MS = Number(process.env.CUA_ROW_WAIT_MS) || 15_000;
+const WAIT_TIMEOUT_MS = env.CUA_ROW_WAIT_MS;
 // Bounded best-effort wait for a row to actually RENDER, after presence is
 // confirmed. Degrades to a read attempt on timeout (the reader filters hidden rows).
-const RENDER_SETTLE_MS = Number(process.env.CUA_ROW_RENDER_MS) || 5_000;
+const RENDER_SETTLE_MS = env.CUA_ROW_RENDER_MS;
 
 /** Best-effort, BOUNDED wait for at least one VISIBLE row matching `sel` (css or
  *  raw xpath) to paint — gives async-rendered rows a moment to settle after

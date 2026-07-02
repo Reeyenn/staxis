@@ -22,6 +22,10 @@ const Schema = z.object({
   JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   PULL_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  // DOM extractor row waits — live ops escape hatch, read at module load
+  // (see extractors/dom-table.ts / dom-inline.ts).
+  CUA_ROW_WAIT_MS: z.coerce.number().int().positive().default(15_000),
+  CUA_ROW_RENDER_MS: z.coerce.number().int().positive().default(5_000),
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
