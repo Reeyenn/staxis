@@ -474,12 +474,21 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
 
     const abortHandler = () => {
       // Plan v8 P1-6: mark row 'aborted' on SIGTERM so admin UI doesn't
-      // dangle a card forever.
+      // dangle a card forever. Supabase builders are LAZY thenables — they
+      // only fire when awaited/.then()'d, so the previous bare `void
+      // builder` never sent the update and every aborted card dangled.
       void supabase
         .from('mapping_help_requests')
         .update({ status: 'aborted', answered_at: new Date().toISOString() })
         .eq('id', requestId)
-        .eq('status', 'pending');
+        .eq('status', 'pending')
+        .then(({ error: abortErr }) => {
+          if (abortErr) {
+            log.warn('help-request: abort-status update failed', {
+              requestId, err: abortErr.message,
+            });
+          }
+        });
       log.info('help-request: aborted via signal', { requestId });
       settle({ actionType: 'unavailable', source: 'aborted', requestId });
     };

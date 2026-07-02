@@ -395,7 +395,19 @@ export async function enrichRowsWithDetail(args: {
       const fetched = await fetcher(url, rowDetail.columns);
       for (const [col, v] of Object.entries(fetched)) row[col] = v;
       enrichedCount++;
-      if (cacheKey) {
+      // Never CACHE an all-blank result. This module itself classifies an
+      // all-blank detail extraction as an artifact (login wall,
+      // half-rendered page — see findRowsWithAllBlankDetail), not data;
+      // caching it re-served the artifact for the full TTL, so one bad
+      // 30s poll became a sustained ~10-minute feed outage even after the
+      // detail page recovered. Let the next poll re-fetch.
+      const fetchedVals = Object.values(fetched);
+      const allBlank =
+        fetchedVals.length > 0 &&
+        fetchedVals.every(
+          (v) => v === undefined || v === null || (typeof v === 'string' && v.trim() === ''),
+        );
+      if (cacheKey && !allBlank) {
         if (detailCache.size >= DETAIL_CACHE_MAX) {
           // Insertion-order eviction — good enough for a safety cache.
           const oldest = detailCache.keys().next().value;

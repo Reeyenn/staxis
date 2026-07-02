@@ -92,6 +92,30 @@ export async function learnVisualStateColumn(opts: {
     return { ok: false, reason: 'a value appears on only 1 labeled row — too thin to learn safely' };
   }
 
+  // Anti-zebra backstop — findDiscriminator's docstring REQUIRES this of its
+  // caller, but no caller enforced it: the sample must contain at least one
+  // ADJACENT pair of same-label rows in DOM source order. On a sample whose
+  // labels perfectly alternate (clean/dirty/clean/dirty…), any presentation
+  // attribute that stripes by row parity (e.g. alternating bgcolor on legacy
+  // JSP tables) perfectly partitions the labels — and the certify pass,
+  // which re-reads the SAME alternating rows, confirms the parity rule
+  // instead of catching it. Every later poll where statuses stop alternating
+  // would then write INVERTED statuses. Adjacency is checked on the `dom`
+  // array (true source order) — the joined learnRows follow the vision map's
+  // iteration order, where adjacency is meaningless.
+  let hasAdjacentSameLabel = false;
+  for (let i = 0; i + 1 < dom.length; i++) {
+    const a = visionA.get(dom[i]!.rowKey);
+    const b = visionA.get(dom[i + 1]!.rowKey);
+    if (a && b && a === b) { hasAdjacentSameLabel = true; break; }
+  }
+  if (!hasAdjacentSameLabel) {
+    return {
+      ok: false,
+      reason: 'labels perfectly alternate down the visible sample — cannot rule out a striping/parity signal; parked for review',
+    };
+  }
+
   // 3. Learn the single readable signal that partitions the labels.
   const disc = findDiscriminator(learnRows);
   if (!disc) {
