@@ -14,6 +14,7 @@
 
 import { supabase } from './supabase.js';
 import { log } from './log.js';
+import { recordSpend } from './cost-cap.js';
 // Pricing math lives in usage-pricing.ts (pure, no Supabase import) so
 // unit tests can exercise it without the Node<22 RealtimeClient throw.
 import { computeCostMicros, type AnthropicUsage } from './usage-pricing.js';
@@ -124,6 +125,20 @@ export async function logClaudeUsage(usage: AnthropicUsage, context: LogContext)
         const oldest = IN_PROC_COST_BY_JOB.keys().next().value;
         if (oldest !== undefined) IN_PROC_COST_BY_JOB.delete(oldest);
       }
+    }
+
+    // Feed the per-hotel $5/day cap. This is the ONE seam every Claude call
+    // site already flows through — recordSpend previously had zero live
+    // callers, so the cap's tally never incremented and the advertised
+    // auto-pause could never trip. Mapping workloads are excluded (the
+    // org-wide daily mapping cap covers them); cua_critic rides mapping
+    // runs and is bounded by the per-job + org mapping caps instead.
+    if (
+      context.propertyId &&
+      !context.workload.startsWith('cua_mapping') &&
+      context.workload !== 'cua_critic'
+    ) {
+      await recordSpend(context.propertyId, cost, { kind: 'other', note: context.workload });
     }
 
     const { error } = await supabase.from('claude_usage_log').insert({
