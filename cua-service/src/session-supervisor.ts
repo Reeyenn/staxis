@@ -25,7 +25,7 @@
 import { supabase } from './supabase.js';
 import { log, makeWorkerId } from './log.js';
 import { SessionDriver } from './session-driver.js';
-import { start as startMemoryMonitor, stop as stopMemoryMonitor } from './memory-monitor.js';
+import { start as startMemoryMonitor, stop as stopMemoryMonitor, shouldRestart } from './memory-monitor.js';
 
 const RECONCILE_INTERVAL_MS = 30_000;
 const MAX_RESTARTS_PER_HOUR = 5;
@@ -104,6 +104,30 @@ export class SessionSupervisor {
 
   private async reconcileOnce(): Promise<void> {
     try {
+      // Consume memory-monitor restart requests HERE, not only in the
+      // drivers' poll loop: when no driver is actively polling (sole hotel
+      // paused_mfa / paused_no_knowledge_file / failed_restart, or every
+      // poll skipped behind a workflow lock), the poll-loop check never
+      // runs and the 80%-RAM + nightly-3am restarts were silently inert —
+      // exactly when leaked memory is most likely accumulating. Deferred
+      // while any workflow holds a browser lock so we never kill an
+      // in-flight write mid-step.
+      const restart = shouldRestart();
+      if (restart.restart) {
+        const locked = Array.from(this.drivers.values()).some((d) => d.isBrowserLocked());
+        if (locked) {
+          log.info('session-supervisor: restart requested but a workflow holds a browser lock — deferring', {
+            reason: restart.reason,
+          });
+        } else {
+          log.warn('session-supervisor: restart requested — stopping all drivers and exiting', {
+            reason: restart.reason,
+          });
+          await this.stop();
+          process.exit(0);
+        }
+      }
+
       const enabled = await this.loadEnabledSessions();
       const enabledById = new Map(enabled.map((s) => [s.property_id, s]));
 
@@ -117,6 +141,10 @@ export class SessionSupervisor {
       for (const [propertyId, driver] of this.drivers.entries()) {
         if (!driver.isRunning()) {
           log.info('session-supervisor: pruning dead driver from map', { propertyId });
+          // Belt-and-braces: a driver whose start() bailed early can still
+          // hold a live Chromium (~200-400MB). stop() is idempotent and
+          // null-safe, so this is free when there's nothing to clean.
+          void driver.stop().catch(() => {});
           this.drivers.delete(propertyId);
         }
       }
@@ -174,6 +202,9 @@ export class SessionSupervisor {
             propertyId: session.property_id,
             err: err instanceof Error ? err : new Error(String(err)),
           });
+          // Release whatever the half-started driver still holds (browser,
+          // timers) before dropping the reference — deleting alone leaked it.
+          void driver.stop().catch(() => {});
           this.drivers.delete(session.property_id);
         });
       }
