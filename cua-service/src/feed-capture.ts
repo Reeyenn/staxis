@@ -44,7 +44,9 @@
 import type { Page } from 'playwright';
 import { log } from './log.js';
 import { captureHardenedScreenshot } from './screenshot-privacy.js';
+import { SENSITIVE_FIELD_SELECTOR } from './screenshot-privacy.js';
 import { clearSetOfMark } from './set-of-mark.js';
+import { redactResponseBody } from './response-redaction.js';
 
 /** Same private bucket the live frame / help cards / takeover share. */
 const BUCKET = 'mapping-screenshots';
@@ -334,7 +336,9 @@ export async function captureLiveFeedProvenance(
  */
 async function captureColumnGeometry(page: Page, rowSelector: string): Promise<ColumnGeometry | null> {
   try {
-    const raw = await page.evaluate((sel: string) => {
+    const raw = await page.evaluate((args: { sel: string; sensitiveSel: string }) => {
+      const sel = args.sel;
+      const sensitiveSel = args.sensitiveSel;
       // Anchor on the first VISIBLE/rendered row, not just the first match. A
       // hidden template/prototype row first in the tbody (e.g. CA's
       // <tr id="roomConditionRow"> display:none) would otherwise anchor the
@@ -388,6 +392,12 @@ async function captureColumnGeometry(page: Page, rowSelector: string): Promise<C
       for (let i = 0; i < cand.length && values.length < 50; i++) {
         const el = cand[i]!;
         if (tbody.contains(el)) continue;                       // per-row cells are columns, not values
+        // Privacy parity with the paired screenshot: elements the screenshot
+        // masker blacks out (password / [data-sensitive] / .ssn / .credit-card
+        // — or anything nested inside one) must not ride along in boxes.json
+        // as plaintext. closest() matches the element itself too. Fail closed:
+        // if the selector check errors, skip the element.
+        try { if (el.closest(sensitiveSel)) continue; } catch { continue; }
         const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
         if (txt === '' || txt.length > 60) continue;
         let childHasText = false;
@@ -415,8 +425,17 @@ async function captureColumnGeometry(page: Page, rowSelector: string): Promise<C
       }
 
       return { viewport: { w: window.innerWidth, h: window.innerHeight }, columns, values };
-    }, rowSelector);
-    return (raw as ColumnGeometry | null) ?? null;
+    }, { sel: rowSelector, sensitiveSel: SENSITIVE_FIELD_SELECTOR });
+    const geometry = (raw as ColumnGeometry | null) ?? null;
+    if (geometry?.values) {
+      // Defense in depth: pattern-scrub harvested sample text (emails, SSNs,
+      // card numbers, formatted phones) before it reaches Supabase storage —
+      // the sensitive-class exclusion above only covers TAGGED elements.
+      for (const v of geometry.values) {
+        v.text = String(redactResponseBody(v.text));
+      }
+    }
+    return geometry;
   } catch (err) {
     log.warn('feed-capture: column geometry capture failed (non-fatal)', { rowSelector, message: (err as Error).message });
     return null;

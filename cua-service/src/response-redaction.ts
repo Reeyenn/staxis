@@ -206,6 +206,36 @@ function walkScalarNumber(n: number, mode: WalkMode): unknown {
   return n;
 }
 
+/**
+ * Array directly under a mask/maskstring key (phoneNumbers: […],
+ * guestNames: […], addressLines: […]). Elements have NO key of their own, so
+ * recursing in 'normal' mode (the old behavior) left bare scalars to the
+ * pattern pass — which by design does not match bare phones, names or street
+ * addresses, so multi-value PII fields escaped redaction entirely. Scalars
+ * inherit the key's masking tier; nested arrays keep the tier; objects
+ * re-classify by their own keys (guest: [{roomNumber, name}] keeps the room).
+ * Array LENGTH is preserved (row counts are reconciliation anchors).
+ */
+function walkMaskedKeyArray(
+  arr: unknown[],
+  depth: number,
+  seen: WeakSet<object>,
+  cls: 'mask' | 'maskstring',
+): unknown {
+  if (seen.has(arr)) return marker('cycle');
+  if (depth >= MAX_DEPTH) return marker('max_depth');
+  seen.add(arr);
+  return arr.map((v) => {
+    if (typeof v === 'string' || typeof v === 'bigint') return marker('field');
+    // maskstring keeps numbers (counts); mask hides them (phones, zips, DOBs).
+    if (typeof v === 'number') {
+      return cls === 'mask' ? marker('field') : walkScalarNumber(v, 'normal');
+    }
+    if (Array.isArray(v)) return walkMaskedKeyArray(v, depth + 1, seen, cls);
+    return walk(v, depth + 1, seen, 'normal');
+  });
+}
+
 function setOwn(out: Record<string, unknown>, key: string, value: unknown): void {
   // Plain assignment with key '__proto__' would set the prototype instead
   // of an own property — defineProperty sidesteps that.
@@ -274,6 +304,8 @@ function walk(value: unknown, depth: number, seen: WeakSet<object>, mode: WalkMo
       } else if (cls === 'mask') {
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'bigint') {
           setOwn(out, key, marker('field'));
+        } else if (Array.isArray(v)) {
+          setOwn(out, key, walkMaskedKeyArray(v, depth + 1, seen, 'mask'));
         } else {
           setOwn(out, key, walk(v, depth + 1, seen, 'normal'));
         }
@@ -282,6 +314,8 @@ function walk(value: unknown, depth: number, seen: WeakSet<object>, mode: WalkMo
         // counts (`guests: 2`) → kept.
         if (typeof v === 'string' || typeof v === 'bigint') {
           setOwn(out, key, marker('field'));
+        } else if (Array.isArray(v)) {
+          setOwn(out, key, walkMaskedKeyArray(v, depth + 1, seen, 'maskstring'));
         } else {
           setOwn(out, key, walk(v, depth + 1, seen, 'normal'));
         }
@@ -633,17 +667,32 @@ function looksLikeHeaderRow(rows: string[][]): boolean {
     const s = cellShape(c);
     if (s === 'date' || s === 'num') return false;
   }
-  // All-text first row: a real header differs in shape from its data in at
-  // least one column (Room vs 204). Identical shapes in every column means
-  // the first row is itself data ("John Smith,DUE_IN" / "Jane Doe,DUE_OUT")
-  // — treating it as a header would leave its name cells unmasked.
   const dataRow = rows.slice(1).find((r) => r.some((c) => c.trim() !== ''));
   if (!dataRow) return true; // header-only export
-  const n = Math.min(cells.length, dataRow.length);
-  for (let i = 0; i < n; i++) {
-    if (cellShape(cells[i]) !== cellShape(dataRow[i])) return true;
+  // All-text first row. Two independent signals say "this is a header":
+  //   1. Any cell CLASSIFIES as a known field name (Guest Name, Phone,
+  //      Status of the holder…) — data values almost never do.
+  //   2. At least TWO columns differ in shape from the first data row
+  //      (Date/Occupancy/ADR over 2026-07-01/85/120.50).
+  // A SINGLE shape diff with zero classify hits is deliberately NOT enough:
+  // a headerless "John Smith,20B,DUE_IN" over "Jane Doe,204,DUE_IN" has
+  // exactly one diff (20B text vs 204 num), and promoting that data row to
+  // header used to leave every guest-name column unmasked. Trade-off: a
+  // legit no-PII header with only one shape diff ("Room,Status") now goes
+  // through headerless masking — statuses are sacrificed, per this module's
+  // conservative-bias rule; names must never survive on a coin flip.
+  if (cells.some((c) => {
+    const cls = classifyKey(c);
+    return cls === 'nuke' || cls === 'mask' || cls === 'maskstring';
+  })) {
+    return true;
   }
-  return false;
+  const n = Math.min(cells.length, dataRow.length);
+  let shapeDiffs = 0;
+  for (let i = 0; i < n; i++) {
+    if (cellShape(cells[i]) !== cellShape(dataRow[i])) shapeDiffs++;
+  }
+  return shapeDiffs >= 2;
 }
 
 function redactHeaderlessCell(raw: string): string {
