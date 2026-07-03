@@ -139,6 +139,21 @@ describe('learnVisualStateColumn', () => {
     assert.match(out.reason, /duplicate row keys/);
   });
 
+  test('a withheld screenshot (labeler returns no labels) parks — never ships', async () => {
+    // buildVisionLabeler now routes through captureHardenedScreenshot and returns
+    // an EMPTY map when a reliably-masked image can't be produced (null). Pin that
+    // an empty learn-pass label set parks with ok:false — no raw-screenshot fallback,
+    // no shipped rule. (Audit medium: privacy invariant on the vision labeler.)
+    await page!.goto(dataUrl(caTable(ROWS)));
+    const withheld: VisionLabeler = async () => new Map<string, string>();
+    const out = await learnVisualStateColumn({
+      page: page!, rowSelector: 'tbody tr', keyCellCss: KEY_CSS, targetCellCss: CONDITION_CSS,
+      label: withheld,
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.selector, undefined, 'nothing authored when the screenshot was withheld');
+  });
+
   test('too-few-rows parks', async () => {
     const few = ROWS.slice(0, 3);
     await page!.goto(dataUrl(caTable(few)));

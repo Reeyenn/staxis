@@ -15,6 +15,7 @@
  */
 import type { Page } from 'playwright';
 import { anthropic, getModeConfig, type MapperModelId } from './anthropic-client.js';
+import { captureHardenedScreenshot } from './screenshot-privacy.js';
 import { learnVisualStateColumn, type VisionLabeler } from './visual-state-learn.js';
 import { contractEnumValues, type ActionKey } from './column-recovery.js';
 import { parseColumnSelector } from './extractors/dom-rows.js';
@@ -52,7 +53,23 @@ function buildVisionLabeler(o: {
     // the viewport): a viewport sample misses off-screen enum codes (→ runtime
     // stamps those rooms 'unknown') and can be single-class on grouped/sorted grids
     // (→ spurious park). (Adversarial review HIGH.)
-    const b64 = (await o.page.screenshot({ type: 'png', fullPage: true })).toString('base64');
+    //
+    // MUST go through the hardened primitive — this frame reaches Claude, so it is
+    // bound by the same credential/PII redaction invariant as every other mapper
+    // screenshot (a session-timeout re-login modal or an embedded payment/profile
+    // panel can be on-screen mid-map). If a reliably-masked image can't be produced
+    // it returns null; we then emit NO labels so the learn parks — NEVER fall back
+    // to a raw page.screenshot. (Audit medium.)
+    const shot = await captureHardenedScreenshot(o.page, { fullPage: true });
+    if (!shot) {
+      log.warn('visual-state: could not produce a redacted screenshot — no labels (parks)', {
+        actionName: o.actionKey,
+        col: o.col,
+        pass,
+      });
+      return new Map<string, string>();
+    }
+    const b64 = shot.toString('base64');
     const tool = {
       name: 'report_rows',
       description: `Report each visible data row's ${o.keyColName} and its value.`,
