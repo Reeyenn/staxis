@@ -27,6 +27,9 @@ import assert from 'node:assert/strict';
 import { validateRows, type TableSchemaDescriptor } from '../persistence/generic-table-writer.js';
 import { redactResponseBody, redactCsvText } from '../response-redaction.js';
 import { enrichRowsWithDetail, __clearDetailCacheForTests } from '../extractors/template-runner.js';
+import { actionFingerprint } from '../loop-detector.js';
+import { getParser } from '../parsers/registry.js';
+import '../parsers/generic.js'; // side-effect: registers generic_number/integer/currency
 
 const PID = '00000000-0000-0000-0000-000000000001';
 
@@ -208,6 +211,48 @@ describe('redactCsvText: header detection', () => {
 });
 
 // ─── 6: all-blank detail results are never cached ─────────────────────────────
+
+// ─── 7 (round 2): parseLocaleNumber leading-zero decimals ───────────────────
+
+describe('generic_number: leading-zero 3-decimal values are not ×1000', () => {
+  const num = getParser('generic_number')!;
+  test('0.750 → 0.75 (was 750)', () => {
+    assert.equal(num('0.750'), 0.75);
+    assert.equal(num('0,750'), 0.75);
+    assert.equal(num('0.123'), 0.123);
+  });
+  test('genuinely ambiguous 3-digit tails keep the tabular-thousands default', () => {
+    assert.equal(num('1.234'), 1234);
+    assert.equal(num('12,345'), 12345);
+  });
+  test('normal decimals + thousands still parse', () => {
+    assert.equal(num('1,5'), 1.5);
+    assert.equal(num('12.50'), 12.5);
+    assert.equal(num('1.234.567'), 1234567);
+    assert.equal(num('$1,234.56'), 1234.56);
+  });
+});
+
+// ─── 8 (round 2): loop-detector never embeds typed text ─────────────────────
+
+describe('actionFingerprint: typed text is hashed, not embedded', () => {
+  test('a typed password never appears verbatim in the fingerprint', () => {
+    const fp = actionFingerprint({ action: 'type', text: 'hunter2SecretPw' });
+    assert.ok(!fp.includes('hunter2SecretPw'), `plaintext leaked: ${fp}`);
+  });
+  test('identical text → identical fingerprint (loop detection intact)', () => {
+    const a = actionFingerprint({ action: 'type', text: 'same' });
+    const b = actionFingerprint({ action: 'type', text: 'same' });
+    assert.equal(a, b);
+  });
+  test('different text → different fingerprint', () => {
+    const a = actionFingerprint({ action: 'type', text: 'aaa' });
+    const b = actionFingerprint({ action: 'type', text: 'bbb' });
+    assert.notEqual(a, b);
+  });
+});
+
+// ─── 9 (round 2): drill-down preview null cell doesn't crash ─────────────────
 
 describe('enrichRowsWithDetail: all-blank artifact is not cached', () => {
   beforeEach(() => __clearDetailCacheForTests());

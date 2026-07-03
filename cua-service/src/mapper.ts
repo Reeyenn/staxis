@@ -2252,9 +2252,14 @@ export function truncatePreviewRows(
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(row)) {
       if (BOARD_PREVIEW_DROPPED_FIELDS.test(k)) continue;
-      out[k] = v.length > BOARD_PREVIEW_MAX_CELL_CHARS
-        ? `${v.slice(0, BOARD_PREVIEW_MAX_CELL_CHARS - 1)}…`
-        : v;
+      // Coerce first: drill-down rowData comes straight from model-emitted JSON
+      // and can carry a null (or non-string) cell despite the Record<string,
+      // string> type. `null.length` used to throw here and abort the ENTIRE
+      // remaining mapping run over one bad preview cell.
+      const s = typeof v === 'string' ? v : v == null ? '' : String(v);
+      out[k] = s.length > BOARD_PREVIEW_MAX_CELL_CHARS
+        ? `${s.slice(0, BOARD_PREVIEW_MAX_CELL_CHARS - 1)}…`
+        : s;
     }
     return out;
   });

@@ -98,12 +98,22 @@ function parseLocaleNumber(raw: unknown): number | null {
     const sep = hasComma ? ',' : '.';
     const parts = cleaned.split(sep);
     const lastGroup = parts[parts.length - 1]!;
+    const firstGroup = parts[0]!;
     // A single separator with a non-3-digit tail → decimal ("1,5", "12.50").
     // Multiple separators, or one with exactly 3 trailing digits → thousands
     // ("1,234", "1.234.567", "12,345"). 3 trailing digits is treated as
     // thousands (the common case for tabular money/counts).
-    const isDecimal = parts.length === 2 && lastGroup.length !== 3;
-    normalized = isDecimal ? `${parts[0]}.${lastGroup}` : parts.join('');
+    //
+    // EXCEPTION — a leading-zero integer part is UNAMBIGUOUSLY a decimal even
+    // with a 3-digit tail: thousands grouping never has a leading-zero group,
+    // so "0.500"/"0,123" is 0.5 / 0.123, never 500 / 123. Without this a
+    // sub-1.0 rate/percentage with 3 fractional digits was multiplied by 1000
+    // ("0.750" → 750). Only fires when parts[0] is a lone "0" or starts "0" —
+    // a real thousands first group ("1", "12", "123") is untouched.
+    const leadingZeroDecimal =
+      parts.length === 2 && (firstGroup === '0' || /^0\d/.test(firstGroup));
+    const isDecimal = parts.length === 2 && (lastGroup.length !== 3 || leadingZeroDecimal);
+    normalized = isDecimal ? `${firstGroup}.${lastGroup}` : parts.join('');
   } else {
     normalized = cleaned;
   }

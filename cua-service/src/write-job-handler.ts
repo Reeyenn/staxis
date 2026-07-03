@@ -137,8 +137,20 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   //     production writes are gated unconditionally.
   const verifiedAgainst =
     typeof rec.verified_against === 'string' ? rec.verified_against : 'mock';
-  const allowLoopback = payload.allow_loopback === true || payload.dry_run === true;
-  if (verifiedAgainst !== 'practice_room' && !allowLoopback) {
+  // Two DISTINCT test/rehearsal signals, neither set by the real enqueue path:
+  //   - dry_run: rehearse the recipe but DON'T commit (no Save click). Truly
+  //     dry (forwarded to the executor below), so it never mutates the PMS and
+  //     may waive the practice-room provenance requirement.
+  //   - allow_loopback: run against a mock/loopback PMS host (bypasses the
+  //     SSRF host guard). Test harness only.
+  // The old code lumped dry_run into `allowLoopback`, which WAIVED provenance
+  // but then hard-coded dryRun:false at execution — so `dry_run:true` disabled
+  // the safety gate AND performed a real, unrehearsed write against the live
+  // hotel PMS. Split them and forward each to its real effect.
+  const isDryRun = payload.dry_run === true;
+  const isLoopback = payload.allow_loopback === true;
+  const waiveProvenance = isDryRun || isLoopback;
+  if (verifiedAgainst !== 'practice_room' && !waiveProvenance) {
     log.error('write-job-handler: write recipe has insufficient provenance — refusing (fail closed)', {
       propertyId: ctx.propertyId, pmsFamily, actionKey, verifiedAgainst,
     });
@@ -209,7 +221,12 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   }
 
   const result = await runExclusive(ctx.propertyId, WRITE_MUTEX_TIMEOUT_MS, (signal) =>
-    executeWriteRecipe(page, recipe, writePayload, { dryRun: false, allowedHost, signal }),
+    executeWriteRecipe(page, recipe, writePayload, {
+      dryRun: isDryRun,
+      allowLoopback: isLoopback,
+      allowedHost,
+      signal,
+    }),
   );
 
   if (!result.ok) {

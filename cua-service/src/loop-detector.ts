@@ -17,6 +17,22 @@
 
 import type { Page } from 'playwright';
 
+/**
+ * Stable, non-reversible 32-bit hash (FNV-1a) → 8-hex. Used to fingerprint
+ * TYPED text without embedding it: identical text yields an identical token
+ * (loop detection intact) but the plaintext never lands in a fingerprint,
+ * which flows verbatim into the logged trip `reason`. A typed value can be a
+ * credential (the login flow types the password), so it must never be logged.
+ */
+function stableTextToken(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 export interface LoopDetectorOpts {
   /** Number of most-recent records the detector remembers. Default 8. */
   windowSize?: number;
@@ -133,7 +149,10 @@ export function actionFingerprint(input: unknown): string {
   }
 
   if (action === 'type' || action === 'key') {
-    return `${action}:${String(a.text ?? '')}`;
+    // Hash the text, never embed it: a typed value can be a password, and this
+    // fingerprint is logged verbatim in the loop trip reason. Same text → same
+    // token, so loop detection is unchanged.
+    return `${action}:${stableTextToken(String(a.text ?? ''))}`;
   }
 
   if (action === 'hold_key') {

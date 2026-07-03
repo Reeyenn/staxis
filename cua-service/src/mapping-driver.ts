@@ -1657,6 +1657,26 @@ export async function promoteRecipeChange(args: PromoteRecipeChangeArgs): Promis
     }
   }
 
+  // Stale-active superset guard (feature/cua-self-heal-reach): a rung-2
+  // re-anchor builds its candidate from the DRIVER's in-memory recipe, which
+  // hot-reloads only every ~60s — so a NEWER active version (e.g. a sibling
+  // hotel's re-anchor or a backfill that added a feed) can have been promoted
+  // while this candidate was in flight. Without this check, activating the
+  // candidate would silently DROP the newly-gained feed family-wide. Seeded
+  // mapper jobs get this same guard via checkSeededPromotionGuards; the
+  // re-anchor path was the one promote caller that skipped it. isBackfill=false
+  // — re-anchor is same-shape-with-better-selectors, so only the superset
+  // (never-drop-a-live-feed) half applies, not the gap-shrink half.
+  if (shouldActivateImmediately(gate.decision)) {
+    const supersetGuard = await checkSeededPromotionGuards(
+      args.pmsFamily, args.recipe, gate.feedGaps, false,
+    );
+    if (!supersetGuard.ok) {
+      gate.decision = 'park_draft';
+      gate.reason = supersetGuard.reason;
+    }
+  }
+
   const initialStatus = gate.decision === 'quarantine' ? 'quarantined' : 'draft';
   const draft = await saveDraftKnowledgeFile(
     args.pmsFamily, args.recipe, initialStatus, gate.feedGaps, `${args.origin}/${gate.decision}: ${gate.reason}`,
