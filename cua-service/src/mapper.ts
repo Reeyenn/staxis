@@ -1595,6 +1595,13 @@ export async function mapLogin(
   //   re-confirm churn at MAX_LOGIN_CONFIRM_RETRIES instead of spinning.
   let credentialsSubmitted = false;
   let loginConfirmRetries = 0;
+  // Adaptive thinking shares the max_tokens pool (4096 + 8192 headroom), so one
+  // over-long thinking turn can truncate with stop_reason='max_tokens' and no
+  // completed tool_use block. Allow ONE bounded retry of such a turn before
+  // giving up, so a transient single-turn truncation doesn't hard-fail the whole
+  // login phase (and the whole learn job). Budget-guarded like every other turn.
+  let truncationRetries = 0;
+  const MAX_TRUNCATION_RETRIES = 1;
 
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS_LOGIN; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
@@ -1926,7 +1933,28 @@ export async function mapLogin(
     // and bundle all tool_results into a single user message. (Bug fix
     // 2026-05-09 — first browser-tool deploy hit this within seconds.)
     const toolUses = responseContent.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
-    if (toolUses.length === 0) break;
+    if (toolUses.length === 0) {
+      // A turn with no tool_use and stop_reason='max_tokens' is a truncated
+      // (adaptive-thinking overran the budget) turn, not a genuine dead end.
+      // Retry it ONCE: drop the incomplete assistant turn and nudge the model to
+      // act concisely. Any other zero-tool stop is a real dead end → break.
+      if (response.stop_reason === 'max_tokens' && truncationRetries < MAX_TRUNCATION_RETRIES) {
+        truncationRetries++;
+        log.warn('login mapper: model turn truncated (max_tokens) with no tool_use — retrying once', {
+          jobId: ctx.jobId ?? undefined, stepIdx, truncationRetries,
+        });
+        messages.pop(); // remove the truncated assistant turn we just pushed
+        messages.push({
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: 'Your previous turn was cut off before you acted. Keep your reasoning brief and take the single next action now (a screenshot or one click/type).',
+          }],
+        });
+        continue;
+      }
+      break;
+    }
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
@@ -2443,7 +2471,16 @@ async function mapAction(args: MapActionArgs): Promise<ActionMapSuccess | Action
     // when a reliably-masked capture can't be produced. Drill-recovered feeds
     // are already navigated back to the feed page before mapActionCore returns,
     // so this still captures the feed (not a drill detail).
-    if (result.ok && !result.viaBail) {
+    //
+    // EXCEPTION — an EARLY structured-discovery upgrade (inside mapActionCore)
+    // returns mode:'api' and leaves the page on the post-login DASHBOARD (its
+    // success path does NOT restore the feed page — only the abstain path does).
+    // The only way `result` is already api HERE is that early upgrade, so
+    // capturing now would persist the dashboard as the feed's provenance. Skip
+    // it rather than capture the wrong page — the api recipe was replay-verified
+    // and its data path is unaffected; the provenance image is display-only.
+    const earlyApiUpgrade = result.ok && result.action.parse.mode === 'api' && discoveryState.earlyAttempted;
+    if (result.ok && !result.viaBail && !earlyApiUpgrade) {
       await captureFeedProvenanceScreenshot({
         page: args.page,
         jobId: args.jobId,
@@ -2851,6 +2888,16 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
   //     args.page, so recipe steps (recordLandingGoto(... args.page)) keep
   //     recording against the original page exactly as today.
   let deliveryDownloadFired = false;
+  // The recorded steps AS OF the click that fired the download — snapshotted so
+  // the csv recipe's steps END at that trigger click. deliveryDownloadFired is
+  // sticky for the whole target loop, so without this a columns-only emission
+  // MANY turns later (the model kept exploring, opened other menus after the
+  // export) would commit steps:[...recordedSteps] whose derived download trigger
+  // (deriveCsvFlowFromSteps takes the LAST click after the last goto) is a wrong
+  // post-export click — the runtime then replays that click and waits forever
+  // for a download that never fires. Refreshed on every download fire so the
+  // most recent export click is always the trigger.
+  let downloadTriggerSteps: RecipeStep[] | null = null;
   let deliveryNewWindowFired = false;
   let popupPage: Page | null = null;
   const currentPage = (): Page => popupPage ?? args.page;
@@ -3113,7 +3160,11 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         const dlSuccess: ActionMapSuccess = {
           ok: true,
           action: {
-            steps: [...recordedSteps],
+            // Steps as of the download-firing click (falls back to the full list
+            // only if the snapshot is somehow absent), so deriveCsvFlowFromSteps
+            // derives the real export click as the trigger — not a later
+            // post-export exploration click.
+            steps: downloadTriggerSteps ?? [...recordedSteps],
             parse: { mode: 'csv', hint: { columns: learnedColumns } },
             downloadsCsv: true,
           },
@@ -3199,12 +3250,23 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
         // auto-learned clean/dirty map never auto-promotes to live blind. PMS-
         // agnostic; a fused/ambiguous column finds no single signal and stays parked.
         // learnedColumns IS success.action.parse.hint.columns (same ref).
-        const applyVisualPatch = (col: string, selector: string, valueMap: Record<string, string>): void => {
-          learnedColumns[col] = selector;
-          success.enumMappings = { ...(success.enumMappings ?? {}), [col]: valueMap };
-          audit.outstanding.delete(col); // author it (not blanked)…
-          audit.uncertain = new Set([...(audit.uncertain ?? []), col]); // …but flag for review
+        // Patch a SPECIFIC candidate's success+audit in place. cand.success's
+        // hint.columns is the same ref its learnedColumns was built from, so
+        // mutating it authors the selector on that candidate's recipe.
+        const applyVisualPatchTo = (
+          cand: { success: ActionMapSuccess; audit: PageAudit },
+          col: string,
+          selector: string,
+          valueMap: Record<string, string>,
+        ): void => {
+          if (cand.success.action.parse.mode !== 'table') return;
+          cand.success.action.parse.hint.columns[col] = selector;
+          cand.success.enumMappings = { ...(cand.success.enumMappings ?? {}), [col]: valueMap };
+          cand.audit.outstanding.delete(col); // author it (not blanked)…
+          cand.audit.uncertain = new Set([...(cand.audit.uncertain ?? []), col]); // …but flag for review
         };
+        const applyVisualPatch = (col: string, selector: string, valueMap: Record<string, string>): void =>
+          applyVisualPatchTo({ success, audit }, col, selector, valueMap);
         // Re-apply recoveries proven on a prior turn to THIS candidate (same feed).
         for (const [col, p] of visualStateRecovered) {
           if (p.rowSelector === parsed.rowSelector) applyVisualPatch(col, p.selector, p.valueMap);
@@ -3249,6 +3311,21 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           for (const r of recovered) {
             visualStateRecovered.set(r.col, { selector: r.selector, valueMap: r.valueMap, rowSelector: parsed.rowSelector });
             applyVisualPatch(r.col, r.selector, r.valueMap);
+            // Retroactively patch the existing best too. A recovery certified on
+            // a structural-only (unverified) turn will NOT win bestCandidate
+            // against an earlier verified best (isBetterCandidate: verified wins
+            // at any size), so the forward re-apply loop above — which only
+            // touches candidates AS they emit — would drop this certified patch:
+            // the unpatched verified best finalizes and blanks the column despite
+            // paid vision proving a selector. Apply it to the best on the same
+            // feed now so whichever candidate finalizes carries the recovery.
+            const bestRowSelector =
+              bestCandidate?.success.action.parse.mode === 'table'
+                ? bestCandidate.success.action.parse.hint.rowSelector
+                : null;
+            if (bestCandidate && bestRowSelector === parsed.rowSelector) {
+              applyVisualPatchTo(bestCandidate, r.col, r.selector, r.valueMap);
+            }
           }
         }
 
@@ -3673,6 +3750,10 @@ async function mapActionCore(args: MapActionArgs): Promise<ActionMapSuccess | Ac
           // success action gets downloadsCsv:true (replays via the EXISTING
           // recipe-adapter csv/download path — extractors/csv-download.ts).
           deliveryDownloadFired = true;
+          // Snapshot the steps ending at THIS trigger click (see the decl) so a
+          // later columns-only emission commits a csv flow whose download trigger
+          // is the real export click, not a subsequent exploration click.
+          downloadTriggerSteps = [...recordedSteps];
           const parsedDl = await parseDownloadedFile(exec.delivery.download);
           const note = parsedDl.ok
             ? `\n\n[DOWNLOADED FILE] format=${parsedDl.format} headers=[${parsedDl.headers.join(', ')}] ` +
@@ -4384,10 +4465,21 @@ export function finalizeRecoveredSuccess(
   // a header here that isn't a captured column is one the founder can add (its
   // index lets the editor author a positional selector). Purely additive; a
   // headerless/colspan feed simply omits it (empty dropdown → re-map prompt).
+  //
+  // fix/cua-header-offset — store the BODY-aligned index, not the raw header
+  // index. c.index is the header-row cell position; the Coverage Editor authors
+  // `td:nth-child(index)` (a BODY position) and dedups against body-position
+  // selectors. On tables with leading checkbox/action cells the body cell is
+  // bodyOffset positions to the RIGHT of its header (dom-rows: body = header +
+  // bodyOffset), and bodyOffset is never persisted — so add it here or the
+  // editor authors a selector bodyOffset cells LEFT of the intended column
+  // (silent well-formed wrong data) and already-captured columns wrongly reappear
+  // as addable. 0 for aligned tables (byte-identical).
+  const bodyOff = audit.headers?.bodyOffset ?? 0;
   const detectedColumns = audit.headers
     ? audit.headers.cells
         .filter((c) => c.index >= 1 && c.raw.trim() !== '')
-        .map((c) => ({ index: c.index, header: c.raw.trim() }))
+        .map((c) => ({ index: c.index + bodyOff, header: c.raw.trim() }))
     : [];
 
   const action: ActionRecipe = {
@@ -6397,6 +6489,16 @@ async function mapDrillDownAction(args: {
           log.info('mapper: drilldown list page is empty — recording list-only recipe', {
             jobId: args.jobId ?? undefined, actionName: args.actionName, listUrl: parsed.listUrl,
           });
+          // feature/cua-feed-extract — anchor the feed's landing URL, exactly as
+          // mapActionCore does. mapDrillDownAction records ONLY click_at steps
+          // for the whole exploration (the vision tool never emits a goto), so
+          // without this the recipe's only goto is the dashboard: recipe-adapter
+          // derives sourceUrl = last goto = postLoginUrl and every poll scrapes
+          // the DASHBOARD with listRowSelector → perpetual silent 0 rows. Record
+          // the model's list URL as a trailing goto so replay navigates STRAIGHT
+          // to the list page and the exploration clicks fall BEFORE the goto (so
+          // recipe-adapter drops them instead of blind-replaying pixel clicks).
+          recordLandingGoto(recordedSteps, parsed.listUrl);
           return {
             ok: true,
             action: {
@@ -6435,16 +6537,31 @@ async function mapDrillDownAction(args: {
 
         // URL template inference.
         const inference = inferUrlTemplate(sampleUrls);
-        const detailUrlTemplate = inference.ok ? inference.template : sampleUrls[0]!;
         const placeholderToColumn = inference.ok
           ? mapPlaceholdersToColumns(inference.placeholders, sampleRowData)
           : {};
-        // Map placeholders to friendlier names — use the column name as
-        // the new placeholder (e.g. var_0 → pms_reservation_id).
+        // Rewrite the machine placeholders ({var_0}) in the template to the
+        // COLUMN NAME (e.g. {var_0} → {reservation_id}), completing the
+        // mapPlaceholdersToColumns contract (url-template.ts:159). Both the
+        // runtime (template-runner reads row[placeholder]) and the eligibility
+        // gate (drillDownDetailEligible requires every {placeholder} to be a
+        // listColumns key) are keyed by column name — a template that keeps
+        // {var_N} resolves to no row value and is permanently unreplayable.
+        let detailUrlTemplate = inference.ok ? inference.template : sampleUrls[0]!;
         const detailUrlParams: Record<string, string> = {};
         for (const [placeholder, columnName] of Object.entries(placeholderToColumn)) {
+          detailUrlTemplate = detailUrlTemplate.replaceAll(`{${placeholder}}`, `{${columnName}}`);
           detailUrlParams[columnName] = columnName;
         }
+        // Every var_N must have been bound to a column for the template to be
+        // replayable. If mapPlaceholdersToColumns couldn't name one (its value
+        // matched no list column), an unbound {var_N} survives the rewrite —
+        // don't stamp templateVerified, or the eligibility gate would fail
+        // closed forever while advertising a verified template.
+        const templateFullyBound =
+          inference.ok && [...detailUrlTemplate.matchAll(/\{([^}]+)\}/g)].every(
+            (m) => detailUrlParams[m[1]!] !== undefined,
+          );
 
         // Per-field coverage: for each detail field, count samples where
         // the selector returned a non-empty value. Agent reports this
@@ -6471,6 +6588,16 @@ async function mapDrillDownAction(args: {
           }
         }
 
+        // feature/cua-feed-extract — anchor the feed's landing URL (see the
+        // empty-list branch above). The page is sitting on a sample DETAIL
+        // record here, not the list, so we anchor on the model's reported
+        // listUrl, not the current page url. Even though the drillDown override
+        // in recipe-adapter re-points source.url to listUrl, the exploration +
+        // drill clicks would otherwise survive as extra.preSteps (the override
+        // never clears extra) and be blind-replayed against the live PMS every
+        // poll. Recording listUrl as a trailing goto empties those preSteps.
+        recordLandingGoto(recordedSteps, parsed.listUrl);
+
         return {
           ok: true,
           action: {
@@ -6494,8 +6621,10 @@ async function mapDrillDownAction(args: {
               // Plan v7 calls for a 4th-sample verification drill; for the
               // initial Phase 2a ship we treat successful inference as
               // verification. A follow-up enhancement (Phase 2c polish)
-              // will add the explicit 4th drill.
-              templateVerified: inference.ok,
+              // will add the explicit 4th drill. Only stamp verified when every
+              // placeholder was rewritten to a real column name — an unbound
+              // {var_N} template can never be replayed (see templateFullyBound).
+              templateVerified: templateFullyBound,
             },
           },
           // Learning Board — the drilled sample records ARE real captured

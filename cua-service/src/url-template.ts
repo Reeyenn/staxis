@@ -123,7 +123,11 @@ export function inferUrlTemplate(sampleUrls: string[]): UrlTemplateInferenceResu
     const valuesAtKey = parsed.map((u) => u.searchParams.get(key) ?? '');
     const unique = new Set(valuesAtKey);
     if (unique.size === 1) {
-      templateQueryEntries.push(`${key}=${valuesAtKey[0]}`);
+      // searchParams.get() percent-DECODES; re-encode the invariant value so
+      // a param value containing &, =, # or + can't split the template's query
+      // string into different params than the samples had (matches
+      // templateFromSample's encodeURIComponent at the query-entry emit below).
+      templateQueryEntries.push(`${key}=${encodeURIComponent(valuesAtKey[0]!)}`);
     } else {
       const placeholder = `var_${varCounter++}`;
       templateQueryEntries.push(`${key}={${placeholder}}`);

@@ -74,6 +74,35 @@ describe('finalizeRecoveredSuccess — detectedColumns (page-column catalogue)',
     });
     assert.equal(detectedOf(out.action), undefined);
   });
+
+  test('offset table (leading checkbox) → detectedColumns store BODY-aligned indices', () => {
+    // A leading checkbox/action cell: header cell N's body cell is td:nth-child(N+bodyOffset).
+    // The Coverage Editor authors td:nth-child(index) — a BODY position — and dedups
+    // against body-position selectors, so detectedColumns must be body-aligned or the
+    // editor lands bodyOffset cells LEFT of the intended column (silent wrong data).
+    const offsetHeaders: CapturedTableHeaders = {
+      cells: [
+        { index: 1, text: 'conf', raw: 'Conf. #' },
+        { index: 2, text: 'guest', raw: 'Guest Name' },
+        { index: 3, text: 'rate', raw: 'Rate Plan' },
+      ],
+      roleKind: 'cell',
+      hasSpan: false,
+      headerChildCount: 3,
+      bodyChildCount: 4, // one leading control cell the header row lacks
+      bodyOffset: 1,
+    };
+    const out = finalizeRecoveredSuccess({
+      success: successWith({ pms_reservation_id: 'td:nth-child(2)', guest_name: 'td:nth-child(3)' }),
+      audit: auditWith({ headers: offsetHeaders }),
+    });
+    // Each stored index = header index + bodyOffset, i.e. the real BODY nth-child.
+    assert.deepEqual(detectedOf(out.action), [
+      { index: 2, header: 'Conf. #' },
+      { index: 3, header: 'Guest Name' },
+      { index: 4, header: 'Rate Plan' },
+    ]);
+  });
 });
 
 describe('actionRecipeToTableTemplate — custom columns → rawColumns + read set', () => {
