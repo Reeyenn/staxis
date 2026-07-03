@@ -19,15 +19,44 @@ import { runExclusive } from './single-flight.js';
 import { executeWriteRecipe } from './write-runner.js';
 import { verifyRecipe } from './recipe-signing.js';
 import { decodeBytea } from './knowledge-file.js';
+import { rehostFeedUrl, resolveAllowedHost } from './session-driver.js';
 import type { Recipe, WriteActionRecipe } from './types.js';
 
 const WRITE_MUTEX_TIMEOUT_MS = 120_000;
+
+/** Origin (scheme://host[:port]) of a URL, or null if unparseable. */
+function safeOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 
 interface HandlerResult {
   ok: boolean;
   result?: Record<string, unknown>;
   error?: string;
+  /** TRANSIENT non-counting deferral — see the session pre-flight gate and
+   *  workflow-runtime's markDeferred. NOT a failure: the runtime re-queues
+   *  without burning an attempt so the write drains once the session resumes. */
+  defer?: boolean;
 }
+
+/**
+ * Session statuses that are a TRANSIENT pause with a live browser that WILL
+ * come back (cost cap clears at midnight, MFA on operator action, `starting`
+ * settles within seconds). A pms.write claimed during one of these must DEFER
+ * (non-counting re-queue), not terminal-fail on its single attempt — otherwise
+ * every write made while a hotel is paused is permanently dropped. Any OTHER
+ * non-'alive' status (e.g. stopped / failed_restart) is NOT a transient pause;
+ * it fails as before rather than deferring forever.
+ */
+const DEFERRABLE_SESSION_STATUSES = new Set<string>([
+  'paused_cost_cap',
+  'paused_mfa',
+  'starting',
+]);
 
 export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResult> {
   // 0. Global kill switch — halts ALL writes regardless of per-property flags.
@@ -36,15 +65,17 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
     return { ok: false, error: 'writes_killed' };
   }
 
-  // 0a. Session pre-flight gate. A cost-cap-paused / MFA-paused / otherwise
-  //     not-'alive' hotel has no usable logged-in browser, so driving a real
-  //     PMS write would terminal-fail on an expired session and burn the job's
-  //     retry budget. Bail BEFORE any browser action with a distinct TRANSIENT
-  //     error — markFailedOrRetry re-queues (while attempts remain) so the job
-  //     drains once the session resumes (cost cap clears at midnight, MFA on
-  //     /admin/mfa-resume). The runtime owns the attempt counter; we can't mark
-  //     this non-counting from here, so the contract is "distinct transient
-  //     error + log, never a hard/silent failure".
+  // 0a. Session pre-flight gate. A cost-cap-paused / MFA-paused / starting
+  //     hotel has no usable logged-in browser YET, so driving a real PMS write
+  //     would fail on an expired session. Bail BEFORE any browser action.
+  //     For a TRANSIENT pause (DEFERRABLE_SESSION_STATUSES) return defer:true —
+  //     the runtime re-queues WITHOUT consuming an attempt (markDeferred), so
+  //     the write drains once the session resumes (cost cap clears at midnight,
+  //     MFA on /admin/mfa-resume). pms.write is max_attempts=1, so the old
+  //     "transient error + rely on retry budget" contract silently dropped
+  //     every write made during a pause; defer:true is the real fix. Any other
+  //     non-'alive' status (stopped / failed_restart) is not a self-resolving
+  //     pause and fails normally.
   const { data: sess, error: sessErr } = await supabase
     .from('property_sessions')
     .select('status')
@@ -53,7 +84,13 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   if (sessErr) return { ok: false, error: `session_read_failed: ${sessErr.message}` };
   const sessionStatus = typeof sess?.status === 'string' ? sess.status : 'unknown';
   if (sessionStatus !== 'alive') {
-    log.warn('write-job-handler: deferring — session not alive (transient)', {
+    if (DEFERRABLE_SESSION_STATUSES.has(sessionStatus)) {
+      log.warn('write-job-handler: deferring — session paused (non-counting re-queue)', {
+        propertyId: ctx.propertyId, sessionStatus,
+      });
+      return { ok: false, defer: true, error: `session_paused:${sessionStatus}` };
+    }
+    log.warn('write-job-handler: session not alive and not a transient pause — failing', {
       propertyId: ctx.propertyId, sessionStatus,
     });
     return { ok: false, error: `session_not_alive:${sessionStatus}` };
@@ -88,6 +125,21 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   const pmsFamily = typeof cred?.pms_type === 'string' ? cred.pms_type : null;
   if (!pmsFamily) return { ok: false, error: 'no_pms_family' };
 
+  // 2a. THIS property's per-hotel login URL (scraper_credentials_decrypted,
+  //     the same source the session driver logs in at). Family-shared write
+  //     recipes bake ONE learn-time pageUrl; for a per-subdomain cloud PMS
+  //     that URL points at the MAPPER hotel's tenant, so replaying it verbatim
+  //     could write into the WRONG hotel's PMS. We re-host recipe.pageUrl onto
+  //     this hotel's origin below (step 6). NULL for a single-host PMS like
+  //     Choice Advantage (no per-hotel URL) → re-host is a no-op there.
+  const { data: credUrl } = await supabase
+    .from('scraper_credentials_decrypted')
+    .select('ca_login_url')
+    .eq('property_id', ctx.propertyId)
+    .eq('is_active', true)
+    .maybeSingle();
+  const perHotelLoginUrl = typeof credUrl?.ca_login_url === 'string' ? credUrl.ca_login_url : null;
+
   // 3. Load the active write recipe + FAIL-CLOSED signature verify. Writes are
   //    higher-risk than reads, so refuse an unsigned/unverified recipe
   //    UNCONDITIONALLY, regardless of RECIPE_SIGNING_ENFORCE (Codex P0-2).
@@ -116,16 +168,38 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
     return { ok: false, error: `recipe_param_unplumbed:${unplumbed}` };
   }
 
+  // The provenance/routing columns the safety gates key on. In v1 the HMAC
+  //   covered ONLY the recipe body, so a service-role attacker could flip
+  //   verified_against ('mock'→'practice_room') or transplant a signed recipe
+  //   onto another action_key row WITHOUT breaking the signature. v2 folds these
+  //   three columns into the signed payload, so any such tamper now fails
+  //   verification. The WRITE path REQUIRES v2 (below); the READ path keeps the
+  //   v1 fallback for legacy knowledge-file signatures.
+  const verifiedAgainst =
+    typeof rec.verified_against === 'string' ? rec.verified_against : 'mock';
+
   const verify = verifyRecipe(
     recipe as unknown as Recipe,
     decodeBytea(rec.signature),
     typeof rec.signed_with_key_id === 'string' ? rec.signed_with_key_id : null,
+    { actionKey, pmsFamily, verifiedAgainst },
   );
   if (!verify.ok) {
     log.error('write-job-handler: write recipe failed signature verification — refusing (fail closed)', {
       propertyId: ctx.propertyId, pmsFamily, actionKey, reason: verify.reason,
     });
     return { ok: false, error: `write_recipe_unverified:${verify.reason}` };
+  }
+  // WRITE path REQUIRES a v2 (metadata-bound) signature. A v1 signature covers
+  // only the recipe body, leaving verified_against/action_key/pms_family
+  // tamperable — refuse it here rather than re-open that gap for writes. (The
+  // seed/resign script signs write recipes v2; a legacy v1 write row must be
+  // re-signed before it can drive a live write.)
+  if (verify.version !== 2) {
+    log.error('write-job-handler: write recipe signature is v1 (metadata-unbound) — refusing (fail closed)', {
+      propertyId: ctx.propertyId, pmsFamily, actionKey, version: verify.version,
+    });
+    return { ok: false, error: 'write_recipe_v1_signature_rejected' };
   }
 
   // 3a. Provenance gate. A recipe validated only against the MOCK PMS
@@ -134,9 +208,9 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   //     live write REQUIRES a recipe that was verified against a real practice
   //     room. The ONLY escape hatch is an explicit test/loopback signal on the
   //     job payload (allow_loopback), which the real enqueue path never sets, so
-  //     production writes are gated unconditionally.
-  const verifiedAgainst =
-    typeof rec.verified_against === 'string' ? rec.verified_against : 'mock';
+  //     production writes are gated unconditionally. verified_against is now
+  //     cryptographically bound (v2), so a DB flip of the column fails the
+  //     verification above before reaching this gate.
   // Two DISTINCT test/rehearsal signals, neither set by the real enqueue path:
   //   - dry_run: rehearse the recipe but DON'T commit (no Save click). Truly
   //     dry (forwarded to the executor below), so it never mutates the PMS and
@@ -207,24 +281,62 @@ export async function writeJobHandler(ctx: WorkflowContext): Promise<HandlerResu
   const targetStatus = writePayload.target_status;
   if (!targetStatus) return { ok: false, error: 'bad_payload_no_target_status' };
 
+  // 5a. Re-host recipe.pageUrl onto THIS property's tenant origin (wrong-hotel
+  //     guard). A family-shared write recipe carries ONE learn-time pageUrl
+  //     recorded on the MAPPER hotel's tenant. For a per-subdomain cloud PMS
+  //     (OPERA Cloud, Cloudbeds, Mews, RoomKey) every hotel on the family would
+  //     otherwise replay that same URL and drive the write into the MAPPER
+  //     hotel's PMS — corrupting the wrong hotel. rehostFeedUrl swaps the
+  //     recorded origin for this hotel's login-URL origin (the exact logic the
+  //     READ path uses for feed URLs); it is a no-op when there is no per-hotel
+  //     URL (single-host PMSes) or the origins already match.
+  //
+  //     FAIL-CLOSED CAVEAT — single-host multi-tenant PMSes (Choice Advantage):
+  //     tenancy there is by SESSION/login (the ?ihc= code on the login URL),
+  //     not by host, so recipe.pageUrl has no per-hotel origin to re-host to and
+  //     the landed-origin guard below can't distinguish hotel A from hotel B on
+  //     the shared host. Today that's safe because CA logs in per-property with
+  //     a per-hotel robot account, so the shared page shows only THIS hotel's
+  //     rooms. But before enabling write-back for a SECOND hotel on any
+  //     single-host family, a per-property page-verification marker (assert a
+  //     hotel-identifying element/text on the landed page belongs to
+  //     ctx.propertyId) must be added — the origin guard alone is not sufficient
+  //     there. See `concerns`.
+  const { data: kf } = await supabase
+    .from('pms_knowledge_files')
+    .select('knowledge')
+    .eq('pms_family', pmsFamily)
+    .eq('status', 'active')
+    .is('deleted_at', null)
+    .maybeSingle();
+  const familyStartUrl =
+    typeof (kf?.knowledge as { login?: { startUrl?: string } } | null)?.login?.startUrl === 'string'
+      ? (kf!.knowledge as { login: { startUrl: string } }).login.startUrl
+      : '';
+  const rehostedPageUrl = rehostFeedUrl(recipe.pageUrl, familyStartUrl, perHotelLoginUrl);
+
   // 6. Drive the write under the EXCLUSIVE browser mutex (serializes against
   //    the 30s reader on the one Page). The workflow-runtime has already
   //    acquired the driver's browser lock (pausing new reads); runExclusive
   //    additionally waits out any read already in flight.
   const page = ctx.page;
   if (!page) return { ok: false, error: 'no_page' };
-  let allowedHost: string;
-  try {
-    allowedHost = new URL(recipe.pageUrl).host;
-  } catch {
-    return { ok: false, error: 'bad_recipe_page_url' };
-  }
+  // allowedHost + expectedOrigin are derived from the RE-HOSTED url so both
+  // safeGoto's navigation pin AND the landed-origin fail-closed check anchor to
+  // THIS property's tenant, never the learn-time (mapper) host.
+  const allowedHost = resolveAllowedHost(rehostedPageUrl);
+  if (!allowedHost) return { ok: false, error: 'bad_recipe_page_url' };
+  const expectedOrigin = safeOrigin(rehostedPageUrl);
+  if (!expectedOrigin) return { ok: false, error: 'bad_recipe_page_url' };
+  // Replay against the re-hosted URL, not the recorded one.
+  const perPropertyRecipe: WriteActionRecipe = { ...recipe, pageUrl: rehostedPageUrl };
 
   const result = await runExclusive(ctx.propertyId, WRITE_MUTEX_TIMEOUT_MS, (signal) =>
-    executeWriteRecipe(page, recipe, writePayload, {
+    executeWriteRecipe(page, perPropertyRecipe, writePayload, {
       dryRun: isDryRun,
       allowLoopback: isLoopback,
       allowedHost,
+      expectedOrigin,
       signal,
     }),
   );

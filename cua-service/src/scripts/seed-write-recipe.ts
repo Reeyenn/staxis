@@ -34,7 +34,7 @@
  * additionally be exercised against a real PMS practice room before activation.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { signRecipe, verifyRecipe, isRecipeSigningConfigured } from '../recipe-signing.js';
+import { signWriteRecipe, verifyRecipe, isRecipeSigningConfigured } from '../recipe-signing.js';
 import type { Recipe, WriteActionRecipe } from '../types.js';
 
 // The Supabase client is imported LAZILY (inside the DB path) so `--print`
@@ -162,15 +162,29 @@ async function main(): Promise<void> {
   const placeholders = findPlaceholders(recipe);
 
   // Sign + locally re-verify (proves the canonical-JSON / jsonb round-trip
-  // before the worker ever sees it).
+  // before the worker ever sees it). WRITE recipes are signed v2 — the HMAC
+  // binds the provenance/routing columns (action_key, pms_family,
+  // verified_against) ALONGSIDE the recipe body, so a service-role attacker
+  // can't flip verified_against or transplant the recipe onto another action
+  // row without breaking verification. The bound meta below MUST match the
+  // exact columns inserted (see the insert() call) or the worker's v2 verify
+  // fails closed.
   if (!isRecipeSigningConfigured()) {
     throw new Error('RECIPE_SIGNING_KEY is not set — refusing to produce an unsigned write recipe.');
   }
-  const sig = signRecipe(recipe as unknown as Recipe);
+  const boundMeta = {
+    actionKey: flags.action,
+    pmsFamily: flags.family,
+    verifiedAgainst: flags.verifiedAgainst,
+  };
+  const sig = signWriteRecipe(recipe as unknown as Recipe, boundMeta);
   const stored = JSON.parse(JSON.stringify(recipe)) as WriteActionRecipe; // jsonb round-trip shape
-  const verify = verifyRecipe(stored as unknown as Recipe, sig.signature, sig.signedWithKeyId);
+  const verify = verifyRecipe(stored as unknown as Recipe, sig.signature, sig.signedWithKeyId, boundMeta);
   if (!verify.ok) {
     throw new Error(`local signature re-verify FAILED (${verify.reason}) — would fail closed in the worker.`);
+  }
+  if (verify.version !== 2) {
+    throw new Error(`local re-verify returned v${verify.version} — write recipes must be v2 (the worker rejects v1 writes).`);
   }
   const signatureBytea = `\\x${sig.signature.toString('hex')}`;
 
