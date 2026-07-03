@@ -94,13 +94,15 @@ export const DRILLDOWN_ACTION_KEYS = new Set<string>([
 /**
  * The feeds the vision mapper can actually LEARN — the `key`s of the TARGETS
  * catalogue in cua-service/src/mapper.ts. Re-pointing (edit) and adding a feed
- * both drive a mapper run, so they are only offered for these keys. Notably
- * EXCLUDES getDashboardCounts / getRoomLayout / getHistoricalOccupancy, which
- * have ACTION_ROUTES tables but are never learned via the TARGETS loop. ⚠️ keep
- * in sync with the TARGETS array in cua-service/src/mapper.ts.
+ * both drive a mapper run, so they are only offered for these keys. ⚠️ keep in
+ * sync with the TARGETS array in cua-service/src/mapper.ts — feature/cua-feed-
+ * extract enrolled getDashboardCounts / getRoomLayout / getHistoricalOccupancy
+ * into that loop, but this set wasn't updated, so add/edit was silently blocked
+ * for all three.
  */
 export const LEARNABLE_ACTION_KEYS = new Set<string>([
   'getRoomStatus', 'getArrivals', 'getDepartures', 'getWorkOrders',
+  'getDashboardCounts', 'getRoomLayout', 'getHistoricalOccupancy',
   'getRevenueDaily', 'getRatesAndInventory', 'getChannelPerformance',
   'getGuests', 'getForecastDaily', 'getGroupsAndBlocks', 'getLostAndFound',
   'getActivityLog', 'getGuestBalances', 'getPaymentsDaily', 'getFutureBookings',

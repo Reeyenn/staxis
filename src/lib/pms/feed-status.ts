@@ -142,6 +142,10 @@ export const NO_PMS_FEED_STATUS: PropertyFeedStatus = Object.freeze({
 
 const PAUSED_STATUSES = new Set([
   'stopped', 'paused_mfa', 'paused_circuit_breaker', 'failed_restart',
+  // The worker writes this when a hotel has no active knowledge file yet
+  // (session-driver start()). It's a genuine not-reading pause — without it
+  // a parked session derived connection 'healthy', hiding the problem.
+  'paused_no_knowledge_file',
 ]);
 
 function deriveConnection(session: FeedStatusSessionRow): PropertyFeedStatus['connection'] {
