@@ -756,6 +756,13 @@ export async function runMappingJob(
           promotionDecision: 'park_draft',
           promotionReason: guard.reason,
           ...computeStats(result),
+          // Learning Board — carry the per-feed state on THIS early-return path too
+          // (see MappingJobResult doc): markCompleted REPLACES workflow_jobs.result
+          // at completion, so omitting these blanks the admin board the moment a
+          // no-progress backfill finishes — the exact outcome (a daily-recurring
+          // park) where the founder most needs to see WHY it made no progress.
+          targetCatalog: result.targetCatalog,
+          boardTargets: result.boardTargets,
         };
       }
       log.warn('mapping-driver: seeded promotion guard parked the draft', {
@@ -1728,19 +1735,23 @@ export function gatherCrossFeedObservation(
     }
     const obs: FeedObservation = {};
     if (typeof preview.rowCount === 'number') obs.rowCount = preview.rowCount;
-    if (Array.isArray(preview.sample)) {
-      obs.rows = preview.sample;
-      // NEVER mark the board preview "complete": its rows are RAW DOM text
-      // (un-translated — e.g. "Occ"/"VC", not the canonical occupied/vacant_clean
-      // the exact predicate expects) and truncated to ≤3. Either alone makes an
-      // exact predicate count unsound (review P2: a tiny-property preview could
-      // exact-count 0 against a positive counter → false mismatch). Cross-feed
-      // therefore uses ONLY the SOUND lower-bound (rowCount ≥ counter) from this
-      // wiring. The exact path stays in cross-feed-reconcile.ts for callers that
-      // pass canonical full rows (a documented follow-up: canonicalize preview
-      // statuses to enable exact occupancy reconcile).
-      obs.rowsComplete = false;
-    }
+    if (Array.isArray(preview.sample)) obs.rows = preview.sample;
+    // NEVER mark the board preview "complete". Two independent reasons:
+    //  (1) The sample rows are RAW DOM text (un-translated — e.g. "Occ"/"VC", not
+    //      the canonical occupied/vacant_clean the exact predicate expects) and
+    //      truncated to ≤3, so an exact predicate count over them is unsound
+    //      (review P2: a tiny-property preview could exact-count 0 against a
+    //      positive counter → false mismatch).
+    //  (2) preview.rowCount is the VISIBLE DOM row count (dom-rows.ts totalMatched
+    //      = rendered.length), i.e. ONE PAGE of a server-paginated feed, NOT the
+    //      feed total. So a "rowCount < counter" SHORTFALL here is not a proof of a
+    //      wrong/empty feed — the rest may be on later pages. Leaving rowsComplete
+    //      unset makes cross-feed ABSTAIN on a shortfall (rather than false-fail a
+    //      correct-but-paginated feed) while STILL passing on rowCount ≥ counter.
+    // The exact path + a real shortfall-fail stay in cross-feed-reconcile.ts for
+    // callers that pass canonical, known-complete full rows (documented follow-up:
+    // canonicalize preview statuses / capture the feed total to re-enable them).
+    obs.rowsComplete = false;
     feeds[key] = obs;
   }
   return { feeds, dashboardCounters };
@@ -1911,8 +1922,33 @@ export async function computeRecipeVerification(args: {
   };
 }
 
-/** The most-recent prior verification telemetry for a family (latest version,
- *  any status) — drives the pass^N counter. Fail-open: any error ⟹ null (the
+/** How many recent versions to scan back through for the last FRESH-learn
+ *  envelope. Bounds the query while comfortably spanning the self-repair /
+ *  backfill / coverage-edit versions that interleave between two fresh learns. */
+const PRIOR_VERIFICATION_SCAN_LIMIT = 25;
+
+/** Pick the last FRESH-learn verification telemetry out of a version-DESC list of
+ *  knowledge envelopes: the first row that actually carries a `verification`
+ *  block. Verification is persisted ONLY on fresh full learns (isFreshFullLearn
+ *  gate), so self-repair / backfill / coverage-edit / re-anchor versions save the
+ *  envelope WITHOUT it. Scanning to the last FRESH envelope (not just the single
+ *  latest version) keeps the pass^N counter from resetting whenever a non-fresh
+ *  version is interleaved between two fresh learns of an identical fingerprint.
+ *  Pure + exported for tests. */
+export function selectPriorVerification(
+  rows: Array<{ knowledge: { verification?: RecipeVerification } | null } | null> | null | undefined,
+): RecipeVerification | null {
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    const v = row?.knowledge?.verification;
+    if (v && typeof v === 'object') return v;
+  }
+  return null;
+}
+
+/** The most-recent prior verification telemetry for a family — drives the pass^N
+ *  counter. Reads a bounded version-DESC window and returns the last FRESH-learn
+ *  envelope (see selectPriorVerification). Fail-open: any error ⟹ null (the
  *  counter simply starts fresh). */
 async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerification | null> {
   try {
@@ -1922,11 +1958,11 @@ async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerificat
       .eq('pms_family', pmsFamily)
       .is('deleted_at', null)
       .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error || !data) return null;
-    const v = (data.knowledge as { verification?: RecipeVerification } | null)?.verification;
-    return v && typeof v === 'object' ? v : null;
+      .limit(PRIOR_VERIFICATION_SCAN_LIMIT);
+    if (error) return null;
+    return selectPriorVerification(
+      data as Array<{ knowledge: { verification?: RecipeVerification } | null }> | null,
+    );
   } catch {
     return null;
   }

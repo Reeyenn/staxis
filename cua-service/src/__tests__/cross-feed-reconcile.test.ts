@@ -31,9 +31,11 @@ describe('parseCounter', () => {
 });
 
 describe('reconcileCrossFeed — wrong-row-set detection (the hero case)', () => {
-  test('an EMPTY/wrong getArrivals feed vs a non-zero dashboard arrivals counter → FAIL', () => {
+  // A lower-bound SHORTFALL is a real defect only for a KNOWN-COMPLETE feed
+  // (rowsComplete); an incomplete/paginated observation abstains (see below).
+  test('an EMPTY/wrong getArrivals feed (known-complete) vs a non-zero dashboard arrivals counter → FAIL', () => {
     const input: CrossFeedInput = {
-      feeds: { getArrivals: { rowCount: 0 } },
+      feeds: { getArrivals: { rowCount: 0, rowsComplete: true } },
       dashboardCounters: { arrivals_remaining_today: 9 },
     };
     const r = reconcileCrossFeed(input);
@@ -44,12 +46,12 @@ describe('reconcileCrossFeed — wrong-row-set detection (the hero case)', () =>
     assert.match(arr.reason, /lower_bound_violated/);
   });
 
-  test('an empty feed vs a SMALL positive counter (1 or 2) → FAIL, not swallowed by tolerance', () => {
+  test('an empty (known-complete) feed vs a SMALL positive counter (1 or 2) → FAIL, not swallowed by tolerance', () => {
     // Regression (review P1): with abs tolerance 2, rowCount 0 vs counter 1/2
-    // must NOT "match" — an empty feed can't witness any positive counter.
+    // must NOT "match" — an empty complete feed can't witness any positive counter.
     for (const counter of [1, 2]) {
       const r = reconcileCrossFeed({
-        feeds: { getDepartures: { rowCount: 0 } },
+        feeds: { getDepartures: { rowCount: 0, rowsComplete: true } },
         dashboardCounters: { departures_remaining_today: counter },
       });
       assert.equal(r.signal, 'fail', `counter ${counter} with an empty feed must fail`);
@@ -59,11 +61,11 @@ describe('reconcileCrossFeed — wrong-row-set detection (the hero case)', () =>
     }
   });
 
-  test('a too-SMALL room-status feed vs dashboard occupied count → FAIL (lower bound)', () => {
-    // 5 rooms scraped but the dashboard reports 30 occupied — impossible: the
-    // feed learned the wrong / a partial table.
+  test('a too-SMALL (known-complete) room-status feed vs dashboard occupied count → FAIL (lower bound)', () => {
+    // 5 rooms scraped but the dashboard reports 30 occupied — impossible for a
+    // COMPLETE feed: it learned the wrong / a partial table.
     const r = reconcileCrossFeed({
-      feeds: { getRoomStatus: { rowCount: 5 } },
+      feeds: { getRoomStatus: { rowCount: 5, rowsComplete: true } },
       dashboardCounters: { total_occupied_rooms: 30 },
     });
     assert.equal(r.signal, 'fail');
@@ -159,6 +161,72 @@ describe('reconcileCrossFeed — exact occupancy from a COMPLETE room-status set
     const occ = r.checks.find((c) => c.counter === 'total_occupied_rooms')!;
     assert.equal(occ.mode, 'lower_bound');
     assert.equal(occ.verdict, 'match');
+  });
+});
+
+// ─── ITEM A (2026-07 round-2 audit) — lower-bound is pagination-safe ─────────
+// A server-paginated feed renders only page 1, so preview.rowCount is a subset
+// of the feed total. A "rowCount < counter" shortfall is then NOT a defect (the
+// rest is on later pages) and must ABSTAIN, not fail — unless the observation is
+// known-complete (rowsComplete). Satisfaction (rowCount ≥ counter) still passes.
+describe('reconcileCrossFeed — pagination safety (ITEM A)', () => {
+  test('a paginated shortfall (rowCount 25 < counter 30, NOT known-complete) → ABSTAIN, no fail', () => {
+    // Exactly the audit scenario: arrivals page server-paginates at 25 rows,
+    // dashboard arrivals_remaining_today=30. A CORRECT recipe must not be parked.
+    const r = reconcileCrossFeed({
+      feeds: { getArrivals: { rowCount: 25 } }, // rowsComplete unset ⟹ one page
+      dashboardCounters: { arrivals_remaining_today: 30 },
+    });
+    assert.equal(r.signal, 'no_signal');
+    assert.equal(r.mismatched, 0);
+    const arr = r.checks.find((c) => c.counter === 'arrivals_remaining_today')!;
+    assert.equal(arr.verdict, 'abstain');
+    assert.match(arr.reason, /lower_bound_incomplete/);
+  });
+
+  test('rowsComplete:false is also treated as incomplete → shortfall abstains', () => {
+    const r = reconcileCrossFeed({
+      feeds: { getRoomStatus: { rowCount: 5, rowsComplete: false } },
+      dashboardCounters: { total_occupied_rooms: 30 },
+    });
+    const occ = r.checks.find((c) => c.counter === 'total_occupied_rooms')!;
+    assert.equal(occ.verdict, 'abstain');
+    assert.match(occ.reason, /lower_bound_incomplete/);
+  });
+
+  test('an empty page (rowCount 0) that is NOT known-complete → ABSTAIN, not a hard mismatch', () => {
+    // A blank first page of a paginated feed is not proof of an empty feed.
+    const r = reconcileCrossFeed({
+      feeds: { getArrivals: { rowCount: 0 } },
+      dashboardCounters: { arrivals_remaining_today: 9 },
+    });
+    const arr = r.checks.find((c) => c.counter === 'arrivals_remaining_today')!;
+    assert.equal(arr.verdict, 'abstain');
+    assert.match(arr.reason, /lower_bound_incomplete/);
+  });
+
+  test('satisfaction (rowCount ≥ counter) still PASSES even when NOT known-complete', () => {
+    // A page that already meets/exceeds the counter witnesses it regardless of
+    // whether more rows follow — completeness only gates the SHORTFALL fail.
+    const r = reconcileCrossFeed({
+      feeds: { getArrivals: { rowCount: 30 } }, // one page, but already ≥ counter
+      dashboardCounters: { arrivals_remaining_today: 12 },
+    });
+    assert.equal(r.signal, 'pass');
+    const arr = r.checks.find((c) => c.counter === 'arrivals_remaining_today')!;
+    assert.equal(arr.verdict, 'match');
+    assert.equal(arr.reason, 'lower_bound_satisfied');
+  });
+
+  test('a KNOWN-COMPLETE shortfall still FAILS (the real wrong/too-small feed signal survives)', () => {
+    const r = reconcileCrossFeed({
+      feeds: { getArrivals: { rowCount: 5, rowsComplete: true } },
+      dashboardCounters: { arrivals_remaining_today: 30 },
+    });
+    assert.equal(r.signal, 'fail');
+    const arr = r.checks.find((c) => c.counter === 'arrivals_remaining_today')!;
+    assert.equal(arr.verdict, 'mismatch');
+    assert.match(arr.reason, /lower_bound_violated/);
   });
 });
 
