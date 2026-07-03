@@ -171,14 +171,32 @@ export default function PropertySessionsPage() {
     return () => clearInterval(interval);
   }, [user, load]);
 
-  // Learning Board heartbeat — the robot only waits for a human click on a
-  // stuck feed while an admin heartbeated in the last 5 minutes. Watching
-  // THIS fleet page counts as watching; a hidden tab does not.
+  // Watcher heartbeat — while this fleet page is open AND visible, publish
+  // BOTH heartbeats every 30s (mirrors <LiveRobotView>), so the robot knows
+  // the founder is watching and HOLDS a stuck feed for his click:
+  //   - global /api/admin/heartbeat (accounts.last_seen_at) → legacy signal.
+  //   - per-job POST /api/admin/mapper/live/[jobId] (feature/cua-polish) — the
+  //     signal human-assist.ts ACTUALLY reads to hold a help request. It gates
+  //     PER JOB, so the global ping alone doesn't reach it: without pinging
+  //     each ACTIVE learning job here, the robot fast-paths every stuck target
+  //     to "nobody's home" and the card's RED "needs help" state is
+  //     unreachable from this page. Fired for every session currently being
+  //     learned (its active_mapper_job.id === the workflow job human-assist
+  //     keys on). Visibility-gated so a backgrounded tab can't impersonate a
+  //     watching founder.
+  const activeJobIds = (rows ?? [])
+    .map((s) => s.active_mapper_job?.id)
+    .filter((id): id is string => typeof id === 'string')
+    .join(',');
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
+    const jobIds = activeJobIds ? activeJobIds.split(',') : [];
     const ping = () => {
       if (document.visibilityState !== 'visible') return;
       void fetchWithAuth('/api/admin/heartbeat', { method: 'POST' });
+      for (const jobId of jobIds) {
+        void fetchWithAuth(`/api/admin/mapper/live/${jobId}`, { method: 'POST' });
+      }
     };
     ping();
     const t = setInterval(ping, 30_000);
@@ -187,7 +205,7 @@ export default function PropertySessionsPage() {
       clearInterval(t);
       document.removeEventListener('visibilitychange', ping);
     };
-  }, [user]);
+  }, [user, activeJobIds]);
 
   const handleAction = async (propertyId: string, action: string) => {
     if (!confirm(`Run "${action}" on ${propertyId}?`)) return;
