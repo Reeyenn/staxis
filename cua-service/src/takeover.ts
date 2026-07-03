@@ -174,6 +174,33 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
     return { x: xi, y: yi };
   }
 
+  /** One-shot read of the session row, returning it ONLY if it carries an
+   *  unapplied command (command_seq > lastApplied, command set, still open).
+   *  The lost-race re-check at the idle-timeout buzzer: a command that
+   *  committed during the race window (realtime lag / dropped socket) is
+   *  honored rather than dropped. Returns null on no command, on an already-
+   *  ended row, or on any read error (fail to timeout, not to a stale honor). */
+  async function readPendingCommand(sessionId: string, lastApplied: number): Promise<SessionRow | null> {
+    try {
+      const { data } = await supabase
+        .from('mapper_takeover_sessions')
+        .select(SESSION_COLS)
+        .eq('id', sessionId)
+        .maybeSingle<SessionRow>();
+      if (!data) return null;
+      if (data.status === 'ended') return null;
+      if (typeof data.command_seq === 'number' && data.command_seq > lastApplied && data.command) {
+        return data;
+      }
+      return null;
+    } catch (err) {
+      log.warn('takeover: lost-race re-read failed — settling as timeout', {
+        jobId, sessionId, err: (err as Error).message,
+      });
+      return null;
+    }
+  }
+
   /** Wait for the next founder command (command_seq > lastApplied) on this
    *  session row. Mirrors requestHelp's realtime race: subscribe + a
    *  post-SUBSCRIBED re-read (the command can land inside the handshake) +
@@ -302,11 +329,25 @@ export function createTakeoverController(jobId: string, deps: TakeoverDeps): Tak
 
     // Drive loop — owns the whole interactive session inside this one call.
     for (;;) {
-      const ev = await waitForCommand(open.id, lastApplied, ctx.signal);
+      let ev = await waitForCommand(open.id, lastApplied, ctx.signal);
       if (ev.kind === 'timeout') {
-        log.info('takeover: idle timeout — handing back to the robot', { jobId, feed: ctx.actionKey });
-        await endSession(open.id, 'timeout', lastApplied);
-        return { kind: 'none', waitedMs: waited() };
+        // Lost-race re-check before settling as timeout: the founder's command
+        // can commit just before the buzzer (realtime delivery lag) or during a
+        // silently-dropped websocket — waitForCommand only re-reads at SUBSCRIBED,
+        // never at timeout. Do ONE final row read; if a command committed inside
+        // the race window, honor it instead of dropping it. Mirrors human-assist's
+        // expireOrHonor ("the founder's click must not be dropped at the buzzer").
+        const late = await readPendingCommand(open.id, lastApplied);
+        if (late) {
+          log.info('takeover: command beat the idle timeout — honoring it', {
+            jobId, feed: ctx.actionKey, command: late.command,
+          });
+          ev = { kind: 'command', row: late };
+        } else {
+          log.info('takeover: idle timeout — handing back to the robot', { jobId, feed: ctx.actionKey });
+          await endSession(open.id, 'timeout', lastApplied);
+          return { kind: 'none', waitedMs: waited() };
+        }
       }
       if (ev.kind === 'aborted') {
         await endSession(open.id, 'aborted', lastApplied);

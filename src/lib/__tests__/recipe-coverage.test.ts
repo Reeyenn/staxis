@@ -135,14 +135,17 @@ describe('parseKnowledgeCoverage — legacy feeds shape', () => {
 });
 
 describe('addableFeeds', () => {
-  test('excludes present, drill-down, and non-learnable feeds', () => {
+  test('excludes present and drill-down feeds', () => {
     const present = new Set(['getRoomStatus', 'getArrivals']);
     const add = addableFeeds(present).map((a) => a.actionKey);
     assert.ok(!add.includes('getRoomStatus'), 'present feed excluded');
     assert.ok(!add.includes('getGuests'), 'drill-down feed excluded');
-    assert.ok(!add.includes('getDashboardCounts'), 'non-learnable feed excluded');
     assert.ok(add.includes('getCancellations'), 'a learnable, absent feed is addable');
     assert.ok(add.includes('getWorkOrders'), 'absent core feed is addable');
+    // getDashboardCounts / getRoomLayout / getHistoricalOccupancy ARE in the
+    // mapper TARGETS loop, so they're now learnable + addable (they were
+    // silently blocked when LEARNABLE_ACTION_KEYS drifted from TARGETS).
+    assert.ok(add.includes('getDashboardCounts'), 'dashboard counts is addable');
   });
 
   test('every addable feed is learnable and not drill-down', () => {

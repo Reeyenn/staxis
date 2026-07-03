@@ -118,11 +118,12 @@ export class RulesEnginePinger {
    *  debounce window every cycle. (Codex follow-up Major #2.) */
   private readonly lastSnapshotSignature = new Map<string, string>();
 
-  /** Per-property map of pms_reservation_id → status. Without this, the
-   *  upserter reports every poll's rows as `inserted`, so an unchanged
-   *  reservation in any high-priority state fires every cycle. We only
-   *  fire when ≥1 reservation_id has a status that differs from what we
-   *  last saw. (Codex follow-up Major #1.) */
+  /** Per-property map of pms_reservation_id → "status|vipFlag" signature.
+   *  Without this, the upserter reports every poll's rows as `inserted`, so an
+   *  unchanged reservation in any high-priority state fires every cycle. We only
+   *  fire when ≥1 reservation_id's signature differs from what we last saw. The
+   *  signature folds in a VIP-mention flag so a VIP note added to an existing
+   *  reservation (no status change) still fires. (Codex follow-up Major #1.) */
   private readonly lastReservationStatus = new Map<string, Map<string, string>>();
 
   /** Counter exposed for tests — how many fetches have actually fired. */
@@ -318,9 +319,17 @@ export class RulesEnginePinger {
           // Unkeyed row — can't dedup, over-fire and skip caching.
           return true;
         }
+        // Signature = status + a VIP-relevance marker. Status-only would let a
+        // VIP note (notes / special_requests / rate_code / package_name) added
+        // to an already-cached reservation slip past this gate with changed=false,
+        // so the rowMentionsVip predicate never runs and the "VIP just got
+        // assigned" fast ping (the feature's whole point) is silently lost. The
+        // marker flips the signature the moment a reservation gains/loses a VIP
+        // mention, arming the ping the same as a status transition would.
         const status = typeof row.status === 'string' ? row.status : '';
-        newMap.set(id, status);
-        if (prevMap?.get(id) !== status) changed = true;
+        const sig = `${status}|${rowMentionsVip(row) ? '1' : '0'}`;
+        newMap.set(id, sig);
+        if (prevMap?.get(id) !== sig) changed = true;
       }
       // Detect disappeared rows: any prevMap key missing from newMap.
       if (prevMap) {

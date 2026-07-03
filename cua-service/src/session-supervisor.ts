@@ -52,6 +52,16 @@ export class SessionSupervisor {
   private readonly workerMachineId: string;
   private reconcileHandle: NodeJS.Timeout | null = null;
   private running = false;
+  /**
+   * In-flight guard for reconcileOnce. The 30s interval fires regardless of
+   * whether the previous reconcile finished, and a reconcile can stall for
+   * seconds inside its awaits (bumpRestartCount round-trips, driver.stop()).
+   * Two overlapping runs can both pass the `drivers.has(propertyId)` dedupe
+   * check for the same hotel before either reaches `drivers.set(...)`,
+   * double-spawning a driver whose duplicate is untracked and never stopped —
+   * two live logins against one PMS account. Skip the tick if one is running.
+   */
+  private reconciling = false;
 
   constructor() {
     this.workerMachineId = makeWorkerId();
@@ -103,6 +113,15 @@ export class SessionSupervisor {
   // ─── Internals ────────────────────────────────────────────────────────
 
   private async reconcileOnce(): Promise<void> {
+    // In-flight guard: a slow reconcile must not overlap the next 30s tick,
+    // or two runs can double-spawn a driver for the same hotel (see the
+    // `reconciling` field comment). Skip rather than queue — the next tick
+    // picks up whatever the in-flight run didn't reach.
+    if (this.reconciling) {
+      log.info('session-supervisor: reconcile already in flight — skipping this tick');
+      return;
+    }
+    this.reconciling = true;
     try {
       // Consume memory-monitor restart requests HERE, not only in the
       // drivers' poll loop: when no driver is actively polling (sole hotel
@@ -226,6 +245,8 @@ export class SessionSupervisor {
       log.warn('session-supervisor: reconcile failed', {
         err: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      this.reconciling = false;
     }
   }
 

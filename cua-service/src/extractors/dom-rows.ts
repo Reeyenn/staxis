@@ -676,9 +676,26 @@ async function extractDomRowsTiered(
   }
   if (Object.keys(xpathToRead).length > 0 && rows.length > 0) {
     const xrows = await scrapeXpathColumns(page, effectiveRowSelector, xpathToRead, opts.cap);
-    rows = rows.map((row, i) => ({ ...row, ...(xrows[i] ?? {}) }));
-    for (const r of resolution) {
-      if (xpathToRead[r.field] && (xrows[0]?.[r.field] ?? '') !== '') r.tier = 'xpath';
+    // Identity guard: the css read and this xpath read are two SEPARATE DOM
+    // snapshots merged purely by array index. If the page mutated between them
+    // (auto-refresh, a still-rendering table, a row removed/reordered), their
+    // visible-row filters no longer align and index i in one is a DIFFERENT row
+    // in the other — attaching an xpath-column value to the wrong record. A
+    // row-count mismatch is the cheap, reliable signal that the snapshots
+    // diverged; drop the xpath columns for THIS poll rather than mis-align
+    // (the next clean poll fills them). Mirrors the re-anchor probe's guard in
+    // session-driver (`if (cext.rows.length !== rows.length) continue`).
+    if (xrows.length === rows.length) {
+      rows = rows.map((row, i) => ({ ...row, ...(xrows[i] ?? {}) }));
+      for (const r of resolution) {
+        if (xpathToRead[r.field] && (xrows[0]?.[r.field] ?? '') !== '') r.tier = 'xpath';
+      }
+    } else {
+      log.warn('dom-rows: xpath-column read row-count mismatch — dropping xpath columns this poll (page shifted mid-read)', {
+        cssRowCount: rows.length,
+        xpathRowCount: xrows.length,
+        fields: Object.keys(xpathToRead),
+      });
     }
   }
 

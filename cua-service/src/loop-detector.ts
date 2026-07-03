@@ -33,6 +33,24 @@ function stableTextToken(s: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * Snap a pixel coordinate to a coarse grid so a model clicking the SAME
+ * control with a few pixels of jitter per turn produces the SAME
+ * fingerprint. The model re-samples target coordinates from a fresh
+ * screenshot every turn, so a genuinely-stuck re-click drifts by a handful
+ * of pixels — without bucketing, the (max+1)th identical click never trips
+ * and the run grinds to its per-target cost cap. 16px is comfortably below
+ * any real clickable control's size, so distinct controls still land in
+ * distinct buckets. Used only for the coordinate fallback (badge `text`
+ * tokens, when present, are exact and take precedence).
+ */
+const COORD_BUCKET_PX = 16;
+function quantizeCoord(coord: unknown[]): string {
+  return coord
+    .map((c) => (typeof c === 'number' ? Math.round(c / COORD_BUCKET_PX) : c))
+    .join(',');
+}
+
 export interface LoopDetectorOpts {
   /** Number of most-recent records the detector remembers. Default 8. */
   windowSize?: number;
@@ -122,13 +140,21 @@ export function actionFingerprint(input: unknown): string {
     action === 'left_mouse_up'
   ) {
     if (typeof a.ref === 'string') return `${action}:${a.ref}`;
-    if (Array.isArray(a.coordinate)) return `${action}:${a.coordinate.join(',')}`;
+    // Set-of-Mark badge clicks carry `text: "#N"`; executeVisionAction
+    // resolves that to the badge's stored center and IGNORES the raw
+    // coordinate the model sent. So the badge token — not the pixel guess
+    // — is the semantic identity of the click. Prefer it, or a re-click of
+    // the same ineffective badge with a few px of model coordinate jitter
+    // per turn fingerprints differently every time and never trips the
+    // loop-abort (grinds to the per-target cost cap instead).
+    if (typeof a.text === 'string' && a.text.trim() !== '') return `${action}:${a.text.trim()}`;
+    if (Array.isArray(a.coordinate)) return `${action}:${quantizeCoord(a.coordinate)}`;
     return `${action}:no-target`;
   }
 
   if (action === 'left_click_drag') {
-    const start = Array.isArray(a.start_coordinate) ? a.start_coordinate.join(',') : '';
-    const end = Array.isArray(a.coordinate) ? a.coordinate.join(',') : '';
+    const start = Array.isArray(a.start_coordinate) ? quantizeCoord(a.start_coordinate) : '';
+    const end = Array.isArray(a.coordinate) ? quantizeCoord(a.coordinate) : '';
     return `${action}:${start}->${end}`;
   }
 

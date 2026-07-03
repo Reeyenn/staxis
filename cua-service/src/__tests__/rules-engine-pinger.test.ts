@@ -188,6 +188,37 @@ describe('rules-engine-pinger — predicate selectivity', () => {
     assert.equal(pinger.isPending(PROP_A), false);
   });
 
+  test('pms_reservations: VIP note ADDED to a cached reservation (no status change) still fires', () => {
+    // Poll 1 seeds reservation r1 with no VIP mention. `booked` isn't a
+    // high-priority status so no ping fires, but hasMaterialChange caches the
+    // signature "booked|0" for r1.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { status: 'booked', notes: 'regular guest', pms_reservation_id: 'r1' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), false);
+    // Poll 2: SAME reservation, SAME status, but a VIP note now appears. The
+    // pre-fix status-only dedup saw "booked"=="booked" and dropped this — the
+    // VIP fast-ping (the feature's whole point) was silently lost. The
+    // status|vip signature flips "booked|0" → "booked|1", arming the ping.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { status: 'booked', notes: 'VIP Platinum arriving', pms_reservation_id: 'r1' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_reservations: a non-VIP note edit on a cached reservation does NOT over-fire', () => {
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { status: 'booked', notes: 'regular guest', pms_reservation_id: 'r1' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), false);
+    // A different, still-non-VIP note leaves the signature "booked|0"
+    // unchanged — the vipFlag term must not fire on unrelated note churn.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { status: 'booked', notes: 'still a regular guest', pms_reservation_id: 'r1' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), false);
+  });
+
   test('pms_in_house_snapshot: any write fires (debouncer collapses)', () => {
     pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [
       { total_occupied_rooms: 42 },
@@ -514,6 +545,53 @@ describe('rules-engine-pinger — diff-signal (Codex follow-up Major #1 + #2)', 
       { pms_reservation_id: 'r2', status: 'checked_in' }, // new
     ]);
     assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_reservations: VIP note added to an already-cached reservation fires (ITEM E)', () => {
+    // The exact miss the audit flagged: r1 is cached with an unchanged status,
+    // then front desk adds a VIP note. Status-only diffing would return
+    // changed=false and the fast ping would never fire — the VIP would surface
+    // up to 5 min later on the cron. The signature now folds in a VIP marker.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in', notes: 'standard guest' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true); // checked_in armed the first window
+    timers.fireNext();
+    assert.equal(pinger.isPending(PROP_A), false);
+
+    // Same reservation, same status — but now a VIP note appears.
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in', notes: 'VIP Diamond member' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_reservations: VIP note REMOVED from a cached reservation still counts as a change', () => {
+    // Symmetry check — the VIP marker flips both directions, so clearing a VIP
+    // note is also a material change (the debounce/idempotency safety net makes
+    // the extra fire harmless, and we prefer over- to under-firing here).
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in', notes: 'VIP Platinum' },
+    ]);
+    timers.fireNext();
+    assert.equal(pinger.isPending(PROP_A), false);
+
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', [
+      { pms_reservation_id: 'r1', status: 'checked_in', notes: 'no longer flagged' },
+    ]);
+    assert.equal(pinger.isPending(PROP_A), true);
+  });
+
+  test('pms_reservations: unchanged VIP note does NOT fire (marker is stable)', () => {
+    // A reservation that already has a VIP note must not re-fire every poll —
+    // the marker is part of the signature, so an identical re-upsert is a no-op.
+    const batch = [{ pms_reservation_id: 'r1', status: 'checked_in', notes: 'VIP Diamond member' }];
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', batch);
+    assert.equal(pinger.isPending(PROP_A), true);
+    timers.fireNext();
+
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_reservations', batch);
+    assert.equal(pinger.isPending(PROP_A), false);
   });
 
   test('pms_room_status_log: no diff applied (append-only — every write is a change)', () => {
