@@ -1,22 +1,12 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-export const dynamic = 'force-dynamic';
+// Constant redirect target — no per-request data, so it can be static.
+export const dynamic = 'force-static';
 
-import React from 'react';
-import { AppLayout } from '@/components/layout/AppLayout';
-import { AiReportShell } from './_components/AiReportShell';
-
-// The Inventory AI "report card" screen. The inventory tab itself is 100%
-// manual — no ML numbers. The AI keeps predicting silently in the background;
-// this screen is where those predictions are surfaced honestly (what it's
-// learned, how accurate it's been, how close each item is to graduating).
-//
-// Reachable by any signed-in user with inventory access — no extra capability
-// gate (matches the /api/inventory/ai-status + ai-report auth model).
+// The Inventory AI "report card" used to live here as its own page. It's now a
+// large overlay on the inventory tab itself (opened via the "AI Helper" rail
+// button, or ?action=ai). This redirect keeps any old bookmarks / links working
+// by sending them straight to the overlay.
 export default function InventoryAiPage() {
-  return (
-    <AppLayout>
-      <AiReportShell />
-    </AppLayout>
-  );
+  redirect('/inventory?action=ai');
 }

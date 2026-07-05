@@ -1,15 +1,14 @@
-// Bilingual (EN + ES) strings for the Inventory AI report screen. Co-located
-// with the feature (same pattern as inv-i18n.ts / the overlay ss/cs string
+// Bilingual (EN + ES) strings for the Inventory AI report overlay. Co-located
+// with the overlay (same pattern as inv-i18n.ts / the overlay ss/cs string
 // blocks) rather than added to the global translations.ts so parallel features
 // don't collide.
 
-import type { Lang } from '../../_components/inv-i18n';
+import type { Lang } from '../inv-i18n';
 
 export function aiStrings(lang: Lang) {
   return {
     en: {
       // ── Header / chrome ──
-      back: 'Back to inventory',
       eyebrow: 'Inventory AI',
       title: 'What the AI has learned',
       subtitle:
@@ -54,7 +53,6 @@ export function aiStrings(lang: Lang) {
       loadError: 'Couldn’t load the AI report. Try again in a moment.',
     },
     es: {
-      back: 'Volver al inventario',
       eyebrow: 'IA de inventario',
       title: 'Lo que la IA ha aprendido',
       subtitle:

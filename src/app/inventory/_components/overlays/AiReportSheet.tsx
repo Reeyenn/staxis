@@ -1,15 +1,14 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useEffect, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
-import { T, fonts, statusColor } from '../../_components/tokens';
-import { Caps } from '../../_components/Caps';
-import { Serif } from '../../_components/Serif';
-import { invLang, dateLocale, type Lang } from '../../_components/inv-i18n';
+import { T, fonts, statusColor } from '../tokens';
+import { Caps } from '../Caps';
+import { Serif } from '../Serif';
+import { dateLocale, type Lang } from '../inv-i18n';
+import { Overlay } from './Overlay';
 import { aiStrings, type AiStrings } from './ai-i18n';
 
 // ── Shapes returned by GET /api/inventory/ai-report ──────────────────────────
@@ -49,20 +48,32 @@ interface ReportData {
 
 type LoadState = 'loading' | 'ready' | 'error';
 
-export function AiReportShell() {
-  const router = useRouter();
+interface AiReportSheetProps {
+  lang: Lang;
+  open: boolean;
+  onClose: () => void;
+}
+
+// The Inventory AI "report card", surfaced as a large overlay on the inventory
+// tab (was formerly the standalone /inventory/ai page). The inventory tab
+// itself is 100% manual — no ML numbers. The AI keeps predicting silently in
+// the background; this overlay is where those predictions are surfaced honestly
+// (what it's learned, how accurate it's been, how close each item is to
+// graduating). Data fetches from /api/inventory/ai-report when `open` flips true.
+export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
   const { activePropertyId } = useProperty();
-  const { lang } = useLang();
-  const L = invLang(lang);
-  const ai = aiStrings(L);
+  const ai = aiStrings(lang);
 
   const [state, setState] = useState<LoadState>('loading');
   const [data, setData] = useState<ReportData | null>(null);
 
+  // Fetch fresh on every open (when `open` flips true). Reset to loading first
+  // so a reopen never flashes the previous property's stale report.
   useEffect(() => {
-    if (!activePropertyId) return;
+    if (!open || !activePropertyId) return;
     let cancelled = false;
     setState('loading');
+    setData(null);
     void (async () => {
       try {
         const res = await fetchWithAuth(
@@ -84,7 +95,7 @@ export function AiReportShell() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activePropertyId]);
+  }, [open, activePropertyId]);
 
   const summary = data?.summary ?? null;
   const items = data?.items ?? [];
@@ -101,69 +112,34 @@ export function AiReportShell() {
     !!summary && !noJobsYet && summary.lastInferenceStale && summary.lastInferenceAt != null;
 
   return (
-    <div
-      style={{
-        padding: '26px 30px 64px',
-        background: T.bg,
-        color: T.ink,
-        fontFamily: fonts.sans,
-        minHeight: 'calc(100dvh - 90px)',
-        maxWidth: 1100,
-        margin: '0 auto',
-      }}
+    <Overlay
+      open={open}
+      onClose={onClose}
+      accent={T.teal}
+      eyebrow={ai.eyebrow}
+      italic={ai.title}
+      width={1100}
     >
-      {/* Back link */}
-      <button
-        type="button"
-        onClick={() => router.push('/inventory')}
+      {/* Intro line — the same honest framing the page carried. */}
+      <p
         style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 7,
-          marginBottom: 20,
-          padding: '6px 12px 6px 9px',
-          borderRadius: 9,
-          cursor: 'pointer',
-          background: T.bg,
-          border: `1px solid ${T.rule}`,
-          color: T.ink2,
+          margin: '0 0 24px',
+          maxWidth: 720,
           fontFamily: fonts.sans,
-          fontSize: 12.5,
-          fontWeight: 600,
+          fontSize: 14,
+          lineHeight: 1.55,
+          color: T.ink2,
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = T.inkWash; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = T.bg; }}
       >
-        <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15 }}>‹</span>
-        {ai.back}
-      </button>
-
-      {/* Title block */}
-      <div style={{ marginBottom: 26 }}>
-        <Caps size={9} color={T.teal}>{ai.eyebrow}</Caps>
-        <div style={{ marginTop: 6 }}>
-          <Serif size={34}>{ai.title}</Serif>
-        </div>
-        <p
-          style={{
-            margin: '10px 0 0',
-            maxWidth: 640,
-            fontFamily: fonts.sans,
-            fontSize: 14,
-            lineHeight: 1.55,
-            color: T.ink2,
-          }}
-        >
-          {ai.subtitle}
-        </p>
-      </div>
+        {ai.subtitle}
+      </p>
 
       {state === 'loading' && <Centered text={ai.loading} />}
       {state === 'error' && <Centered text={ai.loadError} tone="warm" />}
 
       {state === 'ready' && summary && (
         <>
-          <SummaryHeader ai={ai} lang={L} summary={summary} />
+          <SummaryHeader ai={ai} lang={lang} summary={summary} />
 
           {noJobsYet && <Banner tone="neutral" text={ai.noJobsWarning} />}
           {showStale && <Banner tone="warm" text={ai.staleWarning} />}
@@ -175,14 +151,14 @@ export function AiReportShell() {
               <Caps size={9} style={{ marginBottom: 12, display: 'block' }}>{ai.listHeading}</Caps>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                 {items.map((it) => (
-                  <ItemCard key={it.itemId} ai={ai} lang={L} it={it} />
+                  <ItemCard key={it.itemId} ai={ai} lang={lang} it={it} />
                 ))}
               </div>
             </div>
           )}
         </>
       )}
-    </div>
+    </Overlay>
   );
 }
 

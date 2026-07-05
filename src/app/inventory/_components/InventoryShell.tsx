@@ -47,13 +47,14 @@ import { ScanInvoiceSheet } from './overlays/ScanInvoiceSheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
 import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
+import { AiReportSheet } from './overlays/AiReportSheet';
 import { apiGetMode } from './ordering-api';
 import { t, invLang, dateLocale } from './inv-i18n';
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
-// Helper" rail button now NAVIGATES to the /inventory/ai report screen instead
-// of opening an overlay (see openOverlay below). `ai` is intentionally NOT an
-// OverlayKey anymore.
+// Helper" rail button opens the AI report as a large overlay (`ai`) right on
+// the inventory tab — the silent predictions are surfaced there, the tab itself
+// stays manual. `?action=ai` deep-links to it.
 type OverlayKey =
   | 'count'
   | 'scan'
@@ -63,11 +64,12 @@ type OverlayKey =
   | 'reports'
   | 'history'
   | 'budgets'
+  | 'ai'
   | 'add'
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'add',
+  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'ai', 'add',
 ];
 
 export function InventoryShell() {
@@ -257,14 +259,10 @@ export function InventoryShell() {
 
   // ── Handlers ───────────────────────────────────────────────────────
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
-    // The "AI Helper" rail button navigates to the full AI report screen
-    // instead of opening an overlay — the inventory tab itself stays manual.
-    if (k === 'ai') {
-      router.push('/inventory/ai');
-      return;
-    }
+    // The "AI Helper" rail button opens the AI report as a large overlay like
+    // any other action — the inventory tab itself stays manual.
     setOverlay(k as OverlayKey);
-  }, [router]);
+  }, []);
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
@@ -464,6 +462,12 @@ export function InventoryShell() {
         open={overlay === 'budgets' && canViewFinancials}
         onClose={() => { closeOverlay(); void refreshData(); }}
         budgets={budgets}
+      />
+
+      <AiReportSheet
+        lang={L}
+        open={overlay === 'ai'}
+        onClose={closeOverlay}
       />
 
       <ScanInvoiceSheet
