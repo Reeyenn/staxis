@@ -186,7 +186,13 @@ export function validateMlBoundaryShape(
   if ('status' in obj && typeof obj.status !== 'string') {
     return { valid: false, reason: `status_type: ${typeof obj.status}` };
   }
-  if ('error' in obj && typeof obj.error !== 'string') {
+  // `error: null` is FastAPI/pydantic's legitimate "no error" encoding
+  // (Optional[str] = None serializes as null, e.g. TrainInventoryRateResponse).
+  // Only a NON-null, non-string error is shape drift. Rejecting null here made
+  // every inventory training run report status:'error' despite a clean summary
+  // (first observed 2026-07-05, the first live run since this validator landed
+  // 2026-05-22 — the crons were disabled 2026-05-30 before it could ever fire).
+  if ('error' in obj && obj.error !== null && typeof obj.error !== 'string') {
     return { valid: false, reason: `error_type: ${typeof obj.error}` };
   }
   if (extraChecks) {
