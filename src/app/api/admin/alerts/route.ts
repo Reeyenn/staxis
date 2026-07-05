@@ -9,6 +9,8 @@
  *   - HOTEL_PAST_DUE          — Stripe subscription is past_due
  *   - JOB_FAILED              — onboarding_job failed in last 24h
  *   - ERROR_SPIKE             — 20+ same-message errors in last hour
+ *   - PMS_WRITE_SYNC_STUCK    — write-back push failing to land (mirror of the
+ *                               pms-sync-watchdog SMS, so it's visible in-app)
  *
  * Powers the bell-icon dropdown in the admin sticky header.
  *
@@ -36,7 +38,8 @@ type AlertKind =
   | 'HOTEL_STALE_SYNC'
   | 'HOTEL_PAST_DUE'
   | 'JOB_FAILED'
-  | 'ERROR_SPIKE';
+  | 'ERROR_SPIKE'
+  | 'PMS_WRITE_SYNC_STUCK';
 
 interface Alert {
   kind: AlertKind;
@@ -58,7 +61,7 @@ export async function GET(req: NextRequest) {
   const dayAgoIso = new Date(now - 24 * 60 * 60 * 1000).toISOString();
   const hourAgoIso = new Date(now - ERROR_SPIKE_WINDOW_MS).toISOString();
 
-  const [propsRes, jobsRes, errorsRes] = await Promise.all([
+  const [propsRes, jobsRes, errorsRes, syncRes] = await Promise.all([
     supabaseAdmin
       .from('properties')
       .select('id, name, subscription_status, pms_connected, last_synced_at')
@@ -75,9 +78,13 @@ export async function GET(req: NextRequest) {
       .select('source, message, ts')
       .gte('ts', hourAgoIso)
       .limit(2000),
+    supabaseAdmin
+      .from('pms_sync_alert_state')
+      .select('property_id, last_alert_at, last_reason')
+      .eq('state', 'alerting'),
   ]);
 
-  for (const r of [propsRes, jobsRes, errorsRes]) {
+  for (const r of [propsRes, jobsRes, errorsRes, syncRes]) {
     if (r.error) {
       return err(`alerts query failed: ${r.error.message}`, { requestId, status: 500 });
     }
@@ -86,15 +93,18 @@ export async function GET(req: NextRequest) {
   const properties = (propsRes.data ?? []) as { id: string; name: string | null; subscription_status: string | null; pms_connected: boolean | null; last_synced_at: string | null }[];
   const failedJobs = (jobsRes.data ?? []) as { id: string; property_id: string; pms_type: string; error: string | null; created_at: string }[];
   const errorRows = (errorsRes.data ?? []) as { source: string | null; message: string | null; ts: string }[];
+  const stuckSyncRows = (syncRes.data ?? []) as { property_id: string; last_alert_at: string | null; last_reason: string | null }[];
 
   // Build a name lookup so failed-job alerts can show the property name.
   const nameById = new Map(properties.map((p) => [p.id, p.name]));
 
-  // Need names for ANY property surfaced in failed jobs, including those
-  // not in the active/past_due slice — fetch separately if missing.
-  const missingPropIds = failedJobs
-    .map((j) => j.property_id)
-    .filter((id) => !nameById.has(id));
+  // Need names for ANY property surfaced in failed jobs or stuck write-back
+  // syncs, including those not in the active/past_due slice — fetch
+  // separately if missing.
+  const missingPropIds = [
+    ...failedJobs.map((j) => j.property_id),
+    ...stuckSyncRows.map((s) => s.property_id),
+  ].filter((id) => !nameById.has(id));
   if (missingPropIds.length > 0) {
     const { data: extra } = await supabaseAdmin
       .from('properties')
@@ -181,6 +191,26 @@ export async function GET(req: NextRequest) {
       propertyId: latest.property_id,
       href: `/admin/properties/${latest.property_id}`,
       ts: latest.created_at,
+    });
+  }
+
+  // ── Stuck PMS write-back syncs (in-app mirror of the watchdog SMS) ────
+  // pms_sync_alert_state.state='alerting' means a manager change is failing
+  // to land in the hotel's PMS (push failed or wedged >10 min). The
+  // pms-sync-watchdog cron owns the state machine + SMS; this just surfaces
+  // the same incident in the bell so it's visible without checking texts.
+  for (const s of stuckSyncRows) {
+    const propName = nameById.get(s.property_id) ?? '(deleted property)';
+    alerts.push({
+      kind: 'PMS_WRITE_SYNC_STUCK',
+      severity: 'red',
+      title: `${propName}: PMS updates not landing`,
+      detail: s.last_reason
+        ? `Room changes made in Staxis aren't reaching the hotel's PMS — ${s.last_reason.slice(0, 120)}`
+        : 'Room changes made in Staxis aren\'t reaching the hotel\'s PMS.',
+      propertyId: s.property_id,
+      href: '/admin/property-sessions',
+      ts: s.last_alert_at ?? new Date(now).toISOString(),
     });
   }
 
