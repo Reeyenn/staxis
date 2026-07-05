@@ -37,6 +37,7 @@ export * from './db/equipment';
 export * from './db/inventory';
 export * from './db/inventory-counts';
 export * from './db/inventory-orders';
+export * from './db/inventory-discards';
 export * from './db/inventory-budgets';
 export * from './db/inventory-accounting';
 export * from './db/ml-inventory-cockpit';

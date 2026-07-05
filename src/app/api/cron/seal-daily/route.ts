@@ -51,6 +51,45 @@ export const maxDuration = 90;
 // hour to land before we freeze the labels.
 const SEAL_AFTER_HOUR_LOCAL = 1;
 
+// How recent a CUA snapshot must be to count as "positive evidence the robot
+// is actually delivering data for this hotel." A dead robot leaves the last
+// snapshot stale; without this gate the trusted-flags path defaulted to
+// trusted on a lookup miss and sealed fabricated 0s (the incident this fix
+// closes — Comfort Suites had 14 fake-0 days with zero snapshot rows).
+const PMS_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// Minimal shape of a pms_in_house_snapshot row for the freshness gate.
+export type PmsSnapshotEvidence = {
+  has_error: boolean | null;
+  last_good_at: string | null;
+  captured_at: string | null;
+};
+
+/**
+ * Positive-evidence gate: does this property have a CUA snapshot that proves
+ * the robot is live and healthy right now? True only when the snapshot exists,
+ * is not in an error state, and its last-good time (fallback capture time) is
+ * within the last 24h.
+ *
+ * Pure + exported for unit testing (matches the localDatesForProjection
+ * pattern). `now` is injectable so tests don't depend on wall-clock time.
+ *
+ * A missing snapshot (snap === null) → no evidence → false: the exact
+ * dead-robot / manual-no-PMS case that must NOT seal fake 0s.
+ */
+export function hasFreshPmsEvidence(
+  snap: PmsSnapshotEvidence | null,
+  now: Date = new Date(),
+): boolean {
+  if (!snap) return false;
+  if (snap.has_error === true) return false;
+  const ts = snap.last_good_at ?? snap.captured_at;
+  if (!ts) return false;
+  const t = Date.parse(ts);
+  if (Number.isNaN(t)) return false;
+  return now.getTime() - t <= PMS_EVIDENCE_MAX_AGE_MS;
+}
+
 type PropertyRow = {
   id: string;
   name: string;
@@ -367,10 +406,28 @@ async function sealOne(
     }
   } catch { /* non-fatal */ }
 
+  // 2026-07 data-hygiene fix — POSITIVE-EVIDENCE gate. The trusted-flags above
+  // default to trusted on a feed-status lookup miss and never check whether the
+  // CUA has EVER delivered data. That's how 14 days of fabricated 0-occupancy
+  // sealed for a hotel with a dead robot (no pms_in_house_snapshot row at all).
+  // Require an actual, healthy, recent snapshot before writing ANY PMS-derived
+  // field non-null. Additional condition, not a replacement for the flags.
+  // Lookup error → no evidence → NULL (fail CLOSED here: the poison this closes
+  // is worse than a NULL day, and a genuinely-live hotel re-seals next tick).
+  let pmsEvidenceFresh = false;
+  try {
+    const { data: snap } = await supabaseAdmin
+      .from('pms_in_house_snapshot')
+      .select('has_error, last_good_at, captured_at')
+      .eq('property_id', p.id)
+      .maybeSingle();
+    pmsEvidenceFresh = hasFreshPmsEvidence(snap as PmsSnapshotEvidence | null);
+  } catch { /* no evidence → fields stay NULL */ }
+
   // Prefer the CUA's actual in_house count over the derived total_rooms
   // minus vacancies. Both paths read snapshot-sourced columns, so both are
-  // gated on the counts feed being trusted.
-  const occupied = planRow && sealCountsTrusted
+  // gated on the counts feed being trusted AND on fresh CUA evidence.
+  const occupied = planRow && sealCountsTrusted && pmsEvidenceFresh
     ? planRow.in_house > 0
       ? planRow.in_house
       : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
@@ -402,15 +459,17 @@ async function sealOne(
     date: targetDate,
     occupied: occupied !== null ? Math.round(occupied) : null,
     // checkouts/stayovers derive from pms_reservations — NULL (not 0) while
-    // the reservation feeds are learning or the first sync hasn't landed.
-    checkouts: planRow && !reservationsUntrusted ? Math.round(planRow.checkouts) : null,
-    stayovers: planRow && !reservationsUntrusted ? Math.round(planRow.stayovers) : null,
+    // the reservation feeds are learning, the first sync hasn't landed, or the
+    // CUA has no fresh healthy snapshot (dead robot / never-connected hotel).
+    checkouts: planRow && !reservationsUntrusted && pmsEvidenceFresh ? Math.round(planRow.checkouts) : null,
+    stayovers: planRow && !reservationsUntrusted && pmsEvidenceFresh ? Math.round(planRow.stayovers) : null,
     rooms_completed: Math.round(roomsCompleted),
     avg_turnaround_minutes: avgTurnaround,
     total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
     // Derived from checkouts/stayovers (reservations) + vacant_dirty
-    // (snapshot) — meaningless unless BOTH sources are trusted.
-    recommended_staff: planRow && !reservationsUntrusted && sealCountsTrusted ? recommendedHKs : null,
+    // (snapshot) — meaningless unless BOTH sources are trusted AND the CUA
+    // has fresh evidence.
+    recommended_staff: planRow && !reservationsUntrusted && sealCountsTrusted && pmsEvidenceFresh ? recommendedHKs : null,
   };
 
   const { error: upErr } = await supabaseAdmin
@@ -431,6 +490,7 @@ async function sealOne(
     property: p,
     tz,
     reservationsUntrusted,
+    pmsEvidenceFresh,
     requestId,
   });
 
@@ -503,17 +563,20 @@ type ProjectedCounts = {
  *   property with no live feed would train the inventory model at
  *   occupancy=0 (predicting ~0 usage / never reorder). We therefore only
  *   write when BOTH hold:
- *     1. The property has a pms_in_house_snapshot row — proof the CUA is
- *        actually connected and polling for this hotel (the task's explicit
- *        gate; also what today_property_counts_v1 keys off).
+ *     1. The property has a HEALTHY, FRESH pms_in_house_snapshot row
+ *        (pmsEvidenceFresh) — proof the CUA is actually connected and polling
+ *        for this hotel right now. Row-existence alone is not enough: a dead
+ *        robot leaves a stale snapshot, and a snapshot in an error state is
+ *        untrustworthy. Same positive-evidence gate the daily_logs seal uses.
  *     2. The reservation feeds are trusted (reservationsUntrusted === false)
  *        — arrivals/departures aren't 'learning' and the first sync landed.
  *        This is the SAME signal the daily_logs seal above uses to decide
  *        whether checkouts/stayovers are real; occupancy is derived from the
  *        same reservation counts, so the same gate applies.
- *   Manual no-PMS hotels (no snapshot row) and still-learning connections
- *   are skipped — they keep using the historic-mean fallback, which is the
- *   correct behavior for a hotel with no projected-occupancy source.
+ *   Manual no-PMS hotels (no snapshot row), dead-robot hotels (stale/errored
+ *   snapshot), and still-learning connections are skipped — they keep using
+ *   the historic-mean fallback, which is the correct behavior for a hotel with
+ *   no projected-occupancy source.
  *
  * Returns the number of rows written (0, 1, or 2). Best-effort: a failure to
  * project does NOT fail the whole seal (the daily_logs write already
@@ -523,29 +586,22 @@ async function projectPlanSnapshots(args: {
   property: PropertyRow;
   tz: string;
   reservationsUntrusted: boolean;
+  pmsEvidenceFresh: boolean;
   requestId: string;
 }): Promise<number> {
-  const { property: p, tz, reservationsUntrusted, requestId } = args;
+  const { property: p, tz, reservationsUntrusted, pmsEvidenceFresh, requestId } = args;
 
   // Gate 2: reservations must be trusted (same signal daily_logs uses).
   if (reservationsUntrusted) {
     return 0;
   }
 
-  // Gate 1: property must have a live CUA snapshot row.
-  const { data: snapRow, error: snapErr } = await supabaseAdmin
-    .from('pms_in_house_snapshot')
-    .select('property_id')
-    .eq('property_id', p.id)
-    .maybeSingle();
-  if (snapErr) {
-    log.warn('seal-daily: plan_snapshots snapshot-gate lookup failed', {
-      requestId, property_id: p.id, err: snapErr,
-    });
-    return 0;
-  }
-  if (!snapRow) {
-    // No live CUA data — deliberately skip (don't write a fake row).
+  // Gate 1: property must have a HEALTHY, FRESH CUA snapshot — not merely a
+  // row (a dead robot leaves a stale snapshot; an errored one is untrusted).
+  // Uses the same positive-evidence signal the daily_logs seal computed, so a
+  // dead-robot hotel skips projection instead of writing a fake 0-occupancy
+  // row that would train the inventory model to never reorder.
+  if (!pmsEvidenceFresh) {
     return 0;
   }
 
