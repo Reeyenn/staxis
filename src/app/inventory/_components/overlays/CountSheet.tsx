@@ -6,6 +6,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import {
   addInventoryCountBatch,
   addInventoryOrder,
+  fetchInventoryStockByIds,
   updateInventoryItem,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -207,7 +208,10 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     try {
       const now = new Date();
       const rows: Array<Omit<InventoryCount, 'id'>> = [];
-      const stockUps: Array<{ item: InventoryItem; delta: number }> = [];
+      // Counted items we need to check for a possible auto-"stock-up". We defer
+      // the delta computation until AFTER a fresh stock re-fetch below — see
+      // the double-log fix note.
+      const counted: Array<{ item: InventoryItem; countedStock: number }> = [];
       for (const d of scopedDisplay) {
         const e = entries[d.id];
         if (!e || e.value === '') continue;
@@ -227,16 +231,31 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           countedAt: now,
           countedBy: user.displayName || user.username || 'team',
         });
-
-        // If counted stock is HIGHER than what was on file, log a restock event.
-        // (Means someone received stock between counts and forgot to log it.)
-        const delta = n - d.counted;
-        if (delta > 0) stockUps.push({ item: d.raw, delta });
+        counted.push({ item: d.raw, countedStock: n });
       }
 
       if (rows.length === 0) {
         setSaving(false);
         return;
+      }
+
+      // Re-fetch the CURRENT stored stock right before deciding stock-ups. The
+      // page-load value (d.counted) goes stale the moment a delivery is logged
+      // in-app after the sheet opened: counting against the stale value would
+      // re-log the same goods as a phantom "stock-up" order and double-count
+      // them into consumption. Comparing against fresh stock closes that. If an
+      // item vanished from the fetch (deleted mid-session), fall back to the
+      // page-load value so we don't crash — a rare, low-stakes edge.
+      const freshStock = await fetchInventoryStockByIds(
+        user.uid, activePropertyId, counted.map((c) => c.item.id),
+      );
+      const stockUps: Array<{ item: InventoryItem; delta: number }> = [];
+      for (const { item, countedStock } of counted) {
+        const baseline = item.id in freshStock ? freshStock[item.id] : (item.currentStock ?? 0);
+        // If counted stock is HIGHER than what's on file NOW, log a restock
+        // event (someone received stock between counts and forgot to log it).
+        const delta = countedStock - baseline;
+        if (delta > 0) stockUps.push({ item, delta });
       }
 
       // 1. Batch count log.

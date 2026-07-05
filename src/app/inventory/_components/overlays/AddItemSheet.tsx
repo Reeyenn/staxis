@@ -7,8 +7,9 @@ import {
   addInventoryItem,
   updateInventoryItem,
   deleteInventoryItem,
+  addInventoryDiscard,
 } from '@/lib/db';
-import type { InventoryItem, InventoryCategory } from '@/types';
+import type { InventoryItem, InventoryCategory, InventoryDiscardReason } from '@/types';
 import type { Vendor } from '@/lib/ordering/types';
 
 import { T, fonts, type InvCat } from '../tokens';
@@ -60,6 +61,22 @@ function aisStrings(lang: Lang) {
       saveFailed: 'Saving the item failed. Please try again.',
       confirmRemove: (n: string) => `Remove "${n}" from inventory?`,
       couldNotRemove: 'Could not remove the item.',
+      // Write-off (waste) section.
+      writeOff: 'Write off waste',
+      writeOffHint: 'Removes damaged / lost stock so it isn’t counted as usage.',
+      writeOffQty: 'Quantity',
+      writeOffReason: 'Reason',
+      writeOffNotes: 'Note (optional)',
+      writeOffNotesPh: 'e.g. water-damaged case',
+      writeOffBtn: 'Write off',
+      writingOff: 'Writing off…',
+      writeOffDone: 'Written off',
+      writeOffFailed: 'Could not write off. Please try again.',
+      reasonStained: 'Stained',
+      reasonDamaged: 'Damaged',
+      reasonLost: 'Lost',
+      reasonTheft: 'Theft',
+      reasonOther: 'Other',
     },
     es: {
       editItem: 'Editar artículo',
@@ -87,6 +104,22 @@ function aisStrings(lang: Lang) {
       saveFailed: 'No se pudo guardar el artículo. Inténtalo de nuevo.',
       confirmRemove: (n: string) => `¿Quitar "${n}" del inventario?`,
       couldNotRemove: 'No se pudo quitar el artículo.',
+      // Write-off (waste) section.
+      writeOff: 'Dar de baja (merma)',
+      writeOffHint: 'Quita el stock dañado / perdido para que no cuente como uso.',
+      writeOffQty: 'Cantidad',
+      writeOffReason: 'Motivo',
+      writeOffNotes: 'Nota (opcional)',
+      writeOffNotesPh: 'ej. caja dañada por agua',
+      writeOffBtn: 'Dar de baja',
+      writingOff: 'Dando de baja…',
+      writeOffDone: 'Dado de baja',
+      writeOffFailed: 'No se pudo dar de baja. Inténtalo de nuevo.',
+      reasonStained: 'Manchado',
+      reasonDamaged: 'Dañado',
+      reasonLost: 'Perdido',
+      reasonTheft: 'Robo',
+      reasonOther: 'Otro',
     },
   }[lang];
 }
@@ -111,6 +144,13 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Write-off (waste) sub-form — edit mode only.
+  const [woQty, setWoQty] = useState('');
+  const [woReason, setWoReason] = useState<InventoryDiscardReason>('damaged');
+  const [woNotes, setWoNotes] = useState('');
+  const [woSaving, setWoSaving] = useState(false);
+  const [woDone, setWoDone] = useState(false);
+
   // Load real vendor records so an item can link to one (vendor_name stays as
   // the free-text fallback). Management-gated API → non-managers just get the
   // free-text field (empty list, no dropdown).
@@ -125,6 +165,11 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
 
   useEffect(() => {
     if (!open) return;
+    // Reset the write-off sub-form whenever the sheet opens or switches items.
+    setWoQty('');
+    setWoReason('damaged');
+    setWoNotes('');
+    setWoDone(false);
     if (item) {
       setName(item.name);
       setCategory(item.category as InvCat);
@@ -198,6 +243,55 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setSaving(false);
     }
   };
+
+  const woQtyNum = Number(woQty);
+  const woValid = Number.isFinite(woQtyNum) && woQtyNum > 0;
+
+  const handleWriteOff = async () => {
+    if (!user || !activePropertyId || !item || woSaving || !woValid) return;
+    setWoSaving(true);
+    setWoDone(false);
+    try {
+      // Snapshot the unit cost from the item edit form (may differ from the
+      // stored value if the user just changed it) so cost_value is truthful.
+      const uc = unitCost ? Number(unitCost) : (item.unitCost ?? undefined);
+      const res = await addInventoryDiscard(user.uid, activePropertyId, {
+        propertyId: activePropertyId,
+        itemId: item.id,
+        itemName: item.name,
+        quantity: woQtyNum,
+        reason: woReason,
+        unitCost: uc,
+        costValue: uc != null ? Math.round(uc * woQtyNum * 100) / 100 : undefined,
+        discardedAt: new Date(),
+        discardedBy: user.displayName || user.username || undefined,
+        notes: woNotes.trim() || undefined,
+      });
+      // Reflect the decremented stock in the on-hand field. Use the DB's
+      // AUTHORITATIVE post-decrement value (res.newStock) — NOT a number
+      // derived from the editable on-hand field, which may have drifted from
+      // the stored value and could otherwise overwrite real stock on a later
+      // Save. Fall back to the stored item value if the read-back failed.
+      const nextStock = res.newStock ?? Math.max(0, (item.currentStock ?? 0) - woQtyNum);
+      setCurrentStock(String(nextStock));
+      setWoQty('');
+      setWoNotes('');
+      setWoDone(true);
+    } catch (err) {
+      console.error('[add-item] write-off failed', err);
+      alert(ais.writeOffFailed);
+    } finally {
+      setWoSaving(false);
+    }
+  };
+
+  const reasonOptions: Array<{ value: InventoryDiscardReason; label: string }> = [
+    { value: 'damaged', label: ais.reasonDamaged },
+    { value: 'stained', label: ais.reasonStained },
+    { value: 'lost', label: ais.reasonLost },
+    { value: 'theft', label: ais.reasonTheft },
+    { value: 'other', label: ais.reasonOther },
+  ];
 
   return (
     <Overlay
@@ -363,6 +457,80 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
             }}
           />
         </Field>
+
+        {/* Write-off (waste) — edit mode only. Logs a discard so thrown-away
+            stock isn't learned as consumption, and drops the on-hand count. */}
+        {isEdit && (
+          <div
+            style={{
+              marginTop: 4,
+              paddingTop: 16,
+              borderTop: `1px solid ${T.rule}`,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <Caps>{ais.writeOff}</Caps>
+              <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.4 }}>
+                {ais.writeOffHint}
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 12 }}>
+              <Field label={ais.writeOffQty}>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="decimal"
+                  value={woQty}
+                  onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) { setWoQty(v); setWoDone(false); } }}
+                  placeholder="0"
+                  style={inputStyle}
+                />
+              </Field>
+              <Field label={ais.writeOffReason}>
+                <select
+                  value={woReason}
+                  onChange={(e) => { setWoReason(e.target.value as InventoryDiscardReason); setWoDone(false); }}
+                  style={inputStyle}
+                >
+                  {reasonOptions.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+
+            <Field label={ais.writeOffNotes}>
+              <input
+                type="text"
+                value={woNotes}
+                onChange={(e) => { setWoNotes(e.target.value); setWoDone(false); }}
+                placeholder={ais.writeOffNotesPh}
+                style={inputStyle}
+              />
+            </Field>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <Btn
+                variant="ghost"
+                size="md"
+                onClick={handleWriteOff}
+                disabled={woSaving || saving || !woValid}
+                style={{ color: T.warm, borderColor: T.warm }}
+              >
+                {woSaving ? ais.writingOff : ais.writeOffBtn}
+              </Btn>
+              {woDone && (
+                <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, fontWeight: 500 }}>
+                  {ais.writeOffDone}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </Overlay>
   );

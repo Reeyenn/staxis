@@ -13,7 +13,7 @@ predicted_at timestamp for auditability).
 import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # Phase 3.5 (2026-05-13): America/Chicago default removed — caller must
@@ -35,6 +35,9 @@ import pandas as pd
 from scipy import stats
 
 from src.config import (
+    INVENTORY_DEFAULT_KAPPA,
+    INVENTORY_EXPOSURE_ALGORITHM,
+    INVENTORY_EXPOSURE_FEATURE_SET_VERSION,
     INVENTORY_FEATURE_SET_VERSION,
     INVENTORY_OCC_BASELINE_PCT,
     get_settings,
@@ -136,7 +139,14 @@ async def predict_inventory_rates(
         filters={"property_id": property_id, "date": target_date_iso},
     )
     occ_pct = _occupancy_for_target_date(plan_snap)
-    if occ_pct is None:
+    # Tomorrow's EXPOSURE for the reduced-exposure family:
+    #   checkouts_tomorrow + κ·stayovers_tomorrow, where stayovers is defined
+    #   the SAME way daily_logs defines it (see _exposure_for_target_date /
+    #   training/_exposure module header): daily_logs.stayovers INCLUDES same-day
+    #   arrivals, so from plan_snapshots we use stayovers + arrivals. The κ
+    #   multiply happens per-item at serve time (each item has its own κ).
+    exposure_co_so = _exposure_for_target_date(plan_snap)
+    if occ_pct is None or exposure_co_so is None:
         # Fall back to historic mean for cold-start hotels (no PMS
         # snapshot yet) or PMS-outage days. Log the fallback so the
         # doctor can flag it if it becomes routine.
@@ -157,7 +167,10 @@ async def predict_inventory_rates(
         # property's room count to convert it to an occupancy %.
         prop_row = client.fetch_one("properties", filters={"id": property_id})
         total_rooms = (prop_row or {}).get("total_rooms")
-        occ_pct = _recent_avg_occupancy(daily_logs, total_rooms)
+        if occ_pct is None:
+            occ_pct = _recent_avg_occupancy(daily_logs, total_rooms)
+        if exposure_co_so is None:
+            exposure_co_so = _recent_avg_exposure(daily_logs)
 
     predicted = 0
     skipped_no_active = 0
@@ -175,6 +188,7 @@ async def predict_inventory_rates(
                 item_id=item_id,
                 target_date_iso=target_date_iso,
                 occ_pct=occ_pct,
+                exposure_co_so=exposure_co_so,
                 client=client,
             )
             if result.get("predicted"):
@@ -232,6 +246,70 @@ def _recent_avg_occupancy(daily_logs: List[Dict[str, Any]], total_rooms: Optiona
     return sum(vals) / len(vals) if vals else INVENTORY_OCC_BASELINE_PCT
 
 
+def _exposure_for_target_date(plan: Optional[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+    """Tomorrow's (checkouts, stayovers) exposure counts from a plan_snapshots row.
+
+    Returns (checkouts, stayovers_incl_arrivals) — NOT yet multiplied by κ (that's
+    per-item at serve time). Returns None when the snapshot is missing/unusable.
+
+    STAYOVER DEFINITION ALIGNMENT (load-bearing — see training/_exposure header):
+    the exposure model is trained on daily_logs.checkouts / .stayovers, which are
+    sealed from today_property_counts_v1 (migration 0224):
+        checkouts = departure_date = date
+        stayovers = arrival_date <= date AND departure_date > date  (INCLUDES
+                    same-day arrivals who stay overnight)
+    plan_snapshots (0292 project_property_counts_v1) splits the SAME population
+    into `arrivals` (arrival_date = target) + `stayovers` (arrival < target <
+    departure, EXCLUDING arrivals). So to serve at the SAME definition training
+    used, tomorrow's stayover exposure = plan_snapshots.stayovers + arrivals, and
+    checkout exposure = plan_snapshots.checkouts. Training and serving therefore
+    use one consistent stayover definition.
+    """
+    if not plan:
+        return None
+    try:
+        checkouts = plan.get("checkouts")
+        stayovers = plan.get("stayovers")
+        arrivals = plan.get("arrivals")
+        # checkouts + stayovers are the load-bearing exposure inputs. arrivals
+        # folds into stayovers per the alignment above; treat a missing arrivals
+        # as 0 (older snapshots), but a missing checkouts/stayovers → no data.
+        if checkouts is None or stayovers is None:
+            return None
+        co = max(0.0, float(checkouts))
+        so = max(0.0, float(stayovers)) + max(0.0, float(arrivals or 0))
+        return (co, so)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent_avg_exposure(daily_logs: List[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+    """Fallback tomorrow-exposure = recent mean of daily_logs.checkouts/stayovers.
+
+    Only averages days where BOTH columns are non-NULL (feed trusted). Returns
+    None when no such day exists (feeds still learning) — the caller then leaves
+    exposure unset and the exposure family falls through to its final fallback.
+    daily_logs.stayovers already includes arrivals (0224), so no arrivals term.
+    """
+    if not daily_logs:
+        return None
+    cos: List[float] = []
+    sos: List[float] = []
+    for log in daily_logs:
+        co = log.get("checkouts")
+        so = log.get("stayovers")
+        if co is None or so is None:
+            continue
+        try:
+            cos.append(max(0.0, float(co)))
+            sos.append(max(0.0, float(so)))
+        except (TypeError, ValueError):
+            continue
+    if not cos:
+        return None
+    return (sum(cos) / len(cos), sum(sos) / len(sos))
+
+
 def _occupancy_for_target_date(plan: Optional[Dict[str, Any]]) -> Optional[float]:
     """Occupancy % for the target date, derived from a plan_snapshots row.
 
@@ -264,13 +342,51 @@ def _predict_single_item(
     item_id: str,
     target_date_iso: str,
     occ_pct: float,
+    exposure_co_so: Optional[Tuple[float, float]],
     client,
 ) -> Dict[str, Any]:
     """Predict daily rate + current stock for one (property, item)."""
     algorithm = run.get("algorithm", "bayesian")
     posterior_params_json = run.get("posterior_params")
 
-    if algorithm == "bayesian" and posterior_params_json:
+    if algorithm == INVENTORY_EXPOSURE_ALGORITHM and posterior_params_json:
+        # Reduced-exposure family. Serve the single-regressor posterior at
+        # tomorrow's exposure x = checkouts + κ·stayovers (κ from the run's
+        # posterior_params). Version-guarded to the exposure feature set so an
+        # exposure posterior can never be served through the occupancy path.
+        if run.get("feature_set_version") != INVENTORY_EXPOSURE_FEATURE_SET_VERSION:
+            print(json.dumps({
+                "evt": "inventory_predict_stale_feature_set_skipped",
+                "item_id": item_id,
+                "feature_set_version": run.get("feature_set_version"),
+                "expected": INVENTORY_EXPOSURE_FEATURE_SET_VERSION,
+            }))
+            return {"predicted": False, "reason": "stale_feature_set"}
+        if exposure_co_so is None:
+            # Final fallback: no exposure available even after the daily_logs
+            # mean → skip this item (log). The occupancy path is not valid for
+            # an exposure posterior (different feature meaning), so we do NOT
+            # cross-serve; the item simply has no prediction this run.
+            print(json.dumps({
+                "evt": "inventory_exposure_no_exposure_input",
+                "property_id": property_id,
+                "item_id": item_id,
+            }))
+            return {"predicted": False, "reason": "no_exposure_input"}
+        try:
+            params = json.loads(posterior_params_json) if isinstance(posterior_params_json, str) else posterior_params_json
+            kappa = float(params.get("kappa", 0.30))
+            co, so = exposure_co_so
+            exposure = co + kappa * so
+            quantiles = _predict_exposure_quantiles(params, exposure)
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "exposure_rebuild_failed",
+                "item_id": item_id,
+                "error": str(exc),
+            }))
+            return {"predicted": False}
+    elif algorithm == "bayesian" and posterior_params_json:
         # Refuse to serve a posterior trained before occupancy became a
         # CENTERED feature: its coefficients live in raw-occupancy space, so
         # feeding them the centered vector [1, occ-baseline] would bias every
@@ -312,10 +428,12 @@ def _predict_single_item(
             }))
             return {"predicted": False}
     else:
-        # XGBoost path: would load the model artifact from storage. v1 not implemented;
-        # falls back to the run's training_mae as p50 and ±2*MAE as p10/p90.
-        # When XGBoost activates at 100+ events we'll wire this up in session 3.
-        return {"predicted": False, "reason": "xgboost_inference_not_implemented_in_v1"}
+        # Unrecognized / unservable algorithm (the XGBoost branch was removed in
+        # the 2026-07-05 reduced-exposure rebuild — the inventory trainer no
+        # longer produces xgboost-quantile runs; the shared XGBoostQuantile class
+        # is still used by housekeeping demand/supply). A run with no posterior,
+        # or a legacy xgboost row, yields no prediction this cycle.
+        return {"predicted": False, "reason": "unservable_algorithm"}
 
     daily_rate = float(quantiles["p50"])
 
@@ -351,15 +469,34 @@ def _predict_single_item(
         }))
         return {"predicted": False, "reason": "zero_occupancy_cohort"}
 
-    # Compute predicted_current_stock for auto-fill
+    # Compute predicted_current_stock for auto-fill.
+    #   • exposure family: integrate day-by-day using each day's real
+    #     checkouts/stayovers exposure (s·(CO+κ·SO)) since the last count.
+    #   • occupancy family / cold-start: the flat-rate retroactive method.
     item = client.fetch_one("inventory", filters={"id": item_id})
     item_name = (item or {}).get("name", "")
-    predicted_current_stock = _compute_predicted_current_stock(
-        property_id=property_id,
-        item_id=item_id,
-        daily_rate=daily_rate,
-        client=client,
-    )
+    if algorithm == INVENTORY_EXPOSURE_ALGORITHM:
+        try:
+            params = json.loads(posterior_params_json) if isinstance(posterior_params_json, str) else posterior_params_json
+        except Exception:
+            params = {}
+        s_coef = _exposure_s_coefficient(params)
+        kappa = float(params.get("kappa", INVENTORY_DEFAULT_KAPPA))
+        predicted_current_stock = _compute_predicted_current_stock_exposure(
+            property_id=property_id,
+            item_id=item_id,
+            s_coef=s_coef,
+            kappa=kappa,
+            fallback_daily_rate=daily_rate,
+            client=client,
+        )
+    else:
+        predicted_current_stock = _compute_predicted_current_stock(
+            property_id=property_id,
+            item_id=item_id,
+            daily_rate=daily_rate,
+            client=client,
+        )
     # _compute_predicted_current_stock already clamps to >= 0, but if a
     # non-finite anchor stock ever leaks in, write SQL NULL ("no estimate")
     # rather than 0.0 — a 0 here reads downstream as "you have nothing, reorder
@@ -451,6 +588,53 @@ def _predict_bayesian_quantiles(params: Dict[str, Any], occ_pct: float) -> Dict[
     for label, q in (("p10", 0.10), ("p25", 0.25), ("p50", 0.50), ("p75", 0.75), ("p90", 0.90)):
         t_q = stats.t.ppf(q, df=nu)
         out[label] = max(pred_mean + pred_std * t_q, 0.0)  # Clip non-negative
+    return out
+
+
+def _exposure_s_coefficient(params: Dict[str, Any]) -> float:
+    """The learned exposure scale s from a serialized exposure posterior.
+
+    The exposure design is [intercept(pinned≈0), exposure], so mu_n = [base, s].
+    Returns s (the second coefficient). Defensive on shape.
+    """
+    try:
+        mu_n = np.array(params["mu_n"], dtype=float)
+        if mu_n.shape[0] >= 2:
+            return float(mu_n[1])
+        return float(mu_n[0])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def _predict_exposure_quantiles(params: Dict[str, Any], exposure: float) -> Dict[str, float]:
+    """t-distribution quantiles for the reduced-exposure posterior at tomorrow's
+    exposure x = checkouts + κ·stayovers.
+
+    Feature vector [intercept, exposure] — the intercept is pinned near 0 at
+    training (base fixed at 0), so the mean ≈ s·exposure. Uses the same posterior
+    predictive t-distribution as the occupancy path.
+    """
+    mu_n = np.array(params["mu_n"], dtype=float)
+    sigma_n = np.array(params["sigma_n"], dtype=float)
+    alpha_n = float(params["alpha_n"])
+    beta_n = float(params["beta_n"])
+
+    x = np.array([1.0, float(exposure)])
+    if mu_n.shape[0] != x.shape[0]:
+        raise ValueError(
+            f"Exposure feature shape mismatch: posterior has {mu_n.shape[0]} "
+            f"dims, inference built {x.shape[0]}. Retrain or align."
+        )
+
+    pred_mean = float(x @ mu_n)
+    pred_var = (beta_n / alpha_n) * (1 + x @ sigma_n @ x)
+    pred_std = float(np.sqrt(max(pred_var, 1e-9)))
+    nu = 2 * alpha_n
+
+    out: Dict[str, float] = {}
+    for label, q in (("p10", 0.10), ("p25", 0.25), ("p50", 0.50), ("p75", 0.75), ("p90", 0.90)):
+        t_q = stats.t.ppf(q, df=nu)
+        out[label] = max(pred_mean + pred_std * t_q, 0.0)
     return out
 
 
@@ -570,4 +754,116 @@ def _compute_predicted_current_stock(
         discards_sum = 0.0
 
     predicted = last_stock + orders_sum - discards_sum - daily_rate * days_since
+    return max(predicted, 0.0)
+
+
+def _compute_predicted_current_stock_exposure(
+    property_id: str,
+    item_id: str,
+    s_coef: float,
+    kappa: float,
+    fallback_daily_rate: float,
+    client,
+) -> float:
+    """Exposure-family predicted stock, INTEGRATED day-by-day.
+
+    predicted = last_count + orders − discards − s · Σ_{days since count}(CO_d + κ·SO_d)
+
+    The old flat-rate method (`last − daily_rate·days_since`, used by the
+    occupancy path above) applies TOMORROW's rate retroactively across every day
+    since the last count — wrong when occupancy varied (a busy stretch after the
+    count depletes faster than tomorrow's rate implies). Here we use each day's
+    REAL checkouts/stayovers from daily_logs.
+
+    NULL-gapped days (feed still learning, or a day missing from daily_logs) fall
+    back to the mean of the window's KNOWN days; if NO day in the window is known,
+    fall back to the flat-rate method with fallback_daily_rate (tomorrow's p50).
+    Documented degradation, never a hard failure.
+    """
+    last_count_rows = client.fetch_many(
+        "inventory_counts",
+        filters={"property_id": property_id, "item_id": item_id},
+        order_by="counted_at",
+        descending=True,
+        limit=1,
+    )
+    if not last_count_rows:
+        return 0.0
+    last = last_count_rows[0]
+    last_stock = float(last.get("counted_stock") or 0)
+    last_at = pd.to_datetime(last.get("counted_at"))
+    if pd.isna(last_at):
+        return last_stock
+    last_at = last_at.tz_localize(None) if last_at.tzinfo else last_at
+    now = pd.Timestamp.utcnow().tz_localize(None) if pd.Timestamp.utcnow().tzinfo else pd.Timestamp.utcnow()
+    days_since = max((now - last_at).total_seconds() / 86400.0, 0.0)
+    last_at_iso = last_at.isoformat()
+
+    # Orders + discards since the last count (same filters as the flat path).
+    try:
+        orders_resp = client.client.table("inventory_orders")\
+            .select("quantity")\
+            .eq("property_id", property_id).eq("item_id", item_id)\
+            .gt("received_at", last_at_iso).execute()
+        orders_sum = sum(float(r.get("quantity") or 0) for r in (orders_resp.data or []))
+    except Exception:
+        orders_sum = 0.0
+    try:
+        discards_resp = client.client.table("inventory_discards")\
+            .select("quantity")\
+            .eq("property_id", property_id).eq("item_id", item_id)\
+            .gt("discarded_at", last_at_iso).execute()
+        discards_sum = sum(float(r.get("quantity") or 0) for r in (discards_resp.data or []))
+    except Exception:
+        discards_sum = 0.0
+
+    # Pull daily_logs since the last count to integrate exposure day-by-day.
+    daily_logs = client.fetch_many(
+        "daily_logs",
+        filters={"property_id": property_id},
+        order_by="date",
+        descending=True,
+        limit=400,
+    )
+    start_d = last_at.date()
+    today_d = now.date()
+    known_exposures: List[float] = []
+    per_day: Dict[Any, float] = {}
+    for log in daily_logs or []:
+        ld = log.get("date")
+        if not ld:
+            continue
+        try:
+            d = pd.to_datetime(ld).date()
+        except Exception:
+            continue
+        if not (start_d < d <= today_d):
+            continue
+        co = log.get("checkouts")
+        so = log.get("stayovers")
+        if co is None or so is None:
+            continue
+        try:
+            expo = max(0.0, float(co)) + kappa * max(0.0, float(so))
+        except (TypeError, ValueError):
+            continue
+        per_day[d] = expo
+        known_exposures.append(expo)
+
+    n_days_int = int(round(days_since))
+    if known_exposures:
+        mean_known = sum(known_exposures) / len(known_exposures)
+        total_exposure = 0.0
+        d = start_d
+        for _ in range(max(n_days_int, 0)):
+            d = d + pd.Timedelta(days=1).to_pytimedelta()
+            if d > today_d:
+                break
+            total_exposure += per_day.get(d, mean_known)  # NULL-gap → window mean
+        consumed = s_coef * total_exposure
+    else:
+        # No known exposure days in the window → flat-rate fallback.
+        consumed = fallback_daily_rate * days_since
+
+    predicted = last_stock + orders_sum - discards_sum - consumed
     return max(predicted, 0.0)

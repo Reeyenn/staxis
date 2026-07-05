@@ -27,13 +27,37 @@ class BayesianRegression(BaseModel):
     Enables cold-start (N=0) by returning quantiles from prior.
     """
 
-    def __init__(self, prior_strength: float = 1.0) -> None:
+    def __init__(
+        self,
+        prior_strength: float = 1.0,
+        prior_mean: Optional[np.ndarray] = None,
+        prior_variance: Optional[np.ndarray] = None,
+    ) -> None:
         """Initialize Bayesian regression.
 
         Args:
-            prior_strength: Precision of informative prior (higher = stronger prior)
+            prior_strength: Precision of informative prior (higher = stronger prior).
+            prior_mean: OPTIONAL per-coefficient prior means (mu_0). When given,
+                overrides the built-in hospitality default (intercept=60, others
+                0) at fit time. Length must equal the number of columns of X
+                seen in fit(). Used by the reduced-exposure inventory model,
+                which has a single coefficient s and no 60-min intercept prior.
+            prior_variance: OPTIONAL per-coefficient prior VARIANCES (the
+                diagonal of sigma_0). When given, overrides the built-in
+                (1/prior_strength, looser on intercept) covariance. Same length
+                rule as prior_mean.
+
+        Backward-compatible: with both prior_mean and prior_variance None (the
+        default), behavior is bit-for-bit identical to before — demand/supply
+        and the occupancy-family inventory model are unaffected.
         """
         self.prior_strength = prior_strength
+        self._prior_mean_override = (
+            np.asarray(prior_mean, dtype=float) if prior_mean is not None else None
+        )
+        self._prior_variance_override = (
+            np.asarray(prior_variance, dtype=float) if prior_variance is not None else None
+        )
         self.feature_names: Optional[List[str]] = None
 
         # Posterior parameters (initialized with weak informative prior)
@@ -57,15 +81,23 @@ class BayesianRegression(BaseModel):
         """
         n_features = X.shape[1]
 
-        # Prior mean: strong prior on intercept (60 min base load),
-        # zeros on other coefficients
-        self.mu_0 = np.zeros(n_features)
-        self.mu_0[0] = 60.0  # Intercept prior
+        # Prior mean. Default: strong prior on intercept (60 min base load),
+        # zeros on other coefficients. When a per-coefficient override was
+        # supplied at construction (reduced-exposure inventory model), use it.
+        if self._prior_mean_override is not None and self._prior_mean_override.shape[0] == n_features:
+            self.mu_0 = self._prior_mean_override.astype(float).copy()
+        else:
+            self.mu_0 = np.zeros(n_features)
+            self.mu_0[0] = 60.0  # Intercept prior
 
-        # Prior covariance: strong shrinkage (diagonal)
-        # Intercept gets looser prior, others tighter
-        self.sigma_0 = np.eye(n_features) * (1.0 / self.prior_strength)
-        self.sigma_0[0, 0] *= 10.0  # Looser on intercept
+        # Prior covariance. Default: strong shrinkage (diagonal), looser on the
+        # intercept. When a per-coefficient variance override was supplied, use
+        # it as the diagonal (each coefficient gets its own prior variance).
+        if self._prior_variance_override is not None and self._prior_variance_override.shape[0] == n_features:
+            self.sigma_0 = np.diag(np.maximum(self._prior_variance_override.astype(float), 1e-9))
+        else:
+            self.sigma_0 = np.eye(n_features) * (1.0 / self.prior_strength)
+            self.sigma_0[0, 0] *= 10.0  # Looser on intercept
 
         # Inverse-Gamma prior on noise variance
         # alpha=2, beta=1 gives E[sigma^2] = beta/(alpha-1) = 1
@@ -220,6 +252,8 @@ class BayesianRegression(BaseModel):
             "n_samples": self.n_samples,
             "feature_names": self.feature_names,
             "prior_strength": self.prior_strength,
+            "prior_mean_override": self._prior_mean_override,
+            "prior_variance_override": self._prior_variance_override,
         }
         with open(path, "wb") as f:
             pickle.dump(state, f)
@@ -243,6 +277,9 @@ class BayesianRegression(BaseModel):
         self.n_samples = state["n_samples"]
         self.feature_names = state["feature_names"]
         self.prior_strength = state["prior_strength"]
+        # Backward-compatible: older pickles predate the override fields.
+        self._prior_mean_override = state.get("prior_mean_override")
+        self._prior_variance_override = state.get("prior_variance_override")
 
     def get_config(self) -> Dict[str, Any]:
         """Get configuration.

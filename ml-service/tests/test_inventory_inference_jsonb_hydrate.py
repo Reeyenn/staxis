@@ -88,6 +88,7 @@ def test_bayesian_posterior_as_dict_does_not_crash():
         item_id="item-uuid",
         target_date_iso="2026-05-15",
         occ_pct=70.0,
+        exposure_co_so=None,
         client=fake_client,
     )
 
@@ -118,6 +119,7 @@ def test_bayesian_posterior_as_string_still_parses():
         item_id="item-uuid",
         target_date_iso="2026-05-15",
         occ_pct=70.0,
+        exposure_co_so=None,
         client=fake_client,
     )
 
@@ -143,6 +145,7 @@ def test_cold_start_posterior_as_dict_does_not_crash():
         item_id="item-uuid",
         target_date_iso="2026-05-15",
         occ_pct=70.0,
+        exposure_co_so=None,
         client=fake_client,
     )
 
@@ -166,6 +169,7 @@ def test_corrupt_posterior_returns_predicted_false_not_crash():
         item_id="item-uuid",
         target_date_iso="2026-05-15",
         occ_pct=70.0,
+        exposure_co_so=None,
         client=fake_client,
     )
 

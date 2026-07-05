@@ -46,12 +46,14 @@ def should_force_deactivate(
          audit (Coffee Pods at MAE=49.99, mean=50 was passing 1.5x).
 
       3. **XGBoost-not-served** — algorithm == 'xgboost-quantile' AND
-         NOT xgboost_inference_ready. Inventory inference at
-         `inference/inventory_rate.py:261-265` returns predicted=False for
-         any xgboost-quantile run because artifact deserialization isn't
-         wired up yet. Activating an XGBoost run would silently stop
-         emitting per-day predictions the moment an item crosses the
-         100-event activation threshold.
+         NOT xgboost_inference_ready. UNREACHABLE for the inventory layer as of
+         the 2026-07-05 reduced-exposure rebuild: the inventory trainer no
+         longer produces xgboost-quantile runs (the XGBoost branch was removed —
+         a single-regressor exposure fit at N=10-30 can't be improved by
+         XGBoost). The gate is kept as a harmless safety valve in case a future
+         caller ever sets algorithm='xgboost-quantile' on an inventory run
+         without wiring inference; the shared XGBoostQuantile class itself lives
+         on for housekeeping demand/supply.
 
     Args:
       algorithm: Model's `algorithm` field, e.g. 'bayesian', 'xgboost-quantile',

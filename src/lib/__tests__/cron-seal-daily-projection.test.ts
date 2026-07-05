@@ -18,7 +18,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { localDatesForProjection } from '@/app/api/cron/seal-daily/route';
+import { localDatesForProjection, hasFreshPmsEvidence } from '@/app/api/cron/seal-daily/route';
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -61,5 +61,76 @@ describe('seal-daily plan_snapshots projection — localDatesForProjection', () 
     assert.equal(nextDay('2028-02-28'), '2028-02-29', 'leap-year Feb 28 → 29');
     assert.equal(nextDay('2026-02-28'), '2026-03-01', 'non-leap Feb 28 → Mar 1');
     assert.equal(nextDay('2026-03-07'), '2026-03-08', 'ordinary day (US DST-change weekend)');
+  });
+});
+
+describe('seal-daily positive-evidence gate — hasFreshPmsEvidence', () => {
+  // Fixed "now" so the freshness window is deterministic. 24h max age.
+  const now = new Date('2026-07-05T12:00:00Z');
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 3600_000).toISOString();
+
+  test('missing snapshot (dead-robot / manual no-PMS hotel) → no evidence', () => {
+    // The exact incident this gate closes: no pms_in_house_snapshot row at all
+    // must NOT let the sealer write fabricated 0s.
+    assert.equal(hasFreshPmsEvidence(null, now), false);
+  });
+
+  test('healthy + fresh snapshot (live robot) → evidence', () => {
+    assert.equal(
+      hasFreshPmsEvidence(
+        { has_error: false, last_good_at: hoursAgo(2), captured_at: hoursAgo(1) },
+        now,
+      ),
+      true,
+    );
+  });
+
+  test('healthy but STALE snapshot (dead robot, last good > 24h) → no evidence', () => {
+    assert.equal(
+      hasFreshPmsEvidence(
+        { has_error: false, last_good_at: hoursAgo(30), captured_at: hoursAgo(30) },
+        now,
+      ),
+      false,
+    );
+  });
+
+  test('errored snapshot within 24h → no evidence (untrusted even if recent)', () => {
+    assert.equal(
+      hasFreshPmsEvidence(
+        { has_error: true, last_good_at: hoursAgo(1), captured_at: hoursAgo(1) },
+        now,
+      ),
+      false,
+    );
+  });
+
+  test('falls back to captured_at when last_good_at is null', () => {
+    assert.equal(
+      hasFreshPmsEvidence({ has_error: false, last_good_at: null, captured_at: hoursAgo(3) }, now),
+      true,
+    );
+    assert.equal(
+      hasFreshPmsEvidence({ has_error: false, last_good_at: null, captured_at: hoursAgo(48) }, now),
+      false,
+    );
+  });
+
+  test('no usable timestamp → no evidence', () => {
+    assert.equal(
+      hasFreshPmsEvidence({ has_error: false, last_good_at: null, captured_at: null }, now),
+      false,
+    );
+    assert.equal(
+      hasFreshPmsEvidence({ has_error: false, last_good_at: 'not-a-date', captured_at: null }, now),
+      false,
+    );
+  });
+
+  test('exactly at the 24h boundary is still fresh', () => {
+    assert.equal(
+      hasFreshPmsEvidence({ has_error: false, last_good_at: hoursAgo(24), captured_at: null }, now),
+      true,
+    );
   });
 });

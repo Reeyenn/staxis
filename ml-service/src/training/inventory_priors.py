@@ -21,6 +21,24 @@ prior_strength column on inventory_rate_priors):
    10-50 hotels          → strength=2.0  (moderate — cohort gets ~10% weight)
    50+ hotels            → strength=5.0  (strong — cohort dominates new-hotel
                                           day-1 prediction)
+
+REDUCED-EXPOSURE ADDITION (2026-07-05): alongside the legacy per-room-per-day
+prior (prior_rate_per_room_per_day, KEPT), we now also compute a per-CHECKOUT-
+EQUIVALENT prior rate_per_checkout_eq = median over hotels of s_hat, where
+s_hat = window_consumption / (ΣCheckouts + κ·ΣStayovers) (same window hygiene;
+κ from each item's usage config). This seeds the exposure model's single
+coefficient s for a brand-new item. Written to inventory_rate_priors.
+rate_per_checkout_eq + n_hotels (migration 0294).
+
+PRECISION CAP: with 1-3 contributing hotels the between-hotel signal is noise, so
+the CONSUMER (trainer _lookup_exposure_prior_with_source) caps the exposure
+prior's effective strength at ~1 hotel's worth of evidence until n_hotels >= 4.
+The 0.5/2.0/5.0 schedule remains the ceiling SHAPE. Between-hotel-variance
+empirical Bayes is DEFERRED until ≥4 hotels — not built here.
+
+is_test / demo properties are EXCLUDED from every aggregation (both the Python
+property fetch and the rate SQL), mirroring the inventory_ai_mode<>'off' filter,
+so a demo hotel never shapes the network prior every real hotel inherits.
 """
 import json
 from datetime import datetime, timedelta
@@ -28,6 +46,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from src.config import INVENTORY_DEFAULT_KAPPA
 from src.supabase_client import get_supabase_client
 
 
@@ -48,8 +67,13 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
     """
     client = get_supabase_client()
 
-    # 1. Pull all properties with cohort metadata
-    properties = client.fetch_many("properties", limit=5000)
+    # 1. Pull all properties with cohort metadata. Exclude test/demo properties
+    #    (coalesce NULL → false) so a demo hotel never shapes the network prior —
+    #    mirrors the SQL's is_test exclusion + the existing inventory_ai_mode
+    #    filter. Belt-and-suspenders: the rate SQL already drops is_test rows, so
+    #    filtering here just keeps prop_meta consistent.
+    all_properties = client.fetch_many("properties", limit=5000)
+    properties = [p for p in (all_properties or []) if not p.get("is_test", False)]
     if not properties:
         return {"cohorts_updated": 0, "items_canonical": 0, "errors": [],
                 "note": "no properties in network"}
@@ -82,6 +106,23 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
     # sums orders received and discards in the window, computes
     # actual_usage, and returns one median-rate row per (property, item).
     since = (datetime.utcnow() - timedelta(days=90)).isoformat()
+    # 2026-07-05 reduced-exposure rebuild — this SQL now produces TWO
+    # denominations per (property, item):
+    #   • median_rate  — legacy per-ROOM-per-day (KEPT; the occupancy-family
+    #     model and other consumers still read it).
+    #   • median_s     — per-CHECKOUT-EQUIVALENT usage scale s_hat =
+    #     consumption / (ΣCO + κ·ΣSO) over the window, where ΣCO/ΣSO are summed
+    #     daily_logs checkouts/stayovers (stayovers per 0224 INCLUDES arrivals)
+    #     and κ = usage_per_stayover / usage_per_checkout from the inventory row
+    #     (fallback {default_kappa} when missing/zero). This seeds the exposure
+    #     model's single coefficient s for a brand-new item.
+    # A window's exposure sum is only valid when daily_logs has NON-NULL
+    # checkouts AND stayovers for EVERY day in (prev_at, curr_at]; otherwise the
+    # window is EXCLUDED from median_s (but can still contribute to median_rate).
+    # is_test properties are excluded (coalesce false) so a demo hotel never
+    # shapes the network prior every real hotel inherits — mirrors the existing
+    # inventory_ai_mode<>'off' exclusion.
+    default_kappa = INVENTORY_DEFAULT_KAPPA
     rates_query = f"""
         with paired as (
             select
@@ -124,41 +165,65 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                       and d.item_id = p.item_id
                       and d.discarded_at > p.prev_at
                       and d.discarded_at <= p.curr_at
-                ), 0) as discards_in_window
+                ), 0) as discards_in_window,
+                -- Exposure sums over the window from daily_logs. NULL when ANY
+                -- day in the window has NULL checkouts/stayovers (feed still
+                -- learning) — an incomplete window is not a trustworthy s_hat.
+                (
+                    select case
+                             when count(*) = 0 then null
+                             when bool_or(dl.checkouts is null or dl.stayovers is null) then null
+                             else sum(dl.checkouts)
+                           end
+                    from daily_logs dl
+                    where dl.property_id = p.property_id
+                      and dl.date > (p.prev_at)::date
+                      and dl.date <= (p.curr_at)::date
+                ) as sum_checkouts,
+                (
+                    select case
+                             when count(*) = 0 then null
+                             when bool_or(dl.checkouts is null or dl.stayovers is null) then null
+                             else sum(dl.stayovers)
+                           end
+                    from daily_logs dl
+                    where dl.property_id = p.property_id
+                      and dl.date > (p.prev_at)::date
+                      and dl.date <= (p.curr_at)::date
+                ) as sum_stayovers
             from paired p
             where p.curr_at is not null
               and p.prev_stock is not null
               and p.curr_stock is not null
         ),
         per_pair as (
-            -- Codex round-5 META J2.1 (2026-05-13): the prior version
-            -- computed `rate_per_day` as ABSOLUTE units/day for the
-            -- property, but stored the result into a column named
-            -- `prior_rate_per_room_per_day`. Then trainer + inference
-            -- did `mu_0 = prior_rate * room_count` — turning it into
-            -- 60 × room_count for a 200-room hotel = 60×60×200 = ~720k.
-            -- Latent bug: doesn't fire today because Beaumont is the
-            -- only property and falls back to industry seeds. Would
-            -- explode the day a 5th hotel onboards in any cohort.
-            -- Fix: divide by the property's total_rooms so the column
-            -- name matches the column units. Skip rows where total_rooms
-            -- is missing or zero (those properties are misconfigured —
-            -- handled elsewhere by Phase 3.3).
+            -- Codex round-5 META J2.1 (2026-05-13): divide by total_rooms so the
+            -- column name (prior_rate_per_room_per_day) matches its units.
+            -- REDUCED-EXPOSURE (2026-07-05): also compute s_hat = consumption /
+            -- (ΣCO + κ·ΣSO). κ from the inventory row's usage config; fallback
+            -- {default_kappa}. NULL when the exposure denominator is missing
+            -- (incomplete window) or <= 0.
             select
                 w.property_id,
                 w.item_id,
                 (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock)
-                    / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
+                    / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day,
+                case
+                  when w.sum_checkouts is null or w.sum_stayovers is null then null
+                  when (w.sum_checkouts
+                        + coalesce(nullif(inv.usage_per_stayover, 0) / nullif(inv.usage_per_checkout, 0),
+                                   {default_kappa}) * w.sum_stayovers) <= 0 then null
+                  else (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock)
+                       / (w.sum_checkouts
+                          + coalesce(nullif(inv.usage_per_stayover, 0) / nullif(inv.usage_per_checkout, 0),
+                                     {default_kappa}) * w.sum_stayovers)::float8
+                end as s_per_checkout_eq
             from with_window w
             join public.properties p on p.id = w.property_id
+            join public.inventory inv on inv.id = w.item_id
             -- Window hygiene — mirror training/inventory_rate._build_training_rows:
-            -- drop sub-day pairs (require >= 1.0 day); keep windows with real
-            -- positive consumption AND genuine zero-usage windows (count flat or
-            -- down, nothing used); drop only the contamination — unexplained
-            -- increases (consumption < 0) and auto-stock-up zeros (consumption
-            -- = 0 on a count that ROSE). The old `greatest(..., 0)` clamped
-            -- count-up windows to a fake 0, biasing new-hotel cold-start LOW;
-            -- dropping ALL zeros instead would over-estimate intermittent items.
+            -- drop sub-day pairs; keep positive consumption AND genuine zero-
+            -- usage windows; drop unexplained increases + auto-stock-up zeros.
             where w.days >= 1.0
               and p.total_rooms > 0
               and (
@@ -168,17 +233,21 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                   and w.curr_stock <= w.prev_stock
                 )
               )
-              -- Don't let a hotel that turned inventory AI OFF shape the
-              -- network cold-start prior every NEW hotel inherits. coalesce so
-              -- legacy/NULL rows (default = on) are kept. Mirrors the cron
-              -- fan-out, which already skips inventory_ai_mode='off'.
+              -- Exclude AI-off hotels (coalesce keeps legacy NULL = on).
               and coalesce(p.inventory_ai_mode, 'on') <> 'off'
+              -- Exclude test/demo properties from the network prior.
+              and coalesce(p.is_test, false) = false
         )
         select
             property_id,
             item_id,
             percentile_cont(0.5) within group (order by rate_per_room_per_day)::float8 as median_rate,
-            count(*)::int as n_pairs
+            -- percentile_cont is an ordered-set aggregate that IGNORES NULL
+            -- inputs, so incomplete-window rows (s_per_checkout_eq NULL) drop out
+            -- automatically; result is NULL when every window was incomplete.
+            (percentile_cont(0.5) within group (order by s_per_checkout_eq))::float8 as median_s,
+            count(*)::int as n_pairs,
+            count(s_per_checkout_eq)::int as n_pairs_s
         from per_pair
         where rate_per_room_per_day is not null
         group by property_id, item_id
@@ -191,52 +260,70 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                 "errors": [f"per-property rate aggregation failed: {exc}"]}
 
     per_property_item_rates: Dict[str, List[float]] = {}
+    # Exposure denomination (2026-07-05): per-(property, canonical) list of s_hat
+    # medians. Separate from the per-room list because a window can contribute to
+    # median_rate but not median_s (incomplete daily_logs exposure).
+    per_property_item_s: Dict[str, List[float]] = {}
     for row in rate_rows:
         canonical = canonical_by_item.get(row.get("item_id"))
         if not canonical or canonical == "unknown":
             continue
         median = row.get("median_rate")
-        if median is None:
-            continue
-        # APPEND, don't overwrite. The canonical map is coarse (~20 buckets),
-        # so a single hotel routinely has several SKUs collapsing to one
-        # canonical name (e.g. "Bath Towel" + "Pool Towel" → "towel"). The
-        # SQL returns one rate row per (property, item); keying by
-        # property|canonical with `=` kept only the LAST item's rate and
-        # silently dropped every other same-canonical SKU at that hotel —
-        # under-representing high-volume hotels in the network prior. Each
-        # SKU's per-room rate is a legitimate cohort data point.
-        per_property_item_rates.setdefault(
-            f"{row['property_id']}|{canonical}", []
-        ).append(float(median))
+        if median is not None:
+            # APPEND, don't overwrite — several SKUs collapse to one canonical.
+            per_property_item_rates.setdefault(
+                f"{row['property_id']}|{canonical}", []
+            ).append(float(median))
+        median_s = row.get("median_s")
+        if median_s is not None:
+            try:
+                s_val = float(median_s)
+                if s_val > 0:
+                    per_property_item_s.setdefault(
+                        f"{row['property_id']}|{canonical}", []
+                    ).append(s_val)
+            except (TypeError, ValueError):
+                pass
 
     # 5. Aggregate by cohort_key + canonical_name
     #    cohort_key = "<brand>-<region>-<size_tier>" (lowercased, slug-ified)
     #    plus a 'global' bucket per canonical_name covering all properties
     cohort_buckets: Dict[tuple, List[float]] = {}
     cohort_hotel_counts: Dict[tuple, set] = {}
+    # Exposure buckets, parallel to cohort_buckets.
+    cohort_s_buckets: Dict[tuple, List[float]] = {}
+    cohort_s_hotels: Dict[tuple, set] = {}
 
     prop_meta = {p["id"]: p for p in properties}
 
     def _slug(s: Optional[str]) -> str:
         return (s or "").strip().lower().replace(" ", "-")
 
-    for key_str, rates in per_property_item_rates.items():
-        pid, canonical = key_str.split("|", 1)
+    def _cohort_keys_for(pid: str) -> List[str]:
         prop = prop_meta.get(pid)
         if not prop:
-            continue
-        # Cohort key (specific) — only when all 3 cohort fields are populated
+            return []
         brand = prop.get("brand")
         region = prop.get("region")
         size_tier = prop.get("size_tier")
-        cohort_keys: List[str] = ["global"]
+        keys: List[str] = ["global"]
         if brand and region and size_tier:
-            cohort_keys.append(f"{_slug(brand)}-{_slug(region)}-{_slug(size_tier)}")
-        for ck in cohort_keys:
+            keys.append(f"{_slug(brand)}-{_slug(region)}-{_slug(size_tier)}")
+        return keys
+
+    for key_str, rates in per_property_item_rates.items():
+        pid, canonical = key_str.split("|", 1)
+        for ck in _cohort_keys_for(pid):
             tup = (ck, canonical)
             cohort_buckets.setdefault(tup, []).extend(rates)
             cohort_hotel_counts.setdefault(tup, set()).add(pid)
+
+    for key_str, s_vals in per_property_item_s.items():
+        pid, canonical = key_str.split("|", 1)
+        for ck in _cohort_keys_for(pid):
+            tup = (ck, canonical)
+            cohort_s_buckets.setdefault(tup, []).extend(s_vals)
+            cohort_s_hotels.setdefault(tup, set()).add(pid)
 
     # 6. Upsert into inventory_rate_priors. CAREFUL: we don't want to clobber
     #    the industry-benchmark seeds at small N — a single hotel's atypical
@@ -353,8 +440,36 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                 "ts": datetime.utcnow().isoformat(),
             }))
             continue
+
+        # ── Exposure prior (rate_per_checkout_eq) for this cohort+canonical ──
+        # Pooled median of the per-(property) s_hat medians, log-IQR-clipped like
+        # the per-room path when ≥4 contributors. n_hotels_s = distinct hotels
+        # contributing an exposure s. Left NULL when no window had complete
+        # daily_logs exposure. PRECISION CAP note: the exposure prior_strength is
+        # capped consumer-side (trainer _lookup_exposure_prior_with_source) at ~1
+        # hotel's evidence until n_hotels >= 4 — we still persist the true
+        # n_hotels here so the cap can key off it.
+        s_vals = cohort_s_buckets.get((cohort_key, canonical), [])
+        n_hotels_s = len(cohort_s_hotels.get((cohort_key, canonical), set()))
+        rate_per_checkout_eq: Optional[float] = None
+        if s_vals:
+            s_arr = np.asarray(s_vals, dtype=float)
+            if len(s_arr) >= 4:
+                log_s = np.log1p(s_arr)
+                q1s = float(np.percentile(log_s, 25))
+                q3s = float(np.percentile(log_s, 75))
+                iqrs = q3s - q1s
+                mask_s = (log_s >= q1s - 1.5 * iqrs) & (log_s <= q3s + 1.5 * iqrs)
+                s_clipped = s_arr[mask_s] if mask_s.any() else s_arr
+            else:
+                s_clipped = s_arr
+            cand = float(np.median(s_clipped))
+            # Only persist a sane exposure prior (same [0.001, 10] band shape).
+            if SANE_PRIOR_LO <= cand <= SANE_PRIOR_HI:
+                rate_per_checkout_eq = cand
+
         try:
-            client.client.table("inventory_rate_priors").upsert({
+            payload = {
                 "cohort_key": cohort_key,
                 "item_canonical_name": canonical,
                 "prior_rate_per_room_per_day": float(cohort_median),
@@ -362,7 +477,13 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                 "prior_strength": _prior_strength_for(n_hotels),
                 "source": "cohort-aggregate",
                 "updated_at": datetime.utcnow().isoformat(),
-            }, on_conflict="cohort_key,item_canonical_name").execute()
+                "n_hotels": n_hotels_s,
+            }
+            if rate_per_checkout_eq is not None:
+                payload["rate_per_checkout_eq"] = rate_per_checkout_eq
+            client.client.table("inventory_rate_priors").upsert(
+                payload, on_conflict="cohort_key,item_canonical_name"
+            ).execute()
             cohorts_updated += 1
         except Exception as exc:
             errors.append(f"upsert failed for ({cohort_key}, {canonical}): {exc}")
