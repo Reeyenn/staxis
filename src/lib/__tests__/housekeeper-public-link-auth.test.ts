@@ -24,6 +24,7 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import type { NextRequest } from 'next/server';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -128,7 +129,12 @@ beforeEach(() => {
       if (table === 'staff') {
         if (filter.id !== undefined) {
           const s = STAFF_BY_ID[filter.id as string];
-          return s ? [s as unknown as Record<string, unknown>] : [];
+          // Honor the property_id filter when present: verifyStaffLinkToken
+          // looks up staff with .eq('id').eq('property_id'), so a staff whose
+          // property doesn't match the claimed pid must return no row.
+          if (!s) return [];
+          if (pid !== undefined && s.property_id !== pid) return [];
+          return [s as unknown as Record<string, unknown>];
         }
         return Object.values(STAFF_BY_ID)
           .filter((s) => !pid || s.property_id === pid)
@@ -152,6 +158,21 @@ beforeEach(() => {
           .map((r) => assignmentRow(r));
       }
       if (table === 'properties') return [{ pms_writeback_enabled: false }];
+      // Security audit 2026-06-26 #1: the route now verifies a per-staff link
+      // token via verifyStaffLinkToken. Tests embed a token of the shape
+      // `link-${staffId}-${pid}` (see makeRequest); this mock decodes it into a
+      // valid, unexpired, unrevoked staff_link_tokens row bound to that pair.
+      if (table === 'staff_link_tokens') {
+        const th = filter.token_hash as string | undefined;
+        const parsed = th ? parseTestTokenHash(th) : null;
+        if (!parsed) return [];
+        return [{
+          staff_id: parsed.staffId,
+          property_id: parsed.pid,
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+          revoked_at: null,
+        }];
+      }
       // pms_room_status_log / pms_reservations / cleaning_events → empty.
       return [];
     };
@@ -183,11 +204,43 @@ afterEach(() => {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
+// ─── Per-staff link token test harness (security audit 2026-06-26 #1) ──────
+// The route resolves identity from a `tok` bearer via verifyStaffLinkToken,
+// which sha256-hashes it and looks up staff_link_tokens. Tests use a
+// deterministic raw token `link-${staffId}-${pid}`; we precompute the reverse
+// map from sha256(token) → { staffId, pid } so the mock can echo a valid row.
+function testTokenFor(staffId: string, pid: string): string {
+  return `link-${staffId}-${pid}`;
+}
+const TEST_TOKEN_HASH_MAP: Record<string, { staffId: string; pid: string }> = (() => {
+  const map: Record<string, { staffId: string; pid: string }> = {};
+  const pids = [PROPERTY_A, PROPERTY_B];
+  const staffIds = [STAFF_A_AT_PROPERTY_A, STAFF_B_AT_PROPERTY_A, STAFF_C_AT_PROPERTY_B];
+  for (const s of staffIds) {
+    for (const p of pids) {
+      const raw = testTokenFor(s, p);
+      const hash = createHash('sha256').update(raw).digest('hex');
+      map[hash] = { staffId: s, pid: p };
+    }
+  }
+  return map;
+})();
+function parseTestTokenHash(hash: string): { staffId: string; pid: string } | null {
+  return TEST_TOKEN_HASH_MAP[hash] ?? null;
+}
+
 function makeRequest(body: Record<string, unknown>): NextRequest {
+  // Attach a valid link token bound to the body's claimed (pid, staffId) unless
+  // the test overrides `tok`. The ROOM-level capability tests still exercise the
+  // assigned_to scoping — the token just proves the caller holds a real link for
+  // the identity they claim (which the SMS link always does).
+  const pid = String(body.pid ?? '');
+  const staffId = String(body.staffId ?? '');
+  const withTok = 'tok' in body ? body : { ...body, tok: testTokenFor(staffId, pid) };
   return new Request('https://staxis.test/api/housekeeper/room-action', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withTok),
   }) as unknown as NextRequest;
 }
 
@@ -234,8 +287,11 @@ describe('POST /api/housekeeper/room-action — capability model', () => {
     assert.equal(res.status, 200, 'normal happy path: staffA acts on staffA\'s room');
   });
 
-  test('staffC (property B) CANNOT mutate a property A room → 403', async () => {
-    // Cross-property block via staff.property_id check.
+  test('staffC (property B) CANNOT mutate a property A room → 401', async () => {
+    // Security audit 2026-06-26 #1: identity is resolved from the link token.
+    // Even holding a token for (staffC, propertyA), the staff row for staffC
+    // doesn't exist under property A → verifyStaffLinkToken returns 401 (was a
+    // 403 staff/property mismatch under the old tuple model). Still a reject.
     const { POST } = await import('@/app/api/housekeeper/room-action/route');
     const res = await POST(makeRequest({
       pid: PROPERTY_A,                       // claims A
@@ -243,7 +299,7 @@ describe('POST /api/housekeeper/room-action — capability model', () => {
       roomId: ROOM_ASSIGNED_TO_A,
       action: 'finish',
     }));
-    assert.equal(res.status, 403, 'staff/property mismatch must reject');
+    assert.equal(res.status, 401, 'staff/property mismatch must reject');
   });
 
   test('valid (staffA, propertyA) cannot reach a property B room → 404', async () => {
@@ -262,7 +318,10 @@ describe('POST /api/housekeeper/room-action — capability model', () => {
     assert.equal(res.status, 404, 'a property-B room is not reachable under property A (scoped merge → not found)');
   });
 
-  test('unknown staffId → 403 (not 404) so the error shape doesn\'t leak which side was wrong', async () => {
+  test('unknown staffId → 401 (no valid link token for it)', async () => {
+    // Security audit 2026-06-26 #1: an unknown staffId has no link token, so the
+    // token lookup fails → indistinguishable 401 (was 403 under the tuple model).
+    // The error shape still doesn't leak which side was wrong.
     const { POST } = await import('@/app/api/housekeeper/room-action/route');
     const res = await POST(makeRequest({
       pid: PROPERTY_A,
@@ -270,7 +329,7 @@ describe('POST /api/housekeeper/room-action — capability model', () => {
       roomId: ROOM_UNASSIGNED,
       action: 'finish',
     }));
-    assert.equal(res.status, 403, 'unknown staff returns same response as cross-property mismatch');
+    assert.equal(res.status, 401, 'unknown staff has no valid token → 401');
   });
 
   test('malformed (non-UUID) staffId → clean 403, never a 500', async () => {
