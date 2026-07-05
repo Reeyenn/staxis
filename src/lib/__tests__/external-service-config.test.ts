@@ -18,6 +18,7 @@ import {
   EXTERNAL_FETCH_LONG_TIMEOUT_MS,
   ANTHROPIC_REQUEST_TIMEOUT_MS,
   ANTHROPIC_VISION_TIMEOUT_MS,
+  ANTHROPIC_VISION_ABORT_MS,
   ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
   ANTHROPIC_MAX_RETRIES,
   STRIPE_REQUEST_TIMEOUT_MS,
@@ -34,8 +35,26 @@ describe('timeout constants', () => {
     // 50s × 2 = 100s is INTENTIONALLY over 60s (see external-service-config
     // header for the budget math) but it's the deliberate ceiling.
     assert.ok(ANTHROPIC_REQUEST_TIMEOUT_MS <= 50_000, 'main agent timeout drifted above documented ceiling');
-    assert.ok(ANTHROPIC_VISION_TIMEOUT_MS <= 30_000, 'vision timeout drifted above documented ceiling');
+    // Vision routes set maxDuration = 60. The per-attempt SDK timeout can go
+    // up to 50s; the whole-call abort (ANTHROPIC_VISION_ABORT_MS, 55s) bounds
+    // the worst case — including the maxRetries=1 retry — under that ceiling.
+    assert.ok(ANTHROPIC_VISION_TIMEOUT_MS <= 50_000, 'vision timeout drifted above documented ceiling');
     assert.ok(ANTHROPIC_WALKTHROUGH_TIMEOUT_MS < 30_000, 'walkthrough timeout must be < route maxDuration (30s)');
+  });
+
+  test('vision abort outlives one attempt but stays under the route ceiling', () => {
+    // The abort must outlive one full SDK attempt so the SDK timeout fires
+    // first on happy-path slowness (clean SDK error, not a raw fetch abort)…
+    assert.ok(
+      ANTHROPIC_VISION_ABORT_MS > ANTHROPIC_VISION_TIMEOUT_MS,
+      'vision abort must be longer than one attempt so the SDK timeout fires first',
+    );
+    // …and it must fire before the route's 60s maxDuration so we fail cleanly
+    // instead of being killed mid-response by Vercel.
+    assert.ok(
+      ANTHROPIC_VISION_ABORT_MS < 60_000,
+      'vision abort must be under the route maxDuration (60s)',
+    );
   });
 
   test('Anthropic maxRetries is 1, not the SDK default of 2', () => {

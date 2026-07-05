@@ -12,33 +12,44 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
-import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
+import {
+  ANTHROPIC_MAX_RETRIES,
+  ANTHROPIC_VISION_TIMEOUT_MS,
+  ANTHROPIC_VISION_ABORT_MS,
+} from '@/lib/external-service-config';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
 const MODEL = 'claude-sonnet-4-6';
 
-// Per-request timeout. Vision calls typically complete in 3-8s; 30s is
-// generous and well under the route's 60s maxDuration so the Anthropic
-// SDK fails fast (and we surface a 503) rather than hanging Vercel's
-// function until the route timeout. May 2026 audit pass-5: the SDK
-// defaults to no timeout, so an Anthropic API hiccup could pin our
-// function memory for minutes at fleet scale.
+// Vision timeout budget. The per-attempt SDK timeout (50s) and the whole-call
+// wire abort (55s) both live in external-service-config now — per that file's
+// rule 1, a raw timeout number in an SDK client is a code-review red flag, so
+// these are imported (ANTHROPIC_VISION_TIMEOUT_MS / ANTHROPIC_VISION_ABORT_MS)
+// rather than hard-coded here. The consumer routes set maxDuration = 60, and
+// the 55s abort keeps the worst case under that ceiling.
+//
+// Why 50s (was 30s): a real 20-line supplier invoice measures ~23s (~1600
+// output tokens at ~70 tok/s). 30-plus-line invoices ran past the old 30s
+// per-attempt timeout and surfaced a misleading "vision_unavailable" error.
+// The old comment argued shorter-is-better-UX — a clean fail beats a long
+// spinner — but that's superseded by measured reality: legitimate long
+// invoices genuinely need ~45-50s, so failing them fast was failing them
+// wrong.
 //
 // Belt-and-suspenders (audit/concurrency #16): the SDK's `timeout` option
-// is a soft client-side deadline; under some HTTP-keepalive conditions
-// the request can keep running on the wire (and keep billing) past it.
-// Each call site also passes an `AbortSignal.timeout(VISION_ABORT_MS)`
-// to actually cut the fetch. We keep the SDK timeout below the abort so
-// the SDK is the first to fire under happy-path slowness, but the abort
-// is guaranteed to cut the wire if anything wedges.
+// is a soft client-side deadline; under some HTTP-keepalive conditions the
+// request can keep running on the wire (and keep billing) past it. Each call
+// site also passes an `AbortSignal.timeout(ANTHROPIC_VISION_ABORT_MS)` to
+// actually cut the fetch. The abort (55s) outlives one full attempt (50s) so
+// the SDK timeout is the first to fire under happy-path slowness, but the
+// abort is guaranteed to cut the wire — across the maxRetries=1 retry too —
+// if anything wedges.
 //
-// Audit/external-api-hardening (May 2026): `maxRetries` was the SDK
-// default of 2, which can push worst-case wall-clock past 90s — over the
-// route's maxDuration. Now imported from external-service-config so it
-// stays in lockstep with the main agent's budget math.
-const VISION_REQUEST_TIMEOUT_MS = 30_000;
-const VISION_ABORT_MS = 35_000;
+// Audit/external-api-hardening (May 2026): `maxRetries` was the SDK default
+// of 2, which can push worst-case wall-clock past 90s — over the route's
+// maxDuration. Now imported from external-service-config so it stays in
+// lockstep with the main agent's budget math.
 
 // Module-level singleton — matches the pattern in `src/lib/agent/llm.ts` and
 // `src/app/api/walkthrough/step/route.ts`. Re-instantiating `new Anthropic()`
@@ -57,7 +68,7 @@ function getClient(): Anthropic {
   }
   _visionClient = new Anthropic({
     apiKey: key,
-    timeout: VISION_REQUEST_TIMEOUT_MS,
+    timeout: ANTHROPIC_VISION_TIMEOUT_MS,
     maxRetries: ANTHROPIC_MAX_RETRIES,
   });
   return _visionClient;
@@ -260,9 +271,9 @@ export async function visionExtractText(
     },
     // Hard wire-level abort (audit/concurrency #16). Without this an
     // Anthropic outage could leave the underlying fetch running past
-    // VISION_REQUEST_TIMEOUT_MS, still billing tokens for a response
+    // ANTHROPIC_VISION_TIMEOUT_MS, still billing tokens for a response
     // nobody is waiting for.
-    { signal: AbortSignal.timeout(VISION_ABORT_MS) },
+    { signal: AbortSignal.timeout(ANTHROPIC_VISION_ABORT_MS) },
   );
 
   // Capture usage for the optional callback BEFORE any error-throw — so
