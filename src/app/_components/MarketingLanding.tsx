@@ -177,35 +177,6 @@ export default function MarketingLanding() {
     return () => io.disconnect();
   }, []);
 
-  /* animated counters */
-  useEffect(() => {
-    const els = rootRef.current?.querySelectorAll<HTMLElement>('[data-count]') ?? [];
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          const el = e.target as HTMLElement;
-          io.unobserve(el);
-          const target = Number(el.dataset.count || '0');
-          const suffix = el.dataset.suffix || '';
-          const dur = 1400;
-          let start: number | null = null;
-          const tick = (ts: number) => {
-            if (start === null) start = ts;
-            const p = Math.min(1, (ts - start) / dur);
-            const eased = 1 - Math.pow(1 - p, 3);
-            el.textContent = `${Math.round(target * eased)}${suffix}`;
-            if (p < 1) requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-        }
-      },
-      { threshold: 0.6 }
-    );
-    els.forEach((el) => io.observe(el));
-    return () => io.disconnect();
-  }, []);
-
   /* scroll: beam fill, top progress bar, nav state */
   useEffect(() => {
     const nav = rootRef.current?.querySelector('.nav');
@@ -360,65 +331,70 @@ export default function MarketingLanding() {
         </div>
       </div>
 
-      {/* ---------------- the old way ---------------- */}
+      {/* ---------------- the difference: side by side ---------------- */}
       <section className="section" id="story">
-        <div className="kicker rv">HOW IT&rsquo;S ALWAYS BEEN</div>
-        <h2 className="rv">You go <em>find</em> the work.</h2>
-        <p className="section-lede rv">Take one thing. Towels.</p>
+        <div className="kicker rv">THE DIFFERENCE</div>
+        <h2 className="rv">Two ways to run a hotel.</h2>
 
-        <div className="oldway rv">
-          {OLD_STEPS.map((s, i) => (
-            <span key={s.text} className="chore-wrap" style={{ transitionDelay: `${i * 130}ms` }}>
-              <span className="chore rv" style={{ transitionDelay: `${i * 130}ms`, ['--tilt' as string]: `${((i % 3) - 1) * 2.4}deg` }}>
-                <b>{i + 1}</b>
-                <span className="chore-ic">{s.icon}</span>
-                {s.text}
-              </span>
-              {i < OLD_STEPS.length - 1 && (
-                <span className="chore-arrow rv" style={{ transitionDelay: `${i * 130 + 70}ms` }}>→</span>
-              )}
-            </span>
-          ))}
-        </div>
-        <p className="oldway-caption rv" style={{ transitionDelay: '1.3s' }}>
-          Nine steps to stay stocked on <em>towels</em>. Now every supply, every
-          room, every shift, every work order. That&rsquo;s the job.
-        </p>
-      </section>
-
-      {/* ---------------- the staxis way ---------------- */}
-      <section className="section stx-way">
-        <div className="kicker rv">HOW IT SHOULD BE</div>
-        <h2 className="rv">The work comes <em>to you.</em></h2>
-
-        <div className="notif-stage rv" ref={notifRef}>
-          <div className="notif-halo" aria-hidden="true" />
-          <div className={`notif ${notifStage}`}>
-            <div className="notif-head">
-              <span className="notif-logo"><ChevronMark size={16} color="#fff" /></span>
-              <span className="notif-app">Staxis</span>
-              <span className="notif-time">6:07 AM</span>
-            </div>
-            <p className="notif-body">
-              Towels are running low. I counted, checked the budget, and drafted
-              the reorder.
-            </p>
-            <div className="notif-actions">
-              <button type="button" className="notif-btn" tabIndex={-1}>
-                {notifStage === 'done' ? '✓ Ordered' : 'Approve reorder'}
-              </button>
-              {notifStage === 'done' && (
-                <span className="notif-burst" aria-hidden="true">
-                  <i>✦</i><i>✦</i><i>✦</i><i>✦</i><i>✦</i>
+        <div className="vs">
+          <div className="vs-col rv">
+            <h3 className="vs-title">You go <em>find</em> the work.</h3>
+            <p className="vs-sub">Take one thing. Towels.</p>
+            <div className="oldway">
+              {OLD_STEPS.map((s, i) => (
+                <span key={s.text} className="chore-wrap">
+                  <span className="chore rv" style={{ transitionDelay: `${i * 130}ms`, ['--tilt' as string]: `${((i % 3) - 1) * 2.4}deg` }}>
+                    <b>{i + 1}</b>
+                    <span className="chore-ic">{s.icon}</span>
+                    {s.text}
+                  </span>
+                  {i < OLD_STEPS.length - 1 && (
+                    <span className="chore-arrow rv" style={{ transitionDelay: `${i * 130 + 70}ms` }}>→</span>
+                  )}
                 </span>
-              )}
+              ))}
             </div>
+            <p className="vs-caption rv" style={{ transitionDelay: '1.3s' }}>
+              Nine steps to stay stocked on <em>towels</em>. Now every supply,
+              every room, every shift, every work order. That&rsquo;s the job.
+            </p>
+          </div>
+
+          <div className="vs-divider rv" aria-hidden="true"><span>VS</span></div>
+
+          <div className="vs-col rv">
+            <h3 className="vs-title sage-title">The work comes <em>to you.</em></h3>
+            <p className="vs-sub">Same towels.</p>
+            <div className="notif-stage" ref={notifRef}>
+              <div className="notif-halo" aria-hidden="true" />
+              <div className={`notif ${notifStage}`}>
+                <div className="notif-head">
+                  <span className="notif-logo"><ChevronMark size={16} color="#fff" /></span>
+                  <span className="notif-app">Staxis</span>
+                  <span className="notif-time">6:07 AM</span>
+                </div>
+                <p className="notif-body">
+                  Towels are running low. I counted, checked the budget, and
+                  drafted the reorder.
+                </p>
+                <div className="notif-actions">
+                  <button type="button" className="notif-btn" tabIndex={-1}>
+                    {notifStage === 'done' ? '✓ Ordered' : 'Approve reorder'}
+                  </button>
+                  {notifStage === 'done' && (
+                    <span className="notif-burst" aria-hidden="true">
+                      <i>✦</i><i>✦</i><i>✦</i><i>✦</i><i>✦</i>
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="vs-caption rv">
+              One tap. Staxis did the walking, the counting, and the math. It
+              only brings you the decision.
+            </p>
           </div>
         </div>
-        <p className="stxway-caption rv">
-          One tap. Staxis did the walking, the counting, and the math. It only
-          brings you the decision.
-        </p>
       </section>
 
       {/* ---------------- one page ---------------- */}
@@ -459,124 +435,90 @@ export default function MarketingLanding() {
         </div>
       </section>
 
-      {/* ---------------- go deeper ---------------- */}
-      <section className="section">
-        <div className="kicker rv">WHEN YOU WANT TO LOOK</div>
-        <h2 className="rv">Every corner of the hotel,<br /><em>in depth.</em></h2>
+      {/* ---------------- every benefit ---------------- */}
+      <section className="section" id="benefits">
+        <div className="kicker rv">EVERYTHING IT HANDLES</div>
+        <h2 className="rv">Every corner of the hotel, <em>handled.</em></h2>
 
-        <div className="cards">
+        <div className="bens">
           {[
-            {
-              icon: '🧺',
-              title: 'Housekeeping, scheduled for you',
-              body: 'Staxis texts each housekeeper the night before, builds the morning board from who said yes, and re-sorts it live as guests check out.',
-            },
-            {
-              icon: '🔧',
-              title: 'Maintenance that keeps up',
-              body: 'Broken AC, leaky faucet, burnt-out bulb. Logged in seconds, assigned automatically, and tracked until the room is back in service.',
-            },
-            {
-              icon: '📦',
-              title: 'Inventory that reorders itself',
-              body: 'Staxis learns how fast your hotel goes through towels, soap, and coffee, and drafts the reorder before you run out.',
-            },
-            {
-              icon: '👁️',
-              title: 'Watches your property system',
-              body: 'An AI robot reads arrivals, departures, and room status from the software you already use. Day and night, without being asked.',
-            },
-            {
-              icon: '🎙️',
-              title: 'A copilot you can talk to',
-              body: 'Ask “who’s cleaning 204?” or “what came in overnight?” out loud and get an answer. No menus, no training.',
-            },
-            {
-              icon: '🌎',
-              title: 'Bilingual by default',
-              body: 'Every screen and every text message works in English and Spanish, so your whole team is on the same page.',
-            },
-          ].map((c, i) => (
+            'Housekeeping boards built every morning',
+            'Staff texted in English or Spanish',
+            'Live room status, all day',
+            'Work orders assigned and tracked to done',
+            'Inventory counted for you',
+            'Reorders drafted before you run out',
+            'Budgets checked on every order',
+            'Labor costs tracked daily',
+            'A log book that writes itself',
+            'Guest complaints followed to the end',
+            'Financials without the spreadsheet',
+            'A voice copilot you can talk to',
+            'Daily schedules confirmed by text',
+            'Your property system watched day and night',
+            'One page for everything that needs you',
+          ].map((b, i) => (
             <div
-              className="card rv"
-              key={c.title}
-              style={{ transitionDelay: `${i * 60}ms` }}
+              className="ben rv"
+              key={b}
+              style={{ transitionDelay: `${i * 50}ms` }}
               onMouseMove={onCardMove}
               onMouseLeave={onCardLeave}
             >
-              <div className="card-icon">{c.icon}</div>
-              <h3>{c.title}</h3>
-              <p>{c.body}</p>
+              <span className="ben-check">✓</span>
+              {b}
             </div>
           ))}
         </div>
       </section>
 
-      {/* ---------------- how it works ---------------- */}
+      {/* ---------------- the journey ---------------- */}
       <section className="section" id="how">
-        <div className="kicker rv">HOW IT WORKS</div>
-        <h2 className="rv">
-          No integrations. No IT project.<br />
-          <em>It just watches, like your best manager.</em>
-        </h2>
+        <div className="kicker rv">THE JOURNEY</div>
+        <h2 className="rv">Day one to <em>the dream.</em></h2>
 
         <div className="steps" ref={stepsRef}>
           <div className="beam"><div className="beam-fill" ref={beamRef} /></div>
           {[
             {
               n: '01',
-              title: 'Connect in an afternoon',
-              body: 'Staxis signs into the hotel software you already run, the same way a person would. Nothing to install, nothing to migrate, no vendor calls.',
+              when: 'Day one',
+              title: 'Connect',
+              body: 'Staxis signs into the hotel software you already run, the same way a person would. Nothing to install, no vendor calls, no IT project.',
+              dream: false,
             },
             {
               n: '02',
-              title: 'It watches, around the clock',
-              body: 'Day and night it reads arrivals, departures, room status, housekeeping, and work orders, and keeps a live picture of your whole property.',
+              when: 'Week one',
+              title: 'It learns your hotel',
+              body: 'It watches around the clock: rooms, arrivals, supplies, work orders. The busywork starts disappearing.',
+              dream: false,
             },
             {
               n: '03',
-              title: 'Your hotel starts running itself',
-              body: 'Schedules go out by text. Work orders get assigned. Supplies get reordered. You open one page and see everything already handled.',
+              when: 'Month one',
+              title: 'You stop chasing',
+              body: 'Boards build themselves. Texts go out. Reorders draft themselves. Your day becomes a handful of taps.',
+              dream: false,
+            },
+            {
+              n: '✦',
+              when: 'Every morning after',
+              title: 'Coffee in hand, you open one page. The hotel already ran itself overnight.',
+              body: '',
+              dream: true,
             },
           ].map((s) => (
-            <div className="step rv" key={s.n}>
+            <div className={`step rv ${s.dream ? 'dream' : ''}`} key={s.n}>
               <div className="step-n">{s.n}</div>
               <div className="step-body">
+                <div className="step-when">{s.when}</div>
                 <h3>{s.title}</h3>
-                <p>{s.body}</p>
+                {s.body && <p>{s.body}</p>}
               </div>
             </div>
           ))}
         </div>
-      </section>
-
-      {/* ---------------- stats ---------------- */}
-      <section className="stats rv">
-        <div className="stat">
-          <div className="stat-n"><span data-count="24" data-suffix="/7">0/7</span></div>
-          <div className="stat-l">always watching. Nights, weekends, holidays</div>
-        </div>
-        <div className="stat">
-          <div className="stat-n"><span data-count="2">0</span></div>
-          <div className="stat-l">languages, every screen and every text</div>
-        </div>
-        <div className="stat">
-          <div className="stat-n"><span data-count="1">0</span></div>
-          <div className="stat-l">page that brings the work to you</div>
-        </div>
-        <div className="stat">
-          <div className="stat-n"><span data-count="0">0</span></div>
-          <div className="stat-l">new systems for your team to learn</div>
-        </div>
-      </section>
-
-      {/* ---------------- statement ---------------- */}
-      <section className="statement">
-        <p className="rv">
-          Built for the hotels the big platforms forgot. <em>Limited and
-          select-service properties run by lean teams</em>, where the owner still
-          answers the front desk phone.
-        </p>
       </section>
 
       {/* ---------------- CTA ---------------- */}
@@ -881,9 +823,33 @@ const CSS = `
   transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1); }
 .rv.in { opacity: 1; transform: none; }
 
-/* ---------- the old way ---------- */
-.oldway { margin-top: 54px; display: flex; flex-wrap: wrap; align-items: center;
-  gap: 12px 6px; max-width: 900px; }
+/* ---------- the difference: side by side ---------- */
+.vs { display: grid; grid-template-columns: 1fr auto 1fr;
+  gap: clamp(24px, 4vw, 56px); margin-top: 56px; align-items: start; }
+.vs-title { font-family: var(--serif); font-weight: 400;
+  font-size: clamp(26px, 2.8vw, 38px); line-height: 1.12; letter-spacing: -.005em; }
+.vs-title em { font-style: italic; }
+.sage-title em, .sage-title { color: var(--sage-deep); }
+.vs-sub { margin-top: 10px; color: var(--muted); font-size: 15px; }
+.vs-divider { position: relative; align-self: stretch; display: flex;
+  align-items: center; justify-content: center; min-height: 100%; width: 40px; }
+.vs-divider::before { content: ''; position: absolute; top: 6px; bottom: 6px;
+  left: 50%; width: 1px; border-left: 1px dashed var(--rule); }
+.vs-divider span { position: relative; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .18em; color: var(--dim); background: var(--bg);
+  border: 1px solid var(--rule); border-radius: 999px; padding: 7px 11px;
+  animation: markfloat 5s ease-in-out infinite; }
+.vs-caption { margin-top: 30px; max-width: 54ch; color: var(--muted); font-size: 15px; }
+.vs-caption em { font-style: italic; color: var(--warm); }
+@media (max-width: 980px) {
+  .vs { grid-template-columns: 1fr; }
+  .vs-divider { width: auto; min-height: 40px; }
+  .vs-divider::before { top: 50%; bottom: auto; left: 6px; right: 6px; width: auto;
+    height: 1px; border-left: none; border-top: 1px dashed var(--rule); }
+}
+
+.oldway { margin-top: 32px; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 12px 6px; }
 .chore-wrap { display: inline-flex; align-items: center; gap: 6px; }
 .chore { display: inline-flex; align-items: center; gap: 9px;
   font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft);
@@ -900,13 +866,9 @@ const CSS = `
   display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .chore-ic { font-size: 15px; }
 .chore-arrow { color: var(--dim); font-size: 14px; }
-.oldway-caption { margin-top: 34px; max-width: 54ch; color: var(--muted);
-  font-size: clamp(15px, 1.3vw, 17px); }
-.oldway-caption em { font-style: italic; color: var(--warm); }
 
-/* ---------- the staxis way ---------- */
-.stx-way h2 em { color: var(--sage-deep); }
-.notif-stage { position: relative; margin-top: 60px; display: flex; justify-content: center; }
+/* ---------- the staxis way (right column) ---------- */
+.notif-stage { position: relative; margin-top: 32px; display: flex; justify-content: center; }
 .notif-halo { position: absolute; width: 420px; max-width: 90%; height: 220px;
   top: 50%; left: 50%; transform: translate(-50%, -50%);
   background: radial-gradient(ellipse, var(--sage-dim), transparent 70%);
@@ -946,9 +908,6 @@ const CSS = `
   0% { transform: translate(0,0) scale(.4); opacity: 1; }
   100% { transform: translate(var(--bx), var(--by)) scale(1.1) rotate(140deg); opacity: 0; }
 }
-.stxway-caption { margin-top: 40px; text-align: center; color: var(--muted);
-  font-size: clamp(15px, 1.3vw, 17px); max-width: 54ch;
-  margin-left: auto; margin-right: auto; }
 
 /* ---------- one page (orbit) ---------- */
 .orbit { position: relative; margin: 70px auto 0; max-width: 920px; height: 540px; }
@@ -993,32 +952,41 @@ const CSS = `
     flex: none; order: -1; margin-bottom: 12px; }
 }
 
-/* ---------- cards ---------- */
-.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 56px;
-  perspective: 1400px; }
-@media (max-width: 980px) { .cards { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 640px) { .cards { grid-template-columns: 1fr; } }
-.card { position: relative; border: 1px solid var(--rule); border-radius: 16px;
-  padding: 28px 26px; background: #fff; overflow: hidden;
+/* ---------- every benefit ---------- */
+.bens { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 24px;
+  margin-top: 56px; }
+@media (max-width: 980px) { .bens { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 620px) { .bens { grid-template-columns: 1fr; } }
+.ben { position: relative; display: flex; align-items: center; gap: 12px;
+  font-size: 15px; color: var(--ink-soft); padding: 13px 16px; border-radius: 12px;
+  border: 1px solid transparent; overflow: hidden;
   transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
   transition: border-color .3s ease, transform .25s ease, box-shadow .3s ease,
-    opacity .9s cubic-bezier(.19,1,.22,1); }
-.card.rv:not(.in) { transform: translateY(28px); }
-.card::before { content: ''; position: absolute; inset: 0; opacity: 0;
-  background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 50%),
+    background .3s ease, opacity .9s cubic-bezier(.19,1,.22,1); }
+.ben.rv:not(.in) { transform: translateY(20px); }
+.ben::before { content: ''; position: absolute; inset: 0; opacity: 0;
+  background: radial-gradient(240px circle at var(--mx, 50%) var(--my, 50%),
     var(--caramel-dim), transparent 65%);
   transition: opacity .35s ease; pointer-events: none; }
-.card:hover { border-color: var(--sage); box-shadow: 0 18px 44px rgba(31,35,28,.10); }
-.card:hover::before { opacity: 1; }
-.card-icon { font-size: 26px; margin-bottom: 18px; display: inline-block; }
-.card:hover .card-icon { animation: wiggle .6s ease; }
+.ben:hover { background: #fff; border-color: var(--rule);
+  box-shadow: 0 10px 26px rgba(31,35,28,.08); }
+.ben:hover::before { opacity: 1; }
+.ben-check { width: 22px; height: 22px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3); }
+.ben.in .ben-check { animation: checkpop .55s cubic-bezier(.19,1,.22,1); }
+.ben:hover .ben-check { animation: wiggle .6s ease; }
+@keyframes checkpop {
+  0% { transform: scale(.3); }
+  55% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
 @keyframes wiggle {
   0%,100% { transform: rotate(0deg) scale(1); }
   25% { transform: rotate(-10deg) scale(1.15); }
   60% { transform: rotate(8deg) scale(1.1); }
 }
-.card h3 { font-size: 16.5px; font-weight: 650; letter-spacing: -.01em; margin-bottom: 10px; }
-.card p { font-size: 14px; color: var(--muted); }
 
 /* ---------- steps ---------- */
 .steps { position: relative; margin-top: 64px; padding-left: 46px;
@@ -1034,34 +1002,35 @@ const CSS = `
   font-family: var(--mono); font-size: 10.5px; color: var(--caramel-deep);
   border: 1px solid rgba(201,150,68,.5); background: #fff;
   box-shadow: 0 0 0 5px var(--caramel-dim); }
+.step-when { font-family: var(--mono); font-size: 11px; letter-spacing: .2em;
+  text-transform: uppercase; color: var(--caramel-deep); margin-bottom: 8px; }
 .step h3 { font-family: var(--serif); font-weight: 400; font-size: clamp(23px, 2.6vw, 30px);
   letter-spacing: -.005em; margin-bottom: 10px; }
 .step p { color: var(--muted); font-size: 15px; max-width: 56ch; }
+.step.rv.in .step-n { background: var(--caramel); color: #fff;
+  border-color: var(--caramel); transition: background .5s ease .4s, color .5s ease .4s,
+  border-color .5s ease .4s; }
 
-/* ---------- stats ---------- */
-.stats { position: relative; z-index: 1; max-width: 1240px;
-  margin: clamp(90px, 12vh, 150px) auto 0; padding: 0 clamp(20px, 4vw, 48px);
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
-.stat { position: relative; padding-top: 22px; }
-.stat::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-  background: var(--rule); }
-.stat::after { content: ''; position: absolute; top: 0; left: 0; width: 0; height: 2px;
-  background: linear-gradient(90deg, var(--sage-deep), var(--caramel));
-  transition: width 1.2s cubic-bezier(.19,1,.22,1) .3s; }
-.stats.in .stat::after { width: 100%; }
-.stat-n { font-family: var(--serif); font-style: italic; font-weight: 400;
-  font-size: clamp(48px, 5.5vw, 76px); line-height: 1; }
-.stat-n span { background: linear-gradient(120deg, var(--sage-deep), var(--caramel-deep));
-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-.stat-l { margin-top: 12px; font-size: 13px; color: var(--muted); max-width: 24ch; }
-
-/* ---------- statement ---------- */
-.statement { position: relative; z-index: 1; max-width: 980px; margin: 0 auto;
-  padding: clamp(110px, 15vh, 180px) clamp(20px, 4vw, 48px) 0; text-align: center; }
-.statement p { font-family: var(--serif); font-weight: 400;
-  font-size: clamp(28px, 3.6vw, 48px); line-height: 1.24; color: var(--ink); }
-.statement em { color: var(--caramel-deep); }
+/* the dream — final stop */
+.step.dream { padding: 26px 28px 28px; margin-left: -28px; border-radius: 20px;
+  background:
+    radial-gradient(120% 160% at 0% 100%, var(--caramel-dim), transparent 60%),
+    radial-gradient(120% 160% at 100% 0%, var(--sage-dim), transparent 60%),
+    #fff;
+  border: 1px solid rgba(201,150,68,.3);
+  box-shadow: 0 24px 60px rgba(31,35,28,.10); }
+@media (max-width: 640px) { .step.dream { margin-left: 0; padding: 22px 20px; } }
+.step.dream::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+  border-radius: 20px; overflow: hidden;
+  background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.65) 50%, transparent 70%);
+  background-size: 260% 100%; animation: dreamsweep 4.5s ease-in-out infinite; }
+@keyframes dreamsweep { 0% { background-position: 130% 0; } 60%,100% { background-position: -130% 0; } }
+.step.dream .step-n { left: -18px; color: #fff; background: var(--caramel);
+  border-color: var(--caramel); animation: sparkspin 8s linear infinite; }
+@media (max-width: 640px) { .step.dream .step-n { display: none; } }
+.step.dream .step-when { color: var(--sage-deep); }
+.step.dream h3 { font-style: italic; font-size: clamp(24px, 3vw, 36px);
+  line-height: 1.25; color: var(--ink); max-width: 24ch; margin-bottom: 0; }
 
 /* ---------- CTA ---------- */
 .cta-panel { position: relative; z-index: 1; max-width: 1240px;
