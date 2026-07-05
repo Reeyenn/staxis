@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTodayStr } from '@/lib/use-today-str';
+import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import {
   getStaffSelfPublic,
   saveStaffLanguagePublic,
@@ -80,22 +81,23 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     return () => { cancelled = true; };
   }, [laundryPersonId, pid]);
 
-  // Load laundry person name from staff list
+  // Load this laundry worker's name. Security audit 2026-06-26 #1: the roster
+  // endpoint /api/staff-list is retired (it leaked every staff UUID). We now
+  // fetch just THIS worker's own name via /api/housekeeper/me, gated by the
+  // per-staff link token (getStaffSelfPublic forwards it).
   useEffect(() => {
     if (!pid || !laundryPersonId) return;
-
-    fetch(`/api/staff-list?pid=${pid}`)
-      .then(r => r.json())
-      .then((body: { ok?: boolean; data?: Array<{ id: string; name: string }> }) => {
-        // Standard ApiResponse envelope — read the array off `.data`.
-        const list = (body && body.ok && Array.isArray(body.data)) ? body.data : [];
-        const person = list.find(s => s.id === laundryPersonId);
-        if (person) {
-          setLaundryPersonName(person.name);
-        }
-      })
-      .catch(err => console.error('[laundry] staff name load failed:', err));
-  }, [uid, pid, laundryPersonId]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const self = await getStaffSelfPublic(pid, laundryPersonId);
+        if (!cancelled && self?.name) setLaundryPersonName(self.name);
+      } catch (err) {
+        console.error('[laundry] staff name load failed:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pid, laundryPersonId]);
 
   // Bootstrap fetch — public_areas + laundry_config + today's rooms in
   // one server-side round-trip. Goes through /api/laundry/bootstrap
@@ -115,7 +117,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     if (!pid || !laundryPersonId) return;
     try {
       const res = await fetch(
-        `/api/laundry/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(laundryPersonId)}&date=${encodeURIComponent(today)}`,
+        withStaffLinkToken(`/api/laundry/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(laundryPersonId)}&date=${encodeURIComponent(today)}`),
       );
       if (!res.ok) {
         console.error('[laundry] bootstrap http', res.status);
@@ -177,13 +179,13 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       void fetch('/api/laundry/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withStaffLinkTokenBody({
           pid,
           staffId: laundryPersonId,
           date: today,
           completedAreaIds: Array.from(areas),
           completedLoadCategories: Array.from(loads),
-        }),
+        })),
       }).catch((err) => console.error('[laundry] save failed:', err));
     }, 600);
   }, [pid, laundryPersonId, today]);

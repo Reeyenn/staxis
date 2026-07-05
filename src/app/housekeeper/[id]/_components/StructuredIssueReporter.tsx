@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useRef, useState } from 'react';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { X, Camera, AlertTriangle, Trash2, CheckCircle } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
 
@@ -107,12 +108,12 @@ export function StructuredIssueReporter(props: Props) {
         const presignRes = await fetch('/api/housekeeper/photo-presign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(withStaffLinkTokenBody({
             pid,
             staffId,
             scopeKey,
             filename: photoFile.name,
-          }),
+          })),
         });
         const presignJson = (await presignRes.json().catch(() => null)) as
           | { ok?: boolean; data?: { signedUrl: string; path: string } }
@@ -144,7 +145,7 @@ export function StructuredIssueReporter(props: Props) {
     // for replay when the housekeeper comes back online.
     const result = await enqueueIfOffline({
       endpoint: '/api/housekeeper/structured-issue',
-      body: {
+      body: withStaffLinkTokenBody({
         pid,
         staffId,
         roomId,
@@ -155,7 +156,7 @@ export function StructuredIssueReporter(props: Props) {
         severity,
         note: note.trim(),
         photoPath,
-      },
+      }),
       label: `Issue · room ${roomNumber}`,
     });
 

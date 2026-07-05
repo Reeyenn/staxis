@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { Coffee, PlayCircle } from 'lucide-react';
 import type { HousekeeperLocale } from '@/lib/translations';
 // Locally aliased so piece-A code keeps reading `lang: Language` everywhere.
@@ -49,12 +50,12 @@ export function LunchBreakButton({
       const res = await fetch('/api/housekeeper/lunch-break', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withStaffLinkTokenBody({
           pid,
           staffId,
           businessDate,
           breakType: 'lunch',
-        }),
+        })),
       });
       const json = (await res.json().catch(() => null)) as
         | { ok?: boolean; data?: { action?: string; startedAt?: string } }

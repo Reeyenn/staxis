@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import {
   Megaphone,
   Users,
@@ -59,7 +60,7 @@ async function hkPost<T>(url: string, body: unknown): Promise<T | null> {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withStaffLinkTokenBody((body ?? {}) as Record<string, unknown>)),
     });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T };
     return json.ok ? (json.data ?? null) : null;

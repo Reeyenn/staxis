@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { CheckSquare, Square, X, AlertCircle } from 'lucide-react';
 import type { HousekeeperLocale } from '@/lib/translations';
 // Locally aliased so piece-A code keeps reading `lang: Language` everywhere.
@@ -94,13 +95,13 @@ export function ChecklistModal(props: Props) {
         const res = await fetch('/api/housekeeper/checklist/toggle', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(withStaffLinkTokenBody({
             pid,
             staffId,
             roomId,
             itemId,
             checked: !wasChecked,
-          }),
+          })),
         });
         if (!res.ok) throw new Error(`http ${res.status}`);
       } catch {

@@ -14,6 +14,7 @@ import type { HousekeeperLocale } from '@/lib/translations';
 import { supabase, logErr, subscribeTable, asRecordRow } from './_common';
 import { fromRoomRow, fromStaffRow } from '../db-mappers';
 import { STAFF_COLS } from './staff';
+import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 
 /**
  * Subscribe to every room (across all dates) assigned to a given staff
@@ -53,7 +54,7 @@ export function subscribeToRoomsForStaff(
   // change was happening server-side but no event reached the client.
   const fetchRoomsAndStatus = async (): Promise<{ rooms: Room[]; feedStatus?: PropertyFeedStatus }> => {
     const res = await fetch(
-      `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`,
+      withStaffLinkToken(`/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`),
       { method: 'GET', headers: { 'Content-Type': 'application/json' } },
     );
     if (!res.ok) {
@@ -142,7 +143,7 @@ export async function getStaffSelfPublic(
 ): Promise<{ id: string; name: string; language: HousekeeperLocale | null } | null> {
   try {
     const res = await fetch(
-      `/api/housekeeper/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(sid)}`,
+      withStaffLinkToken(`/api/housekeeper/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(sid)}`),
       { method: 'GET', headers: { 'Content-Type': 'application/json' } },
     );
     if (!res.ok) {
@@ -192,7 +193,7 @@ export async function saveStaffLanguagePublic(
     const res = await fetch('/api/housekeeper/save-language', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid, staffId: sid, language }),
+      body: JSON.stringify(withStaffLinkTokenBody({ pid, staffId: sid, language })),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');

@@ -21,6 +21,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
+import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { t, type HousekeeperLocale } from '@/lib/translations';
 type Language = HousekeeperLocale;
 
@@ -74,7 +75,7 @@ export function SickReportButton({
     if (!pid || !staffId || !businessDate) return;
     const ctrl = new AbortController();
     fetch(
-      `/api/housekeeper/callout/status?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}&businessDate=${encodeURIComponent(businessDate)}`,
+      withStaffLinkToken(`/api/housekeeper/callout/status?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}&businessDate=${encodeURIComponent(businessDate)}`),
       { signal: ctrl.signal },
     )
       .then((r) => (r.ok ? r.json() : null))
@@ -100,14 +101,14 @@ export function SickReportButton({
       const res = await fetch('/api/housekeeper/callout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withStaffLinkTokenBody({
           pid,
           staffId,
           businessDate,
           reason,
           note: note.trim() || undefined,
           leaveTiming: isMidShift ? leaveTiming : undefined,
-        }),
+        })),
       });
       const body = (await res.json().catch(() => null)) as
         | { ok?: boolean; data?: { calloutId: string }; error?: string }
@@ -139,7 +140,7 @@ export function SickReportButton({
       const res = await fetch('/api/housekeeper/callout/revert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid, staffId, businessDate }),
+        body: JSON.stringify(withStaffLinkTokenBody({ pid, staffId, businessDate })),
       });
       const body = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!res.ok || !body?.ok) {

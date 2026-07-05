@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { Megaphone, X, Pin } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
 
@@ -52,7 +53,7 @@ export function NoticeBoardBanner({ pid, staffId, lang, enabled = true }: Props)
     if (!enabled || !pid || !staffId) return;
     try {
       const res = await fetch(
-        `/api/housekeeping/notices?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`,
+        withStaffLinkToken(`/api/housekeeping/notices?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`),
       );
       const json = (await res.json().catch(() => null)) as
         | { ok?: boolean; data?: { notices: NoticeRow[]; dismissedNoticeIds: string[] } }
@@ -93,7 +94,7 @@ export function NoticeBoardBanner({ pid, staffId, lang, enabled = true }: Props)
         await fetch('/api/housekeeping/notice-dismiss', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pid, staffId, noticeId }),
+          body: JSON.stringify(withStaffLinkTokenBody({ pid, staffId, noticeId })),
         });
       } catch {
         // If the dismiss POST fails (offline), keep the optimistic state —

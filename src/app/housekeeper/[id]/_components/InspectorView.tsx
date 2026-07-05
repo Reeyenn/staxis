@@ -16,6 +16,7 @@
 // failed item).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { withStaffLinkToken, withStaffLinkTokenBody, getStaffLinkTokenFromUrl } from '@/lib/staff-link-client';
 import { useTodayStr } from '@/lib/use-today-str';
 import { format } from 'date-fns';
 import { CheckCircle, AlertTriangle, Camera, ChevronLeft } from 'lucide-react';
@@ -69,7 +70,7 @@ export default function InspectorView({
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(
-        `/api/housekeeper/inspections/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}&date=${today}`,
+        withStaffLinkToken(`/api/housekeeper/inspections/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}&date=${today}`),
       );
       const json = await res.json().catch(() => null);
       if (res.ok && json?.ok) {
@@ -105,14 +106,14 @@ export default function InspectorView({
       const res = await fetch('/api/housekeeper/inspections/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withStaffLinkTokenBody({
           pid,
           staffId,
           roomId: row.roomId,
           roomNumber: row.roomNumber,
           roomType: row.roomType || null,
           parentInspectionId: row.parentInspectionId,
-        }),
+        })),
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
@@ -152,6 +153,8 @@ export default function InspectorView({
       fd.append('item', itemId);
       fd.append('pid', pid);
       fd.append('staffId', staffId);
+      const linkTok = getStaffLinkTokenFromUrl();
+      if (linkTok) fd.append('tok', linkTok);
       const res = await fetch('/api/housekeeper/inspections/upload-photo', {
         method: 'POST',
         body: fd,
@@ -216,13 +219,13 @@ export default function InspectorView({
       const res = await fetch(`/api/housekeeper/inspections/${active.inspection.id}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withStaffLinkTokenBody({
           pid, staffId,
           result,
           failedItems,
           passedItems,
           notes: active.notes || null,
-        }),
+        })),
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {

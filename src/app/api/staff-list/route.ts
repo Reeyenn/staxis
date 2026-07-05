@@ -1,36 +1,32 @@
 import { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
+import { err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
- * Public endpoint — returns the staff scheduled to work today for a given
- * property. Used by the housekeeper / laundry mobile pages to let someone
- * identify who they are (no login required — the URL encodes the property).
+ * RETIRED — security audit 2026-06-26 #1 (HIGH: public staffId enumeration).
  *
- * THE RESPONSE IS DELIBERATELY MINIMAL.
+ * This endpoint used to return every scheduled staff member's UUID + name to
+ * ANY unauthenticated caller who knew the property id. That was the enumeration
+ * root cause: the whole public mobile surface trusted the (pid, staffId) tuple
+ * as its only credential, `pid` leaks (SMS forwarding, browser history, Referer,
+ * carrier logs), and this route handed out the matching staffIds — so anyone
+ * with a pid could act as any scheduled staff member.
  *
- * Previously this route returned `select *` mapped to camelCase, which
- * leaked every staff member's phone number, hourly wage, weekly hours, and
- * scheduling-manager flag to anyone who knew the property id. The pid
- * shows up in the SMS we send out and ends up in browser history,
- * referrer headers, and any spouse/coworker who borrows the phone for
- * 30 seconds. That was a real PII + payroll leak.
+ * THE FIX MADE THIS ENDPOINT UNNECESSARY. The "pick who you are" roster flow is
+ * gone: each staff member now gets their OWN per-staff link (`&tok=`) straight
+ * to /housekeeper/[id] (or /laundry/[id], /engineer/[id]). The link's token —
+ * not a listed staffId — is the credential the public API routes verify
+ * (src/lib/staff-link-auth.ts). There is nothing left for a roster endpoint to
+ * do that wouldn't re-open the enumeration hole.
  *
- * Now we only return the fields the public landing pages actually need:
- *   { id, name, isSenior }
+ * So the route now returns 410 Gone. It still UUID-validates `pid` (400 on
+ * garbage) purely so a malformed capability URL gets a clean signal, but it
+ * never touches the `staff` table and never emits a staff id or name again.
  *
- * Anything that needs phone / wage data must go through an authenticated
- * route.
- *
- * Legacy `uid` query param is accepted for URL back-compat but ignored.
- *
- * Response shape (uniform envelope from src/lib/api-response.ts):
- *   200: { ok: true, requestId, data: Array<{id,name,isSenior}> }
- *   4xx: { ok: false, requestId, error, code }
- *   5xx: { ok: false, requestId, error, code }
+ * If a property-scoped roster is ever needed again, it MUST be gated behind a
+ * valid property-scoped link token and return opaque, short-lived selection
+ * handles — never raw staff.id. Do NOT restore the old behaviour.
  */
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,45 +34,16 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const { searchParams } = new URL(req.url);
-  const rawPid = searchParams.get('pid');
 
-  // UUID-validate the pid before it touches the query — even though
-  // supabase-js parameterises and the `pid` doesn't really tunnel into
-  // SQL, returning a 400 for garbage is a useful early signal that the
-  // capability URL is malformed.
-  const pidV = validateUuid(rawPid, 'pid');
+  // Keep the 400-on-garbage-pid signal so a mangled link is distinguishable
+  // from the intentional retirement below.
+  const pidV = validateUuid(searchParams.get('pid'), 'pid');
   if (pidV.error) {
     return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  const pid = pidV.value!;
 
-  // Pull only the columns we need to return. Belt-and-suspenders against
-  // someone later widening the response mapper without thinking about the
-  // PII implications.
-  const { data, error: queryError } = await supabaseAdmin
-    .from('staff')
-    .select('id, name, is_senior')
-    .eq('property_id', pid)
-    .eq('scheduled_today', true)
-    .eq('is_active', true);
-
-  if (queryError) {
-    // Don't echo PG error text — leaks schema/column names. Log the full
-    // detail server-side and return generic 500 to caller.
-    log.error('[staff-list] query failed', { requestId, msg: errToString(queryError) });
-    return err('Internal server error', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-
-  // Minimal projection. NEVER add phone, hourly_wage, weekly_hours, or
-  // is_scheduling_manager here — those are private. If a consumer needs
-  // them, build a separate authenticated route.
-  const mapped = (data ?? []).map(s => ({
-    id: s.id,
-    name: s.name,
-    isSenior: s.is_senior,
-  }));
-
-  return ok(mapped, { requestId });
+  return err(
+    'The staff picker has been retired — open your personal shift link from your text message.',
+    { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+  );
 }

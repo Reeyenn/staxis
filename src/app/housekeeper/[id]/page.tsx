@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import * as Sentry from '@sentry/nextjs';
+import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
 import { AlertTriangle, CheckCircle, Bell } from 'lucide-react';
@@ -337,7 +338,7 @@ export default function HousekeeperRoomPage({
     void (async () => {
       try {
         const res = await fetch(
-          `/api/housekeeper/lunch-break?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+          withStaffLinkToken(`/api/housekeeper/lunch-break?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`),
         );
         const json = (await res.json().catch(() => null)) as
           | { ok?: boolean; data?: { openBreak: { startedAt: string } | null } }
@@ -361,7 +362,7 @@ export default function HousekeeperRoomPage({
     void (async () => {
       try {
         const res = await fetch(
-          `/api/housekeeper/reservations?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}&date=${encodeURIComponent(activeDate)}`,
+          withStaffLinkToken(`/api/housekeeper/reservations?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}&date=${encodeURIComponent(activeDate)}`),
         );
         const json = (await res.json().catch(() => null)) as
           | { ok?: boolean; data?: { reservations: Record<string, RoomReservationContext> } }
@@ -386,7 +387,7 @@ export default function HousekeeperRoomPage({
     void (async () => {
       try {
         const res = await fetch(
-          `/api/housekeeper/component-rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+          withStaffLinkToken(`/api/housekeeper/component-rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`),
         );
         const json = (await res.json().catch(() => null)) as
           | { ok?: boolean; data?: { links: ComponentRoomLink[] } }
@@ -431,7 +432,7 @@ export default function HousekeeperRoomPage({
     lastRefetchAtRef.current = Date.now();
     try {
       const res = await fetch(
-        `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+        withStaffLinkToken(`/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`),
       );
       if (!res.ok) return;
       const json = (await res.json().catch(() => null)) as
@@ -475,7 +476,7 @@ export default function HousekeeperRoomPage({
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withStaffLinkTokenBody(body as Record<string, unknown>)),
         });
         const json = (await res.json().catch(() => null)) as
           | { ok?: boolean; data?: unknown }
@@ -497,7 +498,7 @@ export default function HousekeeperRoomPage({
       if (checklistByType[cleaningType]) return;
       try {
         const res = await fetch(
-          `/api/housekeeper/checklist/${cleaningType}?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+          withStaffLinkToken(`/api/housekeeper/checklist/${cleaningType}?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`),
         );
         const json = (await res.json().catch(() => null)) as
           | { ok?: boolean; data?: { template: { id: string } | null; items: ChecklistItem[] } }
@@ -602,11 +603,11 @@ export default function HousekeeperRoomPage({
         const res = await fetch('/api/housekeeper/reset-clean', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(withStaffLinkTokenBody({
             pid,
             staffId: housekeeperId,
             roomId: room.id,
-          }),
+          })),
         });
         const json = await res.json().catch(() => ({}));
         if (res.ok && json?.ok) {
@@ -628,14 +629,14 @@ export default function HousekeeperRoomPage({
         const res = await fetch('/api/housekeeper/exception', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(withStaffLinkTokenBody({
             pid,
             staffId: housekeeperId,
             roomId,
             exceptionType: next.type,
             note: next.note,
             clear: next.type === null,
-          }),
+          })),
         });
         const json = await res.json().catch(() => ({}));
         if (res.ok && json?.ok) {
@@ -658,13 +659,13 @@ export default function HousekeeperRoomPage({
       const res = await fetch('/api/housekeeper/room-action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withStaffLinkTokenBody({
           pid,
           staffId: housekeeperId,
           roomId: issueRoomId,
           action: 'issue',
           issueNote: issueNote.trim(),
-        }),
+        })),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.ok) throw new Error('save failed');

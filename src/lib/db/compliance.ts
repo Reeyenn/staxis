@@ -7,6 +7,7 @@
 // fetch with the pid+staffId capability params.
 
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import type {
   ComplianceOverview,
   ComplianceSummary,
@@ -78,16 +79,19 @@ export interface EngineerBootstrap {
 }
 
 export async function engineerBootstrap(pid: string, staffId: string): Promise<EngineerBootstrap | null> {
-  const res = await fetch(`/api/engineer/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`);
+  // Security audit 2026-06-26 #1: forward the per-staff link token (?tok=).
+  const res = await fetch(withStaffLinkToken(`/api/engineer/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`));
   const { ok, data } = await parse<EngineerBootstrap>(res);
   return ok && data ? data : null;
 }
 
 async function postEngineer<T>(url: string, body: unknown): Promise<{ ok: boolean; data?: T; error?: string }> {
+  // Security audit 2026-06-26 #1: fold the per-staff link token into every
+  // engineer POST body (this is the single choke point for the mobile POSTs).
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withStaffLinkTokenBody((body ?? {}) as Record<string, unknown>)),
   });
   return parse<T>(res);
 }

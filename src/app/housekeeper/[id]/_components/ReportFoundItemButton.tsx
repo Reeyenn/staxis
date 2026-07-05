@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { PackageSearch, X, Camera } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
 
@@ -61,7 +62,7 @@ export function ReportFoundItemButton({ pid, staffId, roomNumber, lang, enqueueI
           const pre = await fetch('/api/housekeeper/found-item-photo-presign', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pid, staffId, scopeKey, filename: file.name }),
+            body: JSON.stringify(withStaffLinkTokenBody({ pid, staffId, scopeKey, filename: file.name })),
           });
           const pj = (await pre.json().catch(() => null)) as
             | { ok?: boolean; data?: { signedUrl: string; token: string; path: string } }
@@ -81,7 +82,7 @@ export function ReportFoundItemButton({ pid, staffId, roomNumber, lang, enqueueI
 
       const res = await enqueueIfOffline({
         endpoint: '/api/housekeeper/report-found-item',
-        body: { pid, staffId, roomNumber, itemDescription: desc.trim(), ...(photoPath ? { photoPath } : {}) },
+        body: withStaffLinkTokenBody({ pid, staffId, roomNumber, itemDescription: desc.trim(), ...(photoPath ? { photoPath } : {}) }),
         label: `Found · room ${roomNumber}`,
       });
       if (!res.ok && !res.queued) {
