@@ -20,13 +20,40 @@ from pydantic_settings import BaseSettings
 INVENTORY_OCC_BASELINE_PCT: float = 60.0
 
 # Feature-set version stamped on every inventory_rate model_run and checked at
-# serve time. Bumped to "v2-centered" when occupancy became a live, CENTERED
-# feature: a posterior trained BEFORE that change learned coefficients in raw
-# (uncentered) occupancy space, so serving it with the centered feature vector
-# would bias every prediction. Inference refuses to serve a Bayesian run whose
-# feature_set_version != this, so a stale model is skipped (and retrained) rather
-# than served wrong. Bump again whenever the feature vector's MEANING changes.
+# serve time. A posterior is only served when its feature_set_version matches the
+# value below for its FAMILY; a stale model is skipped (and retrained) rather than
+# served wrong. Bump the relevant family's version whenever that family's feature
+# vector's MEANING changes.
+#
+# Two model families now coexist (2026-07-05, reduced-exposure rebuild):
+#   • exposure family (guest-consumable amenities/linens/breakfast/paper):
+#       window_consumption = s · (ΣCO + κ·ΣSO), no intercept, base fixed at 0.
+#       feature_set_version = INVENTORY_EXPOSURE_FEATURE_SET_VERSION.
+#   • occupancy family (public-area / staff supplies whose usage is occupancy-
+#       independent — light bulbs, batteries, cleaning chemicals, office/lobby):
+#       the LEGACY affine occupancy model daily_rate = a + b·(occ − baseline).
+#       feature_set_version = INVENTORY_FEATURE_SET_VERSION (unchanged "v2-centered").
+#
+# INVENTORY_FEATURE_SET_VERSION stays "v2-centered" so existing occupancy-family
+# posteriors keep serving; the exposure family gets its own marker so its
+# single-regressor posterior can never be served through the 2-D occupancy
+# inference path (or vice-versa) — the shape guard + version guard both fire.
 INVENTORY_FEATURE_SET_VERSION: str = "v2-centered"
+INVENTORY_EXPOSURE_FEATURE_SET_VERSION: str = "exposure-v1"
+
+# Model-version algorithm tag for the reduced exposure Bayesian fit. Distinct
+# from the legacy "bayesian" (occupancy-form) tag so inference routes to the
+# single-regressor serving path and the shadow-evaluate cron can tell the two
+# families apart.
+INVENTORY_EXPOSURE_ALGORITHM: str = "bayesian-exposure"
+
+# Default kappa (usage_per_stayover / usage_per_checkout) when an exposure-family
+# item has no usable per-checkout / per-stayover config on the inventory row.
+# Represents "a stayover room consumes ~30% of what a checkout room does" —
+# a stayover guest reuses towels/linens and only tops up amenities, whereas a
+# checkout triggers a full replacement. Documented default from the converged
+# review; persisted in hyperparameters as the kappa actually used.
+INVENTORY_DEFAULT_KAPPA: float = 0.30
 
 
 class Settings(BaseSettings):
@@ -126,10 +153,50 @@ class Settings(BaseSettings):
     # operational days for housekeeping. So thresholds are an order of
     # magnitude lower across the board.
     inventory_min_events_per_item: int = 3              # Need at least 3 consecutive counts to fit anything
-    inventory_xgboost_activation_events: int = 100      # Per-item event count above which XGBoost beats Bayesian
-    inventory_graduation_min_events: int = 30           # Auto-fill graduation gate #1
-    inventory_graduation_mae_ratio: float = 0.10        # Auto-fill graduation gate #2 (MAE/mean must be < this)
-    inventory_graduation_consecutive_passes: int = 5    # Auto-fill graduation gate #3
+    # DEPRECATED (2026-07-05 reduced-exposure rebuild): the inventory XGBoost
+    # branch was removed — the exposure model is a single-regressor Bayesian
+    # fit that XGBoost can't improve on at N=10-30. Kept only so any config
+    # override in the environment still parses. Gate #3 in _gates.py is now
+    # unreachable for inventory (the trainer never sets algorithm='xgboost-
+    # quantile' for inventory) but remains harmless.
+    inventory_xgboost_activation_events: int = 100      # DEPRECATED — no longer read by the inventory trainer
+
+    # ── Graduation gates ──────────────────────────────────────────────────
+    # 2026-07-05 reduced-exposure rebuild: the retrain-STREAK graduation
+    # (30 events + val_MAE/mean<0.10 + 5 consecutive 24h-apart passing
+    # retrains) was statistically hollow — the streak re-evaluates the SAME
+    # windows, and 0.10 sits below the count noise floor. Graduation now uses
+    # PROSPECTIVE evidence from prediction_log (genuinely out-of-sample pairs
+    # written when a manager counts). See training/_prospective_gate.py.
+    #
+    # inventory_graduation_min_events is the min CLEAN training windows (gate A).
+    # Lowered 30 → 15: with 20-60 items/hotel counted every 2-7 days, 15 clean
+    # windows is ~3-6 months of real signal; 30 blocked every item indefinitely.
+    inventory_graduation_min_events: int = 15
+    # Prospective gate thresholds (gates B-D):
+    inventory_graduation_min_prospective_pairs: int = 8    # ≥8 predicted-vs-actual pairs
+    inventory_graduation_prospective_span_days: int = 14   # pairs must span ≥14 days
+    inventory_graduation_prospective_wape: float = 0.30    # Σ|pred−actual|/Σ|actual| < 0.30
+    # DEPRECATED — the streak gate is gone. mae_ratio + consecutive_passes are
+    # no longer consulted for graduation (they gated the removed retrain streak).
+    # Kept so environment overrides still parse and _streak.py (shared unit-test
+    # target) keeps its constants; NOT read by the graduation decision anymore.
+    inventory_graduation_mae_ratio: float = 0.10        # DEPRECATED — see prospective gate
+    inventory_graduation_consecutive_passes: int = 5    # DEPRECATED — retrain streak removed
+
+    # ── Reduced-exposure row-weight noise constants ───────────────────────
+    # Row weight w_i = 1 / (σ_d²·d_i + 2·τ²) down-weights long windows (more
+    # accumulated daily-process noise) and always-present count-read noise at
+    # both endpoints (the 2·τ² term = variance of the two boundary counts).
+    #   inventory_daily_process_var (σ_d²): per-day variance of consumption
+    #     unexplained by the exposure regressor. 1.0 = "±1 unit/day of drift".
+    #   inventory_count_noise (τ²): variance of a single physical count read.
+    #     1.0 = "±1 unit of miscount per count". Two counts bound each window,
+    #     hence 2·τ².
+    # Pragmatic unit-scale constants (not fit) — the review's converged choice.
+    # A window of d days weights 1/(d + 2); a 2-day window weighs 2× a 6-day one.
+    inventory_daily_process_var: float = 1.0
+    inventory_count_noise: float = 1.0
 
     # Plan v2 F-AI-4 — API-boundary safety limits. Promoted from
     # os.environ.get(...) reads in main.py so the values flow through
