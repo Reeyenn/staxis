@@ -5,7 +5,12 @@
  *
  * Styled on the app's Snow design system (paper-white canvas, ink text,
  * sage + caramel accents, Instrument Serif display, Geist body, Geist Mono
- * labels) so the marketing site and the product feel like one thing.
+ * labels) and the real in-app ChevronMark logo, so the marketing site and
+ * the product feel like one thing.
+ *
+ * Narrative spine: the old way you WALK to the work (nine sticky-note
+ * chores), the Staxis way the work COMES TO YOU (one notification, one
+ * tap), and one page runs the hotel with every deep page an orbit away.
  *
  * Self-contained: all styles live in the <style> block below. The
  * SMS-compliance content the Twilio review needs (program description,
@@ -15,6 +20,25 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState, useCallback } from 'react';
+
+/* ------------------------------------------------------------------ */
+/* ChevronMark — the real in-app logo (src/components/layout/Header)  */
+/* ------------------------------------------------------------------ */
+
+function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
+      <path
+        d="M18 28 L26 20 M18 38 L38 18 M28 38 L38 28 M28 48 L46 30"
+        stroke={color}
+        strokeWidth={4.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Live ops feed — deterministic script, cycles forever               */
@@ -50,6 +74,30 @@ const SPARKLES = [
   { left: '88%', delay: '7s', dur: '13s' },
 ];
 
+/* The old way — nine chores, one long walk */
+const OLD_STEPS = [
+  { icon: '🚶', text: 'Walk to the supply closet' },
+  { icon: '🔢', text: 'Count the towels' },
+  { icon: '📓', text: 'Log it in the Excel sheet' },
+  { icon: '🧮', text: 'Check the budget formula' },
+  { icon: '😬', text: 'Make sure you’re not over' },
+  { icon: '📞', text: 'Ask someone to place the order' },
+  { icon: '⏳', text: 'Wait for it to arrive' },
+  { icon: '📦', text: 'Count it all again' },
+  { icon: '✍️', text: 'Log it. Again.' },
+];
+
+/* One page — the app's real pages, orbiting */
+const ORBIT_PAGES = [
+  { label: 'Dashboard', x: 10, y: 16 },
+  { label: 'Financials', x: 48, y: 4 },
+  { label: 'Housekeeping', x: 82, y: 14 },
+  { label: 'Maintenance', x: 5, y: 58 },
+  { label: 'Inventory', x: 87, y: 56 },
+  { label: 'Staff', x: 18, y: 90 },
+  { label: 'Communications', x: 72, y: 90 },
+];
+
 /* ------------------------------------------------------------------ */
 
 export default function MarketingLanding() {
@@ -57,10 +105,13 @@ export default function MarketingLanding() {
     () => FEED_SCRIPT.slice(0, 4).map((f, i) => ({ ...f, id: i })).reverse()
   );
   const feedIdx = useRef(4);
+  const [notifStage, setNotifStage] = useState<'idle' | 'pressed' | 'done'>('idle');
+  const notifStarted = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const beamRef = useRef<HTMLDivElement>(null);
   const stepsRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
 
   /* ticking ops feed */
   useEffect(() => {
@@ -73,6 +124,39 @@ export default function MarketingLanding() {
       setFeed((prev) => [next, ...prev].slice(0, 5));
     }, 2600);
     return () => clearInterval(id);
+  }, []);
+
+  /* notification approve loop: idle → pressed → done → idle */
+  useEffect(() => {
+    const el = notifRef.current;
+    if (!el) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) {
+      setNotifStage('done');
+      return;
+    }
+    let timers: ReturnType<typeof setTimeout>[] = [];
+    const play = () => {
+      timers.push(setTimeout(() => setNotifStage('pressed'), 1600));
+      timers.push(setTimeout(() => setNotifStage('done'), 2100));
+      timers.push(setTimeout(() => setNotifStage('idle'), 6400));
+      timers.push(setTimeout(loop, 6900));
+    };
+    const loop = () => play();
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && !notifStarted.current) {
+          notifStarted.current = true;
+          play();
+        }
+      },
+      { threshold: 0.5 }
+    );
+    io.observe(el);
+    return () => {
+      io.disconnect();
+      timers.forEach(clearTimeout);
+    };
   }, []);
 
   /* scroll reveals */
@@ -187,13 +271,13 @@ export default function MarketingLanding() {
       {/* ---------------- nav ---------------- */}
       <nav className="nav">
         <Link className="brand" href="/">
-          <span className="brand-mark">S</span>
+          <span className="brand-mark"><ChevronMark size={26} /></span>
           <span className="brand-name">Staxis</span>
         </Link>
         <div className="nav-links">
-          <a href="#platform">Platform</a>
+          <a href="#story">Why Staxis</a>
+          <a href="#onepage">One page</a>
           <a href="#how">How it works</a>
-          <a href="#contact">Contact</a>
           <a href="/signin" className="btn btn-ghost">Sign in</a>
           <a href="#contact" className="btn btn-solid">Request a demo</a>
         </div>
@@ -211,13 +295,13 @@ export default function MarketingLanding() {
             <span className="line"><span className="w" style={{ animationDelay: '.22s' }}>that&nbsp;<em className="shimmer">runs&nbsp;itself.</em></span></span>
           </h1>
           <p className="lede rise" style={{ animationDelay: '.42s' }}>
-            Staxis is an AI that watches your hotel around the clock. It reads your
-            property systems and turns what it sees into cleaning schedules, work
-            orders, and supply reorders. No new software to learn, no IT project.
+            Staxis is an AI that runs your hotel&rsquo;s operations. It watches your
+            property systems around the clock, handles the busywork, and comes to
+            you only when something needs a person.
           </p>
           <div className="cta-row rise" style={{ animationDelay: '.55s' }}>
             <a className="btn btn-solid btn-lg" href="#contact">Request a demo</a>
-            <a className="btn btn-ghost btn-lg" href="#how">See how it works<span className="arrow">→</span></a>
+            <a className="btn btn-ghost btn-lg" href="#story">See why<span className="arrow">→</span></a>
           </div>
           <div className="hero-meta rise" style={{ animationDelay: '.68s' }}>
             Built for limited &amp; select-service hotels · English + Español
@@ -276,18 +360,109 @@ export default function MarketingLanding() {
         </div>
       </div>
 
-      {/* ---------------- platform ---------------- */}
-      <section className="section" id="platform">
-        <div className="kicker rv">ONE PLATFORM</div>
-        <h2 className="rv">
-          Everything your front desk juggles,<br />
-          <em>handled in one place.</em>
-        </h2>
-        <p className="section-lede rv">
-          The whiteboard, the group texts, the clipboards, the sticky notes on the
-          back-office monitor. Staxis replaces all of it with one system your whole
-          team can use from any phone.
+      {/* ---------------- the old way ---------------- */}
+      <section className="section" id="story">
+        <div className="kicker rv">HOW IT&rsquo;S ALWAYS BEEN</div>
+        <h2 className="rv">You go <em>find</em> the work.</h2>
+        <p className="section-lede rv">Take one thing. Towels.</p>
+
+        <div className="oldway rv">
+          {OLD_STEPS.map((s, i) => (
+            <span key={s.text} className="chore-wrap" style={{ transitionDelay: `${i * 130}ms` }}>
+              <span className="chore rv" style={{ transitionDelay: `${i * 130}ms`, ['--tilt' as string]: `${((i % 3) - 1) * 2.4}deg` }}>
+                <b>{i + 1}</b>
+                <span className="chore-ic">{s.icon}</span>
+                {s.text}
+              </span>
+              {i < OLD_STEPS.length - 1 && (
+                <span className="chore-arrow rv" style={{ transitionDelay: `${i * 130 + 70}ms` }}>→</span>
+              )}
+            </span>
+          ))}
+        </div>
+        <p className="oldway-caption rv" style={{ transitionDelay: '1.3s' }}>
+          Nine steps to stay stocked on <em>towels</em>. Now every supply, every
+          room, every shift, every work order. That&rsquo;s the job.
         </p>
+      </section>
+
+      {/* ---------------- the staxis way ---------------- */}
+      <section className="section stx-way">
+        <div className="kicker rv">HOW IT SHOULD BE</div>
+        <h2 className="rv">The work comes <em>to you.</em></h2>
+
+        <div className="notif-stage rv" ref={notifRef}>
+          <div className="notif-halo" aria-hidden="true" />
+          <div className={`notif ${notifStage}`}>
+            <div className="notif-head">
+              <span className="notif-logo"><ChevronMark size={16} color="#fff" /></span>
+              <span className="notif-app">Staxis</span>
+              <span className="notif-time">6:07 AM</span>
+            </div>
+            <p className="notif-body">
+              Towels are running low. I counted, checked the budget, and drafted
+              the reorder.
+            </p>
+            <div className="notif-actions">
+              <button type="button" className="notif-btn" tabIndex={-1}>
+                {notifStage === 'done' ? '✓ Ordered' : 'Approve reorder'}
+              </button>
+              {notifStage === 'done' && (
+                <span className="notif-burst" aria-hidden="true">
+                  <i>✦</i><i>✦</i><i>✦</i><i>✦</i><i>✦</i>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <p className="stxway-caption rv">
+          One tap. Staxis did the walking, the counting, and the math. It only
+          brings you the decision.
+        </p>
+      </section>
+
+      {/* ---------------- one page ---------------- */}
+      <section className="section" id="onepage">
+        <div className="kicker rv">ONE PAGE</div>
+        <h2 className="rv">One page <em>runs the hotel.</em></h2>
+        <p className="section-lede rv">
+          Everything that needs you lands in one place. Every other page is still
+          one tap away when you want to look deeper.
+        </p>
+
+        <div className="orbit rv" aria-hidden="true">
+          <svg className="orbit-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+            {ORBIT_PAGES.map((p) => (
+              <line key={p.label} x1="50" y1="50" x2={p.x} y2={p.y} />
+            ))}
+          </svg>
+          {ORBIT_PAGES.map((p, i) => (
+            <span
+              key={p.label}
+              className="orbit-chip"
+              style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
+            >
+              {p.label}
+            </span>
+          ))}
+          <div className="today">
+            <div className="today-head">
+              <ChevronMark size={18} />
+              <span>Today</span>
+              <span className="today-count">NEEDS YOU · 3</span>
+            </div>
+            <div className="today-item"><span className="ti-dot warn" />Approve the towel reorder</div>
+            <div className="today-item"><span className="ti-dot info" />Confirm tomorrow&rsquo;s cleaning crew</div>
+            <div className="today-item"><span className="ti-dot warn" />One work order needs a decision</div>
+            <div className="today-rest"><span className="ti-dot ok" />Everything else: already handled</div>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------------- go deeper ---------------- */}
+      <section className="section">
+        <div className="kicker rv">WHEN YOU WANT TO LOOK</div>
+        <h2 className="rv">Every corner of the hotel,<br /><em>in depth.</em></h2>
 
         <div className="cards">
           {[
@@ -361,7 +536,7 @@ export default function MarketingLanding() {
             {
               n: '03',
               title: 'Your hotel starts running itself',
-              body: 'Schedules go out by text. Work orders get assigned. Supplies get reordered. You open one dashboard and see everything already handled.',
+              body: 'Schedules go out by text. Work orders get assigned. Supplies get reordered. You open one page and see everything already handled.',
             },
           ].map((s) => (
             <div className="step rv" key={s.n}>
@@ -387,7 +562,7 @@ export default function MarketingLanding() {
         </div>
         <div className="stat">
           <div className="stat-n"><span data-count="1">0</span></div>
-          <div className="stat-l">platform instead of five tools and a whiteboard</div>
+          <div className="stat-l">page that brings the work to you</div>
         </div>
         <div className="stat">
           <div className="stat-n"><span data-count="0">0</span></div>
@@ -428,7 +603,7 @@ export default function MarketingLanding() {
         <div className="foot-grid">
           <div className="foot-brand">
             <div className="brand">
-              <span className="brand-mark">S</span>
+              <span className="brand-mark"><ChevronMark size={26} /></span>
               <span className="brand-name">Staxis</span>
             </div>
             <p>
@@ -439,7 +614,8 @@ export default function MarketingLanding() {
           </div>
           <div className="foot-col">
             <div className="foot-h">Product</div>
-            <a href="#platform">Platform</a>
+            <a href="#story">Why Staxis</a>
+            <a href="#onepage">One page</a>
             <a href="#how">How it works</a>
             <a href="/signin">Sign in</a>
           </div>
@@ -548,12 +724,11 @@ const CSS = `
 .nav.scrolled { background: rgba(255,255,255,.8); backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px); border-bottom-color: var(--rule);
   padding-top: 12px; padding-bottom: 12px; box-shadow: 0 4px 24px rgba(31,35,28,.05); }
-.brand { display: inline-flex; align-items: center; gap: 10px; }
-.brand-mark { width: 30px; height: 30px; border-radius: 8px; display: inline-flex;
-  align-items: center; justify-content: center; font-weight: 800; font-size: 15px;
-  color: #fff; background: var(--mark); animation: markfloat 5s ease-in-out infinite; }
-@keyframes markfloat { 0%,100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-3px) rotate(-3deg); } }
-.brand-name { font-weight: 700; letter-spacing: -.02em; font-size: 17px; }
+.brand { display: inline-flex; align-items: center; gap: 7px; }
+.brand-mark { display: inline-flex; align-items: center; justify-content: center;
+  animation: markfloat 5s ease-in-out infinite; }
+@keyframes markfloat { 0%,100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-3px) rotate(-4deg); } }
+.brand-name { font-weight: 600; letter-spacing: -.02em; font-size: 18px; }
 .nav-links { display: flex; align-items: center; gap: clamp(10px, 2vw, 26px); font-size: 14px; }
 .nav-links > a:not(.btn) { color: var(--muted); position: relative; transition: color .2s; }
 .nav-links > a:not(.btn)::after { content: ''; position: absolute; left: 0; bottom: -4px;
@@ -706,6 +881,118 @@ const CSS = `
   transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1); }
 .rv.in { opacity: 1; transform: none; }
 
+/* ---------- the old way ---------- */
+.oldway { margin-top: 54px; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 12px 6px; max-width: 900px; }
+.chore-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.chore { display: inline-flex; align-items: center; gap: 9px;
+  font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft);
+  background: #FDF9EC; border: 1px solid rgba(201,150,68,.25);
+  border-radius: 3px; padding: 10px 14px;
+  box-shadow: 0 3px 10px rgba(31,35,28,.07), 0 1px 0 rgba(31,35,28,.04);
+  rotate: var(--tilt, 0deg);
+  transition: opacity .7s cubic-bezier(.19,1,.22,1), transform .7s cubic-bezier(.19,1,.22,1),
+    rotate .3s ease, box-shadow .3s ease; }
+.chore:nth-child(odd) { background: #F6F5F0; border-color: var(--rule); }
+.chore:hover { rotate: 0deg; box-shadow: 0 8px 20px rgba(31,35,28,.12); }
+.chore b { font-weight: 600; font-size: 10px; color: var(--dim);
+  border: 1px solid var(--rule); border-radius: 50%; width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.chore-ic { font-size: 15px; }
+.chore-arrow { color: var(--dim); font-size: 14px; }
+.oldway-caption { margin-top: 34px; max-width: 54ch; color: var(--muted);
+  font-size: clamp(15px, 1.3vw, 17px); }
+.oldway-caption em { font-style: italic; color: var(--warm); }
+
+/* ---------- the staxis way ---------- */
+.stx-way h2 em { color: var(--sage-deep); }
+.notif-stage { position: relative; margin-top: 60px; display: flex; justify-content: center; }
+.notif-halo { position: absolute; width: 420px; max-width: 90%; height: 220px;
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: radial-gradient(ellipse, var(--sage-dim), transparent 70%);
+  filter: blur(10px); animation: halopulse 4s ease-in-out infinite; }
+@keyframes halopulse { 0%,100% { opacity: .7; transform: translate(-50%,-50%) scale(1); }
+  50% { opacity: 1; transform: translate(-50%,-50%) scale(1.08); } }
+.notif { position: relative; width: 420px; max-width: 100%;
+  background: rgba(255,255,255,.9); backdrop-filter: blur(10px);
+  border: 1px solid var(--rule); border-radius: 20px; padding: 18px 20px;
+  box-shadow: 0 24px 60px rgba(31,35,28,.14), 0 4px 14px rgba(31,35,28,.06);
+  transition: transform .4s cubic-bezier(.19,1,.22,1); }
+.notif.done { animation: notifsettle .5s cubic-bezier(.19,1,.22,1); }
+@keyframes notifsettle { 0% { transform: scale(1); } 40% { transform: scale(1.025); } 100% { transform: scale(1); } }
+.notif-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.notif-logo { width: 26px; height: 26px; border-radius: 7px; background: var(--mark);
+  display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.notif-app { font-weight: 600; font-size: 13.5px; letter-spacing: -.01em; }
+.notif-time { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.notif-body { font-size: 14.5px; color: var(--ink-soft); line-height: 1.55; }
+.notif-actions { position: relative; margin-top: 14px; }
+.notif-btn { font-family: var(--sans); font-weight: 600; font-size: 13.5px;
+  border: none; cursor: default; border-radius: 999px; padding: 10px 22px;
+  background: var(--sage-dim); color: var(--sage-deep);
+  border: 1px solid rgba(92,122,96,.35);
+  transition: background .25s ease, color .25s ease, transform .15s ease; }
+.notif.pressed .notif-btn { transform: scale(.94); background: rgba(92,122,96,.25); }
+.notif.done .notif-btn { background: var(--sage-deep); color: #fff; border-color: var(--sage-deep); }
+.notif-burst { position: absolute; left: 60px; top: 50%; pointer-events: none; }
+.notif-burst i { position: absolute; font-style: normal; font-size: 12px; color: var(--caramel);
+  animation: burst .8s cubic-bezier(.19,1,.22,1) forwards; }
+.notif-burst i:nth-child(1) { animation-delay: 0s;   --bx: -34px; --by: -30px; }
+.notif-burst i:nth-child(2) { animation-delay: .05s; --bx: 26px;  --by: -38px; }
+.notif-burst i:nth-child(3) { animation-delay: .1s;  --bx: 44px;  --by: -8px; }
+.notif-burst i:nth-child(4) { animation-delay: .05s; --bx: -46px; --by: 2px; }
+.notif-burst i:nth-child(5) { animation-delay: .12s; --bx: 8px;   --by: 30px; }
+@keyframes burst {
+  0% { transform: translate(0,0) scale(.4); opacity: 1; }
+  100% { transform: translate(var(--bx), var(--by)) scale(1.1) rotate(140deg); opacity: 0; }
+}
+.stxway-caption { margin-top: 40px; text-align: center; color: var(--muted);
+  font-size: clamp(15px, 1.3vw, 17px); max-width: 54ch;
+  margin-left: auto; margin-right: auto; }
+
+/* ---------- one page (orbit) ---------- */
+.orbit { position: relative; margin: 70px auto 0; max-width: 920px; height: 540px; }
+.orbit-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
+.orbit-lines line { stroke: rgba(92,122,96,.3); stroke-width: .35;
+  stroke-dasharray: 2 2.4; animation: march 2.4s linear infinite; }
+@keyframes march { to { stroke-dashoffset: -8.8; } }
+.orbit-chip { position: absolute; transform: translate(-50%, -50%);
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;
+  background: #fff; border: 1px solid var(--rule); border-radius: 999px;
+  padding: 9px 16px; box-shadow: 0 6px 18px rgba(31,35,28,.08);
+  animation: chipfloat 6s ease-in-out infinite; }
+@keyframes chipfloat {
+  0%,100% { margin-top: 0; }
+  50% { margin-top: -9px; }
+}
+.today { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 340px; max-width: 82%; background: #fff; border: 1px solid var(--rule);
+  border-radius: 18px; padding: 20px;
+  box-shadow: 0 28px 70px rgba(31,35,28,.14), 0 0 0 8px rgba(158,183,166,.08); }
+.today-head { display: flex; align-items: center; gap: 8px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--rule-soft); margin-bottom: 12px;
+  font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.today-count { margin-left: auto; font-family: var(--mono); font-weight: 400;
+  font-size: 10px; letter-spacing: .14em; color: var(--caramel-deep);
+  background: var(--caramel-dim); border-radius: 999px; padding: 4px 10px; }
+.today-item, .today-rest { display: flex; align-items: center; gap: 10px;
+  font-size: 13.5px; color: var(--ink-soft); padding: 8px 0; }
+.today-rest { color: var(--sage-deep); border-top: 1px dashed var(--rule);
+  margin-top: 8px; padding-top: 12px; }
+.ti-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ti-dot.warn { background: var(--caramel); }
+.ti-dot.info { background: var(--purple); }
+.ti-dot.ok { background: var(--sage-deep); }
+@media (max-width: 760px) {
+  .orbit { height: auto; display: flex; flex-flow: row wrap; justify-content: center;
+    align-items: center; gap: 14px; }
+  .orbit-lines { display: none; }
+  .orbit-chip { position: static; transform: none; }
+  .today { position: static; transform: none; width: 100%; max-width: 420px;
+    flex: none; order: -1; margin-bottom: 12px; }
+}
+
 /* ---------- cards ---------- */
 .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 56px;
   perspective: 1400px; }
@@ -715,8 +1002,6 @@ const CSS = `
   padding: 28px 26px; background: #fff; overflow: hidden;
   transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
   transition: border-color .3s ease, transform .25s ease, box-shadow .3s ease,
-    opacity .9s cubic-bezier(.19,1,.22,1); }
-.card.rv { transition: border-color .3s ease, transform .25s ease, box-shadow .3s ease,
     opacity .9s cubic-bezier(.19,1,.22,1); }
 .card.rv:not(.in) { transform: translateY(28px); }
 .card::before { content: ''; position: absolute; inset: 0; opacity: 0;
@@ -764,9 +1049,9 @@ const CSS = `
 .stat::after { content: ''; position: absolute; top: 0; left: 0; width: 0; height: 2px;
   background: linear-gradient(90deg, var(--sage-deep), var(--caramel));
   transition: width 1.2s cubic-bezier(.19,1,.22,1) .3s; }
-.rv.in .stat::after, .stats.in .stat::after { width: 100%; }
+.stats.in .stat::after { width: 100%; }
 .stat-n { font-family: var(--serif); font-style: italic; font-weight: 400;
-  font-size: clamp(48px, 5.5vw, 76px); line-height: 1; color: var(--ink); }
+  font-size: clamp(48px, 5.5vw, 76px); line-height: 1; }
 .stat-n span { background: linear-gradient(120deg, var(--sage-deep), var(--caramel-deep));
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 .stat-l { margin-top: 12px; font-size: 13px; color: var(--muted); max-width: 24ch; }
