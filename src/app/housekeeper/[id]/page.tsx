@@ -108,6 +108,13 @@ export default function HousekeeperRoomPage({
 
   const lastRefetchAtRef = useRef<number>(0);
   const [loading, setLoading] = useState(true);
+  // Tokenless / invalid-link guard: true when this link can't identify the
+  // staff member — an old SMS link minted before per-staff tokens, or a
+  // tampered/expired one. Security audit 2026-06-26 #1 made the per-staff
+  // token (?tok=) the credential, so a link without a valid one 401s on every
+  // gated call. We show a friendly "ask your manager to resend" screen
+  // instead of spinning on "Loading…" forever.
+  const [linkError, setLinkError] = useState(false);
 
   const [savingStart, setSavingStart] = useState<string | null>(null);
   const [savingPause, setSavingPause] = useState<string | null>(null);
@@ -158,6 +165,35 @@ export default function HousekeeperRoomPage({
     },
     [],
   );
+
+  // ── Tokenless-link guard ───────────────────────────────────────────────
+  // Probe /me once on mount. It's token-gated, so a 401 means "this link has
+  // no valid per-staff token" (old or tampered link) — surface the friendly
+  // resend screen rather than letting the realtime rooms path spin forever
+  // (its subscribe callback never fires on a 401, so `loading` never clears).
+  useEffect(() => {
+    if (!pid || !housekeeperId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          withStaffLinkToken(
+            `/api/housekeeper/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+          ),
+        );
+        if (!cancelled && res.status === 401) {
+          setLinkError(true);
+          setLoading(false);
+        }
+      } catch {
+        // Network hiccup — leave the normal spinner/offline handling in
+        // charge; don't misreport a connectivity blip as a bad link.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pid, housekeeperId]);
 
   // ── Magic-link consumption ─────────────────────────────────────────────
   const [authReady, setAuthReady] = useState(false);
@@ -777,6 +813,32 @@ export default function HousekeeperRoomPage({
         </p>
         <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
           {t('cxIncompleteLinkHelp', lang)}
+        </p>
+      </div>
+    );
+  }
+  if (linkError) {
+    return (
+      <div
+        style={{
+          minHeight: '100dvh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexDirection: 'column',
+          gap: '12px',
+          padding: '24px',
+          background: 'var(--bg)',
+          fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
+          textAlign: 'center',
+        }}
+      >
+        <AlertTriangle size={32} color="var(--red, #EF4444)" />
+        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+          {t('somethingWentWrong', lang)}
+        </p>
+        <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
+          {t('badLink', lang)}
         </p>
       </div>
     );
