@@ -14,7 +14,7 @@ import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
 } from '@/lib/api-ratelimit';
-import { checkStaffCapability } from '@/lib/compliance/api-helpers';
+import { requireEngineerStaff } from '@/lib/compliance/api-helpers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,8 +43,11 @@ export async function POST(req: NextRequest) {
 
   // Capability gate also rejects inactive staff (stale-link), matching the
   // other /api/engineer/* routes.
-  const staff = await checkStaffCapability(pid, staffId);
-  if (!staff) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await requireEngineerStaff(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown } | null)?.tok });
+  if (!gate.ok) return gate.response;
+  const staff = gate.staff;
 
   const { data, error: updErr } = await supabaseAdmin
     .from('staff')

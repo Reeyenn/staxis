@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 
@@ -64,26 +65,10 @@ export async function POST(req: NextRequest) {
   const pid = pidCheck.value!;
   const staffId = staffCheck.value!;
 
-  // Verify the staff row exists AND belongs to the claimed property. This
-  // is the capability check — without it, anyone with a guess at a staff
-  // UUID could touch any property.
-  const { data: staffRow, error: lookupErr } = await supabaseAdmin
-    .from('staff')
-    .select('id, property_id')
-    .eq('id', staffId)
-    .maybeSingle();
-  if (lookupErr) {
-    log.error('[save-fcm-token] staff lookup failed', { requestId, msg: errToString(lookupErr) });
-    return err('internal error', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!staffRow) {
-    return err('staff not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
-  if (staffRow.property_id !== pid) {
-    // pid in URL doesn't match the staff's actual property — almost
-    // certainly a stale magic link. Don't leak whether the staff exists.
-    return err('staff not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown } | null)?.tok });
+  if (!gate.ok) return gate.response;
 
   const { error: updateErr } = await supabaseAdmin
     .from('staff')

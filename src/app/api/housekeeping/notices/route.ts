@@ -16,6 +16,7 @@
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
@@ -66,14 +67,9 @@ export async function GET(req: NextRequest): Promise<Response> {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  const { data: staff } = await supabaseAdmin
-    .from('staff')
-    .select('id, property_id')
-    .eq('id', staffId)
-    .maybeSingle();
-  if (!staff || staff.property_id !== pid) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (?tok=).
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
 
   try {
     const nowIso = new Date().toISOString();

@@ -29,6 +29,7 @@ import {
   validateDateStr,
 } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import {
   checkAndIncrementRateLimit,
@@ -128,24 +129,10 @@ export async function POST(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  // Capability check — staff must belong to property.
-  const staffLookup = await supabaseAdmin
-    .from('staff')
-    .select('id')
-    .eq('id', staffId)
-    .eq('property_id', pid)
-    .maybeSingle();
-  if (staffLookup.error) {
-    log.error('[housekeeper/callout] staff lookup failed', {
-      requestId, msg: errToString(staffLookup.error),
-    });
-    return err('Internal server error', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-  if (!staffLookup.data) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown } | null)?.tok });
+  if (!gate.ok) return gate.response;
 
   try {
     const result = await createCallout(supabaseAdmin, {

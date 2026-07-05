@@ -14,7 +14,7 @@ import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
 } from '@/lib/api-ratelimit';
-import { checkStaffCapability } from '@/lib/compliance/api-helpers';
+import { requireEngineerStaff } from '@/lib/compliance/api-helpers';
 import { getOverview } from '@/lib/compliance/store';
 
 export const runtime = 'nodejs';
@@ -37,8 +37,9 @@ export async function GET(req: NextRequest) {
   const rl = await checkAndIncrementRateLimit('engineer-bootstrap', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const staff = await checkStaffCapability(pid, staffId);
-  if (!staff) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  const gate = await requireEngineerStaff(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
+  const staff = gate.staff;
 
   try {
     const overview = await getOverview(pid);

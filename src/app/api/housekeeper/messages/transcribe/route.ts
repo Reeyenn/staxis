@@ -7,6 +7,7 @@
  */
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -35,9 +36,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('invalid path', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   }
 
-  // Capability: staff must belong to this property.
-  const staff = await getStaffRow(pidV.value!, staffV.value!);
-  if (!staff) return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid: pidV.value!, staffId: staffV.value!, requestId, bodyToken: (body as { tok?: unknown }).tok });
+  if (!gate.ok) return gate.response;
 
   const rl = await checkAndIncrementRateLimit('comms-transcribe', pidV.value!);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

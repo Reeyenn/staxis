@@ -8,6 +8,7 @@
 import { NextRequest } from 'next/server';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { getChecklistById, getInspectionById, staffCanInspect } from '@/lib/db/inspections';
@@ -91,6 +92,10 @@ export async function POST(
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
+
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok).
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown }).tok });
+  if (!gate.ok) return gate.response;
 
   const canInspect = await staffCanInspect(pid, staffId);
   if (!canInspect) {

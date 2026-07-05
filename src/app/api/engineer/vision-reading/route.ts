@@ -15,7 +15,7 @@ import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
 } from '@/lib/api-ratelimit';
-import { checkStaffCapability, resolveCostAccount } from '@/lib/compliance/api-helpers';
+import { requireEngineerStaff, resolveCostAccount } from '@/lib/compliance/api-helpers';
 import { extractReadingFromImage } from '@/lib/compliance/vision';
 import {
   VisionTruncatedError,
@@ -58,8 +58,11 @@ export async function POST(req: NextRequest) {
   const rl = await checkAndIncrementRateLimit('engineer-vision', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const staff = await checkStaffCapability(pid, staffId);
-  if (!staff) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await requireEngineerStaff(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown } | null)?.tok });
+  if (!gate.ok) return gate.response;
+  const staff = gate.staff;
 
   const { data: typeRow } = await supabaseAdmin
     .from('compliance_reading_types')

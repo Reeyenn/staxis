@@ -27,7 +27,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { SUPPORTED_LOCALES, type HousekeeperLocale } from '@/lib/translations';
 
 export const runtime = 'nodejs';
@@ -49,22 +50,12 @@ export async function GET(req: NextRequest) {
   const pid = pidV.value!;
   const staffId = staffV.value!;
 
-  const { data, error: queryError } = await supabaseAdmin
-    .from('staff')
-    .select('id, name, language')
-    .eq('id', staffId)
-    .eq('property_id', pid)
-    .maybeSingle();
-
-  if (queryError) {
-    log.error('[housekeeper/me] query failed', { requestId, msg: errToString(queryError) });
-    return err('Internal server error', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-  if (!data) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
+  // Security audit 2026-06-26 #1: identity comes from the per-staff link token
+  // (?tok=), not the raw (pid, staffId) tuple. verifyStaffLinkToken returns the
+  // staff's name + language, so no second staff read is needed.
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
+  const data = gate.staff;
 
   // Tight projection: only what the public page actually consumes. Round-trip
   // the FULL housekeeper locale set (en/es/ht/tl/vi) so a saved ht/tl/vi choice
@@ -74,5 +65,5 @@ export async function GET(req: NextRequest) {
     (SUPPORTED_LOCALES as readonly string[]).includes(data.language)
       ? (data.language as HousekeeperLocale)
       : null;
-  return ok({ id: data.id, name: data.name, language: lang }, { requestId });
+  return ok({ id: data.staffId, name: data.name, language: lang }, { requestId });
 }

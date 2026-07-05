@@ -20,6 +20,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
@@ -88,23 +89,10 @@ export async function POST(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  // Capability check: staff must exist on this property and not be deactivated.
-  const { data: staff, error: staffErr } = await supabaseAdmin
-    .from('staff')
-    .select('id, property_id, is_active')
-    .eq('id', staffId)
-    .eq('property_id', pid)
-    .maybeSingle();
-  if (staffErr) {
-    log.error('[laundry/complete] staff lookup failed', { requestId, msg: errToString(staffErr), pid, staffId });
-    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!staff) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
-  if (staff.is_active === false) {
-    return err('staff inactive', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown } | null)?.tok });
+  if (!gate.ok) return gate.response;
 
   const { error: upsertErr } = await supabaseAdmin
     .from('laundry_completion')

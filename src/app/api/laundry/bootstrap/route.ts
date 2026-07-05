@@ -22,6 +22,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import {
@@ -69,19 +70,10 @@ export async function GET(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  const { data: staffRow, error: staffErr } = await supabaseAdmin
-    .from('staff')
-    .select('id')
-    .eq('id', staffId)
-    .eq('property_id', pid)
-    .maybeSingle();
-  if (staffErr) {
-    log.error('[laundry/bootstrap] staff lookup failed', { requestId, msg: errToString(staffErr), pid, staffId });
-    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!staffRow) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (?tok=),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
 
   // Default to the property's local date (America/Chicago) — matches the
   // rest of the app and avoids the UTC midnight roll giving "tomorrow's

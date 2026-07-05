@@ -38,6 +38,7 @@ import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 // Plan v4 bridge: deriveCleaningEventFeatures reads from the
 // today_room_work_v1 + today_property_counts_v1 RPCs (derived live from
 // pms_room_status_log + pms_reservations + pms_in_house_snapshot +
@@ -297,27 +298,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ─── Capability check ─────────────────────────────────────────────────
-  // Staff must belong to this property. Anyone who knows a staff_id can
-  // forge an URL, but we at least block cross-property mutations and
-  // reject obviously-wrong inputs.
+  // Security audit 2026-06-26 #1: the credential is the per-staff link token
+  // (body.tok), NOT the (pid, staffId) tuple. verifyStaffLinkToken resolves
+  // identity from the token, confirms it's bound to this pid+staffId, and
+  // enforces is_active. A raw tuple with no valid token is rejected (401).
   try {
-    const { data: staff, error: staffErr } = await supabaseAdmin
-      .from('staff')
-      .select('id, property_id, name, is_active')
-      .eq('id', staffId)
-      .maybeSingle();
-    if (staffErr) {
-      return err('staff lookup failed', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
-    }
-    if (!staff || staff.property_id !== pid) {
-      return err('staff/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
-    }
-    // Deactivated/terminated staff keep their old SMS magic-link, but must
-    // not be able to mutate rooms. is_active defaults true; only an explicit
-    // false (deactivated in Settings) blocks — null/true pass through.
-    if (staff.is_active === false) {
-      return err('staff inactive', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
-    }
+    const gate = await verifyStaffLinkToken(req, {
+      pid,
+      staffId,
+      requestId,
+      bodyToken: (body as { tok?: unknown } | null)?.tok,
+    });
+    if (!gate.ok) return gate.response;
+    const staff = { name: gate.staff.name };
 
     // ─── Room belongs to property AND assigned to this staff ───────────
     // 2026-05-12: previously this only checked room.property_id === pid.

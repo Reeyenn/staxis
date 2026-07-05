@@ -22,6 +22,7 @@ import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -84,9 +85,18 @@ export async function POST(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  // Capability: write only if (staff_id, property_id) actually matches.
-  // .update().eq().eq() is enough — if there's no matching row the update
-  // is a no-op; we then return 404 so the client surface a real error.
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok)
+  // before writing — the credential is the token, not the (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, {
+    pid,
+    staffId,
+    requestId,
+    bodyToken: (body as { tok?: unknown } | null)?.tok,
+  });
+  if (!gate.ok) return gate.response;
+
+  // Write scoped to (staff_id, property_id) — belt-and-suspenders on top of
+  // the token check.
   const { data, error: updateError } = await supabaseAdmin
     .from('staff')
     .update({ language })

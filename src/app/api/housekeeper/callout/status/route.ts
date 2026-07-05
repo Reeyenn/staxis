@@ -23,6 +23,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid, validateDateStr } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import {
   checkAndIncrementRateLimit,
@@ -68,24 +69,10 @@ export async function GET(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  // Capability check — staff must belong to the property.
-  const staffLookup = await supabaseAdmin
-    .from('staff')
-    .select('id')
-    .eq('id', staffId)
-    .eq('property_id', pid)
-    .maybeSingle();
-  if (staffLookup.error) {
-    log.error('[housekeeper/callout/status] staff lookup failed', {
-      requestId, msg: errToString(staffLookup.error),
-    });
-    return err('Internal server error', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-  if (!staffLookup.data) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (?tok=),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
 
   // Single active callout for today, if any. The partial unique index
   // on callout_events guarantees at most one row matches.

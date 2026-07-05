@@ -14,6 +14,7 @@
 
 import { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -88,6 +89,10 @@ export async function POST(req: NextRequest) {
       requestId, status: 415, code: ApiErrorCode.ValidationFailed,
     });
   }
+
+  // Security audit 2026-06-26 #1: verify the per-staff link token (form 'tok').
+  const gate = await verifyStaffLinkToken(req, { pid: pidSafe, staffId: staffIdSafe, requestId, bodyToken: form.get('tok') });
+  if (!gate.ok) return gate.response;
 
   const canInspect = await staffCanInspect(pidSafe, staffIdSafe);
   if (!canInspect) {

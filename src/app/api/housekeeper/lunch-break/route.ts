@@ -23,6 +23,7 @@ import {
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -74,14 +75,9 @@ export async function GET(req: NextRequest): Promise<Response> {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  const { data: staff } = await supabaseAdmin
-    .from('staff')
-    .select('id, property_id')
-    .eq('id', staffId)
-    .maybeSingle();
-  if (!staff || staff.property_id !== pid) {
-    return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
-  }
+  // Security audit 2026-06-26 #1: verify the per-staff link token (?tok=).
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
 
   const { data: openRow, error: lookupErr } = await supabaseAdmin
     .from('staff_breaks')

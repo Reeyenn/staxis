@@ -5,6 +5,7 @@
  */
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
@@ -31,8 +32,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (targetV.error) return err(targetV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   if (!Array.isArray(body.texts)) return err('texts must be an array', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
 
-  const staff = await getStaffRow(pidV.value!, staffV.value!);
-  if (!staff) return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await verifyStaffLinkToken(req, { pid: pidV.value!, staffId: staffV.value!, requestId, bodyToken: (body as { tok?: unknown }).tok });
+  if (!gate.ok) return gate.response;
 
   const texts = (body.texts as unknown[]).filter((t): t is string => typeof t === 'string').map((t) => t.slice(0, 2000)).slice(0, 200);
   if (targetV.value === 'en' || texts.length === 0) {

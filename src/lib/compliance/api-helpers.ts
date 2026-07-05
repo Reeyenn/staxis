@@ -7,7 +7,9 @@
 //  * resolveCostAccount    — an account to attribute Claude/vision spend to for
 //                            the accountless engineer surface (best-effort).
 
+import type { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 
 export interface StaffCapability {
   id: string;
@@ -38,6 +40,38 @@ export async function checkStaffCapability(pid: string, staffId: string): Promis
     name: String(data.name ?? ''),
     language: typeof data.language === 'string' ? data.language : 'en',
     department: typeof data.department === 'string' ? data.department : null,
+  };
+}
+
+/**
+ * Security audit 2026-06-26 #1 — token-verifying replacement for the bare
+ * checkStaffCapability(pid, staffId) gate on every public /api/engineer/* route.
+ *
+ * The credential is now the per-staff link token (`tok` in the URL/body), NOT
+ * the (pid, staffId) tuple. This resolves identity from the token via
+ * verifyStaffLinkToken, confirms it's bound to this pid+staffId, enforces
+ * is_active, and returns either the StaffCapability the routes already consume
+ * or a Response the route returns immediately.
+ *
+ * Routes call:
+ *   const gate = await requireEngineerStaff(req, { pid, staffId, requestId, bodyToken });
+ *   if (!gate.ok) return gate.response;
+ *   const staff = gate.staff;   // same StaffCapability shape as before
+ */
+export async function requireEngineerStaff(
+  req: NextRequest,
+  args: { pid: string; staffId: string; requestId: string; bodyToken?: unknown },
+): Promise<{ ok: true; staff: StaffCapability } | { ok: false; response: NextResponse }> {
+  const verified = await verifyStaffLinkToken(req, args);
+  if (!verified.ok) return { ok: false, response: verified.response };
+  return {
+    ok: true,
+    staff: {
+      id: verified.staff.staffId,
+      name: verified.staff.name,
+      language: verified.staff.language,
+      department: verified.staff.department,
+    },
   };
 }
 

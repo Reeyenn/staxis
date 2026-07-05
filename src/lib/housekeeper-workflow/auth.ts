@@ -14,7 +14,6 @@
  */
 
 import type { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { errToString } from '@/lib/utils';
 import type { Room } from '@/types';
@@ -26,6 +25,7 @@ import {
   hashToRateLimitKey,
   type RateLimitEndpoint,
 } from '@/lib/api-ratelimit';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 
 export interface CapabilityOk<TBody> {
   ok: true;
@@ -96,59 +96,20 @@ export async function gateHousekeeperRequest<TBody extends { pid?: unknown; staf
   }
 
   try {
-    const { data: staff, error: staffErr } = await supabaseAdmin
-      .from('staff')
-      .select('id, property_id, name, is_active')
-      .eq('id', staffId)
-      .maybeSingle();
-    if (staffErr) {
-      log.error('housekeeper-workflow: staff lookup failed', {
-        requestId,
-        endpoint,
-        err: errToString(staffErr),
-      });
-      return {
-        ok: false,
-        response: err('Internal server error', {
-          requestId,
-          status: 500,
-          code: ApiErrorCode.InternalError,
-          headers,
-        }),
-      };
-    }
-    if (!staff || staff.property_id !== pid) {
-      return {
-        ok: false,
-        response: err('staff/property mismatch', {
-          requestId,
-          status: 403,
-          code: ApiErrorCode.Forbidden,
-          headers,
-        }),
-      };
-    }
-    // Deactivated/terminated staff keep their old SMS magic-link working,
-    // but must not be able to act on it. is_active defaults to true; only an
-    // explicit false (deactivated in Settings → Accounts) is blocked —
-    // null/true pass through, so existing staff are never locked out.
-    if (staff.is_active === false) {
-      log.warn('housekeeper-workflow: blocked deactivated staff', { requestId, endpoint, staffId });
-      return {
-        ok: false,
-        response: err('staff inactive', {
-          requestId,
-          status: 403,
-          code: ApiErrorCode.Forbidden,
-          headers,
-        }),
-      };
+    // Security audit 2026-06-26 #1: the credential is the per-staff link token
+    // (`tok`), NOT the (pid, staffId) tuple. verifyStaffLinkToken resolves
+    // identity from the token, confirms it's bound to this pid+staffId, and
+    // enforces the is_active gate. A raw tuple with no valid token is rejected.
+    const bodyToken = (body as { tok?: unknown }).tok;
+    const verified = await verifyStaffLinkToken(req, { pid, staffId, requestId, bodyToken });
+    if (!verified.ok) {
+      return { ok: false, response: verified.response };
     }
     return {
       ok: true,
       pid,
       staffId,
-      staffName: staff.name ?? 'Housekeeper',
+      staffName: verified.staff.name || 'Housekeeper',
       requestId,
       headers,
       body,

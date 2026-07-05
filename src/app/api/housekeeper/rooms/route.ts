@@ -31,6 +31,7 @@ import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { mergePmsRoomsForStaff } from '@/lib/pms-rooms-server';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import {
@@ -68,27 +69,11 @@ export async function GET(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  // Explicit capability check — distinguishes "invalid pair" (404) from
-  // "valid pair, no assignments" (200 []).
-  const { data: staffRow, error: staffErr } = await supabaseAdmin
-    .from('staff')
-    .select('id')
-    .eq('id', staffId)
-    .eq('property_id', pid)
-    .maybeSingle();
-  if (staffErr) {
-    log.error('[housekeeper/rooms] staff lookup failed', {
-      requestId, msg: errToString(staffErr),
-    });
-    return err('Internal server error', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-  if (!staffRow) {
-    return err('Not found', {
-      requestId, status: 404, code: ApiErrorCode.NotFound,
-    });
-  }
+  // Security audit 2026-06-26 #1: the credential is the per-staff link token
+  // (?tok=), not the raw (pid, staffId) tuple. A missing/expired/wrong-bound
+  // token → 401. A valid token with no room assignments still returns 200 [].
+  const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+  if (!gate.ok) return gate.response;
 
   try {
     const rooms = await mergePmsRoomsForStaff(pid, staffId);

@@ -15,7 +15,7 @@ import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
 } from '@/lib/api-ratelimit';
-import { checkStaffCapability } from '@/lib/compliance/api-helpers';
+import { requireEngineerStaff } from '@/lib/compliance/api-helpers';
 import { logReading, uploadCompliancePhoto } from '@/lib/compliance/store';
 import { READING_SOURCES } from '@/lib/compliance/types';
 
@@ -77,8 +77,11 @@ export async function POST(req: NextRequest) {
   const rl = await checkAndIncrementRateLimit('engineer-log', pid, { subKey: staffId });
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const staff = await checkStaffCapability(pid, staffId);
-  if (!staff) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  // Security audit 2026-06-26 #1: verify the per-staff link token (body.tok),
+  // not the raw (pid, staffId) tuple.
+  const gate = await requireEngineerStaff(req, { pid, staffId, requestId, bodyToken: (body as { tok?: unknown } | null)?.tok });
+  if (!gate.ok) return gate.response;
+  const staff = gate.staff;
 
   try {
     // Optional snap-to-log photo for the audit trail.

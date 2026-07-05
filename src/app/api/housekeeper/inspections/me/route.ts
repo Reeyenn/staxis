@@ -15,6 +15,7 @@
 import { NextRequest } from 'next/server';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -55,6 +56,10 @@ export async function GET(req: NextRequest) {
     // Capability check: the (pid, staffId) pair must exist AND the staff
     // row must have can_inspect=true. Two queries in one — the staff
     // lookup also serves as the capability gate.
+    // Security audit 2026-06-26 #1: verify the per-staff link token (?tok=).
+    const gate = await verifyStaffLinkToken(req, { pid, staffId, requestId });
+    if (!gate.ok) return gate.response;
+
     const canInspect = await staffCanInspect(pid, staffId);
     if (!canInspect) {
       // Return canInspect=false rather than 403 so InspectorView can
