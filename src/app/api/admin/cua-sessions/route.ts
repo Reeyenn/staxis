@@ -301,8 +301,11 @@ export async function POST(req: NextRequest) {
     case 'resume_mfa':
       // Flip status back to 'starting'; supervisor reconcile picks it up
       // and respawns the driver. New driver attempts login with whatever
-      // storageState is now in scraper_session.
-      patch = { status: 'starting', paused_reason: null, paused_until: null };
+      // storageState is now in scraper_session. Reset restart_count too:
+      // a hotel that dead-lettered its restart budget before the MFA pause
+      // would otherwise be immediately re-parked at failed_restart on the
+      // supervisor's first reconcile (same recovery contract as 'restart').
+      patch = { status: 'starting', restart_count: 0, paused_reason: null, paused_until: null };
       break;
     case 'reset_cost_cap':
       patch = {

@@ -59,7 +59,7 @@ import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 // feature/cua-self-heal-reach — one-fix-generalizes (sample-verify) + golden-fixture gates.
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
-import { captureLiveFeedProvenance, uploadLiveFeedSample } from './feed-capture.js';
+import { captureLiveFeedProvenance, uploadLiveFeedSample, upsertFeedValues } from './feed-capture.js';
 import { loadActive } from './knowledge-file.js';
 // rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
 // from here, so this is a cycle — but BOTH cross-module references are call-time
@@ -696,6 +696,22 @@ export async function runMappingJob(
     gate.reason = 'parked: founder re-mapped a draft feed — review before live';
   }
 
+  // 3.2. Re-review fix (B2/B3 belt-and-suspenders) — an INCOMPLETE run must never
+  //      auto-promote to live. The target loop preserves its partial recipe when
+  //      it breaks abnormally (90-min timeout / admin clicked Abort / help-flood /
+  //      an unexpected throw) and flags it via result.aborted; the workflow signal
+  //      may also already be aborted. In either case, DOWNGRADE auto_promote to
+  //      park_draft: the partial is still saved for founder review, but an aborted
+  //      or timed-out map can never silently go live on the hotel. Post-gate clamp
+  //      only — park_partial / park_draft / quarantine already wait for a human.
+  if ((result.aborted || signal.aborted) && gate.decision === 'auto_promote') {
+    log.info('mapping-driver: run aborted/incomplete — parking partial instead of auto-promoting', {
+      jobId, was: gate.reason, resultAborted: Boolean(result.aborted), signalAborted: signal.aborted,
+    });
+    gate.decision = 'park_draft';
+    gate.reason = 'parked: mapping run was aborted or timed out — review the partial before going live';
+  }
+
   // 3.5. feat/cua-partial-promotion — promote-time guards for SEEDED jobs.
   //      A seeded job's seed snapshot can go stale: another repair/backfill
   //      may have promoted a better active while this job sat queued (the
@@ -740,6 +756,13 @@ export async function runMappingJob(
           promotionDecision: 'park_draft',
           promotionReason: guard.reason,
           ...computeStats(result),
+          // Learning Board — carry the per-feed state on THIS early-return path too
+          // (see MappingJobResult doc): markCompleted REPLACES workflow_jobs.result
+          // at completion, so omitting these blanks the admin board the moment a
+          // no-progress backfill finishes — the exact outcome (a daily-recurring
+          // park) where the founder most needs to see WHY it made no progress.
+          targetCatalog: result.targetCatalog,
+          boardTargets: result.boardTargets,
         };
       }
       log.warn('mapping-driver: seeded promotion guard parked the draft', {
@@ -1502,7 +1525,10 @@ export async function captureFeedOnDemand(args: {
     // Persist a small live SAMPLE of what was read (the "Captured" preview).
     // sampleRows survives the contract gate (blank required cols), so the founder
     // still sees the values — including a blank column they then drag to fix.
-    await uploadLiveFeedSample(propertyId, feedKey, run.sampleRows ?? run.rows);
+    // Feed-level PAGE values (e.g. "Guest Count: 23") ride along in the sample's
+    // pageValues block AND are stored durably once per feed (pms_feed_values).
+    await uploadLiveFeedSample(propertyId, feedKey, run.sampleRows ?? run.rows, run.feedValues);
+    await upsertFeedValues(propertyId, feedKey, run.feedValues, (template.pageColumns?.length ?? 0) > 0);
     return { ok: true };
   } catch (err) {
     if (err instanceof UnsafeNavigationError) return { ok: false, reason: `unsafe_url:${err.reason}` };
@@ -1638,6 +1664,26 @@ export async function promoteRecipeChange(args: PromoteRecipeChangeArgs): Promis
     }
   }
 
+  // Stale-active superset guard (feature/cua-self-heal-reach): a rung-2
+  // re-anchor builds its candidate from the DRIVER's in-memory recipe, which
+  // hot-reloads only every ~60s — so a NEWER active version (e.g. a sibling
+  // hotel's re-anchor or a backfill that added a feed) can have been promoted
+  // while this candidate was in flight. Without this check, activating the
+  // candidate would silently DROP the newly-gained feed family-wide. Seeded
+  // mapper jobs get this same guard via checkSeededPromotionGuards; the
+  // re-anchor path was the one promote caller that skipped it. isBackfill=false
+  // — re-anchor is same-shape-with-better-selectors, so only the superset
+  // (never-drop-a-live-feed) half applies, not the gap-shrink half.
+  if (shouldActivateImmediately(gate.decision)) {
+    const supersetGuard = await checkSeededPromotionGuards(
+      args.pmsFamily, args.recipe, gate.feedGaps, false,
+    );
+    if (!supersetGuard.ok) {
+      gate.decision = 'park_draft';
+      gate.reason = supersetGuard.reason;
+    }
+  }
+
   const initialStatus = gate.decision === 'quarantine' ? 'quarantined' : 'draft';
   const draft = await saveDraftKnowledgeFile(
     args.pmsFamily, args.recipe, initialStatus, gate.feedGaps, `${args.origin}/${gate.decision}: ${gate.reason}`,
@@ -1689,19 +1735,23 @@ export function gatherCrossFeedObservation(
     }
     const obs: FeedObservation = {};
     if (typeof preview.rowCount === 'number') obs.rowCount = preview.rowCount;
-    if (Array.isArray(preview.sample)) {
-      obs.rows = preview.sample;
-      // NEVER mark the board preview "complete": its rows are RAW DOM text
-      // (un-translated — e.g. "Occ"/"VC", not the canonical occupied/vacant_clean
-      // the exact predicate expects) and truncated to ≤3. Either alone makes an
-      // exact predicate count unsound (review P2: a tiny-property preview could
-      // exact-count 0 against a positive counter → false mismatch). Cross-feed
-      // therefore uses ONLY the SOUND lower-bound (rowCount ≥ counter) from this
-      // wiring. The exact path stays in cross-feed-reconcile.ts for callers that
-      // pass canonical full rows (a documented follow-up: canonicalize preview
-      // statuses to enable exact occupancy reconcile).
-      obs.rowsComplete = false;
-    }
+    if (Array.isArray(preview.sample)) obs.rows = preview.sample;
+    // NEVER mark the board preview "complete". Two independent reasons:
+    //  (1) The sample rows are RAW DOM text (un-translated — e.g. "Occ"/"VC", not
+    //      the canonical occupied/vacant_clean the exact predicate expects) and
+    //      truncated to ≤3, so an exact predicate count over them is unsound
+    //      (review P2: a tiny-property preview could exact-count 0 against a
+    //      positive counter → false mismatch).
+    //  (2) preview.rowCount is the VISIBLE DOM row count (dom-rows.ts totalMatched
+    //      = rendered.length), i.e. ONE PAGE of a server-paginated feed, NOT the
+    //      feed total. So a "rowCount < counter" SHORTFALL here is not a proof of a
+    //      wrong/empty feed — the rest may be on later pages. Leaving rowsComplete
+    //      unset makes cross-feed ABSTAIN on a shortfall (rather than false-fail a
+    //      correct-but-paginated feed) while STILL passing on rowCount ≥ counter.
+    // The exact path + a real shortfall-fail stay in cross-feed-reconcile.ts for
+    // callers that pass canonical, known-complete full rows (documented follow-up:
+    // canonicalize preview statuses / capture the feed total to re-enable them).
+    obs.rowsComplete = false;
     feeds[key] = obs;
   }
   return { feeds, dashboardCounters };
@@ -1872,8 +1922,33 @@ export async function computeRecipeVerification(args: {
   };
 }
 
-/** The most-recent prior verification telemetry for a family (latest version,
- *  any status) — drives the pass^N counter. Fail-open: any error ⟹ null (the
+/** How many recent versions to scan back through for the last FRESH-learn
+ *  envelope. Bounds the query while comfortably spanning the self-repair /
+ *  backfill / coverage-edit versions that interleave between two fresh learns. */
+const PRIOR_VERIFICATION_SCAN_LIMIT = 25;
+
+/** Pick the last FRESH-learn verification telemetry out of a version-DESC list of
+ *  knowledge envelopes: the first row that actually carries a `verification`
+ *  block. Verification is persisted ONLY on fresh full learns (isFreshFullLearn
+ *  gate), so self-repair / backfill / coverage-edit / re-anchor versions save the
+ *  envelope WITHOUT it. Scanning to the last FRESH envelope (not just the single
+ *  latest version) keeps the pass^N counter from resetting whenever a non-fresh
+ *  version is interleaved between two fresh learns of an identical fingerprint.
+ *  Pure + exported for tests. */
+export function selectPriorVerification(
+  rows: Array<{ knowledge: { verification?: RecipeVerification } | null } | null> | null | undefined,
+): RecipeVerification | null {
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    const v = row?.knowledge?.verification;
+    if (v && typeof v === 'object') return v;
+  }
+  return null;
+}
+
+/** The most-recent prior verification telemetry for a family — drives the pass^N
+ *  counter. Reads a bounded version-DESC window and returns the last FRESH-learn
+ *  envelope (see selectPriorVerification). Fail-open: any error ⟹ null (the
  *  counter simply starts fresh). */
 async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerification | null> {
   try {
@@ -1883,11 +1958,11 @@ async function loadPriorVerification(pmsFamily: string): Promise<RecipeVerificat
       .eq('pms_family', pmsFamily)
       .is('deleted_at', null)
       .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error || !data) return null;
-    const v = (data.knowledge as { verification?: RecipeVerification } | null)?.verification;
-    return v && typeof v === 'object' ? v : null;
+      .limit(PRIOR_VERIFICATION_SCAN_LIMIT);
+    if (error) return null;
+    return selectPriorVerification(
+      data as Array<{ knowledge: { verification?: RecipeVerification } | null }> | null,
+    );
   } catch {
     return null;
   }
@@ -2312,11 +2387,13 @@ async function promoteDraft(
  * Anthropic, so the worst case is ~$0 + 20s of compute vs the mapper
  * agent's $4-10 + 5-45min when it fails the same way deeper in.
  *
- * Note on the selector check: we look for `input[type="password"]` as
- * proof of a real login form. This is the single workhorse signal — a
- * 404 page, T&C wall, maintenance page, or redirect to a vendor's
- * marketing site all reliably fail it. A correct login page always
- * exposes one.
+ * Note on the selector check: we accept a page as a login page if it
+ * shows ANY of three signals — an `input[type="password"]` (classic
+ * form), a canvas-rendered login, or an email-first / SSO login (an
+ * identifier field + a Continue/Next/Sign-in affordance, as used by
+ * Okta / Azure AD / Google, where the password comes on step 2). A 404
+ * page, T&C wall, maintenance page, or redirect to a vendor's marketing
+ * site reliably fails all three.
  */
 async function preflightLoginPage(
   loginUrl: string,
@@ -2378,10 +2455,41 @@ async function preflightLoginPage(
         if (isCanvasLogin) {
           return { ok: true };
         }
+
+        // Email-first / SSO login (Okta / Azure AD / Google): the first
+        // step shows only a username/email field + a Continue/Next/Sign-in
+        // button — the password field appears on step 2. Accept these too,
+        // otherwise a modern identity-provider login fails pre-flight and
+        // the whole onboarding aborts at $0 before vision mode ever runs.
+        // Pre-flight is only a cheap "is this a login page at all" gate, so
+        // loosening it cannot ship wrong data — the real login is done by
+        // vision later.
+        const isEmailFirstLogin = await page.evaluate(() => {
+          const hasIdentifierField = document.querySelector(
+            'input[type="email"], input[type="text"], ' +
+            'input[name*="user" i], input[name*="email" i], ' +
+            'input[id*="user" i], input[id*="email" i]',
+          ) !== null;
+          if (!hasIdentifierField) return false;
+          const affordanceRe = /continue|next|sign.?in|log.?in|submit/i;
+          const buttons = Array.from(
+            document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]'),
+          );
+          return buttons.some((el) => {
+            const label = (el.textContent ?? '') + ' ' +
+              (el.getAttribute('value') ?? '') + ' ' +
+              (el.getAttribute('aria-label') ?? '');
+            return affordanceRe.test(label);
+          });
+        }).catch(() => false);
+        if (isEmailFirstLogin) {
+          return { ok: true };
+        }
+
         const finalUrl = page.url().slice(0, 120);
         return {
           ok: false,
-          reason: `no password input AND no canvas login on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
+          reason: `no password input, canvas login, or email-first/SSO login on ${finalUrl} — likely T&C, maintenance, or wrong URL`,
         };
       }
     } finally {

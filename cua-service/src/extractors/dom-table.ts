@@ -13,6 +13,7 @@
 
 import type { Page } from 'playwright';
 import { log } from '../log.js';
+import { env } from '../env.js';
 import { safeGoto } from '../browser-utils/navigate.js';
 import { extractDomRows } from './dom-rows.js';
 import { parsePreSteps, replayPreSteps } from './pre-steps.js';
@@ -36,7 +37,46 @@ export interface DomTableExtractResult {
 
 const DEFAULT_MAX_ROWS = 5000;
 const ROW_SELECTOR_KEY = 'rowSelector';
-const WAIT_TIMEOUT_MS = 15_000;
+// Presence wait (how long to wait for ANY matching row to attach). Env-overridable
+// as a live ops escape hatch (read at module load).
+const WAIT_TIMEOUT_MS = env.CUA_ROW_WAIT_MS;
+// Bounded best-effort wait for a row to actually RENDER, after presence is
+// confirmed. Degrades to a read attempt on timeout (the reader filters hidden rows).
+const RENDER_SETTLE_MS = env.CUA_ROW_RENDER_MS;
+
+/** Best-effort, BOUNDED wait for at least one VISIBLE row matching `sel` (css or
+ *  raw xpath) to paint — gives async-rendered rows a moment to settle after
+ *  presence is confirmed (safeGoto only waits domcontentloaded). DEGRADES TO READ
+ *  on timeout: the row-reader's visible filter is the real correctness guarantee,
+ *  so a hidden-template-only or genuinely-empty feed simply reads 0 rows rather
+ *  than hanging. Visible = not [hidden]/display:none/visibility:hidden/opacity:0
+ *  and a non-zero box (matches the codebase's house predicate). */
+async function settleForVisibleRow(page: Page, sel: string, isXpath: boolean): Promise<void> {
+  await page.waitForFunction(
+    (a: { sel: string; isXpath: boolean }) => {
+      let els: Element[] = [];
+      try {
+        if (a.isXpath) {
+          const snap = document.evaluate(a.sel, document, null, 7 /* ORDERED_NODE_SNAPSHOT_TYPE */, null);
+          for (let i = 0; i < snap.snapshotLength; i++) { const n = snap.snapshotItem(i); if (n && n.nodeType === 1) els.push(n as Element); }
+        } else {
+          els = Array.from(document.querySelectorAll(a.sel));
+        }
+      } catch { return true; }
+      return els.some((el: Element) => {
+        try {
+          if (el.hasAttribute('hidden')) return false;
+          const s = getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 || r.height > 0;
+        } catch { return true; }
+      });
+    },
+    { sel, isXpath },
+    { timeout: RENDER_SETTLE_MS },
+  ).catch(() => { /* degrade to read — the reader filters hidden rows */ });
+}
 
 export async function extractDomTable(opts: DomTableExtractOptions): Promise<DomTableExtractResult> {
   const { page, feedSpec, allowedHost, signal } = opts;
@@ -98,16 +138,23 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
   const columnsTiered = feedSpec.extra?.columnsTiered as Record<string, TieredSelector> | undefined;
   const rowSelectorTiered = feedSpec.extra?.rowSelectorTiered as TieredSelector | undefined;
 
-  // Wait for the rows to materialize. The css rowSelector is primary; if it
-  // never appears AND an xpath tier exists, wait on the xpath instead — without
-  // this pre-wait fallback the reader's own row-xpath tier could never engage on
-  // a broken css selector (it returns early here first).
+  // Wait for the rows to materialize. Gate on PRESENCE (state:'attached'), NOT
+  // the default 'visible' state. A PMS commonly keeps a hidden template/prototype
+  // row as the FIRST match (e.g. Choice Advantage's <tr id="roomConditionRow">),
+  // and the default visible-wait gates on that first element → 15s timeout even
+  // with dozens of real rows present (the PMS-agnostic 0-rows bug). The css
+  // rowSelector is primary; if it never appears AND an xpath tier exists, wait on
+  // the xpath instead — without this pre-wait fallback the reader's own row-xpath
+  // tier could never engage on a broken css selector (it returns early here first).
+  let presentSel: { sel: string; isXpath: boolean } | null = null;
   try {
-    await page.waitForSelector(rowSelector, { timeout: WAIT_TIMEOUT_MS });
+    await page.waitForSelector(rowSelector, { state: 'attached', timeout: WAIT_TIMEOUT_MS });
+    presentSel = { sel: rowSelector, isXpath: false };
   } catch (err) {
     if (rowSelectorTiered?.xpath) {
       try {
-        await page.waitForSelector(`xpath=${rowSelectorTiered.xpath}`, { timeout: WAIT_TIMEOUT_MS });
+        await page.waitForSelector(`xpath=${rowSelectorTiered.xpath}`, { state: 'attached', timeout: WAIT_TIMEOUT_MS });
+        presentSel = { sel: rowSelectorTiered.xpath, isXpath: true };
       } catch {
         return { ok: false, rows: [], reason: `row selector did not appear (css + xpath): ${(err as Error).message}` };
       }
@@ -115,6 +162,14 @@ export async function extractDomTable(opts: DomTableExtractOptions): Promise<Dom
       return { ok: false, rows: [], reason: `row selector did not appear: ${(err as Error).message}` };
     }
   }
+
+  // Best-effort render-settle on WHICHEVER selector attached (css or xpath): the
+  // old visible-wait silently doubled as an async-render settle (safeGoto only
+  // waits domcontentloaded). Give a real VISIBLE row a bounded moment to paint,
+  // degrading to a read on timeout — the reader's visible-row filter is the real
+  // correctness guarantee, and a genuinely-empty feed then reads 0 rows rather
+  // than falsely hanging the full timeout.
+  await settleForVisibleRow(page, presentSel.sel, presentSel.isXpath);
 
   if (signal?.aborted) return { ok: false, rows: [], reason: 'aborted' };
 

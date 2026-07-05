@@ -37,7 +37,19 @@ import {
   type InHouseSnapshotRow,
 } from './validators.js';
 
-export type ValidatorResult = { ok: true } | { ok: false; reason: string };
+export type ValidatorResult =
+  | {
+      ok: true;
+      /** Sanitized row from a validators.ts validator: warned-invalid fields
+       *  are dropped (undefined). The writer MUST apply this before
+       *  persisting — the values it drops (inverted date pairs, implausible
+       *  counts, malformed room numbers) passed layer-1 type checks and
+       *  would otherwise write as-is. */
+      clean?: Record<string, unknown>;
+      /** Field-level issues the sanitize pass fixed (for logging). */
+      warnings?: string[];
+    }
+  | { ok: false; reason: string };
 export type Validator = (row: Record<string, unknown>) => ValidatorResult;
 
 // ─── pms_guests ──────────────────────────────────────────────────────────
@@ -156,7 +168,12 @@ export function validateActivityLog(row: Record<string, unknown>): ValidatorResu
 
 // ─── pms_lost_and_found ──────────────────────────────────────────────────
 
-const LOST_FOUND_STATUSES = new Set(['unclaimed', 'claimed', 'disposed']);
+// Must match the 0202 CHECK constraint on pms_lost_and_found.status (which
+// migration 0258 also aligned the layer-1 descriptor to): the CHECK is
+// authoritative. The old set here ('unclaimed', …) contained a value that
+// exists nowhere in the DB and was missing 'open' — the normal status for an
+// active lost item — so every open item was rejected and never persisted.
+const LOST_FOUND_STATUSES = new Set(['open', 'claimed', 'disposed', 'shipped', 'expired']);
 
 export function validateLostAndFound(row: Record<string, unknown>): ValidatorResult {
   if (!validNonEmptyString(row.item_description)) return { ok: false, reason: 'item_description required' };
@@ -226,25 +243,41 @@ export const VALIDATOR_REGISTRY: Record<string, Validator> = {
   pms_rates_and_inventory:    validateRatesAndInventory,
   // Phase 1 tables — wrap the existing typed validators so the generic
   // writer can call them uniformly.
+  // These wrappers MUST pass `clean` + `warnings` through: the validators
+  // null out warned-invalid fields (inverted arrival/departure pairs,
+  // 50,000-room counts, malformed room numbers) in `clean`, and the writer
+  // applies it before persisting. The old wrappers returned only `ok`,
+  // which silently discarded the entire sanitize layer — garbage that
+  // passed layer-1 type checks wrote to Postgres as-is.
   pms_reservations: (row: Record<string, unknown>) => {
     const r = validateReservation(row as ReservationRow);
-    return r.ok ? { ok: true as const } : { ok: false as const, reason: r.errors.join('; ') };
+    return r.ok
+      ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
+      : { ok: false as const, reason: r.errors.join('; ') };
   },
   pms_room_status_log: (row: Record<string, unknown>) => {
     const r = validateRoomStatus(row as RoomStatusRow);
-    return r.ok ? { ok: true as const } : { ok: false as const, reason: r.errors.join('; ') };
+    return r.ok
+      ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
+      : { ok: false as const, reason: r.errors.join('; ') };
   },
   pms_housekeeping_assignments: (row: Record<string, unknown>) => {
     const r = validateHousekeeping(row as HousekeepingRow);
-    return r.ok ? { ok: true as const } : { ok: false as const, reason: r.errors.join('; ') };
+    return r.ok
+      ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
+      : { ok: false as const, reason: r.errors.join('; ') };
   },
   pms_work_orders_v2: (row: Record<string, unknown>) => {
     const r = validateWorkOrder(row as WorkOrderRow);
-    return r.ok ? { ok: true as const } : { ok: false as const, reason: r.errors.join('; ') };
+    return r.ok
+      ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
+      : { ok: false as const, reason: r.errors.join('; ') };
   },
   pms_in_house_snapshot: (row: Record<string, unknown>) => {
     const r = validateInHouseSnapshot(row as InHouseSnapshotRow);
-    return r.ok ? { ok: true as const } : { ok: false as const, reason: r.errors.join('; ') };
+    return r.ok
+      ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
+      : { ok: false as const, reason: r.errors.join('; ') };
   },
 };
 

@@ -97,3 +97,43 @@ export async function callerCan(
   if (!canManageHotel(caller, hotelId)) return false;
   return canForProperty({ role: caller.role }, capability, hotelId);
 }
+
+/**
+ * Capability + property-scope check resolved straight from an authenticated
+ * user id (no pre-fetched TeamCaller). Loads the account once, then requires
+ * BOTH:
+ *   (1) the per-hotel capability resolver allows it (default + override + the
+ *       manager floor — e.g. manage_settings is owner/GM/admin only and
+ *       override-proof), AND
+ *   (2) the caller actually has access to `propertyId` (admin reaches all; the
+ *       '*' wildcard reaches all; otherwise the id must be in property_access).
+ *
+ * Use this at a route boundary that already ran requireSession and just needs
+ * "is this user allowed to do <capability> at <propertyId>?". The PMS write
+ * routes use it to admit owner + GM (manage_settings) instead of the old
+ * owner-id-only check, so a GM can save/onboard PMS credentials — matching the
+ * /settings/pms page gate. (Access cleanup 2026-06-26.)
+ */
+export async function accountCanForProperty(
+  authUserId: string,
+  capability: CapabilityKey,
+  propertyId: string | null | undefined,
+): Promise<boolean> {
+  if (!propertyId) return false;
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('role, property_access')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (error || !account) return false;
+
+  const role = (account.role as AppRole | null) ?? null;
+  if (!role) return false;
+
+  // (1) Capability (default + per-hotel override + manager floor).
+  if (!(await canForProperty({ role }, capability, propertyId))) return false;
+
+  // (2) Property scope — admin and '*' wildcard reach every property.
+  const access = (account.property_access ?? []) as string[];
+  return role === 'admin' || access.includes(propertyId) || access.includes('*');
+}

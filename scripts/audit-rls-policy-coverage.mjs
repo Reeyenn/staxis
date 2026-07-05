@@ -161,6 +161,12 @@ const SERVICE_ROLE_ONLY = new Set([
   'pms_lost_and_found',
   'pms_groups_and_blocks',
   'pms_rates_and_inventory',
+  // ─── Migration 0291 — per-feed PAGE values (feed-capture). ───────────
+  // Same service-role-only pattern as the 0202 siblings: RLS enabled +
+  // REVOKE from public/anon/authenticated + explicit
+  // `pms_feed_values_no_client` deny policy. CUA worker writes; web app
+  // reads via /api/* with supabaseAdmin.
+  'pms_feed_values',
   // ─── Plan v4 (migration 0205) — empty stub tables. ───────────────────
   // Recreated as empty stubs so legacy web-app code paths don't 500 with
   // "relation does not exist". RLS enabled via the same dynamic SQL

@@ -28,7 +28,19 @@ const FEED_KEY = /^[A-Za-z0-9_.-]{1,80}$/;
 const sanitizeKey = (k: string): string => k.replace(/[^a-z0-9_-]/gi, '_');
 
 interface SampleField { name: string; value: string }
-interface FeedSample { capturedAt: string; rowCount: number; fields: SampleField[] }
+interface FeedSample { capturedAt: string; rowCount: number; fields: SampleField[]; pageValues?: SampleField[] }
+
+/** Validate + clamp an array of {name,value} fields from the stored sample. */
+function sanitizeFields(raw: unknown): SampleField[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((f: unknown) => f && typeof f === 'object' && typeof (f as { name?: unknown }).name === 'string')
+    .map((f: { name: string; value?: unknown }) => {
+      const v = typeof f.value === 'string' ? f.value : '';
+      return { name: f.name.slice(0, 80), value: v.length > 200 ? v.slice(0, 200) : v };
+    })
+    .slice(0, 60);
+}
 
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
@@ -62,14 +74,13 @@ async function loadSample(propertyId: string, feedKey: string): Promise<FeedSamp
     if (!blob || blob.size > 200_000) return null;
     const parsed = JSON.parse(await blob.text());
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.fields)) return null;
-    const fields: SampleField[] = parsed.fields
-      .filter((f: unknown) => f && typeof f === 'object' && typeof (f as { name?: unknown }).name === 'string')
-      .map((f: { name: string; value?: unknown }) => ({ name: f.name, value: typeof f.value === 'string' ? f.value : '' }))
-      .slice(0, 60);
+    const fields = sanitizeFields(parsed.fields);
+    const pageValues = sanitizeFields(parsed.pageValues);
     return {
       capturedAt: typeof parsed.capturedAt === 'string' ? parsed.capturedAt : '',
       rowCount: typeof parsed.rowCount === 'number' && Number.isFinite(parsed.rowCount) ? parsed.rowCount : 0,
       fields,
+      ...(pageValues.length > 0 ? { pageValues } : {}),
     };
   } catch {
     return null;

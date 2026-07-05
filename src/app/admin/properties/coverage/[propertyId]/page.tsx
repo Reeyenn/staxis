@@ -108,7 +108,7 @@ interface CoverageResponse {
 }
 
 // fix/cua-freeform-capture — the "Captured" panel's per-feed live sample.
-interface FeedSampleData { capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }> }
+interface FeedSampleData { capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }>; pageValues?: Array<{ name: string; value: string }> }
 
 const STATE_PILL: Record<FeedDetail['state'], { tone: PillTone; label: string }> = {
   live: { tone: 'forest', label: 'Live' },
@@ -623,6 +623,17 @@ export default function CoveragePage() {
       { feedKey: feed.actionKey ?? feed.key, op: 'delete', columnName },
       `Stopped capturing “${columnName}”.`);
 
+  // fix/cua-repoint-column — point a built-in field at the correct page column
+  // (fixes a mis-mapped column, e.g. Guest Name reading the wrong/no cell). The
+  // geometry index IS the body cell index, so td:nth-child(index) is the selector.
+  const repointColumn = (feed: FeedDetail, columnName: string, geometryIndex: number) =>
+    void runColumnEdit(`set:${feed.key}:${columnName}`,
+      { feedKey: feed.actionKey ?? feed.key, op: 'set-selector', columnName, selector: `td:nth-child(${geometryIndex})` },
+      data?.activeMap?.isDraft
+        ? `Pointed “${columnName}” at the right column — saved to your draft (re-read to preview).`
+        : `Pointed “${columnName}” at the right column.`)
+      .then((okFlag) => { if (okFlag) void loadSamples(); });
+
   const addCustomColumn = (feed: FeedDetail) => {
     const columnKey = slugifyHeader(addColName);
     // Three ways to choose the column: a drag-selected per-row COLUMN selector, a
@@ -932,7 +943,31 @@ export default function CoveragePage() {
                                   {c}
                                   {custom && <Caps size={8} c="var(--gold)" style={{ letterSpacing: '.1em' }}>custom</Caps>}
                                 </span>
-                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), wordBreak: 'break-all' }}>{selector}</span>
+                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: (selector && selector.trim()) ? dimWhite(.5) : 'var(--gold)', wordBreak: 'break-all' }}>{(selector && selector.trim()) ? selector : '— unassigned'}</span>
+                                {/* fix/cua-repoint-column — point a BUILT-IN field at the right
+                                    page column. Options = ALL captured page columns (the geometry),
+                                    not just unassigned ones. */}
+                                {!custom && editable && (() => {
+                                  const setBusy = colBusy === `set:${f.key}:${c}`;
+                                  if (setBusy) return <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', color: dimWhite(.5), flexShrink: 0 }} />;
+                                  const geoCols = (captures[capKey]?.geometry?.columns ?? []).filter((g) => g.header && g.header.trim().length > 0);
+                                  if (geoCols.length === 0) {
+                                    return (
+                                      <button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} disabled={!!liveJobId}
+                                        title="Read the page so you can re-point this field"
+                                        style={{ flexShrink: 0, background: 'transparent', border: 'none', color: 'var(--gold)', textDecoration: 'underline', cursor: liveJobId ? 'default' : 'pointer', fontFamily: FONT_MONO, fontSize: 10, padding: 0, opacity: liveJobId ? .5 : 1 }}>re-read to fix</button>
+                                    );
+                                  }
+                                  return (
+                                    <select value="" disabled={!!liveJobId}
+                                      onChange={(e) => { const idx = Number(e.target.value); if (Number.isInteger(idx) && idx >= 1) repointColumn(f, c, idx); }}
+                                      title="Point this field at the correct page column"
+                                      style={{ flexShrink: 0, background: dimWhite(.06), color: '#fff', border: `1px solid ${dimWhite(.2)}`, borderRadius: 6, padding: '2px 6px', fontFamily: FONT_SANS, fontSize: 10.5, cursor: 'pointer' }}>
+                                      <option value="" style={{ color: '#000' }}>fix → point at…</option>
+                                      {geoCols.map((g) => <option key={g.index} value={g.index} style={{ color: '#000' }}>{g.header}</option>)}
+                                    </select>
+                                  );
+                                })()}
                               </div>
                             );
                           };
@@ -974,7 +1009,9 @@ export default function CoveragePage() {
                                           setAddColScope('page');
                                           setAddColSelector(r.value.selector);
                                           setAddColIndex('');
-                                          setAddColName(slugifyValue(r.value.text));
+                                          // Name from the label beside the datum when present ("Guest
+                                          // Count:" → guest_count), else the value text. (Editable.)
+                                          setAddColName(slugifyValue(r.labelText ?? r.value.text));
                                           setDragColFeed(null);
                                         }
                                         // unknown → DragToCaptureView shows "couldn't tell…"; stay in drag mode so the founder can re-drag (the human-loop).
@@ -1133,7 +1170,7 @@ export default function CoveragePage() {
                 const busy = !!recapturing[key];
                 return (
                   <div key={key} style={{ padding: '12px 14px', background: dimWhite(.04), borderRadius: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: s && s.fields.length ? 10 : 0, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: s && (s.fields.length || (s.pageValues?.length ?? 0)) ? 10 : 0, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: FONT_SERIF, fontSize: 15, color: '#fff' }}>{f.label}</span>
                       {s && <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>{s.rowCount} row{s.rowCount === 1 ? '' : 's'}{s.capturedAt && timeAgo(s.capturedAt) ? ` · ${timeAgo(s.capturedAt)}` : ''}</span>}
                       <button
@@ -1144,6 +1181,21 @@ export default function CoveragePage() {
                         {busy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={11} />} {busy ? 'Reading…' : 'Re-read'}
                       </button>
                     </div>
+                    {/* Feed-level PAGE totals (e.g. "Guest Count: 23") — one per feed, shown
+                        distinctly above the per-row columns. */}
+                    {s && s.pageValues && s.pageValues.length > 0 && (
+                      <div style={{ marginBottom: s.fields.length > 0 ? 10 : 0, padding: '7px 10px', background: 'rgba(212,175,55,0.07)', border: '1px solid rgba(212,175,55,0.22)', borderRadius: 8 }}>
+                        <div style={{ fontFamily: FONT_MONO, fontSize: 9.5, letterSpacing: .5, textTransform: 'uppercase', color: 'var(--gold)', marginBottom: 5 }}>Page totals · one per feed</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '4px 16px' }}>
+                          {s.pageValues.map((pv, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 8, fontFamily: FONT_MONO, fontSize: 11.5, minWidth: 0 }}>
+                              <span style={{ color: dimWhite(.55), whiteSpace: 'nowrap' }}>{pv.name}</span>
+                              <span title={pv.value} style={{ color: pv.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pv.value || '— blank'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {s && s.fields.length > 0 ? (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: '5px 16px' }}>
                         {s.fields.map((fld, i) => (
@@ -1153,11 +1205,11 @@ export default function CoveragePage() {
                           </div>
                         ))}
                       </div>
-                    ) : (
+                    ) : (!s || !s.pageValues || s.pageValues.length === 0) ? (
                       <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
                         {busy ? 'Reading the page…' : 'Not read yet — hit Re-read to pull the live values.'}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}

@@ -17,6 +17,40 @@
 
 import type { Page } from 'playwright';
 
+/**
+ * Stable, non-reversible 32-bit hash (FNV-1a) → 8-hex. Used to fingerprint
+ * TYPED text without embedding it: identical text yields an identical token
+ * (loop detection intact) but the plaintext never lands in a fingerprint,
+ * which flows verbatim into the logged trip `reason`. A typed value can be a
+ * credential (the login flow types the password), so it must never be logged.
+ */
+function stableTextToken(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Snap a pixel coordinate to a coarse grid so a model clicking the SAME
+ * control with a few pixels of jitter per turn produces the SAME
+ * fingerprint. The model re-samples target coordinates from a fresh
+ * screenshot every turn, so a genuinely-stuck re-click drifts by a handful
+ * of pixels — without bucketing, the (max+1)th identical click never trips
+ * and the run grinds to its per-target cost cap. 16px is comfortably below
+ * any real clickable control's size, so distinct controls still land in
+ * distinct buckets. Used only for the coordinate fallback (badge `text`
+ * tokens, when present, are exact and take precedence).
+ */
+const COORD_BUCKET_PX = 16;
+function quantizeCoord(coord: unknown[]): string {
+  return coord
+    .map((c) => (typeof c === 'number' ? Math.round(c / COORD_BUCKET_PX) : c))
+    .join(',');
+}
+
 export interface LoopDetectorOpts {
   /** Number of most-recent records the detector remembers. Default 8. */
   windowSize?: number;
@@ -106,13 +140,21 @@ export function actionFingerprint(input: unknown): string {
     action === 'left_mouse_up'
   ) {
     if (typeof a.ref === 'string') return `${action}:${a.ref}`;
-    if (Array.isArray(a.coordinate)) return `${action}:${a.coordinate.join(',')}`;
+    // Set-of-Mark badge clicks carry `text: "#N"`; executeVisionAction
+    // resolves that to the badge's stored center and IGNORES the raw
+    // coordinate the model sent. So the badge token — not the pixel guess
+    // — is the semantic identity of the click. Prefer it, or a re-click of
+    // the same ineffective badge with a few px of model coordinate jitter
+    // per turn fingerprints differently every time and never trips the
+    // loop-abort (grinds to the per-target cost cap instead).
+    if (typeof a.text === 'string' && a.text.trim() !== '') return `${action}:${a.text.trim()}`;
+    if (Array.isArray(a.coordinate)) return `${action}:${quantizeCoord(a.coordinate)}`;
     return `${action}:no-target`;
   }
 
   if (action === 'left_click_drag') {
-    const start = Array.isArray(a.start_coordinate) ? a.start_coordinate.join(',') : '';
-    const end = Array.isArray(a.coordinate) ? a.coordinate.join(',') : '';
+    const start = Array.isArray(a.start_coordinate) ? quantizeCoord(a.start_coordinate) : '';
+    const end = Array.isArray(a.coordinate) ? quantizeCoord(a.coordinate) : '';
     return `${action}:${start}->${end}`;
   }
 
@@ -133,7 +175,10 @@ export function actionFingerprint(input: unknown): string {
   }
 
   if (action === 'type' || action === 'key') {
-    return `${action}:${String(a.text ?? '')}`;
+    // Hash the text, never embed it: a typed value can be a password, and this
+    // fingerprint is logged verbatim in the loop trip reason. Same text → same
+    // token, so loop detection is unchanged.
+    return `${action}:${stableTextToken(String(a.text ?? ''))}`;
   }
 
   if (action === 'hold_key') {
@@ -161,6 +206,15 @@ export function actionFingerprint(input: unknown): string {
  * re-renders that don't change content; varies across actual
  * navigations / dialog opens / submenu expansions.
  *
+ * Robust to time-like / rotating content: before hashing we strip
+ * clocks, dates, "last refreshed/updated ..." lines, and standalone
+ * long digit runs (see `stripVolatileText`). Without this, a page with
+ * a live clock or a refresh timestamp changes its body text every turn,
+ * so a genuinely-STUCK feed never trips the loop-abort — it grinds to
+ * its per-target cost cap + 15-min wall instead. Two turns of the SAME
+ * page that differ ONLY by a clock/timestamp must produce the SAME
+ * fingerprint.
+ *
  * Fail-safe behavior: if the page eval errors (page closing or
  * navigating mid-flight), we fall back to URL-only. That way two
  * consecutive errored fingerprints on the same URL still compare
@@ -185,11 +239,38 @@ export async function pageFingerprint(page: Page): Promise<string> {
         ? (document.body.innerText ?? '').slice(0, 500)
         : '',
     }));
-    return `${url}::${data.title}::${hashString(data.bodyText)}`;
+    return `${url}::${stripVolatileText(data.title)}::${hashString(stripVolatileText(data.bodyText))}`;
   } catch {
     // Mid-navigation evaluate failure — fall back to URL-only.
     return `${url}::eval-failed`;
   }
+}
+
+/**
+ * Remove time-like / rotating tokens so a live clock, a "last refreshed"
+ * timestamp, or a rotating counter does not make an otherwise-identical
+ * page fingerprint differently every turn. Order matters: strip the
+ * longer/more-specific patterns (refresh lines, ISO datetimes) before the
+ * generic digit-run catch-all. Identity-only — never load-bearing beyond
+ * the loop detector.
+ */
+function stripVolatileText(s: string): string {
+  return s
+    // "last refreshed/updated: ..." (to end of that line)
+    .replace(/last\s+(?:refreshed|updated|synced|modified)[^\n]*/gi, '')
+    // clock times: 3:04, 03:04:05, 3:04 pm
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b/gi, '')
+    // ISO-ish dates/datetimes: 2026-06-30, 2026-06-30T12:34:56
+    .replace(/\b\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?\b/gi, '')
+    // slash/dot dates: 06/30/2026, 30.06.2026
+    .replace(/\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, '')
+    // standalone LONG digit runs (rotating counters, epoch ms, etc.). 6+ digits,
+    // not 4+ — so two pages that differ only by a 4-5 digit record/room id don't
+    // strip to the same fingerprint and cause a false loop-abort. (Re-review LOW.)
+    .replace(/\b\d{6,}\b/g, '')
+    // collapse whitespace left behind so spacing changes don't leak through
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**

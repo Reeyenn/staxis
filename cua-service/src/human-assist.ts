@@ -163,6 +163,19 @@ interface PendingRequestRow {
 }
 
 /**
+ * ITEM B (audit 40a45bfe) — decide whether a REUSED pending row is safe to
+ * wait on. `refreshReusedPendingRow` returns TRUE only when the row now
+ * reflects THIS attempt (refresh landed, or an answer legitimately raced in on
+ * its own frame). FALSE means the refresh UPDATE errored, so the row still
+ * carries the PREVIOUS attempt's — possibly wrong-target — screenshot. The
+ * admin clicks these frames, so waiting on a stale one risks a takeover click
+ * landing on a page the robot has moved off. Pure so it can be unit-pinned.
+ */
+export function shouldWaitOnReusedRow(refreshOutcome: boolean): boolean {
+  return refreshOutcome === true;
+}
+
+/**
  * feature/cua-assist-board — refresh a REUSED pending row to THIS attempt's
  * reality: fresh screenshot/scroll/viewport/question, the CURRENT target_key,
  * and a fresh TTL. Two reasons, both takeover-critical:
@@ -177,11 +190,21 @@ interface PendingRequestRow {
  * the OLD screenshot is kept — it's the frame the answer was given against).
  * The replaced screenshot is deleted best-effort only when the refresh
  * landed (the expire cron deletes only the path stored on the row).
+ *
+ * Returns TRUE only when the reused row now faithfully reflects THIS attempt
+ * (refresh UPDATE landed, or an answer raced in first and legitimately won the
+ * row on its own frame). Returns FALSE when the refresh UPDATE errored: the row
+ * still carries the PREVIOUS attempt's screenshot/target, and the admin clicks
+ * these frames — a takeover answer against a stale frame would land a physical
+ * click on a page the robot is no longer on, inside a real PMS. On that failure
+ * we EXPIRE the stale row (best-effort) so the assist route — which commits only
+ * WHERE status='pending' — can't accept an answer against it, and the caller
+ * refuses to wait on it (audit 40a45bfe ITEM B).
  */
 async function refreshReusedPendingRow(
   row: PendingRequestRow,
   input: HelpRequestInput,
-): Promise<void> {
+): Promise<boolean> {
   const { data: refreshed, error } = await supabase
     .from('mapping_help_requests')
     .update({
@@ -201,13 +224,32 @@ async function refreshReusedPendingRow(
     .select('id')
     .maybeSingle();
   if (error) {
-    // Degraded, not broken: the robot waits on a row with the older
-    // screenshot/TTL. Worst case the cron sweeps it and the wait times out.
-    log.warn('help-request: reused-row refresh failed (stale screenshot may be shown)', {
+    // The row still shows the PREVIOUS attempt's (possibly wrong-target)
+    // screenshot, but the admin clicks these frames. Rather than let a takeover
+    // answer commit against a frame the robot has moved off, EXPIRE the stale
+    // pending row so the assist route (commits only WHERE status='pending')
+    // can't accept it. Best-effort — if this UPDATE also fails the caller still
+    // refuses the row (returns false), so no answer is ever taken against it.
+    log.warn('help-request: reused-row refresh failed — expiring the stale row', {
       err: error.message, requestId: row.id, targetKey: input.targetKey,
     });
-    return;
+    try {
+      await supabase
+        .from('mapping_help_requests')
+        .update({ status: 'expired', answered_at: new Date().toISOString() })
+        .eq('id', row.id)
+        .eq('status', 'pending');
+    } catch (expireErr) {
+      log.warn('help-request: stale-row expire also failed (non-fatal)', {
+        err: (expireErr as Error).message, requestId: row.id,
+      });
+    }
+    return false;
   }
+  // refreshed === null means an answer/expire raced in and won the row while
+  // still on ITS frame (the status='pending' guard blocked our overwrite) —
+  // legitimate, so we keep it and report success. Only delete the old
+  // screenshot when OUR refresh actually landed (refreshed truthy).
   const oldPath = row.screenshot_storage_path;
   if (refreshed && oldPath && oldPath !== input.screenshotStoragePath) {
     try {
@@ -218,6 +260,7 @@ async function refreshReusedPendingRow(
       });
     }
   }
+  return true;
 }
 
 async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string> {
@@ -236,7 +279,13 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
     log.info('help-request: reusing existing pending row', {
       requestId: existing.id, jobId: input.jobId, targetKey: input.targetKey,
     });
-    await refreshReusedPendingRow(existing, input);
+    // If the refresh failed, the row still holds the PREVIOUS attempt's
+    // screenshot/target and has been expired above — do NOT wait on it (an
+    // admin answering the stale frame could land a click on the wrong page).
+    // Throw so requestHelp falls through to 'unavailable' for this target.
+    if (!shouldWaitOnReusedRow(await refreshReusedPendingRow(existing, input))) {
+      throw new Error('help-request reused-row refresh failed; refusing stale frame');
+    }
     return existing.id;
   }
 
@@ -279,8 +328,12 @@ async function findOrInsertHelpRequest(input: HelpRequestInput): Promise<string>
         // winner row can belong to a DIFFERENT target (e.g. a leftover from
         // a pre-restart attempt whose expire UPDATE failed). Refresh it to
         // THIS request's target + screenshot before waiting on it, exactly
-        // like the fast-path reuse above.
-        await refreshReusedPendingRow(raced, input);
+        // like the fast-path reuse above. A failed refresh means the row still
+        // shows the OTHER target's frame (and has been expired) — refuse it
+        // rather than wait on / let the admin answer against a stale frame.
+        if (!shouldWaitOnReusedRow(await refreshReusedPendingRow(raced, input))) {
+          throw new Error('help-request raced-row refresh failed; refusing stale frame');
+        }
         return raced.id;
       }
     }
@@ -474,12 +527,21 @@ export async function requestHelp(input: HelpRequestInput): Promise<HelpResponse
 
     const abortHandler = () => {
       // Plan v8 P1-6: mark row 'aborted' on SIGTERM so admin UI doesn't
-      // dangle a card forever.
+      // dangle a card forever. Supabase builders are LAZY thenables — they
+      // only fire when awaited/.then()'d, so the previous bare `void
+      // builder` never sent the update and every aborted card dangled.
       void supabase
         .from('mapping_help_requests')
         .update({ status: 'aborted', answered_at: new Date().toISOString() })
         .eq('id', requestId)
-        .eq('status', 'pending');
+        .eq('status', 'pending')
+        .then(({ error: abortErr }) => {
+          if (abortErr) {
+            log.warn('help-request: abort-status update failed', {
+              requestId, err: abortErr.message,
+            });
+          }
+        });
       log.info('help-request: aborted via signal', { requestId });
       settle({ actionType: 'unavailable', source: 'aborted', requestId });
     };

@@ -204,6 +204,7 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   },
   {
     key: 'run_reports', adminOnly: false, deptScoped: false, group: 'team_settings',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Reports', label_es: 'Informes',
     desc_en: 'Run, export & schedule reports', desc_es: 'Ejecutar, exportar y programar informes',
   },
@@ -268,6 +269,9 @@ export function isAdminOnlyCapability(cap: CapabilityKey): boolean {
 //   - view_activity_log — the full searchable/exportable audit history.
 //   - manage_settings — the hotel's PMS connection / credentials surface.
 //     (Pre-onboarding lockdown 2026-06-26.)
+//   - run_reports — the self-serve report hub embeds money (inventory spend,
+//     budgets) and the activity-log audit timeline, so it's manager-only too.
+//     (Pre-onboarding access cleanup 2026-06-26.)
 //
 // Derived from each meta's `defaultRoles === MANAGER_ROLES` so it can never drift
 // from the registry (manage_* and the sensitive view caps all carry that floor).

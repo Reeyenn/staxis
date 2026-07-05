@@ -11,15 +11,12 @@ import {
   listInventoryOrders,
   listInventoryBudgets,
   monthToDateSpendByCategory,
-  getInventoryAutoFillMap,
 } from '@/lib/db';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
 import {
   fetchDailyAverages,
-  fetchMlPredictedRates,
   type DailyAverages,
 } from '@/lib/inventory-predictions';
-import { fetchWithAuth } from '@/lib/api-fetch';
 import { useCan } from '@/lib/capabilities/useCan';
 import type { OrderingMode } from '@/lib/ordering/types';
 import type {
@@ -28,7 +25,6 @@ import type {
   InventoryOrder,
   InventoryBudget,
 } from '@/types';
-import type { AutoFillItem } from '@/lib/db/ml-inventory-cockpit';
 
 import { T, fonts } from './tokens';
 import { Caps } from './Caps';
@@ -47,14 +43,17 @@ import { ReorderPanel } from './overlays/ReorderPanel';
 import { ReportsPanel } from './overlays/ReportsPanel';
 import { HistoryPanel } from './overlays/HistoryPanel';
 import { BudgetsPanel } from './overlays/BudgetsPanel';
-import { SimpleSheet } from './overlays/SimpleSheet';
+import { ScanInvoiceSheet } from './overlays/ScanInvoiceSheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
 import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
 import { apiGetMode } from './ordering-api';
 import { t, invLang, dateLocale } from './inv-i18n';
 
-type AiMode = 'off' | 'auto' | 'always-on';
+// The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
+// Helper" rail button now NAVIGATES to the /inventory/ai report screen instead
+// of opening an overlay (see openOverlay below). `ai` is intentionally NOT an
+// OverlayKey anymore.
 type OverlayKey =
   | 'count'
   | 'scan'
@@ -63,13 +62,12 @@ type OverlayKey =
   | 'ordersettings'
   | 'reports'
   | 'history'
-  | 'ai'
   | 'budgets'
   | 'add'
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'ai', 'budgets', 'add',
+  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'add',
 ];
 
 export function InventoryShell() {
@@ -82,14 +80,23 @@ export function InventoryShell() {
   const tx = t(L);
   const can = useCan();
   const canManage = !!user && can('manage_inventory_orders');
+  // Money capability — gates every budget/spend surface (sidebar spend strip,
+  // Reports + Budgets panels, the reorder budget meters) AND the budget/spend
+  // data fetch below, so the figures never reach a line-staff browser. Stock
+  // counts + low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.)
+  const canViewFinancials = !!user && can('view_financials');
 
   // ── Core data state ────────────────────────────────────────────────
+  // No ML state here on purpose. The manual inventory tab never fetches ML
+  // predicted rates or the auto-fill map — days-left + reorder suggestions run
+  // only on the occupancy-weighted usage rule and the static fallback. The
+  // (empty) map below is threaded through the adapter/panel so selectBurnRate
+  // can never pick the 'ml' source. The AI's silent predictions live on the
+  // separate /inventory/ai report screen.
+  const EMPTY_ML_RATES: Map<string, number> = useMemo(() => new Map(), []);
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [occupancy, setOccupancy] = useState<OccupancyBundle | null>(null);
   const [averages, setAverages] = useState<DailyAverages | null>(null);
-  const [mlRateMap, setMlRateMap] = useState<Map<string, number>>(() => new Map());
-  const [autoFill, setAutoFill] = useState<AutoFillItem[]>([]);
-  const [aiMode, setAiMode] = useState<AiMode>('auto');
   const [counts, setCounts] = useState<InventoryCount[]>([]);
   const [orders, setOrders] = useState<InventoryOrder[]>([]);
   const [budgets, setBudgets] = useState<InventoryBudget[]>([]);
@@ -115,31 +122,29 @@ export function InventoryShell() {
 
     void (async () => {
       try {
-        const aiStatusUrl = `/api/inventory/ai-status?propertyId=${activePropertyId}`;
-        const statusRes = await fetchWithAuth(aiStatusUrl, { cache: 'no-store' })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null);
-        const initialMode = (statusRes?.data?.aiMode as AiMode) ?? 'auto';
-
+        // Manual page: fetch occupancy + daily averages (needed for the
+        // rule-based days-left) + counts/orders/budgets/spend only. No ML
+        // predicted-rate fetch, no auto-fill map, no ai-status/ai-mode call.
         const monthStart = startOfMonth(new Date());
         const monthEnd = startOfMonth(addMonths(new Date(), 1));
-        const [occ, avg, rates, fill, ct, od, bd, spend] =
+        const [occ, avg, ct, od, bd, spend] =
           await Promise.all([
             fetchOccupancyBundle(activePropertyId, daysAgo(14)),
             fetchDailyAverages(activePropertyId, 14),
-            fetchMlPredictedRates(activePropertyId),
-            getInventoryAutoFillMap(activePropertyId, initialMode).catch(() => [] as AutoFillItem[]),
             listInventoryCounts(user.uid, activePropertyId, 200),
             listInventoryOrders(user.uid, activePropertyId, 200),
-            listInventoryBudgets(user.uid, activePropertyId),
-            monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd),
+            // Budget + spend are money — only fetch them for the money capability
+            // so the dollar figures never reach a line-staff browser.
+            canViewFinancials
+              ? listInventoryBudgets(user.uid, activePropertyId)
+              : Promise.resolve([] as InventoryBudget[]),
+            canViewFinancials
+              ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
+              : Promise.resolve({} as Record<string, number>),
           ]);
         if (cancelled) return;
         setOccupancy(occ);
         setAverages(avg);
-        setMlRateMap(rates);
-        setAutoFill(fill);
-        setAiMode(initialMode);
         setCounts(ct);
         setOrders(od);
         setBudgets(bd);
@@ -152,7 +157,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, canViewFinancials]);
 
   // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
   useEffect(() => {
@@ -168,20 +173,20 @@ export function InventoryShell() {
   useEffect(() => {
     const action = searchParams.get('action');
     if (action && VALID_QUERY_ACTIONS.includes(action as Exclude<OverlayKey, null>)) {
+      // The budget/spend overlays are money — never honour a ?action= deep link
+      // to them for a non-money role (closes the deep-link back door).
+      if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
       setOverlay(action as OverlayKey);
     }
     // Run only on initial mount + param changes — we want sticky URLs.
 
-  }, [searchParams]);
+  }, [searchParams, canViewFinancials]);
 
   // ── Derived display items ──────────────────────────────────────────
-  const autoFillGraduated = useMemo(() => {
-    const s = new Set<string>();
-    for (const f of autoFill) {
-      if ((f as { graduated?: boolean }).graduated) s.add(f.itemId);
-    }
-    return s;
-  }, [autoFill]);
+  // Fully manual: no ML rates and no "ai-tracked" graduation marks. Empty
+  // maps force selectBurnRate down the rule-occupancy → fallback-60d → no-data
+  // path, and no card ever shows the ai-tracked label.
+  const NO_GRADUATED: Set<string> = useMemo(() => new Set(), []);
 
   const display: DisplayItem[] = useMemo(
     () =>
@@ -189,11 +194,11 @@ export function InventoryShell() {
         toDisplayItem(it, {
           occupancy,
           dailyAverages: averages,
-          mlRateMap,
-          autoFillGraduated,
+          mlRateMap: EMPTY_ML_RATES,
+          autoFillGraduated: NO_GRADUATED,
         }),
       ),
-    [items, occupancy, averages, mlRateMap, autoFillGraduated],
+    [items, occupancy, averages, EMPTY_ML_RATES, NO_GRADUATED],
   );
 
   const totalItems = display.length;
@@ -252,8 +257,14 @@ export function InventoryShell() {
 
   // ── Handlers ───────────────────────────────────────────────────────
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
+    // The "AI Helper" rail button navigates to the full AI report screen
+    // instead of opening an overlay — the inventory tab itself stays manual.
+    if (k === 'ai') {
+      router.push('/inventory/ai');
+      return;
+    }
     setOverlay(k as OverlayKey);
-  }, []);
+  }, [router]);
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
@@ -276,14 +287,17 @@ export function InventoryShell() {
     try {
       const monthStart = startOfMonth(new Date());
       const monthEnd = startOfMonth(addMonths(new Date(), 1));
-      const [ct, od, bd, spend, occ, avg, rates] = await Promise.all([
+      const [ct, od, bd, spend, occ, avg] = await Promise.all([
         listInventoryCounts(user.uid, activePropertyId, 200),
         listInventoryOrders(user.uid, activePropertyId, 200),
-        listInventoryBudgets(user.uid, activePropertyId),
-        monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd),
+        canViewFinancials
+          ? listInventoryBudgets(user.uid, activePropertyId)
+          : Promise.resolve([] as InventoryBudget[]),
+        canViewFinancials
+          ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
+          : Promise.resolve({} as Record<string, number>),
         fetchOccupancyBundle(activePropertyId, daysAgo(14)),
         fetchDailyAverages(activePropertyId, 14),
-        fetchMlPredictedRates(activePropertyId),
       ]);
       setCounts(ct);
       setOrders(od);
@@ -291,28 +305,10 @@ export function InventoryShell() {
       setSpendByCat(spend as Record<string, number>);
       setOccupancy(occ);
       setAverages(avg);
-      setMlRateMap(rates);
     } catch (err) {
       console.error('[inventory] refresh failed', err);
     }
-  }, [user, activePropertyId]);
-
-  const updateAiMode = useCallback(async (mode: AiMode) => {
-    if (!activePropertyId) return;
-    setAiMode(mode);
-    try {
-      await fetchWithAuth('/api/inventory/ai-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: activePropertyId, mode }),
-      });
-      // Refresh auto-fill map so the new mode takes effect immediately.
-      const fresh = await getInventoryAutoFillMap(activePropertyId, mode);
-      setAutoFill(fresh);
-    } catch (err) {
-      console.error('[inventory] ai-mode update failed', err);
-    }
-  }, [activePropertyId]);
+  }, [user, activePropertyId, canViewFinancials]);
 
   if (!user || !activePropertyId) {
     return (
@@ -359,7 +355,8 @@ export function InventoryShell() {
         >
           <HStat eyebrow={tx.stockHealth} big={stockHealth == null ? '—' : `${stockHealth}%`} dot="good" />
           <HStat eyebrow={tx.orderNow} big={String(statusCounts.critical)} dot="critical" />
-          <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />
+          {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
+          {canViewFinancials && <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />}
           <div style={{ paddingTop: 2 }}>
             <Caps size={9}>{todayLabel(L)}</Caps>
             <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim, marginTop: 2 }}>
@@ -378,6 +375,7 @@ export function InventoryShell() {
           spendSpent={totalSpent}
           spendCap={totalCap}
           canManage={canManage}
+          canViewFinancials={canViewFinancials}
           onAction={openOverlay}
         />
         <div>
@@ -412,8 +410,6 @@ export function InventoryShell() {
         onClose={() => { closeOverlay(); void refreshData(); }}
         items={items}
         display={display}
-        autoFill={autoFill}
-        aiMode={aiMode}
       />
 
       <ReorderPanel
@@ -424,8 +420,9 @@ export function InventoryShell() {
         budgets={budgets}
         spendByCat={spendByCat}
         averages={averages}
-        mlRateMap={mlRateMap}
+        mlRateMap={EMPTY_ML_RATES}
         canManage={canManage}
+        canViewFinancials={canViewFinancials}
         orderingMode={orderingMode}
         onViewOrders={() => setOverlay('orders')}
       />
@@ -449,7 +446,7 @@ export function InventoryShell() {
 
       <ReportsPanel
         lang={L}
-        open={overlay === 'reports'}
+        open={overlay === 'reports' && canViewFinancials}
         onClose={closeOverlay}
         display={display}
       />
@@ -464,18 +461,15 @@ export function InventoryShell() {
 
       <BudgetsPanel
         lang={L}
-        open={overlay === 'budgets'}
+        open={overlay === 'budgets' && canViewFinancials}
         onClose={() => { closeOverlay(); void refreshData(); }}
         budgets={budgets}
       />
 
-      <SimpleSheet
+      <ScanInvoiceSheet
         lang={L}
-        open={overlay === 'scan' || overlay === 'ai'}
-        kind={overlay === 'scan' ? 'scan' : 'ai'}
+        open={overlay === 'scan'}
         onClose={() => { closeOverlay(); void refreshData(); }}
-        aiMode={aiMode}
-        onModeChange={updateAiMode}
         display={display}
       />
 

@@ -148,14 +148,16 @@ describe('ActionLoopDetector — window eviction', () => {
 });
 
 describe('actionFingerprint — vision (computer_20251124) action shapes', () => {
-  test('left_click with coordinate is stable', () => {
+  test('left_click with coordinate is stable (quantized to 16px buckets)', () => {
     const fp1 = actionFingerprint({ action: 'left_click', coordinate: [520, 340] });
     const fp2 = actionFingerprint({ action: 'left_click', coordinate: [520, 340] });
     assert.equal(fp1, fp2);
-    assert.equal(fp1, 'left_click:520,340');
+    // 520/16=32.5→33, 340/16=21.25→21. Coordinates snap to a coarse grid so
+    // a few pixels of model jitter on the same control collapse together.
+    assert.equal(fp1, 'left_click:33,21');
   });
 
-  test('left_click at different coords produces different fingerprints', () => {
+  test('left_click at far-apart coords produces different fingerprints', () => {
     const fp1 = actionFingerprint({ action: 'left_click', coordinate: [100, 200] });
     const fp2 = actionFingerprint({ action: 'left_click', coordinate: [100, 300] });
     assert.notEqual(fp1, fp2);
@@ -185,6 +187,83 @@ describe('actionFingerprint — vision (computer_20251124) action shapes', () =>
     const fp2 = actionFingerprint({ action: 'screenshot' });
     assert.equal(fp1, fp2);
     assert.equal(fp1, 'screenshot');
+  });
+});
+
+describe('actionFingerprint — coordinate jitter & Set-of-Mark badge tokens', () => {
+  test('same-badge clicks with jittered coordinates share ONE fingerprint', () => {
+    // executeVisionAction resolves `text: "#N"` to the stored badge center
+    // and ignores the raw coordinate, so a re-click of the same ineffective
+    // badge with per-turn model jitter is the SAME action. The fingerprint
+    // must collapse on the badge token, not the pixel guess.
+    const fp1 = actionFingerprint({ action: 'left_click', coordinate: [642, 318], text: '#7' });
+    const fp2 = actionFingerprint({ action: 'left_click', coordinate: [640, 320], text: '#7' });
+    const fp3 = actionFingerprint({ action: 'left_click', coordinate: [641, 319], text: '#7' });
+    assert.equal(fp1, fp2);
+    assert.equal(fp2, fp3);
+    assert.equal(fp1, 'left_click:#7');
+  });
+
+  test('clicks on genuinely different badges still differ', () => {
+    const fp7 = actionFingerprint({ action: 'left_click', coordinate: [642, 318], text: '#7' });
+    const fp8 = actionFingerprint({ action: 'left_click', coordinate: [642, 318], text: '#8' });
+    assert.notEqual(fp7, fp8);
+  });
+
+  test('badge token takes precedence over a wildly different coordinate', () => {
+    // Even if the model guesses very different pixels, the same badge is the
+    // same semantic click.
+    const fp1 = actionFingerprint({ action: 'left_click', coordinate: [10, 10], text: '#3' });
+    const fp2 = actionFingerprint({ action: 'left_click', coordinate: [900, 700], text: '#3' });
+    assert.equal(fp1, fp2);
+  });
+
+  test('same-control clicks with pixel jitter (no badge) share ONE fingerprint', () => {
+    // Pure-coordinate path: three clicks within a ~16px cell of each other
+    // must quantize to the same bucket.
+    const fp1 = actionFingerprint({ action: 'left_click', coordinate: [642, 318] });
+    const fp2 = actionFingerprint({ action: 'left_click', coordinate: [640, 320] });
+    const fp3 = actionFingerprint({ action: 'left_click', coordinate: [641, 319] });
+    assert.equal(fp1, fp2);
+    assert.equal(fp2, fp3);
+  });
+
+  test('a stuck agent re-clicking one badge with jitter TRIPS the detector', () => {
+    // End-to-end: the failure the finding describes. Badge #7 on a feed that
+    // never changes; the model sends slightly different coordinates each turn
+    // (with screenshots interleaved). The 4th same-badge click must trip
+    // instead of grinding to the per-target cost cap.
+    const d = new ActionLoopDetector({ windowSize: 8, maxRepeats: 3 });
+    const jitter = [[642, 318], [640, 320], [641, 319], [643, 317]] as const;
+    let tripped = false;
+    for (const [x, y] of jitter) {
+      const clickFp = actionFingerprint({ action: 'left_click', coordinate: [x, y], text: '#7' });
+      if (d.record(clickFp, 'stuck-feed').stuck) tripped = true;
+      // interleave the screenshot the model needs to re-read the unchanged page
+      d.record(actionFingerprint({ action: 'screenshot' }), 'stuck-feed');
+    }
+    assert.equal(tripped, true, 'jittered same-badge clicks must trip the loop-abort');
+  });
+
+  test('clicks on FAR-APART controls do NOT trip (bucketing is not over-broad)', () => {
+    // Guard the other direction: clicking four distinct controls (each >16px
+    // apart) must NOT be misread as a loop.
+    const d = new ActionLoopDetector({ windowSize: 8, maxRepeats: 3 });
+    const spots = [[100, 100], [300, 300], [500, 500], [700, 100]] as const;
+    let tripped = false;
+    for (const [x, y] of spots) {
+      const fp = actionFingerprint({ action: 'left_click', coordinate: [x, y] });
+      if (d.record(fp, 'page-A').stuck) tripped = true;
+    }
+    assert.equal(tripped, false, 'clicks on distinct far-apart controls must not trip');
+  });
+
+  test('left_click_drag coordinates are quantized too', () => {
+    // Pick values mid-cell (well away from a 16px boundary) so ±2px stays in
+    // the same bucket: 100/16=6.25, 292/16=18.25, 404/16=25.25, 196/16=12.25.
+    const fp1 = actionFingerprint({ action: 'left_click_drag', start_coordinate: [100, 292], coordinate: [404, 196] });
+    const fp2 = actionFingerprint({ action: 'left_click_drag', start_coordinate: [102, 294], coordinate: [406, 198] });
+    assert.equal(fp1, fp2, 'a drag from/to the same ~16px cells is the same action');
   });
 });
 
@@ -228,6 +307,39 @@ describe('pageFingerprint', () => {
     const fpB = await pageFingerprint(b);
     assert.equal(fpA, 'closed-page');
     assert.equal(fpB, 'closed-page');
+  });
+
+  test('two turns differing ONLY by a clock time produce the same fingerprint (so a stuck feed can trip)', async () => {
+    // A page with a live clock changes its body text every turn. Without
+    // volatile-token stripping, a genuinely-stuck feed would never trip
+    // the loop-abort. These two must fingerprint EQUAL.
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Rooms clean: 42  Current time 3:04:05 pm' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Rooms clean: 42  Current time 3:04:06 pm' });
+    assert.equal(await pageFingerprint(a), await pageFingerprint(b),
+      'a live clock must not change the fingerprint');
+  });
+
+  test('two turns differing ONLY by a "last refreshed" timestamp fingerprint equal', async () => {
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Occupancy 88%\nLast refreshed: 2026-06-30 14:22:01' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Occupancy 88%\nLast refreshed: 2026-06-30 14:23:47' });
+    assert.equal(await pageFingerprint(a), await pageFingerprint(b),
+      'a rotating "last refreshed" timestamp must not change the fingerprint');
+  });
+
+  test('two turns differing ONLY by a rotating long counter fingerprint equal', async () => {
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Session token 100045 · queue idle' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Session token 998877 · queue idle' });
+    assert.equal(await pageFingerprint(a), await pageFingerprint(b),
+      'a rotating long digit run must not change the fingerprint');
+  });
+
+  test('REAL content changes still produce different fingerprints (stripping is not over-broad)', async () => {
+    // Guard against the strip being so aggressive it masks genuine
+    // navigation. Same clock, different real content → must differ.
+    const a = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Arrivals list — Smith, Jones  3:04 pm' });
+    const b = fakePage({ url: 'https://pms/dash', title: 'Dashboard', bodyText: 'Departures list — Lee, Kim  3:04 pm' });
+    assert.notEqual(await pageFingerprint(a), await pageFingerprint(b),
+      'a genuine content change must still change the fingerprint');
   });
 });
 

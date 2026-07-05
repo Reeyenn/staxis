@@ -32,8 +32,10 @@ import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
 
-/** Default daily cap in millionths-of-a-dollar. $5/day = 5_000_000. */
-const DAILY_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
+/** Default daily cap in millionths-of-a-dollar. $5/day = 5_000_000.
+ *  Its OWN env var — this previously aliased CUA_JOB_COST_CAP_MICROS (the
+ *  per-mapping-JOB cap), coupling two knobs with different semantics. */
+const DAILY_CAP_MICROS = env.CUA_DAILY_HOTEL_COST_CAP_MICROS;
 
 /**
  * Convert a USD dollar amount to micros (millionths-of-a-dollar).
@@ -338,23 +340,43 @@ export async function checkDailyMappingSpend(): Promise<{
   // prior `.eq('source','mapping')` filter always summed $0 and the cap was
   // inert. Filter on the workload prefix instead — per migration 0208 the
   // `cua_mapping%` workloads are the documented equivalent of source=mapping.
-  const { data, error } = await supabase
-    .from('claude_usage_log')
-    .select('cost_micros')
-    .like('workload', 'cua_mapping%')
-    .gte('ts', since);
-  if (error) {
-    // Don't fail-closed: if the cap-check query itself fails, we
-    // log + treat as under-budget. The per-job cap still applies.
-    log.warn('cost-cap: daily mapping spend query failed — assuming under cap', {
-      err: error.message,
-    });
-    return { over: false, spentMicros: 0, capMicros };
+  //
+  // PAGINATED: hosted PostgREST caps a response at max_rows (1000 default)
+  // and supabase-js returns the truncated page WITHOUT an error. A single
+  // full vision learn logs hundreds of cua_mapping% rows, so 2-3 concurrent
+  // onboardings blow past 1000 inside the 24h window — the old unpaginated
+  // sum silently froze exactly during the mass-onboarding load this cap
+  // exists to stop. cua_critic is included too: critic calls only fire
+  // inside mapping runs and were previously bounded by nothing but the
+  // per-job cap. (`*` is PostgREST's like-wildcard inside .or() strings.)
+  const PAGE = 1000;
+  const MAX_PAGES = 50; // 50k rows ≈ far beyond any real day; bounded loop
+  let spentMicros = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE;
+    const { data, error } = await supabase
+      .from('claude_usage_log')
+      .select('cost_micros')
+      .or('workload.like.cua_mapping*,workload.eq.cua_critic')
+      .gte('ts', since)
+      .order('ts', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      // Don't fail-closed: if the cap-check query itself fails, we
+      // log + treat as under-budget. The per-job cap still applies.
+      log.warn('cost-cap: daily mapping spend query failed — assuming under cap', {
+        err: error.message,
+      });
+      return { over: false, spentMicros: 0, capMicros };
+    }
+    const batch = data ?? [];
+    spentMicros += batch.reduce(
+      (sum, row) => sum + ((row as { cost_micros: number }).cost_micros ?? 0),
+      0,
+    );
+    // Short-circuit: already over cap, or final (partial) page reached.
+    if (spentMicros >= capMicros || batch.length < PAGE) break;
   }
-  const spentMicros = (data ?? []).reduce(
-    (sum, row) => sum + ((row as { cost_micros: number }).cost_micros ?? 0),
-    0,
-  );
   return { over: spentMicros >= capMicros, spentMicros, capMicros };
 }
 

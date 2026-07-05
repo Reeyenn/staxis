@@ -14,6 +14,7 @@
 
 import { supabase } from './supabase.js';
 import { log } from './log.js';
+import { recordSpend } from './cost-cap.js';
 // Pricing math lives in usage-pricing.ts (pure, no Supabase import) so
 // unit tests can exercise it without the Node<22 RealtimeClient throw.
 import { computeCostMicros, type AnthropicUsage } from './usage-pricing.js';
@@ -78,7 +79,14 @@ const IN_PROC_COST_CAP = 1000;
 export async function getJobCostMicros(jobId: string): Promise<number> {
   // Fast path: in-process state is authoritative when present.
   const inProc = IN_PROC_COST_BY_JOB.get(jobId);
-  if (inProc !== undefined) return inProc;
+  if (inProc !== undefined) {
+    // Refresh recency (delete+re-set moves the key to the tail) so a job that
+    // is still being cost-checked can never become the eviction victim — the
+    // bounded map evicts the least-recently-touched entry, not the oldest.
+    IN_PROC_COST_BY_JOB.delete(jobId);
+    IN_PROC_COST_BY_JOB.set(jobId, inProc);
+    return inProc;
+  }
 
   // Fallback: DB read. Used only when the worker restarted between
   // logClaudeUsage and the next checkBudget — rare but possible on
@@ -117,13 +125,33 @@ export async function logClaudeUsage(usage: AnthropicUsage, context: LogContext)
     // round-trip). The cost-cap check downstream sees this without lag.
     if (context.jobId) {
       const current = IN_PROC_COST_BY_JOB.get(context.jobId) ?? 0;
+      // delete+set (not a bare set on an existing key, which leaves insertion
+      // order untouched) so this just-written job moves to the tail — an active
+      // job that keeps spending stays the most-recently-touched and is never
+      // the eviction victim, so its running total can't be silently truncated.
+      IN_PROC_COST_BY_JOB.delete(context.jobId);
       IN_PROC_COST_BY_JOB.set(context.jobId, current + cost);
-      // Bounded-size eviction: drop the oldest entry when over cap.
-      // Maps preserve insertion order, so the first key is the oldest.
+      // Bounded-size eviction: drop the LEAST-recently-touched entry when over
+      // cap. Both get (getJobCostMicros) and set refresh recency via delete+set,
+      // so Map insertion order is now LRU order — the first key is the coldest.
       if (IN_PROC_COST_BY_JOB.size > IN_PROC_COST_CAP) {
-        const oldest = IN_PROC_COST_BY_JOB.keys().next().value;
-        if (oldest !== undefined) IN_PROC_COST_BY_JOB.delete(oldest);
+        const coldest = IN_PROC_COST_BY_JOB.keys().next().value;
+        if (coldest !== undefined) IN_PROC_COST_BY_JOB.delete(coldest);
       }
+    }
+
+    // Feed the per-hotel $5/day cap. This is the ONE seam every Claude call
+    // site already flows through — recordSpend previously had zero live
+    // callers, so the cap's tally never incremented and the advertised
+    // auto-pause could never trip. Mapping workloads are excluded (the
+    // org-wide daily mapping cap covers them); cua_critic rides mapping
+    // runs and is bounded by the per-job + org mapping caps instead.
+    if (
+      context.propertyId &&
+      !context.workload.startsWith('cua_mapping') &&
+      context.workload !== 'cua_critic'
+    ) {
+      await recordSpend(context.propertyId, cost, { kind: 'other', note: context.workload });
     }
 
     const { error } = await supabase.from('claude_usage_log').insert({

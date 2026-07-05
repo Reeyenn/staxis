@@ -115,7 +115,7 @@ function sensitiveMaskLocators(frames: ReadonlyArray<Frame>): Locator[] {
   return frames.map((frame) => frame.locator(SENSITIVE_FIELD_SELECTOR));
 }
 
-async function captureHardenedScreenshotInner(page: Page, deadlineAt: number): Promise<Buffer | null> {
+async function captureHardenedScreenshotInner(page: Page, deadlineAt: number, fullPage: boolean): Promise<Buffer | null> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     // Cooperative deadline: never START a new attempt past the hard cap, so the
     // loop can't keep taking screenshots in the background after withTimeout
@@ -140,7 +140,10 @@ async function captureHardenedScreenshotInner(page: Page, deadlineAt: number): P
       // there is no code path that takes a screenshot WITHOUT them, so either we
       // get a redacted image or we throw / discard and retry/withhold.
       const buf = await page.screenshot({
-        fullPage: false,
+        // Mask + style + frame-mutation guard all still apply at fullPage — the
+        // native mask paints over every sensitive element's box across the whole
+        // scroll height, so a below-the-fold credential is redacted too.
+        fullPage,
         mask: sensitiveMaskLocators(page.frames()),
         maskColor: MASK_COLOR,
         style: REDACTION_STYLE,
@@ -197,18 +200,22 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  * the critic's pre/post capture, and the help-card snapshot.
  *
  * `opts.deadlineMs` overrides the wall-clock deadline (tests only).
+ * `opts.fullPage` captures the whole scroll height instead of the viewport — the
+ * mask/style/guard invariant is unchanged (Playwright masks across the full page),
+ * so the image is still redacted or withheld. Default `false` (viewport-only).
  */
 export async function captureHardenedScreenshot(
   page: Page,
-  opts?: { deadlineMs?: number },
+  opts?: { deadlineMs?: number; fullPage?: boolean },
 ): Promise<Buffer | null> {
   const deadlineMs = opts?.deadlineMs ?? DEADLINE_MS;
+  const fullPage = opts?.fullPage ?? false;
   try {
     // The inner loop honours `deadlineAt` cooperatively (won't start a new
     // attempt past it); withTimeout is the hard backstop that guarantees the
     // CALLER gets `null` promptly even if one in-flight screenshot is finishing.
     return await withTimeout(
-      captureHardenedScreenshotInner(page, performance.now() + deadlineMs),
+      captureHardenedScreenshotInner(page, performance.now() + deadlineMs, fullPage),
       deadlineMs,
       null,
     );

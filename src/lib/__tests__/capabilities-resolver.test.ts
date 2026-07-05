@@ -84,12 +84,25 @@ describe('can() — everyone-everything default', () => {
       assert.equal(can({ role: 'general_manager' }, cap), true, `general_manager should default-have ${cap}`);
     }
   });
-  it('the manager floor covers the sensitive caps it should (wages/financials/audit/settings/team)', () => {
-    for (const cap of ['view_wages', 'view_financials', 'view_activity_log', 'manage_settings', 'manage_team', 'manage_users'] as CapabilityKey[]) {
+  it('the manager floor covers the sensitive caps it should (wages/financials/audit/settings/team/reports)', () => {
+    for (const cap of ['view_wages', 'view_financials', 'view_activity_log', 'manage_settings', 'manage_team', 'manage_users', 'run_reports'] as CapabilityKey[]) {
       assert.equal(MANAGER_FLOOR_CAPABILITIES.has(cap), true, `${cap} should be a manager-floor cap`);
     }
     // A clearly line-staff-safe cap must NOT be floored.
     assert.equal(MANAGER_FLOOR_CAPABILITIES.has('use_packages'), false);
+  });
+  it('run_reports (self-serve report hub) is manager-only and override-proof (embeds money + audit log)', () => {
+    // The reports hub can render inventory spend, budgets, and the activity
+    // log, so line staff must never reach it — by default OR via a stray
+    // allowed:true override. (Pre-onboarding access cleanup 2026-06-26.)
+    for (const role of ['front_desk', 'housekeeping', 'maintenance', 'staff'] as const) {
+      assert.equal(can({ role }, 'run_reports'), false, `${role} must NOT default-have run_reports`);
+      const grant: CapabilityOverrideMap = { run_reports: { [role]: true } };
+      assert.equal(can({ role }, 'run_reports', grant), false, `override must NOT grant run_reports to ${role}`);
+    }
+    assert.equal(can({ role: 'owner' }, 'run_reports'), true);
+    assert.equal(can({ role: 'general_manager' }, 'run_reports'), true);
+    assert.equal(can({ role: 'admin' }, 'run_reports'), true);
   });
   it('legacy staff role gets the everyone-default for hotel caps except manager-floor caps', () => {
     for (const cap of HOTEL_CAPS) {

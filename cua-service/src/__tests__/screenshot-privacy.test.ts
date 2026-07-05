@@ -112,10 +112,10 @@ function makeFakePage(st: PageState): Page {
 }
 
 /** Asserts a recorded screenshot call carried a complete, black, per-frame mask + the suppression style. */
-function assertMaskedCall(call: ScreenshotCall, frames: number) {
+function assertMaskedCall(call: ScreenshotCall, frames: number, fullPage = false) {
   assert.equal(call.maskLen, frames, `screenshot must mask all ${frames} frame(s), never a bare capture`);
   assert.equal(call.maskColor, '#000000', 'mask must be solid black');
-  assert.equal(call.fullPage, false, 'viewport screenshot');
+  assert.equal(call.fullPage, fullPage, fullPage ? 'full-page screenshot' : 'viewport screenshot');
   for (const sel of call.maskSelectors) {
     assert.equal(sel, SENSITIVE_FIELD_SELECTOR, 'mask built from the sensitive-field selector');
   }
@@ -130,6 +130,34 @@ describe('captureHardenedScreenshot — happy path', () => {
     assert.ok(Buffer.isBuffer(result), 'returns a Buffer on success');
     assert.equal(st.screenshotCalls, 1);
     assertMaskedCall(st.calls[0]!, 1);
+  });
+});
+
+describe('captureHardenedScreenshot — opts.fullPage', () => {
+  test('default is a viewport (fullPage:false) capture — byte-identical for existing callers', async () => {
+    const st = pageState();
+    const result = await captureHardenedScreenshot(makeFakePage(st));
+    assert.ok(Buffer.isBuffer(result));
+    assert.equal(st.calls[0]!.fullPage, false, 'no opt ⇒ viewport-only, unchanged from before');
+  });
+
+  test('fullPage:true captures the whole page but is STILL masked (mask/style/black unchanged)', async () => {
+    // The visual-state labeler needs every off-screen row, but a full-page shot
+    // reaches Claude, so the credential/PII redaction invariant must still hold.
+    const st = pageState({ frames: 3 });
+    const result = await captureHardenedScreenshot(makeFakePage(st), { fullPage: true });
+    assert.ok(Buffer.isBuffer(result));
+    assert.equal(st.calls[0]!.fullPage, true, 'threaded through to page.screenshot');
+    assertMaskedCall(st.calls[0]!, 3, /* fullPage */ true); // all 3 frames masked at fullPage too
+  });
+
+  test('fullPage:true still WITHHOLDS (null) when a masked image cannot be produced', async () => {
+    // The labeler's contract: null ⇒ no labels ⇒ the learn parks. A full-page
+    // request must never relax the withhold — no bare fallback at fullPage either.
+    const st = pageState({ screenshotThrowFirst: 99, frames: 2 });
+    const result = await captureHardenedScreenshot(makeFakePage(st), { fullPage: true });
+    assert.equal(result, null, 'no buffer when masking fails, even at fullPage');
+    st.calls.forEach((c) => assertMaskedCall(c, 2, /* fullPage */ true));
   });
 });
 

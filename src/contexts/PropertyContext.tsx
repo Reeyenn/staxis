@@ -5,7 +5,6 @@ import { useAuth } from './AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { supabase } from '@/lib/supabase';
 import type { CapabilityOverrideMap } from '@/lib/capabilities/can';
-import type { AppUsageMap } from '@/lib/app-usage/registry';
 import {
   getProperties,
   getProperty,
@@ -32,11 +31,6 @@ interface PropertyContextType {
   /** The active hotel's capability restrictions (admin's Access-tab toggles).
    *  Empty = everyone-everything (the default). Drives useCan(). */
   capabilityOverrides: CapabilityOverrideMap;
-  /** Which apps the active hotel is actually USING (has real activity in), so
-   *  the nav lights the in-use ones and greys + sinks the rest. An app is only
-   *  greyed when its key is explicitly `false`; absent/true = treated as in use,
-   *  so a loading/failed fetch never hides anything. */
-  appUsage: AppUsageMap;
   loading: boolean;
   setActivePropertyId: (id: string) => void;
   refreshProperty: () => Promise<void>;
@@ -44,7 +38,6 @@ interface PropertyContextType {
   refreshPublicAreas: () => Promise<void>;
   refreshLaundryConfig: () => Promise<void>;
   refreshCapabilities: () => Promise<void>;
-  refreshAppUsage: () => Promise<void>;
 }
 
 const PropertyContext = createContext<PropertyContextType>({
@@ -56,7 +49,6 @@ const PropertyContext = createContext<PropertyContextType>({
   publicAreas: [],
   laundryConfig: [],
   capabilityOverrides: {},
-  appUsage: {},
   loading: true,
   setActivePropertyId: () => {},
   refreshProperty: async () => {},
@@ -64,7 +56,6 @@ const PropertyContext = createContext<PropertyContextType>({
   refreshPublicAreas: async () => {},
   refreshLaundryConfig: async () => {},
   refreshCapabilities: async () => {},
-  refreshAppUsage: async () => {},
 });
 
 /** Read one hotel's capability override map via the service-role-backed route
@@ -102,31 +93,6 @@ async function fetchOverridesFor(pid: string): Promise<CapabilityOverrideMap> {
   }
 }
 
-/** Read which apps the active hotel is USING via the service-role-backed route
- *  (the signal tables are RLS-restricted, so a direct browser read would return
- *  [] and grey every app for the owner). Same fail-soft contract as
- *  fetchOverridesFor: we pass our OWN Authorization header so a transient 401
- *  (e.g. the 2FA-trust window) yields {} instead of nuking the session. {} =
- *  nothing greyed. */
-async function fetchAppUsageFor(pid: string): Promise<AppUsageMap> {
-  let token: string | null = null;
-  try {
-    const { data } = await supabase.auth.getSession();
-    token = data.session?.access_token ?? null;
-  } catch { /* no session → fall through to {} */ }
-  if (!token) return {};
-  try {
-    const res = await fetchWithAuth(`/api/app-usage?propertyId=${encodeURIComponent(pid)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return {};
-    const json = await res.json().catch(() => null);
-    return (json?.data?.usage ?? {}) as AppUsageMap;
-  } catch {
-    return {};
-  }
-}
-
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [properties, setProperties] = useState<Property[]>([]);
@@ -139,7 +105,6 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
   const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
   const [capabilityOverrides, setCapabilityOverrides] = useState<CapabilityOverrideMap>({});
-  const [appUsage, setAppUsage] = useState<AppUsageMap>({});
   const [loading, setLoading] = useState(true);
 
   // Derived from properties list - no async needed, always in sync
@@ -382,49 +347,6 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     catch { setCapabilityOverrides({}); }
   }, [activePropertyId]);
 
-  // Load which apps the active hotel is USING, so the nav can light the in-use
-  // ones and grey + sink the rest.
-  //
-  // NOTE: unlike the capabilities effect above, this deliberately does NOT gate
-  // on activeOnboardingInProgress. A live, operational hotel can still have
-  // onboarding_completed_at = null (e.g. Comfort Suites was never formally
-  // "finished") → isOnboardingInProgress stays true forever → the guard would
-  // permanently suppress auto-light for exactly the hotels that need it, leaving
-  // every app falsely lit. The 2FA-trust-window logout risk that motivates the
-  // capabilities guard is already neutralised here by fetchAppUsageFor's
-  // self-Authorization fail-soft (a transient `requires_2fa` 401 → {} = nothing
-  // greyed, never a forced sign-out), so firing during onboarding is harmless.
-  //
-  // Refresh cadence (v1): fires on sign-in and on every active-property switch.
-  // It does NOT live-refresh mid-session, so an app the owner first starts using
-  // lights up on the next reload / property switch — fine, because the app you're
-  // currently ON is always shown lit (the Header treats the active route as in
-  // use) and an app stays lit permanently once used. refreshAppUsage() is exposed
-  // for a future explicit re-pull, the same way refreshCapabilities is.
-  useEffect(() => {
-    if (!user || !activePropertyId) {
-      setAppUsage({});
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const map = await fetchAppUsageFor(activePropertyId);
-        if (!cancelled) setAppUsage(map);
-      } catch {
-        if (!cancelled) setAppUsage({});
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, activePropertyId]);
-
-  const refreshAppUsage = useCallback(async () => {
-    if (!activePropertyId) { setAppUsage({}); return; }
-    try { setAppUsage(await fetchAppUsageFor(activePropertyId)); }
-    catch { setAppUsage({}); }
-  }, [activePropertyId]);
-
   const refreshProperty = async () => {
     if (!user || !activePropertyId) return;
     const prop = await getProperty(user.uid, activePropertyId);
@@ -462,7 +384,6 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         publicAreas,
         laundryConfig,
         capabilityOverrides,
-        appUsage,
         loading,
         setActivePropertyId,
         refreshProperty,
@@ -470,7 +391,6 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         refreshPublicAreas,
         refreshLaundryConfig,
         refreshCapabilities,
-        refreshAppUsage,
       }}
     >
       {children}

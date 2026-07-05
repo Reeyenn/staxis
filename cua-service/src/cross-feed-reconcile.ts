@@ -46,6 +46,16 @@ const OCCUPIED_STATUSES = new Set(['occupied', 'occupied_clean', 'occupied_dirty
  *    bounded by) the feed's rows, so the feed can never legitimately have FEWER
  *    rows than the counter. This is what catches a wrong/empty/too-small feed
  *    without ever false-failing a correct superset feed.
+ *
+ * PAGINATION SOUNDNESS: the lower-bound inequality is only sound to FAIL on when
+ * `rowCount` is the feed's TOTAL row count. A server-paginated feed renders only
+ * the first page, so `rowCount` is a page-size SUBSET and `rowCount < counter` is
+ * NOT a contradiction — the missing rows are on later pages. So a lower-bound
+ * SHORTFALL is a real mismatch only when the observation is known-complete
+ * (`rowsComplete`); otherwise it degrades to `abstain` (no signal), matching this
+ * module's abstain-by-default rule. A lower-bound SATISFACTION (rowCount ≥ counter)
+ * stays a `match` regardless of completeness — a page that already meets/exceeds
+ * the counter witnesses it whether or not more rows follow.
  */
 export interface CrossFeedCheck {
   counter: string;
@@ -91,8 +101,12 @@ function canonicalStatus(row: Record<string, unknown>): string {
 
 /** One row feed's learn-time observation. `rowCount` is the total rows matched
  *  on the feed page (boardTargets preview.rowCount). `rows` is whatever sample
- *  the caller has; `rowsComplete` is true only when `rows` is the ENTIRE feed
- *  (so a predicate count over it is exact, not a truncated undercount). */
+ *  the caller has; `rowsComplete` is true only when the observation is the ENTIRE
+ *  feed — i.e. `rows` is every row (so a predicate count over it is exact, not a
+ *  truncated undercount) AND `rowCount` is the feed TOTAL (not one page of a
+ *  server-paginated feed). `rowsComplete` therefore gates BOTH the exact-predicate
+ *  path AND the lower-bound SHORTFALL fail: without it, a lower-bound shortfall is
+ *  abstained (it may just be a later page), never failed. */
 export interface FeedObservation {
   rowCount?: number;
   rows?: Array<Record<string, unknown>>;
@@ -194,11 +208,14 @@ export function reconcileCrossFeed(input: CrossFeedInput): CrossFeedResult {
         checks.push({ ...base, counterValue, observed: feedObs.rowCount, reason: 'counter_zero_uninformative' });
         continue;
       }
-      // An EMPTY feed can never witness a POSITIVE counter — that is the exact
-      // wrong/empty-feed signal, and the drift tolerance must NOT swallow it
-      // (review P1: with abs tolerance 2, rowCount 0 would otherwise "match" a
-      // counter of 1 or 2). Treat 0-vs-positive as a hard mismatch.
-      if (feedObs.rowCount === 0) {
+      const complete = feedObs.rowsComplete === true;
+      // An EMPTY feed that is KNOWN-COMPLETE can never witness a POSITIVE counter
+      // — that is the exact wrong/empty-feed signal, and the drift tolerance must
+      // NOT swallow it (review P1: with abs tolerance 2, rowCount 0 would otherwise
+      // "match" a counter of 1 or 2). Checked BEFORE the tolerance comparison, and
+      // gated on completeness (a blank first page of a paginated feed is not proof
+      // of an empty feed → it abstains via the shortfall path below).
+      if (complete && feedObs.rowCount === 0) {
         checks.push({
           counter: check.counter, feed: check.feed,
           verdict: 'mismatch', mode: 'lower_bound',
@@ -207,14 +224,38 @@ export function reconcileCrossFeed(input: CrossFeedInput): CrossFeedResult {
         });
         continue;
       }
-      const ok = feedObs.rowCount >= counterValue - tol;
+      // A lower-bound SATISFACTION (rowCount ≥ counter within tolerance) is sound
+      // regardless of completeness: a page already meeting/exceeding the counter
+      // witnesses it whether or not more rows follow.
+      if (feedObs.rowCount >= counterValue - tol) {
+        checks.push({
+          counter: check.counter, feed: check.feed,
+          verdict: 'match', mode: 'lower_bound',
+          counterValue, observed: feedObs.rowCount,
+          reason: 'lower_bound_satisfied',
+        });
+        continue;
+      }
+      // SHORTFALL (rowCount < counter - tol). A real contradiction ONLY when the
+      // observation is the WHOLE feed. Under server-side pagination rowCount is one
+      // page (e.g. 25 of 60), so a shortfall is expected, not a defect — the missing
+      // rows are on later pages. Without a completeness guarantee we ABSTAIN, not
+      // fail (abstain-by-default). This is the same reality oracle-verify.ts
+      // accommodates ("the DOM may legitimately be paginated — showing 25 of 60");
+      // a correct-but-paginated feed must never cross-feed-fail.
+      if (!complete) {
+        checks.push({
+          ...base, counterValue, observed: feedObs.rowCount,
+          reason: `lower_bound_incomplete:rows=${feedObs.rowCount}<counter=${counterValue}_but_feed_not_known_complete`,
+        });
+        continue;
+      }
+      // Known-complete AND still short → a genuine wrong/too-small feed.
       checks.push({
         counter: check.counter, feed: check.feed,
-        verdict: ok ? 'match' : 'mismatch', mode: 'lower_bound',
+        verdict: 'mismatch', mode: 'lower_bound',
         counterValue, observed: feedObs.rowCount,
-        reason: ok
-          ? 'lower_bound_satisfied'
-          : `lower_bound_violated:rows=${feedObs.rowCount}<counter=${counterValue}`,
+        reason: `lower_bound_violated:rows=${feedObs.rowCount}<counter=${counterValue}`,
       });
       continue;
     }

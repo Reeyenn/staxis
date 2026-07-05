@@ -77,6 +77,7 @@ import {
   deriveModelKind,
   type OptimizerModelKind,
 } from '@/lib/ml-schedule-helpers';
+import { canForProperty } from '@/lib/capabilities/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -201,6 +202,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }
+
+    // Labor cost ($) is wage-derived. A manager passes the forecast role gate
+    // above but may be specifically restricted from wages via a per-hotel
+    // override (view_wages is a MANAGER_FLOOR cap). When restricted, keep the
+    // operational forecast (staffing, gaps, room mix) but zero out the dollar
+    // projections so the money never reaches them — the UI hides the labor row
+    // via the labor_cost_visible flag below. (Access cleanup 2026-06-26.)
+    const canSeeLaborCost = await canForProperty({ role }, 'view_wages', propertyId);
 
     // Rate limit (60/hr per user × property). hashToRateLimitKey
     // produces a UUID-shaped digest so the same api_limits.property_id
@@ -512,8 +521,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         total_minutes_needed: minutesNeeded,
         housekeepers_scheduled: housekeepersScheduled,
         housekeepers_recommended: recommended,
-        projected_labor_cents: laborProjection.cents,
-        wage_pending: laborProjection.wagePending,
+        // Zeroed for a wage-restricted manager; the UI hides it via
+        // labor_cost_visible so a 0 is never rendered as "$0".
+        projected_labor_cents: canSeeLaborCost ? laborProjection.cents : 0,
+        wage_pending: canSeeLaborCost ? laborProjection.wagePending : false,
         gap_status: gapStatus,
         accuracy_label: accuracyLabel,
         model_kind: modelKind,
@@ -538,11 +549,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         history_days: historyDays,
         history_threshold_days: HISTORY_THRESHOLD_DAYS,
         shift_minutes: propRow.shift_minutes ?? DEFAULT_SHIFT_MINUTES,
+        // Whether the caller may see wage-derived labor cost ($). False for a
+        // manager an admin restricted from wages — the UI hides the labor row +
+        // wage-pending prompt. (Access cleanup 2026-06-26.)
+        labor_cost_visible: canSeeLaborCost,
         // Top-level signal: at least one active housekeeper is missing
         // a wage. The UI uses this to surface a roster-level "fill in
         // wages for the rest of your crew" prompt independent of
         // whether any given day's scheduled staff happens to lack one.
-        wage_pending_roster: anyStaffWageUnset,
+        // Suppressed when labor cost is hidden (no wage hints to a
+        // wage-restricted manager).
+        wage_pending_roster: canSeeLaborCost ? anyStaffWageUnset : false,
         summary: {
           total_minutes_needed: summary.totalMinutesNeeded,
           total_hours_scheduled: summary.totalHoursScheduled,

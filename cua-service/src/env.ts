@@ -22,8 +22,19 @@ const Schema = z.object({
   JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   PULL_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  // DOM extractor row waits — live ops escape hatch, read at module load
+  // (see extractors/dom-table.ts / dom-inline.ts).
+  CUA_ROW_WAIT_MS: z.coerce.number().int().positive().default(15_000),
+  CUA_ROW_RENDER_MS: z.coerce.number().int().positive().default(5_000),
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
+
+  // Per-hotel daily Claude polling budget ($5/day default). DISTINCT from
+  // CUA_JOB_COST_CAP_MICROS (the per-mapping-JOB cap): the daily cap used
+  // to alias the job-cap var, so an operator raising the job cap to let one
+  // hard PMS learn finish silently multiplied every hotel's daily polling
+  // ceiling by the same factor.
+  CUA_DAILY_HOTEL_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
   // BASE budget (Sonnet 1.0) for one FULL learning run (login + all targets)
   // when the trigger didn't set payload.cost_cap_micros. fix/cua-discovery-budget

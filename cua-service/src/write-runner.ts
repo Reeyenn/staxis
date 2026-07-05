@@ -31,6 +31,15 @@ export interface ExecuteWriteOpts {
   dryRun: boolean;
   /** Pin navigation to this host (the PMS domain). null = unpinned (login anchor). */
   allowedHost?: string | null;
+  /** Fail closed if, AFTER navigating to pageUrl, the page did not LAND on this
+   *  exact origin (scheme://host[:port]). This is the per-property wrong-hotel
+   *  guard for family-shared write recipes: recipe.pageUrl is re-hosted onto
+   *  THIS property's tenant origin by the handler, and a landed origin that
+   *  differs (a redirect to a sibling tenant, an un-rehosted host) aborts BEFORE
+   *  any row is located or mutated. Checked exact-origin, not registrable-domain
+   *  (sibling tenants share a domain — the whole point of the guard). Undefined
+   *  = unchecked (e.g. the mock-PMS harness / single-host PMSes). */
+  expectedOrigin?: string;
   /** Test-only loopback allowance for the mock-PMS harness. Never set in prod. */
   allowLoopback?: boolean;
   /** Cancellation from the workflow timeout. Checked between phases/steps so a
@@ -43,6 +52,16 @@ export type ExecuteWriteResult =
   | { ok: false; error: string; detail?: Record<string, unknown> };
 
 type VerifySpec = NonNullable<WriteActionRecipe['verifyInPage']>;
+
+/** Origin (scheme://host[:port]) of a URL, or null if unparseable. Used for the
+ *  exact-origin landed-page guard (never throws on a mid-transition page.url()). */
+function safeOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 
 /** Build a concrete assert_text step from a verify spec, resolving any
  *  $payload placeholders in equals/contains. */
@@ -125,6 +144,26 @@ export async function executeWriteRecipe(
     }
   }
 
+  // 3b. Per-property landed-origin guard (wrong-hotel fail-closed). A
+  //     family-shared write recipe carries one learn-time pageUrl; the handler
+  //     re-hosts it onto THIS property's tenant origin and passes that origin
+  //     here. If the page LANDED anywhere else (a redirect to a sibling tenant,
+  //     or a host that didn't get re-hosted), abort BEFORE locating/mutating a
+  //     row — the exact-text row guard alone can't tell hotel A's "101" from
+  //     hotel B's. Exact-origin, not registrable-domain (sibling tenants share
+  //     the domain). safeGoto already pins navigation to allowedHost; this is
+  //     the defence-in-depth confirmation on where we actually landed.
+  if (opts.expectedOrigin) {
+    const landed = safeOrigin(page.url());
+    if (landed !== opts.expectedOrigin) {
+      return {
+        ok: false,
+        error: 'wrong_property_origin',
+        detail: { expected: opts.expectedOrigin, landed: landed ?? '(unparseable)' },
+      };
+    }
+  }
+
   // 4. Locate exactly ONE row (exact text — wrong-room guard).
   let row: Locator;
   try {
@@ -135,16 +174,25 @@ export async function executeWriteRecipe(
 
   if (opts.signal?.aborted) return { ok: false, error: 'aborted' };
 
-  // 5a. Precondition — optional sanity guard against a stale overwrite (e.g.
-  //     "only mark clean if currently dirty"). If declared and not met, refuse.
-  if (recipe.precondition && !(await passesVerify(page, row, recipe.precondition, payload))) {
-    return { ok: false, error: 'precondition_failed', detail: { selector: recipe.precondition.selector } };
-  }
-
-  // 5b. Idempotency short-circuit — if the row already shows the target, a
-  //     retry (at-least-once delivery) must not re-mutate.
+  // 5a. Idempotency short-circuit FIRST — if the row already shows the target,
+  //     a retry (at-least-once delivery) must not re-mutate AND must report
+  //     success. This runs BEFORE the precondition because a precondition that
+  //     is the inverse of the target (the inline example below, "only mark
+  //     clean if currently dirty") is by definition FALSE once the write has
+  //     landed. Checking the precondition first would fail an already-applied
+  //     retry as precondition_failed — a terminal failure on a job that in
+  //     fact succeeded (pms.write is max_attempts=1). Order = idempotent wins.
   if (!opts.dryRun && recipe.verifyInPage && (await passesVerify(page, row, recipe.verifyInPage, payload))) {
     return { ok: true, verifiedVia: 'idempotent' };
+  }
+
+  // 5b. Precondition — optional sanity guard against a stale overwrite (e.g.
+  //     "only mark clean if currently dirty"). Reached only when the row is NOT
+  //     already at the target (5a returned above otherwise), so a legitimately-
+  //     not-yet-applied write still gets its stale-overwrite guard. If declared
+  //     and not met, refuse.
+  if (recipe.precondition && !(await passesVerify(page, row, recipe.precondition, payload))) {
+    return { ok: false, error: 'precondition_failed', detail: { selector: recipe.precondition.selector } };
   }
 
   // 5c. Fail closed BEFORE mutating if the recipe is unverifiable. An

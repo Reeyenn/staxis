@@ -42,7 +42,7 @@ import {
 // the generic-table-writer driven by mapper-produced TableTemplates
 // is the only write path now.
 import { saveGenericTable } from './persistence/generic-table-writer.js';
-import { captureLiveFeedProvenance } from './feed-capture.js';
+import { captureLiveFeedProvenance, upsertFeedValues } from './feed-capture.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
@@ -114,6 +114,23 @@ interface ScraperSessionRow {
   state: Record<string, unknown> | null;
   refreshed_at: string | null;
 }
+
+/**
+ * Outcome of ensureLoggedIn. Callers need TWO distinctions a plain boolean
+ * can't carry:
+ *   - ok:true  → `didLogin` says whether a real re-login happened (vs the
+ *     existing session simply being valid). The zero-row-streak guard must
+ *     only clear the drift counter after an ACTUAL re-login — clearing on
+ *     every "already logged in" probe froze the self-repair ladder forever.
+ *   - ok:false → `reason` says whether we paused for MFA (status is already
+ *     paused_mfa and must NOT be clobbered with failed_restart) or hit a
+ *     retryable login failure (leave status 'starting' so the supervisor's
+ *     restart ladder absorbs transient blips instead of dead-lettering on
+ *     the first one).
+ */
+type LoginResult =
+  | { ok: true; didLogin: boolean }
+  | { ok: false; reason: 'mfa' | 'failed' };
 
 export interface SessionDriverOptions {
   propertyId: string;
@@ -306,6 +323,9 @@ export class SessionDriver {
         propertyId: this.propertyId,
         err: err instanceof Error ? err : new Error(String(err)),
       });
+      // chromium.launch may have succeeded before a later step threw —
+      // never leave that browser process alive.
+      await this.closeBrowser();
       await this.updateStatus({
         status: 'failed_restart',
         paused_reason: `Browser boot failed: ${(err as Error).message}`,
@@ -315,9 +335,29 @@ export class SessionDriver {
     }
 
     // 4. Verify session — log in if needed.
-    const loggedIn = await this.ensureLoggedIn();
-    if (!loggedIn) {
-      // ensureLoggedIn handled status update (paused_mfa or failed_restart).
+    const login = await this.ensureLoggedIn();
+    if (this.stopping) {
+      // stop() raced our in-flight start (e.g. admin stop while logging in).
+      // Don't touch status; just release resources and bow out.
+      await this.closeBrowser();
+      this.running = false;
+      return;
+    }
+    if (!login.ok) {
+      // Never leave the just-launched Chromium alive on a failed start —
+      // each leaked headless browser holds ~200-400MB until the machine OOMs.
+      await this.closeBrowser();
+      if (login.reason === 'failed') {
+        // Retryable failure: keep the row in 'starting' so the supervisor's
+        // restart ladder (MAX_RESTARTS_PER_HOUR → failed_restart at the
+        // ceiling) absorbs transient blips instead of dead-lettering on the
+        // first one.
+        await this.updateStatus({
+          status: 'starting',
+          paused_reason: 'Login failed — supervisor will retry; dead-letters after repeated failures.',
+        });
+      }
+      // reason === 'mfa' → pauseForMfa already wrote paused_mfa; leave it.
       this.running = false;
       return;
     }
@@ -325,13 +365,35 @@ export class SessionDriver {
     // 5. Kick off polling + heartbeat. Reset restart_count here so a
     //    string of successful logins doesn't leave the dead-letter
     //    counter close to its limit from earlier failed attempts.
-    await this.updateStatus({
-      status: 'alive',
-      last_alive_at: new Date().toISOString(),
-      restart_count: 0,
-      paused_reason: null,
-      paused_until: null,
-    });
+    //    Guarded UPDATE (not the usual upsert): if an admin marked this
+    //    hotel 'stopped' while we were logging in, flipping it back to
+    //    'alive' would silently revert the stop and make the next
+    //    reconcile respawn a duplicate driver.
+    const { error: aliveErr } = await supabase
+      .from('property_sessions')
+      .update({
+        status: 'alive',
+        last_alive_at: new Date().toISOString(),
+        restart_count: 0,
+        paused_reason: null,
+        paused_until: null,
+        worker_machine_id: this.workerMachineId,
+      })
+      .eq('property_id', this.propertyId)
+      .neq('status', 'stopped');
+    if (aliveErr) {
+      log.warn('session-driver: alive status update failed', {
+        propertyId: this.propertyId,
+        err: aliveErr.message,
+      });
+    }
+    if (this.stopping) {
+      // stop() landed during the status write — don't schedule any timers
+      // (stop() already ran its cleanup pass; timers set now would orphan).
+      await this.closeBrowser();
+      this.running = false;
+      return;
+    }
     this.scheduleNextPoll();
     this.heartbeatHandle = setInterval(() => {
       void this.publishHeartbeat();
@@ -423,6 +485,12 @@ export class SessionDriver {
     return this.page;
   }
 
+  /** True while a workflow holds the browser lock. The supervisor defers
+   *  memory/nightly restarts rather than killing an in-flight write. */
+  isBrowserLocked(): boolean {
+    return this.browserLockDepth > 0;
+  }
+
   // ─── Internals: boot + login ─────────────────────────────────────────
 
   private async bootBrowser(): Promise<void> {
@@ -432,15 +500,27 @@ export class SessionDriver {
     const stored = await this.loadStorageState();
 
     this.browser = await chromium.launch({ headless: true });
-    this.context = await this.browser.newContext({
-      viewport: VIEWPORT,
-      acceptDownloads: true,
-      // storageState comes back as opaque jsonb from Supabase. Cast to
-      // Playwright's expected shape. Malformed stored data will throw
-      // from newContext and we fall back to fresh login in ensureLoggedIn.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      storageState: (stored ?? undefined) as any,
-    });
+    try {
+      this.context = await this.browser.newContext({
+        viewport: VIEWPORT,
+        acceptDownloads: true,
+        // storageState comes back as opaque jsonb from Supabase. Cast to
+        // Playwright's expected shape. Malformed stored data throws from
+        // newContext — caught below and retried with a fresh context so a
+        // corrupt saved session degrades to a fresh login, not a dead hotel.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        storageState: (stored ?? undefined) as any,
+      });
+    } catch (err) {
+      log.warn('session-driver: stored storageState rejected — starting with a fresh context', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      this.context = await this.browser.newContext({
+        viewport: VIEWPORT,
+        acceptDownloads: true,
+      });
+    }
     this.page = await this.context.newPage();
   }
 
@@ -513,7 +593,7 @@ export class SessionDriver {
     }
   }
 
-  private async ensureLoggedIn(): Promise<boolean> {
+  private async ensureLoggedIn(): Promise<LoginResult> {
     if (!this.page || !this.knowledgeFile || !this.credentials || !this.allowedHost) {
       throw new Error('ensureLoggedIn precondition failed');
     }
@@ -536,7 +616,7 @@ export class SessionDriver {
         propertyId: this.propertyId,
         err: err instanceof Error ? err.message : String(err),
       });
-      return false;
+      return { ok: false, reason: 'failed' };
     }
 
     const successSelector = login.successSelectors[0];
@@ -548,7 +628,7 @@ export class SessionDriver {
       log.info('session-driver: existing session valid (no login needed)', {
         propertyId: this.propertyId,
       });
-      return true;
+      return { ok: true, didLogin: false };
     }
 
     log.info('session-driver: session expired — logging in', { propertyId: this.propertyId });
@@ -581,7 +661,7 @@ export class SessionDriver {
         detectedSelector: earlyMfa.selector,
         loginUrl,
       });
-      return false;
+      return { ok: false, reason: 'mfa' };
     }
 
     // Execute login steps.
@@ -595,11 +675,10 @@ export class SessionDriver {
         propertyId: this.propertyId,
         err: err instanceof Error ? err : new Error(String(err)),
       });
-      await this.updateStatus({
-        status: 'failed_restart',
-        paused_reason: `Login failed: ${(err as Error).message}`,
-      });
-      return false;
+      // Retryable — callers route this through the supervisor's restart
+      // ladder. Writing failed_restart here (the old behavior) dead-lettered
+      // the hotel on a single transient miss, bypassing the ladder entirely.
+      return { ok: false, reason: 'failed' };
     }
 
     // Click trust-device BEFORE submitting MFA (in case the next step is the MFA submit).
@@ -617,7 +696,7 @@ export class SessionDriver {
         detectedSelector: mfa.selector,
         loginUrl,
       });
-      return false;
+      return { ok: false, reason: 'mfa' };
     }
 
     // Wait for login to actually succeed. CA's flow:
@@ -649,7 +728,7 @@ export class SessionDriver {
         url: safeUrl(this.page!),
         err: err instanceof Error ? err : new Error(String(err)),
       });
-      return false;
+      return { ok: false, reason: 'failed' };
     }
     // Reactive MFA can land mid-redirect: the URL leaves j_security_check
     // (positive signal) but an MFA challenge is actually rendering, and the
@@ -664,7 +743,7 @@ export class SessionDriver {
         detectedSelector: postRedirectMfa.selector,
         loginUrl,
       });
-      return false;
+      return { ok: false, reason: 'mfa' };
     }
     // Now wait for the login form to be absent — catches the case where
     // CA redirected back to the login page (still URL-distinct from
@@ -680,7 +759,7 @@ export class SessionDriver {
         url: safeUrl(this.page!),
         err: err instanceof Error ? err : new Error(String(err)),
       });
-      return false;
+      return { ok: false, reason: 'failed' };
     }
     // Dismiss a one-time post-login interstitial before the dashboard renders.
     // Choice Advantage interposes a "Migrate to Okta / Continue with Traditional
@@ -744,7 +823,7 @@ export class SessionDriver {
     }
 
     log.info('session-driver: login complete', { propertyId: this.propertyId });
-    return true;
+    return { ok: true, didLogin: true };
   }
 
   /**
@@ -985,19 +1064,36 @@ export class SessionDriver {
         propertyId: this.propertyId,
         pmsFamily: this.pmsFamily,
       });
-      const reloggedIn = await this.ensureLoggedIn().catch(() => false);
-      if (!reloggedIn) {
-        // ensureLoggedIn already set paused_mfa/failed_restart for its own
-        // failure modes. For the plain logged-out-and-can't-recover case,
-        // make the failed_restart explicit so the supervisor respawns us.
+      const relogin: LoginResult = await this.ensureLoggedIn()
+        .catch(() => ({ ok: false, reason: 'failed' } as const));
+      if (!relogin.ok) {
+        if (relogin.reason === 'mfa') {
+          // pauseForMfa already wrote paused_mfa — the state the
+          // /admin/mfa-resume flow and the doctor's cua_mfa_pending check
+          // key off. Overwriting it with failed_restart (the old behavior)
+          // made the admin resume match zero rows and the MFA alert never
+          // fire. The supervisor parks this driver on its next reconcile.
+          log.warn('session-driver: re-login paused for MFA — skipping feeds', {
+            propertyId: this.propertyId,
+            pmsFamily: this.pmsFamily,
+          });
+          return;
+        }
+        // Retryable failure: put the row back in 'starting' and stop this
+        // driver so the supervisor respawns it through the restart ladder
+        // (MAX_RESTARTS_PER_HOUR → failed_restart at the ceiling). Writing
+        // failed_restart directly (the old behavior) was a dead-end — the
+        // supervisor never respawns that status, so one transient blip
+        // permanently froze the hotel until a manual resume.
         await this.updateStatus({
-          status: 'failed_restart',
-          paused_reason: 'Polling detected logged-out and re-login failed.',
+          status: 'starting',
+          paused_reason: 'Polling detected logged-out and re-login failed — supervisor will retry.',
         });
-        log.warn('session-driver: re-login failed — skipping feeds (failed_restart)', {
+        log.warn('session-driver: re-login failed — stopping for supervisor respawn', {
           propertyId: this.propertyId,
           pmsFamily: this.pmsFamily,
         });
+        await this.stop();
         return;
       }
       // Re-login succeeded. Clear any zero-row streak so login-caused zeros
@@ -1013,18 +1109,25 @@ export class SessionDriver {
     // so it adds no overhead on the healthy path.
     const hasZeroStreak = Array.from(this.consecutiveZeroRowsByAction.values()).some((c) => c > 0);
     if (hasZeroStreak) {
-      const loggedIn = await this.ensureLoggedIn().catch(() => false);
-      if (!loggedIn) {
+      const streakLogin: LoginResult = await this.ensureLoggedIn()
+        .catch(() => ({ ok: false, reason: 'failed' } as const));
+      if (!streakLogin.ok) {
         log.warn('session-driver: zero-row streak + not logged in — skipping feeds, not firing self-repair (re-login/MFA pending)', {
           propertyId: this.propertyId,
           pmsFamily: this.pmsFamily,
         });
         return;
       }
-      // Confirmed logged in (possibly just re-logged in). Clear the streak so
-      // login-caused zeros don't count toward self-repair; genuine selector
-      // drift rebuilds the streak across later confirmed-login polls.
-      this.consecutiveZeroRowsByAction.clear();
+      // Clear the streak ONLY when a real re-login just happened — those
+      // zeros were session-expiry artifacts. When the session was simply
+      // still valid (didLogin=false), the zeros are genuine selector drift
+      // and the streak MUST keep building toward ZERO_THRESHOLD. The old
+      // unconditional clear() wiped it on every poll, so the threshold was
+      // unreachable and the whole self-repair/re-anchor ladder never fired:
+      // a drifted feed silently froze at stale data forever.
+      if (streakLogin.didLogin) {
+        this.consecutiveZeroRowsByAction.clear();
+      }
     }
 
     // Recipe.actions → TableTemplate[]. Each template knows its target
@@ -1150,6 +1253,13 @@ export class SessionDriver {
           // sees a partial view ('delta') must never trigger auto-resolve.
           { snapshotScope: template.snapshotScope },
         );
+        // Feed-level PAGE values (e.g. "Guest Count: 23") — store ONCE per
+        // (property, feed) in pms_feed_values, NOT stamped onto every row.
+        // Best-effort, never throws; a poll that captured none preserves the
+        // previous good row (last-good semantics).
+        if (template.sourceActionKey) {
+          await upsertFeedValues(this.propertyId, template.sourceActionKey, runResult.feedValues, (template.pageColumns?.length ?? 0) > 0);
+        }
         results.push({
           table: template.tableName,
           ok: saveResult.ok,
@@ -1264,6 +1374,10 @@ export class SessionDriver {
   // ─── Internals: heartbeat + status ───────────────────────────────────
 
   private async publishHeartbeat(): Promise<void> {
+    // Orphaned-interval guard: a heartbeat that fires after stop() must not
+    // stamp last_alive_at — it would make a dead/stopped session look healthy
+    // to the watchdog and doctor forever.
+    if (this.stopping || !this.running) return;
     const metrics = getSingleFlightMetrics(this.propertyId);
     const { error } = await supabase
       .from('property_sessions')

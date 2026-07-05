@@ -190,6 +190,29 @@ export function validateRows(
         rejected.push({ rowIndex, row, reason: `layer-2: ${result.reason}` });
         return;
       }
+      // Apply the sanitized row: fields the validator dropped (inverted
+      // date pairs, implausible counts, malformed room numbers) become
+      // explicit nulls — never `undefined`, which JSON-drops the key and
+      // makes a multi-row batch heterogeneous (a PostgREST 400). A REQUIRED
+      // field the sanitizer dropped rejects the whole row instead: writing
+      // null into a NOT NULL column would throw and kill the entire batch.
+      if (result.clean) {
+        for (const [k, v] of Object.entries(result.clean)) {
+          const next = v === undefined ? null : v;
+          if (next === null && row[k] !== null && row[k] !== undefined && columnsByName.get(k)?.required) {
+            rejected.push({ rowIndex, row, reason: `layer-2: required field "${k}" failed sanitize — value dropped` });
+            return;
+          }
+          row[k] = next;
+        }
+      }
+      if (result.warnings && result.warnings.length > 0) {
+        log.info('generic-table-writer: layer-2 sanitized bad field values', {
+          tableName: descriptor.table_name,
+          rowIndex,
+          warnings: result.warnings,
+        });
+      }
     }
 
     // Reject any extra fields not in the descriptor — they'd be dropped by
@@ -399,12 +422,22 @@ export async function saveGenericTable(
       blankColumns: allBlankRequired,
       rowCount: stamped.length,
     });
-    void supabase.from('error_logs').insert({
-      source: 'generic-table-writer',
-      message: `${tableName}: ${msg}`,
-      property_id: propertyId,
-      stack: null,
-    });
+    // Supabase builders are LAZY thenables — they only fire when awaited /
+    // .then()'d. A bare `void builder` (the old code) never executed, so
+    // the entire error audit trail was a silent no-op.
+    void supabase
+      .from('error_logs')
+      .insert({
+        source: 'generic-table-writer',
+        message: `${tableName}: ${msg}`,
+        property_id: propertyId,
+        stack: null,
+      })
+      .then(({ error: insErr }) => {
+        if (insErr) {
+          log.warn('generic-table-writer: error_logs insert failed', { tableName, err: insErr.message });
+        }
+      });
     return {
       ok: false, tableName, inserted: 0, updated: 0, autoResolved: 0,
       rejected: stamped.length,
@@ -429,15 +462,23 @@ export async function saveGenericTable(
       allRejected: stamped.length > 0 && validation.rejected.length === stamped.length,
     });
 
-    // Best-effort: log to error_logs (admin's recent-errors panel).
-    for (const r of validation.rejected) {
-      void supabase.from('error_logs').insert({
-        source: 'generic-table-writer',
-        message: `${tableName} row ${r.rowIndex}: ${r.reason}`,
-        property_id: propertyId,
-        stack: null,
+    // Best-effort: log to error_logs (admin's recent-errors panel). One
+    // batched insert, and .then()'d — Supabase builders are lazy thenables,
+    // so the old bare `void builder` in a loop never sent anything.
+    const errorRows = validation.rejected.map((r) => ({
+      source: 'generic-table-writer',
+      message: `${tableName} row ${r.rowIndex}: ${r.reason}`,
+      property_id: propertyId,
+      stack: null,
+    }));
+    void supabase
+      .from('error_logs')
+      .insert(errorRows)
+      .then(({ error: insErr }) => {
+        if (insErr) {
+          log.warn('generic-table-writer: error_logs insert failed', { tableName, err: insErr.message });
+        }
       });
-    }
   }
 
   if (validation.valid.length === 0) {
@@ -611,6 +652,37 @@ async function hasInterveningChange(
   return (data?.length ?? 0) > 0;
 }
 
+/**
+ * Tables with a documented last-good contract (migration 0202): one row per
+ * natural key, overwritten every poll, where an optional column that
+ * extracted blank/absent this poll must PRESERVE the previous good value.
+ * An explicit null in an upsert payload overwrites; an omitted column is
+ * left untouched by the conflict-update. So for these tables, optional
+ * columns that are null across the whole batch are dropped from the payload
+ * (column-level, keeping row keys homogeneous for PostgREST).
+ */
+const LAST_GOOD_UPSERT_TABLES = new Set(['pms_in_house_snapshot']);
+
+function dropAllNullOptionalColumns(
+  rows: Array<Record<string, unknown>>,
+  descriptor: TableSchemaDescriptor,
+): Array<Record<string, unknown>> {
+  const droppable = descriptor.columns
+    .filter((c) => !c.required)
+    .map((c) => c.name)
+    .filter((name) => rows.every((r) => r[name] === null || r[name] === undefined));
+  if (droppable.length === 0) return rows;
+  log.info('generic-table-writer: preserving last-good values for blank optional columns', {
+    tableName: descriptor.table_name,
+    columns: droppable,
+  });
+  return rows.map((r) => {
+    const out = { ...r };
+    for (const name of droppable) delete out[name];
+    return out;
+  });
+}
+
 async function writeUpsert(
   tableName: string,
   rows: Array<Record<string, unknown>>,
@@ -620,7 +692,12 @@ async function writeUpsert(
   // ON CONFLICT target = the natural_key columns. Supabase JS client's
   // upsert() takes `onConflict` as a comma-separated string of columns.
   const onConflict = descriptor.natural_key.join(',');
-  const { error } = await supabase.from(tableName).upsert(rows, { onConflict });
+  // Last-good preservation (0202): one half-rendered PMS tile must not null
+  // out a good count in the property's only snapshot row.
+  const payload = LAST_GOOD_UPSERT_TABLES.has(descriptor.table_name)
+    ? dropAllNullOptionalColumns(rows, descriptor)
+    : rows;
+  const { error } = await supabase.from(tableName).upsert(payload, { onConflict });
   if (error) throw error;
   // upsert() doesn't distinguish inserts from updates in the response.
   // For now, report all as 'inserted' — admin UI cares about the delta,
@@ -648,30 +725,50 @@ async function writeReconcile(
   // with a null pms_item_id when the PMS row carries no stable id). A null
   // key is poison for reconcile two ways: (a) it never lands in incomingKeys,
   // so the auto-resolve pass would see it as "disappeared" and dispose
-  // everything; (b) ON CONFLICT can't match a null, so upsert re-INSERTs the
-  // same null-key rows on every poll → unbounded duplicates. When any null
-  // key is present we degrade safely: plain append (no upsert) for this batch
-  // and skip auto-resolve entirely.
+  // everything; (b) ON CONFLICT can't match a null, so an upsert re-INSERTs
+  // the same null-key rows on every poll → unbounded duplicates.
+  //
+  // Degrade safely: upsert the KEYED rows as normal, SKIP the null-key rows
+  // (loudly), and skip auto-resolve for the batch. The old fallback demoted
+  // the ENTIRE batch to a plain INSERT, which was strictly worse: on the
+  // very next poll the keyed rows hit the table's unique constraint and the
+  // whole feed died with a 23505, forever — while the null-key rows it was
+  // protecting still duplicated every poll anyway.
   const reconcileKeyField = descriptor.reconcile_key_field;
-  const hasNullReconcileKey = rows.some((r) => {
+  const keyedRows = rows.filter((r) => {
     const k = r[reconcileKeyField];
-    return k === undefined || k === null;
+    return k !== undefined && k !== null;
   });
+  const skippedNullKey = rows.length - keyedRows.length;
+  const hasNullReconcileKey = skippedNullKey > 0;
 
-  // Step 1: write all incoming rows. Normally an upsert on the natural key;
-  // but when any reconcile key is null, upsert-on-null re-inserts duplicates
-  // every poll, so fall back to a plain append for this batch.
+  // Step 1: upsert the keyed rows on the natural key.
   const onConflict = descriptor.natural_key.join(',');
   if (hasNullReconcileKey) {
-    log.warn('reconcile: incoming row(s) have a null reconcile key — appending instead of upserting', {
+    log.warn('reconcile: skipping row(s) with a null reconcile key — cannot upsert or reconcile them', {
       tableName: descriptor.table_name,
       reconcileKeyField,
-      reason: 'upsert on a null key cannot match ON CONFLICT and would duplicate every poll',
+      skipped: skippedNullKey,
+      kept: keyedRows.length,
     });
-    const { error: insertErr } = await supabase.from(tableName).insert(rows);
-    if (insertErr) throw insertErr;
-  } else {
-    const { error: upsertErr } = await supabase.from(tableName).upsert(rows, { onConflict });
+    void supabase
+      .from('error_logs')
+      .insert({
+        source: 'generic-table-writer',
+        message: `${descriptor.table_name}: ${skippedNullKey} row(s) skipped — null ${reconcileKeyField} (PMS row has no stable id; cannot reconcile)`,
+        property_id: propertyId,
+        stack: null,
+      })
+      .then(({ error: insErr }) => {
+        if (insErr) {
+          log.warn('generic-table-writer: error_logs insert failed', {
+            tableName: descriptor.table_name, err: insErr.message,
+          });
+        }
+      });
+  }
+  if (keyedRows.length > 0) {
+    const { error: upsertErr } = await supabase.from(tableName).upsert(keyedRows, { onConflict });
     if (upsertErr) throw upsertErr;
   }
 
@@ -772,10 +869,12 @@ async function writeReconcile(
   return {
     ok: true,
     tableName,
-    inserted: rows.length,
+    inserted: keyedRows.length,
     updated: 0,
     autoResolved,
     rejected,
-    errors: [],
+    errors: hasNullReconcileKey
+      ? [`${skippedNullKey} row(s) skipped: null ${reconcileKeyField} (no stable PMS id)`]
+      : [],
   };
 }

@@ -69,6 +69,17 @@ export type RecipeEditJobInput =
       /** fix/cua-freeform-capture — 'page' = a one-off value (read once, stamped
        *  on every row); 'row' (default) = a per-row column cell. */
       scope?: 'row' | 'page';
+    }
+  | {
+      // fix/cua-repoint-column — RE-POINT an existing column (core/contract OR
+      // custom) at a different page column. Unlike add_custom_column this ALLOWS
+      // a contract column name (it IS that column) and REPLACES its selector.
+      pms_family: string;
+      property_id: string;
+      edit_op: 'set_column';
+      feed_key: string;
+      column_name: string;
+      selector: string;
     };
 
 export type RecipeEditHandlerResult =
@@ -181,6 +192,7 @@ export async function runRecipeEditJob(
     case 'delete_feeds':      return runDeleteFeeds(input, jobId);
     case 'delete_column':     return runDeleteColumn(input, jobId);
     case 'add_custom_column': return runAddCustomColumn(input, jobId);
+    case 'set_column':        return runSetColumnSelector(input, jobId);
     default:                  return { ok: false, error: `unsupported edit_op: ${String((input as { edit_op?: unknown }).edit_op)}` };
   }
 }
@@ -347,6 +359,103 @@ async function runDeleteColumn(
       edit_op: 'delete_column',
       feed_key: feedKey,
       column_name: columnName,
+      was_custom: inCustom,
+    },
+  });
+}
+
+// fix/cua-repoint-column — a re-point selector is a simple positional/id chain
+// (the same shapes the app authors from a page-column index or a drag). Bounds
+// nth-child(N) to 3 digits so a junk index can't fan out.
+const SET_SELECTOR_RE = /^(#[A-Za-z][\w-]*|[a-z]+(:nth-(child|of-type)\(\d{1,3}\))?)(\s*>\s*(#[A-Za-z][\w-]*|[a-z]+(:nth-(child|of-type)\(\d{1,3}\))?))*$/;
+
+async function runSetColumnSelector(
+  input: Extract<RecipeEditJobInput, { edit_op: 'set_column' }>,
+  jobId: string,
+): Promise<RecipeEditHandlerResult> {
+  const feedKey = typeof input.feed_key === 'string' ? input.feed_key : '';
+  const columnName = typeof input.column_name === 'string' ? input.column_name : '';
+  const selector = typeof input.selector === 'string' ? input.selector.trim() : '';
+  if (!feedKey || !columnName || !selector) {
+    return { ok: false, error: 'feed_key, column_name and selector are required' };
+  }
+  if (!SET_SELECTOR_RE.test(selector)) {
+    return { ok: false, error: 'selector must be a simple positional/id chain' };
+  }
+
+  const loaded = await loadActiveMap(input.pms_family);
+  if (!loaded.ok) return loaded;
+  const { active } = loaded;
+  const actions = (active.knowledge?.actions ?? {}) as Record<string, unknown>;
+  if (!(feedKey in actions)) {
+    return { ok: false, error: `"${feedKey}" isn't a feed in the active map for ${input.pms_family}` };
+  }
+
+  const action = cloneAction(actions[feedKey]);
+  const parse = (action.parse ?? {}) as Record<string, unknown>;
+  const hint = (parse.hint ?? {}) as Record<string, unknown>;
+  const columns = (hint.columns ?? {}) as Record<string, unknown>;
+  const customColumns = (hint.customColumns ?? {}) as Record<string, unknown>;
+  const inlineFields = (parse.fields ?? {}) as Record<string, unknown>;
+  const tiered = (hint.columnsTiered ?? {}) as Record<string, unknown>;
+
+  const inCustom = columnName in customColumns;
+  const inInline = columnName in inlineFields;
+  const inKnown = columnName in columns;
+  const isContract = contractColumnsFor(feedKey).has(columnName);
+  // Re-point is allowed for a contract column (even if its selector is currently
+  // empty/missing — the whole point of fixing a mis-mapped guest_name), an
+  // already-known column, a custom column, or an inline_text field.
+  if (!inCustom && !inInline && !inKnown && !isContract) {
+    return { ok: false, error: `"${columnName}" isn't a column on "${feedKey}".` };
+  }
+
+  if (inCustom) {
+    customColumns[columnName] = selector;
+  } else if (inInline) {
+    inlineFields[columnName] = selector;
+  } else {
+    // Core/known/contract column → set the positional selector AND clear any stale
+    // header-anchor: the runtime PREFERS columnsTiered[field] over columns[field]
+    // (dom-rows.ts), so a leftover anchor would silently override the founder's pick.
+    columns[columnName] = selector;
+    delete tiered[columnName];
+  }
+
+  if (Object.keys(columns).length > 0 || 'columns' in hint) hint.columns = columns;
+  if (Object.keys(customColumns).length > 0) hint.customColumns = customColumns;
+  else delete hint.customColumns;
+  if (Object.keys(tiered).length > 0) hint.columnsTiered = tiered;
+  else delete hint.columnsTiered;
+  if ('hint' in parse || Object.keys(hint).length > 0) parse.hint = hint;
+  if (Object.keys(inlineFields).length > 0 || 'fields' in parse) parse.fields = inlineFields;
+  action.parse = parse;
+
+  // The founder's explicit re-point IS the proof — drop this column from the
+  // action's unproven list so the feed doesn't stay badged "parked/unproven"
+  // after they fixed it (promote runs no value-cert re-check).
+  const unproven = action.unprovenRequiredColumns;
+  if (Array.isArray(unproven)) {
+    const kept = unproven.filter((u) => u !== columnName);
+    if (kept.length > 0) action.unprovenRequiredColumns = kept;
+    else delete action.unprovenRequiredColumns;
+  }
+
+  const newActions: Record<string, unknown> = { ...actions, [feedKey]: action };
+
+  return saveAndPromote({
+    pmsFamily: input.pms_family,
+    active,
+    newActions,
+    notes: `coverage-editor: re-pointed column ${feedKey}.${columnName} (from v${active.version})`,
+    successMessage: `Re-pointed the "${columnName}" column and made the map live`,
+    logLabel: 'set_column',
+    jobId,
+    resultExtras: {
+      edit_op: 'set_column',
+      feed_key: feedKey,
+      column_name: columnName,
+      selector,
       was_custom: inCustom,
     },
   });

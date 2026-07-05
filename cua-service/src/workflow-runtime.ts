@@ -77,7 +77,20 @@ interface WorkflowJobRow {
   attempts: number;
   max_attempts: number;
   idempotency_key: string;
+  /** When the trigger source first enqueued the job. Bounds a non-counting
+   *  `defer` (see markDeferred): a job that has been deferring longer than
+   *  DEFER_MAX_AGE_MS gives up with a terminal fail so nothing loops forever. */
+  created_at: string;
 }
+
+/**
+ * Upper bound on how long a `defer` outcome may keep re-queueing a job
+ * without consuming an attempt. A pms.write deferred because the hotel's
+ * session is paused (cost cap resumes at midnight; MFA on operator action)
+ * should drain within hours; past this it's a stuck pause and we give up
+ * rather than loop forever. 24h covers a full cost-cap day plus slack.
+ */
+const DEFER_MAX_AGE_MS = 24 * 60 * 60_000;
 
 export interface WorkflowContext {
   jobId: string;
@@ -98,6 +111,13 @@ export type WorkflowHandler = (ctx: WorkflowContext) => Promise<{
   ok: boolean;
   result?: Record<string, unknown>;
   error?: string;
+  /** A TRANSIENT, non-counting deferral (distinct from a retryable failure).
+   *  When true the runtime re-queues the job WITHOUT consuming an attempt, so
+   *  a pms.write enqueued while its hotel is paused (cost cap / MFA / starting,
+   *  all max_attempts=1) survives to drain once the session resumes — instead
+   *  of being terminally failed by markFailedOrRetry on its single attempt.
+   *  Bounded by DEFER_MAX_AGE_MS in markDeferred. `error` carries the reason. */
+  defer?: boolean;
 }>;
 
 export class WorkflowRuntime {
@@ -239,7 +259,7 @@ export class WorkflowRuntime {
     if (lane === 'noDriver') {
       const { data } = await supabase
         .from('workflow_jobs')
-        .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key')
+        .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key, created_at')
         .in('kind', noDriverKinds)
         .eq('status', 'queued')
         .order('created_at', { ascending: true })
@@ -252,7 +272,7 @@ export class WorkflowRuntime {
       if (aliveDriverIds.length === 0) return null;
       const { data, error } = await supabase
         .from('workflow_jobs')
-        .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key')
+        .select('id, property_id, kind, payload, attempts, max_attempts, idempotency_key, created_at')
         .in('property_id', aliveDriverIds)
         .not('kind', 'in', `(${noDriverKinds.map((k) => `"${k}"`).join(',')})`)
         .eq('status', 'queued')
@@ -358,6 +378,12 @@ export class WorkflowRuntime {
       clearTimeout(timeoutHandle);
       if (result.ok) {
         await this.markCompleted(job, result.result ?? {});
+      } else if (result.defer) {
+        // TRANSIENT non-counting deferral — re-queue without burning an attempt
+        // (bounded by DEFER_MAX_AGE_MS). Distinct from a retryable failure so a
+        // max_attempts=1 pms.write isn't terminally failed just because its
+        // hotel was paused when the job was claimed.
+        await this.markDeferred(job, result.error ?? 'deferred');
       } else {
         await this.markFailedOrRetry(job, result.error ?? 'handler returned ok=false');
       }
@@ -402,6 +428,40 @@ export class WorkflowRuntime {
       .eq('id', job.id);
     if (error) {
       log.error('workflow-runtime: markCompleted failed', { jobId: job.id, err: error });
+    }
+  }
+
+  /**
+   * TRANSIENT non-counting deferral. `claimNextJob` already bumped the row to
+   * status='running', attempts=job.attempts+1 for THIS pick. A defer undoes
+   * that pick: status back to 'queued' AND attempts back to the pre-claim
+   * value (job.attempts), so the deferral never erodes the real retry budget.
+   * The next poll re-claims and re-runs it — the loop drains once the hotel's
+   * session resumes.
+   *
+   * Bounded: if the job has been alive longer than DEFER_MAX_AGE_MS the pause
+   * is stuck (not the routine midnight cost-cap clear), so we give up with a
+   * terminal, clearly-reasoned fail instead of deferring forever.
+   */
+  private async markDeferred(job: WorkflowJobRow, reason: string): Promise<void> {
+    const ageMs = Date.now() - Date.parse(job.created_at);
+    if (Number.isFinite(ageMs) && ageMs > DEFER_MAX_AGE_MS) {
+      await this.markFailed(
+        job,
+        `gave up deferring after ${Math.round(ageMs / 3_600_000)}h (${reason})`,
+      );
+      return;
+    }
+    const { error } = await supabase
+      .from('workflow_jobs')
+      .update({
+        status: 'queued',
+        attempts: job.attempts, // undo claimNextJob's +1 — a defer costs no attempt
+        error: `deferred: ${reason}`,
+      })
+      .eq('id', job.id);
+    if (error) {
+      log.error('workflow-runtime: defer re-queue failed', { jobId: job.id, err: error });
     }
   }
 

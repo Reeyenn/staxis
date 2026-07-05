@@ -29,6 +29,10 @@ interface ForecastPayload {
   history_threshold_days: number;
   shift_minutes: number;
   wage_pending_roster: boolean;
+  // False when the caller is a manager restricted from wages — the day cards
+  // then hide the labor-cost ($) row. Optional for backward-compat with a
+  // payload minted before this field existed (treated as visible).
+  labor_cost_visible?: boolean;
   summary: {
     total_minutes_needed: number;
     total_hours_scheduled: number;
@@ -226,6 +230,7 @@ export function ForecastView({ propertyId, lang }: Props) {
             <div key={card.date}>
               <ForecastDayCard
                 data={card}
+                laborCostVisible={payload.labor_cost_visible ?? true}
                 isExpanded={expandedDate === card.date}
                 onToggle={() => setExpandedDate(prev => (prev === card.date ? null : card.date))}
                 lang={lang}

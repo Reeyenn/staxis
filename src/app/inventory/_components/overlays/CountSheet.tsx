@@ -17,7 +17,6 @@ import {
   type MergedFill,
 } from '@/lib/photo-count-merge';
 import type { InventoryItem, InventoryCount } from '@/types';
-import type { AutoFillItem } from '@/lib/db/ml-inventory-cockpit';
 
 import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { CatIcon } from '../CatIcon';
@@ -36,15 +35,13 @@ interface CountSheetProps {
   onClose: () => void;
   items: InventoryItem[];
   display: DisplayItem[];
-  autoFill: AutoFillItem[];
-  aiMode: 'off' | 'auto' | 'always-on';
 }
 
-// A count entry and where its value came from. `manual` = typed by the user
-// (or untouched); `ai` = prefilled from the ML prediction; `photo` = filled
-// from a shelf photo (carries the model's confidence for visual flagging).
-// Precedence on display: manual edit > photo > ai.
-type FillSource = 'manual' | 'ai' | 'photo';
+// A count entry and where its value came from. The manual inventory tab never
+// pre-fills from AI — counts start empty and are typed (`manual`) or filled
+// from a shelf photo (`photo`, carries the model's confidence for visual
+// flagging). Photo counting is a manual convenience, not an ML prediction.
+type FillSource = 'manual' | 'photo';
 type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium' | 'low' };
 
 // Co-located strings for the count sheet (too specific for inv-i18n).
@@ -59,19 +56,13 @@ function csStrings(lang: Lang) {
       items: 'items',
       countMode: 'Count mode',
       walkTally: 'Walk & tally',
-      aiPrefilled: 'AI-prefilled',
       cancel: 'Cancel',
       saving: 'Saving…',
       saveCount: '✓ Save count',
       changeWhatToCount: 'Change what to count',
       progress: 'Progress',
-      graduatedFor: (n: number) => `graduated for ${n} items`,
-      graduatedHelp: ' — those start prefilled with the prediction. Tap the number to change it. The rest you’ll enter yourself.',
-      theModelHas: 'The model has ',
       par: 'par',
       last: 'last',
-      predicted: 'Predicted',
-      noPredictionYet: 'No prediction yet',
       skip: 'Skip',
       countByPhoto: 'Count by photo',
       photoHint: 'Snap a shelf — we’ll fill the counts for you to review. Nothing saves until you hit Save count.',
@@ -100,19 +91,13 @@ function csStrings(lang: Lang) {
       items: 'artículos',
       countMode: 'Modo de conteo',
       walkTally: 'Recorrer y contar',
-      aiPrefilled: 'prellenado por IA',
       cancel: 'Cancelar',
       saving: 'Guardando…',
       saveCount: '✓ Guardar conteo',
       changeWhatToCount: 'Cambiar qué contar',
       progress: 'Progreso',
-      graduatedFor: (n: number) => `aprendió ${n} artículos`,
-      graduatedHelp: ' — esos vienen prellenados con la predicción. Toca el número para cambiarlo. El resto los ingresas tú.',
-      theModelHas: 'El modelo ',
       par: 'par',
       last: 'último',
-      predicted: 'Predicho',
-      noPredictionYet: 'Sin predicción aún',
       skip: 'Omitir',
       countByPhoto: 'Contar por foto',
       photoHint: 'Toma una foto del estante — llenamos los conteos para que los revises. Nada se guarda hasta que toques Guardar conteo.',
@@ -135,7 +120,7 @@ function csStrings(lang: Lang) {
   }[lang];
 }
 
-export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMode }: CountSheetProps) {
+export function CountSheet({ lang, open, onClose, items, display }: CountSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const cs = csStrings(lang);
@@ -143,39 +128,6 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
   const [scope, setScope] = useState<Scope | null>(null);
   const [entries, setEntries] = useState<Record<string, Entry>>({});
   const [saving, setSaving] = useState(false);
-  const [mae, setMae] = useState<number | null>(null);
-
-  const autoFillById = useMemo(() => {
-    const m = new Map<string, AutoFillItem>();
-    for (const f of autoFill) m.set(f.itemId, f);
-    return m;
-  }, [autoFill]);
-
-  // Load MAE % for the header caption when the sheet opens.
-  // Honesty-audit Phase 4: read currentMaeRatioVsMean (the real gate ratio)
-  // — the "% off" caption only makes sense as gate ratio, not overfit. May
-  // be null for ~7 days post-Phase-2 ship until next weekly retrain
-  // populates hyperparameters.mean_observed_rate; we leave the caption
-  // empty in that window rather than showing a misleading number.
-  useEffect(() => {
-    if (!open || !activePropertyId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetchWithAuth(
-          `/api/inventory/ai-status?propertyId=${activePropertyId}`,
-          { cache: 'no-store' },
-        );
-        if (!res.ok) return;
-        const json = (await res.json()) as {
-          data?: { currentMaeRatioVsMean: number | null };
-        };
-        const ratio = json.data?.currentMaeRatioVsMean;
-        if (!cancelled && typeof ratio === 'number') setMae(ratio * 100);
-      } catch { /* ignore */ }
-    })();
-    return () => { cancelled = true; };
-  }, [open, activePropertyId]);
 
   // Show the "what to count" chooser fresh on every open (clear any old entries).
   useEffect(() => {
@@ -192,22 +144,11 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
   );
 
   // Pick a scope → seed the count inputs for just that subset and proceed.
-  // Auto-fill rule (unchanged): off → blank; auto → graduated items prefilled;
-  // always-on → any available prediction prefilled.
+  // Manual page: counts always start EMPTY. No AI pre-fill.
   const begin = (s: Scope) => {
     const next: Record<string, Entry> = {};
     for (const d of display.filter((d) => inScope(d.cat, s))) {
-      const f = autoFillById.get(d.id);
-      let prefill = '';
-      let auto = false;
-      if (f && aiMode !== 'off') {
-        const shouldFill = aiMode === 'always-on' || f.graduated;
-        if (shouldFill && Number.isFinite(f.predictedCurrentStock)) {
-          prefill = String(Math.max(0, Math.round(f.predictedCurrentStock)));
-          auto = true;
-        }
-      }
-      next[d.id] = { value: prefill, source: auto ? 'ai' : 'manual' };
+      next[d.id] = { value: '', source: 'manual' };
     }
     setEntries(next);
     setScope(s);
@@ -249,7 +190,6 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
     const e = entries[d.id];
     return e && e.value !== '' && !Number.isNaN(Number(e.value));
   }).length;
-  const auto = scopedDisplay.filter((d) => entries[d.id]?.source === 'ai').length;
   const pct = total > 0 ? Math.round((100 * filled) / total) : 0;
 
   const scopeLabel =
@@ -358,18 +298,7 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
       width={920}
       footer={
         <>
-          <span
-            style={{
-              marginRight: 'auto',
-              fontFamily: fonts.mono,
-              fontSize: 10,
-              color: T.dim,
-              letterSpacing: '0.1em',
-              textTransform: 'uppercase',
-            }}
-          >
-            {auto} {cs.aiPrefilled}{mae !== null ? ` · MAE ${mae.toFixed(1)}%` : ''}
-          </span>
+          <span style={{ marginRight: 'auto' }} />
           <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
             {cs.cancel}
           </Btn>
@@ -433,50 +362,6 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
       </div>
         <PhotoCountPanel lang={lang} display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
 
-        {auto > 0 && (
-          <div
-            style={{
-              background: T.purpleDim,
-              border: `1px solid ${T.purple}33`,
-              borderRadius: 12,
-              padding: '12px 16px',
-              display: 'flex',
-              gap: 12,
-              alignItems: 'center',
-              marginBottom: 22,
-            }}
-          >
-            <span
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                background: T.purple,
-                color: '#fff',
-                fontFamily: fonts.mono,
-                fontSize: 11,
-                fontWeight: 600,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              AI
-            </span>
-            <span
-              style={{
-                fontFamily: fonts.sans,
-                fontSize: 13,
-                color: T.ink2,
-                flex: 1,
-                lineHeight: 1.45,
-              }}
-            >
-              {cs.theModelHas}<b style={{ color: T.ink }}>{cs.graduatedFor(auto)}</b>{cs.graduatedHelp}
-            </span>
-          </div>
-        )}
-
         {cats.map((cat) => {
           const catItems = scopedDisplay.filter((d) => d.cat === cat);
           if (catItems.length === 0) return null;
@@ -504,7 +389,6 @@ export function CountSheet({ lang, open, onClose, items, display, autoFill, aiMo
                     d={d}
                     entry={entries[d.id] || { value: '', source: 'manual' }}
                     onChange={(v) => setEntry(d.id, v)}
-                    autoFill={autoFillById.get(d.id)}
                   />
                 ))}
               </div>
@@ -520,24 +404,13 @@ function CountRow({
   d,
   entry,
   onChange,
-  autoFill,
 }: {
   lang: Lang;
   d: DisplayItem;
   entry: Entry;
   onChange: (v: string) => void;
-  autoFill?: AutoFillItem;
 }) {
   const cs = csStrings(lang);
-  const expected =
-    autoFill && Number.isFinite(autoFill.predictedCurrentStock)
-      ? Math.max(0, Math.round(autoFill.predictedCurrentStock))
-      : null;
-  const valNum = Number(entry.value);
-  const variance =
-    entry.value !== '' && Number.isFinite(valNum) && expected !== null
-      ? valNum - expected
-      : null;
   const fill = fillStyle(entry);
   return (
     <div
@@ -547,7 +420,7 @@ function CountRow({
         borderRadius: 12,
         padding: '12px 18px',
         display: 'grid',
-        gridTemplateColumns: '40px minmax(180px, 1.4fr) 130px 220px 80px',
+        gridTemplateColumns: '40px minmax(200px, 1.6fr) 220px 80px',
         gap: 18,
         alignItems: 'center',
       }}
@@ -567,31 +440,6 @@ function CountRow({
         >
           {cs.par} {d.par} · {cs.last} {d.counted}
         </span>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {expected !== null ? (
-          <>
-            <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
-              {cs.predicted} <b style={{ color: T.ink }}>{expected}</b>
-            </span>
-            <span
-              style={{
-                fontFamily: fonts.mono,
-                fontSize: 10,
-                color: T.purple,
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
-                fontWeight: 600,
-              }}
-            >
-              AI · ±{(d.burn * 1.4).toFixed(1)}
-            </span>
-          </>
-        ) : (
-          <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, fontStyle: 'italic' }}>
-            {cs.noPredictionYet}
-          </span>
-        )}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ position: 'relative', flex: 1 }}>
@@ -642,19 +490,6 @@ function CountRow({
             </span>
           )}
         </div>
-        {variance !== null && expected !== null && (
-          <span
-            style={{
-              fontFamily: fonts.mono,
-              fontSize: 11,
-              fontWeight: 600,
-              color: Math.abs(variance) > expected * 0.05 ? statusColor.critical : T.ink2,
-            }}
-          >
-            {variance > 0 ? '+' : ''}
-            {variance}
-          </span>
-        )}
       </div>
       <Btn
         variant="ghost"
@@ -671,12 +506,10 @@ function CountRow({
 type FillVisual = { bg: string; border: string; badge: { text: string; color: string } | null };
 
 // Maps an entry's source + confidence to its input styling + corner badge.
-// AI = purple AUTO; photo = sage/caramel/warm by confidence, with low
-// deliberately loud (warm + ⚠) so a shaky guess is never quietly trusted.
+// The manual page has no AI pre-fill, so there's no purple AUTO state — only
+// photo counting tints the input (sage/caramel/warm by confidence, with low
+// deliberately loud (warm + ⚠) so a shaky guess is never quietly trusted).
 function fillStyle(entry: Entry): FillVisual {
-  if (entry.source === 'ai') {
-    return { bg: T.purpleDim, border: `${T.purple}44`, badge: { text: 'AUTO', color: T.purple } };
-  }
   if (entry.source === 'photo') {
     if (entry.confidence === 'high') return { bg: T.sageDim, border: `${T.sageDeep}44`, badge: { text: 'PHOTO', color: T.sageDeep } };
     if (entry.confidence === 'medium') return { bg: `${T.caramel}14`, border: `${T.caramel}55`, badge: { text: 'PHOTO', color: T.caramelDeep } };

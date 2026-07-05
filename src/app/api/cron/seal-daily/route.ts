@@ -65,6 +65,11 @@ interface SealOutcome {
   attended_count: number;
   no_show_count: number;
   daily_log_written: boolean;
+  // How many plan_snapshots rows we projected for this property this run
+  // (today + tomorrow = 0, 1, or 2). 0 when the property has no live CUA
+  // data — we deliberately don't write fake 0-occupancy rows (see
+  // projectPlanSnapshots).
+  plan_snapshots_written: number;
   skipped_reason?: string;
   error?: string;
 }
@@ -121,6 +126,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           attended_count: 0,
           no_show_count: 0,
           daily_log_written: false,
+          plan_snapshots_written: 0,
           error: errToString(e),
         };
       }
@@ -137,6 +143,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       attended_count: 0,
       no_show_count: 0,
       daily_log_written: false,
+      plan_snapshots_written: 0,
       error: errToString(o.error),
     },
   );
@@ -149,6 +156,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const sealedCount = sealOutcomes.filter((o) => o.daily_log_written).length;
   const skippedCount = sealOutcomes.filter((o) => o.skipped_reason).length;
   const erroredCount = sealOutcomes.filter((o) => o.error).length;
+  const planSnapshotsWritten = sealOutcomes.reduce((acc, o) => acc + (o.plan_snapshots_written || 0), 0);
 
   // Heartbeat on full success only. Doctor's cron_heartbeats_fresh check
   // reads back: a heartbeat older than 2× the cadence (hourly → > 2h
@@ -156,7 +164,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!anyError) {
     await writeCronHeartbeat('seal-daily', {
       requestId,
-      notes: { sealed: sealedCount, skipped: skippedCount, errored: erroredCount },
+      notes: {
+        sealed: sealedCount,
+        skipped: skippedCount,
+        errored: erroredCount,
+        plan_snapshots_written: planSnapshotsWritten,
+      },
     });
   }
 
@@ -166,6 +179,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     sealed: sealedCount,
     skipped: skippedCount,
     errored: erroredCount,
+    plan_snapshots_written: planSnapshotsWritten,
     results: sealOutcomes,
   });
 }
@@ -222,6 +236,7 @@ async function sealOne(
       attended_count: 0,
       no_show_count: 0,
       daily_log_written: false,
+      plan_snapshots_written: 0,
       skipped_reason: 'before_seal_window',
     };
   }
@@ -403,10 +418,26 @@ async function sealOne(
     .upsert(row, { onConflict: 'property_id,date' });
   if (upErr) throw upErr;
 
+  // ─── 3. Project plan_snapshots for today + tomorrow ──────────────────
+  // The Python ML inventory model reads TOMORROW'S projected occupancy from
+  // plan_snapshots (ml-service/src/inference/inventory_rate.py). That table
+  // has been an empty stub since Plan v4 deleted the scraper that wrote it,
+  // so ML silently fell back to a 14-day historic mean. We refill it here
+  // from the live CUA data via project_property_counts_v1 (migration 0292)
+  // — one projection per (property, date), keyed on property-local today +
+  // tomorrow. Gated on the property having live CUA data (see helper) so we
+  // never write a fake 0-occupancy row that would poison the model.
+  const planSnapshotsWritten = await projectPlanSnapshots({
+    property: p,
+    tz,
+    reservationsUntrusted,
+    requestId,
+  });
+
   log.info('seal-daily: sealed', {
     requestId, property_id: p.id, target_date: targetDate,
     marks_inserted: toMark.length, attended: attendedCount, no_show: noShowCount,
-    rooms_completed: roomsCompleted,
+    rooms_completed: roomsCompleted, plan_snapshots_written: planSnapshotsWritten,
   });
 
   return {
@@ -417,5 +448,156 @@ async function sealOne(
     attended_count: attendedCount,
     no_show_count: noShowCount,
     daily_log_written: true,
+    plan_snapshots_written: planSnapshotsWritten,
   };
+}
+
+/**
+ * Compute "today" and "tomorrow" as YYYY-MM-DD in the property's local
+ * timezone. Uses the same Intl.DateTimeFormat approach as
+ * targetDateForProperty so all three (yesterday/today/tomorrow) key off one
+ * consistent notion of the property's local calendar day.
+ *
+ * Exported for unit testing (cron-seal-daily-projection.test.ts) — the
+ * date-arithmetic is the piece most prone to a DST/off-by-one bug.
+ */
+export function localDatesForProjection(tz: string): { today: string; tomorrow: string } {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const parts = fmt.formatToParts(new Date());
+  const get = (t: string) => parts.find((pp) => pp.type === t)?.value ?? '';
+  const today = `${get('year')}-${get('month')}-${get('day')}`;
+  // Add one day via a noon-UTC anchor to dodge DST edge cases.
+  const t = new Date(`${today}T12:00:00Z`);
+  t.setUTCDate(t.getUTCDate() + 1);
+  const tomorrow = t.toISOString().slice(0, 10);
+  return { today, tomorrow };
+}
+
+// Shape returned by the project_property_counts_v1 RPC (migration 0292).
+type ProjectedCounts = {
+  total_rooms: number;
+  arrivals: number;
+  stayovers: number;
+  checkouts: number;
+  vacant_clean: number;
+  vacant_dirty: number;
+  ooo: number;
+  stayover_day1: number;
+  stayover_day2: number;
+  stayover_arrival_day: number;
+  stayover_unknown: number;
+  arrival_room_numbers: string[] | null;
+  stayover_day1_room_numbers: string[] | null;
+  checkout_room_numbers: string[] | null;
+};
+
+/**
+ * Project + upsert plan_snapshots rows for the property's local today and
+ * tomorrow, so the ML inventory/demand/supply inference paths read real
+ * PMS-projected occupancy instead of the 14-day-mean fallback.
+ *
+ * NO-CUA-DATA GUARD (why we don't just always write):
+ *   plan_snapshots is HISTORY-adjacent — a fake 0-occupancy row for a
+ *   property with no live feed would train the inventory model at
+ *   occupancy=0 (predicting ~0 usage / never reorder). We therefore only
+ *   write when BOTH hold:
+ *     1. The property has a pms_in_house_snapshot row — proof the CUA is
+ *        actually connected and polling for this hotel (the task's explicit
+ *        gate; also what today_property_counts_v1 keys off).
+ *     2. The reservation feeds are trusted (reservationsUntrusted === false)
+ *        — arrivals/departures aren't 'learning' and the first sync landed.
+ *        This is the SAME signal the daily_logs seal above uses to decide
+ *        whether checkouts/stayovers are real; occupancy is derived from the
+ *        same reservation counts, so the same gate applies.
+ *   Manual no-PMS hotels (no snapshot row) and still-learning connections
+ *   are skipped — they keep using the historic-mean fallback, which is the
+ *   correct behavior for a hotel with no projected-occupancy source.
+ *
+ * Returns the number of rows written (0, 1, or 2). Best-effort: a failure to
+ * project does NOT fail the whole seal (the daily_logs write already
+ * succeeded); it's logged and reported as 0 written so the counter is honest.
+ */
+async function projectPlanSnapshots(args: {
+  property: PropertyRow;
+  tz: string;
+  reservationsUntrusted: boolean;
+  requestId: string;
+}): Promise<number> {
+  const { property: p, tz, reservationsUntrusted, requestId } = args;
+
+  // Gate 2: reservations must be trusted (same signal daily_logs uses).
+  if (reservationsUntrusted) {
+    return 0;
+  }
+
+  // Gate 1: property must have a live CUA snapshot row.
+  const { data: snapRow, error: snapErr } = await supabaseAdmin
+    .from('pms_in_house_snapshot')
+    .select('property_id')
+    .eq('property_id', p.id)
+    .maybeSingle();
+  if (snapErr) {
+    log.warn('seal-daily: plan_snapshots snapshot-gate lookup failed', {
+      requestId, property_id: p.id, err: snapErr,
+    });
+    return 0;
+  }
+  if (!snapRow) {
+    // No live CUA data — deliberately skip (don't write a fake row).
+    return 0;
+  }
+
+  const { today, tomorrow } = localDatesForProjection(tz);
+  let written = 0;
+  for (const projDate of [today, tomorrow]) {
+    const { data: counts, error: rpcErr } = await supabaseAdmin
+      .rpc('project_property_counts_v1', { p_property_id: p.id, p_target_date: projDate });
+    if (rpcErr) {
+      log.warn('seal-daily: project_property_counts_v1 failed', {
+        requestId, property_id: p.id, date: projDate, err: rpcErr,
+      });
+      continue;
+    }
+    const c = Array.isArray(counts) && counts.length > 0 ? (counts[0] as ProjectedCounts) : null;
+    if (!c) continue;
+
+    // Match the plan_snapshots stub columns the ML code reads (migration
+    // 0205). total_cleaning_minutes / recommended_hks are left at their
+    // column defaults (0) — supply/demand COALESCE them and don't rely on a
+    // projected value. pull_type tags the row's provenance for debugging.
+    const snapshotRow: Record<string, unknown> = {
+      property_id: p.id,
+      date: projDate,
+      pulled_at: new Date().toISOString(),
+      pull_type: 'projection',
+      total_rooms: c.total_rooms,
+      arrivals: c.arrivals,
+      stayovers: c.stayovers,
+      checkouts: c.checkouts,
+      vacant_clean: c.vacant_clean,
+      vacant_dirty: c.vacant_dirty,
+      ooo: c.ooo,
+      stayover_day1: c.stayover_day1,
+      stayover_day2: c.stayover_day2,
+      stayover_arrival_day: c.stayover_arrival_day,
+      stayover_unknown: c.stayover_unknown,
+      arrival_room_numbers: c.arrival_room_numbers ?? [],
+      stayover_day1_room_numbers: c.stayover_day1_room_numbers ?? [],
+      checkout_room_numbers: c.checkout_room_numbers ?? [],
+    };
+
+    const { error: upErr } = await supabaseAdmin
+      .from('plan_snapshots')
+      .upsert(snapshotRow, { onConflict: 'property_id,date' });
+    if (upErr) {
+      log.warn('seal-daily: plan_snapshots upsert failed', {
+        requestId, property_id: p.id, date: projDate, err: upErr,
+      });
+      continue;
+    }
+    written += 1;
+  }
+  return written;
 }

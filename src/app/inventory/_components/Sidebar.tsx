@@ -29,6 +29,10 @@ interface SidebarProps {
   spendCap: number;
   /** Management (owner/GM/admin) — gates the Orders + Ordering-settings actions. */
   canManage: boolean;
+  /** Money capability (view_financials) — gates the budget/spend surfaces:
+   *  the Reports + Budgets actions and the month spend strip. Stock counts and
+   *  low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.) */
+  canViewFinancials: boolean;
   onAction: (key: SidebarAction) => void;
 }
 
@@ -42,6 +46,7 @@ export function Sidebar({
   spendSpent,
   spendCap,
   canManage,
+  canViewFinancials,
   onAction,
 }: SidebarProps) {
   const tx = t(lang);
@@ -68,17 +73,23 @@ export function Sidebar({
       {canManage && <RailBtn label={tx.orders} onClick={() => onAction('orders')} />}
       <Divider />
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>
-      <RailBtn label={tx.reports} onClick={() => onAction('reports')} />
+      {/* Reports + Budgets show budget/spend dollars — money-capability only. */}
+      {canViewFinancials && <RailBtn label={tx.reports} onClick={() => onAction('reports')} />}
       <RailBtn label={tx.history} badge={historyCount} onClick={() => onAction('history')} />
       <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
-      <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />
+      {canViewFinancials && <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />}
       {canManage && <RailBtn label={tx.orderingSettings} onClick={() => onAction('ordersettings')} />}
 
-      <div style={{ height: 1, background: T.rule, margin: '10px 8px 6px' }} />
-      <div style={{ padding: '4px 10px 6px' }}>
-        <Caps size={9}>{tx.thisMonth}</Caps>
-        <SpendStrip spent={spendSpent} cap={spendCap} lang={lang} />
-      </div>
+      {/* Month spend vs budget — money-capability only. */}
+      {canViewFinancials && (
+        <>
+          <div style={{ height: 1, background: T.rule, margin: '10px 8px 6px' }} />
+          <div style={{ padding: '4px 10px 6px' }}>
+            <Caps size={9}>{tx.thisMonth}</Caps>
+            <SpendStrip spent={spendSpent} cap={spendCap} lang={lang} />
+          </div>
+        </>
+      )}
     </aside>
   );
 }

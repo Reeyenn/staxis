@@ -15,10 +15,13 @@ import {
   evaluatePromotionGate,
   gatherCrossFeedObservation,
   computeRecipeFingerprint,
+  selectPriorVerification,
   type VerificationGateInput,
 } from '../mapping-driver.js';
+import { reconcileCrossFeed } from '../cross-feed-reconcile.js';
 import { signRecipe, verifyRecipe } from '../recipe-signing.js';
 import type { Recipe, ActionRecipe, BoardTargetState } from '../types.js';
+import type { RecipeVerification } from '../knowledge-file.js';
 
 // ─── Recipe fixtures (mirror mapper-field-contract.test.ts fullRecipe) ────────
 function tableAction(columns: Record<string, string>): ActionRecipe {
@@ -125,6 +128,70 @@ describe('gatherCrossFeedObservation', () => {
       getRoomStatus: { status: 'found', preview: { rowCount: 80, sample: [{ status: 'a' }, { status: 'b' }, { status: 'c' }] } },
     });
     assert.equal(feeds.getRoomStatus?.rowsComplete, false);
+  });
+
+  // ITEM A — a rowCount-only preview (no sample) is ALSO marked not-complete, so
+  // its lower-bound shortfall abstains instead of false-failing a paginated feed.
+  test('a rowCount-only preview (no sample) is NOT marked complete', () => {
+    const { feeds } = gatherCrossFeedObservation({
+      getArrivals: { status: 'found', preview: { rowCount: 25 } },
+    });
+    assert.equal(feeds.getArrivals?.rowCount, 25);
+    assert.equal(feeds.getArrivals?.rowsComplete, false);
+  });
+
+  // ITEM A end-to-end (caller wiring): a paginated arrivals page (rowCount 25 of a
+  // 60-row feed) with dashboard arrivals_remaining_today=30 must NOT cross-feed
+  // fail — the preview is never known-complete, so the shortfall abstains.
+  test('paginated preview shortfall through reconcileCrossFeed → no fail (correct recipe not parked)', () => {
+    const { feeds, dashboardCounters } = gatherCrossFeedObservation({
+      getArrivals: { status: 'found', preview: { rowCount: 25, sample: [{ pms_reservation_id: 'R1' }] } },
+      getDashboardCounts: { status: 'found', preview: { rowCount: 1, sample: [{ arrivals_remaining_today: '30' }] } },
+    });
+    const r = reconcileCrossFeed({ feeds, dashboardCounters });
+    assert.notEqual(r.signal, 'fail');
+    assert.equal(r.mismatched, 0);
+  });
+});
+
+// ─── ITEM C (2026-07 round-2 audit) — pass^N counter tolerates interleaved ─────
+// non-fresh knowledge-file versions. Verification telemetry is persisted ONLY on
+// fresh full learns, so self-repair / backfill / coverage-edit versions save the
+// envelope WITHOUT a verification block. selectPriorVerification scans version-DESC
+// to the last FRESH-learn envelope so the counter compares against it, not null.
+describe('selectPriorVerification — skips interleaved non-fresh versions (ITEM C)', () => {
+  const withVerif = (over: Partial<RecipeVerification>): { knowledge: { verification?: RecipeVerification } } => ({
+    knowledge: { verification: { consistentPasses: 1, fingerprint: 'fp-A', score: 1, ...over } },
+  });
+  const noVerif = (): { knowledge: { verification?: RecipeVerification } } => ({ knowledge: {} });
+
+  test('latest version is a non-fresh (no verification) row → returns the last FRESH row underneath it', () => {
+    // version-DESC: [v7 repair (no verif), v6 fresh (passes=2), v5 fresh (passes=1)]
+    const rows = [noVerif(), withVerif({ consistentPasses: 2 }), withVerif({ consistentPasses: 1 })];
+    const v = selectPriorVerification(rows);
+    assert.ok(v);
+    assert.equal(v!.consistentPasses, 2);
+    assert.equal(v!.fingerprint, 'fp-A');
+  });
+
+  test('several interleaved non-fresh versions on top → still finds the fresh envelope', () => {
+    const rows = [noVerif(), noVerif(), noVerif(), withVerif({ consistentPasses: 3 })];
+    assert.equal(selectPriorVerification(rows)!.consistentPasses, 3);
+  });
+
+  test('the latest fresh row wins when it IS the newest', () => {
+    const rows = [withVerif({ consistentPasses: 5 }), withVerif({ consistentPasses: 4 })];
+    assert.equal(selectPriorVerification(rows)!.consistentPasses, 5);
+  });
+
+  test('no fresh row anywhere in the window → null (counter starts fresh)', () => {
+    assert.equal(selectPriorVerification([noVerif(), noVerif()]), null);
+  });
+
+  test('empty / nullish input → null (fail-open)', () => {
+    assert.equal(selectPriorVerification([]), null);
+    assert.equal(selectPriorVerification(null), null);
+    assert.equal(selectPriorVerification(undefined), null);
   });
 });
 
