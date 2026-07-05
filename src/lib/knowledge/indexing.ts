@@ -19,7 +19,8 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { chunkText, DEFAULT_MAX_CHUNKS, type TextChunk } from './chunking';
-import { extractDocumentText } from './extraction';
+import { extractDocumentText, EXTRACTED_TEXT_MAX } from './extraction';
+import { enqueueOcrJob, decideOcrStatus } from './ocr';
 import {
   getDefaultEmbedder, estimateEmbeddingCostUsd, EMBEDDING_MODEL, toVectorLiteral, type Embedder,
 } from './embeddings';
@@ -280,6 +281,25 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
 
     const outcome = await extractDocumentText(bytes, mime);
 
+    // Scanned PDF / uploaded photo → hand off to the Fly vision-OCR worker
+    // instead of dead-ending. Set the doc to `processing` (KnowledgePane shows
+    // "Reading scan…") and enqueue a doc_ocr job. The worker POSTs the
+    // transcribed text back to /api/internal/knowledge/ocr-complete, which runs
+    // this same chunk→embed pipeline. If the enqueue fails outright, fall back
+    // to `unsupported` so the doc lands on a definite state (no stuck spinner).
+    if (outcome.status === 'needs_ocr') {
+      const enqueued = await enqueueOcrJob({ propertyId, documentId: docId, filePath, mime });
+      if (enqueued) {
+        await setDocStatus(propertyId, docId, 'processing', { extractedText: null, error: outcome.error });
+        return 'processing';
+      }
+      await setDocStatus(propertyId, docId, 'unsupported', {
+        extractedText: null,
+        error: 'Couldn\'t start reading this scan — please try uploading it again.',
+      });
+      return 'unsupported';
+    }
+
     if (outcome.text === null) {
       // failed | unsupported — no text to index.
       await setDocStatus(propertyId, docId, outcome.status, { extractedText: null, error: outcome.error });
@@ -310,6 +330,77 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
   } catch (e) {
     log.error('knowledge.indexDocument unexpected', { err: e instanceof Error ? e.message : String(e) });
     await setDocStatus(propertyId, docId, 'failed', { error: 'Indexing failed unexpectedly.' });
+    return 'failed';
+  }
+}
+
+// ── Public: index OCR-transcribed text (from the Fly vision worker) ──────────
+
+export interface IndexOcrTextInput {
+  propertyId: string;
+  docId: string;
+  /** Verbatim transcription the worker produced (concatenated per-page). */
+  text: string;
+  accountId: string;
+  /** True when the worker capped the doc at its page limit — forces `partial`
+   *  even if everything else fits, so the badge is honest about the tail. */
+  pageCapped: boolean;
+  embedder?: Embedder;
+}
+
+/**
+ * Index text that was OCR'd off-box by the Fly worker (scanned PDF / photo).
+ * Same tail as indexDocument — cap → chunk → embed → store → set status — but
+ * skips download+extraction (the worker already did the reading). Idempotent:
+ * clears the doc's existing chunks first, so a retry can't duplicate passages.
+ * Never throws; a failure lands the doc on `failed` with a plain-English reason.
+ */
+export async function indexOcrText(input: IndexOcrTextInput): Promise<ExtractionStatus> {
+  const { propertyId, docId, accountId, pageCapped } = input;
+  try {
+    await deleteChunksForDocument(docId);
+
+    // Apply the same stored-text cap as the extraction path (partial past it).
+    const raw = input.text ?? '';
+    const truncated = raw.length > EXTRACTED_TEXT_MAX;
+    let text = raw;
+    if (truncated) {
+      const slice = raw.slice(0, EXTRACTED_TEXT_MAX);
+      const lastSpace = slice.lastIndexOf(' ');
+      text = lastSpace > EXTRACTED_TEXT_MAX - 500 ? slice.slice(0, lastSpace) : slice;
+    }
+
+    if (text.trim().length === 0) {
+      await setDocStatus(propertyId, docId, 'failed', {
+        extractedText: null,
+        error: 'The scan didn\'t contain any readable text.',
+      });
+      return 'failed';
+    }
+
+    const chunks = chunkText(text);
+    const scope0 = await currentDocScope(propertyId, docId, 'all_staff', null);
+    const emb = await embedAndStoreChunks({
+      propertyId, accountId, visibility: scope0.visibility, visibleDept: scope0.visibleDept,
+      sourceType: 'document', documentId: docId, articleId: null,
+      chunks, embedder: input.embedder,
+    });
+    await reconcileDocChunkScope(propertyId, docId, scope0);
+
+    const hitChunkCap = chunks.length >= DEFAULT_MAX_CHUNKS;
+    const finalStatus: ExtractionStatus = decideOcrStatus({
+      truncated, pageCapped, embedPartial: emb.partial, hitChunkCap,
+    });
+    const finalError = pageCapped
+      ? 'This scan is long — only the first pages are searchable.'
+      : truncated || hitChunkCap
+        ? 'This scan is large — only the first part is searchable.'
+        : emb.error;
+    await setDocStatus(propertyId, docId, finalStatus, { extractedText: text, error: finalError });
+    return finalStatus;
+  } catch (e) {
+    log.error('knowledge.indexOcrText unexpected', { err: e instanceof Error ? e.message : String(e) });
+    await setDocStatus(propertyId, docId, 'failed', { error: 'Reading the scan failed unexpectedly.' });
     return 'failed';
   }
 }

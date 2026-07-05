@@ -25,11 +25,22 @@ test('typed PDF → ready with real text', async () => {
   assert.ok((out.text ?? '').includes('PX-4471'), 'keeps exact part numbers');
 });
 
-test('scanned / image-only PDF → unsupported (OCR coming, not a green badge)', async () => {
+test('scanned / image-only PDF → needs_ocr (routes to vision worker, not a dead end)', async () => {
   const out = await extractDocumentText(fixture('scanned.pdf'), PDF);
-  assert.equal(out.status, 'unsupported');
+  assert.equal(out.status, 'needs_ocr');
   assert.equal(out.text, null);
-  assert.match(out.error ?? '', /scanned/i);
+  assert.match(out.error ?? '', /scan/i);
+});
+
+test('uploaded photo (jpg/png/webp) → needs_ocr (no text layer to parse)', async () => {
+  // A tiny 1x1 PNG — the byte content is irrelevant: image mimes route straight
+  // to the OCR worker without any local parse.
+  const tinyPng = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+  for (const mime of ['image/jpeg', 'image/png', 'image/webp']) {
+    const out = await extractDocumentText(tinyPng, mime);
+    assert.equal(out.status, 'needs_ocr', `${mime} routes to OCR`);
+    assert.equal(out.text, null);
+  }
 });
 
 test('.docx → ready with real text', async () => {

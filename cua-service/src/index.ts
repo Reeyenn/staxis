@@ -36,6 +36,7 @@ import { runMappingJob, mappingJobResultToWorkflowResult, captureFeedOnDemand, t
 import { runRecipeEditJob, type RecipeEditJobInput } from './recipe-edit.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
 import { writeJobHandler } from './write-job-handler.js';
+import { runDocOcrJob } from './doc-ocr-handler.js';
 
 const WORKER_ID = makeWorkerId();
 
@@ -151,6 +152,13 @@ async function main(): Promise<void> {
   // the logged-in page + browser lock; the handler drives the write under the
   // exclusive mutex and verifies it landed.
   runtime.registerHandler('pms.write', (ctx) => writeJobHandler(ctx));
+
+  // feature/knowledge-ocr — doc_ocr handler. No-driver kind: it owns no PMS
+  // browser. Downloads a scanned PDF / photo from the knowledge-docs bucket,
+  // rasterizes with mupdf, transcribes each page with Claude vision, and POSTs
+  // the text to /api/internal/knowledge/ocr-complete. Budget-guarded to
+  // $2/property/day (defers when over instead of failing).
+  runtime.registerHandler('doc_ocr', (ctx) => runDocOcrJob(ctx));
 
   log.info('cua-service ready', {
     workerId: WORKER_ID,

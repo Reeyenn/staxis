@@ -7,13 +7,18 @@
 //   ready       — extracted clean text (whole document fits the index cap)
 //   partial     — extracted, but truncated at the 100 KB index cap
 //   failed      — extraction produced junk / threw (alpha-ratio heuristic)
-//   unsupported — scanned PDF (no embedded text → OCR coming) or legacy .doc
+//   unsupported — legacy .doc (a truly unreadable file type)
+//   needs_ocr   — scanned/image PDF (no text layer) or an uploaded photo →
+//                 route to the Fly vision-OCR worker (NON-terminal; the worker
+//                 sets the doc to processing → ready/partial/failed).
 //
 // The state machine kills the failure modes the reviewers called out:
-//   • no NULL-overload — every doc lands on a definite terminal status, never
-//     a green "searchable" badge it didn't earn;
+//   • no NULL-overload — every doc lands on a definite state, never a green
+//     "searchable" badge it didn't earn;
 //   • no infinite retry — terminal statuses are final; a "change" is a new
 //     upload (new row), so we embed-once with no re-extraction debt.
+//   • `needs_ocr` is NOT a DB status — it's an internal routing signal that
+//     indexDocument turns into `processing` + a doc_ocr worker job.
 //
 // Pure-ish: takes bytes in, returns a result. The only I/O is the extraction
 // libraries (unpdf / mammoth), which are deterministic for a given file. The
@@ -24,6 +29,7 @@ import 'server-only';
 import { extractText, getDocumentProxy } from 'unpdf';
 import mammoth from 'mammoth';
 import type { ExtractionStatus } from './types';
+import { isImageMime } from './types';
 
 export type { ExtractionStatus };
 
@@ -35,9 +41,19 @@ export const TERMINAL_EXTRACTION_STATUSES: readonly ExtractionStatus[] = [
 /** Cap on stored/indexed text per document. Beyond this → `partial`. */
 export const EXTRACTED_TEXT_MAX = 100_000;
 
+/**
+ * The status an extraction attempt resolves to. Adds `needs_ocr` on top of the
+ * DB `ExtractionStatus` terminal set — a NON-DB routing marker meaning "this is
+ * a scan/photo; hand it to the Fly vision-OCR worker." indexDocument maps it to
+ * `processing` + a doc_ocr job (it never lands on the row as-is).
+ */
+export type ExtractionOutcomeStatus =
+  | Exclude<ExtractionStatus, 'pending' | 'processing'>
+  | 'needs_ocr';
+
 export interface ExtractionOutcome {
-  status: Exclude<ExtractionStatus, 'pending' | 'processing'>;
-  /** Clean extracted text (already capped), or null when not readable. */
+  status: ExtractionOutcomeStatus;
+  /** Clean extracted text (already capped), or null when not readable / OCR-bound. */
   text: string | null;
   /** Human-readable reason for failed/unsupported (shown to no one raw — used
    *  for the doc's extract_error + the EN/ES badge tooltip). */
@@ -122,6 +138,11 @@ function fail(error: string): ExtractionOutcome {
 function unsupported(error: string): ExtractionOutcome {
   return { status: 'unsupported', text: null, error, pageCount: null, truncated: false };
 }
+/** Route to the Fly vision-OCR worker (scanned PDF / photo). NON-terminal —
+ *  indexDocument turns this into `processing` + a doc_ocr job. */
+function needsOcr(error: string): ExtractionOutcome {
+  return { status: 'needs_ocr', text: null, error, pageCount: null, truncated: false };
+}
 
 /**
  * Extract searchable text from an uploaded document's bytes.
@@ -135,6 +156,12 @@ export async function extractDocumentText(
   // Legacy .doc — the binary OLE format unpdf/mammoth don't read.
   if (mime === MIME_DOC) {
     return unsupported('Legacy .doc files can\'t be read — re-save as .docx or PDF and re-upload.');
+  }
+
+  // Uploaded photo / scan image (jpg/png/webp) — no text layer to parse here.
+  // Route straight to the Fly vision-OCR worker, which transcribes it.
+  if (isImageMime(mime)) {
+    return needsOcr('Reading this photo with AI — text search will be ready shortly.');
   }
 
   // Plain text / markdown / csv — decode UTF-8.
@@ -179,10 +206,11 @@ export async function extractDocumentText(
     } catch {
       return fail('Couldn\'t read this PDF. It may be corrupt or password-protected.');
     }
-    // A scanned/photo PDF has (near) zero embedded text. Distinguish "scanned"
-    // (unsupported — OCR coming) from "read junk" (failed).
+    // A scanned/photo PDF has (near) zero embedded text. Route it to the Fly
+    // vision-OCR worker rather than dead-ending as `unsupported`. (A PDF whose
+    // text layer reads as junk — not empty — is still `failed`, below.)
     if (meaningfulCharCount(text) < 16) {
-      return unsupported('This looks like a scanned image PDF — text search isn\'t available yet (OCR coming).');
+      return needsOcr('This looks like a scanned PDF — reading it with AI, text search will be ready shortly.');
     }
     if (!isMostlyReadable(text)) return fail('The PDF\'s text couldn\'t be read cleanly.');
     return ok(text, totalPages);
