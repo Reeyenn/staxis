@@ -16,7 +16,7 @@
  *   - loggedAt                 — when that comparison was recorded
  *   - status                   — 'graduated' | 'learning' | 'not-enough-data'
  *   - countEvents              — distinct count events logged for this item
- *   - eventsNeeded             — graduation threshold (30)
+ *   - eventsNeeded             — graduation threshold (15, prospective-gate rebuild)
  *
  * Plus the same summary block the AI-status endpoint returns (items tracked,
  * graduated, gate-ratio accuracy, last-inference freshness) so the page can
@@ -42,9 +42,12 @@ const isUuid = (s: unknown): s is string =>
 // One missed daily cron (24h) + 2h grace. Mirrors ai-status STALE_INFERENCE_HOURS.
 const STALE_INFERENCE_HOURS = 26;
 
-// Graduation threshold — the AI needs this many count events per item before it
-// will auto-fill. Matches the training_row_count >= 30 gate in ai-status.
-const EVENTS_NEEDED = 30;
+// Graduation threshold — the AI needs this many clean count windows per item
+// before auto-fill is even considered. Matches ml-service's prospective gate
+// (config inventory_graduation_min_events = 15, 2026-07-05 rebuild — the old
+// 30-event retrain-streak gate was replaced by prospective prediction_log
+// evidence; see ml-service/src/training/_prospective_gate.py).
+const EVENTS_NEEDED = 15;
 
 type ItemStatus = 'graduated' | 'learning' | 'not-enough-data';
 
