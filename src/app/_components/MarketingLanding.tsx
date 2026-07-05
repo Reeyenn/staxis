@@ -336,8 +336,9 @@ export default function MarketingLanding() {
         <div className="kicker rv">THE DIFFERENCE</div>
         <h2 className="rv">Two ways to run a hotel.</h2>
 
-        <div className="vs">
-          <div className="vs-col rv">
+        <div className="vs rv">
+          <div className="vs-col nightmare">
+            <div className="vs-tag bad-tag">TODAY · THE NIGHTMARE</div>
             <h3 className="vs-title">You go <em>find</em> the work.</h3>
             <p className="vs-sub">Take one thing. Towels.</p>
             <div className="oldway">
@@ -354,15 +355,30 @@ export default function MarketingLanding() {
                 </span>
               ))}
             </div>
-            <p className="vs-caption rv" style={{ transitionDelay: '1.3s' }}>
+            <p className="vs-caption">
               Nine steps to stay stocked on <em>towels</em>. Now every supply,
               every room, every shift, every work order. That&rsquo;s the job.
             </p>
+            <div className="vs-outcomes">
+              {[
+                '▲ Higher labor costs',
+                'Hours lost walking and checking',
+                'Budget surprises at month end',
+                'Nights and weekends unwatched',
+              ].map((o, i) => (
+                <span className="oc bad rv" key={o} style={{ transitionDelay: `${i * 110}ms` }}>{o}</span>
+              ))}
+            </div>
           </div>
 
-          <div className="vs-divider rv" aria-hidden="true"><span>VS</span></div>
+          <div className="vs-mid" aria-hidden="true">
+            <i className="vs-line" />
+            <span className="vs-badge"><em>VS</em></span>
+            <i className="vs-line" />
+          </div>
 
-          <div className="vs-col rv">
+          <div className="vs-col dreamside">
+            <div className="vs-tag good-tag">WITH STAXIS · THE DREAM</div>
             <h3 className="vs-title sage-title">The work comes <em>to you.</em></h3>
             <p className="vs-sub">Same towels.</p>
             <div className="notif-stage" ref={notifRef}>
@@ -389,10 +405,33 @@ export default function MarketingLanding() {
                 </div>
               </div>
             </div>
-            <p className="vs-caption rv">
+            <p className="vs-caption">
               One tap. Staxis did the walking, the counting, and the math. It
               only brings you the decision.
             </p>
+            <div className="dream-extra">
+              <div className="de-h">ALSO HANDLED, WHILE YOU SLEPT</div>
+              {[
+                'Tomorrow’s cleaning board built',
+                'AC ticket sent to maintenance',
+                'Breakfast coffee reorder drafted',
+                'Every room status up to date',
+              ].map((d, i) => (
+                <div className="de-item rv" key={d} style={{ transitionDelay: `${300 + i * 140}ms` }}>
+                  <span className="de-check">✓</span>{d}
+                </div>
+              ))}
+            </div>
+            <div className="vs-outcomes">
+              {[
+                '▼ Lower labor costs',
+                'Hours back, every single week',
+                'Budget checked before every order',
+                'Watched around the clock',
+              ].map((o, i) => (
+                <span className="oc good rv" key={o} style={{ transitionDelay: `${i * 110}ms` }}>{o}</span>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -823,29 +862,96 @@ const CSS = `
   transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1); }
 .rv.in { opacity: 1; transform: none; }
 
-/* ---------- the difference: side by side ---------- */
-.vs { display: grid; grid-template-columns: 1fr auto 1fr;
-  gap: clamp(24px, 4vw, 56px); margin-top: 56px; align-items: start; }
+/* ---------- the difference: nightmare vs dream ---------- */
+.vs { display: grid; grid-template-columns: 1fr 88px 1fr; margin-top: 56px;
+  align-items: stretch; }
+.vs-col { border-radius: 22px; padding: clamp(26px, 3vw, 40px);
+  display: flex; flex-direction: column; }
+.vs-col.nightmare { border: 1px solid rgba(184,92,61,.22);
+  background:
+    repeating-linear-gradient(-45deg, rgba(184,92,61,.028) 0 14px, transparent 14px 28px),
+    radial-gradient(120% 100% at 0% 0%, rgba(184,92,61,.07), transparent 60%),
+    #FCFAF6;
+  box-shadow: inset 0 0 0 1px rgba(184,92,61,.05), 0 14px 40px rgba(31,35,28,.06); }
+.vs-col.dreamside { border: 1px solid rgba(92,122,96,.3);
+  background:
+    radial-gradient(120% 100% at 100% 0%, rgba(158,183,166,.16), transparent 60%),
+    radial-gradient(100% 100% at 0% 100%, var(--caramel-dim), transparent 65%),
+    #FDFEFC;
+  box-shadow: 0 20px 56px rgba(92,122,96,.14), 0 0 0 6px rgba(158,183,166,.08); }
+.vs-tag { align-self: flex-start; font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: .18em; border-radius: 999px; padding: 7px 14px; margin-bottom: 22px; }
+.bad-tag { color: var(--warm); background: rgba(184,92,61,.09);
+  border: 1px solid rgba(184,92,61,.3); }
+.good-tag { color: var(--sage-deep); background: var(--sage-dim);
+  border: 1px solid rgba(92,122,96,.35); }
 .vs-title { font-family: var(--serif); font-weight: 400;
   font-size: clamp(26px, 2.8vw, 38px); line-height: 1.12; letter-spacing: -.005em; }
 .vs-title em { font-style: italic; }
 .sage-title em, .sage-title { color: var(--sage-deep); }
 .vs-sub { margin-top: 10px; color: var(--muted); font-size: 15px; }
-.vs-divider { position: relative; align-self: stretch; display: flex;
-  align-items: center; justify-content: center; min-height: 100%; width: 40px; }
-.vs-divider::before { content: ''; position: absolute; top: 6px; bottom: 6px;
-  left: 50%; width: 1px; border-left: 1px dashed var(--rule); }
-.vs-divider span { position: relative; font-family: var(--mono); font-size: 10px;
-  letter-spacing: .18em; color: var(--dim); background: var(--bg);
-  border: 1px solid var(--rule); border-radius: 999px; padding: 7px 11px;
-  animation: markfloat 5s ease-in-out infinite; }
-.vs-caption { margin-top: 30px; max-width: 54ch; color: var(--muted); font-size: 15px; }
+.vs-caption { margin-top: 28px; max-width: 54ch; color: var(--muted); font-size: 14.5px; }
 .vs-caption em { font-style: italic; color: var(--warm); }
+.vs-outcomes { display: flex; flex-wrap: wrap; gap: 9px; margin-top: auto;
+  padding-top: 28px; }
+.oc { font-size: 13px; font-weight: 600; letter-spacing: -.005em;
+  border-radius: 999px; padding: 9px 16px;
+  transition: transform .25s ease, box-shadow .25s ease,
+    opacity .9s cubic-bezier(.19,1,.22,1); }
+.oc.rv:not(.in) { transform: translateY(14px); }
+.oc:hover { transform: translateY(-2px); }
+.oc.bad { color: var(--warm); background: rgba(184,92,61,.09);
+  border: 1px solid rgba(184,92,61,.28); }
+.oc.bad:hover { box-shadow: 0 6px 16px rgba(184,92,61,.18); }
+.oc.good { color: var(--sage-deep); background: rgba(92,122,96,.1);
+  border: 1px solid rgba(92,122,96,.32); }
+.oc.good:hover { box-shadow: 0 6px 16px rgba(92,122,96,.2); }
+.vs.in .oc.good:first-child { animation: notifsettle .6s cubic-bezier(.19,1,.22,1) 1s; }
+.dream-extra { margin-top: 28px; display: flex; flex-direction: column; gap: 8px; }
+.de-h { font-family: var(--mono); font-size: 10px; letter-spacing: .18em;
+  color: var(--dim); margin-bottom: 4px; }
+.de-item { display: flex; align-items: center; gap: 10px; font-size: 13.5px;
+  color: var(--ink-soft); background: rgba(255,255,255,.75);
+  border: 1px solid var(--rule-soft); border-radius: 10px; padding: 10px 14px;
+  transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1); }
+.de-item.rv:not(.in) { transform: translateX(18px); }
+.de-check { width: 18px; height: 18px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3); }
+
+/* the VS spine */
+.vs-mid { display: flex; flex-direction: column; align-items: center;
+  gap: 14px; padding: 10px 0; }
+.vs-line { flex: 1; width: 2px; border-radius: 2px;
+  background: linear-gradient(180deg, rgba(184,92,61,.45), var(--caramel), rgba(92,122,96,.55));
+  transform: scaleY(0); transition: transform 1.1s cubic-bezier(.19,1,.22,1) .25s; }
+.vs-mid .vs-line:first-child { transform-origin: bottom; }
+.vs-mid .vs-line:last-child { transform-origin: top; }
+.vs.in .vs-line { transform: scaleY(1); }
+.vs-badge { position: relative; width: 68px; height: 68px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; background: #fff;
+  border: 1px solid var(--rule); box-shadow: 0 12px 32px rgba(31,35,28,.14);
+  opacity: 0; transform: scale(.3) rotate(-16deg);
+  transition: opacity .6s cubic-bezier(.19,1,.22,1) .7s,
+    transform .6s cubic-bezier(.34,1.56,.64,1) .7s; }
+.vs.in .vs-badge { opacity: 1; transform: scale(1) rotate(0deg); }
+.vs-badge::before { content: ''; position: absolute; inset: -7px; border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--warm), var(--caramel), var(--sage-deep), var(--warm));
+  filter: blur(0.5px); animation: spin 7s linear infinite; z-index: -1; opacity: .8; }
+.vs-badge::after { content: ''; position: absolute; inset: -2px; border-radius: 50%;
+  background: #fff; z-index: -1; }
+.vs-badge em { font-family: var(--serif); font-style: italic; font-size: 26px;
+  color: var(--ink); letter-spacing: .02em; }
 @media (max-width: 980px) {
-  .vs { grid-template-columns: 1fr; }
-  .vs-divider { width: auto; min-height: 40px; }
-  .vs-divider::before { top: 50%; bottom: auto; left: 6px; right: 6px; width: auto;
-    height: 1px; border-left: none; border-top: 1px dashed var(--rule); }
+  .vs { grid-template-columns: 1fr; row-gap: 0; }
+  .vs-mid { flex-direction: row; padding: 18px 0; }
+  .vs-line { width: auto; height: 2px; flex: 1;
+    background: linear-gradient(90deg, rgba(184,92,61,.45), var(--caramel), rgba(92,122,96,.55)); }
+  .vs-mid .vs-line:first-child { transform-origin: right; }
+  .vs-mid .vs-line:last-child { transform-origin: left; }
+  .vs.in .vs-line { transform: scaleX(1); }
+  .vs-line { transform: scaleX(0); }
 }
 
 .oldway { margin-top: 32px; display: flex; flex-wrap: wrap; align-items: center;
