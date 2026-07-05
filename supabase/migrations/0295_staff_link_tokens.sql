@@ -1,4 +1,4 @@
--- 0293 — staff_link_tokens: per-staff bearer token for the public mobile surface.
+-- 0295 — staff_link_tokens: per-staff bearer token for the public mobile surface.
 --
 -- SECURITY AUDIT 2026-06-26, Remaining #1 (HIGH — public staffId enumeration).
 --
@@ -111,7 +111,7 @@ COMMENT ON TABLE public.staff_link_tokens IS
 -- ─── applied_migrations bookkeeping ──────────────────────────────────────
 INSERT INTO public.applied_migrations (version, description)
 VALUES (
-  '0293',
+  '0295',
   'staff_link_tokens: per-staff hashed bearer token minted at SMS-send time, embedded in the mobile link as &tok=, verified server-side on every public housekeeper/laundry/engineer/save-fcm-token call. Closes the public staffId-enumeration hole — the (pid,staffId) tuple is no longer a sufficient credential and /api/staff-list stops emitting staff.id.'
 )
 ON CONFLICT (version) DO NOTHING;

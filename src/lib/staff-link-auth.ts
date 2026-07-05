@@ -12,7 +12,7 @@
 //
 // AFTER: the SMS link carries a per-staff bearer token (`&tok=<raw>`), minted
 // at send time (src/lib/staff-auth.ts → mintStaffLinkToken), stored HASHED in
-// staff_link_tokens (0293). This helper resolves identity FROM the token:
+// staff_link_tokens (0295). This helper resolves identity FROM the token:
 //   token_hash → staff row → the URL's pid/staffId must match that row.
 // A raw (pid, staffId) with no valid token is rejected. staffId may still ride
 // in URLs for back-compat parsing but is no longer sufficient.
