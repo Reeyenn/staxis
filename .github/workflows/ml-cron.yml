@@ -21,20 +21,36 @@ name: ML cron
 # scraper's heartbeat row).
 
 on:
-  # Scheduled run(s) DISABLED 2026-05-30 — the ML service has no incoming
-  # data since the scraper was removed, so each run hit a dead endpoint,
-  # failed, and emailed a 'workflow failed' notification. Jobs + all ML
-  # code are KEPT; re-enable by uncommenting. Manual runs still work via
-  # the Actions tab (workflow_dispatch).
-  # schedule:
-  # # cron is UTC. CDT is UTC-5; CST is UTC-6.
-  # - cron: '0 8 * * 0'    # Sunday 03:00 CDT — train/demand
-  # - cron: '30 8 * * 0'   # Sunday 03:30 CDT — train/supply
-  # - cron: '0 9 * * 0'    # Sunday 04:00 CDT — train/inventory-rate
-  # - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference (housekeeping)
-  # - cron: '0 11 * * *'   # Daily 06:00 CDT — predict/inventory-rate
-  # - cron: '45 11 * * *'  # Daily 06:45 CDT — auto-rollback pipeline (Phase 7 v2: backfill + check + execute)
-  # - cron: '0 12 * * *'   # Daily 07:00 CDT — aggregate cohort priors
+  # INVENTORY ML re-enabled 2026-07-05 — the inventory-rate pipeline now has
+  # a live data source again: the seal-daily cron projects tomorrow's
+  # occupancy into plan_snapshots from the pms_* tables (migration 0292),
+  # so inventory training + prediction produce real output instead of the
+  # dead-endpoint failures that got the whole block disabled on 2026-05-30.
+  #
+  # Enabled here: aggregate-priors (Sun 03:00 CT) → train-inventory
+  # (Sun 04:00 CT, +1h so priors land first) → predict-inventory (daily
+  # 06:00 CT). Priors runs before training so the cold-start cohort priors
+  # are fresh when the weekly fit reads them.
+  #
+  # STILL DISABLED (housekeeping ML — demand/supply/run-inference and the
+  # auto-rollback pipeline): those consume attendance-labelled training data
+  # that is a separate re-enablement decision; left commented on purpose.
+  # Their jobs + all ML code are KEPT; re-enable by uncommenting the matching
+  # cron line. Manual runs of ANY job still work via the Actions tab
+  # (workflow_dispatch).
+  schedule:
+  # cron is UTC. CDT is UTC-5; CST is UTC-6.
+  # NOTE: each cron string here also matches a job's `if:` guard below by
+  # exact string. aggregate-priors uses its OWN distinct time ('30 7 * * 0')
+  # so it does NOT collide with train-demand's '0 8 * * 0' guard — that would
+  # re-run the disabled housekeeping demand job. Keep priors on a unique slot.
+  # - cron: '0 8 * * 0'    # Sunday 03:00 CDT — train/demand (housekeeping ML — disabled)
+  # - cron: '30 8 * * 0'   # Sunday 03:30 CDT — train/supply (housekeeping ML — disabled)
+  - cron: '30 7 * * 0'     # Sunday 02:30 CDT — aggregate cohort priors (before inventory training)
+  - cron: '0 9 * * 0'      # Sunday 04:00 CDT — train/inventory-rate
+  # - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference (housekeeping ML — disabled)
+  - cron: '0 11 * * *'     # Daily 06:00 CDT — predict/inventory-rate
+  # - cron: '45 11 * * *'  # Daily 06:45 CDT — auto-rollback pipeline (housekeeping ML — disabled)
   workflow_dispatch: {}    # manual trigger from the Actions UI
 
 jobs:
@@ -320,7 +336,11 @@ jobs:
           ' /tmp/result.json
 
   aggregate-priors:
-    if: github.event.schedule == '0 12 * * *' || github.event_name == 'workflow_dispatch'
+    # Sunday 02:30 CDT ('30 7 * * 0'), ~1.5h before inventory training, so the
+    # cold-start cohort priors are fresh when the weekly fit reads them. Uses a
+    # distinct cron slot from train-demand ('0 8 * * 0') so re-enabling priors
+    # doesn't drag the still-disabled housekeeping demand job back to life.
+    if: github.event.schedule == '30 7 * * 0' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Hard cap so a hung TLS handshake / DNS pathology can't block this
     # workflow queue for 6h (GH default). Routes have maxDuration=300s
