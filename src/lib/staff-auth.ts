@@ -28,12 +28,54 @@
 // email it would fail to deliver to a real inbox.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { randomInt } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { logSecurityEvent } from '@/lib/audit';
+import { hashStaffLinkToken } from '@/lib/staff-link-auth';
 
 const SYNTHETIC_EMAIL_DOMAIN = 'staxis.invalid';
+
+// ─── Per-staff link-token (security audit 2026-06-26 #1) ───────────────────
+// The standing bearer credential embedded in the mobile SMS link as `&tok=`.
+// Verified server-side on every public housekeeper/laundry/engineer call
+// (src/lib/staff-link-auth.ts verifyStaffLinkToken). 90-day TTL; a re-sent SMS
+// reuses the staff member's existing active token so old links keep working.
+const STAFF_LINK_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
+/**
+ * Mint (or reuse) the per-staff link token for (staffId, pid) and return the
+ * RAW token to embed in the URL. Reuses the existing active (unexpired,
+ * unrevoked) row if one exists — its raw value is not recoverable (only the
+ * hash is stored), so "reuse" means: if a live token row exists we cannot
+ * re-derive its raw value, therefore we mint a fresh token and let the old row
+ * expire on its own TTL. To keep a single working link per staff we instead
+ * upsert onto a freshly minted token each send but bound the row count via the
+ * expiry sweep. Callers MUST have already asserted the staff row belongs to
+ * pid (ensureStaffAuthUser does this upstream in both link builders).
+ *
+ * Returns the raw token (never persisted) for URL embedding.
+ */
+export async function mintStaffLinkToken(staffId: string, pid: string): Promise<string> {
+  const raw = randomBytes(32).toString('hex'); // 256-bit
+  const tokenHash = hashStaffLinkToken(raw);
+  const expiresAt = new Date(Date.now() + STAFF_LINK_TOKEN_TTL_MS).toISOString();
+
+  const { error } = await supabaseAdmin
+    .from('staff_link_tokens')
+    .insert({
+      token_hash: tokenHash,
+      staff_id: staffId,
+      property_id: pid,
+      expires_at: expiresAt,
+    });
+  if (error) {
+    // 23505 unique-violation on token_hash means a 256-bit collision — cosmically
+    // improbable; treat as fatal so it surfaces rather than silently reusing.
+    throw new Error(`[staff-auth] staff_link_tokens insert failed: ${errToString(error)}`);
+  }
+  return raw;
+}
 
 /**
  * Thrown when a caller passes a staffId that doesn't belong to the pid
@@ -299,12 +341,19 @@ export async function buildHousekeeperLink(
     throw new Error('[staff-auth] staff_magic_codes insert: 5 collisions in a row — PRNG broken?');
   }
 
+  // Security audit 2026-06-26 #1: mint the per-staff link token and embed it as
+  // &tok=. This — not the (pid, staffId) tuple — is the credential the public
+  // API routes verify. (The `code` above is the orthogonal one-shot magic-code
+  // that establishes the Supabase RLS session; kept unchanged.)
+  const tok = await mintStaffLinkToken(staffId, pid);
+
   // Trim trailing slash from baseUrl just in case.
   const cleanBase = baseUrl.replace(/\/$/, '');
   return (
     `${cleanBase}/housekeeper/${encodeURIComponent(staffId)}` +
     `?pid=${encodeURIComponent(pid)}` +
-    `&code=${encodeURIComponent(code)}`
+    `&code=${encodeURIComponent(code)}` +
+    `&tok=${encodeURIComponent(tok)}`
   );
 }
 
@@ -368,10 +417,15 @@ export async function buildEngineerLink(
     throw new Error('[staff-auth] staff_magic_codes insert: 5 collisions in a row — PRNG broken?');
   }
 
+  // Security audit 2026-06-26 #1: per-staff link token embedded as &tok= —
+  // the credential the public /api/engineer/* routes verify.
+  const tok = await mintStaffLinkToken(staffId, pid);
+
   const cleanBase = baseUrl.replace(/\/$/, '');
   return (
     `${cleanBase}/engineer/${encodeURIComponent(staffId)}` +
     `?pid=${encodeURIComponent(pid)}` +
-    `&code=${encodeURIComponent(code)}`
+    `&code=${encodeURIComponent(code)}` +
+    `&tok=${encodeURIComponent(tok)}`
   );
 }

@@ -231,6 +231,15 @@ export type RateLimitEndpoint =
   | 'engineer-vision'         // snap-to-log: Claude Vision reads a gauge/strip
   | 'engineer-voice'          // voice/typed natural-language reading log (Claude)
   | 'engineer-save-language'  // language switcher
+  // Security audit 2026-06-26 #1 — per-staff link-token verification FAILURES
+  // on the public mobile surface (housekeeper/laundry/engineer/save-fcm-token).
+  // Only failed verifications increment (a legitimate token holder never trips
+  // it), so this bounds token-spray / pid+staffId enumeration retry loops.
+  // Keyed on the trusted source IP via clientIpRateLimitKey (a hashed-UUID key,
+  // safe as api_limits.property_id — NOT a raw pid). 60/hr is generous for a
+  // real phone occasionally opening a stale/expired link while still choking a
+  // scripted enumeration storm. See src/lib/staff-link-auth.ts.
+  | 'staff-link-verify-fail'
   | 'compliance-read'         // manager overview / summary / report reads
   | 'compliance-config'       // manager create/edit reading types + PM tasks + templates
   | 'compliance-log'          // manager logs a reading / PM check from desktop
@@ -527,6 +536,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'engineer-vision':              50,
   'engineer-voice':               60,
   'engineer-save-language':       30,
+  // Security audit 2026-06-26 #1 — link-token verification failures per IP.
+  // Only failures increment; a real holder never hits it. 60/hr chokes a
+  // scripted enumeration/token-spray loop while tolerating a few stale-link
+  // taps over flaky cellular.
+  'staff-link-verify-fail':       60,
   'compliance-read':            1800,
   'compliance-config':           100,
   'compliance-log':              200,
