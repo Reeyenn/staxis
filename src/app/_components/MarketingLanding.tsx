@@ -1199,13 +1199,6 @@ export default function MarketingLanding() {
             <a href="/terms">Terms of Service</a>
           </div>
         </div>
-        <div className="foot-sms">
-          Staxis sends operational scheduling SMS to hotel employees on behalf of the
-          property that employs them, never marketing. Consent is collected verbally
-          at hire using a published script. One message per day per employee, and
-          employees can reply STOP at any time to opt out. Full details at{' '}
-          <a href="/consent">/consent</a>.
-        </div>
         <div className="foot-legal">© 2026 Staxis · Austin, Texas</div>
       </footer>
     </div>
@@ -2300,9 +2293,7 @@ const CSS = `
   transition: transform .3s cubic-bezier(.19,1,.22,1); }
 .foot-col a:hover { color: var(--ink); }
 .foot-col a:hover::after { transform: scaleX(1); transform-origin: left; }
-.foot-sms { margin-top: 32px; font-size: 12px; color: var(--dim); max-width: 88ch; line-height: 1.7; }
-.foot-sms a { color: var(--muted); text-decoration: underline; }
-.foot-legal { margin-top: 24px; font-family: var(--mono); font-size: 11px;
+.foot-legal { margin-top: 32px; font-family: var(--mono); font-size: 11px;
   letter-spacing: .12em; color: var(--dim); }
 
 /* ---------- reduced motion ---------- */
