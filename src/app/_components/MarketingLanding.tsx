@@ -96,6 +96,8 @@ const ORBIT_PAGES = [
   { id: 'financials', label: 'Financials', x: 48, y: 4, dir: 'up', tabs: ['Checkbook', 'Budget', 'CapEx'] },
   { id: 'housekeeping', label: 'Housekeeping', x: 82, y: 14, dir: 'up-right', tabs: ['Rooms', 'Schedule', 'Quality', 'Deep Clean'] },
   { id: 'maintenance', label: 'Maintenance', x: 8, y: 58, dir: 'left', tabs: ['Work Orders', 'Preventive', 'Equipment'] },
+  /* farther out than the rest, on purpose: it's not here yet */
+  { id: 'comingsoon', label: 'Coming Soon', x: 97, y: 34, dir: 'right', tabs: ['Guest Experience'], soon: true },
   { id: 'inventory', label: 'Inventory', x: 86, y: 56, dir: 'right', tabs: ['Inventory'] },
   { id: 'staff', label: 'Staff', x: 18, y: 90, dir: 'down-left', tabs: ['Schedule', 'Directory', 'Recognition'] },
   { id: 'communications', label: 'Communications', x: 72, y: 90, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
@@ -104,6 +106,29 @@ const ORBIT_PAGES = [
 /* Mini live page inside each orbit popup, per page + sub-tab —
    each one mirrors the real app screen's layout in miniature. */
 function ChipDemo({ id, sub }: { id: string; sub: number }) {
+  if (id === 'comingsoon') {
+    return (
+      <div className="ap">
+        <div className="ap-card cs-call">
+          <span className="cs-ring">✆</span>
+          <div className="ap-wo-mid">Guest calling after hours<span>AI answers on the first ring, in their language</span></div>
+          <span className="ap-pill p-open">SOON</span>
+        </div>
+        <div className="ap-h">GUEST EXPERIENCE · COMING SOON</div>
+        {[
+          'An AI voice agent answering every guest call, 24/7',
+          'After-hours bookings, never missed again',
+          'Reservation changes handled automatically',
+          'Instant replies to guest texts and emails',
+          'Late checkouts and requests taken by phone',
+          'Guests greeted in their own language',
+        ].map((t) => (
+          <div className="ap-done" key={t}><span className="rm-soon-dot sm">✦</span>{t}</div>
+        ))}
+        <div className="ap-note">Every request lands on the same one page that runs your operations.</div>
+      </div>
+    );
+  }
   if (id === 'dashboard') {
     return (
       <div className="ap wide">
@@ -577,7 +602,7 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
           <span className="ap-search">⌕ Jump to or search…</span>
           <div className="ap-catchup">✨ Catch up<span className="ap-badge">3</span></div>
           {['↩ Threads', '☰ To-do', '📖 Knowledge', '▤ Log book', '▦ Calendar', '✆ Contacts'].map((n) => (
-            <span className="side-chan nav" key={n}>{n}</span>
+            <span className="side-chan cnav" key={n}>{n}</span>
           ))}
           <div className="ap-h">ANNOUNCEMENTS +</div>
           <div className="side-chan">📣 Announcements<span className="ap-badge">1</span></div>
@@ -965,21 +990,21 @@ export default function MarketingLanding() {
         <div className="orbit rv" aria-hidden="true">
           <svg className="orbit-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
             {ORBIT_PAGES.map((p) => (
-              <line key={p.label} x1="50" y1="50" x2={p.x} y2={p.y} />
+              <line key={p.label} className={'soon' in p ? 'l-soon' : ''} x1="50" y1="50" x2={p.x} y2={p.y} />
             ))}
           </svg>
           {ORBIT_PAGES.map((p, i) => (
             <span
               key={p.label}
-              className="orbit-chip"
+              className={`orbit-chip ${'soon' in p ? 'chip-soon' : ''}`}
               style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
             >
               {p.label}
-              <span className={`chip-pop pop-${p.dir}`}>
+              <span className={`chip-pop pop-${p.dir} ${'soon' in p ? 'pop-soon' : ''}`}>
                 <span className="cp-head">
                   <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
                   <b>{p.label}</b>
-                  <i>LIVE DEMO · SCROLLS</i>
+                  <i>{'soon' in p ? 'COMING SOON' : 'LIVE DEMO · SCROLLS'}</i>
                 </span>
                 {p.tabs.length > 1 && (
                   <span className="cp-tabs">
@@ -1002,16 +1027,60 @@ export default function MarketingLanding() {
               </span>
             </span>
           ))}
-          <div className="today">
-            <div className="today-head">
-              <ChevronMark size={18} />
-              <span>Today</span>
-              <span className="today-count">NEEDS YOU · 3</span>
+          {/* the center IS the app's Staxis page, exact mini, always live */}
+          <div className="today stx-center">
+            <span className="cp-head">
+              <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
+              <b>Staxis</b>
+              <i>YOUR ONE PAGE · SCROLLS</i>
+            </span>
+            <div className="cp-body stx-body">
+              <div className="ap">
+                <div className="x-headrow">
+                  <span className="x-caps" style={{ margin: 0 }}>GOOD EVENING · SUNDAY, JULY 5</span>
+                  <span className="x-spacer" />
+                  <span className="fl-leg"><i className="lane-dot ld-sage" />78% occupancy · all shifts staffed</span>
+                </div>
+                <div className="ap-card stx-wrap">
+                  <span className="stx-moon">☾</span>
+                  <div className="ap-wo-mid">
+                    <span className="x-caps" style={{ margin: 0 }}>EVENING WRAP-UP</span>
+                    <b className="stx-wrap-title">Wrapping up: 6 items to clear before you go.</b>
+                    <span>Tomorrow&rsquo;s crew is set · night shift briefed</span>
+                  </div>
+                </div>
+                <div className="ap-card stx-labor">
+                  <div className="ap-wo-mid">
+                    <span className="x-caps" style={{ margin: 0 }}>LABOR TODAY</span>
+                    <b className="stx-labor-n">$1,840 <i>/ $1,910</i></b>
+                    <div className="ap-bar big"><i className="f-good" style={{ width: '96%' }} /></div>
+                  </div>
+                  <div className="stx-under"><b>$70</b><span>under budget</span></div>
+                </div>
+                <div className="x-headrow">
+                  <span className="x-caps" style={{ margin: 0 }}>NEEDS YOU</span>
+                  <b className="x-attn-badge dark">6</b>
+                </div>
+                {[
+                  ['GUESTS', 'Room 207 messaged about noise, twice', 'Guest is still up. An apology + 10% off tonight is drafted and ready to send.', 'Send reply', 'rust', 'Edit', 'protects your review score', true],
+                  ['STAFF', 'Maria hasn’t confirmed tomorrow', 'No reply since last night. Lupe is available as backup. Text her to be safe?', 'Text Lupe', 'dark', 'Call Maria', '↓ avoids a morning scramble', false],
+                  ['HOUSEKEEPING', 'Tomorrow’s crew is ready', '86 rooms · 4 housekeepers. Board balanced by floor and checkout load.', 'Approve & send', 'dark', 'Adjust', '↓ saves ~$210 vs a flat 5-person crew', false],
+                  ['INVENTORY', 'Towels run out Thursday', 'At today’s pace you’ll be short by Thursday. Order drafted: 6 cases · $310 · ABC Supply.', 'Approve order', 'dark', 'Change', '$310', false],
+                ].map(([cat, title, body, act, tone, alt, note, hot]) => (
+                  <div className={`ap-card stx-need ${hot ? 'hot' : ''}`} key={title as string}>
+                    <span className="x-caps" style={{ margin: 0 }}>{cat}</span>
+                    <b className="stx-need-title">{title}</b>
+                    <span className="stx-need-body">{body}</span>
+                    <div className="x-btnrow">
+                      <span className={tone === 'rust' ? 'xb-rust' : 'xb-dark'}>{act}</span>
+                      <span className="xb-light">{alt}</span>
+                      <span className="x-spacer" />
+                      <span className="stx-note">{note}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="today-item"><span className="ti-dot warn" />Approve the towel reorder</div>
-            <div className="today-item"><span className="ti-dot info" />Confirm tomorrow&rsquo;s cleaning crew</div>
-            <div className="today-item"><span className="ti-dot warn" />One work order needs a decision</div>
-            <div className="today-rest"><span className="ti-dot ok" />Everything else: already handled</div>
           </div>
         </div>
       </section>
@@ -1970,7 +2039,7 @@ const CSS = `
 .inv-count { font-size: 10px; color: var(--muted); }
 .comms-head { font-size: 12.5px; font-weight: 700; color: var(--ink); }
 .comms-head span { display: block; font-size: 9px; font-weight: 400; color: var(--dim); }
-.side-chan.nav { font-family: var(--sans); font-size: 10.5px; }
+.side-chan.cnav { font-family: var(--sans); font-size: 10.5px; }
 .x-floorstrip { gap: 10px; flex-wrap: wrap; }
 .fl-leg { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px;
   color: var(--muted); }
@@ -2002,6 +2071,54 @@ const CSS = `
 .x-attn-badge { width: 20px; height: 20px; border-radius: 50%; background: var(--sage-deep);
   color: #fff; font-size: 10px; font-weight: 700; display: inline-flex;
   align-items: center; justify-content: center; }
+.x-attn-badge.dark { background: var(--mark); }
+.xb-rust { font-size: 10px; font-weight: 600; border-radius: 999px; padding: 6px 12px;
+  white-space: nowrap; background: var(--warm); color: #fff; }
+
+/* ---------- center: the Staxis page itself ---------- */
+.stx-center { width: 420px; max-width: 88%; padding: 0; overflow: hidden;
+  display: flex; flex-direction: column; }
+.stx-center .cp-head { border-radius: 18px 18px 0 0; }
+.stx-body { height: 330px; border-radius: 0 0 18px 18px; }
+.stx-wrap { background: var(--bg-warm); align-items: flex-start; }
+.stx-moon { font-size: 15px; flex: none; width: 26px; height: 26px; border-radius: 50%;
+  background: #fff; border: 1px solid var(--rule-soft); display: inline-flex;
+  align-items: center; justify-content: center; }
+.stx-wrap-title { display: block; font-family: var(--serif); font-style: italic;
+  font-weight: 400; font-size: 14px; color: var(--ink); margin: 3px 0 2px; }
+.stx-labor { align-items: center; gap: 14px; }
+.stx-labor-n { display: block; font-family: var(--mono); font-size: 15px;
+  font-weight: 700; color: var(--ink); margin: 3px 0 6px; }
+.stx-labor-n i { font-style: normal; font-weight: 400; font-size: 10px; color: var(--dim); }
+.stx-under { text-align: right; flex: none; }
+.stx-under b { display: block; font-family: var(--serif); font-style: italic;
+  font-weight: 400; font-size: 19px; color: var(--sage-deep); }
+.stx-under span { font-size: 9px; color: var(--dim); }
+.stx-need { flex-direction: column; align-items: stretch; gap: 4px; }
+.stx-need.hot { border-left: 3px solid var(--warm); }
+.stx-need-title { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.stx-need-body { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.stx-need .x-btnrow { margin-top: 5px; }
+.stx-note { font-size: 9px; color: var(--sage-deep); }
+.stx-need.hot .stx-note { color: var(--warm); }
+
+/* ---------- coming-soon chip ---------- */
+.orbit-chip.chip-soon { border: 1.5px dashed rgba(201,150,68,.55);
+  color: var(--caramel-deep); background: #FFFDF6; }
+.orbit-chip.chip-soon:hover { border-color: var(--caramel); color: var(--caramel-deep); }
+.orbit-lines line.l-soon { stroke: rgba(201,150,68,.45); }
+.cs-call { border-color: rgba(201,150,68,.35); background: #FDFBF4; }
+.cs-ring { width: 28px; height: 28px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px;
+  color: var(--caramel-deep); background: var(--caramel-dim);
+  border: 1px solid rgba(201,150,68,.4); animation: csring 1.6s ease-in-out infinite; }
+@keyframes csring {
+  0%, 100% { transform: rotate(0deg); box-shadow: 0 0 0 0 rgba(201,150,68,.3); }
+  15% { transform: rotate(-12deg); }
+  30% { transform: rotate(10deg); }
+  45% { transform: rotate(0deg); box-shadow: 0 0 0 8px rgba(201,150,68,0); }
+}
+.rm-soon-dot.sm { width: 16px; height: 16px; font-size: 8px; flex: none; }
 
 /* ---------- how AI runs your hotel (tiers) ---------- */
 .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
