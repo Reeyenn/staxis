@@ -87,21 +87,32 @@ export async function createPendingActions(opts: {
     tier: a.tier,
     status: 'pending' as const,
   }));
-  const { error } = await supabaseAdmin
+  // Select the upserted rows in the SAME round-trip. With ignoreDuplicates the
+  // insert path returns the freshly-created rows directly; a separate re-read is
+  // only needed when a conflict suppressed some rows (an idempotent stream
+  // retry), which returns fewer rows than we asked for.
+  const callIds = opts.actions.map((a) => a.toolCallId);
+  const { data: upserted, error } = await supabaseAdmin
     .from('agent_pending_actions')
-    .upsert(payload, { onConflict: 'conversation_id,tool_call_id', ignoreDuplicates: true });
+    .upsert(payload, { onConflict: 'conversation_id,tool_call_id', ignoreDuplicates: true })
+    .select('*');
   if (error) throw new Error(`createPendingActions failed: ${error.message}`);
 
-  // Re-read the canonical rows (covers the idempotent case where the row
-  // already existed) so callers get server-truth ids/expires_at.
-  const callIds = opts.actions.map((a) => a.toolCallId);
-  const { data, error: readErr } = await supabaseAdmin
-    .from('agent_pending_actions')
-    .select('*')
-    .eq('conversation_id', opts.conversationId)
-    .in('tool_call_id', callIds);
-  if (readErr) throw new Error(`createPendingActions read-back failed: ${readErr.message}`);
-  const byId = new Map((data ?? []).map((r) => [r.tool_call_id as string, mapRow(r)]));
+  const byId = new Map((upserted ?? []).map((r) => [r.tool_call_id as string, mapRow(r)]));
+
+  // If some rows were suppressed as duplicates (retry), re-read just those so
+  // the caller still gets server-truth ids/expires_at for every requested id.
+  if (byId.size < callIds.length) {
+    const missing = callIds.filter((id) => !byId.has(id));
+    const { data, error: readErr } = await supabaseAdmin
+      .from('agent_pending_actions')
+      .select('*')
+      .eq('conversation_id', opts.conversationId)
+      .in('tool_call_id', missing);
+    if (readErr) throw new Error(`createPendingActions read-back failed: ${readErr.message}`);
+    for (const r of data ?? []) byId.set(r.tool_call_id as string, mapRow(r));
+  }
+
   // Preserve the caller's order.
   return callIds.map((id) => byId.get(id)).filter((r): r is PendingActionRow => !!r);
 }
@@ -138,10 +149,16 @@ export async function claimPendingAction(
   return data ? mapRow(data) : null;
 }
 
-/** Record the outcome of executing an approved action. */
+/**
+ * Record a terminal outcome for a claimed action:
+ *   - 'executed' / 'failed' — the tool ran (or errored) after approval.
+ *   - 'denied' — the user declined. A first-class terminal status so denials
+ *     stay queryable (allActionsResolved treats it as terminal; the DB CHECK
+ *     allows it) rather than being masked as a generic 'failed'.
+ */
 export async function finalizePendingAction(opts: {
   id: string;
-  status: 'executed' | 'failed';
+  status: 'executed' | 'failed' | 'denied';
   result?: unknown;
   error?: string | null;
 }): Promise<void> {
@@ -174,6 +191,50 @@ export async function expireIfStale(row: PendingActionRow): Promise<boolean> {
     .maybeSingle();
   if (error) throw new Error(`expireIfStale failed: ${error.message}`);
   return !!data;
+}
+
+/**
+ * Sweep every UNRESOLVED (still 'pending') action of a conversation to
+ * 'expired' in one UPDATE, returning the rows that were flipped. Called at the
+ * start of a NEW user turn: if the user sends a fresh message while cards are
+ * still up, those proposals are superseded — the hotel state they were built
+ * against has moved on. Flipping them to a terminal status stops an orphaned
+ * card from being approved later, and the caller persists a synthetic
+ * tool_result per tool_call_id so the abandoned assistant turn's tool_use blocks
+ * don't dangle on replay.
+ *
+ * Only 'pending' rows are swept — an 'approved' row is mid-resolution (its
+ * resolve request owns it) and must not be yanked out from under that flow.
+ */
+export async function sweepConversationPending(conversationId: string): Promise<PendingActionRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_pending_actions')
+    .update({ status: 'expired', resolved_at: new Date().toISOString() })
+    .eq('conversation_id', conversationId)
+    .eq('status', 'pending')
+    .select('*');
+  if (error) throw new Error(`sweepConversationPending failed: ${error.message}`);
+  return (data ?? []).map(mapRow);
+}
+
+/**
+ * Still-pending, non-expired rows for a conversation — used to REHYDRATE cards
+ * on a page reload / conversation switch. The lazy TTL means a row can be
+ * past-expiry but still status='pending' in the DB; we filter those out in JS so
+ * a reload never surfaces a card the resolve route would immediately 409.
+ */
+export async function getLivePendingActions(conversationId: string): Promise<PendingActionRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_pending_actions')
+    .select('*')
+    .eq('conversation_id', conversationId)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`getLivePendingActions failed: ${error.message}`);
+  const now = Date.now();
+  return (data ?? [])
+    .map(mapRow)
+    .filter((r) => new Date(r.expiresAt).getTime() > now);
 }
 
 /** All pending-action rows for one assistant turn (grouped by turn_key). */
@@ -225,6 +286,25 @@ export async function claimTurnResume(
   if (error) throw new Error(`claimTurnResume failed: ${error.message}`);
   const rows = (data ?? []).map(mapRow);
   return rows.length > 0 ? rows : null;
+}
+
+/**
+ * Best-effort release of a resume claim: clear resume_claimed_at back to NULL
+ * for every row of the turn. Called when the resume stream throws AFTER a
+ * successful claimTurnResume — without this nothing ever un-stamps the claim and
+ * the turn is permanently stuck (every later resolve sees the claim taken and
+ * backs off). Idempotent; safe to call even when no rows are stamped.
+ */
+export async function releaseTurnResume(
+  conversationId: string,
+  turnKey: string,
+): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('agent_pending_actions')
+    .update({ resume_claimed_at: null })
+    .eq('conversation_id', conversationId)
+    .eq('turn_key', turnKey);
+  if (error) throw new Error(`releaseTurnResume failed: ${error.message}`);
 }
 
 /**

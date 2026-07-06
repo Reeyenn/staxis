@@ -34,8 +34,11 @@ import {
   getTurnActions,
   allActionsResolved,
   claimTurnResume,
+  releaseTurnResume,
   expiredWithoutResult,
   getPendingAction,
+  sweepConversationPending,
+  getLivePendingActions,
   type PendingActionRow,
 } from '@/lib/agent/pending-actions';
 
@@ -73,13 +76,18 @@ afterEach(() => {
 function buildStub() {
   let filters: Array<{ col: string; val: unknown }> = [];
   let pendingUpdate: Record<string, unknown> | null = null;
+  // Rows freshly inserted by an upsert (excludes rows suppressed as duplicates
+  // when ignoreDuplicates=true) — returned by a chained .select('*'), matching
+  // PostgREST's real behaviour.
+  let upsertedRows: Row[] | null = null;
   const api: Record<string, unknown> = {
     upsert: (rows: Row[] | Row, opts: { ignoreDuplicates?: boolean }) => {
       const list = Array.isArray(rows) ? rows : [rows];
+      const inserted: Row[] = [];
       for (const r of list) {
         const dupe = store.find((s) => s.conversation_id === r.conversation_id && s.tool_call_id === r.tool_call_id);
         if (dupe) { if (!opts?.ignoreDuplicates) Object.assign(dupe, r); continue; }
-        store.push({
+        const row: Row = {
           id: `pa-${++idSeq}`,
           property_id: r.property_id, conversation_id: r.conversation_id, account_id: r.account_id,
           turn_key: r.turn_key, tool_call_id: r.tool_call_id, tool_name: r.tool_name,
@@ -87,9 +95,12 @@ function buildStub() {
           result: null, error: null, resume_claimed_at: null,
           created_at: new Date(Date.now() + idSeq).toISOString(), resolved_at: null,
           expires_at: r.expires_at ?? new Date(Date.now() + 600_000).toISOString(),
-        });
+        };
+        store.push(row);
+        inserted.push(row);
       }
-      return Promise.resolve({ error: null });
+      upsertedRows = inserted;
+      return api;
     },
     update: (patch: Record<string, unknown>) => { pendingUpdate = patch; return api; },
     select: () => api,
@@ -102,6 +113,12 @@ function buildStub() {
       return { data: rows[0] ?? null, error: null };
     },
     then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+      // A chained upsert().select('*') resolves the freshly-inserted rows.
+      if (upsertedRows !== null) {
+        const rows = upsertedRows;
+        upsertedRows = null;
+        return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
+      }
       const rows = applyUpdate();
       return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
     },
@@ -252,5 +269,55 @@ describe('pending-actions lifecycle', () => {
     assert.equal(expired.length, 1);
     assert.equal(expired[0].id, rows[0].id);
     assert.equal(expired[0].status, 'expired');
+  });
+
+  test('deny finalizes as terminal "denied" (queryable, not masked as failed)', async () => {
+    const [row] = await createPendingActions({
+      propertyId: PID, conversationId: CONV, accountId: ACCT, turnKey: 'tc-1',
+      actions: [{ toolCallId: 'tc-1', toolName: 'send_message', toolArgs: {}, tier: 'card' }],
+    });
+    await claimPendingAction(row.id, 'denied');
+    await finalizePendingAction({ id: row.id, status: 'denied', error: 'declined by user' });
+    const done = (await getPendingAction(row.id))!;
+    assert.equal(done.status, 'denied');
+    // 'denied' is terminal — a lone denied action counts as fully resolved.
+    assert.equal(allActionsResolved([done]), true);
+  });
+
+  test('releaseTurnResume clears a resume claim so a later resolve can re-claim', async () => {
+    await seedThree();
+    const first = await claimTurnResume(CONV, 'tc-1');
+    assert.ok(first, 'first claim wins');
+    // A second claim before release gets nothing.
+    assert.equal(await claimTurnResume(CONV, 'tc-1'), null);
+    // Simulate a resume crash: release the claim.
+    await releaseTurnResume(CONV, 'tc-1');
+    // Now a later resolver can claim again.
+    const retry = await claimTurnResume(CONV, 'tc-1');
+    assert.ok(retry, 'claim succeeds again after release');
+    assert.equal(retry!.length, 3);
+  });
+
+  test('sweepConversationPending expires only pending rows and returns them', async () => {
+    const rows = await seedThree();
+    // Approve one (mid-resolution) — it must NOT be swept.
+    await claimPendingAction(rows[0].id, 'approved');
+    const swept = await sweepConversationPending(CONV);
+    const sweptIds = swept.map((r) => r.id).sort();
+    assert.deepEqual(sweptIds, [rows[1].id, rows[2].id].sort(), 'only the two still-pending rows swept');
+    for (const r of swept) assert.equal(r.status, 'expired');
+    // The approved row is untouched.
+    assert.equal((await getPendingAction(rows[0].id))!.status, 'approved');
+  });
+
+  test('getLivePendingActions returns only non-expired pending rows', async () => {
+    const rows = await seedThree();
+    // Backdate one past its TTL (still status='pending' in the store).
+    store.find((r) => r.id === rows[0].id)!.expires_at = new Date(Date.now() - 1000).toISOString();
+    // Resolve another so it's no longer pending.
+    await claimPendingAction(rows[1].id, 'approved');
+    await finalizePendingAction({ id: rows[1].id, status: 'executed' });
+    const live = await getLivePendingActions(CONV);
+    assert.deepEqual(live.map((r) => r.id), [rows[2].id], 'only the fresh pending row is live');
   });
 });
