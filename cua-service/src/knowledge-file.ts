@@ -227,6 +227,24 @@ export interface LoadedKnowledgeFile {
    *  NULL when the row pre-dates signing or signing was bypassed. */
   signature: Buffer | null;
   signedWithKeyId: string | null;
+  /**
+   * feature/coverage-gated-feeds (migration 0296) — action keys the founder's
+   * Make-live left OFF because no preview capture ever proved them readable.
+   * The session-driver excludes any polling template whose sourceActionKey is
+   * in this array; a later successful mapper.capture_feed re-enables one by
+   * removing its key (see feed-capture / captureFeedOnDemand).
+   *
+   * DELIBERATELY OUTSIDE THE SIGNED `knowledge` ENVELOPE — it's the sibling
+   * `disabled_feeds` jsonb column, not part of the HMAC. Toggling a feed on/off
+   * must never require a worker re-sign; and because a tampered value can only
+   * REDUCE what's collected (deny-of-data, never inject selectors/steps), it
+   * needs no signature protection. NEVER thread this into verifyRecipe.
+   *
+   * Sanitized defensively at load (see sanitizeDisabledFeeds): non-array →
+   * [], non-string entries dropped, deduped. Absent/legacy row → [] (collect
+   * everything).
+   */
+  disabledFeeds: string[];
 }
 
 // ─── Load ────────────────────────────────────────────────────────────────
@@ -270,7 +288,7 @@ export async function loadActiveDetailed(
 ): Promise<{ file: LoadedKnowledgeFile | null; refusedExisting: boolean }> {
   const { data, error } = await db
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
     .is('deleted_at', null)
@@ -360,7 +378,7 @@ export async function loadByVersion(
 ): Promise<LoadedKnowledgeFile | null> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .eq('version', version)
     .maybeSingle();
@@ -375,7 +393,7 @@ export async function loadByVersion(
 export async function listVersions(pmsFamily: string): Promise<LoadedKnowledgeFile[]> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .order('version', { ascending: false });
 
@@ -506,7 +524,36 @@ function unwrap(row: Record<string, unknown>): LoadedKnowledgeFile | null {
     createdBy: row.created_by as string,
     signature: decodeBytea(row.signature),
     signedWithKeyId: typeof row.signed_with_key_id === 'string' ? row.signed_with_key_id : null,
+    // feature/coverage-gated-feeds — sibling jsonb column, NOT part of the signed
+    // envelope. A row that fails shape validation above never gets here, so a
+    // disabled_feeds sanitize failure can never mask a broken knowledge blob.
+    disabledFeeds: sanitizeDisabledFeeds(row.disabled_feeds),
   };
+}
+
+/**
+ * feature/coverage-gated-feeds — coerce the raw `disabled_feeds` jsonb into a
+ * clean, deduped string[]. This value lives OUTSIDE the HMAC-signed envelope, so
+ * it can be tampered/malformed WITHOUT tripping signature verification — sanitize
+ * fully defensively here so a junk value degrades to "collect everything / this
+ * subset", never to a crash or a poisoned skip set:
+ *   - not an array (null, object, string, missing legacy row) → [] (collect all).
+ *   - non-string entries (numbers, nulls, nested arrays) → dropped.
+ *   - blank/whitespace-only entries → dropped (can't match a real action key).
+ *   - duplicates → collapsed.
+ * The worst a hostile value can do is name MORE keys to skip (reduce collection),
+ * which is admin-visible on the Coverage page — it can never inject a selector.
+ */
+export function sanitizeDisabledFeeds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (trimmed === '') continue;
+    out.add(trimmed);
+  }
+  return [...out];
 }
 
 /**

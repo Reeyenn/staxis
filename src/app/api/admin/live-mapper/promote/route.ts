@@ -1,6 +1,6 @@
 /**
  * POST /api/admin/live-mapper/promote
- *   body: { id, expectedVersion, expectedStatus }
+ *   body: { id, expectedVersion, expectedStatus, propertyId? }
  *
  * Admin-only. Makes a map the LIVE (active) one for its PMS family. Handles
  * both first-promotion (draft → active) and rollback (a deprecated prior
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  let body: { id?: unknown; expectedVersion?: unknown; expectedStatus?: unknown };
+  let body: { id?: unknown; expectedVersion?: unknown; expectedStatus?: unknown; propertyId?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -70,6 +70,22 @@ export async function POST(req: NextRequest) {
     return err('expectedStatus is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
+  // Optional per-feed collection gate (feature/coverage-gated-feeds). When the
+  // Coverage page's Make-live sends the property it's viewing, only feeds with a
+  // proven preview capture for THAT property go live; the rest are disabled
+  // until a later Re-read turns them on. Absent (e.g. Manage-maps rollback) →
+  // no gating, the map's disabled_feeds column is left as-is.
+  let gateByPropertyCaptures: { propertyId: string } | undefined;
+  if (body.propertyId !== undefined && body.propertyId !== null) {
+    const pidCheck = validateUuid(body.propertyId, 'propertyId');
+    if (pidCheck.error || !pidCheck.value) {
+      return err(pidCheck.error ?? 'propertyId must be a uuid', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    gateByPropertyCaptures = { propertyId: pidCheck.value };
+  }
+
   // Quarantined maps stay non-promotable here (Manage maps); the deliberate
   // "promote anyway" path is the Learning Board's Save & Finish (save-map).
   const result = await promoteMap({
@@ -77,10 +93,16 @@ export async function POST(req: NextRequest) {
     expectedVersion: body.expectedVersion,
     expectedStatus: body.expectedStatus,
     promotedBy: auth.email ?? auth.userId,
+    gateByPropertyCaptures,
   });
 
   if (!result.ok) {
     return err(result.message, { requestId, status: result.status, code: result.code });
   }
-  return ok({ map: result.map, revivedSessions: result.revivedSessions }, { requestId });
+  return ok({
+    map: result.map,
+    revivedSessions: result.revivedSessions,
+    disabledFeeds: result.disabledFeeds,
+    allFeedsDisabled: result.allFeedsDisabled,
+  }, { requestId });
 }

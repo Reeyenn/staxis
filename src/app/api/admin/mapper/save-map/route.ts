@@ -50,9 +50,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     expectedStatus: draft.row.status,
     allowQuarantined: true,
     promotedBy: admin.email ?? admin.userId,
+    // Per-feed collection gate (feature/coverage-gated-feeds): a partial map
+    // saved from the Learning Board only lights up feeds that produced a preview
+    // for THIS run's property. Absent property_id → no gating (collect all).
+    ...(draft.propertyId ? { gateByPropertyCaptures: { propertyId: draft.propertyId } } : {}),
   });
   if (!result.ok) {
     return err(result.message, { requestId, status: result.status, code: result.code });
   }
-  return ok({ saved: true, map: result.map, revivedSessions: result.revivedSessions }, { requestId });
+  return ok({
+    saved: true,
+    map: result.map,
+    revivedSessions: result.revivedSessions,
+    disabledFeeds: result.disabledFeeds,
+    allFeedsDisabled: result.allFeedsDisabled,
+  }, { requestId });
 }

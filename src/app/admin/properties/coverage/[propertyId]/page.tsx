@@ -102,13 +102,22 @@ interface CoverageResponse {
     isDraft?: boolean;
     draftId?: string;
     review?: { score?: number; threshold?: number; reason?: string };
+    // feature/coverage-gated-feeds — action keys the robot is NOT collecting
+    // (pms_knowledge_files.disabled_feeds). On a LIVE map, a key here means the
+    // feed is off until a successful Re-read turns it on. On a DRAFT it's
+    // usually [] (the gate is computed at Make-live). Always present (route
+    // defaults to []); older responses without it degrade to "no feeds gated".
+    disabledFeeds?: string[];
   } | null;
   feeds: FeedDetail[];
   addableFeeds: Array<{ actionKey: string; label: string }>;
 }
 
 // fix/cua-freeform-capture — the "Captured" panel's per-feed live sample.
-interface FeedSampleData { capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }>; pageValues?: Array<{ name: string; value: string }> }
+// `ok` (feature/coverage-gated-feeds): extraction success. The worker writes a
+// sample even for a partially-failed read (a "see what went wrong" preview) and
+// stamps ok:false on it; absent (older cached response) → treat as true.
+interface FeedSampleData { ok?: boolean; capturedAt: string; rowCount: number; fields: Array<{ name: string; value: string }>; pageValues?: Array<{ name: string; value: string }> }
 
 const STATE_PILL: Record<FeedDetail['state'], { tone: PillTone; label: string }> = {
   live: { tone: 'forest', label: 'Live' },
@@ -275,13 +284,19 @@ export default function CoveragePage() {
         if (s && s.capturedAt && s.capturedAt !== before) {
           setSamples((prev) => ({ ...prev, [feedKey]: s }));
           setToast({ tone: 'good', text: 'Re-read from the robot.' });
+          // feature/coverage-gated-feeds — a successful Re-read of a feed that was
+          // gated OFF makes the worker clear its key from disabled_feeds. Reload
+          // coverage so the feed's chip flips from "Off — hit Re-read" to
+          // "Collecting". Cheap + only after a confirmed fresh capture. Guarded to
+          // the live-map case (a draft has no server-side gate to flip yet).
+          if (data?.activeMap && !data.activeMap.isDraft) void load();
           return;
         }
       }
       setToast({ tone: 'warn', text: "Still reading — check back in a moment." });
     } catch { setToast({ tone: 'bad', text: "Couldn't re-read this feed." }); }
     finally { setRecapturing((prev) => ({ ...prev, [feedKey]: false })); }
-  }, [propertyId, recapturing, samples, loadOneSample]);
+  }, [propertyId, recapturing, samples, loadOneSample, data, load]);
 
   useEffect(() => {
     if (data?.feeds?.length) void loadSamples();
@@ -545,7 +560,9 @@ export default function CoveragePage() {
       const res = await fetchWithAuth('/api/admin/live-mapper/promote', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: map.draftId, expectedVersion: map.version, expectedStatus: 'draft' }),
+        // feature/coverage-gated-feeds — send the property we're viewing so
+        // promote only lights up feeds proven by a preview for THIS hotel.
+        body: JSON.stringify({ id: map.draftId, expectedVersion: map.version, expectedStatus: 'draft', propertyId }),
       });
       const json = await res.json();
       if (!res.ok || !json.ok) {
@@ -553,7 +570,17 @@ export default function CoveragePage() {
         return;
       }
       setPendingPromote(false);
-      setToast({ tone: 'good', text: `Map v${map.version} is now live for every ${data?.familyLabel} hotel.` });
+      // If some feeds were gated off, say how many are actually collecting so the
+      // founder isn't surprised the map is live but a feed shows no data yet.
+      const disabled = Array.isArray(json.data?.disabledFeeds) ? (json.data.disabledFeeds as string[]) : [];
+      const totalMapped = data?.feeds?.length ?? 0;
+      const collecting = Math.max(0, totalMapped - disabled.length);
+      setToast({
+        tone: 'good',
+        text: disabled.length > 0
+          ? `Map v${map.version} is live for every ${data?.familyLabel} hotel — collecting ${collecting} of ${totalMapped} feeds (Re-read a feed to turn on the rest).`
+          : `Map v${map.version} is now live for every ${data?.familyLabel} hotel.`,
+      });
       await load();
     } catch (err) {
       setPromoteError((err as Error).message);
@@ -704,6 +731,50 @@ export default function CoveragePage() {
   const map = data?.activeMap;
   const legacy = map && !map.editable;
   const isDraft = !!map?.isDraft;
+
+  // ── feature/coverage-gated-feeds — per-feed collection state. ──────────────
+  // The founder's rule: Make-live only turns on feeds that have a proven preview;
+  // the rest stay off until a later Re-read proves them. This block computes, for
+  // display AND for the Make-live summary, EXACTLY what promote will decide — off
+  // the SAME `samples` artifacts promote lists — so the page's prediction can
+  // never drift from what actually collects.
+  const capKeyOf = (f: FeedDetail): string => f.actionKey ?? f.key;
+  // A feed is PROVEN iff its live/{propertyId}/{key}.sample.json artifact loaded
+  // AND its extraction succeeded (ok !== false). Mere artifact existence is not
+  // proof — the worker writes a sample even for a partially-failed read (its
+  // data still shows below so the founder can fix the feed, but it won't
+  // collect). Absent ok (legacy artifact) → proven, exactly matching promote's
+  // shared sampleIndicatesSuccess rule, so prediction can't drift.
+  const feedHasPreview = (f: FeedDetail): boolean => {
+    const s = samples[capKeyOf(f)];
+    return !!s && s.ok !== false;
+  };
+  // On a LIVE map, the source of truth is the server's disabled_feeds list.
+  const disabledSet = new Set(map?.disabledFeeds ?? []);
+  const feedIsDisabledLive = (f: FeedDetail): boolean => disabledSet.has(capKeyOf(f));
+
+  // Collection chip per feed — DRAFT predicts from previews; LIVE reflects the
+  // server's disabled_feeds. Returns null when we can't classify (e.g. legacy).
+  const collectionChip = (f: FeedDetail): { tone: PillTone; label: string } | null => {
+    if (!map) return null;
+    if (isDraft) {
+      return feedHasPreview(f)
+        ? { tone: 'forest', label: '✓ Will collect when live' }
+        : { tone: 'neutral', label: 'Off until previewed' };
+    }
+    // Live map.
+    return feedIsDisabledLive(f)
+      ? { tone: 'gold', label: 'Off — hit Re-read to turn on' }
+      : { tone: 'forest', label: '● Collecting' };
+  };
+
+  // Plain-English Make-live summary — "Goes live collecting N of M feeds: …. The
+  // other K stay off until you preview them working." Computed from the SAME
+  // previews the chips use, so the dialog and the chips agree.
+  const draftFeeds = isDraft ? (data?.feeds ?? []) : [];
+  const willCollect = draftFeeds.filter(feedHasPreview);
+  const willStayOff = draftFeeds.filter((f) => !feedHasPreview(f));
+  const totalFeeds = draftFeeds.length;
 
   return (
     <AppLayout>
@@ -1192,6 +1263,12 @@ export default function CoveragePage() {
                   <div key={key} style={{ padding: '12px 14px', background: dimWhite(.04), borderRadius: 10 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: s && (s.fields.length || (s.pageValues?.length ?? 0)) ? 10 : 0, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: FONT_SERIF, fontSize: 15, color: '#fff' }}>{f.label}</span>
+                      {/* feature/coverage-gated-feeds — collection state chip. On a
+                          DRAFT it PREDICTS from the preview (has a sample → will
+                          collect once live); on a LIVE map it reflects the server's
+                          disabled_feeds (off until a Re-read turns it on). Both read
+                          the same artifacts promote uses, so it can't drift. */}
+                      {(() => { const c = collectionChip(f); return c ? <Pill tone={c.tone}>{c.label}</Pill> : null; })()}
                       {s && <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.45) }}>{s.rowCount} row{s.rowCount === 1 ? '' : 's'}{s.capturedAt && timeAgo(s.capturedAt) ? ` · ${timeAgo(s.capturedAt)}` : ''}</span>}
                       <button
                         onClick={() => void recaptureFeed(key)}
@@ -1278,6 +1355,19 @@ export default function CoveragePage() {
               </h3>
               <div style={{ fontSize: 13.5, color: 'var(--ink-soft)', lineHeight: 1.6 }}>
                 The robot will start using map <b>v{map.version}</b> to read every {data?.familyLabel} hotel right away. You can edit or remove individual feeds afterward.
+                {/* feature/coverage-gated-feeds — plain-English preview of what
+                    WILL and WON'T collect, computed from the same previews the
+                    chips use. "Goes live collecting N of M feeds: …. The other K
+                    stay off until you preview them working." */}
+                <span style={{ display: 'block', marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(60,156,104,.08)', border: '1px solid rgba(60,156,104,.3)', fontSize: 12.5, color: 'var(--forest-deep)' }}>
+                  Goes live collecting <b>{willCollect.length}</b> of <b>{totalFeeds}</b> feed{totalFeeds === 1 ? '' : 's'}
+                  {willCollect.length > 0 && <>: {willCollect.map((f) => f.label).join(', ')}</>}.
+                  {willStayOff.length > 0 && (
+                    <span style={{ display: 'block', marginTop: 6, color: 'var(--ink-soft)' }}>
+                      The other <b>{willStayOff.length}</b> ({willStayOff.map((f) => f.label).join(', ')}) stay off until you preview them working — Re-read any feed to turn it on later.
+                    </span>
+                  )}
+                </span>
                 <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(60,156,104,.08)', border: '1px solid rgba(60,156,104,.3)', color: 'var(--forest)', fontSize: 12.5 }}>
                   <Check size={15} style={{ flexShrink: 0, marginTop: 1 }} />
                   <span>This goes live for all {data?.hotelsOnFamily} hotel{data?.hotelsOnFamily === 1 ? '' : 's'} on this PMS.</span>

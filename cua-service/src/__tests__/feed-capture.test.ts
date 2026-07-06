@@ -232,18 +232,43 @@ test('buildFeedSample clamps long values + coerces non-strings; empty rows → n
 test('uploadLiveFeedSample writes the sample key for non-empty rows; no-op + never throws otherwise', async () => {
   const writes: Array<{ key: string; body: string }> = [];
   const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
-  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: 'A', raw: { x: '1' } }], undefined, deps);
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: 'A', raw: { x: '1' } }], true, undefined, deps);
   assert.equal(writes.length, 1);
   assert.equal(writes[0]!.key, 'live/prop-1/getArrivals.sample.json');
   const parsed = JSON.parse(writes[0]!.body);
   assert.equal(parsed.rowCount, 1);
   assert.equal(parsed.fields.length, 2);
 
-  await uploadLiveFeedSample('prop-1', 'getArrivals', [], undefined, deps);
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [], true, undefined, deps);
   assert.equal(writes.length, 1, 'empty rows + no page values upload nothing');
 
   const boom = { uploadJson: async () => { throw new Error('boom'); }, now: () => 'T' };
-  await assert.doesNotReject(() => uploadLiveFeedSample('p', 'f', [{ a: '1' }], undefined, boom));
+  await assert.doesNotReject(() => uploadLiveFeedSample('p', 'f', [{ a: '1' }], true, undefined, boom));
+});
+
+// feature/coverage-gated-feeds — the artifact carries the extraction-success
+// flag so the web Make-live gate ("proven readable") can tell a genuinely
+// successful Re-read from a failed one that captured the page anyway. Legacy
+// artifacts (no `ok` field) are grandfathered as proven on the web side; every
+// NEW upload must therefore stamp it explicitly, both values.
+test('uploadLiveFeedSample stamps ok:true into the artifact for a successful run', async () => {
+  const writes: Array<{ key: string; body: string }> = [];
+  const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: 'A' }], true, undefined, deps);
+  assert.equal(writes.length, 1);
+  assert.equal(JSON.parse(writes[0]!.body).ok, true);
+});
+
+test('uploadLiveFeedSample stamps ok:false for a FAILED run (capture-anyway) — so the Make-live gate does not count it as proof', async () => {
+  const writes: Array<{ key: string; body: string }> = [];
+  const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
+  // A failed run can still carry sampleRows (contract-gate-failed rows survive
+  // for the founder's "Captured" panel) — the artifact must say ok:false.
+  await uploadLiveFeedSample('prop-1', 'getArrivals', [{ guest_name: '' }], false, undefined, deps);
+  assert.equal(writes.length, 1);
+  const parsed = JSON.parse(writes[0]!.body);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.rowCount, 1, 'rows still previewed — only the proof flag flips');
 });
 
 test('page values ride in a separate pageValues block, NOT mixed into per-row fields', () => {
@@ -269,7 +294,7 @@ test('page values ride in a separate pageValues block, NOT mixed into per-row fi
 test('uploadLiveFeedSample previews an EMPTY feed that still has page totals (e.g. "Guest Count: 0")', async () => {
   const writes: Array<{ key: string; body: string }> = [];
   const deps = { uploadJson: async (key: string, body: string) => { writes.push({ key, body }); }, now: () => 'T' };
-  await uploadLiveFeedSample('p', 'getArrivals', [], { guest_count: '0' }, deps);
+  await uploadLiveFeedSample('p', 'getArrivals', [], true, { guest_count: '0' }, deps);
   assert.equal(writes.length, 1, 'empty rows but page totals → still previewed');
   const parsed = JSON.parse(writes[0]!.body);
   assert.equal(parsed.rowCount, 0);
