@@ -336,7 +336,7 @@ export function InventoryShell() {
     <div
       ref={pageRef}
       style={{
-        padding: '26px 30px 48px',
+        padding: '12px 30px 48px',
         background: T.bg,
         color: T.ink,
         fontFamily: fonts.sans,
@@ -345,21 +345,22 @@ export function InventoryShell() {
     >
       <InvFx />
 
-      {/* Masthead — editorial title block on the left, living stats on the right */}
+      {/* Masthead — editorial title block on the left, living stats on the right.
+          Kept deliberately tight: this row + hairline is the only air above the board. */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'flex-end',
-          gap: '18px 40px',
+          alignItems: 'center',
+          gap: '12px 40px',
           flexWrap: 'wrap',
-          padding: '2px 4px 0',
+          padding: '0 4px',
         }}
       >
         <div data-rise>
           <Caps size={9.5}>{todayLabel(L)} · {todayDow(L)}</Caps>
-          <div style={{ marginTop: 5 }}>
-            <Serif size={38}>{tx.pageTitle}</Serif>
+          <div style={{ marginTop: 3 }}>
+            <Serif size={33}>{tx.pageTitle}</Serif>
           </div>
         </div>
 
@@ -371,9 +372,9 @@ export function InventoryShell() {
             flexWrap: 'wrap',
           }}
         >
-          <div data-rise style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7 }}>
+          <div data-rise style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <HealthRing pct={stockHealth} size={58} />
             <Caps size={9}>{tx.stockHealth}</Caps>
-            <HealthRing pct={stockHealth} size={72} />
           </div>
           <HStat
             eyebrow={tx.orderNow}
@@ -392,7 +393,7 @@ export function InventoryShell() {
       </div>
 
       {/* Editorial hairline that draws itself across on load */}
-      <div className="inv-rule-draw" style={{ height: 1, background: T.rule, margin: '16px 0 20px' }} />
+      <div className="inv-rule-draw" style={{ height: 1, background: T.rule, margin: '10px 0 16px' }} />
 
       <div className="inv-layout">
         <Sidebar
