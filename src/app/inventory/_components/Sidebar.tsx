@@ -199,7 +199,9 @@ function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: La
         <Serif size={22}>
           <CountUp value={spent} format={(n) => fmtMoney(n)} />
         </Serif>
-        <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>{tx.of} {fmtMoney(cap)}</span>
+        {cap > 0 && (
+          <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>{tx.of} {fmtMoney(cap)}</span>
+        )}
       </div>
       <span
         style={{
