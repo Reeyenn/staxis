@@ -40,7 +40,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 
-import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/llm';
+import { streamAgent, type AgentMessage } from '@/lib/agent/llm';
 import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
@@ -49,19 +49,22 @@ import {
   createConversation,
   lockLoadAndRecordUserTurn,
   recordUserTurn,
-  recordAssistantTurn,
-  recordToolResult,
-  recordSyntheticAbortToolResult,
 } from '@/lib/agent/memory';
 import {
   reserveCostBudget,
   finalizeCostReservation,
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
+import { createPendingActions } from '@/lib/agent/pending-actions';
+import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
-import { handleToolCallFinished } from './_tool-result-handler';
+import {
+  runAgentStream,
+  finishAgentStream,
+  drainDanglingToolCalls,
+} from './_stream-runner';
 
 import type { AppRole } from '@/lib/roles';
 
@@ -132,22 +135,30 @@ export async function POST(req: NextRequest): Promise<Response> {
     dept: null as string | null,
   };
 
-  // ── Resolve staff.id + department for floor-level roles ──────────────
+  // ── Resolve staff.id + department ────────────────────────────────────
   // `rooms.assigned_to` references `staff.id`, not `accounts.id` — Codex
   // review fix #4. Look it up by `staff.auth_user_id = user.uid`. We also
   // pull `department` here to gate 'dept'-scoped knowledge documents in the
   // search_knowledge tool (managers don't need it — role short-circuits the
-  // gate). front_desk is included for the department only; its staffId stays
-  // null to preserve the prior rooms.assigned_to scoping behaviour.
+  // gate).
+  //
+  // Approval-cards feature: the new comms tools (send_message, create_todo,
+  // add_logbook_entry) post AS the caller, so they need staffId for EVERY
+  // role, not just floor roles. We now resolve it for all roles. To keep the
+  // prior rooms.assigned_to scoping behaviour intact, front_desk's staffId is
+  // still suppressed for room mutations — that scoping lives in
+  // assertFloorRoleCanMutateRoom, which only gates housekeeping/maintenance,
+  // so surfacing front_desk's staffId here is safe (it's used by the comms
+  // tools, not the room-mutation scope check).
   let staffId: string | null = null;
-  if (userCtx.role === 'housekeeping' || userCtx.role === 'maintenance' || userCtx.role === 'front_desk') {
+  {
     const { data: staffRow } = await supabaseAdmin
       .from('staff')
       .select('id, department')
       .eq('auth_user_id', userCtx.uid)
       .eq('property_id', body.propertyId)
       .maybeSingle();
-    if (userCtx.role === 'housekeeping' || userCtx.role === 'maintenance') staffId = (staffRow?.id as string) ?? null;
+    staffId = (staffRow?.id as string) ?? null;
     userCtx.dept = (staffRow?.department as string | null) ?? null;
   }
 
@@ -233,13 +244,6 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // ── Stream the agent response via SSE ────────────────────────────────
   const encoder = new TextEncoder();
-  let finalUsage: UsageReport | null = null;
-  let lastDoneText = '';
-  // In-flight tool_call ids whose tool_result hasn't been persisted yet.
-  // On stream abort or crash, we drain this set into synthetic error rows
-  // so the next replay isn't broken by dangling tool_use blocks.
-  const pendingToolCallIds = new Set<string>();
-
   const finalConversationId = conversationId;
 
   const stream = new ReadableStream({
@@ -254,16 +258,31 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       send({ type: 'conversation_id', id: finalConversationId });
 
+      const runnerCtx = {
+        conversationId: finalConversationId,
+        requestId,
+        promptVersion: systemPrompt.versionLabel,
+        send,
+      };
+      // Route-owned so the finally block drains dangling tool_use rows even if
+      // runAgentStream throws mid-loop (before returning `result`).
+      const pendingToolCallIds = new Set<string>();
+      // Set by runAgentStream — the finally block reconciles the cost hold.
+      let result: Awaited<ReturnType<typeof runAgentStream>> | null = null;
+
       try {
         const iter = streamAgent({
           systemPrompt,
           history,
           newUserMessage: body.message,
           tools,
+          // Approval-cards feature: mutation tool_use blocks are proposed
+          // (pending row + card), NOT executed inline. Read-only tools still
+          // run inline.
+          approvalMode: true,
           // Codex adversarial review 2026-05-13 (A-C3): forward the request
           // abort signal into the agent loop so client disconnects stop
-          // burning Anthropic tokens. The streamAgent internals check
-          // signal.aborted between iterations and between tool calls.
+          // burning Anthropic tokens.
           abortSignal: req.signal,
           toolContext: {
             user: userCtx,
@@ -275,150 +294,60 @@ export async function POST(req: NextRequest): Promise<Response> {
           },
         });
 
-        for await (const event of iter) {
-          // assistant_turn is a persistence signal only — never forwarded.
-          // `done` is held until the final assistant turn is durably saved
-          // so the client never sees "success" for a message that failed
-          // to persist (Codex review fix C4).
-          //
-          // Codex round-5 fix R1: `error` events now carry a `usage`
-          // payload when the iter-cap was hit or any prior iteration
-          // completed before the throw. Forward the error to the client
-          // BUT strip the `usage` field — that's an internal signal for
-          // the finally block to finalize the reservation.
-          if (event.type === 'assistant_turn') {
-            // Codex fix #2: throw on failure rather than continuing.
-            // recordAssistantTurn uses an atomic RPC; if it fails, the
-            // assistant text + tool_use rows aren't safely on disk and
-            // running the tools would leave orphan tool_result rows.
-            await recordAssistantTurn(
-              finalConversationId,
-              event.text,
-              event.toolCalls.length ? event.toolCalls : undefined,
-              {
-                tokensIn: event.usage.inputTokens,
-                tokensOut: event.usage.outputTokens,
-                modelUsed: event.usage.model,
-                modelId: event.usage.modelId,
-                costUsd: event.usage.costUsd,
-                // L2: use the actual prompt version resolved from DB (or
-                // the fallback constant if DB was unreachable); falls back
-                // to the code-baseline PROMPT_VERSION only if buildSystemPrompt
-                // itself couldn't run (which would have errored earlier).
-                promptVersion: systemPrompt.versionLabel,
-              },
-            );
-            // Register every tool_call id from this iteration as in-flight.
-            // They'll be cleared as their results stream in.
-            for (const call of event.toolCalls) {
-              pendingToolCallIds.add(call.id);
-            }
-          } else if (event.type === 'tool_call_finished') {
-            // Round 12 T12.8 (2026-05-13): extracted to a testable
-            // helper. See ./_tool-result-handler.ts for the encoded
-            // invariants. Behavior: persist tool_result; on success
-            // forward the event; on failure send an error event and
-            // abort the stream so the next turn's replay doesn't
-            // diverge from this turn's "success" view.
-            const { shouldBreak } = await handleToolCallFinished({
+        result = await runAgentStream(iter, runnerCtx, {
+          pendingToolCallIds,
+          // Persist a pending row per proposed mutation + stream the card. The
+          // browser renders it and POSTs /api/agent/command/resolve-action on
+          // the user's decision.
+          onPendingApproval: async (ev) => {
+            const [row] = await createPendingActions({
+              propertyId: body.propertyId,
               conversationId: finalConversationId,
-              event,
-              pendingToolCallIds,
-              recordToolResult,
-              send,
-              onPersistenceFailure: (err) => {
-                log.error('[agent/command] failed to persist tool result; aborting stream', {
-                  requestId, conversationId: finalConversationId, callId: event.call.id, err,
-                });
+              accountId: userCtx.accountId,
+              turnKey: ev.turnKey,
+              actions: [{ toolCallId: ev.call.id, toolName: ev.call.name, toolArgs: ev.call.args, tier: ev.tier }],
+            });
+            if (!row) return;
+            send({
+              type: 'tool_call_pending_approval',
+              pendingActionId: row.id,
+              toolCallId: ev.call.id,
+              toolName: ev.call.name,
+              args: ev.call.args,
+              tier: ev.tier,
+              // Both languages so the client picks by useLang() without a round-trip.
+              summary: {
+                en: buildActionSummary(ev.call.name, ev.call.args, 'en'),
+                es: buildActionSummary(ev.call.name, ev.call.args, 'es'),
+              },
+              addons: {
+                en: addonDescriptorsForCard(ev.call.name, ev.call.args, 'en'),
+                es: addonDescriptorsForCard(ev.call.name, ev.call.args, 'es'),
               },
             });
-            if (shouldBreak) break;
-          } else if (event.type === 'done') {
-            finalUsage = event.usage;
-            lastDoneText = event.finalText;
-          } else if (event.type === 'error') {
-            // Codex A-C7 (cbc4228) + round-5 R1: error events may carry
-            // accumulated usage (runaway tool loops, abort-after-spend,
-            // mid-stream exception). Promote so the finally FINALIZES the
-            // reservation against actual spend instead of cancelling and
-            // leaking the cost. Strip the usage from the client-bound
-            // event — it's an internal signal.
-            if (event.usage) finalUsage = event.usage;
-            send({ type: 'error', message: event.message });
-          } else {
-            send(event);
-          }
-        }
+          },
+        });
 
-        // Persist the FINAL assistant text turn BEFORE forwarding the
-        // `done` event to the client. If this throws, the catch block
-        // sends an error event — the client never gets a misleading
-        // success terminal (Codex review fix C4, 2026-05-13).
-        if (lastDoneText) {
-          await recordAssistantTurn(
-            finalConversationId,
-            lastDoneText,
-            undefined,
-            {
-              tokensIn: finalUsage?.inputTokens ?? 0,
-              tokensOut: finalUsage?.outputTokens ?? 0,
-              modelUsed: finalUsage?.model ?? 'sonnet',
-              modelId: finalUsage?.modelId ?? null,
-              costUsd: finalUsage?.costUsd ?? 0,
-              promptVersion: systemPrompt.versionLabel,
-            },
-          );
-        }
-
-        // Final assistant turn is now durable. Emit the held `done` event
-        // so the client knows the response is complete.
-        if (finalUsage) {
-          send({ type: 'done', usage: finalUsage, finalText: lastDoneText });
-        }
+        // Persist the final assistant text turn + emit the held `done`
+        // (skipped when the turn ended by proposing approval cards).
+        await finishAgentStream(result, runnerCtx);
       } catch (err) {
-        // Includes errors thrown from recordAssistantTurn (Fix #2). The
-        // finally block handles cleanup of the cost reservation + any
-        // dangling tool_use rows.
         log.error('[agent/command] stream loop threw', {
           requestId, conversationId: finalConversationId, reservationId, err,
         });
         send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       } finally {
-        // ── Fix #3 cleanup: synthesize tool_result rows for any tool_use
-        // that didn't get a matching result before the stream ended. This
-        // keeps the conversation history valid for the next replay.
-        //
-        // Round-8 fix B7 (2026-05-13): post-0094 unique index on
-        // (conversation_id, tool_call_id) for role='tool', a plain insert
-        // would throw a constraint violation if the result actually landed
-        // earlier in the stream but pendingToolCallIds wasn't cleared in
-        // time. recordSyntheticAbortToolResult uses ON CONFLICT DO NOTHING
-        // so existing rows are left alone — silent + idempotent. ──
-        if (pendingToolCallIds.size > 0) {
-          await Promise.allSettled(
-            Array.from(pendingToolCallIds).map(toolCallId =>
-              recordSyntheticAbortToolResult(finalConversationId, toolCallId, {
-                ok: false,
-                error: 'aborted — tool result was not captured before the stream ended',
-              }).catch(err => {
-                log.error('[agent/command] failed to insert synthetic abort result', {
-                  requestId, conversationId: finalConversationId, err,
-                });
-              }),
-            ),
-          );
-        }
+        // Synthesize error tool_result rows for any dangling tool_use. Uses the
+        // route-owned set so a mid-loop throw is still covered.
+        await drainDanglingToolCalls(pendingToolCallIds, runnerCtx);
 
-        // ── Fix #1 cleanup: reconcile the cost reservation. If the stream
-        // completed and gave us a usage report, finalize to actual spend.
-        // Otherwise cancel (release the budget hold).
-        //
-        // Codex review fix M1 (2026-05-13): finalizeCostReservation now
-        // throws on RPC error. If it does, we attempt a cancel to release
-        // the budget hold (better than leaving the row stuck in 'reserved'
-        // state forever, inflating future cap checks). The user has
-        // already received their response via the `done` event emitted
-        // above; we're just losing the actual-cost record. ──
+        // ── Reconcile the cost reservation. Finalize to actual spend when we
+        // have a usage report. A turn that ended by proposing approval cards
+        // has no `done`/usage — but the model DID spend tokens on the proposal,
+        // so we finalize against the last assistant_turn usage instead of
+        // cancelling and losing that spend. The model's FOLLOW-UP (after the
+        // user decides) reserves its own budget on the resolve route. ──
+        const finalUsage = result?.finalUsage ?? result?.lastTurnUsage ?? null;
         if (finalUsage) {
           try {
             await finalizeCostReservation({
@@ -430,9 +359,6 @@ export async function POST(req: NextRequest): Promise<Response> {
               tokensIn: finalUsage.inputTokens,
               tokensOut: finalUsage.outputTokens,
               cachedInputTokens: finalUsage.cachedInputTokens,
-              // Codex round-7 fix F1: passed through so the audit-row
-              // fallback (agent_cost_finalize_failures) can record the
-              // user + property when retries are exhausted.
               userId: userCtx.accountId,
               propertyId: body.propertyId,
             });
