@@ -87,38 +87,192 @@ const OLD_STEPS = [
   { icon: '✍️', text: 'Log it. Again.' },
 ];
 
-/* One page — the app's real pages, orbiting. Hover a chip and a summary
-   of that operation expands outward, away from the Today card. */
-const ORBIT_PAGES = [
-  {
-    label: 'Dashboard', x: 10, y: 16, dir: 'left',
-    blurb: 'The morning picture: occupancy, arrivals and departures, today’s labor cost, and anything that needs attention.',
-  },
-  {
-    label: 'Financials', x: 48, y: 4, dir: 'up',
-    blurb: 'Labor costs, spending, and cost per occupied room, tracked for you. No spreadsheet, no formulas.',
-  },
-  {
-    label: 'Housekeeping', x: 82, y: 14, dir: 'right',
-    blurb: 'The live board: every room, every cleaner, statuses flipping as guests check out. Deep cleans scheduled and tracked.',
-  },
-  {
-    label: 'Maintenance', x: 8, y: 58, dir: 'left',
-    blurb: 'Work orders logged in seconds, assigned automatically, and tracked until the room is back in service.',
-  },
-  {
-    label: 'Inventory', x: 86, y: 56, dir: 'right',
-    blurb: 'Counts, par levels, and burn rates, with reorders drafted before you run out and checked against your budget.',
-  },
-  {
-    label: 'Staff', x: 18, y: 90, dir: 'down',
-    blurb: 'Your roster and schedules, with tomorrow’s crew confirmed by text in each person’s language.',
-  },
-  {
-    label: 'Communications', x: 72, y: 90, dir: 'down',
-    blurb: 'Team messages and a log book that writes itself, so nothing gets lost between shifts.',
-  },
-];
+/* One page — explorable app preview. Tabs mirror the real app nav;
+   each tab renders a visual mock of that page, scrollable inside the
+   window. Greyed out until you hover in. */
+const APP_TABS = [
+  { id: 'today', label: 'Today' },
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'housekeeping', label: 'Housekeeping' },
+  { id: 'maintenance', label: 'Maintenance' },
+  { id: 'inventory', label: 'Inventory' },
+  { id: 'staff', label: 'Staff' },
+  { id: 'communications', label: 'Communications' },
+  { id: 'financials', label: 'Financials' },
+] as const;
+type AppTab = (typeof APP_TABS)[number]['id'];
+
+const ROOM_STATUSES = ['ok', 'dirty', 'ok', 'occ', 'ok', 'dirty', 'insp', 'ok', 'occ', 'ok', 'dirty', 'ok', 'ok', 'insp', 'occ', 'ok', 'dirty', 'ok', 'occ', 'ok', 'ok', 'dirty', 'insp', 'ok'];
+
+function AppPage({ tab }: { tab: AppTab }) {
+  switch (tab) {
+    case 'today':
+      return (
+        <div className="ap">
+          <div className="ap-top"><span className="ap-day">Tuesday</span><span className="ap-fact">84% occupied tonight</span></div>
+          <div className="ap-h">NEEDS YOU · 3</div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />Approve the towel reorder<span className="ap-btn">Approve</span></div>
+          <div className="ap-card ap-need"><span className="ti-dot info" />Confirm tomorrow&rsquo;s cleaning crew<span className="ap-btn">Confirm</span></div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />Work order on 118 needs a decision<span className="ap-btn">Review</span></div>
+          <div className="ap-h">ALREADY HANDLED</div>
+          {['Cleaning board built, 31 rooms assigned', 'Maria and Ana confirmed by text', 'AC ticket on 118 assigned', 'Coffee reorder drafted', 'All room statuses up to date'].map((t) => (
+            <div className="ap-done" key={t}><span className="de-check">✓</span>{t}</div>
+          ))}
+          <div className="ap-h">OVERNIGHT</div>
+          {FEED_SCRIPT.slice(0, 4).map((f) => (
+            <div className="ap-feedrow" key={f.text}><span>{f.time}</span>{f.text}</div>
+          ))}
+        </div>
+      );
+    case 'dashboard':
+      return (
+        <div className="ap">
+          <div className="ap-statrow">
+            <div className="ap-card ap-stat"><div className="ap-ring" /><div><b>84%</b><span>occupancy tonight</span></div></div>
+            <div className="ap-card ap-stat"><b>42<i>in</i> 38<i>out</i></b><span>arrivals &amp; departures</span></div>
+            <div className="ap-card ap-stat"><b>$612</b><span>labor today</span></div>
+          </div>
+          <div className="ap-h">ROOMS RIGHT NOW</div>
+          <div className="ap-roomgrid">
+            {ROOM_STATUSES.map((s, i) => (
+              <span className={`ap-room r-${s}`} key={i}>{101 + i}</span>
+            ))}
+          </div>
+          <div className="ap-legend"><i className="r-ok" />Clean<i className="r-dirty" />Needs cleaning<i className="r-insp" />Inspect<i className="r-occ" />Occupied</div>
+          <div className="ap-h">ATTENTION</div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />Towels below par<span className="ap-btn">Open</span></div>
+          <div className="ap-card ap-need"><span className="ti-dot info" />2 late checkouts today<span className="ap-btn">View</span></div>
+        </div>
+      );
+    case 'housekeeping':
+      return (
+        <div className="ap">
+          <div className="ap-top"><span className="ap-day">Tuesday board</span><span className="ap-fact">31 rooms · 3 cleaners</span></div>
+          {[['MG', 'Maria', 8, 12], ['AR', 'Ana', 6, 10], ['LT', 'Luis', 5, 9]].map(([ini, name, done, total]) => (
+            <div className="ap-card ap-cleaner" key={name as string}>
+              <span className="ap-avatar">{ini}</span>
+              <div className="ap-cl-mid"><b>{name}</b><div className="ap-bar"><i style={{ width: `${(Number(done) / Number(total)) * 100}%` }} /></div></div>
+              <span className="ap-cl-count">{done}/{total}</span>
+            </div>
+          ))}
+          <div className="ap-h">ROOMS</div>
+          <div className="ap-roomgrid">
+            {ROOM_STATUSES.map((s, i) => (
+              <span className={`ap-room r-${s}`} key={i}>{101 + i}</span>
+            ))}
+          </div>
+          <div className="ap-h">DEEP CLEANS THIS WEEK</div>
+          <div className="ap-done"><span className="de-check">✓</span>204 · carpet + vents · Thursday</div>
+          <div className="ap-done"><span className="de-check">✓</span>117 · full turn · Friday</div>
+        </div>
+      );
+    case 'maintenance':
+      return (
+        <div className="ap">
+          <div className="ap-h">WORK ORDERS</div>
+          {[
+            ['118', 'AC not cooling', 'In progress', 'prog', 'Luis'],
+            ['204', 'Shower drip', 'Open', 'open', 'Unassigned'],
+            ['312', 'Hallway bulb out', 'Fixed', 'done', 'Luis'],
+            ['Lobby', 'Door closer slow', 'Open', 'open', 'Unassigned'],
+          ].map(([room, what, status, cls, who]) => (
+            <div className="ap-card ap-wo" key={what as string}>
+              <b>{room}</b>
+              <div className="ap-wo-mid">{what}<span>{who}</span></div>
+              <span className={`ap-pill p-${cls}`}>{status}</span>
+            </div>
+          ))}
+          <div className="ap-h">PREVENTIVE</div>
+          <div className="ap-done"><span className="de-check">✓</span>Filter changes · floors 1–2 · this month</div>
+          <div className="ap-done"><span className="de-check">✓</span>Water heater check · scheduled</div>
+        </div>
+      );
+    case 'inventory':
+      return (
+        <div className="ap">
+          <div className="ap-card ap-reorder">
+            <span className="ti-dot warn" />Towel reorder drafted · $214 · under budget ✓<span className="ap-btn">Approve</span>
+          </div>
+          <div className="ap-h">STOCK</div>
+          {[
+            ['Towels', 28, 'crit'],
+            ['Soap & amenities', 54, 'low'],
+            ['Coffee', 81, 'good'],
+            ['Sheets', 72, 'good'],
+            ['Cleaning supplies', 43, 'low'],
+          ].map(([name, pct, cls]) => (
+            <div className="ap-card ap-stock" key={name as string}>
+              <b>{name}</b>
+              <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
+              <span className={`ap-pct t-${cls}`}>{pct}%</span>
+            </div>
+          ))}
+          <div className="ap-note">Staxis learns how fast each item burns and drafts the reorder before you run out.</div>
+        </div>
+      );
+    case 'staff':
+      return (
+        <div className="ap">
+          <div className="ap-h">TOMORROW&rsquo;S CREW</div>
+          {[
+            ['MG', 'Maria', 'Housekeeping', 'Confirmed ✓', 'ES'],
+            ['AR', 'Ana', 'Housekeeping', 'Confirmed ✓', 'ES'],
+            ['LT', 'Luis', 'Maintenance', 'Confirmed ✓', 'EN'],
+            ['JD', 'Jade', 'Front desk', 'Waiting…', 'EN'],
+          ].map(([ini, name, role, st, lang]) => (
+            <div className="ap-card ap-person" key={name as string}>
+              <span className="ap-avatar">{ini}</span>
+              <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{role}</span></div>
+              <span className={`ap-conf ${String(st).startsWith('Confirmed') ? 'yes' : ''}`}>{st}</span>
+              <span className="ap-lang">{lang}</span>
+            </div>
+          ))}
+          <div className="ap-note">One text per day, in each person&rsquo;s language. Replies build the schedule.</div>
+        </div>
+      );
+    case 'communications':
+      return (
+        <div className="ap">
+          <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
+          {[
+            ['7:12 AM', 'Late checkout on 312 approved'],
+            ['7:04 AM', 'Towel reorder drafted for approval'],
+            ['6:41 AM', 'AC ticket on 118 assigned to Luis'],
+            ['6:03 AM', 'Cleaning board built, 31 rooms'],
+          ].map(([t, txt]) => (
+            <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
+          ))}
+          <div className="ap-h">TEAM MESSAGES</div>
+          <div className="ap-msg them">Room 204 lista ✓</div>
+          <div className="ap-msg me">Gracias Maria! 118 next please</div>
+          <div className="ap-msg them">Ok voy 👍</div>
+        </div>
+      );
+    case 'financials':
+      return (
+        <div className="ap">
+          <div className="ap-statrow">
+            <div className="ap-card ap-stat"><b>$23.40</b><span>cost per occupied room</span></div>
+            <div className="ap-card ap-stat"><b>$612</b><span>labor today</span></div>
+            <div className="ap-card ap-stat"><b>$148</b><span>supplies this week</span></div>
+          </div>
+          <div className="ap-h">THIS WEEK VS BUDGET</div>
+          {[
+            ['Labor', 72, 'good'],
+            ['Supplies', 61, 'good'],
+            ['Maintenance', 88, 'low'],
+          ].map(([name, pct, cls]) => (
+            <div className="ap-card ap-stock" key={name as string}>
+              <b>{name}</b>
+              <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
+              <span className={`ap-pct t-${cls}`}>{pct}%</span>
+            </div>
+          ))}
+          <div className="ap-note">No spreadsheet, no formulas. The numbers are just there.</div>
+        </div>
+      );
+  }
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -127,6 +281,7 @@ export default function MarketingLanding() {
     () => FEED_SCRIPT.slice(0, 4).map((f, i) => ({ ...f, id: i })).reverse()
   );
   const feedIdx = useRef(4);
+  const [appTab, setAppTab] = useState<AppTab>('today');
   const [notifStage, setNotifStage] = useState<'idle' | 'pressed' | 'done'>('idle');
   const notifStarted = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -467,36 +622,32 @@ export default function MarketingLanding() {
           one tap away when you want to look deeper.
         </p>
 
-        <div className="orbit rv" aria-hidden="true">
-          <svg className="orbit-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
-            {ORBIT_PAGES.map((p) => (
-              <line key={p.label} x1="50" y1="50" x2={p.x} y2={p.y} />
+        <div className="appdemo rv">
+          <div className="apptabs">
+            {APP_TABS.map((t) => (
+              <button
+                type="button"
+                key={t.id}
+                className={`apptab ${appTab === t.id ? 'on' : ''}`}
+                onMouseEnter={() => setAppTab(t.id)}
+                onFocus={() => setAppTab(t.id)}
+                onClick={() => setAppTab(t.id)}
+              >
+                {t.label}
+              </button>
             ))}
-          </svg>
-          {ORBIT_PAGES.map((p, i) => (
-            <span
-              key={p.label}
-              className="orbit-chip"
-              style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
-            >
-              {p.label}
-              <span className={`chip-pop pop-${p.dir}`}>
-                <b>{p.label}</b>
-                {p.blurb}
-                <i>LIVE IN THE APP</i>
-              </span>
-            </span>
-          ))}
-          <div className="today">
-            <div className="today-head">
-              <ChevronMark size={18} />
-              <span>Today</span>
-              <span className="today-count">NEEDS YOU · 3</span>
+          </div>
+          <div className="appwin">
+            <div className="appwin-head">
+              <span className="dot r" /><span className="dot y" /><span className="dot g" />
+              <span className="awh-brand"><ChevronMark size={15} />Staxis</span>
+              <span className="awh-sep" />
+              <span className="awh-prop">Your Hotel</span>
+              <span className="awh-hint">HOVER TO EXPLORE · SCROLLS</span>
             </div>
-            <div className="today-item"><span className="ti-dot warn" />Approve the towel reorder</div>
-            <div className="today-item"><span className="ti-dot info" />Confirm tomorrow&rsquo;s cleaning crew</div>
-            <div className="today-item"><span className="ti-dot warn" />One work order needs a decision</div>
-            <div className="today-rest"><span className="ti-dot ok" />Everything else: already handled</div>
+            <div className="appwin-body" key={appTab}>
+              <AppPage tab={appTab} />
+            </div>
           </div>
         </div>
       </section>
@@ -1042,80 +1193,139 @@ const CSS = `
   100% { transform: translate(var(--bx), var(--by)) scale(1.1) rotate(140deg); opacity: 0; }
 }
 
-/* ---------- one page (orbit) ---------- */
-.orbit { position: relative; margin: 70px auto 0; max-width: 920px; height: 540px; }
-.orbit-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
-.orbit-lines line { stroke: rgba(92,122,96,.3); stroke-width: .35;
-  stroke-dasharray: 2 2.4; animation: march 2.4s linear infinite; }
-@keyframes march { to { stroke-dashoffset: -8.8; } }
-.orbit-chip { position: absolute; transform: translate(-50%, -50%);
-  font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
+/* ---------- one page (explorable app preview) ---------- */
+.appdemo { margin-top: 48px; }
+.apptabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.apptab { font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
   text-transform: uppercase; color: var(--dim); white-space: nowrap;
   background: #FAFAF7; border: 1px solid var(--rule-soft); border-radius: 999px;
-  padding: 9px 16px; box-shadow: 0 4px 12px rgba(31,35,28,.05); cursor: default;
-  animation: chipfloat 6s ease-in-out infinite;
+  padding: 9px 16px; cursor: pointer;
   transition: color .25s ease, background .25s ease, border-color .25s ease,
-    box-shadow .25s ease; }
-.orbit-chip:hover { color: var(--ink); background: #fff;
-  border-color: var(--sage); box-shadow: 0 14px 34px rgba(31,35,28,.14);
-  animation-play-state: paused; z-index: 5; }
-@keyframes chipfloat {
-  0%,100% { margin-top: 0; }
-  50% { margin-top: -9px; }
-}
+    box-shadow .25s ease, transform .25s ease; }
+.apptab:hover { transform: translateY(-2px); }
+.apptab.on { color: var(--ink); background: #fff; border-color: var(--sage);
+  box-shadow: 0 8px 22px rgba(31,35,28,.1); }
+.appwin { border: 1px solid var(--rule); border-radius: 18px; overflow: hidden;
+  background: #fff; box-shadow: 0 28px 70px rgba(31,35,28,.12);
+  filter: grayscale(.9) opacity(.72); transition: filter .6s ease, box-shadow .6s ease; }
+.appdemo:hover .appwin, .appdemo:focus-within .appwin { filter: none;
+  box-shadow: 0 34px 90px rgba(31,35,28,.16), 0 0 0 8px rgba(158,183,166,.08); }
+.appwin-head { display: flex; align-items: center; gap: 7px; padding: 12px 16px;
+  border-bottom: 1px solid var(--rule-soft); background: var(--bg-warm); }
+.awh-brand { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px;
+  font-weight: 600; font-size: 13.5px; letter-spacing: -.01em; }
+.awh-sep { width: 1px; height: 14px; background: var(--rule); }
+.awh-prop { font-size: 12.5px; color: var(--muted); }
+.awh-hint { margin-left: auto; font-family: var(--mono); font-size: 9.5px;
+  letter-spacing: .16em; color: var(--dim); }
+@media (max-width: 640px) { .awh-hint { display: none; } }
+.appwin-body { height: clamp(440px, 62vh, 620px); overflow-y: auto;
+  background: #F7F8F5; padding: clamp(16px, 2.5vw, 28px);
+  animation: pagein .5s cubic-bezier(.19,1,.22,1); }
+@keyframes pagein { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+.appwin-body::-webkit-scrollbar { width: 8px; }
+.appwin-body::-webkit-scrollbar-thumb { background: rgba(31,35,28,.14);
+  border-radius: 8px; }
+.appwin-body::-webkit-scrollbar-track { background: transparent; }
 
-/* hover summary — expands outward, away from the Today card */
-.chip-pop { position: absolute; width: 240px; white-space: normal;
-  text-transform: none; letter-spacing: 0; font-family: var(--sans);
-  font-size: 13px; line-height: 1.55; color: var(--muted); text-align: left;
-  background: #fff; border: 1px solid var(--rule); border-radius: 14px;
-  padding: 16px 18px; box-shadow: 0 24px 54px rgba(31,35,28,.16);
-  opacity: 0; pointer-events: none; z-index: 6;
-  transition: opacity .3s cubic-bezier(.19,1,.22,1), transform .35s cubic-bezier(.34,1.56,.64,1); }
-.chip-pop b { display: block; font-family: var(--serif); font-weight: 400;
-  font-size: 19px; color: var(--ink); margin-bottom: 6px; letter-spacing: -.005em; }
-.chip-pop i { display: block; font-style: normal; font-family: var(--mono);
-  font-size: 9px; letter-spacing: .18em; color: var(--sage-deep); margin-top: 12px; }
-.orbit-chip:hover .chip-pop { opacity: 1; pointer-events: auto; }
-.pop-left { right: calc(100% + 12px); top: 50%;
-  transform: translateY(-50%) scale(.6); transform-origin: right center; }
-.orbit-chip:hover .pop-left { transform: translateY(-50%) scale(1); }
-.pop-right { left: calc(100% + 12px); top: 50%;
-  transform: translateY(-50%) scale(.6); transform-origin: left center; }
-.orbit-chip:hover .pop-right { transform: translateY(-50%) scale(1); }
-.pop-up { bottom: calc(100% + 12px); left: 50%;
-  transform: translateX(-50%) scale(.6); transform-origin: center bottom; }
-.orbit-chip:hover .pop-up { transform: translateX(-50%) scale(1); }
-.pop-down { top: calc(100% + 12px); left: 50%;
-  transform: translateX(-50%) scale(.6); transform-origin: center top; }
-.orbit-chip:hover .pop-down { transform: translateX(-50%) scale(1); }
-.today { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: 340px; max-width: 82%; background: #fff; border: 1px solid var(--rule);
-  border-radius: 18px; padding: 20px;
-  box-shadow: 0 28px 70px rgba(31,35,28,.14), 0 0 0 8px rgba(158,183,166,.08); }
-.today-head { display: flex; align-items: center; gap: 8px; padding-bottom: 14px;
-  border-bottom: 1px solid var(--rule-soft); margin-bottom: 12px;
-  font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
-.today-count { margin-left: auto; font-family: var(--mono); font-weight: 400;
-  font-size: 10px; letter-spacing: .14em; color: var(--caramel-deep);
-  background: var(--caramel-dim); border-radius: 999px; padding: 4px 10px; }
-.today-item, .today-rest { display: flex; align-items: center; gap: 10px;
-  font-size: 13.5px; color: var(--ink-soft); padding: 8px 0; }
-.today-rest { color: var(--sage-deep); border-top: 1px dashed var(--rule);
-  margin-top: 8px; padding-top: 12px; }
+/* mock page primitives */
+.ap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 9px; }
+.ap-top { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.ap-day { font-family: var(--serif); font-size: 26px; }
+.ap-fact { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--dim); }
+.ap-h { font-family: var(--mono); font-size: 10px; letter-spacing: .18em;
+  color: var(--dim); margin: 14px 0 2px; }
+.ap-card { background: #fff; border: 1px solid var(--rule-soft); border-radius: 12px;
+  padding: 13px 16px; display: flex; align-items: center; gap: 11px;
+  font-size: 13.5px; color: var(--ink-soft); }
+.ap-btn { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3);
+  border-radius: 999px; padding: 6px 14px; flex: none; }
+.ap-done { display: flex; align-items: center; gap: 10px; font-size: 13px;
+  color: var(--muted); padding: 5px 4px; }
+.ap-feedrow { display: flex; align-items: baseline; gap: 12px; font-size: 12.5px;
+  color: var(--ink-soft); background: #fff; border: 1px solid var(--rule-soft);
+  border-radius: 10px; padding: 9px 13px; }
+.ap-feedrow > span { font-family: var(--mono); font-size: 10px; color: var(--dim);
+  flex: none; width: 52px; }
+.ap-note { font-size: 12.5px; color: var(--dim); font-style: italic; padding: 6px 4px; }
 .ti-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .ti-dot.warn { background: var(--caramel); }
 .ti-dot.info { background: var(--purple); }
 .ti-dot.ok { background: var(--sage-deep); }
-@media (max-width: 760px) {
-  .orbit { height: auto; display: flex; flex-flow: row wrap; justify-content: center;
-    align-items: center; gap: 14px; }
-  .orbit-lines { display: none; }
-  .orbit-chip { position: static; transform: none; color: var(--ink-soft); }
-  .chip-pop { display: none; }
-  .today { position: static; transform: none; width: 100%; max-width: 420px;
-    flex: none; order: -1; margin-bottom: 12px; }
-}
+
+.ap-statrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+@media (max-width: 640px) { .ap-statrow { grid-template-columns: 1fr; } }
+.ap-stat { flex-direction: row; gap: 12px; }
+.ap-stat b { font-family: var(--serif); font-style: italic; font-weight: 400;
+  font-size: 26px; color: var(--ink); line-height: 1.1; }
+.ap-stat b i { font-family: var(--mono); font-style: normal; font-size: 9px;
+  color: var(--dim); letter-spacing: .1em; margin: 0 6px 0 2px; }
+.ap-stat span { display: block; font-size: 11.5px; color: var(--dim); }
+.ap-ring { width: 40px; height: 40px; border-radius: 50%; flex: none;
+  background: conic-gradient(var(--sage-deep) 0 84%, rgba(31,35,28,.08) 84% 100%);
+  -webkit-mask: radial-gradient(circle, transparent 11px, black 12px);
+  mask: radial-gradient(circle, transparent 11px, black 12px); }
+
+.ap-roomgrid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+@media (max-width: 640px) { .ap-roomgrid { grid-template-columns: repeat(6, 1fr); } }
+.ap-room { font-family: var(--mono); font-size: 10px; text-align: center;
+  padding: 9px 0; border-radius: 6px; color: var(--ink-soft); }
+.r-ok { background: rgba(92,122,96,.16); }
+.r-dirty { background: rgba(201,150,68,.2); }
+.r-insp { background: rgba(123,106,151,.16); }
+.r-occ { background: rgba(31,35,28,.06); color: var(--dim); }
+.ap-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px;
+  color: var(--dim); align-items: center; padding: 2px 2px 0; }
+.ap-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+  margin-right: 5px; vertical-align: -1px; }
+
+.ap-avatar { width: 32px; height: 32px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3); }
+.ap-cl-mid { flex: 1; min-width: 0; }
+.ap-cl-mid b { display: block; font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.ap-role { font-size: 11.5px; color: var(--dim); }
+.ap-bar { height: 6px; border-radius: 4px; background: rgba(31,35,28,.07);
+  margin-top: 6px; overflow: hidden; }
+.ap-bar i { display: block; height: 100%; border-radius: 4px;
+  background: var(--sage-deep); transition: width 1s cubic-bezier(.19,1,.22,1); }
+.ap-bar.big { height: 8px; flex: 1; margin-top: 0; }
+.f-good { background: var(--sage-deep) !important; }
+.f-low { background: var(--caramel) !important; }
+.f-crit { background: var(--warm) !important; }
+.ap-cl-count { font-family: var(--mono); font-size: 11px; color: var(--dim); flex: none; }
+.ap-stock b { font-size: 13px; font-weight: 600; width: 130px; flex: none; }
+.ap-pct { font-family: var(--mono); font-size: 11px; flex: none; width: 38px; text-align: right; }
+.t-good { color: var(--sage-deep); }
+.t-low { color: var(--caramel-deep); }
+.t-crit { color: var(--warm); }
+
+.ap-wo b { font-family: var(--mono); font-size: 11px; color: var(--dim);
+  width: 44px; flex: none; }
+.ap-wo-mid { flex: 1; font-size: 13.5px; color: var(--ink); }
+.ap-wo-mid span { display: block; font-size: 11.5px; color: var(--dim); }
+.ap-pill { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
+  border-radius: 999px; padding: 5px 11px; flex: none; }
+.p-open { color: var(--caramel-deep); background: var(--caramel-dim);
+  border: 1px solid rgba(201,150,68,.35); }
+.p-prog { color: var(--purple); background: rgba(123,106,151,.1);
+  border: 1px solid rgba(123,106,151,.3); }
+.p-done { color: var(--sage-deep); background: var(--sage-dim);
+  border: 1px solid rgba(92,122,96,.3); }
+
+.ap-conf { font-size: 11.5px; color: var(--dim); flex: none; }
+.ap-conf.yes { color: var(--sage-deep); font-weight: 600; }
+.ap-lang { font-family: var(--mono); font-size: 9.5px; color: var(--dim);
+  border: 1px solid var(--rule); border-radius: 5px; padding: 3px 6px; flex: none; }
+.ap-reorder { border-color: rgba(201,150,68,.35); background: #FDFBF4; }
+.ap-msg { max-width: 75%; font-size: 13px; padding: 9px 14px; border-radius: 14px; }
+.ap-msg.them { background: #fff; border: 1px solid var(--rule-soft);
+  align-self: flex-start; border-bottom-left-radius: 4px; }
+.ap-msg.me { background: var(--sage-dim); border: 1px solid rgba(92,122,96,.25);
+  align-self: flex-end; border-bottom-right-radius: 4px; color: var(--ink); }
 
 /* ---------- every benefit ---------- */
 .bens { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 24px;
