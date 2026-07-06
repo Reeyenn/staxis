@@ -381,11 +381,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const tz = (propRes.data?.timezone as string | null) ?? null;
     const localToday = propertyLocalToday(new Date(), tz);
     let occupancyDaysMissing = 0;
+    // Oldest-first day strip for the UI's visual data-pulse (one tick per
+    // census day: did the robot deliver that day's numbers?). Pre-go-live
+    // days are excluded entirely — they're not gaps, they're before history.
+    const occupancyDays: Array<{ date: string; hasData: boolean }> = [];
     if (earliestLogDate !== null) {
-      for (let back = 1; back <= OCCUPANCY_CENSUS_DAYS; back++) {
+      for (let back = OCCUPANCY_CENSUS_DAYS; back >= 1; back--) {
         const d = addDaysInTz(localToday, -back);
-        if (d < earliestLogDate) break; // pre-go-live — not a robot gap
-        if (!occByDate.get(d)) occupancyDaysMissing += 1;
+        if (d < earliestLogDate) continue; // pre-go-live — not a robot gap
+        const hasData = occByDate.get(d) === true;
+        occupancyDays.push({ date: d, hasData });
+        if (!hasData) occupancyDaysMissing += 1;
       }
     }
     const windowsDroppedIncomplete = Array.from(runByItem.values())
@@ -406,6 +412,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           pairsNeeded: PAIRS_NEEDED,
           occupancyDaysMissing,
           occupancyCensusDays: OCCUPANCY_CENSUS_DAYS,
+          occupancyDays,
           windowsDroppedIncomplete,
         },
         items: reportItems,
