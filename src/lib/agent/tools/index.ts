@@ -13,6 +13,7 @@ import './management';
 import './reports';
 import './walkthrough';
 import './voice-issue';
+import './voice-confirm';
 import './complaints';
 import './compliance';
 import './lost-found';

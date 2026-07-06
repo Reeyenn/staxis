@@ -237,6 +237,38 @@ export async function getLivePendingActions(conversationId: string): Promise<Pen
     .filter((r) => new Date(r.expiresAt).getTime() > now);
 }
 
+/**
+ * Reap rows STUCK in the intermediate 'approved' state past a grace period.
+ *
+ * A voice confirm claims a row pending → 'approved' and then runs the held tool;
+ * if the function is killed between the claim and the finalize (Vercel
+ * maxDuration, crash), the row is left 'approved' — neither 'pending' (so it's
+ * invisible to getLivePendingActions and to the expires_at partial index, which
+ * only covers status='pending') nor terminal (so it never expires). It would
+ * linger forever. This flips any such row whose claim is older than
+ * `graceMs` to 'failed' so it becomes terminal. Scoped to one conversation and
+ * called best-effort at the start of a voice turn. Returns the reaped rows.
+ */
+export async function reapStaleApprovedActions(
+  conversationId: string,
+  graceMs = 2 * 60_000,
+): Promise<PendingActionRow[]> {
+  const cutoff = new Date(Date.now() - graceMs).toISOString();
+  const { data, error } = await supabaseAdmin
+    .from('agent_pending_actions')
+    .update({
+      status: 'failed',
+      error: 'abandoned mid-confirmation (claimed but never finalized)',
+      resolved_at: new Date().toISOString(),
+    })
+    .eq('conversation_id', conversationId)
+    .eq('status', 'approved')
+    .lt('resolved_at', cutoff)
+    .select('*');
+  if (error) throw new Error(`reapStaleApprovedActions failed: ${error.message}`);
+  return (data ?? []).map(mapRow);
+}
+
 /** All pending-action rows for one assistant turn (grouped by turn_key). */
 export async function getTurnActions(conversationId: string, turnKey: string): Promise<PendingActionRow[]> {
   const { data, error } = await supabaseAdmin
