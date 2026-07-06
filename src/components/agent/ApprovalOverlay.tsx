@@ -22,6 +22,7 @@ import { createPortal } from 'react-dom';
 import { Check, X, Pencil, Send } from 'lucide-react';
 import { useLang } from '@/contexts/LanguageContext';
 import type { PendingAction, ResultCard } from './approval-types';
+import { EDITABLE_FIELDS } from './approval-types';
 
 const C = {
   bg:       'var(--snow-bg, #FFFFFF)',
@@ -37,46 +38,6 @@ const C = {
 const FONT_SANS = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
 const FONT_MONO = "var(--font-geist-mono), ui-monospace, monospace";
 
-// Fields we render as editable in the "Adjust" panel per tool. Keyed by tool
-// name → arg keys, with a hint for each (multiline / number / enum options).
-// Only these fields become editable; everything else rides along unchanged.
-interface FieldSpec { key: string; label: { en: string; es: string }; kind: 'text' | 'multiline' | 'number' | 'enum'; options?: string[]; }
-
-const EDITABLE_FIELDS: Record<string, FieldSpec[]> = {
-  send_message: [
-    { key: 'recipient', label: { en: 'To', es: 'Para' }, kind: 'text' },
-    { key: 'message', label: { en: 'Message', es: 'Mensaje' }, kind: 'multiline' },
-  ],
-  create_todo: [
-    { key: 'title', label: { en: 'Task', es: 'Tarea' }, kind: 'text' },
-    { key: 'notes', label: { en: 'Notes', es: 'Notas' }, kind: 'multiline' },
-    { key: 'assignee', label: { en: 'Assign to', es: 'Asignar a' }, kind: 'text' },
-    { key: 'priority', label: { en: 'Priority', es: 'Prioridad' }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
-  ],
-  add_logbook_entry: [
-    { key: 'title', label: { en: 'Title', es: 'Titulo' }, kind: 'text' },
-    { key: 'body', label: { en: 'Detail', es: 'Detalle' }, kind: 'multiline' },
-    { key: 'category', label: { en: 'Category', es: 'Categoria' }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
-  ],
-  post_announcement: [
-    { key: 'message', label: { en: 'Announcement', es: 'Aviso' }, kind: 'multiline' },
-  ],
-  log_complaint: [
-    { key: 'description', label: { en: 'Complaint', es: 'Queja' }, kind: 'multiline' },
-    { key: 'roomNumber', label: { en: 'Room', es: 'Habitacion' }, kind: 'text' },
-    { key: 'guestName', label: { en: 'Guest', es: 'Huesped' }, kind: 'text' },
-  ],
-  assign_room: [
-    { key: 'roomNumber', label: { en: 'Room', es: 'Habitacion' }, kind: 'text' },
-    { key: 'staffName', label: { en: 'Housekeeper', es: 'Camarista' }, kind: 'text' },
-  ],
-  createMaintenanceWorkOrder: [
-    { key: 'room_number', label: { en: 'Room', es: 'Habitacion' }, kind: 'text' },
-    { key: 'item', label: { en: 'Item', es: 'Objeto' }, kind: 'text' },
-    { key: 'note', label: { en: 'Note', es: 'Nota' }, kind: 'multiline' },
-  ],
-};
-
 export interface ApprovalOverlayProps {
   pendingActions: PendingAction[];
   resultCard: ResultCard | null;
@@ -86,15 +47,15 @@ export interface ApprovalOverlayProps {
     opts?: { adjustedArgs?: Record<string, unknown>; addons?: string[] },
   ) => void;
   dismissResultCard: () => void;
+  /** Per-card inline validation errors (keyed by pendingActionId). */
+  actionErrors?: Record<string, string>;
 }
 
-export function ApprovalOverlay({ pendingActions, resultCard, resolveAction, dismissResultCard }: ApprovalOverlayProps) {
+export function ApprovalOverlay({ pendingActions, resultCard, resolveAction, dismissResultCard, actionErrors }: ApprovalOverlayProps) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
 
-  // Only one approval card at a time (the queue head). The result card shows
-  // when no approval card is up (a resolve clears its pending entry first).
   const head = pendingActions[0] ?? null;
   if (!head && !resultCard) return null;
 
@@ -111,10 +72,14 @@ export function ApprovalOverlay({ pendingActions, resultCard, resolveAction, dis
       role="dialog"
       aria-modal="true"
     >
-      {head ? (
-        <ApprovalCard key={head.pendingActionId} action={head} resolveAction={resolveAction} />
-      ) : resultCard ? (
-        <ResultConfirmation card={resultCard} onDismiss={dismissResultCard} />
+      {/* Render priority: show a just-resolved RESULT confirmation FIRST, then
+          the next queued approval card. A failure result requires an explicit
+          dismissal — a queued sibling card must not hide it. Success/denial
+          results auto-dismiss, so the next card surfaces right after. */}
+      {resultCard ? (
+        <ResultConfirmation key={resultCard.pendingActionId} card={resultCard} onDismiss={dismissResultCard} />
+      ) : head ? (
+        <ApprovalCard key={head.pendingActionId} action={head} resolveAction={resolveAction} inlineError={actionErrors?.[head.pendingActionId]} />
       ) : null}
     </div>,
     document.body,
@@ -125,15 +90,22 @@ export function ApprovalOverlay({ pendingActions, resultCard, resolveAction, dis
 function ApprovalCard({
   action,
   resolveAction,
+  inlineError,
 }: {
   action: PendingAction;
   resolveAction: ApprovalOverlayProps['resolveAction'];
+  inlineError?: string;
 }) {
   const { lang } = useLang();
   const es = lang === 'es';
-  const [adjusting, setAdjusting] = useState(false);
+  // An inline validation error is always about an edit → open the Adjust panel
+  // so the user lands on the field they need to fix.
+  const [adjusting, setAdjusting] = useState(!!inlineError);
   const [edits, setEdits] = useState<Record<string, unknown>>({});
   const [checkedAddons, setCheckedAddons] = useState<Record<string, boolean>>({});
+
+  // A late-arriving validation error (edit rejected server-side) opens Adjust.
+  useEffect(() => { if (inlineError) setAdjusting(true); }, [inlineError]);
 
   const fields = EDITABLE_FIELDS[action.toolName] ?? [];
   const summary = es ? (action.summary.es || action.summary.en) : (action.summary.en || action.summary.es);
@@ -158,6 +130,7 @@ function ApprovalCard({
     return (
       <div style={cardShell(320)}>
         <div style={{ ...bodyText, marginBottom: 14 }}>{summary}</div>
+        {inlineError && <div style={inlineErrorStyle}>{inlineError}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button style={secondaryBtn} onClick={() => submit('deny')}>{t.cancel}</button>
           <button style={primaryBtn} onClick={() => submit('approve')}>
@@ -212,6 +185,8 @@ function ApprovalCard({
           })}
         </div>
       )}
+
+      {inlineError && <div style={{ ...inlineErrorStyle, marginBottom: 12 }}>{inlineError}</div>}
 
       {action.addons.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
@@ -300,6 +275,11 @@ function cardShell(maxWidth: number): React.CSSProperties {
   };
 }
 const bodyText: React.CSSProperties = { fontFamily: FONT_SANS, fontSize: 14, lineHeight: 1.5, color: C.ink, wordBreak: 'break-word' };
+const inlineErrorStyle: React.CSSProperties = {
+  fontFamily: FONT_SANS, fontSize: 12.5, lineHeight: 1.4, color: C.warm,
+  background: 'rgba(184, 92, 61, 0.08)', border: '1px solid rgba(184, 92, 61, 0.22)',
+  borderRadius: 8, padding: '7px 10px', marginBottom: 10, wordBreak: 'break-word',
+};
 const inputStyle: React.CSSProperties = {
   width: '100%', boxSizing: 'border-box', resize: 'vertical',
   padding: '8px 10px', fontFamily: FONT_SANS, fontSize: 13.5, color: C.ink,

@@ -57,6 +57,7 @@ export default function ChatPage() {
     resultCard,
     resolveAction,
     dismissResultCard,
+    actionErrors,
   } = useAgentChat({ propertyId: activePropertyId, active: true });
 
   const [input, setInput] = useState('');
@@ -127,6 +128,7 @@ export default function ChatPage() {
         resultCard={resultCard}
         resolveAction={resolveAction}
         dismissResultCard={dismissResultCard}
+        actionErrors={actionErrors}
       />
       {/* ── Sidebar ── */}
       <aside style={{

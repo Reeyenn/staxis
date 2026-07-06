@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import type { DisplayMessage } from './MessageList';
-import type { BiText, PendingAction, ResultCard } from './approval-types';
+import type { BiText, PendingAction, PendingAddon, ResultCard } from './approval-types';
 
 export interface ConversationListItem {
   id: string;
@@ -47,6 +47,10 @@ export interface UseAgentChatReturn {
   ) => Promise<void>;
   /** Dismiss the current result card (used by the failure card's close button). */
   dismissResultCard: () => void;
+  /** Per-card inline validation errors (keyed by pendingActionId). Set when an
+   *  Adjust edit fails server validation — the card stays up so the user can
+   *  fix it. */
+  actionErrors: Record<string, string>;
 }
 
 interface ServerMessage {
@@ -62,6 +66,18 @@ interface ServerConversationDetail {
   id: string;
   title: string | null;
   messages?: ServerMessage[];
+}
+
+/** A rehydrated pending card from the conversation-detail load path. Same shape
+ *  as the tool_call_pending_approval SSE event (bilingual summary + addons). */
+interface ServerPendingAction {
+  pendingActionId: string;
+  toolCallId: string;
+  toolName: string;
+  args?: Record<string, unknown>;
+  tier: 'quick' | 'card';
+  summary?: BiText;
+  addons?: { en: PendingAddon[]; es: PendingAddon[] };
 }
 
 interface ServerConversationListItem {
@@ -93,6 +109,8 @@ interface SsePayload {
   error?: { en: string | null; es: string | null };
   addonNotes?: string[];
   addonErrors?: string[];
+  // pending_actions_superseded
+  pendingActionIds?: string[];
 }
 
 export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): UseAgentChatReturn {
@@ -104,6 +122,7 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
   const [error, setError] = useState<string | null>(null);
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [resultCard, setResultCard] = useState<ResultCard | null>(null);
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
 
   // Language in a ref so the SSE closure resolves bilingual payloads with the
   // current language without re-creating sendMessage on every language change.
@@ -114,6 +133,50 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
   // start a new bubble on the next delta. Kept in a ref so the streaming
   // closure doesn't capture stale state.
   const assistantIndexRef = useRef<number>(-1);
+
+  // ── Streamed-text flush buffer (perf) ──────────────────────────────────
+  // Naively calling setMessages per text_delta clones the whole messages array
+  // on every token → O(n²) re-renders on a long reply. We buffer incoming
+  // deltas in a ref and flush at most once per animation frame, so a burst of
+  // tokens becomes ONE state update. flushDeltaBuffer must run before any other
+  // event that reads/mutates messages, and once more at stream end.
+  const deltaBufRef = useRef<string>('');
+  const rafRef = useRef<number | null>(null);
+
+  const flushDeltaBuffer = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    const chunk = deltaBufRef.current;
+    if (!chunk) return;
+    deltaBufRef.current = '';
+    setMessages(prev => {
+      const next = [...prev];
+      if (assistantIndexRef.current >= 0 && next[assistantIndexRef.current]?.role === 'assistant') {
+        next[assistantIndexRef.current] = {
+          ...next[assistantIndexRef.current],
+          text: next[assistantIndexRef.current].text + chunk,
+        };
+      } else {
+        assistantIndexRef.current = next.length;
+        next.push({ role: 'assistant', text: chunk });
+      }
+      return next;
+    });
+  }, []);
+
+  const enqueueDelta = useCallback((delta: string) => {
+    deltaBufRef.current += delta;
+    if (rafRef.current === null && typeof requestAnimationFrame !== 'undefined') {
+      rafRef.current = requestAnimationFrame(() => { rafRef.current = null; flushDeltaBuffer(); });
+    } else if (typeof requestAnimationFrame === 'undefined') {
+      // Non-browser (SSR / test) — flush synchronously.
+      flushDeltaBuffer();
+    }
+  }, [flushDeltaBuffer]);
+
+  useEffect(() => () => { if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); }, []);
 
   // Auto-dismiss timer for the success result card.
   const resultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -156,6 +219,7 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
   const loadConversation = useCallback(async (id: string) => {
     setError(null);
     setPendingActions([]);
+    setActionErrors({});
     dismissResultCard();
     try {
       const res = await fetchWithAuth(`/api/agent/conversations/${id}`);
@@ -178,6 +242,22 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
         }
       }
       setMessages(display);
+
+      // Rehydrate approval cards still awaiting a decision. The DB pending rows
+      // outlive React state — without this a reload / conversation switch loses
+      // the card while the turn hangs until the 10-min TTL. Language-resolve the
+      // addon list here (same as the SSE path) so the card renders identically.
+      const rawPending: ServerPendingAction[] = body.data?.pendingActions ?? [];
+      const rehydrated: PendingAction[] = rawPending.map((p) => ({
+        pendingActionId: p.pendingActionId,
+        toolCallId: p.toolCallId,
+        toolName: p.toolName,
+        args: p.args ?? {},
+        tier: p.tier === 'quick' ? 'quick' : 'card',
+        summary: p.summary ?? { en: '', es: '' },
+        addons: (p.addons ? (langRef.current === 'es' ? p.addons.es : p.addons.en) : []) ?? [],
+      }));
+      setPendingActions(rehydrated);
       setConversationId(id);
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress
@@ -190,6 +270,7 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
     setMessages([]);
     setError(null);
     setPendingActions([]);
+    setActionErrors({});
     dismissResultCard();
     assistantIndexRef.current = -1;
   }, [dismissResultCard]);
@@ -246,24 +327,17 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
           );
         }
 
+        // Any event OTHER than a text delta reads or resets the message list /
+        // assistant-bubble index, so flush buffered deltas first — otherwise
+        // tokens could land in the wrong bubble (or after an index reset).
+        if (payload.type !== 'text_delta') flushDeltaBuffer();
+
         if (payload.type === 'conversation_id' && typeof payload.id === 'string') {
           setConversationId(payload.id);
           void reloadConversations();
         } else if (payload.type === 'text_delta' && typeof payload.delta === 'string') {
-          const delta = payload.delta;
-          setMessages(prev => {
-            const next = [...prev];
-            if (assistantIndexRef.current >= 0 && next[assistantIndexRef.current]?.role === 'assistant') {
-              next[assistantIndexRef.current] = {
-                ...next[assistantIndexRef.current],
-                text: next[assistantIndexRef.current].text + delta,
-              };
-            } else {
-              assistantIndexRef.current = next.length;
-              next.push({ role: 'assistant', text: delta });
-            }
-            return next;
-          });
+          // Buffered — coalesced into ~one setMessages per animation frame.
+          enqueueDelta(payload.delta);
         } else if (payload.type === 'tool_call_started' && payload.call) {
           const call = payload.call;
           setMessages(prev => [
@@ -291,6 +365,14 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
           };
           setPendingActions(prev => (prev.some(p => p.pendingActionId === card.pendingActionId) ? prev : [...prev, card]));
           assistantIndexRef.current = -1;
+        } else if (payload.type === 'pending_actions_superseded') {
+          // A new user message abandoned earlier proposals — the server expired
+          // them. Drop any still-displayed cards for them so the user can't
+          // approve a stale action.
+          const dropped = new Set(payload.pendingActionIds ?? []);
+          if (dropped.size > 0) {
+            setPendingActions(prev => prev.filter(p => !dropped.has(p.pendingActionId)));
+          }
         } else if (payload.type === 'action_result' && payload.pendingActionId) {
           // A decision resolved — show the result confirmation card.
           const denied = payload.denied === true;
@@ -316,7 +398,9 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
         }
       }
     }
-  }, [reloadConversations, pick, clearResultTimer]);
+    // Flush any tokens still buffered when the stream ends.
+    flushDeltaBuffer();
+  }, [reloadConversations, pick, clearResultTimer, enqueueDelta, flushDeltaBuffer]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || streaming || !propertyId) return;
@@ -348,9 +432,6 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
     opts?: { adjustedArgs?: Record<string, unknown>; addons?: string[] },
   ) => {
     if (!propertyId) return;
-    // Remove the card immediately — the decision is committed server-side and a
-    // stale card would let the user double-tap.
-    setPendingActions(prev => prev.filter(p => p.pendingActionId !== pendingActionId));
     setError(null);
     setStreaming(true);
     assistantIndexRef.current = -1;
@@ -365,6 +446,31 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
           adjustedArgs: opts?.adjustedArgs,
           addons: opts?.addons,
         }),
+      });
+
+      // An invalid Adjust edit comes back as a 400 JSON (code 'invalid_edit')
+      // WITHOUT consuming the pending row — the card stays up. Surface the field
+      // error inline on that card and keep it displayed so the user can fix it.
+      const ct = res.headers.get('content-type') ?? '';
+      if (res.status === 400 && ct.includes('application/json')) {
+        const errBody = await res.json().catch(() => null);
+        if (errBody?.code === 'invalid_edit') {
+          setActionErrors(prev => ({ ...prev, [pendingActionId]: errBody.error ?? 'That edit isn\'t valid.' }));
+          return;
+        }
+        // Any other 400 — fall through to the shared error handling.
+        setError(errBody?.error ?? `Request failed: ${res.status}`);
+        setPendingActions(prev => prev.filter(p => p.pendingActionId !== pendingActionId));
+        return;
+      }
+
+      // Valid decision — the row is committed server-side. Remove the card (and
+      // clear any stale inline error) so the user can't double-tap, then consume
+      // the resume stream.
+      setPendingActions(prev => prev.filter(p => p.pendingActionId !== pendingActionId));
+      setActionErrors(prev => {
+        if (!(pendingActionId in prev)) return prev;
+        const next = { ...prev }; delete next[pendingActionId]; return next;
       });
       await consumeStream(res);
     } catch (e) {
@@ -389,5 +495,6 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
     resultCard,
     resolveAction,
     dismissResultCard,
+    actionErrors,
   };
 }

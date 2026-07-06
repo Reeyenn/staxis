@@ -80,6 +80,7 @@ export function AskStaxisBar() {
     resultCard,
     resolveAction,
     dismissResultCard,
+    actionErrors,
   } = useAgentChat({
     propertyId: activePropertyId,
     // Lazily warm the conversation list once the user engages the bar, so the
@@ -274,6 +275,7 @@ export function AskStaxisBar() {
         resultCard={resultCard}
         resolveAction={resolveAction}
         dismissResultCard={dismissResultCard}
+        actionErrors={actionErrors}
       />
       <div
         className={`asx-scrim${dimOn ? ' asx-scrim-on' : ''}${chatting ? ' asx-scrim-chat' : ''}`}
