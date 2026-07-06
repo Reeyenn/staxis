@@ -52,6 +52,7 @@ registerTool<LogComplaintArgs>({
   // housekeeper_issue entry point. Audited in voice-surface-tools.test.ts.
   voiceModes: ['general'],
   mutates: true,
+  approval: 'card',
   handler: async (args: LogComplaintArgs, ctx: ToolContext): Promise<ToolResult> => {
     // Clamp lengths to match /api/complaints/log's validators so a prompt-
     // injected / runaway-long string can't be stored or sent to the

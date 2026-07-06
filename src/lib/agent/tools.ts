@@ -135,6 +135,24 @@ export interface ToolDefinition<TArgs = unknown> {
    */
   mutates?: boolean;
   /**
+   * Approval tier for the AI-assistant approval flow. REQUIRED on every
+   * `mutates: true` tool (enforced by a completeness unit test) and MUST be
+   * absent on read-only tools.
+   *
+   *   'quick' — a one-tap compact card ("Do it" / "Cancel"). For low-stakes,
+   *             reversible, single-target floor actions (mark clean, DND, …).
+   *   'card'  — a full centered card with editable fields + add-on checkboxes.
+   *             For higher-consequence actions (send a message, log a
+   *             complaint, post an announcement, …).
+   *
+   * The tier is read SERVER-SIDE when the pending-action row is written, so a
+   * client can never downgrade a 'card' action to 'quick'. Both tiers go
+   * through the same pending → resolve gate; only READ-ONLY tools execute
+   * inline without approval. See src/lib/agent/approval.ts for the tier map +
+   * per-tool summary builders.
+   */
+  approval?: 'quick' | 'card';
+  /**
    * Per-hotel capability this tool requires (e.g. 'view_financials',
    * 'run_reports', 'view_wages'). When set, executeTool() enforces the SAME
    * Access-tab capability gate the HTTP layer uses (canForProperty), honoring
@@ -161,6 +179,25 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
 /** All registered tools, regardless of role. Mostly for introspection / monitoring. */
 export function listAllTools(): ToolDefinition[] {
   return Array.from(registry.values());
+}
+
+/** Look up a registered tool by name (or undefined). */
+export function getTool(name: string): ToolDefinition | undefined {
+  return registry.get(name);
+}
+
+/**
+ * True when the named tool MUTATES data. Drives the approval gate — a mutation
+ * tool_use is proposed (pending row + card), not executed inline. Unknown tools
+ * are treated as non-mutating (the executor's own not-found guard handles them).
+ */
+export function isMutationTool(name: string): boolean {
+  return registry.get(name)?.mutates === true;
+}
+
+/** The approval tier a mutation tool carries ('quick' | 'card'), or null. */
+export function approvalTierFor(name: string): 'quick' | 'card' | null {
+  return registry.get(name)?.approval ?? null;
 }
 
 /** Tools the given role is allowed to invoke on a given surface. This is

@@ -14,6 +14,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   executeTool,
   toAnthropicTools,
+  isMutationTool,
+  approvalTierFor,
   type ToolContext,
   type ToolDefinition,
 } from './tools';
@@ -349,8 +351,10 @@ export interface RunAgentOpts {
   systemPrompt: SystemPromptBlocks;
   /** Conversation history (the past). */
   history: AgentMessage[];
-  /** The user's new turn. */
-  newUserMessage: string;
+  /** The user's new turn. `null` when RESUMING after an approval decision —
+   *  the history already ends with the tool_result user turn Anthropic needs,
+   *  so no new user message is appended. */
+  newUserMessage: string | null;
   /** Tools the model can call this turn. */
   tools: ToolDefinition[];
   /** Tool execution context (user + property + request id). */
@@ -371,6 +375,15 @@ export interface RunAgentOpts {
    *  ($3/$15 per M). Normal user-driven requests omit this and get
    *  pickModel()'s default. Longevity L4 part B, 2026-05-13. */
   model?: ModelTier;
+  /**
+   * When true, MUTATION tool calls are NOT executed inline. Instead the loop
+   * yields a `tool_call_pending_approval` event per mutation and ENDS the turn
+   * (read-only calls in the same turn still execute inline as before). The
+   * chat route sets this; evals + the sync runAgent path leave it off so their
+   * behaviour is unchanged. The action resumes via a fresh streamAgent call
+   * (newUserMessage: null) once the user approves/denies on a card.
+   */
+  approvalMode?: boolean;
 }
 
 export interface RunAgentResult {
@@ -409,7 +422,7 @@ type ClaudeContent = Anthropic.Messages.ContentBlockParam;
  * abort-cleanup row racing a new user turn) be misclassified as
  * "matched" while still producing an invalid message sequence.
  */
-export function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessage[] {
+export function toClaudeMessages(history: AgentMessage[], newUser: string | null): ClaudeMessage[] {
   const out: ClaudeMessage[] = [];
 
   // Iterate over history with explicit index control so we can peek
@@ -504,8 +517,12 @@ export function toClaudeMessages(history: AgentMessage[], newUser: string): Clau
     out.push({ role: 'user', content: resultBlocks });
   }
 
-  // The new user turn always goes at the end.
-  out.push({ role: 'user', content: newUser });
+  // The new user turn always goes at the end — UNLESS we're resuming after an
+  // approval decision, where `newUser` is null and the history already ends
+  // with the tool_result user turn Anthropic needs to continue the generation.
+  if (newUser !== null) {
+    out.push({ role: 'user', content: newUser });
+  }
   return out;
 }
 
@@ -702,6 +719,11 @@ export type AgentEvent =
   | { type: 'assistant_turn'; text: string; toolCalls: AgentToolCall[]; usage: UsageReport }
   | { type: 'tool_call_started'; call: AgentToolCall }
   | { type: 'tool_call_finished'; call: AgentToolCall; result: unknown; isError: boolean }
+  // Emitted (approvalMode only) when the model proposes a MUTATION tool. The
+  // action is NOT executed — the route persists a pending row and streams a
+  // card to the browser. `tier` + `summary` drive the card; `turnKey` groups
+  // all mutations of this assistant turn so resume waits for all to resolve.
+  | { type: 'tool_call_pending_approval'; call: AgentToolCall; tier: 'quick' | 'card'; turnKey: string }
   | { type: 'done'; usage: UsageReport; finalText: string }
   // Error events carry `usage` whenever the stream consumed any tokens
   // before the error fired (iteration-cap exit, mid-stream exception).
@@ -876,6 +898,68 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         }
         yield { type: 'done', usage: buildUsage(), finalText: refusal };
         return;
+      }
+
+      // ── Approval gate (approvalMode only) ──────────────────────────────
+      // If any proposed call is a MUTATION, we do NOT run the mutations. We
+      // execute the READ-ONLY calls in this turn inline (as before), then emit
+      // a `tool_call_pending_approval` per mutation and STOP — the turn ends
+      // here. The route persists a pending row per mutation and streams a card.
+      //
+      // Why stop instead of continue: Anthropic requires EVERY tool_use in the
+      // assistant message to get a tool_result before the conversation can go
+      // on. The mutation tool_use blocks have no result yet (they await the
+      // user's decision), so we can't safely feed the read-only results back
+      // and keep looping. The read-only results are persisted (via the route's
+      // tool_call_finished handler); resume replays them alongside the mutation
+      // results once every pending action is resolved.
+      if (opts.approvalMode) {
+        const mutations = calls.filter((c) => isMutationTool(c.name));
+        if (mutations.length > 0) {
+          // Group key for this assistant turn = its first tool_call_id. Stable
+          // and unique; the resolve route uses it to know when all siblings
+          // are resolved before resuming.
+          const turnKey = calls[0].id;
+
+          // Yield the pending-approval proposals FIRST, BEFORE running any
+          // read-only calls of the same turn (code-review finding: ordering).
+          // The route persists a pending row per proposal as it consumes each
+          // event. If we ran read-only calls first and the client aborted in
+          // that window, the mutation proposals would be silently discarded —
+          // no card, no pending row, and the turn would hang until TTL. Staging
+          // the durable proposals up front closes that window. Persistence
+          // order still holds: the route already recorded the assistant turn
+          // (assistant_turn event) before this branch runs, and each
+          // tool_call_pending_approval removes its id from pendingToolCallIds so
+          // the drain doesn't synthesize an abort result for a proposed
+          // mutation. Tier comes from the tool's registry metadata
+          // (server-decided — the client can't downgrade it); default to 'card'
+          // for any mutation missing a tier.
+          for (const call of mutations) {
+            const tier = approvalTierFor(call.name) ?? 'card';
+            yield { type: 'tool_call_pending_approval', call, tier, turnKey };
+          }
+
+          // Read-only calls in the same turn still run inline, AFTER the
+          // mutation proposals are staged.
+          for (const call of calls) {
+            if (isMutationTool(call.name)) continue;
+            if (checkAborted()) {
+              yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+              return;
+            }
+            yield { type: 'tool_call_started', call };
+            const result = await executeTool(call.name, call.args, {
+              ...opts.toolContext,
+              dryRun: opts.dryRun,
+            });
+            yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError: !result.ok };
+          }
+
+          // Turn ends here — no `done`. The route holds the stream open only
+          // long enough to persist, then closes; the browser shows the card(s).
+          return;
+        }
       }
 
       // Run the tools and feed results back.

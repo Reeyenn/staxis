@@ -46,6 +46,7 @@ registerTool<{ metric: string; value: number }>({
   surfaces: ['chat', 'voice'],
   voiceModes: ['compliance'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ metric, value }, ctx): Promise<ToolResult> => {
     if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1e9) {
       return { ok: false, error: 'value must be a finite number within ±1e9.' };
@@ -102,6 +103,7 @@ registerTool<{ equipment: string; status?: 'pass' | 'fail'; unitsChecked?: numbe
   surfaces: ['chat', 'voice'],
   voiceModes: ['compliance'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ equipment, status, unitsChecked }, ctx): Promise<ToolResult> => {
     const task = await findPmTaskByName(ctx.propertyId, String(equipment || ''));
     if (!task) {
@@ -216,6 +218,7 @@ registerTool<{ text?: string }>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   surfaces: ['chat'],
   mutates: true,
+  approval: 'card',
   handler: async ({ text }, ctx): Promise<ToolResult> => {
     const { data: prop } = await supabaseAdmin.from('properties').select('name, pms_type').eq('id', ctx.propertyId).maybeSingle();
     const template = detectTemplate(prop?.name as string | null, prop?.pms_type as string | null);
