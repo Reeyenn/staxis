@@ -53,9 +53,12 @@ const STRINGS = {
   en: {
     // ── Shell ──
     loading: 'Loading…',
+    pageTitle: 'Inventory',
     stockHealth: 'Stock health',
     orderNow: 'Order now',
     onTheShelf: 'On the shelf',
+    allClear: 'All clear',
+    allClearSub: 'nothing needs ordering',
     // ── Sidebar ──
     do: 'Do',
     look: 'Look',
@@ -116,9 +119,12 @@ const STRINGS = {
   es: {
     // ── Shell ──
     loading: 'Cargando…',
+    pageTitle: 'Inventario',
     stockHealth: 'Salud del inventario',
     orderNow: 'Pedir ahora',
     onTheShelf: 'En estante',
+    allClear: 'Todo en orden',
+    allClearSub: 'no hay nada que pedir',
     // ── Sidebar ──
     do: 'Acciones',
     look: 'Ver',

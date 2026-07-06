@@ -8,7 +8,18 @@
 // card-flip + rise-in + button-pop survive reduced-motion (the design's crew
 // browse with it on). Ported 1:1 from the handoff's `Motion` in core.js.
 
-import { useEffect, useRef, type DependencyList } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type DependencyList } from 'react';
+
+// Layout-effect that is SSR-safe (the shell only client-renders, but the
+// loading branch can be server-rendered — never call useLayoutEffect there).
+const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+// Shared easing vocabulary — "paper physics": quick departure, soft settle.
+export const EASE = {
+  settle: 'cubic-bezier(.16,.84,.3,1)',   // rise-in / draw-in
+  spring: 'cubic-bezier(.22,1.4,.36,1)',  // slight overshoot on arrival
+  glide:  'cubic-bezier(.2,.9,.25,1)',    // FLIP position moves
+} as const;
 
 type FlipOpts = { axis?: 'x' | 'y'; perspective?: number; d1?: number; d2?: number };
 
@@ -96,4 +107,112 @@ export function useRiseIn<T extends HTMLElement>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   return ref;
+}
+
+// ── FLIP layout animation ─────────────────────────────────────────────────
+// Put the returned ref on a container; every `[data-flip-id]` descendant gets
+// tracked across renders. When a card's on-screen position changes (filter,
+// search, a count moving it between triage columns) it glides from its old
+// spot instead of teleporting; brand-new cards rise in with a cascade stagger.
+// Removed cards unmount instantly — the survivors' glide carries the eye.
+// WAAPI, so it plays under prefers-reduced-motion like the rest of this file.
+export function useFlipList<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const rects = useRef<Map<string, DOMRect>>(new Map());
+
+  useIsoLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const prev = rects.current;
+    const next = new Map<string, DOMRect>();
+    // Positions are stored relative to the container, not the viewport —
+    // otherwise a page scroll between two renders would read as movement and
+    // send every card gliding.
+    const origin = root.getBoundingClientRect();
+    const kids = root.querySelectorAll<HTMLElement>('[data-flip-id]');
+    kids.forEach((k) => {
+      const id = k.dataset.flipId;
+      if (!id) return;
+      const r = k.getBoundingClientRect();
+      next.set(id, new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height));
+    });
+    let enterIndex = 0;
+    kids.forEach((k) => {
+      const id = k.dataset.flipId;
+      if (!id) return;
+      const a = prev.get(id);
+      const b = next.get(id)!;
+      if (a) {
+        const dx = a.left - b.left;
+        const dy = a.top - b.top;
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+          k.animate(
+            [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }],
+            { duration: 430, easing: EASE.glide, fill: 'none' },
+          );
+        }
+      } else {
+        // Entering card — rise-and-settle, staggered but capped so a long
+        // board never keeps the tail invisible for more than ~a third of a second.
+        k.animate(
+          [
+            { opacity: 0, transform: 'translateY(12px) scale(.985)' },
+            { opacity: 1, transform: 'none' },
+          ],
+          {
+            duration: 400,
+            delay: Math.min(enterIndex * 22, 330),
+            easing: EASE.settle,
+            fill: 'none',
+          },
+        );
+        enterIndex += 1;
+      }
+    });
+    rects.current = next;
+  });
+
+  return ref;
+}
+
+// ── Count-up ──────────────────────────────────────────────────────────────
+// rAF number tween — the "ledger being tallied" feel on the masthead stats and
+// column counts. Animates from the previously shown value (0 on first mount,
+// so the page-load moment counts everything up from zero). Ease-out cubic.
+export function useCountUp(target: number, duration = 850): number {
+  const [value, setValue] = useState(0);
+  const fromRef = useRef(0);
+  const shownRef = useRef(0);
+
+  useEffect(() => {
+    if (!Number.isFinite(target)) return;
+    const from = fromRef.current;
+    if (from === target) {
+      setValue(target);
+      return;
+    }
+    let raf = 0;
+    const t0 = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - t0) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const v = from + (target - from) * eased;
+      shownRef.current = v;
+      setValue(v);
+      if (p < 1) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        fromRef.current = target;
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      // Interrupted mid-tween (target changed again) — continue from where
+      // the number visually is, not from the stale start value.
+      fromRef.current = shownRef.current;
+    };
+  }, [target, duration]);
+
+  return value;
 }
