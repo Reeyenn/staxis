@@ -167,6 +167,48 @@ def test_window_exposure_direct():
     assert got == (30.0, 90.0)
 
 
+# ───────────────────── evening counts vs local days (tz fix) ─────────────────────
+
+def test_evening_count_stays_on_its_local_day():
+    """7pm Central IS next-day UTC. Under the old UTC-naive parsing an evening
+    count shifted the whole window a day forward — needing a daily_log for a
+    day that doesn't exist yet at Sunday-train time, voiding the window every
+    week for evening-counting hotels. With the property timezone the window
+    keys on local days and the exact same 3-day LOGS_FULL suffices."""
+    evening_counts = [
+        # 2026-01-02T01:00Z = Jan 1, 7:00pm America/Chicago
+        {"counted_at": "2026-01-02T01:00:00Z", "counted_stock": 100},
+        # 2026-01-05T01:00Z = Jan 4, 7:00pm America/Chicago
+        {"counted_at": "2026-01-05T01:00:00Z", "counted_stock": 80},
+    ]
+    # WITHOUT timezone: UTC days (Jan 2 → Jan 5] need Jan 3,4,5; Jan 5 has no
+    # log → dropped as incomplete. The old, lossy behavior.
+    rows_utc, dropped_utc = build_exposure_rows(
+        evening_counts, [], [], LOGS_FULL, 0.3, 1.0, 1.0,
+    )
+    assert rows_utc == []
+    assert dropped_utc == 1
+
+    # WITH the property timezone: local days (Jan 1 → Jan 4] need Jan 2,3,4 —
+    # all present → window kept, exposure identical to the daytime fixture.
+    rows_local, dropped_local = build_exposure_rows(
+        evening_counts, [], [], LOGS_FULL, 0.3, 1.0, 1.0,
+        timezone="America/Chicago",
+    )
+    assert dropped_local == 0
+    assert len(rows_local) == 1
+    assert abs(rows_local[0]["exposure"] - (30 + 0.3 * 90)) < 1e-9
+    assert abs(rows_local[0]["consumption"] - 20.0) < 1e-9
+
+
+def test_unknown_timezone_falls_back_to_utc_not_crash():
+    rows, dropped = build_exposure_rows(
+        COUNTS, [], [], LOGS_FULL, 0.3, 1.0, 1.0, timezone="Not/AZone",
+    )
+    assert len(rows) == 1
+    assert dropped == 0
+
+
 # ───────────────────────── contamination filters ─────────────────────────
 
 def test_sub_day_pair_dropped_and_not_counted_as_incomplete():

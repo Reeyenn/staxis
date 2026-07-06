@@ -44,6 +44,16 @@ def should_force_deactivate(
          covers items with near-zero mean rates where the ratio is
          meaningless. Threshold tightened from 1.5x to 1.0x in the May 2026
          audit (Coffee Pods at MAE=49.99, mean=50 was passing 1.5x).
+         2026-07-05 accuracy pass: the gate FIRES at any holdout size — a
+         rejected run stays inactive, which keeps the previous active run
+         (usually the cold-start cohort prior) serving; abstaining here would
+         let a degenerate 5-9-window fit replace sane prior predictions for a
+         week. The old flap (a single genuine-zero holdout window → mean=0 →
+         threshold 1.0 benched good models) is fixed at the CALLER instead:
+         with < 3 holdout rows the trainer passes the POOLED mean (train+test)
+         as mean_observed_rate, so one quiet week can't zero the denominator
+         while a genuinely bad fit (MAE >= the item's overall mean) is still
+         rejected.
 
       3. **XGBoost-not-served** — algorithm == 'xgboost-quantile' AND
          NOT xgboost_inference_ready. UNREACHABLE for the inventory layer as of
@@ -88,7 +98,8 @@ def should_force_deactivate(
             f"(need ≥5 for an 80/20 split). Falling back to cold-start prior.",
         )
 
-    # Gate 2: max-MAE safety
+    # Gate 2: max-MAE safety (callers pass the POOLED mean when the holdout
+    # is tiny — see docstring — so this stays armed at every holdout size)
     if (
         validation_mae is not None
         and validation_mae >= max(mean_observed_rate * 1.0, 1.0)

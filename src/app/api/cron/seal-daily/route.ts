@@ -96,6 +96,81 @@ type PropertyRow = {
   timezone: string | null;
 };
 
+// How far back the occupancy backfill looks for NULL-checkout days it can
+// repair from pms_reservations history. 14 days ≈ two weekly count cycles —
+// enough to rescue the training windows a typical robot outage voids, small
+// enough that one hourly tick stays cheap (≤14 RPC calls, once; the repaired
+// days drop out of the candidate list on the next tick).
+const OCCUPANCY_BACKFILL_LOOKBACK_DAYS = 14;
+
+// The four daily_logs fields derived from PMS data. These are the fields the
+// stale-evidence gate seals as NULL — and therefore the fields that must
+// never regress from a real value back to NULL on a later tick.
+export type SealedOccupancyFields = {
+  occupied: number | null;
+  checkouts: number | null;
+  stayovers: number | null;
+  recommended_staff: number | null;
+};
+
+/**
+ * Last-good preservation for the daily_logs seal. The seal re-runs ~23×/day
+ * for the same date; on the tick where CUA evidence crosses the 24h staleness
+ * line the newly-computed PMS fields flip to NULL, and an unconditional upsert
+ * would overwrite the real values an earlier tick already sealed. NULL here
+ * means "no evidence", never "the value is zero" — so a real value always
+ * wins over a later NULL for the same date.
+ *
+ * Pure + exported for unit tests.
+ */
+export function preserveSealedOccupancy(
+  next: SealedOccupancyFields,
+  existing: SealedOccupancyFields | null,
+): SealedOccupancyFields {
+  if (!existing) return next;
+  return {
+    occupied: next.occupied ?? existing.occupied,
+    checkouts: next.checkouts ?? existing.checkouts,
+    stayovers: next.stayovers ?? existing.stayovers,
+    recommended_staff: next.recommended_staff ?? existing.recommended_staff,
+  };
+}
+
+/**
+ * Which dates in the lookback window still need their checkouts/stayovers
+ * backfilled? A date qualifies when its daily_logs row is missing or has a
+ * NULL checkouts/stayovers (a robot-outage day the normal seal skipped), AND
+ * it is not before `historyFloor` — the first day pms_reservations has any
+ * data for this property. Dates before the floor can never be derived (the
+ * robot hadn't synced yet), so retrying them every tick is pure waste and
+ * a pre-go-live date would backfill a partial undercount.
+ *
+ * Pure + exported for unit tests. Dates ascend so the oldest gap heals first.
+ */
+export function datesNeedingOccupancyBackfill(args: {
+  /** The date the main seal just wrote (yesterday, property-local). */
+  targetDate: string;
+  existing: { date: string; checkouts: number | null; stayovers: number | null }[];
+  /** min(created_at)::date over pms_reservations for the property, or null when the table has no rows. */
+  historyFloor: string | null;
+  lookbackDays?: number;
+}): string[] {
+  const { targetDate, existing, historyFloor } = args;
+  const lookback = args.lookbackDays ?? OCCUPANCY_BACKFILL_LOOKBACK_DAYS;
+  if (!historyFloor) return [];
+  const byDate = new Map(existing.map((r) => [r.date, r]));
+  const out: string[] = [];
+  for (let back = lookback; back >= 1; back--) {
+    const d = new Date(`${targetDate}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - back);
+    const date = d.toISOString().slice(0, 10);
+    if (date < historyFloor) continue;
+    const row = byDate.get(date);
+    if (!row || row.checkouts === null || row.stayovers === null) out.push(date);
+  }
+  return out;
+}
+
 interface SealOutcome {
   property_id: string;
   property_name: string;
@@ -109,6 +184,9 @@ interface SealOutcome {
   // data — we deliberately don't write fake 0-occupancy rows (see
   // projectPlanSnapshots).
   plan_snapshots_written: number;
+  // How many robot-outage days in the lookback window had their
+  // checkouts/stayovers repaired from pms_reservations history this run.
+  occupancy_backfilled: number;
   skipped_reason?: string;
   error?: string;
 }
@@ -166,6 +244,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           no_show_count: 0,
           daily_log_written: false,
           plan_snapshots_written: 0,
+          occupancy_backfilled: 0,
           error: errToString(e),
         };
       }
@@ -183,6 +262,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       no_show_count: 0,
       daily_log_written: false,
       plan_snapshots_written: 0,
+      occupancy_backfilled: 0,
       error: errToString(o.error),
     },
   );
@@ -196,6 +276,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const skippedCount = sealOutcomes.filter((o) => o.skipped_reason).length;
   const erroredCount = sealOutcomes.filter((o) => o.error).length;
   const planSnapshotsWritten = sealOutcomes.reduce((acc, o) => acc + (o.plan_snapshots_written || 0), 0);
+  const occupancyBackfilled = sealOutcomes.reduce((acc, o) => acc + (o.occupancy_backfilled || 0), 0);
 
   // Heartbeat on full success only. Doctor's cron_heartbeats_fresh check
   // reads back: a heartbeat older than 2× the cadence (hourly → > 2h
@@ -208,6 +289,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         skipped: skippedCount,
         errored: erroredCount,
         plan_snapshots_written: planSnapshotsWritten,
+        occupancy_backfilled: occupancyBackfilled,
       },
     });
   }
@@ -219,6 +301,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     skipped: skippedCount,
     errored: erroredCount,
     plan_snapshots_written: planSnapshotsWritten,
+    occupancy_backfilled: occupancyBackfilled,
     results: sealOutcomes,
   });
 }
@@ -276,6 +359,7 @@ async function sealOne(
       no_show_count: 0,
       daily_log_written: false,
       plan_snapshots_written: 0,
+      occupancy_backfilled: 0,
       skipped_reason: 'before_seal_window',
     };
   }
@@ -454,22 +538,58 @@ async function sealOne(
   void stayDay2Min;
   const recommendedHKs = shiftMin > 0 ? Math.max(0, Math.ceil(totalCleaningMinutes / shiftMin)) : 0;
 
-  const row: Record<string, unknown> = {
-    property_id: p.id,
-    date: targetDate,
-    occupied: occupied !== null ? Math.round(occupied) : null,
+  // The in-house snapshot is LIVE point-in-time data: it describes NOW, and
+  // "now" only approximates the sealed day when we're sealing yesterday on
+  // the normal hourly cadence. A ?date= repair run for an older date must
+  // NOT stamp today's in-house count onto history — snapshot-derived fields
+  // seal NULL there (checkouts/stayovers are date-parameterized from
+  // pms_reservations, so they stay correct for any date).
+  const snapshotDescribesTargetDate =
+    overrideDate === null || overrideDate === targetDateForProperty(tz);
+
+  const computed: SealedOccupancyFields = {
+    occupied: occupied !== null && snapshotDescribesTargetDate ? Math.round(occupied) : null,
     // checkouts/stayovers derive from pms_reservations — NULL (not 0) while
     // the reservation feeds are learning, the first sync hasn't landed, or the
     // CUA has no fresh healthy snapshot (dead robot / never-connected hotel).
     checkouts: planRow && !reservationsUntrusted && pmsEvidenceFresh ? Math.round(planRow.checkouts) : null,
     stayovers: planRow && !reservationsUntrusted && pmsEvidenceFresh ? Math.round(planRow.stayovers) : null,
-    rooms_completed: Math.round(roomsCompleted),
-    avg_turnaround_minutes: avgTurnaround,
-    total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
     // Derived from checkouts/stayovers (reservations) + vacant_dirty
     // (snapshot) — meaningless unless BOTH sources are trusted AND the CUA
     // has fresh evidence.
-    recommended_staff: planRow && !reservationsUntrusted && sealCountsTrusted && pmsEvidenceFresh ? recommendedHKs : null,
+    recommended_staff: planRow && !reservationsUntrusted && sealCountsTrusted && pmsEvidenceFresh && snapshotDescribesTargetDate ? recommendedHKs : null,
+  };
+
+  // Never regress a sealed real value back to NULL on a later tick of the
+  // same day (the tick where evidence crosses the 24h staleness line would
+  // otherwise NULL out what an earlier tick sealed from live data).
+  //
+  // Two carve-outs:
+  //   • ?date= admin repair runs BYPASS preservation — that path exists to
+  //     CORRECT poisoned history, and "a real value always wins" would make
+  //     poison permanent (the fabricated-occupancy incident class).
+  //   • A failed read is NOT "no existing row": proceeding on unknown state
+  //     is exactly the NULL-overwrite this merge prevents, so throw and let
+  //     the next hourly tick retry.
+  let sealed = computed;
+  if (overrideDate === null) {
+    const { data: existingLog, error: existingErr } = await supabaseAdmin
+      .from('daily_logs')
+      .select('occupied, checkouts, stayovers, recommended_staff')
+      .eq('property_id', p.id)
+      .eq('date', targetDate)
+      .maybeSingle();
+    if (existingErr) throw existingErr;
+    sealed = preserveSealedOccupancy(computed, (existingLog ?? null) as SealedOccupancyFields | null);
+  }
+
+  const row: Record<string, unknown> = {
+    property_id: p.id,
+    date: targetDate,
+    ...sealed,
+    rooms_completed: Math.round(roomsCompleted),
+    avg_turnaround_minutes: avgTurnaround,
+    total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
   };
 
   const { error: upErr } = await supabaseAdmin
@@ -494,10 +614,28 @@ async function sealOne(
     requestId,
   });
 
+  // ─── 4. Backfill robot-outage days ───────────────────────────────────
+  // The main seal only ever writes yesterday, so every outage day used to
+  // stay NULL forever — and one NULL day voids the entire inventory-ML
+  // training window that spans it. checkouts/stayovers ARE recoverable:
+  // pms_reservations is upsert-only history (reservations booked before the
+  // outage keep their arrival/departure dates), so once the robot is back
+  // and trusted we re-derive the gap days. `occupied` is NOT backfilled —
+  // it comes from the point-in-time in-house snapshot, which can't be
+  // reconstructed for a past day.
+  const occupancyBackfilled = await backfillOccupancyGaps({
+    property: p,
+    targetDate,
+    reservationsUntrusted,
+    pmsEvidenceFresh,
+    requestId,
+  });
+
   log.info('seal-daily: sealed', {
     requestId, property_id: p.id, target_date: targetDate,
     marks_inserted: toMark.length, attended: attendedCount, no_show: noShowCount,
     rooms_completed: roomsCompleted, plan_snapshots_written: planSnapshotsWritten,
+    occupancy_backfilled: occupancyBackfilled,
   });
 
   return {
@@ -509,7 +647,115 @@ async function sealOne(
     no_show_count: noShowCount,
     daily_log_written: true,
     plan_snapshots_written: planSnapshotsWritten,
+    occupancy_backfilled: occupancyBackfilled,
   };
+}
+
+/**
+ * Repair the checkouts/stayovers of recent robot-outage days from
+ * pms_reservations history. Runs only when the CUA is live and trusted RIGHT
+ * NOW (same two gates as the main seal) — during an outage this is a no-op
+ * and the days simply wait.
+ *
+ * Known limit, accepted: a stay booked AND departed entirely inside the
+ * outage (same-day walk-ins, mostly) was never synced, so a backfilled day
+ * can undercount slightly. Pre-booked stays — the vast majority — are
+ * already in pms_reservations before the outage starts. A slight undercount
+ * on one day beats permanently voiding every training window that spans it.
+ *
+ * Returns the number of days repaired. Best-effort: failures are logged and
+ * the day is retried on the next hourly tick.
+ */
+async function backfillOccupancyGaps(args: {
+  property: PropertyRow;
+  targetDate: string;
+  reservationsUntrusted: boolean;
+  pmsEvidenceFresh: boolean;
+  requestId: string;
+}): Promise<number> {
+  const { property: p, targetDate, reservationsUntrusted, pmsEvidenceFresh, requestId } = args;
+  if (reservationsUntrusted || !pmsEvidenceFresh) return 0;
+
+  const windowStart = (() => {
+    const d = new Date(`${targetDate}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - OCCUPANCY_BACKFILL_LOOKBACK_DAYS);
+    return d.toISOString().slice(0, 10);
+  })();
+  const { data: recentLogs, error: logsErr } = await supabaseAdmin
+    .from('daily_logs')
+    .select('date, checkouts, stayovers')
+    .eq('property_id', p.id)
+    .gte('date', windowStart)
+    .lt('date', targetDate);
+  if (logsErr) {
+    log.warn('seal-daily: backfill daily_logs read failed', { requestId, property_id: p.id, err: logsErr });
+    return 0;
+  }
+  const existing = (recentLogs ?? []) as { date: string; checkouts: number | null; stayovers: number | null }[];
+
+  // Steady-state fast path: with no gap in the window, skip the reservation
+  // history-floor lookup entirely (it's a sort over the property's whole
+  // pms_reservations history, and this runs every hourly tick).
+  const anyGap = datesNeedingOccupancyBackfill({
+    targetDate, existing, historyFloor: '0000-01-01',
+  }).length > 0;
+  if (!anyGap) return 0;
+
+  // Oldest reservation ever synced = the floor below which no date can be
+  // derived (the robot hadn't delivered data yet — backfilling a pre-go-live
+  // date would seal a partial undercount, the exact poison class 0293 fixed).
+  const { data: oldest, error: oldestErr } = await supabaseAdmin
+    .from('pms_reservations')
+    .select('created_at')
+    .eq('property_id', p.id)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (oldestErr || !oldest?.created_at) return 0;
+  const historyFloor = String(oldest.created_at).slice(0, 10);
+
+  const candidates = datesNeedingOccupancyBackfill({
+    targetDate,
+    existing,
+    historyFloor,
+  });
+
+  let repaired = 0;
+  for (const date of candidates) {
+    const { data: counts, error: rpcErr } = await supabaseAdmin
+      .rpc('today_property_counts_v1', { p_property_id: p.id, p_date: date });
+    if (rpcErr) {
+      log.warn('seal-daily: backfill counts RPC failed', { requestId, property_id: p.id, date, err: rpcErr });
+      continue;
+    }
+    const c = Array.isArray(counts) && counts.length > 0
+      ? (counts[0] as { checkouts: number; stayovers: number })
+      : null;
+    if (!c) continue;
+
+    // Partial upsert: only the two derivable fields. On an existing row the
+    // other columns are untouched; on a missing row they take their defaults.
+    const { error: upErr } = await supabaseAdmin
+      .from('daily_logs')
+      .upsert({
+        property_id: p.id,
+        date,
+        checkouts: Math.round(c.checkouts),
+        stayovers: Math.round(c.stayovers),
+      }, { onConflict: 'property_id,date' });
+    if (upErr) {
+      log.warn('seal-daily: backfill upsert failed', { requestId, property_id: p.id, date, err: upErr });
+      continue;
+    }
+    repaired += 1;
+  }
+
+  if (repaired > 0) {
+    log.info('seal-daily: occupancy gaps backfilled', {
+      requestId, property_id: p.id, days: repaired,
+    });
+  }
+  return repaired;
 }
 
 /**

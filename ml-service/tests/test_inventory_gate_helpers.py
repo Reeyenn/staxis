@@ -173,3 +173,35 @@ def test_clean_bayesian_model_passes_all_gates():
     force, note = should_force_deactivate(**_kwargs())
     assert force is False
     assert note is None
+
+
+# ── Gate 2 + tiny holdouts (2026-07-05 flap fix, caller-side) ─────────────
+# The gate itself stays armed at EVERY holdout size — a rejected run stays
+# inactive, keeping the previous active run (usually the cold-start prior)
+# serving. Abstaining at holdout<2 would let a degenerate 5-9-window fit
+# replace sane prior predictions for a week. The old flap (single genuine-
+# zero holdout window → mean=0 → threshold 1.0 benches a good model) is
+# fixed at the CALLER: trainers pass the POOLED mean when holdout < 3.
+
+
+def test_gate_fires_at_single_row_holdout_protecting_the_prior():
+    """A bad early fit must NOT replace the serving cold-start prior just
+    because its holdout is tiny — the gate stays armed at holdout_n=1."""
+    force, note = should_force_deactivate(
+        **_kwargs(validation_holdout_n=1, validation_mae=40.0, mean_observed_rate=10.0)
+    )
+    assert force is True
+    assert note is not None and "rejected_high_mae" in note
+
+
+def test_pooled_mean_denominator_defuses_the_zero_week_flap():
+    """The flap scenario: one genuine-zero holdout window used to zero the
+    denominator (threshold max(0,1)=1.0) and bench a good model. The caller
+    now passes the pooled mean (e.g. 10 units/window overall), so a fit with
+    MAE 3 sails through — while remaining rejectable if MAE >= the pooled
+    mean (previous test)."""
+    force, note = should_force_deactivate(
+        **_kwargs(validation_holdout_n=1, validation_mae=3.0, mean_observed_rate=10.0)
+    )
+    assert force is False
+    assert note is None

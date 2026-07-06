@@ -24,6 +24,7 @@ import {
   MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
 import { predictInventoryRates } from '@/lib/ml-predict-invoke';
+import { sweepUnpairedCounts } from '@/lib/inventory-pairing-sweep';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -177,6 +178,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }),
   ];
 
+  // ── Pairing sweep (2026-07-05 accuracy pass) ─────────────────────────
+  // Back-write prediction↔actual pairs for recent counts the browser's
+  // fire-and-forget post-count-process call lost (closed tab, hotel wifi).
+  // Best-effort: a sweep failure never fails the predict cron — the sweep
+  // re-runs tomorrow and pairs are only ever additive.
+  let pairsSwept = 0;
+  const sweepOutcomes = await runWithConcurrency(eligible, async (property) => {
+    return sweepUnpairedCounts(property.id, property.timezone as string, requestId);
+  }, 5);
+  for (const o of sweepOutcomes) {
+    if (o.ok) pairsSwept += o.value.paired;
+    else {
+      log.warn('ml-predict-inventory: pairing sweep failed', {
+        requestId, property_id: o.input.id, err: errToString(o.error),
+      });
+    }
+  }
+
   const anyError = results.some((r) => r.status === 'error');
   // Codex round-4 (G4): MISCONFIG_STATUSES now lives in the shared
   // helper module so all 4 ML crons (this + 3 training crons) read
@@ -190,6 +209,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       notes: {
         properties_processed: results.length,
         properties_misconfigured: propertiesMisconfigured,
+        pairs_swept: pairsSwept,
       },
     });
   }
@@ -199,6 +219,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       ok: !anyError,
       requestId,
       properties_processed: results.length,
+      pairs_swept: pairsSwept,
       results,
     },
     { status: anyError ? 502 : 200 },

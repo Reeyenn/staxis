@@ -24,6 +24,10 @@ interface ReportSummary {
   lastInferenceStale: boolean;
   predictionsLast7Days: number;
   eventsNeeded: number;
+  pairsNeeded?: number;
+  occupancyDaysMissing?: number;
+  occupancyCensusDays?: number;
+  windowsDroppedIncomplete?: number;
 }
 
 interface ReportItem {
@@ -39,6 +43,13 @@ interface ReportItem {
   status: ItemStatus;
   countEvents: number;
   eventsNeeded: number;
+  // True graduation progress (2026-07-05) — see /api/inventory/ai-report.
+  cleanWindows?: number | null;
+  prospectivePairs?: number | null;
+  pairsNeeded?: number;
+  pairSpanDays?: number | null;
+  graduationWape?: number | null;
+  graduationReason?: string | null;
 }
 
 interface ReportData {
@@ -143,6 +154,19 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
 
           {noJobsYet && <Banner tone="neutral" text={ai.noJobsWarning} />}
           {showStale && <Banner tone="warm" text={ai.staleWarning} />}
+          {/* Starvation visibility: fresh predictions keep flowing even when
+              zero LEARNING is happening (robot gaps void the count windows).
+              Without this banner, "learning normally" and "accumulated
+              nothing for a month" look identical here. */}
+          {!noJobsYet && (summary.occupancyDaysMissing ?? 0) > 0 && (
+            <Banner
+              tone="warm"
+              text={ai.gapWarning(
+                summary.occupancyDaysMissing ?? 0,
+                summary.occupancyCensusDays ?? 14,
+              )}
+            />
+          )}
 
           {items.length === 0 ? (
             <EmptyState ai={ai} />
@@ -247,7 +271,21 @@ function ItemCard({ ai, lang, it }: { ai: AiStrings; lang: Lang; it: ReportItem 
     compareColor = T.ink3;
   }
 
-  const pct = it.eventsNeeded > 0 ? Math.min(1, it.countEvents / it.eventsNeeded) : 0;
+  // Progress = the REAL graduation gates, not raw count events. The bar tracks
+  // clean data windows (the calendar-dominant gate); the label shows both
+  // windows and graded-prediction progress. countEvents remains the fallback
+  // for items that predate a trained model (cold-start / no run yet).
+  const windowsDone = it.cleanWindows ?? null;
+  const pairsDone = it.prospectivePairs ?? null;
+  const pairsNeeded = it.pairsNeeded ?? 8;
+  const progressCurrent = windowsDone ?? Math.min(it.countEvents, it.eventsNeeded);
+  const pct = it.eventsNeeded > 0 ? Math.min(1, progressCurrent / it.eventsNeeded) : 0;
+  const progressLabel = windowsDone != null
+    ? `${ai.windowsProgress(Math.min(windowsDone, it.eventsNeeded), it.eventsNeeded)} · ${ai.pairsProgress(Math.min(pairsDone ?? 0, pairsNeeded), pairsNeeded)}`
+    : ai.countProgress(Math.min(it.countEvents, it.eventsNeeded), it.eventsNeeded);
+  const reasonText = it.status !== 'graduated' && it.graduationReason
+    ? ai.gradReason(it.graduationReason)
+    : '';
 
   return (
     <div
@@ -332,9 +370,14 @@ function ItemCard({ ai, lang, it }: { ai: AiStrings; lang: Lang; it: ReportItem 
               whiteSpace: 'nowrap',
             }}
           >
-            {ai.countProgress(Math.min(it.countEvents, it.eventsNeeded), it.eventsNeeded)}
+            {progressLabel}
           </span>
         </div>
+        {reasonText && (
+          <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, lineHeight: 1.4 }}>
+            {reasonText}
+          </span>
+        )}
       </div>
     </div>
   );
