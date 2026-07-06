@@ -203,6 +203,7 @@ export interface StaffRow {
   name: string;
   role: string | null;
   phone: string | null;
+  department: string | null;
   is_active: boolean;
 }
 
@@ -220,34 +221,84 @@ function parseStaffRow(raw: unknown): StaffRow | null {
     name,
     role: parseStringField(r.role) ?? null,
     phone: parseStringField(r.phone) ?? null,
+    department: parseStringField(r.department) ?? null,
     is_active: parseBoolField(r.is_active) ?? false,
   };
 }
 
 /**
- * Find a staff member by name (case-insensitive partial match). Used by
- * tools like assign_room("302", "Maria") — pick the staff record. If
- * multiple match, return the first active one. If none, return null.
+ * Resolve a staff member by name OR staff-id, with AMBIGUITY as a first-class
+ * outcome. This is THE canonical staff-name matcher for the agent layer — the
+ * comms tools (send_message, create_todo) and the room tools (assign_room via
+ * findStaffByName) all funnel through it so name-matching behaves identically
+ * everywhere.
+ *
+ * Resolution rules:
+ *   - a UUID query does a direct id lookup (the model can pass an id it saw in a
+ *     prior tool result); an inactive/absent id resolves to 'none'.
+ *   - otherwise: prefer EXACT case-insensitive name matches; fall back to
+ *     partial (substring) matches. 0 → 'none', 1 → 'ok', >1 → 'ambiguous' with
+ *     the candidate list (so the caller can ask the user which one).
+ */
+export type StaffResolution =
+  | { kind: 'ok'; staff: StaffRow }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; candidates: StaffRow[] };
+
+const STAFF_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function resolveStaffByName(
+  propertyId: string,
+  query: string,
+): Promise<StaffResolution> {
+  const raw = String(query ?? '').trim();
+  if (!raw) return { kind: 'none' };
+
+  // Direct staff-id lookup.
+  if (STAFF_UUID_RE.test(raw)) {
+    const { data } = await supabaseAdmin
+      .from('staff')
+      .select('id, property_id, name, role, phone, department, is_active')
+      .eq('property_id', propertyId)
+      .eq('id', raw)
+      .maybeSingle();
+    const parsed = data ? parseStaffRow(data) : null;
+    if (parsed && parsed.is_active) return { kind: 'ok', staff: parsed };
+    return { kind: 'none' };
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('staff')
+    .select('id, property_id, name, role, phone, department, is_active')
+    .eq('property_id', propertyId)
+    .eq('is_active', true);
+  if (error || !data) return { kind: 'none' };
+
+  const rows = data.map(parseStaffRow).filter((r): r is StaffRow => !!r);
+  const q = raw.toLowerCase();
+  const exact = rows.filter(r => r.name.toLowerCase() === q);
+  const matches = exact.length > 0 ? exact : rows.filter(r => r.name.toLowerCase().includes(q));
+
+  if (matches.length === 0) return { kind: 'none' };
+  if (matches.length > 1) return { kind: 'ambiguous', candidates: matches.slice(0, 8) };
+  return { kind: 'ok', staff: matches[0] };
+}
+
+/**
+ * Find a staff member by name (case-insensitive). Used by tools like
+ * assign_room("302", "Maria"). Returns the single match, or the FIRST candidate
+ * when several match (legacy "pick the first" behaviour — assign_room isn't
+ * ambiguity-aware). Returns null when none match. Thin wrapper over the
+ * canonical resolveStaffByName so all name-matching shares one implementation.
  */
 export async function findStaffByName(
   propertyId: string,
   nameQuery: string,
 ): Promise<StaffRow | null> {
-  const normalized = nameQuery.trim().toLowerCase();
-  if (!normalized) return null;
-  const { data, error } = await supabaseAdmin
-    .from('staff')
-    .select('id, property_id, name, role, phone, is_active')
-    .eq('property_id', propertyId)
-    .eq('is_active', true);
-  if (error || !data) return null;
-  // Prefer exact case-insensitive match; otherwise first partial.
-  const lcName = (s: { name?: unknown }): string =>
-    parseStringField(s.name)?.toLowerCase() ?? '';
-  const exact = data.find(s => lcName(s) === normalized);
-  if (exact) return parseStaffRow(exact);
-  const partial = data.find(s => lcName(s).includes(normalized));
-  return partial ? parseStaffRow(partial) : null;
+  const res = await resolveStaffByName(propertyId, nameQuery);
+  if (res.kind === 'ok') return res.staff;
+  if (res.kind === 'ambiguous') return res.candidates[0] ?? null;
+  return null;
 }
 
 /** Returns true if the role is allowed to perform manager-only actions. */

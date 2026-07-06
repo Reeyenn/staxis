@@ -20,7 +20,6 @@
 // NOTE (parallel branches): this file is ADDITIVE. It self-registers on import;
 // add `import './comms-actions';` to tools/index.ts.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult, type ToolContext } from '../tools';
 import {
   ensureDmConversation,
@@ -31,64 +30,25 @@ import {
 } from '@/lib/comms/core';
 import { canForProperty } from '@/lib/capabilities/server';
 import { registerAddon } from '../approval';
+import { resolveStaffByName, type StaffResolution } from './_helpers';
 
 // ─── Shared: resolve a recipient staff member by name (or id) ──────────────
 // Ambiguity is a first-class outcome: when several active staff match, we
 // return the candidate list AS THE TOOL RESULT (ok:false with a `candidates`
 // payload) so the model asks the user which one — never silently picks.
+//
+// This funnels through the canonical resolveStaffByName in _helpers.ts (the
+// single staff-name matcher shared with assign_room) rather than re-querying
+// staff a third time. We keep the same discriminated-result shape the handlers
+// below already consume.
 
-interface StaffCandidate {
-  id: string;
-  name: string;
-  department: string | null;
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-type RecipientResolution =
-  | { kind: 'ok'; staff: StaffCandidate }
-  | { kind: 'none' }
-  | { kind: 'ambiguous'; candidates: StaffCandidate[] };
+type RecipientResolution = StaffResolution;
 
 async function resolveRecipient(
   propertyId: string,
   recipient: string,
 ): Promise<RecipientResolution> {
-  const raw = String(recipient ?? '').trim();
-  if (!raw) return { kind: 'none' };
-
-  // Direct staff-id match (the model can pass an id it saw in a prior result).
-  if (UUID_RE.test(raw)) {
-    const { data } = await supabaseAdmin
-      .from('staff')
-      .select('id, name, department, is_active')
-      .eq('property_id', propertyId)
-      .eq('id', raw)
-      .maybeSingle();
-    if (data && data.is_active !== false) {
-      return { kind: 'ok', staff: { id: data.id as string, name: (data.name as string) ?? 'Staff', department: (data.department as string | null) ?? null } };
-    }
-    return { kind: 'none' };
-  }
-
-  const { data } = await supabaseAdmin
-    .from('staff')
-    .select('id, name, department')
-    .eq('property_id', propertyId)
-    .eq('is_active', true);
-  const all: StaffCandidate[] = (data ?? []).map((s) => ({
-    id: s.id as string,
-    name: (s.name as string) ?? '',
-    department: (s.department as string | null) ?? null,
-  })).filter((s) => s.name);
-
-  const q = raw.toLowerCase();
-  const exact = all.filter((s) => s.name.toLowerCase() === q);
-  const matches = exact.length > 0 ? exact : all.filter((s) => s.name.toLowerCase().includes(q));
-
-  if (matches.length === 0) return { kind: 'none' };
-  if (matches.length > 1) return { kind: 'ambiguous', candidates: matches.slice(0, 8) };
-  return { kind: 'ok', staff: matches[0] };
+  return resolveStaffByName(propertyId, recipient);
 }
 
 const ALL_STAFF_ROLES = [
@@ -183,7 +143,7 @@ registerAddon('send_message', {
     const who = String(args.recipient ?? 'them').trim() || 'them';
     return {
       en: `Also add this to ${who}'s to-do list`,
-      es: `Tambien agregar esto a la lista de tareas de ${who}`,
+      es: `También agregar esto a la lista de tareas de ${who}`,
     };
   },
   run: async (ctx) => {
@@ -234,6 +194,12 @@ registerTool<CreateTodoArgs>({
   handler: async ({ title, notes, assignee, department, dueAt, priority }, ctx: ToolContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the to-do a short title.' };
+    // Post AS the caller — a to-do created by "nobody" is an orphaned row that
+    // contradicts this file's identity contract. Refuse rather than insert
+    // anonymously (same message + reasoning as send_message).
+    if (!ctx.staffId) {
+      return { ok: false, error: 'Your account isn\'t linked to a staff record on this property, so I can\'t create a to-do as you. Ask a manager to link it.' };
+    }
     const cleanNotes = notes ? String(notes).trim().slice(0, 2000) : null;
     const dept = department && (DEPARTMENTS as readonly string[]).includes(department) ? department : null;
     const prio = priority && (TASK_PRIORITIES as readonly string[]).includes(priority)
@@ -323,6 +289,11 @@ registerTool<AddLogbookEntryArgs>({
   handler: async ({ title, body, category }, ctx: ToolContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the log entry a short title.' };
+    // Log book entries are attributed to their author — refuse rather than
+    // write an anonymous entry (same identity contract as send_message).
+    if (!ctx.staffId) {
+      return { ok: false, error: 'Your account isn\'t linked to a staff record on this property, so I can\'t add a log entry as you. Ask a manager to link it.' };
+    }
     const cleanBody = body ? String(body).trim().slice(0, 4000) : null;
     const cat = category && (DEPARTMENTS as readonly string[]).includes(category) ? category : 'general';
 
@@ -412,7 +383,7 @@ registerAddon('log_complaint', {
   id: 'add_to_maintenance_todo',
   label: () => ({
     en: 'Also add to the to-do list',
-    es: 'Tambien agregar a la lista de tareas',
+    es: 'También agregar a la lista de tareas',
   }),
   run: async (ctx) => {
     const r = (ctx.primaryResult ?? {}) as { complaintId?: string; roomNumber?: string | null };
@@ -433,7 +404,7 @@ registerAddon('createMaintenanceWorkOrder', {
   id: 'add_to_maintenance_todo',
   label: () => ({
     en: 'Also add to the to-do list',
-    es: 'Tambien agregar a la lista de tareas',
+    es: 'También agregar a la lista de tareas',
   }),
   run: async (ctx) => {
     const r = (ctx.primaryResult ?? {}) as { room_number?: string | null; action?: string; item?: string };

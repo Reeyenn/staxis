@@ -33,7 +33,7 @@ const ACCT = '00000000-0000-0000-0000-0000000000b3';
 const MARIA = '00000000-0000-0000-0000-0000000000b4';
 const MARIO = '00000000-0000-0000-0000-0000000000b5';
 
-let staffRows: Array<{ id: string; name: string; department: string | null; is_active: boolean }>;
+let staffRows: Array<{ id: string; property_id: string; name: string; department: string | null; is_active: boolean }>;
 const postedMessages: Array<Record<string, unknown>> = [];
 const createdTasks: Array<Record<string, unknown>> = [];
 const createdLogs: Array<Record<string, unknown>> = [];
@@ -42,8 +42,8 @@ const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 
 beforeEach(() => {
   staffRows = [
-    { id: MARIA, name: 'Maria Garcia', department: 'housekeeping', is_active: true },
-    { id: CALLER_STAFF, name: 'Reeyen Boss', department: 'front_desk', is_active: true },
+    { id: MARIA, property_id: PID, name: 'Maria Garcia', department: 'housekeeping', is_active: true },
+    { id: CALLER_STAFF, property_id: PID, name: 'Reeyen Boss', department: 'front_desk', is_active: true },
   ];
   postedMessages.length = 0;
   createdTasks.length = 0;
@@ -138,7 +138,7 @@ describe('send_message', () => {
   });
 
   test('returns the candidate list on an ambiguous name', async () => {
-    staffRows.push({ id: MARIO, name: 'Mario Reyes', department: 'maintenance', is_active: true });
+    staffRows.push({ id: MARIO, property_id: PID, name: 'Mario Reyes', department: 'maintenance', is_active: true });
     const res = await executeTool('send_message', { recipient: 'Mar', message: 'hi' }, ctx());
     assert.equal(res.ok, false);
     const data = res.data as { ambiguous?: boolean; candidates?: { name: string }[] };
@@ -184,6 +184,20 @@ describe('create_todo + add_logbook_entry', () => {
     assert.equal(createdLogs.length, 1);
     assert.equal(createdLogs[0].author_staff_id, CALLER_STAFF);
     assert.equal(createdLogs[0].category, 'maintenance');
+  });
+
+  test('create_todo refuses when the caller has no staff identity (no anonymous row)', async () => {
+    const res = await executeTool('create_todo', { title: 'restock linen' }, ctx({ staffId: null }));
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /staff/i);
+    assert.equal(createdTasks.length, 0, 'no anonymous task written');
+  });
+
+  test('add_logbook_entry refuses when the caller has no staff identity (no anonymous row)', async () => {
+    const res = await executeTool('add_logbook_entry', { title: 'note' }, ctx({ staffId: null }));
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /staff/i);
+    assert.equal(createdLogs.length, 0, 'no anonymous log entry written');
   });
 });
 
