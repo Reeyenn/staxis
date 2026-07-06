@@ -24,6 +24,7 @@ registerTool<{ roomNumber: string; staffName: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
+  approval: 'card',
   handler: async ({ roomNumber, staffName }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -299,6 +300,7 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
+  approval: 'card',
   handler: async ({ staffName, decision, date, denyReason }, ctx): Promise<ToolResult> => {
     if (decision !== 'approve' && decision !== 'deny') {
       return { ok: false, error: 'decision must be "approve" or "deny".' };

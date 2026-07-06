@@ -45,6 +45,7 @@ registerTool<{ roomNumber: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found in this property.` };
@@ -105,6 +106,7 @@ registerTool<{ roomNumber: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -154,6 +156,7 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ roomNumber, on, note }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -200,6 +203,7 @@ registerTool<{ roomNumber: string; note: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ roomNumber, note }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -238,6 +242,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ roomNumber, message }, ctx): Promise<ToolResult> => {
     // Codex adversarial review 2026-05-13 (A-C2 length cap): the schema
     // doesn't bound `message`. A model hallucinating "summarize the whole

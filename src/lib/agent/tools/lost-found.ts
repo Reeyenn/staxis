@@ -40,6 +40,7 @@ registerTool<{ itemDescription: string; roomOrLocation?: string; category?: stri
   // the narrow housekeeper_issue maintenance flow.
   voiceModes: ['general'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ itemDescription, roomOrLocation, category }, ctx): Promise<ToolResult> => {
     const desc = String(itemDescription ?? '').trim().slice(0, 500);
     if (!desc) return { ok: false, error: 'I need a short description of the item to log it.' };

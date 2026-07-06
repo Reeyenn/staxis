@@ -20,6 +20,7 @@ import './financials';
 import './pms-feeds';
 import './knowledge';
 import './memory';
+import './comms-actions';
 
 // Future cross-feature tool modules (registered from other branches/chats)
 // can be added by importing from agent/index.ts at the top level — this

@@ -125,6 +125,7 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
   surfaces: ['voice'],
   voiceModes: ['housekeeper_issue'],
   mutates: true,
+  approval: 'card',
   handler: async (args, ctx): Promise<ToolResult> => {
     // ─── 1. Resolve room number ─────────────────────────────────────────
     // Prefer the argument; fall back to the UI hint from session mint.
