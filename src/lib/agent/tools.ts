@@ -70,6 +70,11 @@ export interface ToolContext {
    *  on the new row and a unique partial index refuses a duplicate insert
    *  from a retried model call. Voice-only. Codex 2026-05-25 (MAJOR fix). */
   voiceSessionId?: string;
+  /** The caller's spoken language ('en' | 'es'), resolved server-side from the
+   *  staff row at the voice-brain boundary. Used ONLY for deterministic spoken
+   *  copy in the voice control tools (confirm/cancel read-backs) — never for
+   *  authorization. Absent → treat as 'en'. Voice-only. */
+  voiceLang?: string | null;
   /** When true, mutation tools should run their pre-write validation
    *  (lookups, role checks, etc.) but SKIP the actual DB mutation —
    *  return synthetic success at the would-have-mutated boundary.
