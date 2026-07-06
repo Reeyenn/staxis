@@ -138,10 +138,10 @@ Your ONLY job in this conversation:
   1. Listen to the housekeeper describe a maintenance problem in any of: English, Spanish, Haitian Creole, Tagalog, or Vietnamese.
   2. Extract structured fields: action (REPAIR/REPLACE/CLEAN/INSPECT), item (sink/TV/AC/lamp/...), location_detail (bathroom / above the bed / by the window), severity (MINOR/MAJOR/URGENT), short note.
   3. Call the createMaintenanceWorkOrder tool ONCE. Always include the room number — use the room hint from context when the housekeeper doesn't restate it.
-  4. After the tool succeeds, confirm in ONE short sentence in the housekeeper's own language. Example (Tagalog): "Salamat — ticket na ginawa para sa kwarto 305: sirang lababo sa banyo, urgent." Example (English): "Got it — maintenance ticket created for room 305: broken sink in bathroom, marked urgent."
+  4. Creating a ticket is a confirmed action: when you call createMaintenanceWorkOrder the system reads it back to the housekeeper out loud and waits — it is NOT filed yet. On the NEXT thing the housekeeper says, if they agree call confirm_pending_action; if they decline call cancel_pending_action. Do NOT re-read the confirmation yourself — the system already spoke it. After it's confirmed and filed, say in ONE short sentence in the housekeeper's own language that it's done. Example (Tagalog): "Salamat — ticket na ginawa para sa kwarto 305: sirang lababo sa banyo, urgent." Example (English): "Got it — maintenance ticket created for room 305: broken sink in bathroom, marked urgent."
 
 Hard rules for this mode:
-  - One tool call per session. Do not chat — do not ask clarifying questions unless the housekeeper said something that is genuinely missing required fields.
+  - One maintenance ticket per session. Calling createMaintenanceWorkOrder, then confirm_pending_action after the housekeeper agrees, is the expected two-step flow — that is NOT "chatting." Do not ask clarifying questions unless the housekeeper said something that is genuinely missing required fields.
   - Required fields: action + item. Severity defaults to MINOR when the housekeeper didn't indicate urgency. Room defaults to the UI hint.
   - Always pass original_language (e.g. "tl", "es", "Tagalog") and original_transcription (their words verbatim) so the maintenance team has the audit trail. Translate the note into English for the maintenance team.
   - If the housekeeper says something off-topic ("how's the weather", "what's my schedule"), politely redirect: "I'm just here to log a maintenance issue right now. What's the problem with the room?"
@@ -161,6 +161,20 @@ export const FALLBACK_PROMPTS = {
   owner: PROMPT_OWNER,
   admin: PROMPT_ADMIN,
 } as const;
+
+// ─── Voice approval note (spoken confirmation) ──────────────────────────────
+// Appended to the STABLE block for EVERY voice turn (all modes). The base prompt
+// describes the CHAT approval UX ("the user taps Approve or Cancel on a card");
+// on voice there is no card — the confirmation is spoken. This note overrides
+// that for voice: card-tier actions are read back out loud and require a spoken
+// "yes" on the NEXT turn before they run. Quick-tier logging (readings, found
+// items, memory notes) still runs immediately and you just say the result.
+const VOICE_APPROVAL_NOTE = `─── Voice confirmation (spoken, not tapped) ───
+
+You are on the VOICE surface — there are no tappable cards. Approval works by voice:
+- Higher-stakes actions (logging a guest complaint, creating a maintenance ticket) are NOT done immediately. When you call one, the system reads it back to the user out loud and waits. On the NEXT thing the user says, if they agree call confirm_pending_action; if they decline call cancel_pending_action. You do NOT re-read the confirmation yourself — the system already spoke it.
+- Low-stakes logging (a compliance reading, a maintenance PM check, a found item, remembering/forgetting a note) runs right away — just say clearly what you logged (e.g. "Logged the pool chlorine reading of 3 ppm").
+- Always speak a clear result of what actually happened after an action runs. Never claim something was done before it actually ran.`;
 
 /** Voice-mode addenda. Returned by maybeVoiceModeAddendum() to extend the
  *  role prompt for a specific voice mode. Keep `null` for 'general' — the
@@ -231,6 +245,13 @@ export async function buildSystemPrompt(
     '─── Role context ───',
     rolePrompt.content,
   ];
+  // Voice surface: replace the chat "tap a card" approval framing with the
+  // spoken-confirmation flow. Presence of voiceCtx is how we know this is a
+  // voice turn (chat call sites pass voiceCtx = undefined). Part of the STABLE
+  // block — it's identical across a voice session's turns, so it stays cached.
+  if (voiceCtx) {
+    stableParts.push('', VOICE_APPROVAL_NOTE);
+  }
   if (modeAddendum) {
     stableParts.push('', modeAddendum);
   }

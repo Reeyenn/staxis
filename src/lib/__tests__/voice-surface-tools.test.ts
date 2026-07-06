@@ -37,6 +37,16 @@ import '@/lib/agent/tools/index';
 
 const ROLES = ['owner', 'admin', 'general_manager', 'housekeeping', 'maintenance', 'staff'] as const;
 
+// Voice approval gate (feature/voice-approval): the two CONTROL tools
+// confirm_pending_action + cancel_pending_action opt into the voice surface
+// (surfaces:['voice']) with NO voiceModes, so they surface in EVERY voice mode
+// for EVERY role. They are mutates:false control-flow (the real card-tier
+// mutation already passed the spoken-confirmation gate), so the gate itself can
+// never hold them. Audited before pinning here: they only ever touch
+// agent_pending_actions rows scoped to the caller's conversationId + propertyId
+// + accountId, run no mutation of their own, and are chat-excluded.
+const VOICE_CONTROL_TOOLS = ['cancel_pending_action', 'confirm_pending_action'];
+
 describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => {
   // Tools that opt into GENERAL voice mode (voiceModes: ['general']):
   //   • log_complaint        (Complaints)   — manager + floor roles
@@ -75,6 +85,8 @@ describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => 
         ...(MANAGER_VOICE_ROLES.has(role) ? ['get_time_off_requests'] : []),
         ...base,
         ...memoryTools,
+        // Confirm/cancel control tools are present in every voice mode + role.
+        ...VOICE_CONTROL_TOOLS,
       ].sort();
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
@@ -90,12 +102,15 @@ describe('voice surface tool catalog — housekeeper_issue mode (feature #11)', 
   // Roles that the createMaintenanceWorkOrder tool allows.
   const ALLOWED_ROLES = ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'] as const;
   for (const role of ALLOWED_ROLES) {
-    test(`role=${role} sees exactly the maintenance-ticket tool in housekeeper_issue mode`, () => {
+    test(`role=${role} sees the maintenance-ticket tool + confirm/cancel in housekeeper_issue mode`, () => {
       const tools = getToolsForRole(role as never, 'voice', 'housekeeper_issue');
+      // createMaintenanceWorkOrder is card-tier — it's HELD by the voice gate and
+      // confirmed out loud, so the confirm/cancel control tools ride along in
+      // this mode too (they carry no voiceModes → all modes).
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
-        ['createMaintenanceWorkOrder'],
-        `housekeeper_issue mode for role=${role} surfaced a tool list other than ['createMaintenanceWorkOrder']. ` +
+        ['createMaintenanceWorkOrder', ...VOICE_CONTROL_TOOLS].sort(),
+        `housekeeper_issue mode for role=${role} surfaced an unexpected tool list. ` +
           'If you intentionally exposed more tools to this mode, audit them and update the snapshot.',
       );
     });
@@ -103,7 +118,17 @@ describe('voice surface tool catalog — housekeeper_issue mode (feature #11)', 
 
   test('role=staff is NOT allowed to use the maintenance-ticket tool', () => {
     const tools = getToolsForRole('staff' as never, 'voice', 'housekeeper_issue');
-    assert.deepEqual(tools.map((t) => t.name), [], "'staff' role must not see createMaintenanceWorkOrder");
+    // staff still can't see createMaintenanceWorkOrder (not in its allowedRoles),
+    // but the confirm/cancel control tools are role-open (ALL_ROLES) and appear.
+    assert.ok(
+      !tools.some((t) => t.name === 'createMaintenanceWorkOrder'),
+      "'staff' role must not see createMaintenanceWorkOrder",
+    );
+    assert.deepEqual(
+      tools.map((t) => t.name).sort(),
+      [...VOICE_CONTROL_TOOLS].sort(),
+      "'staff' in housekeeper_issue mode should see only the confirm/cancel control tools",
+    );
   });
 });
 
@@ -124,7 +149,7 @@ describe('voice surface tool catalog — surface omitted (no-mode call)', () => 
     // branch's new tools are chat-only, so none appear here.)
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['createMaintenanceWorkOrder', 'forget', 'log_complaint', 'log_found_item', 'remember'],
+      ['cancel_pending_action', 'confirm_pending_action', 'createMaintenanceWorkOrder', 'forget', 'log_complaint', 'log_found_item', 'remember'],
       'No-mode getToolsForRole bypasses voiceModes filter — this is fine because executeTool re-checks mode.',
     );
   });
