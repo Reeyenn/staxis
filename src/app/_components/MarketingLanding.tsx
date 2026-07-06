@@ -101,25 +101,35 @@ const ORBIT_PAGES = [
   { id: 'communications', label: 'Communications', x: 72, y: 90, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
 ] as const;
 
-const ROOM_STATUSES = ['ok', 'dirty', 'ok', 'occ', 'ok', 'dirty', 'insp', 'ok', 'occ', 'ok', 'dirty', 'ok', 'ok', 'insp', 'occ', 'ok', 'dirty', 'ok'];
-
-/* Mini live page inside each orbit popup, per page + sub-tab. */
+/* Mini live page inside each orbit popup, per page + sub-tab —
+   each one mirrors the real app screen's layout in miniature. */
 function ChipDemo({ id, sub }: { id: string; sub: number }) {
   if (id === 'dashboard') {
     return (
       <div className="ap">
-        <div className="ap-statrow">
-          <div className="ap-card ap-stat"><div className="ap-ring" /><div><b>84%</b><span>occupied tonight</span></div></div>
-          <div className="ap-card ap-stat"><b>42<i>in</i>38<i>out</i></b><span>arrivals &amp; departures</span></div>
+        <div className="ap-rail">
+          {['Occupancy', 'Revenue', 'ADR', 'RevPAR', 'Profit'].map((k, i) => (
+            <span className={`ap-railbtn ${i === 0 ? 'on' : ''}`} key={k}>{k}</span>
+          ))}
         </div>
-        <div className="ap-h">ROOMS RIGHT NOW</div>
-        <div className="ap-roomgrid">
-          {ROOM_STATUSES.map((s, i) => (<span className={`ap-room r-${s}`} key={i}>{101 + i}</span>))}
+        <div className="ap-card ap-ringrow">
+          <div className="ap-ring big" />
+          <div className="ap-ringlegend">
+            <span><i className="lg l-occ" />Occupied · 38</span>
+            <span><i className="lg l-arr" />Arriving · 8</span>
+            <span><i className="lg l-dep" />Departing · 6</span>
+            <span><i className="lg l-dirty" />Dirty · 5</span>
+          </div>
         </div>
-        <div className="ap-legend"><i className="r-ok" />Clean<i className="r-dirty" />Needs cleaning<i className="r-insp" />Inspect<i className="r-occ" />Occupied</div>
-        <div className="ap-h">ATTENTION</div>
+        <div className="ap-h">RIGHT NOW</div>
+        <div className="ap-statgrid">
+          <div className="ap-cell"><b>42</b><span>IN HOUSE</span></div>
+          <div className="ap-cell"><b>8</b><span>ARRIVALS</span></div>
+          <div className="ap-cell"><b>34m</b><span>AVG TURNOVER</span></div>
+        </div>
+        <div className="ap-h">NEEDS ATTENTION</div>
+        <div className="ap-card ap-need"><span className="ti-dot warn" />2 urgent work orders<span className="ap-btn">View</span></div>
         <div className="ap-card ap-need"><span className="ti-dot warn" />Towels below par<span className="ap-btn">Open</span></div>
-        <div className="ap-card ap-need"><span className="ti-dot info" />2 late checkouts today<span className="ap-btn">View</span></div>
       </div>
     );
   }
@@ -154,14 +164,19 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     }
     return (
       <div className="ap">
+        <div className="ap-statgrid">
+          <div className="ap-cell"><b className="t-good">$48.2k</b><span>REVENUE</span></div>
+          <div className="ap-cell"><b className="t-low">$31.4k</b><span>EXPENSES</span></div>
+          <div className="ap-cell"><b className="t-good">$16.8k</b><span>PROFIT · 35%</span></div>
+        </div>
         <div className="ap-h">CHECKBOOK</div>
-        {[['Jul 3', 'Linen supplier', '-$214', ''], ['Jul 2', 'Payroll run', '-$4,180', ''], ['Jul 1', 'OTA payout', '+$6,940', 'good'], ['Jun 30', 'Coffee vendor', '-$86', '']].map(([d, payee, amt, c]) => (
+        {[['Jul 3', 'Linen supplier', '-$214', '', '$8,412'], ['Jul 2', 'Payroll run', '-$4,180', '', '$8,626'], ['Jul 1', 'OTA payout', '+$6,940', 'good', '$12,806'], ['Jun 30', 'Coffee vendor', '-$86', '', '$5,866']].map(([d, payee, amt, c, bal]) => (
           <div className="ap-feedrow" key={payee as string}>
             <span>{d}</span>{payee}
             <b className={`ap-amt ${c ? 't-good' : ''}`}>{amt}</b>
+            <i className="ap-bal">{bal}</i>
           </div>
         ))}
-        <div className="ap-card ap-stat"><b>$23.40</b><span>cost per occupied room</span></div>
         <div className="ap-note">Every dollar in and out, logged for you. No spreadsheet.</div>
       </div>
     );
@@ -170,51 +185,104 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 1) {
       return (
         <div className="ap">
-          <div className="ap-h">TUESDAY BOARD · 31 ROOMS</div>
-          {[['MG', 'Maria', 8, 12], ['AR', 'Ana', 6, 10], ['LT', 'Luis', 5, 9]].map(([ini, name, done, total]) => (
+          <div className="ap-serif">Schedule · Today</div>
+          <div className="ap-statgrid">
+            <div className="ap-cell"><b>42</b><span>IN HOUSE</span></div>
+            <div className="ap-cell"><b>12</b><span>CHECKOUTS</span></div>
+            <div className="ap-cell hl"><b>3</b><span>RECOMMENDED HK</span></div>
+          </div>
+          <div className="ap-rail">
+            <span className="ap-railbtn">↻ Auto-assign</span>
+            <span className="ap-railbtn">→ Send links</span>
+          </div>
+          {[['MG', 'Maria', 8, 12, ['204', '206', '210']], ['AR', 'Ana', 6, 10, ['102', '105', '107']], ['LT', 'Luis', 5, 9, ['301', '303']]].map(([ini, name, done, total, rooms]) => (
             <div className="ap-card ap-cleaner" key={name as string}>
               <span className="ap-avatar">{ini}</span>
-              <div className="ap-cl-mid"><b>{name}</b><div className="ap-bar"><i style={{ width: `${(Number(done) / Number(total)) * 100}%` }} /></div></div>
+              <div className="ap-cl-mid">
+                <b>{name}</b>
+                <div className="ap-bar"><i style={{ width: `${(Number(done) / Number(total)) * 100}%` }} /></div>
+                <div className="ap-chips">
+                  {(rooms as string[]).map((r) => (<span className="ap-chip" key={r}>{r}</span>))}
+                </div>
+              </div>
               <span className="ap-cl-count">{done}/{total}</span>
             </div>
           ))}
-          <div className="ap-note">Built from who confirmed by text. Re-sorts as guests check out.</div>
         </div>
       );
     }
     if (sub === 2) {
       return (
         <div className="ap">
-          <div className="ap-h">QUALITY · INSPECTIONS</div>
-          <div className="ap-done"><span className="de-check">✓</span>204 · passed inspection</div>
-          <div className="ap-done"><span className="de-check">✓</span>211 · passed inspection</div>
-          <div className="ap-card ap-need"><span className="ti-dot warn" />118 · needs recheck<span className="ap-btn">Assign</span></div>
-          <div className="ap-note">Every clean gets checked before the room goes back on sale.</div>
+          <div className="ap-statgrid">
+            <div className="ap-cell hl"><b className="t-good">94%</b><span>PASS RATE TODAY</span></div>
+            <div className="ap-cell"><b>8%</b><span>RE-CLEAN</span></div>
+            <div className="ap-cell"><b>11m</b><span>AVG INSPECTION</span></div>
+          </div>
+          <div className="ap-h">INSPECTION QUEUE</div>
+          {[['204', 'Maria · cleaned 20m ago', 'Pending', 'open'], ['118', 'Ana · cleaned 1h ago', 'Re-check', 'prog']].map(([r, who, st, c]) => (
+            <div className="ap-card ap-wo" key={r as string}>
+              <b>{r}</b>
+              <div className="ap-wo-mid">{who}</div>
+              <span className={`ap-pill p-${c}`}>{st}</span>
+              <span className="ap-btn">Inspect →</span>
+            </div>
+          ))}
+          <div className="ap-h">RECENT</div>
+          <div className="ap-done"><span className="de-check">✓</span>211 · Jade · 8m · Pass</div>
+          <div className="ap-done"><span className="de-check">✓</span>206 · Jade · 12m · Pass</div>
         </div>
       );
     }
     if (sub === 3) {
       return (
         <div className="ap">
-          <div className="ap-h">DEEP CLEANS</div>
-          {[['204', 'carpet + vents', 'Overdue', 'crit'], ['117', 'full turn', 'Due soon', 'low'], ['305', 'mattress flip', 'Fresh', 'good']].map(([r, w, st, c]) => (
-            <div className="ap-card ap-stock" key={r as string}>
-              <b style={{ width: 34 }}>{r}</b>
-              <div className="ap-wo-mid">{w}</div>
-              <span className={`ap-pct t-${c}`} style={{ width: 'auto' }}>{st}</span>
+          <div className="ap-statgrid four">
+            <div className="ap-cell"><b className="t-crit">2</b><span>OVERDUE</span></div>
+            <div className="ap-cell"><b className="t-low">3</b><span>DUE SOON</span></div>
+            <div className="ap-cell"><b className="t-good">24</b><span>FRESH</span></div>
+            <div className="ap-cell"><b>30d</b><span>CADENCE</span></div>
+          </div>
+          <div className="ap-h">OVERDUE</div>
+          {[['204', '6d over par'], ['117', 'Never cleaned']].map(([r, st]) => (
+            <div className="ap-card ap-wo" key={r as string}>
+              <b>{r}</b>
+              <div className="ap-wo-mid"><span className="t-crit">{st}</span></div>
+              <span className="ap-btn">Schedule</span>
             </div>
           ))}
-          <div className="ap-note">Cadence per room. Staxis schedules them into slow days.</div>
+          <div className="ap-h">DUE SOON</div>
+          <div className="ap-chips">
+            <span className="ap-chip">305 · 2d</span><span className="ap-chip">312 · 4d</span><span className="ap-chip">108 · 5d</span>
+          </div>
         </div>
       );
     }
     return (
       <div className="ap">
-        <div className="ap-roomgrid">
-          {ROOM_STATUSES.map((s, i) => (<span className={`ap-room r-${s}`} key={i}>{101 + i}</span>))}
+        <div className="ap-serif">12 rooms to turn</div>
+        <div className="ap-statgrid">
+          <div className="ap-cell"><b className="t-good">16</b><span>CLEAN</span></div>
+          <div className="ap-cell"><b className="t-low">12</b><span>DIRTY</span></div>
+          <div className="ap-cell"><b>62%</b><span>DONE</span></div>
         </div>
-        <div className="ap-legend"><i className="r-ok" />Clean<i className="r-dirty" />Needs cleaning<i className="r-insp" />Inspect<i className="r-occ" />Occupied</div>
-        <div className="ap-note">Statuses flip live as the robot reads your property system.</div>
+        <div className="ap-legendcaps">★ ARRIVAL · ◐ STAYOVER · ↗ CHECKOUT</div>
+        <div className="ap-h">FLOOR 1</div>
+        <div className="ap-roomcards">
+          {[['101', 'CLEAN', 'ok', ''], ['102', 'DIRTY', 'dirty', '★'], ['103', 'CLEAN', 'ok', ''], ['104', 'CLEANING', 'prog', ''], ['105', 'DIRTY', 'dirty', '↗'], ['106', 'CLEAN', 'ok', '◐'], ['107', 'DIRTY', 'dirty', ''], ['108', 'CLEAN', 'ok', '']].map(([n, st, c, g]) => (
+            <span className={`ap-roomcard rc-${c}`} key={n as string}>
+              <b>{n}{g && <em> {g}</em>}</b><i>{st}</i>
+            </span>
+          ))}
+        </div>
+        <div className="ap-h">FLOOR 2</div>
+        <div className="ap-roomcards">
+          {[['201', 'CLEAN', 'ok', ''], ['204', 'DIRTY', 'dirty', '!'], ['206', 'CLEANING', 'prog', ''], ['208', 'CLEAN', 'ok', '★']].map(([n, st, c, g]) => (
+            <span className={`ap-roomcard rc-${c}`} key={n as string}>
+              <b>{n}{g === '!' ? <em className="rc-flag"> !</em> : g && <em> {g}</em>}</b><i>{st}</i>
+            </span>
+          ))}
+        </div>
       </div>
     );
   }
@@ -222,37 +290,71 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 1) {
       return (
         <div className="ap">
-          <div className="ap-h">PREVENTIVE</div>
-          <div className="ap-done"><span className="de-check">✓</span>Filter changes · floors 1–2 · done</div>
-          <div className="ap-done"><span className="de-check">✓</span>Water heater check · scheduled</div>
-          <div className="ap-card ap-need"><span className="ti-dot warn" />PTAC deep service due<span className="ap-btn">Schedule</span></div>
+          <div className="ap-serif">Preventive · scheduled</div>
+          <div className="ap-laneh"><i className="lane-dot ld-warm" />OVERDUE · 1</div>
+          <div className="ap-card ap-wo wo-warm">
+            <div className="ap-wo-mid">Filter changes · floors 1–2<span>every 3 months</span></div>
+            <b className="t-crit" style={{ width: 'auto' }}>2d over</b>
+            <span className="ap-btn">Done today</span>
+          </div>
+          <div className="ap-laneh"><i className="lane-dot ld-car" />DUE THIS MONTH · 1</div>
+          <div className="ap-card ap-wo wo-car">
+            <div className="ap-wo-mid">Water heater check<span>next · Jul 18</span></div>
+          </div>
+          <div className="ap-laneh"><i className="lane-dot ld-sage" />UPCOMING · 2</div>
+          <div className="ap-card ap-wo">
+            <div className="ap-wo-mid">Gutter clearing<span>next · Aug 2</span></div>
+          </div>
         </div>
       );
     }
     if (sub === 2) {
       return (
         <div className="ap">
-          <div className="ap-h">EQUIPMENT</div>
-          {[['Water heater', 'OK', 'good'], ['AC unit · 118', 'Attention', 'crit'], ['Boiler', 'OK', 'good'], ['Elevator', 'Service due', 'low']].map(([n, st, c]) => (
-            <div className="ap-card ap-stock" key={n as string}>
-              <b>{n}</b>
-              <span className={`ap-pct t-${c}`} style={{ width: 'auto', marginLeft: 'auto' }}>{st}</span>
-            </div>
-          ))}
+          <div className="ap-serif">Equipment · storeroom</div>
+          <div className="ap-laneh"><i className="lane-dot ld-warm" />OUT · 1</div>
+          <div className="ap-card ap-wo wo-warm">
+            <div className="ap-wo-mid">Plunger kit<span>bin B2 · reorder at 2</span></div>
+            <b style={{ width: 'auto' }}>0</b>
+            <span className="ap-pill p-open">Out</span>
+          </div>
+          <div className="ap-laneh"><i className="lane-dot ld-car" />LOW · 1</div>
+          <div className="ap-card ap-wo wo-car">
+            <div className="ap-wo-mid">AC filters<span>storeroom · reorder at 6</span></div>
+            <b style={{ width: 'auto' }}>4</b>
+            <span className="ap-pill p-prog">Low</span>
+          </div>
+          <div className="ap-laneh"><i className="lane-dot ld-sage" />IN STOCK · 12</div>
+          <div className="ap-card ap-wo">
+            <div className="ap-wo-mid">Light bulbs<span>bin A1</span></div>
+            <b style={{ width: 'auto' }}>32</b>
+            <span className="ap-pill p-done">OK</span>
+          </div>
         </div>
       );
     }
     return (
       <div className="ap">
-        <div className="ap-h">WORK ORDERS</div>
-        {[['118', 'AC not cooling', 'In progress', 'prog', 'Luis'], ['204', 'Shower drip', 'Open', 'open', 'Unassigned'], ['312', 'Hallway bulb out', 'Fixed', 'done', 'Luis']].map(([room, what, status, cls, who]) => (
-          <div className="ap-card ap-wo" key={what as string}>
-            <b>{room}</b>
-            <div className="ap-wo-mid">{what}<span>{who}</span></div>
-            <span className={`ap-pill p-${cls}`}>{status}</span>
-          </div>
-        ))}
-        <div className="ap-note">Logged in seconds, assigned automatically, tracked to done.</div>
+        <div className="ap-serif">Work orders · today</div>
+        <div className="ap-laneh"><i className="lane-dot ld-warm" />URGENT · 1</div>
+        <div className="ap-card ap-wo wo-warm">
+          <div className="ap-wo-mid">Room 118 · AC not cooling<span>Luis · 2h ago</span></div>
+          <span className="ap-pill p-prog">In progress</span>
+        </div>
+        <div className="ap-laneh"><i className="lane-dot ld-car" />NORMAL · 2</div>
+        <div className="ap-card ap-wo wo-car">
+          <div className="ap-wo-mid">Room 204 · Shower drip<span>Unassigned · 4h ago</span></div>
+          <span className="ap-pill p-open">Open</span>
+        </div>
+        <div className="ap-card ap-wo wo-car">
+          <div className="ap-wo-mid">Hallway 3 · Bulb out<span>Luis · yesterday</span></div>
+          <span className="ap-pill p-done">Fixed</span>
+        </div>
+        <div className="ap-laneh"><i className="lane-dot ld-pur" />PROFESSIONAL · 1</div>
+        <div className="ap-card ap-wo wo-pur">
+          <div className="ap-wo-mid">Boiler room · Annual service<span>Contractor scheduled</span></div>
+          <span className="ap-pill p-prog">Pro</span>
+        </div>
       </div>
     );
   }
@@ -262,18 +364,29 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
        budgets, settings) */
     return (
       <div className="ap">
+        <div className="ap-statgrid">
+          <div className="ap-cell"><b className="t-good">78%</b><span>● STOCK HEALTH</span></div>
+          <div className="ap-cell"><b className="t-crit">2</b><span>● ORDER NOW</span></div>
+          <div className="ap-cell"><b>$3,480</b><span>ON THE SHELF</span></div>
+        </div>
         <div className="ap-rail">
           {['Start Count', 'Scan Invoice', 'Reorder List', 'Orders', 'Reports', 'History', 'AI Helper', 'Budgets', 'Ordering Settings'].map((r) => (
             <span className="ap-railbtn" key={r}>{r}</span>
           ))}
         </div>
+        <div className="ap-rail">
+          {['All · 24', 'General', 'Breakfast'].map((r, i) => (
+            <span className={`ap-railbtn seg ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
+          ))}
+        </div>
         <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder drafted · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
         <div className="ap-h">STOCK</div>
-        {[['Towels', 28, 'crit'], ['Soap & amenities', 54, 'low'], ['Coffee', 81, 'good'], ['Sheets', 72, 'good'], ['Cleaning supplies', 43, 'low']].map(([name, pct, cls]) => (
+        {[['Towels', 28, 'crit', '6d left'], ['Soap & amenities', 54, 'low', '2w left'], ['Coffee', 81, 'good', '5w left'], ['Sheets', 72, 'good', '—'], ['Cleaning supplies', 43, 'low', '9d left']].map(([name, pct, cls, days]) => (
           <div className="ap-card ap-stock" key={name as string}>
             <b>{name}</b>
             <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
             <span className={`ap-pct t-${cls}`}>{pct}%</span>
+            <i className="ap-days">{days}</i>
           </div>
         ))}
         <div className="ap-note">Staxis learns how fast each item burns and drafts the reorder first.</div>
@@ -284,11 +397,16 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 1) {
       return (
         <div className="ap">
-          <div className="ap-h">DIRECTORY</div>
+          <div className="ap-rail">
+            {['All', 'Housekeeping', 'Front desk', 'Maintenance'].map((r, i) => (
+              <span className={`ap-railbtn seg ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
+            ))}
+          </div>
           {[['MG', 'Maria', 'Housekeeping', 'ES'], ['AR', 'Ana', 'Housekeeping', 'ES'], ['LT', 'Luis', 'Maintenance', 'EN'], ['JD', 'Jade', 'Front desk', 'EN']].map(([ini, name, role, lang]) => (
             <div className="ap-card ap-person" key={name as string}>
               <span className="ap-avatar">{ini}</span>
               <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{role}</span></div>
+              <span className="ap-conf yes">Active</span>
               <span className="ap-lang">{lang}</span>
             </div>
           ))}
@@ -298,20 +416,32 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 2) {
       return (
         <div className="ap">
-          <div className="ap-h">RECOGNITION</div>
+          <div className="ap-h">LEADERBOARD · 7 DAYS</div>
+          {[['1', 'MG', 'Maria', '48 rooms', '↑ Fast', 'good'], ['2', 'AR', 'Ana', '41 rooms', '· On pace', ''], ['3', 'JD', 'Jade', '12 rooms', '· On pace', '']].map(([rank, ini, name, rooms, pace, c]) => (
+            <div className="ap-card ap-person" key={name as string}>
+              <b className="ap-rank">{rank}</b>
+              <span className="ap-avatar">{ini}</span>
+              <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{rooms}</span></div>
+              <span className={`ap-conf ${c ? 'yes' : ''}`}>{pace}</span>
+            </div>
+          ))}
+          <div className="ap-h">SHOUT-OUTS</div>
           <div className="ap-card ap-need"><span className="ti-dot ok" />Maria · 12 perfect inspections in a row ⭐</div>
-          <div className="ap-card ap-need"><span className="ti-dot ok" />Luis · fastest work-order month yet 🔧</div>
-          <div className="ap-done"><span className="de-check">✓</span>Kudos go out by text, in their language</div>
         </div>
       );
     }
     return (
       <div className="ap">
-        <div className="ap-h">SCHEDULE · TOMORROW&rsquo;S CREW</div>
-        {[['MG', 'Maria', 'Confirmed ✓', 'ES'], ['AR', 'Ana', 'Confirmed ✓', 'ES'], ['LT', 'Luis', 'Confirmed ✓', 'EN'], ['JD', 'Jade', 'Waiting…', 'EN']].map(([ini, name, st, lang]) => (
+        <div className="ap-week">
+          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+            <span className={`ap-day ${i === 1 ? 'on' : ''}`} key={i}>{d}</span>
+          ))}
+        </div>
+        <div className="ap-h">TOMORROW&rsquo;S CREW</div>
+        {[['MG', 'Maria', '8:00–2:00', 'Confirmed ✓', 'ES'], ['AR', 'Ana', '8:00–2:00', 'Confirmed ✓', 'ES'], ['LT', 'Luis', '9:00–5:00', 'Confirmed ✓', 'EN'], ['JD', 'Jade', '7:00–3:00', 'Waiting…', 'EN']].map(([ini, name, shift, st, lang]) => (
           <div className="ap-card ap-person" key={name as string}>
             <span className="ap-avatar">{ini}</span>
-            <div className="ap-cl-mid"><b>{name}</b></div>
+            <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{shift}</span></div>
             <span className={`ap-conf ${String(st).startsWith('Confirmed') ? 'yes' : ''}`}>{st}</span>
             <span className="ap-lang">{lang}</span>
           </div>
@@ -343,13 +473,20 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
   }
   return (
     <div className="ap">
+      <div className="ap-catchup">⚡ Catch up<span className="ap-badge">3</span></div>
       <div className="ap-h">CHANNELS</div>
-      <div className="ap-done"><span className="de-check">✓</span># announcements · new schedule posted</div>
-      <div className="ap-done"><span className="de-check">✓</span># housekeeping · 3 new</div>
-      <div className="ap-h">MESSAGES</div>
-      <div className="ap-msg them">Room 204 lista ✓</div>
-      <div className="ap-msg me">Gracias Maria! 118 next please</div>
-      <div className="ap-msg them">Ok voy 👍</div>
+      <div className="ap-card ap-chan"># announcements<span className="ap-badge">1</span></div>
+      <div className="ap-card ap-chan"># housekeeping<span className="ap-badge">3</span></div>
+      <div className="ap-card ap-chan"><span className="ap-online" />Maria<span className="ap-role" style={{ marginLeft: 'auto' }}>online</span></div>
+      <div className="ap-h"># HOUSEKEEPING</div>
+      <div className="ap-msgrow">
+        <span className="ap-avatar">MG</span>
+        <div className="mr-mid"><b>Maria <i>7:02 AM</i></b>Room 204 lista ✓</div>
+      </div>
+      <div className="ap-msgrow">
+        <span className="ap-avatar">JD</span>
+        <div className="mr-mid"><b>Jade <i>7:04 AM</i></b>Gracias! 118 next please 🙏</div>
+      </div>
     </div>
   );
 }
@@ -1381,19 +1518,19 @@ const CSS = `
 .pop-down-right { top: calc(100% + 10px); left: calc(50% - 40px);
   transform-origin: 40px top; }
 
-.pop-left { right: calc(100% - 30px); top: 50%;
+.pop-left { right: calc(100% + 12px); top: 50%;
   transform: translateY(-50%) scale(.5); transform-origin: right center; }
 .orbit-chip:hover .pop-left { transform: translateY(-50%) scale(1); }
-.pop-right { left: calc(100% - 30px); top: 50%;
+.pop-right { left: calc(100% + 12px); top: 50%;
   transform: translateY(-50%) scale(.5); transform-origin: left center; }
 .orbit-chip:hover .pop-right { transform: translateY(-50%) scale(1); }
 
-@media (max-width: 1500px) {
-  .pop-left { right: calc(50% - 40px); left: auto; top: calc(100% + 10px);
-    bottom: auto; transform: scale(.5); transform-origin: calc(100% - 40px) top; }
+@media (max-width: 1600px) {
+  .pop-left { right: auto; left: -12px; top: calc(100% + 12px);
+    bottom: auto; transform: scale(.5); transform-origin: 40px top; }
   .orbit-chip:hover .pop-left { transform: scale(1); }
-  .pop-right { left: calc(50% - 40px); right: auto; top: calc(100% + 10px);
-    transform: scale(.5); transform-origin: 40px top; }
+  .pop-right { left: auto; right: -12px; top: calc(100% + 12px);
+    transform: scale(.5); transform-origin: calc(100% - 40px) top; }
   .orbit-chip:hover .pop-right { transform: scale(1); }
 }
 @media (max-width: 1150px) {
@@ -1495,6 +1632,88 @@ const CSS = `
   align-self: flex-start; border-bottom-left-radius: 3px; }
 .ap-msg.me { background: var(--sage-dim); border: 1px solid rgba(92,122,96,.25);
   align-self: flex-end; border-bottom-right-radius: 3px; color: var(--ink); }
+
+/* --- mirrors of real app screens --- */
+.ap-serif { font-family: var(--serif); font-size: 17px; color: var(--ink);
+  letter-spacing: -.005em; }
+.ap-statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.ap-statgrid.four { grid-template-columns: repeat(4, 1fr); }
+.ap-cell { background: #fff; border: 1px solid var(--rule-soft); border-radius: 8px;
+  padding: 8px 10px; }
+.ap-cell.hl { background: var(--sage-dim); border-color: rgba(92,122,96,.3); }
+.ap-cell b { display: block; font-family: var(--serif); font-weight: 400;
+  font-size: 17px; line-height: 1.1; color: var(--ink); }
+.ap-cell span { display: block; font-family: var(--mono); font-size: 6.8px;
+  letter-spacing: .12em; color: var(--dim); margin-top: 3px; white-space: nowrap; }
+.ap-legendcaps { font-family: var(--mono); font-size: 8px; letter-spacing: .1em;
+  color: var(--dim); }
+.ap-roomcards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.ap-roomcard { display: flex; flex-direction: column; gap: 3px; background: #fff;
+  border: 1px solid var(--rule-soft); border-left-width: 3px; border-radius: 7px;
+  padding: 7px 9px; }
+.ap-roomcard b { font-family: var(--mono); font-size: 10.5px; color: var(--ink); }
+.ap-roomcard b em { font-style: normal; font-size: 8.5px; color: var(--caramel-deep); }
+.ap-roomcard b em.rc-flag { color: var(--warm); font-weight: 700; }
+.ap-roomcard i { font-style: normal; font-family: var(--mono); font-size: 6.5px;
+  letter-spacing: .1em; color: var(--dim); }
+.rc-ok { border-left-color: var(--sage-deep); }
+.rc-dirty { border-left-color: var(--caramel); }
+.rc-prog { border-left-color: var(--purple); }
+.ap-laneh { display: flex; align-items: center; gap: 6px; margin: 6px 0 0;
+  font-family: var(--mono); font-size: 8.5px; letter-spacing: .16em; color: var(--dim); }
+.lane-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.ld-warm { background: var(--warm); } .ld-car { background: var(--caramel); }
+.ld-pur { background: var(--purple); } .ld-sage { background: var(--sage-deep); }
+.ap-wo.wo-warm { border-left: 3px solid var(--warm); }
+.ap-wo.wo-car { border-left: 3px solid var(--caramel); }
+.ap-wo.wo-pur { border-left: 3px solid var(--purple); }
+.ap-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.ap-chip { font-family: var(--mono); font-size: 8.5px; color: var(--ink-soft);
+  background: var(--caramel-dim); border: 1px solid rgba(201,150,68,.3);
+  border-radius: 5px; padding: 2px 6px; }
+.ap-days { margin-left: 2px; font-style: normal; font-family: var(--mono);
+  font-size: 8.5px; color: var(--dim); flex: none; width: 40px; text-align: right; }
+.ap-bal { margin-left: 8px; font-style: normal; font-family: var(--mono);
+  font-size: 9px; color: var(--dim); flex: none; }
+.ap-railbtn.on { background: var(--mark); color: #fff; border-color: var(--mark); }
+.ap-railbtn.seg { border-radius: 999px; }
+.ap-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.ap-day { text-align: center; font-family: var(--mono); font-size: 9px;
+  color: var(--muted); background: #fff; border: 1px solid var(--rule-soft);
+  border-radius: 6px; padding: 6px 0; }
+.ap-day.on { background: var(--sage-dim); border-color: rgba(92,122,96,.35);
+  color: var(--sage-deep); font-weight: 600; }
+.ap-msgrow { display: flex; gap: 8px; align-items: flex-start; background: #fff;
+  border: 1px solid var(--rule-soft); border-radius: 10px; padding: 9px 11px; }
+.mr-mid { font-size: 11.5px; color: var(--ink-soft); line-height: 1.45; }
+.mr-mid b { display: block; font-size: 11px; color: var(--ink); }
+.mr-mid b i { font-style: normal; font-family: var(--mono); font-size: 8px;
+  color: var(--dim); font-weight: 400; margin-left: 5px; }
+.ap-badge { margin-left: auto; font-family: var(--mono); font-size: 8px;
+  color: var(--sage-deep); background: var(--sage-dim);
+  border: 1px solid rgba(92,122,96,.3); border-radius: 999px; padding: 2px 7px; flex: none; }
+.ap-catchup { display: flex; align-items: center; gap: 8px; font-size: 12px;
+  font-weight: 600; color: #fff; background: var(--sage-deep); border-radius: 9px;
+  padding: 8px 12px; }
+.ap-catchup .ap-badge { background: rgba(255,255,255,.2); color: #fff;
+  border-color: transparent; }
+.ap-chan { font-family: var(--mono); font-size: 10.5px; color: var(--ink-soft);
+  padding: 9px 12px; }
+.ap-online { width: 7px; height: 7px; border-radius: 50%; background: var(--sage-deep);
+  flex: none; }
+.ap-rank { font-family: var(--mono); font-size: 9px; color: var(--dim); flex: none; }
+.ap-ringrow { gap: 14px; }
+.ap-ring.big { width: 52px; height: 52px;
+  background: conic-gradient(var(--ink-soft) 0 62%, var(--sage-deep) 62% 75%,
+    var(--caramel) 75% 85%, var(--warm) 85% 93%, rgba(31,35,28,.08) 93% 100%);
+  -webkit-mask: radial-gradient(circle, transparent 15px, black 16px);
+  mask: radial-gradient(circle, transparent 15px, black 16px); }
+.ap-ringlegend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px;
+  font-size: 9.5px; color: var(--muted); }
+.lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 5px; vertical-align: -1px; }
+.l-occ { background: var(--ink-soft); } .l-arr { background: var(--sage-deep); }
+.l-dep { background: var(--caramel); } .l-dirty { background: var(--warm); }
 .today { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: 340px; max-width: 82%; background: #fff; border: 1px solid var(--rule);
   border-radius: 18px; padding: 20px;
