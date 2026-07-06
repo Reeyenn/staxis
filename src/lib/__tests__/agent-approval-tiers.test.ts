@@ -67,6 +67,11 @@ describe('approval tier completeness', () => {
         equipment: 'AED', itemDescription: 'glasses', content: 'note', topic: 'x',
         staffName: 'Maria', decision: 'approve', description: 'AC broken', action: 'REPAIR',
         item: 'sink', recipient: 'Maria', message: 'hi', title: 'task', assignee: 'Ana',
+        // Schedule / inventory / reminder / recurring-todo tool args.
+        date: '2026-07-08', startTime: '08:00', endTime: '16:00',
+        itemName: 'towels', newCount: 40, markOrdered: true,
+        body: 'check the pool', fireAt: '2026-07-08T08:00:00-05:00',
+        department: 'housekeeping', cadence: 'weekly', weekday: 1, priority: 'high',
       };
       const en = buildActionSummary(t.name, args, 'en');
       const es = buildActionSummary(t.name, args, 'es');
@@ -125,5 +130,59 @@ describe('approval tier completeness', () => {
     for (const name of NEW_COMMS) {
       assert.equal(approvalTierFor(name), 'card', `${name} must be card-tier`);
     }
+  });
+
+  // ── New feature tools (schedules / inventory / reminders / recurring) ───────
+  test('the new schedule + inventory + reminder + recurring mutation tools carry the expected tiers', () => {
+    const byName = new Map(listAllTools().map((t) => [t.name, t]));
+    const expected: Record<string, 'quick' | 'card'> = {
+      // Schedules
+      remove_from_shift: 'card',
+      assign_shift: 'card',
+      // Inventory
+      adjust_stock: 'card',
+      // Reminders
+      create_reminder: 'card',
+      cancel_reminder: 'quick',
+      // Recurring to-dos
+      create_recurring_todo: 'card',
+      stop_recurring_todo: 'card',
+    };
+    for (const [name, tier] of Object.entries(expected)) {
+      const tool = byName.get(name);
+      assert.ok(tool, `${name} is not registered`);
+      assert.equal(tool!.mutates, true, `${name} should be a mutation`);
+      assert.equal(tool!.approval, tier, `${name} should be ${tier}-tier`);
+    }
+  });
+
+  test('the new READ tools are registered and carry NO approval tier', () => {
+    const byName = new Map(listAllTools().map((t) => [t.name, t]));
+    for (const name of ['get_schedule', 'get_low_stock', 'list_reminders', 'list_recurring_todos', 'search_lost_found']) {
+      const tool = byName.get(name);
+      assert.ok(tool, `${name} is not registered`);
+      assert.notEqual(tool!.mutates, true, `${name} should be read-only`);
+      assert.equal(approvalTierFor(name), null, `${name} should have no approval tier`);
+    }
+  });
+
+  // The new card/quick MUTATION tools must not leak onto the voice surface (the
+  // approval gate only runs on chat) — same class of bug the comms guard covers.
+  test('the new mutation tools are NOT exposed on the voice surface (un-gated bypass)', () => {
+    const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
+    const NEW_MUTATIONS = new Set([
+      'remove_from_shift', 'assign_shift', 'adjust_stock',
+      'create_reminder', 'cancel_reminder', 'create_recurring_todo', 'stop_recurring_todo',
+    ]);
+    const leaked = new Set<string>();
+    for (const role of roles) {
+      for (const t of getToolsForRole(role, 'voice')) {
+        if (NEW_MUTATIONS.has(t.name)) leaked.add(t.name);
+      }
+    }
+    assert.deepEqual(
+      [...leaked], [],
+      `these new mutation tools are reachable UN-GATED on the voice surface: ${[...leaked].join(', ')}`,
+    );
   });
 });

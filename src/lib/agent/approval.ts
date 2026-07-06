@@ -122,7 +122,87 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
     l === 'es' ? `Agregar al libro de registro: ${quoted(a.title)}` : `Add a log book entry: ${quoted(a.title)}`,
   post_announcement: (a, l) =>
     l === 'es' ? `Publicar un aviso para todo el personal: ${quoted(a.message)}` : `Post an announcement to all staff: ${quoted(a.message)}`,
+
+  remove_from_shift: (a, l) =>
+    l === 'es'
+      ? `Dar el día libre a ${str(a.staffName)} el ${str(a.date)} (quitar su turno)`
+      : `Give ${str(a.staffName)} ${str(a.date)} off (remove their shift)`,
+  assign_shift: (a, l) => {
+    const start = str(a.startTime);
+    const end = str(a.endTime);
+    const hours = start && end ? ` (${start}–${end})` : '';
+    return l === 'es'
+      ? `Programar a ${str(a.staffName)} el ${str(a.date)}${hours}`
+      : `Schedule ${str(a.staffName)} on ${str(a.date)}${hours}`;
+  },
+
+  adjust_stock: (a, l) => {
+    const item = str(a.itemName);
+    const hasCount = a.newCount !== undefined && a.newCount !== null && str(a.newCount) !== '';
+    const ordered = a.markOrdered === true || str(a.markOrdered) === 'true';
+    if (l === 'es') {
+      const parts = [] as string[];
+      if (hasCount) parts.push(`ajustar el conteo de ${item} a ${str(a.newCount)}`);
+      if (ordered) parts.push(`marcar ${item} como pedido`);
+      return parts.length ? parts.join(' y ') : `Actualizar el inventario de ${item}`;
+    }
+    const parts = [] as string[];
+    if (hasCount) parts.push(`set ${item} count to ${str(a.newCount)}`);
+    if (ordered) parts.push(`mark ${item} as ordered`);
+    return parts.length ? parts.join(' and ') : `Update ${item} inventory`;
+  },
+
+  create_reminder: (a, l) => {
+    const who = str(a.recipient) || str(a.department);
+    const when = formatFireAt(a.fireAt, l);
+    if (l === 'es') return `Programar un recordatorio${who ? ` para ${who}` : ''}${when ? ` el ${when}` : ''}: ${quoted(a.body)}`;
+    return `Schedule a reminder${who ? ` for ${who}` : ''}${when ? ` at ${when}` : ''}: ${quoted(a.body)}`;
+  },
+  cancel_reminder: (_a, l) =>
+    l === 'es' ? 'Cancelar este recordatorio' : 'Cancel this reminder',
+
+  create_recurring_todo: (a, l) => {
+    const who = str(a.assignee) || str(a.department);
+    const cadence = formatCadence(a.cadence, a.weekday, l);
+    if (l === 'es') return `Crear tarea recurrente (${cadence}): ${quoted(a.title)}${who ? ` — para ${who}` : ''}`;
+    return `Create a recurring to-do (${cadence}): ${quoted(a.title)}${who ? ` — for ${who}` : ''}`;
+  },
+  stop_recurring_todo: (_a, l) =>
+    l === 'es' ? 'Detener esta tarea recurrente' : 'Stop this recurring to-do',
 };
+
+/** Best-effort short local time for a reminder's fireAt (drops to '' if we can't
+ *  parse it, so the summary stays clean). Uses the app timezone for display. */
+function formatFireAt(v: unknown, l: ApprovalLang): string {
+  const s = str(v);
+  if (!s) return '';
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat(l === 'es' ? 'es-US' : 'en-US', {
+      timeZone: 'America/Chicago',
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    }).format(d);
+  } catch {
+    return '';
+  }
+}
+
+/** Human cadence label for a recurring to-do summary. */
+function formatCadence(cadence: unknown, weekday: unknown, l: ApprovalLang): string {
+  const c = str(cadence).toLowerCase();
+  const days = l === 'es'
+    ? ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
+    : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const wd = Number(weekday);
+  if (c === 'weekly') {
+    const label = Number.isInteger(wd) && wd >= 0 && wd <= 6 ? days[wd] : '';
+    if (l === 'es') return label ? `cada ${label}` : 'semanal';
+    return label ? `every ${label}` : 'weekly';
+  }
+  if (c === 'weekdays') return l === 'es' ? 'días laborables' : 'weekdays';
+  return l === 'es' ? 'diario' : 'daily';
+}
 
 /**
  * Build the card's one-liner for a proposed action. Bilingual; falls back to a

@@ -65,6 +65,12 @@ describe('voice surface tool catalog — general mode (Plan v2 F-AI-15)', () => 
       // read/write the hotel's own memory, never operational data.
       const memoryTools = ['forget', 'remember'];
       const base = GENERAL_VOICE_ROLES.has(role) ? ['log_complaint', 'log_found_item'] : [];
+      // ai-approval-cards branch: the five new abilities (schedules, inventory,
+      // reminders, lost&found lookup, recurring to-dos) are ALL chat-only — none
+      // opt into voice, so this general-voice catalog is intentionally unchanged
+      // by that branch. The mutation tools stay chat-only so their approval card
+      // can never be bypassed by a misheard voice command; the read tools are
+      // chat-only too (scoped to one reviewed surface for this branch).
       const expected = [
         ...(MANAGER_VOICE_ROLES.has(role) ? ['get_time_off_requests'] : []),
         ...base,
@@ -114,7 +120,8 @@ describe('voice surface tool catalog — surface omitted (no-mode call)', () => 
     // (voiceModes:['housekeeper_issue']), log_complaint + log_found_item +
     // remember + forget (all voiceModes:['general']); with no mode the
     // voiceModes filter no-ops so all of them surface. (Compliance tools and
-    // get_time_off_requests exclude the housekeeping role.)
+    // get_time_off_requests exclude the housekeeping role. The ai-approval-cards
+    // branch's new tools are chat-only, so none appear here.)
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
       ['createMaintenanceWorkOrder', 'forget', 'log_complaint', 'log_found_item', 'remember'],

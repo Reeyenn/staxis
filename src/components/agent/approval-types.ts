@@ -81,4 +81,33 @@ export const EDITABLE_FIELDS: Record<string, FieldSpec[]> = {
     { key: 'item', label: { en: 'Item', es: 'Objeto' }, kind: 'text' },
     { key: 'note', label: { en: 'Note', es: 'Nota' }, kind: 'multiline' },
   ],
+  remove_from_shift: [
+    { key: 'staffName', label: { en: 'Staff', es: 'Personal' }, kind: 'text' },
+    { key: 'date', label: { en: 'Date', es: 'Fecha' }, kind: 'text' },
+  ],
+  assign_shift: [
+    { key: 'staffName', label: { en: 'Staff', es: 'Personal' }, kind: 'text' },
+    { key: 'date', label: { en: 'Date', es: 'Fecha' }, kind: 'text' },
+    { key: 'startTime', label: { en: 'Start', es: 'Inicio' }, kind: 'text' },
+    { key: 'endTime', label: { en: 'End', es: 'Fin' }, kind: 'text' },
+    { key: 'department', label: { en: 'Department', es: 'Departamento' }, kind: 'enum', options: ['housekeeping', 'front_desk', 'maintenance'] },
+  ],
+  adjust_stock: [
+    { key: 'itemName', label: { en: 'Item', es: 'Artículo' }, kind: 'text' },
+    { key: 'newCount', label: { en: 'New count', es: 'Nuevo conteo' }, kind: 'number' },
+    { key: 'orderQuantity', label: { en: 'Order quantity', es: 'Cantidad pedida' }, kind: 'number' },
+  ],
+  create_reminder: [
+    { key: 'body', label: { en: 'Reminder', es: 'Recordatorio' }, kind: 'multiline' },
+    { key: 'fireAt', label: { en: 'When', es: 'Cuándo' }, kind: 'text' },
+    { key: 'recipient', label: { en: 'Person', es: 'Persona' }, kind: 'text' },
+    { key: 'department', label: { en: 'Department', es: 'Departamento' }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
+  ],
+  create_recurring_todo: [
+    { key: 'title', label: { en: 'Task', es: 'Tarea' }, kind: 'text' },
+    { key: 'assignee', label: { en: 'Assign to', es: 'Asignar a' }, kind: 'text' },
+    { key: 'department', label: { en: 'Department', es: 'Departamento' }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
+    { key: 'cadence', label: { en: 'Repeat', es: 'Repetir' }, kind: 'enum', options: ['daily', 'weekly', 'weekdays'] },
+    { key: 'priority', label: { en: 'Priority', es: 'Prioridad' }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
+  ],
 };
