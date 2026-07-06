@@ -86,6 +86,27 @@ export interface VisionImage {
 export type VisionMediaType = VisionImage['mediaType'];
 
 /**
+ * PDF source for the same vision pipeline. Anthropic accepts a whole PDF via a
+ * `document` content block (claude-sonnet-4-6 supports it) — the model reads
+ * every page in one call, so multi-page invoices don't need to be exploded into
+ * per-page images client-side. Discriminated from VisionImage by the fixed
+ * `application/pdf` mediaType so `visionExtract*` can take either.
+ */
+export interface VisionPdf {
+  /** Base64-encoded PDF bytes (no data: prefix). */
+  data: string;
+  mediaType: 'application/pdf';
+}
+
+/** Either input the vision pipeline accepts. */
+export type VisionSource = VisionImage | VisionPdf;
+
+/** Narrow a VisionSource to the PDF branch. */
+function isPdf(src: VisionSource): src is VisionPdf {
+  return src.mediaType === 'application/pdf';
+}
+
+/**
  * Sentinel error subclass for image-validation failures. Routes catch this
  * to return a 400 with a friendly message instead of letting Anthropic
  * reject the request (which would burn an API call and surface an opaque
@@ -175,6 +196,68 @@ function validateImage(image: VisionImage): void {
   }
 }
 
+// ── PDF validation ─────────────────────────────────────────────────────────
+//
+// Mirrors the image validation: decode the base64, sanity-check the byte
+// length, and match the leading magic bytes ("%PDF-") so a mislabeled or
+// garbage payload is rejected here (a friendly 400) instead of burning an
+// Anthropic call. Reuses VisionImageInvalidError so route error-mapping is
+// unchanged.
+//
+// 4MB decoded cap (tighter than the 5MB image cap): the whole request body
+// travels through Vercel, which caps serverless request bodies at ~4.5MB. A
+// base64 PDF is ~1.33× its decoded size, so a 4MB decoded PDF is already
+// ~5.3MB on the wire — right at the edge. Keeping the decoded ceiling at 4MB
+// leaves a little headroom before Vercel rejects the request outright. A real
+// multi-page supplier invoice PDF is well under this.
+const VISION_PDF_MAX_DECODED_BYTES = 4 * 1024 * 1024;
+const VISION_PDF_MIN_DECODED_BYTES = 256;
+
+// %PDF- — 0x25 0x50 0x44 0x46 0x2D. Every conforming PDF begins with this
+// header (optionally after a few junk bytes, but real exports lead with it).
+function pdfMagicOk(b: Uint8Array): boolean {
+  return (
+    b.length >= 5 &&
+    b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d
+  );
+}
+
+function validatePdf(pdf: VisionPdf): void {
+  if (typeof pdf.data !== 'string' || pdf.data.length === 0) {
+    throw new VisionImageInvalidError('empty PDF data');
+  }
+  // Reject data-URL prefixes — callers must strip them first (same trap as the
+  // image path: a sneaked-in "data:application/pdf;base64," corrupts the decode
+  // and masks the magic-byte check).
+  if (pdf.data.startsWith('data:')) {
+    throw new VisionImageInvalidError('data URL prefix not allowed; pass raw base64');
+  }
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(pdf.data, 'base64');
+  } catch {
+    throw new VisionImageInvalidError('not valid base64');
+  }
+  if (decoded.length < VISION_PDF_MIN_DECODED_BYTES) {
+    throw new VisionImageInvalidError(
+      `decoded payload is only ${decoded.length} bytes — too small to be a real PDF`,
+    );
+  }
+  if (decoded.length > VISION_PDF_MAX_DECODED_BYTES) {
+    throw new VisionImageInvalidError(
+      `decoded PDF is ${(decoded.length / 1024 / 1024).toFixed(1)}MB; ` +
+      `max is ${VISION_PDF_MAX_DECODED_BYTES / 1024 / 1024}MB. ` +
+      `Split the PDF or scan fewer pages at a time.`,
+    );
+  }
+  if (!pdfMagicOk(decoded)) {
+    throw new VisionImageInvalidError(
+      `payload does not start with valid PDF bytes (%PDF-) ` +
+      `(file may be corrupt or mislabeled)`,
+    );
+  }
+}
+
 /**
  * Send an image + a text prompt to Claude. Returns the model's text response.
  * The prompt should instruct the model to return JSON; the caller is
@@ -240,13 +323,40 @@ function estimateVisionCostUsd(inputTokens: number, outputTokens: number): numbe
 }
 
 export async function visionExtractText(
-  image: VisionImage,
+  source: VisionSource,
   prompt: string,
   onUsage?: (usage: VisionUsageReport) => void,
 ): Promise<string> {
   // Validate BEFORE we burn an API call. Throws VisionImageInvalidError
-  // which routes catch to return a structured 400.
-  validateImage(image);
+  // which routes catch to return a structured 400. PDFs go through the
+  // parallel PDF validator (magic bytes + tighter size cap); images keep
+  // the existing per-format magic-byte checks.
+  if (isPdf(source)) {
+    validatePdf(source);
+  } else {
+    validateImage(source);
+  }
+  // Build the media content block: a `document` block for PDFs (the model
+  // reads all pages in one call), an `image` block otherwise. Both are valid
+  // ContentBlockParam members in the installed SDK (@anthropic-ai/sdk 0.96.0 —
+  // Base64PDFSource + DocumentBlockParam), so no assertion is needed.
+  const mediaBlock: Anthropic.ContentBlockParam = isPdf(source)
+    ? {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: source.data,
+        },
+      }
+    : {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: source.mediaType,
+          data: source.data,
+        },
+      };
   const client = getClient();
   const response = await client.messages.create(
     {
@@ -256,14 +366,7 @@ export async function visionExtractText(
         {
           role: 'user',
           content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: image.mediaType,
-                data: image.data,
-              },
-            },
+            mediaBlock,
             { type: 'text', text: prompt },
           ],
         },
@@ -342,12 +445,12 @@ export class VisionSchemaError extends Error {
  * old unchecked-cast behavior (deprecated for new callers).
  */
 export async function visionExtractJSON<T>(
-  image: VisionImage,
+  source: VisionSource,
   prompt: string,
   validate?: (raw: unknown) => T,
   onUsage?: (usage: VisionUsageReport) => void,
 ): Promise<T> {
-  const text = await visionExtractText(image, prompt, onUsage);
+  const text = await visionExtractText(source, prompt, onUsage);
 
   const validated = (raw: unknown): T => {
     if (validate) return validate(raw);

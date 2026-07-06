@@ -48,9 +48,20 @@ function ssStrings(lang: Lang) {
       dropInvoicePhoto: 'Drop an invoice photo here',
       dropHint: "A photo or screenshot. We'll read the lines and match them to your inventory — you confirm before anything saves.",
       reading: 'Reading…',
-      choosePhoto: 'Choose photo…',
-      pdfHint: 'PDF invoice? Screenshot the page and upload the image.',
+      choosePhoto: 'Choose file…',
+      pdfHint: 'PDF invoices work too — pick the file and we’ll read every page.',
       tryAnotherPhoto: 'Try another photo',
+      // Staging step — one or more pages / a single PDF before scanning.
+      pageN: (n: number) => `Page ${n}`,
+      addAnotherPage: '＋ Add another page',
+      removePage: (n: number) => `Remove page ${n}`,
+      removePdf: 'Remove PDF',
+      scanInvoiceAction: 'Scan invoice',
+      maxPagesReached: 'That’s the limit — 5 pages per scan.',
+      onePdfPerScan: 'A PDF scans on its own — remove it to add photo pages instead.',
+      pdfTooBig: 'That PDF is too large (over 4 MB). Photograph the pages and add them instead.',
+      heicUnsupported: 'That photo format (HEIC) can’t be read here — use a JPG or PNG, or take a fresh photo.',
+      notAnImage: 'That file isn’t a photo or PDF — pick an image or a PDF.',
       savedMsg: (n: number) => `Saved. Stock updated and the delivery logged for ${n} item${n === 1 ? '' : 's'}.`,
       done: 'Done',
       dupWarn: "This invoice looks like it may already be recorded. You can still save it if it's a new delivery.",
@@ -95,9 +106,20 @@ function ssStrings(lang: Lang) {
       dropInvoicePhoto: 'Suelta una foto de la factura aquí',
       dropHint: 'Una foto o captura. Leemos las líneas y las emparejamos con tu inventario — tú confirmas antes de que se guarde algo.',
       reading: 'Leyendo…',
-      choosePhoto: 'Elegir foto…',
-      pdfHint: '¿Factura en PDF? Toma una captura de la página y sube la imagen.',
+      choosePhoto: 'Elegir archivo…',
+      pdfHint: 'También sirven las facturas en PDF — elige el archivo y leemos todas las páginas.',
       tryAnotherPhoto: 'Probar otra foto',
+      // Paso de preparación — una o varias páginas / un solo PDF antes de escanear.
+      pageN: (n: number) => `Página ${n}`,
+      addAnotherPage: '＋ Agregar otra página',
+      removePage: (n: number) => `Quitar página ${n}`,
+      removePdf: 'Quitar PDF',
+      scanInvoiceAction: 'Escanear factura',
+      maxPagesReached: 'Ese es el límite — 5 páginas por escaneo.',
+      onePdfPerScan: 'Un PDF se escanea solo — quítalo para agregar páginas de fotos.',
+      pdfTooBig: 'Ese PDF es demasiado grande (más de 4 MB). Fotografía las páginas y agrégalas.',
+      heicUnsupported: 'Ese formato de foto (HEIC) no se puede leer aquí — usa un JPG o PNG, o toma una foto nueva.',
+      notAnImage: 'Ese archivo no es una foto ni un PDF — elige una imagen o un PDF.',
       savedMsg: (n: number) => `Guardado. Stock actualizado y entrega registrada para ${n} artículo${n === 1 ? '' : 's'}.`,
       done: 'Listo',
       dupWarn: 'Esta factura parece que ya está registrada. Puedes guardarla de todas formas si es una entrega nueva.',
@@ -169,6 +191,50 @@ interface ReviewRow {
 const numGuard = (v: string) => v === '' || /^\d*\.?\d*$/.test(v);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+// Staging model for the upload step. The scan can carry EITHER a set of image
+// pages (1..5) OR a single PDF — never both (the backend contract is one shape
+// per request, and mixing a PDF with photos has no meaning). We keep the two
+// in one discriminated union so the "no mixing" rule is impossible to violate.
+const MAX_PAGES = 5;
+const PDF_MAX_BYTES = 4 * 1024 * 1024; // 4 MB — mirrors the route's file cap.
+// One staged image page: the File plus an object-URL for its thumbnail. The URL
+// is revoked when the page is removed or the sheet resets, so we don't leak.
+interface StagedPage { file: File; url: string; }
+type Staged =
+  | { kind: 'none' }
+  | { kind: 'images'; pages: StagedPage[] }
+  | { kind: 'pdf'; file: File };
+
+// A File is HEIC/HEIF if the browser reports the type or the name ends in the
+// extension (Safari sometimes hands us an empty type). Anthropic Vision can't
+// read these, and canvas decode fails silently on some devices — reject at pick
+// time with a clear message rather than a generic "upload failed" later.
+function isHeic(file: File): boolean {
+  const t = (file.type || '').toLowerCase();
+  if (t === 'image/heic' || t === 'image/heif') return true;
+  return /\.(heic|heif)$/i.test(file.name);
+}
+function isPdf(file: File): boolean {
+  return (file.type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name);
+}
+function isImage(file: File): boolean {
+  return (file.type || '').toLowerCase().startsWith('image/');
+}
+
+// Read a File as base64 with no data: prefix (the route wants the raw payload).
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('file read failed'));
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function scanErrorFor(lang: Lang, status: number, err?: string): string {
   const ss = ssStrings(lang);
   if (status === 422) return ss.errTooMany;
@@ -211,6 +277,12 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
 
   const [phase, setPhase] = useState<ScanPhase>('upload');
   const [errorText, setErrorText] = useState('');
+  // Staged file(s) waiting on the manager to press "Scan invoice". Held in a ref
+  // for cleanup (revoking object-URLs) alongside the state that drives the view.
+  const [staged, setStaged] = useState<Staged>({ kind: 'none' });
+  const stagedRef = useRef<Staged>(staged);
+  stagedRef.current = staged;
+  const [stageNote, setStageNote] = useState(''); // brief inline message (max reached, no-mix, size…)
   const [vendor, setVendor] = useState('');
   const [invoiceDate, setInvoiceDate] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
@@ -232,10 +304,20 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     return m;
   }, [display]);
 
+  // Revoke every thumbnail object-URL currently staged. Called on reset/close
+  // and unmount so we never leak blob URLs (esp. across repeated open/close).
+  const clearStaged = () => {
+    const cur = stagedRef.current;
+    if (cur.kind === 'images') for (const p of cur.pages) URL.revokeObjectURL(p.url);
+    setStaged({ kind: 'none' });
+    setStageNote('');
+  };
+
   useEffect(() => {
     if (!open) return;
     setPhase('upload');
     setErrorText('');
+    clearStaged();
     setVendor('');
     setInvoiceDate('');
     setInvoiceNumber(null);
@@ -244,6 +326,13 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     setBanner('');
     progressRef.current = { createdIds: new Map(), orderedKeys: new Set(), stockedIds: new Set() };
   }, [open]);
+
+  // Belt-and-suspenders: revoke any staged thumbnails if the sheet unmounts
+  // while pages are staged (open/close resets already handle the common path).
+  useEffect(() => () => {
+    const cur = stagedRef.current;
+    if (cur.kind === 'images') for (const p of cur.pages) URL.revokeObjectURL(p.url);
+  }, []);
 
   const onHandFor = (itemId: string | null) =>
     itemId ? Math.max(0, Math.round(byId.get(itemId)?.estimated ?? 0)) : 0;
@@ -277,18 +366,118 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
 
   const handlePick = () => fileRef.current?.click();
 
-  const handleFile = async (file: File) => {
+  // Fold newly-picked files into the staged set, enforcing the four rules:
+  //   1. PDF staged → picking anything more just shows the "PDF scans alone" note.
+  //   2. images staged + a PDF picked → same note (no mixing).
+  //   3. a single fresh PDF (nothing staged) → stage it, drop any pages.
+  //   4. images → append up to MAX_PAGES; extras beyond the cap are ignored w/ a note.
+  // HEIC and non-image/non-PDF files are rejected here with their own message.
+  const addFiles = (files: File[]) => {
+    if (files.length === 0) return;
+    setStageNote('');
+    const cur = stagedRef.current;
+
+    // A PDF is already staged — one PDF per scan, no appending.
+    if (cur.kind === 'pdf') {
+      setStageNote(ss.onePdfPerScan);
+      return;
+    }
+
+    const pdf = files.find(isPdf);
+    if (pdf) {
+      // Mixing rule: a PDF can only be staged on its own. If images are already
+      // staged (or the manager picked images + a PDF together), refuse the PDF.
+      if (cur.kind === 'images' || files.some((f) => isImage(f) && !isPdf(f))) {
+        setStageNote(ss.onePdfPerScan);
+        return;
+      }
+      if (pdf.size > PDF_MAX_BYTES) {
+        setStageNote(ss.pdfTooBig);
+        return;
+      }
+      setStaged({ kind: 'pdf', file: pdf });
+      return;
+    }
+
+    // Image path — validate each, then append respecting the 5-page cap.
+    const existing = cur.kind === 'images' ? cur.pages : [];
+    const room = MAX_PAGES - existing.length;
+    const additions: StagedPage[] = [];
+    let rejectedHeic = false;
+    let rejectedType = false;
+    let overflowed = false;
+    for (const f of files) {
+      if (!isImage(f)) { rejectedType = true; continue; }
+      if (isHeic(f)) { rejectedHeic = true; continue; }
+      if (additions.length >= room) { overflowed = true; continue; }
+      additions.push({ file: f, url: URL.createObjectURL(f) });
+    }
+
+    if (additions.length > 0) {
+      setStaged({ kind: 'images', pages: [...existing, ...additions] });
+    }
+    // Surface the most actionable message (order: bad type → HEIC → cap hit).
+    if (rejectedType) setStageNote(ss.notAnImage);
+    else if (rejectedHeic) setStageNote(ss.heicUnsupported);
+    else if (overflowed) setStageNote(ss.maxPagesReached);
+  };
+
+  const removePage = (idx: number) => {
+    const cur = stagedRef.current;
+    if (cur.kind !== 'images') return;
+    const target = cur.pages[idx];
+    if (target) URL.revokeObjectURL(target.url);
+    const next = cur.pages.filter((_, i) => i !== idx);
+    setStaged(next.length > 0 ? { kind: 'images', pages: next } : { kind: 'none' });
+    setStageNote('');
+  };
+
+  // Drag-drop onto the dropzone / staging area — same append rules as picking.
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (phase !== 'upload') return;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length > 0) addFiles(files);
+  };
+
+  // Any close/back affordance (✕, ESC, click-outside, Cancel) releases staged
+  // pages and their thumbnails before delegating to the parent's onClose, so
+  // closing mid-stage never leaks blob URLs or carries pages into a reopen.
+  const handleClose = () => {
+    clearStaged();
+    onClose();
+  };
+
+  // Submit the staged file(s). Images → resize EACH page (same 1600px long-edge
+  // treatment the single-image path used) and send { pid, pages: [...] }. PDF →
+  // read raw base64 and send { pid, pdfBase64 }. Everything downstream (reading/
+  // review/commit) is unchanged — the response shape is identical either way.
+  const handleScan = async () => {
     if (!user || !activePropertyId) return;
+    const cur = stagedRef.current;
+    if (cur.kind === 'none') return;
     setPhase('reading');
     setErrorText('');
     try {
-      // Resize before upload — Vision bills per pixel area; 1600px long-edge
-      // keeps small receipt text legible at ~1/4 the cost of a raw photo.
-      const resized = await resizeImageForVision(file);
+      let body: string;
+      if (cur.kind === 'images') {
+        // Resize before upload — Vision bills per pixel area; 1600px long-edge
+        // keeps small receipt text legible at ~1/4 the cost of a raw photo.
+        const pages = await Promise.all(
+          cur.pages.map(async (p) => {
+            const resized = await resizeImageForVision(p.file);
+            return { imageBase64: resized.base64, mediaType: resized.mediaType };
+          }),
+        );
+        body = JSON.stringify({ pid: activePropertyId, pages });
+      } else {
+        const pdfBase64 = await fileToBase64(cur.file);
+        body = JSON.stringify({ pid: activePropertyId, pdfBase64 });
+      }
       const res = await fetchWithAuth('/api/inventory/scan-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid: activePropertyId, imageBase64: resized.base64, mediaType: resized.mediaType }),
+        body,
       });
       const json = (await res.json()) as {
         ok?: boolean;
@@ -315,6 +504,9 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       const num = (json.invoice_number ?? '').trim();
       setInvoiceNumber(num || null);
       setBanner('');
+      // Scan accepted — the staged files (and their thumbnails) are done with;
+      // release them so we don't hold blob URLs through the review/commit phases.
+      clearStaged();
       setPhase('review');
 
       // Warning-only duplicate check (no invoice_number column to hard-guard on).
@@ -458,7 +650,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
   return (
     <Overlay
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       eyebrow={ss.scanInvoice}
       italic={reviewing ? ss.reviewSave : phase === 'done' ? ss.saved : ss.dropOneIn}
       suffix={reviewing ? `${matchedCount} ${ss.matched} · ${createCount} ${ss.new} · ${skipCount} ${ss.skipped}` : ss.autoUpdateStock}
@@ -467,7 +659,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       footer={
         reviewing ? (
           <>
-            <Btn variant="ghost" size="md" onClick={onClose} disabled={phase === 'committing'}>
+            <Btn variant="ghost" size="md" onClick={handleClose} disabled={phase === 'committing'}>
               {ss.cancel}
             </Btn>
             <Btn variant="primary" size="md" onClick={handleCommit} disabled={phase === 'committing' || actionable === 0}>
@@ -479,41 +671,219 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     >
       {(phase === 'upload' || phase === 'reading') && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div
-            style={{
-              border: `1px dashed ${T.rule}`,
-              borderRadius: 14,
-              padding: '40px 24px',
-              textAlign: 'center',
-              background: 'repeating-linear-gradient(135deg, rgba(24,22,17,0.03) 0 10px, transparent 10px 20px)',
+          {/* Hidden picker — images (multi) AND PDFs. addFiles enforces the
+              1-PDF / max-5-images / no-mixing rules; the same rules apply to
+              drag-drop below. */}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*,application/pdf,.pdf"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) addFiles(files);
+              e.target.value = '';
             }}
-          >
-            <div style={{ fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
-              {ss.dropInvoicePhoto}
+          />
+
+          {staged.kind === 'none' ? (
+            // ── Empty dropzone ──────────────────────────────────────────────
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDrop}
+              style={{
+                border: `1px dashed ${T.rule}`,
+                borderRadius: 14,
+                padding: '40px 24px',
+                textAlign: 'center',
+                background: 'repeating-linear-gradient(135deg, rgba(24,22,17,0.03) 0 10px, transparent 10px 20px)',
+              }}
+            >
+              <div style={{ fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
+                {ss.dropInvoicePhoto}
+              </div>
+              <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, margin: '8px 0 0' }}>
+                {ss.dropHint}
+              </div>
+              <div style={{ marginTop: 16 }}>
+                <Btn variant="primary" size="md" onClick={handlePick}>
+                  {ss.choosePhoto}
+                </Btn>
+              </div>
+              <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, marginTop: 12 }}>
+                {ss.pdfHint}
+              </div>
             </div>
-            <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, margin: '8px 0 0' }}>
-              {ss.dropHint}
+          ) : (
+            // ── Staging view: thumbnails / PDF card + add + scan ────────────
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDrop}
+              style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+            >
+              {staged.kind === 'images' ? (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {staged.pages.map((p, i) => (
+                    <div
+                      key={p.url}
+                      style={{
+                        position: 'relative',
+                        width: 128,
+                        borderRadius: 12,
+                        border: `1px solid ${T.rule}`,
+                        background: T.paper,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={p.url}
+                        alt={ss.pageN(i + 1)}
+                        style={{ display: 'block', width: '100%', height: 128, objectFit: 'cover' }}
+                      />
+                      <button
+                        type="button"
+                        aria-label={ss.removePage(i + 1)}
+                        onClick={() => removePage(i)}
+                        disabled={phase === 'reading'}
+                        style={{
+                          position: 'absolute',
+                          top: 6,
+                          right: 6,
+                          width: 24,
+                          height: 24,
+                          borderRadius: 12,
+                          border: 'none',
+                          background: 'rgba(24,22,17,0.72)',
+                          color: '#FFFFFF',
+                          fontFamily: fonts.sans,
+                          fontSize: 15,
+                          lineHeight: 1,
+                          cursor: phase === 'reading' ? 'not-allowed' : 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        ×
+                      </button>
+                      <div
+                        style={{
+                          padding: '6px 8px',
+                          fontFamily: fonts.mono,
+                          fontSize: 10.5,
+                          letterSpacing: '0.04em',
+                          color: T.ink2,
+                          borderTop: `1px solid ${T.ruleSoft}`,
+                        }}
+                      >
+                        {ss.pageN(i + 1)}
+                      </div>
+                    </div>
+                  ))}
+
+                  {staged.pages.length < MAX_PAGES && (
+                    <button
+                      type="button"
+                      onClick={handlePick}
+                      disabled={phase === 'reading'}
+                      style={{
+                        width: 128,
+                        height: 158,
+                        borderRadius: 12,
+                        border: `1px dashed ${T.rule}`,
+                        background: T.bg,
+                        color: T.ink2,
+                        fontFamily: fonts.sans,
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        cursor: phase === 'reading' ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textAlign: 'center',
+                        padding: '0 10px',
+                      }}
+                    >
+                      {ss.addAnotherPage}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                // Single PDF card — document glyph + name + size. No add button.
+                <div
+                  style={{
+                    position: 'relative',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 14,
+                    padding: '16px 18px',
+                    borderRadius: 12,
+                    border: `1px solid ${T.rule}`,
+                    background: T.paper,
+                  }}
+                >
+                  <svg width="34" height="42" viewBox="0 0 34 42" fill="none" aria-hidden="true" style={{ flex: 'none' }}>
+                    <path d="M3 3.5A2.5 2.5 0 0 1 5.5 1h16L31 10.5V38.5A2.5 2.5 0 0 1 28.5 41H5.5A2.5 2.5 0 0 1 3 38.5V3.5Z" fill={T.ruleSoft} stroke={T.rule} strokeWidth="1.5" />
+                    <path d="M21.5 1v9.5H31" stroke={T.rule} strokeWidth="1.5" fill="none" />
+                    <text x="17" y="30" textAnchor="middle" fontFamily={fonts.mono} fontSize="8.5" fontWeight="700" fill={T.terra}>PDF</text>
+                  </svg>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {staged.file.name}
+                    </div>
+                    <div style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, marginTop: 3 }}>
+                      {(staged.file.size / (1024 * 1024)).toFixed(2)} MB
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={ss.removePdf}
+                    onClick={clearStaged}
+                    disabled={phase === 'reading'}
+                    style={{
+                      width: 26,
+                      height: 26,
+                      borderRadius: 13,
+                      border: `1px solid ${T.rule}`,
+                      background: T.bg,
+                      color: T.ink2,
+                      fontFamily: fonts.sans,
+                      fontSize: 15,
+                      lineHeight: 1,
+                      cursor: phase === 'reading' ? 'not-allowed' : 'pointer',
+                      flex: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              {stageNote && (
+                <div style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
+                  {stageNote}
+                </div>
+              )}
+
+              <div>
+                <Btn variant="primary" size="md" onClick={handleScan} disabled={phase === 'reading'}>
+                  {phase === 'reading' ? ss.reading : ss.scanInvoiceAction}
+                </Btn>
+              </div>
             </div>
-            <div style={{ marginTop: 16 }}>
-              <Btn variant="primary" size="md" onClick={handlePick} disabled={phase === 'reading'}>
-                {phase === 'reading' ? ss.reading : ss.choosePhoto}
-              </Btn>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void handleFile(f);
-                  e.target.value = '';
-                }}
-              />
+          )}
+
+          {/* Note shown on the empty dropzone too (e.g. rejected a lone bad file). */}
+          {staged.kind === 'none' && stageNote && (
+            <div style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
+              {stageNote}
             </div>
-            <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, marginTop: 12 }}>
-              {ss.pdfHint}
-            </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -558,7 +928,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
             {ss.savedMsg(matchedCount + createCount)}
           </div>
           <div>
-            <Btn variant="primary" size="md" onClick={onClose}>
+            <Btn variant="primary" size="md" onClick={handleClose}>
               {ss.done}
             </Btn>
           </div>
