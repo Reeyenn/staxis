@@ -107,11 +107,12 @@ describe('approval tier completeness', () => {
   // confirmation. They declare no `surfaces` → default chat-only; this pins that
   // so a future edit can't accidentally add 'voice' and bypass the gate.
   //
-  // NOTE: some PRE-EXISTING voice tools (createMaintenanceWorkOrder,
-  // log_complaint, and the quick-tier floor tools) are intentionally voice-
-  // exposed and run without a card — that is the established voice UX and out of
-  // scope for this branch. See the spawned follow-up for closing that broader
-  // gap (voice-side approval / confirmation).
+  // NOTE: the voice-side gap this note used to describe is now CLOSED by the
+  // voice approval gate (feature/voice-approval): card-tier voice mutations
+  // (createMaintenanceWorkOrder, log_complaint) are HELD by streamAgent's
+  // voiceApprovalMode and read back for a spoken "yes" before running; quick-
+  // tier voice mutations still run inline. See the confirm/cancel control-tool
+  // assertions below and agent-voice-approval-gate.test.ts.
   test('the new comms mutation tools are NOT exposed on the voice surface (un-gated bypass)', () => {
     const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
     const NEW_COMMS = new Set(['send_message', 'create_todo', 'add_logbook_entry', 'post_announcement']);
@@ -184,5 +185,59 @@ describe('approval tier completeness', () => {
       [...leaked], [],
       `these new mutation tools are reachable UN-GATED on the voice surface: ${[...leaked].join(', ')}`,
     );
+  });
+
+  // ── Voice approval gate: control tools + card-tier gating ───────────────────
+  // feature/voice-approval. The confirm/cancel control tools are the spoken
+  // half of the gate. They MUST be voice-only (chat-excluded) and mutates:false
+  // (so the gate's partitionGatedCalls can never hold them — a confirm can't
+  // itself need confirming). And every card-tier VOICE mutation must be gated.
+  test('confirm/cancel are voice-only, mutates:false control tools', () => {
+    const byName = new Map(listAllTools().map((t) => [t.name, t]));
+    for (const name of ['confirm_pending_action', 'cancel_pending_action']) {
+      const tool = byName.get(name);
+      assert.ok(tool, `${name} is not registered`);
+      assert.deepEqual([...(tool!.surfaces ?? [])], ['voice'], `${name} must be voice-only (chat-excluded)`);
+      assert.notEqual(tool!.mutates, true, `${name} must be mutates:false (control-flow, never held by the gate)`);
+      assert.equal(approvalTierFor(name), null, `${name} must carry NO approval tier`);
+      // No voiceModes → available in every voice mode.
+      assert.equal(tool!.voiceModes, undefined, `${name} must be available in all voice modes`);
+    }
+  });
+
+  test('confirm/cancel are NOT reachable on the chat surface', () => {
+    const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
+    const leaked = new Set<string>();
+    for (const role of roles) {
+      for (const t of getToolsForRole(role, 'chat')) {
+        if (t.name === 'confirm_pending_action' || t.name === 'cancel_pending_action') leaked.add(t.name);
+      }
+    }
+    assert.deepEqual([...leaked], [], `confirm/cancel leaked onto chat: ${[...leaked].join(', ')}`);
+  });
+
+  test('every CARD-tier voice mutation is a mutation the voice gate will hold', () => {
+    // The voice gate holds a call when isMutationTool && approvalTierFor === 'card'.
+    // Assert the two known card-tier voice mutations qualify, and that no voice-
+    // exposed card-tier mutation is accidentally mutates:false (which would let
+    // it slip past the gate un-held).
+    const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
+    const voiceCardMutations = new Set<string>();
+    for (const role of roles) {
+      // no-mode lookup surfaces every voice tool regardless of voiceModes
+      for (const t of getToolsForRole(role, 'voice')) {
+        if (t.mutates === true && t.approval === 'card') voiceCardMutations.add(t.name);
+      }
+    }
+    // Ground truth on this branch: log_complaint (general) +
+    // createMaintenanceWorkOrder (housekeeper_issue).
+    assert.ok(voiceCardMutations.has('log_complaint'), 'log_complaint should be a voice card-tier mutation');
+    assert.ok(
+      voiceCardMutations.has('createMaintenanceWorkOrder'),
+      'createMaintenanceWorkOrder should be a voice card-tier mutation',
+    );
+    for (const name of voiceCardMutations) {
+      assert.equal(approvalTierFor(name), 'card', `${name} must be card-tier so the voice gate holds it`);
+    }
   });
 });
