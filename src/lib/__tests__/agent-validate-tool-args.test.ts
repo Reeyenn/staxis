@@ -60,6 +60,17 @@ describe('validateToolArgs', () => {
     assert.strictEqual(r.args.value, 7.4);
   });
 
+  test('rejects an empty / whitespace string for a number field (Number("") trap)', () => {
+    const tool = fakeTool({ type: 'object', properties: { value: { type: 'number' } } });
+    // Number('') and Number('  ') both coerce to 0 — must be rejected, not
+    // silently passed through as zero.
+    assert.equal(validateToolArgs(tool, { value: '' }).ok, false);
+    assert.equal(validateToolArgs(tool, { value: '   ' }).ok, false);
+    // A real zero still passes.
+    assert.equal(validateToolArgs(tool, { value: 0 }).ok, true);
+    assert.strictEqual(validateToolArgs(tool, { value: '0' }).args.value, 0);
+  });
+
   test('enforces enum membership', () => {
     const tool = fakeTool({ type: 'object', properties: { priority: { type: 'string', enum: ['normal', 'high', 'urgent'] } } });
     assert.equal(validateToolArgs(tool, { priority: 'high' }).ok, true);

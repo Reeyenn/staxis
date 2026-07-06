@@ -68,9 +68,18 @@ export function validateToolArgs(
       }
       out[key] = value;
     } else if (t === 'number') {
-      // Accept a numeric string from a form input; coerce.
-      const n = typeof value === 'number' ? value : (typeof value === 'string' ? Number(value) : NaN);
-      if (typeof n !== 'number' || !Number.isFinite(n)) {
+      // Accept a numeric string from a form input; coerce. Reject empty /
+      // whitespace-only strings up front — Number('') and Number('  ') both
+      // coerce to 0, which would silently pass a blank field as zero.
+      let n: number;
+      if (typeof value === 'number') {
+        n = value;
+      } else if (typeof value === 'string') {
+        n = value.trim() === '' ? NaN : Number(value);
+      } else {
+        n = NaN;
+      }
+      if (!Number.isFinite(n)) {
         return { ok: false, args: {}, error: `"${key}" must be a number.` };
       }
       out[key] = n;

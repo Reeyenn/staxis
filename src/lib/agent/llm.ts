@@ -921,7 +921,27 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           // are resolved before resuming.
           const turnKey = calls[0].id;
 
-          // Read-only calls in the same turn still run inline.
+          // Yield the pending-approval proposals FIRST, BEFORE running any
+          // read-only calls of the same turn (code-review finding: ordering).
+          // The route persists a pending row per proposal as it consumes each
+          // event. If we ran read-only calls first and the client aborted in
+          // that window, the mutation proposals would be silently discarded —
+          // no card, no pending row, and the turn would hang until TTL. Staging
+          // the durable proposals up front closes that window. Persistence
+          // order still holds: the route already recorded the assistant turn
+          // (assistant_turn event) before this branch runs, and each
+          // tool_call_pending_approval removes its id from pendingToolCallIds so
+          // the drain doesn't synthesize an abort result for a proposed
+          // mutation. Tier comes from the tool's registry metadata
+          // (server-decided — the client can't downgrade it); default to 'card'
+          // for any mutation missing a tier.
+          for (const call of mutations) {
+            const tier = approvalTierFor(call.name) ?? 'card';
+            yield { type: 'tool_call_pending_approval', call, tier, turnKey };
+          }
+
+          // Read-only calls in the same turn still run inline, AFTER the
+          // mutation proposals are staged.
           for (const call of calls) {
             if (isMutationTool(call.name)) continue;
             if (checkAborted()) {
@@ -934,14 +954,6 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
               dryRun: opts.dryRun,
             });
             yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError: !result.ok };
-          }
-
-          // Each mutation becomes a pending approval card. Tier comes from the
-          // tool's registry metadata (server-decided — the client can't
-          // downgrade it); default to 'card' for any mutation missing a tier.
-          for (const call of mutations) {
-            const tier = approvalTierFor(call.name) ?? 'card';
-            yield { type: 'tool_call_pending_approval', call, tier, turnKey };
           }
 
           // Turn ends here — no `done`. The route holds the stream open only
