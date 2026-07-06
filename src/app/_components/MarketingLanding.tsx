@@ -87,15 +87,37 @@ const OLD_STEPS = [
   { icon: '✍️', text: 'Log it. Again.' },
 ];
 
-/* One page — the app's real pages, orbiting */
+/* One page — the app's real pages, orbiting. Hover a chip and a summary
+   of that operation expands outward, away from the Today card. */
 const ORBIT_PAGES = [
-  { label: 'Dashboard', x: 10, y: 16 },
-  { label: 'Financials', x: 48, y: 4 },
-  { label: 'Housekeeping', x: 82, y: 14 },
-  { label: 'Maintenance', x: 5, y: 58 },
-  { label: 'Inventory', x: 87, y: 56 },
-  { label: 'Staff', x: 18, y: 90 },
-  { label: 'Communications', x: 72, y: 90 },
+  {
+    label: 'Dashboard', x: 10, y: 16, dir: 'left',
+    blurb: 'The morning picture: occupancy, arrivals and departures, today’s labor cost, and anything that needs attention.',
+  },
+  {
+    label: 'Financials', x: 48, y: 4, dir: 'up',
+    blurb: 'Labor costs, spending, and cost per occupied room, tracked for you. No spreadsheet, no formulas.',
+  },
+  {
+    label: 'Housekeeping', x: 82, y: 14, dir: 'right',
+    blurb: 'The live board: every room, every cleaner, statuses flipping as guests check out. Deep cleans scheduled and tracked.',
+  },
+  {
+    label: 'Maintenance', x: 8, y: 58, dir: 'left',
+    blurb: 'Work orders logged in seconds, assigned automatically, and tracked until the room is back in service.',
+  },
+  {
+    label: 'Inventory', x: 86, y: 56, dir: 'right',
+    blurb: 'Counts, par levels, and burn rates, with reorders drafted before you run out and checked against your budget.',
+  },
+  {
+    label: 'Staff', x: 18, y: 90, dir: 'down',
+    blurb: 'Your roster and schedules, with tomorrow’s crew confirmed by text in each person’s language.',
+  },
+  {
+    label: 'Communications', x: 72, y: 90, dir: 'down',
+    blurb: 'Team messages and a log book that writes itself, so nothing gets lost between shifts.',
+  },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -338,7 +360,7 @@ export default function MarketingLanding() {
 
         <div className="vs rv">
           <div className="vs-col nightmare">
-            <div className="vs-tag bad-tag">TODAY · THE NIGHTMARE</div>
+            <div className="vs-tag bad-tag">TODAY</div>
             <h3 className="vs-title">You go <em>find</em> the work.</h3>
             <p className="vs-sub">Take one thing. Towels.</p>
             <div className="oldway">
@@ -378,7 +400,7 @@ export default function MarketingLanding() {
           </div>
 
           <div className="vs-col dreamside">
-            <div className="vs-tag good-tag">WITH STAXIS · THE DREAM</div>
+            <div className="vs-tag good-tag">WITH STAXIS</div>
             <h3 className="vs-title sage-title">The work comes <em>to you.</em></h3>
             <p className="vs-sub">Same towels.</p>
             <div className="notif-stage" ref={notifRef}>
@@ -458,6 +480,11 @@ export default function MarketingLanding() {
               style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
             >
               {p.label}
+              <span className={`chip-pop pop-${p.dir}`}>
+                <b>{p.label}</b>
+                {p.blurb}
+                <i>LIVE IN THE APP</i>
+              </span>
             </span>
           ))}
           <div className="today">
@@ -1023,14 +1050,45 @@ const CSS = `
 @keyframes march { to { stroke-dashoffset: -8.8; } }
 .orbit-chip { position: absolute; transform: translate(-50%, -50%);
   font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;
-  background: #fff; border: 1px solid var(--rule); border-radius: 999px;
-  padding: 9px 16px; box-shadow: 0 6px 18px rgba(31,35,28,.08);
-  animation: chipfloat 6s ease-in-out infinite; }
+  text-transform: uppercase; color: var(--dim); white-space: nowrap;
+  background: #FAFAF7; border: 1px solid var(--rule-soft); border-radius: 999px;
+  padding: 9px 16px; box-shadow: 0 4px 12px rgba(31,35,28,.05); cursor: default;
+  animation: chipfloat 6s ease-in-out infinite;
+  transition: color .25s ease, background .25s ease, border-color .25s ease,
+    box-shadow .25s ease; }
+.orbit-chip:hover { color: var(--ink); background: #fff;
+  border-color: var(--sage); box-shadow: 0 14px 34px rgba(31,35,28,.14);
+  animation-play-state: paused; z-index: 5; }
 @keyframes chipfloat {
   0%,100% { margin-top: 0; }
   50% { margin-top: -9px; }
 }
+
+/* hover summary — expands outward, away from the Today card */
+.chip-pop { position: absolute; width: 240px; white-space: normal;
+  text-transform: none; letter-spacing: 0; font-family: var(--sans);
+  font-size: 13px; line-height: 1.55; color: var(--muted); text-align: left;
+  background: #fff; border: 1px solid var(--rule); border-radius: 14px;
+  padding: 16px 18px; box-shadow: 0 24px 54px rgba(31,35,28,.16);
+  opacity: 0; pointer-events: none; z-index: 6;
+  transition: opacity .3s cubic-bezier(.19,1,.22,1), transform .35s cubic-bezier(.34,1.56,.64,1); }
+.chip-pop b { display: block; font-family: var(--serif); font-weight: 400;
+  font-size: 19px; color: var(--ink); margin-bottom: 6px; letter-spacing: -.005em; }
+.chip-pop i { display: block; font-style: normal; font-family: var(--mono);
+  font-size: 9px; letter-spacing: .18em; color: var(--sage-deep); margin-top: 12px; }
+.orbit-chip:hover .chip-pop { opacity: 1; pointer-events: auto; }
+.pop-left { right: calc(100% + 12px); top: 50%;
+  transform: translateY(-50%) scale(.6); transform-origin: right center; }
+.orbit-chip:hover .pop-left { transform: translateY(-50%) scale(1); }
+.pop-right { left: calc(100% + 12px); top: 50%;
+  transform: translateY(-50%) scale(.6); transform-origin: left center; }
+.orbit-chip:hover .pop-right { transform: translateY(-50%) scale(1); }
+.pop-up { bottom: calc(100% + 12px); left: 50%;
+  transform: translateX(-50%) scale(.6); transform-origin: center bottom; }
+.orbit-chip:hover .pop-up { transform: translateX(-50%) scale(1); }
+.pop-down { top: calc(100% + 12px); left: 50%;
+  transform: translateX(-50%) scale(.6); transform-origin: center top; }
+.orbit-chip:hover .pop-down { transform: translateX(-50%) scale(1); }
 .today { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: 340px; max-width: 82%; background: #fff; border: 1px solid var(--rule);
   border-radius: 18px; padding: 20px;
@@ -1053,7 +1111,8 @@ const CSS = `
   .orbit { height: auto; display: flex; flex-flow: row wrap; justify-content: center;
     align-items: center; gap: 14px; }
   .orbit-lines { display: none; }
-  .orbit-chip { position: static; transform: none; }
+  .orbit-chip { position: static; transform: none; color: var(--ink-soft); }
+  .chip-pop { display: none; }
   .today { position: static; transform: none; width: 100%; max-width: 420px;
     flex: none; order: -1; margin-bottom: 12px; }
 }
