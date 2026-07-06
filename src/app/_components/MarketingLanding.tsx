@@ -106,19 +106,27 @@ const ORBIT_PAGES = [
 function ChipDemo({ id, sub }: { id: string; sub: number }) {
   if (id === 'dashboard') {
     return (
-      <div className="ap">
-        <div className="ap-rail">
-          {['Occupancy', 'Revenue', 'ADR', 'RevPAR', 'Profit'].map((k, i) => (
-            <span className={`ap-railbtn ${i === 0 ? 'on' : ''}`} key={k}>{k}</span>
-          ))}
-        </div>
-        <div className="ap-card ap-ringrow">
-          <div className="ap-ring big" />
-          <div className="ap-ringlegend">
-            <span><i className="lg l-occ" />Occupied · 38</span>
-            <span><i className="lg l-arr" />Arriving · 8</span>
-            <span><i className="lg l-dep" />Departing · 6</span>
-            <span><i className="lg l-dirty" />Dirty · 5</span>
+      <div className="ap wide">
+        <div className="ap-cols">
+          <div className="ap-card ap-ringrow" style={{ flex: 'none' }}>
+            <div className="ap-ring big" />
+            <div className="ap-ringlegend">
+              <span><i className="lg l-occ" />Occupied · 38</span>
+              <span><i className="lg l-arr" />Arriving · 8</span>
+              <span><i className="lg l-dep" />Departing · 6</span>
+              <span><i className="lg l-dirty" />Dirty · 5</span>
+            </div>
+          </div>
+          <div className="ap-card ap-chart">
+            <div className="ap-rail">
+              {['Occupancy', 'Revenue', 'ADR', 'RevPAR'].map((k, i) => (
+                <span className={`ap-railbtn ${i === 0 ? 'on' : ''}`} key={k}>{k}</span>
+              ))}
+            </div>
+            <svg viewBox="0 0 220 60" preserveAspectRatio="none">
+              <polyline points="0,44 25,40 50,42 75,32 100,35 125,24 150,28 175,18 200,22 220,14" />
+              <circle cx="200" cy="22" r="3" />
+            </svg>
           </div>
         </div>
         <div className="ap-h">RIGHT NOW</div>
@@ -333,27 +341,39 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
         </div>
       );
     }
+    /* exact mini of the real screen: 4 priority lanes side by side */
     return (
-      <div className="ap">
+      <div className="ap wide">
         <div className="ap-serif">Work orders · today</div>
-        <div className="ap-laneh"><i className="lane-dot ld-warm" />URGENT · 1</div>
-        <div className="ap-card ap-wo wo-warm">
-          <div className="ap-wo-mid">Room 118 · AC not cooling<span>Luis · 2h ago</span></div>
-          <span className="ap-pill p-prog">In progress</span>
-        </div>
-        <div className="ap-laneh"><i className="lane-dot ld-car" />NORMAL · 2</div>
-        <div className="ap-card ap-wo wo-car">
-          <div className="ap-wo-mid">Room 204 · Shower drip<span>Unassigned · 4h ago</span></div>
-          <span className="ap-pill p-open">Open</span>
-        </div>
-        <div className="ap-card ap-wo wo-car">
-          <div className="ap-wo-mid">Hallway 3 · Bulb out<span>Luis · yesterday</span></div>
-          <span className="ap-pill p-done">Fixed</span>
-        </div>
-        <div className="ap-laneh"><i className="lane-dot ld-pur" />PROFESSIONAL · 1</div>
-        <div className="ap-card ap-wo wo-pur">
-          <div className="ap-wo-mid">Boiler room · Annual service<span>Contractor scheduled</span></div>
-          <span className="ap-pill p-prog">Pro</span>
+        <div className="ap-lanes">
+          <div className="ap-lane">
+            <div className="ap-laneh"><i className="lane-dot ld-sage" />LOW · 1</div>
+            <div className="ap-card ap-wo">
+              <div className="ap-wo-mid">Lobby · Door closer slow<span>Unassigned · 2d</span></div>
+            </div>
+          </div>
+          <div className="ap-lane">
+            <div className="ap-laneh"><i className="lane-dot ld-car" />NORMAL · 2</div>
+            <div className="ap-card ap-wo wo-car">
+              <div className="ap-wo-mid">204 · Shower drip<span>Unassigned · 4h</span></div>
+            </div>
+            <div className="ap-card ap-wo wo-car">
+              <div className="ap-wo-mid">Hall 3 · Bulb out<span>Luis · 1d</span></div>
+            </div>
+          </div>
+          <div className="ap-lane">
+            <div className="ap-laneh"><i className="lane-dot ld-warm" />URGENT · 1</div>
+            <div className="ap-card ap-wo wo-warm">
+              <div className="ap-wo-mid">118 · AC not cooling<span>Luis · 2h</span></div>
+            </div>
+          </div>
+          <div className="ap-lane">
+            <div className="ap-laneh"><i className="lane-dot ld-pur" />PROFESSIONAL · 1</div>
+            <div className="ap-card ap-wo wo-pur">
+              <div className="ap-wo-mid">Boiler · Annual service<span>Contractor</span></div>
+              <span className="ap-pill p-prog">Pro</span>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -362,34 +382,43 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     /* the real inventory is one screen: a stock list plus a rail of
        actions (count, scan, reorder, orders, reports, history, AI,
        budgets, settings) */
+    /* exact mini of the real screen: sidebar rail (224px scaled down)
+       + main column. Wider than the window on purpose; scroll any way. */
     return (
-      <div className="ap">
-        <div className="ap-statgrid">
-          <div className="ap-cell"><b className="t-good">78%</b><span>● STOCK HEALTH</span></div>
-          <div className="ap-cell"><b className="t-crit">2</b><span>● ORDER NOW</span></div>
-          <div className="ap-cell"><b>$3,480</b><span>ON THE SHELF</span></div>
-        </div>
-        <div className="ap-rail">
-          {['Start Count', 'Scan Invoice', 'Reorder List', 'Orders', 'Reports', 'History', 'AI Helper', 'Budgets', 'Ordering Settings'].map((r) => (
-            <span className="ap-railbtn" key={r}>{r}</span>
-          ))}
-        </div>
-        <div className="ap-rail">
-          {['All · 24', 'General', 'Breakfast'].map((r, i) => (
-            <span className={`ap-railbtn seg ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
-          ))}
-        </div>
-        <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder drafted · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
-        <div className="ap-h">STOCK</div>
-        {[['Towels', 28, 'crit', '6d left'], ['Soap & amenities', 54, 'low', '2w left'], ['Coffee', 81, 'good', '5w left'], ['Sheets', 72, 'good', '—'], ['Cleaning supplies', 43, 'low', '9d left']].map(([name, pct, cls, days]) => (
-          <div className="ap-card ap-stock" key={name as string}>
-            <b>{name}</b>
-            <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
-            <span className={`ap-pct t-${cls}`}>{pct}%</span>
-            <i className="ap-days">{days}</i>
+      <div className="ap wide">
+        <div className="ap-cols">
+          <div className="ap-siderail">
+            <div className="rail-stat"><b className="t-good">78%</b><span>STOCK HEALTH</span></div>
+            <div className="rail-stat"><b>24</b><span>TOTAL ITEMS</span></div>
+            <div className="rail-stat"><b className="t-crit">2</b><span>REORDER NOW</span></div>
+            <div className="rail-stat"><b>$1.2k</b><span>SPEND / $2K CAP</span></div>
+            {['Start Count', 'Scan Invoice', 'Reorder List', 'Orders', 'Reports', 'History', 'AI Helper', 'Budgets', 'Add Item'].map((r, i) => (
+              <span className={`ap-railbtn block ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
+            ))}
           </div>
-        ))}
-        <div className="ap-note">Staxis learns how fast each item burns and drafts the reorder first.</div>
+          <div className="ap-main">
+            <div className="ap-statgrid">
+              <div className="ap-cell"><b className="t-good">78%</b><span>● STOCK HEALTH</span></div>
+              <div className="ap-cell"><b className="t-crit">2</b><span>● ORDER NOW</span></div>
+              <div className="ap-cell"><b>$3,480</b><span>ON THE SHELF</span></div>
+            </div>
+            <div className="ap-rail">
+              {['All · 24', 'General', 'Breakfast'].map((r, i) => (
+                <span className={`ap-railbtn seg ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
+              ))}
+              <span className="ap-search">⌕ Search items…</span>
+            </div>
+            <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder drafted · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
+            {[['Towels', 28, 'crit', '6d left'], ['Soap & amenities', 54, 'low', '2w left'], ['Coffee', 81, 'good', '5w left'], ['Sheets', 72, 'good', '—'], ['Cleaning supplies', 43, 'low', '9d left']].map(([name, pct, cls, days]) => (
+              <div className="ap-card ap-stock" key={name as string}>
+                <b>{name}</b>
+                <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
+                <span className={`ap-pct t-${cls}`}>{pct}%</span>
+                <i className="ap-days">{days}</i>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -450,42 +479,60 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
       </div>
     );
   }
-  /* communications */
-  if (sub === 1) {
-    return (
-      <div className="ap">
-        <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
-        {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel reorder drafted'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
-          <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
-        ))}
-      </div>
-    );
-  }
-  if (sub === 2) {
-    return (
-      <div className="ap">
-        <div className="ap-h">CALENDAR</div>
-        {[['Wed', 'Deep clean · 204'], ['Thu', 'Linen delivery expected'], ['Fri', 'Fire panel inspection'], ['Sat', 'Sold out night · 100%']].map(([d, ev]) => (
-          <div className="ap-feedrow" key={ev as string}><span>{d}</span>{ev}</div>
-        ))}
-      </div>
-    );
-  }
+  /* communications — exact mini of the real screen: sidebar + main pane.
+     The sidebar stays; the pane swaps with the sub-tab, like the app. */
   return (
-    <div className="ap">
-      <div className="ap-catchup">⚡ Catch up<span className="ap-badge">3</span></div>
-      <div className="ap-h">CHANNELS</div>
-      <div className="ap-card ap-chan"># announcements<span className="ap-badge">1</span></div>
-      <div className="ap-card ap-chan"># housekeeping<span className="ap-badge">3</span></div>
-      <div className="ap-card ap-chan"><span className="ap-online" />Maria<span className="ap-role" style={{ marginLeft: 'auto' }}>online</span></div>
-      <div className="ap-h"># HOUSEKEEPING</div>
-      <div className="ap-msgrow">
-        <span className="ap-avatar">MG</span>
-        <div className="mr-mid"><b>Maria <i>7:02 AM</i></b>Room 204 lista ✓</div>
-      </div>
-      <div className="ap-msgrow">
-        <span className="ap-avatar">JD</span>
-        <div className="mr-mid"><b>Jade <i>7:04 AM</i></b>Gracias! 118 next please 🙏</div>
+    <div className="ap wide">
+      <div className="ap-cols">
+        <div className="ap-siderail">
+          <span className="ap-search">⌕ Jump or search…</span>
+          <div className="ap-catchup">⚡ Catch up<span className="ap-badge">3</span></div>
+          {['Threads', 'To-do · 2', 'Knowledge', 'Log book', 'Calendar', 'Contacts'].map((n) => (
+            <span className="ap-railbtn block" key={n}>{n}</span>
+          ))}
+          <div className="ap-h">ANNOUNCEMENTS</div>
+          <div className="side-chan">📣 All-team<span className="ap-badge">1</span></div>
+          <div className="ap-h">CHANNELS</div>
+          <div className="side-chan"># housekeeping<span className="ap-badge">3</span></div>
+          <div className="side-chan"># front-desk</div>
+          <div className="ap-h">DIRECT MESSAGES</div>
+          <div className="side-chan"><span className="ap-online" />Maria</div>
+          <div className="side-chan"><span className="ap-online off" />Luis</div>
+        </div>
+        <div className="ap-main">
+          {sub === 1 ? (
+            <>
+              <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
+              {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel reorder drafted'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
+                <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
+              ))}
+            </>
+          ) : sub === 2 ? (
+            <>
+              <div className="ap-h">CALENDAR</div>
+              {[['Wed', 'Deep clean · 204'], ['Thu', 'Linen delivery expected'], ['Fri', 'Fire panel inspection'], ['Sat', 'Sold out night · 100%']].map(([d, ev]) => (
+                <div className="ap-feedrow" key={ev as string}><span>{d}</span>{ev}</div>
+              ))}
+            </>
+          ) : (
+            <>
+              <div className="ap-panehead"># housekeeping<span>4 members</span></div>
+              <div className="ap-msgrow">
+                <span className="ap-avatar">MG</span>
+                <div className="mr-mid"><b>Maria <i>7:02 AM</i></b>Room 204 lista ✓</div>
+              </div>
+              <div className="ap-msgrow">
+                <span className="ap-avatar">JD</span>
+                <div className="mr-mid"><b>Jade <i>7:04 AM</i></b>Gracias! 118 next please 🙏</div>
+              </div>
+              <div className="ap-msgrow">
+                <span className="ap-avatar">MG</span>
+                <div className="mr-mid"><b>Maria <i>7:05 AM</i></b>Ok voy 👍</div>
+              </div>
+              <div className="ap-msginput">Message #housekeeping…</div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -656,13 +703,13 @@ export default function MarketingLanding() {
             Live at a working hotel today
           </div>
           <h1>
-            <span className="line"><span className="w" style={{ animationDelay: '.10s' }}>The&nbsp;hotel</span></span>
-            <span className="line"><span className="w" style={{ animationDelay: '.22s' }}>that&nbsp;<em className="shimmer">runs&nbsp;itself.</em></span></span>
+            <span className="line"><span className="w" style={{ animationDelay: '.10s' }}>AI&nbsp;for</span></span>
+            <span className="line"><span className="w" style={{ animationDelay: '.22s' }}><em className="shimmer">hotels.</em></span></span>
           </h1>
           <p className="lede rise" style={{ animationDelay: '.42s' }}>
-            Staxis is an AI that runs your hotel&rsquo;s operations. It watches your
+            Staxis runs your hotel&rsquo;s operations today. It watches your
             property systems around the clock, handles the busywork, and comes to
-            you only when something needs a person.
+            you when something needs a person. And operations is just the start.
           </p>
           <div className="cta-row rise" style={{ animationDelay: '.55s' }}>
             <a className="btn btn-solid btn-lg" href="#contact">Request a demo</a>
@@ -831,7 +878,9 @@ export default function MarketingLanding() {
       </section>
 
       {/* ---------------- one page ---------------- */}
-      <section className="section" id="onepage">
+      {/* z-index above sibling sections so hover demos from bottom chips
+          paint over the next section instead of dying under it */}
+      <section className="section sec-top" id="onepage">
         <div className="kicker rv">ONE PAGE</div>
         <h2 className="rv">One page <em>runs the hotel.</em></h2>
         <p className="section-lede rv">
@@ -927,6 +976,50 @@ export default function MarketingLanding() {
               {b}
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* ---------------- roadmap ---------------- */}
+      <section className="section" id="roadmap">
+        <div className="kicker rv">THE ROADMAP</div>
+        <h2 className="rv">Operations today. <em>Guests next.</em></h2>
+        <p className="section-lede rv">
+          Staxis starts with the back of the house. The front of the house is next,
+          on the same one page.
+        </p>
+
+        <div className="roadmap">
+          <div className="rm-col rm-now rv">
+            <div className="vs-tag good-tag">LIVE TODAY · OPERATIONS</div>
+            {[
+              'Housekeeping boards built every morning',
+              'Work orders assigned and tracked',
+              'Inventory counted, reorders drafted',
+              'Staff texted in their language',
+              'Labor and budgets watched daily',
+              'One page for everything that needs you',
+            ].map((t, i) => (
+              <div className="rm-item rv" key={t} style={{ transitionDelay: `${i * 80}ms` }}>
+                <span className="de-check">✓</span>{t}
+              </div>
+            ))}
+          </div>
+          <div className="rm-col rm-soon rv">
+            <div className="vs-tag soon-tag">COMING SOON · GUEST EXPERIENCE</div>
+            {[
+              'An AI voice agent answering every guest call, 24/7',
+              'After-hours bookings, never missed again',
+              'Reservation changes handled automatically',
+              'Instant replies to guest texts and emails',
+              'Late checkouts and requests taken by phone',
+              'Guests greeted in their own language',
+            ].map((t, i) => (
+              <div className="rm-item rv" key={t} style={{ transitionDelay: `${i * 80}ms` }}>
+                <span className="rm-soon-dot">✦</span>{t}
+              </div>
+            ))}
+            <div className="rm-note">Every request lands on the same page that runs your operations.</div>
+          </div>
         </div>
       </section>
 
@@ -1269,6 +1362,7 @@ const CSS = `
 /* ---------- sections ---------- */
 .section { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto;
   padding: clamp(90px, 12vh, 150px) clamp(20px, 4vw, 48px) 0; }
+.section.sec-top { z-index: 5; }
 .kicker { font-family: var(--mono); font-size: 11.5px; letter-spacing: .22em;
   color: var(--caramel-deep); margin-bottom: 20px; }
 .mkt h2 { font-family: var(--serif); font-weight: 400;
@@ -1489,9 +1583,11 @@ const CSS = `
 .cp-tab:hover { color: var(--ink); }
 .cp-tab.on { color: var(--ink); background: var(--sage-dim);
   border-color: rgba(92,122,96,.4); }
-.cp-body { display: block; height: 300px; overflow-y: auto; padding: 14px;
+.cp-body { display: block; height: 300px; overflow: auto; padding: 14px;
   background: #F7F8F5; position: relative; border-radius: 0 0 16px 16px;
-  animation: pagein .4s cubic-bezier(.19,1,.22,1); }
+  animation: pagein .4s cubic-bezier(.19,1,.22,1); overscroll-behavior: contain; }
+.cp-body::-webkit-scrollbar { height: 8px; }
+.ap.wide { width: 620px; }
 @keyframes pagein { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .cp-body::-webkit-scrollbar { width: 7px; }
 .cp-body::-webkit-scrollbar-thumb { background: rgba(31,35,28,.14); border-radius: 8px; }
@@ -1714,6 +1810,71 @@ const CSS = `
   margin-right: 5px; vertical-align: -1px; }
 .l-occ { background: var(--ink-soft); } .l-arr { background: var(--sage-deep); }
 .l-dep { background: var(--caramel); } .l-dirty { background: var(--warm); }
+
+/* wide two-column replicas (scroll any direction inside the window) */
+.ap-cols { display: flex; gap: 10px; align-items: stretch; }
+.ap-siderail { width: 148px; flex: none; display: flex; flex-direction: column;
+  gap: 6px; background: #fff; border: 1px solid var(--rule-soft);
+  border-radius: 10px; padding: 10px; }
+.rail-stat { padding: 2px 2px 6px; border-bottom: 1px solid var(--rule-soft); }
+.rail-stat b { display: block; font-family: var(--serif); font-weight: 400;
+  font-size: 15px; color: var(--ink); }
+.rail-stat span { font-family: var(--mono); font-size: 6.5px; letter-spacing: .12em;
+  color: var(--dim); }
+.ap-railbtn.block { display: block; text-align: center; border-radius: 8px; }
+.ap-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.ap-search { font-family: var(--mono); font-size: 8.5px; color: var(--dim);
+  background: #fff; border: 1px solid var(--rule-soft); border-radius: 999px;
+  padding: 5px 10px; }
+.side-chan { display: flex; align-items: center; gap: 6px; font-family: var(--mono);
+  font-size: 9px; color: var(--ink-soft); padding: 4px 2px; }
+.side-chan .ap-badge { margin-left: auto; }
+.ap-online.off { background: var(--rule); }
+.ap-panehead { display: flex; align-items: baseline; gap: 8px; font-weight: 600;
+  font-size: 12px; color: var(--ink); padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule-soft); }
+.ap-panehead span { font-size: 9.5px; font-weight: 400; color: var(--dim); }
+.ap-msginput { font-size: 10.5px; color: var(--dim); background: #fff;
+  border: 1px solid var(--rule); border-radius: 9px; padding: 9px 12px;
+  margin-top: 4px; }
+.ap-lanes { display: flex; gap: 8px; align-items: flex-start; }
+.ap-lane { width: 148px; flex: none; display: flex; flex-direction: column; gap: 6px; }
+.ap-lane .ap-wo { flex-wrap: wrap; }
+.ap-chart { flex: 1; display: block; }
+.ap-chart svg { width: 100%; height: 54px; margin-top: 8px; }
+.ap-chart polyline { fill: none; stroke: var(--sage-deep); stroke-width: 1.6; }
+.ap-chart circle { fill: var(--caramel); }
+
+/* ---------- roadmap ---------- */
+.roadmap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 56px; }
+@media (max-width: 860px) { .roadmap { grid-template-columns: 1fr; } }
+.rm-col { border-radius: 22px; padding: clamp(26px, 3vw, 38px);
+  display: flex; flex-direction: column; gap: 10px; }
+.rm-now { border: 1px solid rgba(92,122,96,.3);
+  background:
+    radial-gradient(120% 100% at 0% 0%, rgba(158,183,166,.14), transparent 60%),
+    #FDFEFC;
+  box-shadow: 0 16px 44px rgba(92,122,96,.1); }
+.rm-soon { position: relative; border: 1.5px dashed rgba(201,150,68,.5);
+  background:
+    radial-gradient(120% 100% at 100% 0%, var(--caramel-dim), transparent 65%),
+    #FFFDF8; overflow: hidden; }
+.rm-soon::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+  border-radius: 22px;
+  background: linear-gradient(100deg, transparent 35%, rgba(255,255,255,.5) 50%, transparent 65%);
+  background-size: 280% 100%; animation: dreamsweep 5.5s ease-in-out infinite; }
+.rm-col .vs-tag { margin-bottom: 14px; }
+.soon-tag { color: var(--caramel-deep); background: var(--caramel-dim);
+  border: 1px solid rgba(201,150,68,.4); }
+.rm-item { display: flex; align-items: center; gap: 11px; font-size: 14.5px;
+  color: var(--ink-soft);
+  transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1); }
+.rm-item.rv:not(.in) { transform: translateX(16px); }
+.rm-soon-dot { width: 20px; height: 20px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--caramel-deep); background: var(--caramel-dim);
+  border: 1px dashed rgba(201,150,68,.5); animation: sparkspin 8s linear infinite; }
+.rm-note { margin-top: 10px; font-size: 12.5px; font-style: italic; color: var(--dim); }
 .today { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: 340px; max-width: 82%; background: #fff; border: 1px solid var(--rule);
   border-radius: 18px; padding: 20px;

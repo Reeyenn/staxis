@@ -4,7 +4,7 @@ import MarketingLanding from './_components/MarketingLanding';
 export const dynamic = 'force-static';
 
 export const metadata: Metadata = {
-  title: 'Staxis · The hotel that runs itself',
+  title: 'Staxis · AI for hotels',
   description:
     'Staxis is an AI operations platform for limited and select-service hotels. It watches your property systems around the clock and turns what it sees into housekeeping schedules, work orders, and supply reorders, automatically.',
 };
