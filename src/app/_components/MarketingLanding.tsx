@@ -661,8 +661,6 @@ export default function MarketingLanding() {
   const [notifStage, setNotifStage] = useState<'idle' | 'pressed' | 'done'>('idle');
   const notifStarted = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const beamRef = useRef<HTMLDivElement>(null);
-  const stepsRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
 
@@ -730,18 +728,10 @@ export default function MarketingLanding() {
     return () => io.disconnect();
   }, []);
 
-  /* scroll: beam fill, top progress bar, nav state */
+  /* scroll: top progress bar, nav state */
   useEffect(() => {
     const nav = rootRef.current?.querySelector('.nav');
     const onScroll = () => {
-      const steps = stepsRef.current;
-      const beam = beamRef.current;
-      if (steps && beam) {
-        const r = steps.getBoundingClientRect();
-        const vh = window.innerHeight;
-        const p = Math.min(1, Math.max(0, (vh * 0.75 - r.top) / r.height));
-        beam.style.transform = `scaleY(${p})`;
-      }
       const bar = progressRef.current;
       if (bar) {
         const max = document.documentElement.scrollHeight - window.innerHeight;
@@ -784,7 +774,7 @@ export default function MarketingLanding() {
         <div className="nav-links">
           <a href="#story">Why Staxis</a>
           <a href="#onepage">One page</a>
-          <a href="#how">How it works</a>
+          <a href="#benefits">How it works</a>
           <a href="/signin" className="btn btn-ghost">Sign in</a>
           <a href="#contact" className="btn btn-solid">Request a demo</a>
         </div>
@@ -1084,10 +1074,7 @@ export default function MarketingLanding() {
       {/* ---------------- how AI runs your hotel ---------------- */}
       <section className="section" id="benefits">
         <div className="kicker rv">HOW AI RUNS YOUR HOTEL</div>
-        <h2 className="rv">Every corner of the hotel, <em>handled.</em></h2>
-        <p className="section-lede rv">
-          Three levels of AI. One rule: you stay in control.
-        </p>
+        <h2 className="rv">Three levels of AI. <em>You stay in control.</em></h2>
 
         <div className="tiers">
           {/* AUTONOMOUS */}
@@ -1165,55 +1152,6 @@ export default function MarketingLanding() {
         </div>
       </section>
 
-      {/* ---------------- the journey ---------------- */}
-      <section className="section" id="how">
-        <div className="kicker rv">THE JOURNEY</div>
-        <h2 className="rv">Day one to <em>the dream.</em></h2>
-
-        <div className="steps" ref={stepsRef}>
-          <div className="beam"><div className="beam-fill" ref={beamRef} /></div>
-          {[
-            {
-              n: '01',
-              when: 'Day one',
-              title: 'Connect',
-              body: 'Staxis signs into the hotel software you already run, the same way a person would. Nothing to install, no vendor calls, no IT project.',
-              dream: false,
-            },
-            {
-              n: '02',
-              when: 'Week one',
-              title: 'It learns your hotel',
-              body: 'It watches around the clock: rooms, arrivals, supplies, work orders. The busywork starts disappearing.',
-              dream: false,
-            },
-            {
-              n: '03',
-              when: 'Month one',
-              title: 'You stop chasing',
-              body: 'Boards build themselves. Texts go out. Reorders draft themselves. Your day becomes a handful of taps.',
-              dream: false,
-            },
-            {
-              n: '✦',
-              when: 'Every morning after',
-              title: 'Coffee in hand, you open one page. The hotel already ran itself overnight.',
-              body: '',
-              dream: true,
-            },
-          ].map((s) => (
-            <div className={`step rv ${s.dream ? 'dream' : ''}`} key={s.n}>
-              <div className="step-n">{s.n}</div>
-              <div className="step-body">
-                <div className="step-when">{s.when}</div>
-                <h3>{s.title}</h3>
-                {s.body && <p>{s.body}</p>}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       {/* ---------------- CTA ---------------- */}
       <section className="cta-panel rv" id="contact">
         <div className="cta-inner">
@@ -1251,7 +1189,7 @@ export default function MarketingLanding() {
             <div className="foot-h">Product</div>
             <a href="#story">Why Staxis</a>
             <a href="#onepage">One page</a>
-            <a href="#how">How it works</a>
+            <a href="#benefits">How it works</a>
             <a href="/signin">Sign in</a>
           </div>
           <div className="foot-col">
