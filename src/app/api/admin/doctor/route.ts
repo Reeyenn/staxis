@@ -1020,6 +1020,14 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   'pull_jobs',
   'processed_twilio_webhooks',
   'scraper_session',
+  // 0295 — public staff-link tokens (server-minted, capability-checked in routes).
+  'staff_link_tokens',
+  // 0300/0302/0303 — AI-assistant approval gate, reminders, recurring to-dos.
+  // Deny-all service-role-only by design (the `-- @rls: service-role-only`
+  // markers satisfy the lint-time twin; this runtime list must match it).
+  'agent_pending_actions',
+  'agent_reminders',
+  'recurring_task_templates',
 ]);
 
 async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {

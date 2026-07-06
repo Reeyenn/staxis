@@ -108,7 +108,8 @@ describe('mapActivityRows', () => {
 
 describe('groupByDay', () => {
   test('groups newest-first items into Today / Yesterday / dated buckets, preserving order', () => {
-    const now = new Date();
+    // Fixed local-midday clock — live-clock fixtures flaked right after midnight.
+    const now = new Date(2026, 6, 5, 12, 0, 0);
     const today = new Date(now.getTime() - 60_000).toISOString();
     const yesterday = new Date(now.getTime() - 26 * 3_600_000).toISOString();
     const older = new Date(now.getTime() - 5 * 86_400_000).toISOString();
@@ -116,24 +117,25 @@ describe('groupByDay', () => {
       id: `i${i}`, createdAt, who: 'X', toolName: 'send_message',
       outcome: 'done', summary: { en: 'x', es: 'x' }, error: null,
     }));
-    const en = groupByDay(items, 'en');
+    const en = groupByDay(items, 'en', now);
     assert.equal(en.length, 3);
     assert.equal(en[0].label, 'Today');
     assert.equal(en[1].label, 'Yesterday');
     assert.equal(en[0].items[0].id, 'i0'); // order preserved
 
-    const es = groupByDay(items, 'es');
+    const es = groupByDay(items, 'es', now);
     assert.equal(es[0].label, 'Hoy');
     assert.equal(es[1].label, 'Ayer');
   });
 
   test('same-day items collapse into one group', () => {
-    const base = Date.now();
+    const now = new Date(2026, 6, 5, 12, 0, 0);
+    const base = now.getTime();
     const items: ActivityItem[] = [0, 1, 2].map((n) => ({
       id: `i${n}`, createdAt: new Date(base - n * 60_000).toISOString(), who: 'X',
       toolName: 'send_message', outcome: 'done', summary: { en: 'x', es: 'x' }, error: null,
     }));
-    const groups = groupByDay(items, 'en');
+    const groups = groupByDay(items, 'en', now);
     assert.equal(groups.length, 1);
     assert.equal(groups[0].items.length, 3);
   });

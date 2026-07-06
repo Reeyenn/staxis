@@ -101,12 +101,14 @@ export interface ActivityDayGroup {
  * (Today / Yesterday / a localized date). Insertion order is preserved so the
  * feed still reads newest→oldest. `lang` picks EN vs ES for the header copy.
  */
-export function groupByDay(items: ActivityItem[], lang: string): ActivityDayGroup[] {
+export function groupByDay(items: ActivityItem[], lang: string, now: Date = new Date()): ActivityDayGroup[] {
+  // `now` is injectable so tests can pin the clock — fixtures built from the
+  // live clock made the Today/Yesterday assertions flake right after midnight.
   const es = lang === 'es';
   const groups: ActivityDayGroup[] = [];
   const byKey = new Map<string, ActivityDayGroup>();
-  const today = dayKey(new Date());
-  const yesterday = dayKey(new Date(Date.now() - 86_400_000));
+  const today = dayKey(now);
+  const yesterday = dayKey(new Date(now.getTime() - 86_400_000));
 
   for (const it of items) {
     const d = new Date(it.createdAt);
