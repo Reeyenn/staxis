@@ -139,9 +139,11 @@ function unsupported(error: string): ExtractionOutcome {
   return { status: 'unsupported', text: null, error, pageCount: null, truncated: false };
 }
 /** Route to the Fly vision-OCR worker (scanned PDF / photo). NON-terminal —
- *  indexDocument turns this into `processing` + a doc_ocr job. */
-function needsOcr(error: string): ExtractionOutcome {
-  return { status: 'needs_ocr', text: null, error, pageCount: null, truncated: false };
+ *  indexDocument turns this into `processing` + a doc_ocr job. `pageCount`
+ *  (from unpdf, for scanned PDFs) rides along in the job payload so the worker
+ *  can apply its 60-page cap instruction + partial flag; null when unknown. */
+function needsOcr(error: string, pageCount: number | null = null): ExtractionOutcome {
+  return { status: 'needs_ocr', text: null, error, pageCount, truncated: false };
 }
 
 /**
@@ -193,8 +195,8 @@ export async function extractDocumentText(
     return ok(text, pageCount);
   }
 
-  // PDF — unpdf (pdf.js under the hood). Text PDFs only; scanned image PDFs
-  // have no text layer → routed to `unsupported` for the OCR follow-up.
+  // PDF — unpdf (pdf.js under the hood). Text PDFs are read here; scanned
+  // image PDFs have no text layer → routed to the Fly vision-OCR worker.
   if (mime === MIME_PDF) {
     let text: string;
     let totalPages: number | null = null;
@@ -210,7 +212,7 @@ export async function extractDocumentText(
     // vision-OCR worker rather than dead-ending as `unsupported`. (A PDF whose
     // text layer reads as junk — not empty — is still `failed`, below.)
     if (meaningfulCharCount(text) < 16) {
-      return needsOcr('This looks like a scanned PDF — reading it with AI, text search will be ready shortly.');
+      return needsOcr('This looks like a scanned PDF — reading it with AI, text search will be ready shortly.', totalPages);
     }
     if (!isMostlyReadable(text)) return fail('The PDF\'s text couldn\'t be read cleanly.');
     return ok(text, totalPages);

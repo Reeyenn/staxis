@@ -30,6 +30,9 @@ test('scanned / image-only PDF → needs_ocr (routes to vision worker, not a dea
   assert.equal(out.status, 'needs_ocr');
   assert.equal(out.text, null);
   assert.match(out.error ?? '', /scan/i);
+  // The page count rides into the doc_ocr job payload so the worker can apply
+  // its 60-page cap instruction — unpdf must have produced a real number here.
+  assert.ok(typeof out.pageCount === 'number' && out.pageCount >= 1, `pageCount is ${out.pageCount}`);
 });
 
 test('uploaded photo (jpg/png/webp) → needs_ocr (no text layer to parse)', async () => {

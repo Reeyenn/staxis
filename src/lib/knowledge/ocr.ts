@@ -2,12 +2,13 @@
 // Knowledge OCR enqueue — the bridge from the web app to the Fly vision worker.
 //
 // A scanned PDF or an uploaded photo can't be read by unpdf/mammoth (no text
-// layer), and multi-page vision OCR is far too slow for the upload route's
-// after() hook (maxDuration 60s). So instead of dead-ending the doc as
-// `unsupported`, indexDocument sets it to `processing` and enqueues a
-// `doc_ocr` row into workflow_jobs. The Fly cua-service worker claims it,
-// rasterizes + transcribes each page with Claude vision, and POSTs the text
-// back to /api/internal/knowledge/ocr-complete — which runs the SAME
+// layer), and a whole-document vision transcription is far too slow for the
+// upload route's after() hook (maxDuration 60s). So instead of dead-ending the
+// doc as `unsupported`, indexDocument sets it to `processing` and enqueues a
+// `doc_ocr` row into workflow_jobs. The Fly cua-service worker claims it, sends
+// the PDF/image to Claude vision in ONE call (native PDF input — no local
+// rasterization), and POSTs the text back to
+// /api/internal/knowledge/ocr-complete — which runs the SAME
 // chunk→embed→search pipeline the normal path uses.
 //
 // workflow_jobs.kind is free-text (no CHECK constraint — see migration 0201),
@@ -20,6 +21,14 @@ import { log } from '@/lib/log';
 
 /** The workflow_jobs.kind the Fly OCR handler claims. */
 export const DOC_OCR_JOB_KIND = 'doc_ocr';
+
+/**
+ * Per-job timeout the worker runtime honors via payload.timeout_ms (the
+ * no-driver lane's pickMapperTimeoutMs reads the override). 15 min: one
+ * streamed whole-document vision transcription comfortably fits; without this
+ * the no-driver default is the mapper's 90 min — far too generous for OCR.
+ */
+export const DOC_OCR_TIMEOUT_MS = 900_000;
 
 /**
  * Decide the final extraction_status for an OCR'd doc. `ready` only when the
@@ -43,6 +52,53 @@ export interface EnqueueOcrInput {
   documentId: string;
   filePath: string;
   mime: string;
+  /** Total pages (from unpdf) for scanned PDFs; null when unknown (images).
+   *  The worker uses it for the 60-page cap instruction + the partial flag. */
+  pageCount?: number | null;
+}
+
+/**
+ * Build the workflow_jobs row a doc_ocr enqueue inserts. Pure — the payload
+ * contract with the Fly worker (pageCount passthrough, the 15-min timeout_ms
+ * override, stable-per-doc idempotency key, single attempt) is unit-testable
+ * without supabase.
+ */
+export function buildDocOcrJobRow(input: EnqueueOcrInput): {
+  property_id: string;
+  kind: string;
+  idempotency_key: string;
+  max_attempts: number;
+  triggered_by: string;
+  payload: {
+    propertyId: string;
+    documentId: string;
+    filePath: string;
+    mime: string;
+    pageCount: number | null;
+    timeout_ms: number;
+  };
+} {
+  return {
+    property_id: input.propertyId,
+    kind: DOC_OCR_JOB_KIND,
+    // Stable-per-doc idempotency key: one logical OCR job per document. A
+    // re-index of the same doc collides on the unique constraint (23505) rather
+    // than spawning a second run — which the caller treats as "already enqueued".
+    idempotency_key: `${DOC_OCR_JOB_KIND}:${input.documentId}`,
+    // OCR is a single self-contained pass; the worker defers (no attempt
+    // burned) on budget/transient-API failures, so one real attempt is right —
+    // a genuine permanent failure should surface, not silently retry forever.
+    max_attempts: 1,
+    triggered_by: 'knowledge:index',
+    payload: {
+      propertyId: input.propertyId,
+      documentId: input.documentId,
+      filePath: input.filePath,
+      mime: input.mime,
+      pageCount: input.pageCount ?? null,
+      timeout_ms: DOC_OCR_TIMEOUT_MS,
+    },
+  };
 }
 
 /**
@@ -59,7 +115,7 @@ export interface EnqueueOcrInput {
  * idempotency_key stable-per-doc so a re-index doesn't spawn a duplicate run.
  */
 export async function enqueueOcrJob(input: EnqueueOcrInput): Promise<boolean> {
-  const { propertyId, documentId, filePath, mime } = input;
+  const { propertyId, documentId } = input;
   try {
     // Already an unfinished OCR job for this doc? Reuse it.
     const { data: existing, error: exErr } = await supabaseAdmin
@@ -79,23 +135,9 @@ export async function enqueueOcrJob(input: EnqueueOcrInput): Promise<boolean> {
       return true; // an OCR job is already in flight for this doc
     }
 
-    // Stable-per-doc idempotency key: one logical OCR job per document. A
-    // re-index of the same doc collides on the unique constraint (23505) rather
-    // than spawning a second run — which we treat as "already enqueued".
-    const idempotencyKey = `${DOC_OCR_JOB_KIND}:${documentId}`;
     const { error: insErr } = await supabaseAdmin
       .from('workflow_jobs')
-      .insert({
-        property_id: propertyId,
-        kind: DOC_OCR_JOB_KIND,
-        idempotency_key: idempotencyKey,
-        // OCR is a single self-contained pass; the budget guard defers (no
-        // attempt burned) when over cap, so one real attempt is right — a
-        // genuine failure should surface, not silently retry forever.
-        max_attempts: 1,
-        triggered_by: 'knowledge:index',
-        payload: { propertyId, documentId, filePath, mime },
-      });
+      .insert(buildDocOcrJobRow(input));
     if (insErr) {
       // 23505 = unique_violation → a job for this doc already exists (race or
       // re-index). That's a success for our purposes: an OCR job IS enqueued.

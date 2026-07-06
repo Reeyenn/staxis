@@ -2,35 +2,39 @@
  * doc_ocr workflow handler — turn a scanned PDF / uploaded photo into searchable
  * text with Claude vision, entirely off the Vercel box.
  *
- * Why here (and not in a Vercel route): a scanned PDF can be dozens of pages;
- * one vision call per page at ~5-15s each blows past Vercel's 60s function
- * ceiling. The Fly worker has a 10-min per-job budget and its own cost caps.
+ * Why here (and not in a Vercel route): a scanned PDF can be dozens of pages
+ * and its transcription a very large output; Vercel's 60s function ceiling
+ * can't hold that. The Fly worker runs the job under a 15-min per-job timeout
+ * (payload.timeout_ms, set at enqueue) with its own cost caps.
  *
  * Flow (no-driver kind — owns no PMS browser):
  *   1. Budget guard: if today's OCR spend for the property is over the
  *      $2/property/day cap, DEFER (non-counting reschedule) — drain later.
  *   2. Download the file from the private knowledge-docs bucket (service role).
- *   3. PDF → rasterize each page to PNG at ~150 DPI via mupdf (pure wasm — see
- *      note below). Image → use the bytes as-is.
- *   4. Cap at 60 pages: beyond that, transcribe the first 60 and mark partial.
- *   5. One Claude vision call per page (claude-sonnet-4-6), strict verbatim
- *      transcription. Concatenate with [Page N] markers.
+ *   3. Build ONE vision request: PDFs go up as a native `document` content
+ *      block (Anthropic PDF input — the API reads each page server-side;
+ *      pages are billed internally as image+text tokens, ~1-2¢/page on
+ *      Sonnet); images go up as a single `image` block. No local
+ *      rasterization and no PDF dependency in this service at all (the
+ *      earlier mupdf approach was dropped: AGPL-3.0 license — unusable in
+ *      closed-source commercial SaaS).
+ *   4. Page cap 60: when the payload's pageCount (computed web-side by unpdf)
+ *      exceeds it, the prompt instructs "transcribe only pages 1-60" and the
+ *      doc lands `partial`. API limits (32MB request / 600 pages) are far
+ *      above our 10MB upload cap.
+ *   5. STREAM the response (messages.stream → finalMessage) with max_tokens
+ *      64000 — a 60-page transcription is a very large output and a
+ *      non-streaming call would hit SDK HTTP timeouts.
  *   6. POST the text to /api/internal/knowledge/ocr-complete (Bearer
  *      CRON_SECRET), which runs the chunk→embed→search pipeline.
- *   7. On unrecoverable failure: set the doc's extraction_status = 'failed'
- *      with a plain-English extract_error.
- *
- * Rasterizer choice — mupdf (Artifex, npm `mupdf`):
- *   The Fly runtime image is mcr.microsoft.com/playwright:v1.59.1-jammy. It has
- *   Chromium but NO PDF-rasterization native libs (no libvips/canvas/poppler),
- *   and adding a native addon means chasing glibc/build-deps in the image. mupdf
- *   is pure WebAssembly with ZERO native dependencies — it runs anywhere Node 20
- *   runs, including this image, with no extra system packages. Verified locally
- *   on Node 20.20 (opens a PDF, renders a page to a valid PNG). See the unit test
- *   doc-ocr-handler.test.ts which rasterizes a real PDF end-to-end.
+ *   7. Errors: TRANSIENT Anthropic failures (429 rate limit, 5xx/529 server,
+ *      network, abort-timeout) DEFER — the job re-runs later without burning
+ *      its attempt. Only a permanent rejection (400 — e.g. a corrupt PDF the
+ *      API refuses) or a non-API failure marks the doc `failed`. Classified
+ *      via the SDK's typed error classes, never by string-matching.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 import type { WorkflowContext } from './workflow-runtime.js';
 import { env } from './env.js';
 import { log } from './log.js';
@@ -38,45 +42,44 @@ import { log } from './log.js';
 // ─── Tunables ──────────────────────────────────────────────────────────────
 /** $/property/day OCR ceiling. Over this → defer (non-counting reschedule). */
 export const OCR_PROPERTY_DAILY_USD = 2.0;
-/** Pages beyond this are dropped; the doc is marked `partial`. */
+/** Pages beyond this are not transcribed; the doc is marked `partial`. */
 export const OCR_MAX_PAGES = 60;
-/** Rasterize at ~150 DPI (PDFs are 72 DPI native → scale = 150/72). */
-const OCR_DPI = 150;
-/** Model — cheap enough at ~1¢/page, strong enough to transcribe a scan. */
+/** Model — cheap enough at ~1-2¢/page, strong enough to transcribe a scan. */
 export const OCR_MODEL = 'claude-sonnet-4-6';
-/** Cap output tokens per page — a dense page is ~1-2k tokens of text. */
-const OCR_MAX_OUTPUT_TOKENS = 4096;
+/** Output budget for the WHOLE transcription (one streaming call per doc).
+ *  A dense page is ~1-2k tokens; 60 pages needs real headroom. */
+const OCR_MAX_OUTPUT_TOKENS = 64_000;
+/** Per-call HTTP timeout override (ms). The anthropic client default is 120s —
+ *  tuned for short CUA turns, far too tight for a 60-page streamed
+ *  transcription. 14 min stays under the job's 15-min timeout so the job-level
+ *  abort (→ defer) fires first. */
+const OCR_CALL_TIMEOUT_MS = 840_000;
 const OCR_BUCKET = 'knowledge-docs';
 
-/** Image mimes we OCR as-is (no rasterization). Mirrors the web side. */
+/** Image mimes we OCR as a single image block. Mirrors the web side. */
 const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 /** The strict verbatim-transcription prompt. No commentary, no summarizing. */
 export const OCR_SYSTEM_PROMPT =
   'You are a precise document transcriber. Transcribe ALL visible text in the ' +
-  'image EXACTLY as it appears, in reading order. Preserve tables as plain-text ' +
+  'document EXACTLY as it appears, in reading order. Start each page with a ' +
+  'marker line of the form [Page N] (1-based). Preserve tables as plain-text ' +
   'rows (separate cells with " | "). Preserve headings, lists, and line breaks. ' +
   'Do NOT summarize, explain, translate, correct, or add any commentary. Do NOT ' +
-  'wrap the output in code fences. If the image has no legible text, reply with ' +
-  'the single word: [no text]. Output only the transcription.';
+  'wrap the output in code fences. If the document has no legible text at all, ' +
+  'reply with the single word: [no text]. Output only the transcription.';
 
 export interface DocOcrPayload {
   propertyId: string;
   documentId: string;
   filePath: string;
   mime: string;
+  /** Total pages, computed web-side by unpdf for scanned PDFs; null when
+   *  unknown (images, or backfilled docs whose page count was never stored). */
+  pageCount: number | null;
 }
 
-/** A page rendered to a base64 PNG ready for a vision call. */
-export interface OcrPageImage {
-  /** 1-based page number (for the [Page N] marker). */
-  page: number;
-  /** base64-encoded PNG bytes. */
-  base64: string;
-  mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
-}
-
-// ─── Pure helpers (unit-tested without supabase/anthropic) ───────────────────
+// ─── Pure helpers (unit-tested without supabase/anthropic I/O) ───────────────
 
 /** Validate the payload shape a doc_ocr job must carry. */
 export function parseDocOcrPayload(payload: Record<string, unknown>): DocOcrPayload | null {
@@ -90,60 +93,69 @@ export function parseDocOcrPayload(payload: Record<string, unknown>): DocOcrPayl
     typeof filePath !== 'string' || !filePath ||
     typeof mime !== 'string' || !mime
   ) return null;
-  return { propertyId, documentId, filePath, mime };
+  const rawPages = payload.pageCount;
+  const pageCount = typeof rawPages === 'number' && Number.isFinite(rawPages) && rawPages > 0
+    ? Math.floor(rawPages)
+    : null;
+  return { propertyId, documentId, filePath, mime, pageCount };
 }
 
-/** Is this an OCR-able image mime (vs. a PDF to rasterize)? */
+/** Is this an OCR-able image mime (vs. a PDF sent as a document block)? */
 export function isOcrImageMime(mime: string): boolean {
   return IMAGE_MIMES.has(mime);
 }
 
 /**
- * Rasterize PDF bytes to per-page PNGs at ~150 DPI using mupdf (pure wasm).
- * Returns { pages, totalPages, capped } — pages is capped at OCR_MAX_PAGES; when
- * capped is true the doc has more pages than we transcribed → `partial`.
+ * Build the user-message content for the single vision call.
+ *   - PDF  → native `document` block (base64, media_type application/pdf) +
+ *            a text instruction. When pageCount exceeds the 60-page cap, the
+ *            instruction limits transcription to pages 1-60 and the caller
+ *            marks the doc `partial`.
+ *   - image → single `image` block + instruction.
+ * The media block comes FIRST, the text instruction after (per PDF-input docs).
+ * Pure: content shape + page-cap decision are unit-tested directly.
  */
-export async function rasterizePdf(bytes: Uint8Array): Promise<{ pages: OcrPageImage[]; totalPages: number; capped: boolean }> {
-  const mupdf = await import('mupdf');
-  const doc = mupdf.Document.openDocument(bytes, 'application/pdf');
-  try {
-    const totalPages = doc.countPages();
-    const limit = Math.min(totalPages, OCR_MAX_PAGES);
-    const scale = OCR_DPI / 72;
-    const matrix = mupdf.Matrix.scale(scale, scale);
-    const pages: OcrPageImage[] = [];
-    for (let i = 0; i < limit; i++) {
-      const page = doc.loadPage(i);
-      // alpha=false (opaque white background), showExtras=true (annotations/widgets).
-      const pix = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const png = pix.asPNG();
-        pages.push({ page: i + 1, base64: Buffer.from(png).toString('base64'), mediaType: 'image/png' });
-      } finally {
-        // Free the wasm-heap objects eagerly. A 150-DPI full-page pixmap is
-        // multi-MB; leaning on GC/finalizers across a 60-page loop grows the
-        // wasm heap enough to trip the worker's 80% RAM auto-restart.
-        pix.destroy();
-        page.destroy();
-      }
-    }
-    return { pages, totalPages, capped: totalPages > OCR_MAX_PAGES };
-  } finally {
-    doc.destroy();
+export function buildOcrUserContent(input: {
+  mime: string;
+  /** base64 WITHOUT newlines (Node's Buffer.toString('base64') never inserts any). */
+  base64: string;
+  pageCount: number | null;
+}): { content: Anthropic.Messages.ContentBlockParam[]; pageCapped: boolean } {
+  if (isOcrImageMime(input.mime)) {
+    const media = input.mime === 'image/png' ? 'image/png' as const
+      : input.mime === 'image/webp' ? 'image/webp' as const
+      : 'image/jpeg' as const;
+    return {
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: media, data: input.base64 } },
+        { type: 'text', text: 'Transcribe this image.' },
+      ],
+      // A single image can't exceed the page cap.
+      pageCapped: false,
+    };
   }
+
+  const pageCapped = (input.pageCount ?? 0) > OCR_MAX_PAGES;
+  const instruction = pageCapped
+    ? `This document has ${input.pageCount} pages. Transcribe ONLY pages 1 through ${OCR_MAX_PAGES}, in order, and stop there.`
+    : 'Transcribe this document.';
+  return {
+    content: [
+      {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: input.base64 },
+      },
+      { type: 'text', text: instruction },
+    ],
+    pageCapped,
+  };
 }
 
-/** Concatenate per-page transcripts with [Page N] markers, dropping empties. */
-export function joinPageTranscripts(parts: { page: number; text: string }[]): string {
-  const NO_TEXT = /^\s*\[no text\]\s*$/i;
-  return parts
-    .map((p) => {
-      const t = (p.text ?? '').trim();
-      if (!t || NO_TEXT.test(t)) return null;
-      return `[Page ${p.page}]\n${t}`;
-    })
-    .filter((s): s is string => s !== null)
-    .join('\n\n');
+/** Strip a lone "[no text]" sentinel; otherwise pass the transcript through. */
+export function normalizeTranscript(text: string): string {
+  const t = (text ?? '').trim();
+  if (/^\[no text\]$/i.test(t)) return '';
+  return t;
 }
 
 /**
@@ -154,6 +166,26 @@ export function joinPageTranscripts(parts: { page: number; text: string }[]): st
 export function ocrBudgetDecision(spentMicrosToday: number): 'proceed' | 'defer' {
   const capMicros = OCR_PROPERTY_DAILY_USD * 1_000_000;
   return spentMicrosToday >= capMicros ? 'defer' : 'proceed';
+}
+
+/**
+ * Classify a transcription-call failure using the SDK's TYPED error classes
+ * (never string matching):
+ *   defer — transient; the runtime re-queues without burning the attempt:
+ *     • RateLimitError (429), InternalServerError (any ≥500, incl. 529 overload)
+ *     • APIConnectionError (network / DNS / TLS, incl. its timeout subclass)
+ *     • APIUserAbortError (the job-timeout signal fired mid-stream)
+ *   fail — permanent for THIS document; mark it failed:
+ *     • BadRequestError (400 — e.g. corrupt or API-rejected PDF)
+ *     • anything else (auth/permission/unknown) — loud, definite failure
+ *       rather than a 24h defer loop that strands the doc in `processing`.
+ */
+export function classifyOcrError(err: unknown): 'defer' | 'fail' {
+  if (err instanceof Anthropic.RateLimitError) return 'defer';
+  if (err instanceof Anthropic.InternalServerError) return 'defer';
+  if (err instanceof Anthropic.APIConnectionError) return 'defer';
+  if (err instanceof Anthropic.APIUserAbortError) return 'defer';
+  return 'fail';
 }
 
 // ─── I/O — used only on the live Fly worker (lazy supabase import) ───────────
@@ -169,7 +201,7 @@ function utcDayStartIso(): string {
  * Sum today's OCR spend (micro-dollars) for a property from claude_usage_log.
  * OCR calls are logged with workload 'cua_extraction' (see runDocOcrJob). Fails
  * OPEN (returns 0) on a read error — a transient ledger read shouldn't strand a
- * scan; the per-job + per-page bounds still cap a single run.
+ * scan; the per-call output cap still bounds a single run.
  */
 async function ocrSpendTodayMicros(propertyId: string): Promise<number> {
   try {
@@ -188,7 +220,7 @@ async function ocrSpendTodayMicros(propertyId: string): Promise<number> {
 }
 
 /**
- * Record one page's OCR spend into claude_usage_log directly (workload
+ * Record the doc's OCR spend into claude_usage_log directly (workload
  * 'cua_extraction'), so the Money tab attributes it AND the next job's budget
  * guard (ocrSpendTodayMicros) sees it.
  *
@@ -200,7 +232,7 @@ async function ocrSpendTodayMicros(propertyId: string): Promise<number> {
  * OCR-free. Best-effort — a logging failure never fails a transcription.
  */
 async function logOcrUsage(opts: {
-  propertyId: string; jobId: string; documentId: string; page: number;
+  propertyId: string; jobId: string; documentId: string;
   inputTokens: number; outputTokens: number; costMicros: number;
 }): Promise<void> {
   try {
@@ -215,7 +247,7 @@ async function logOcrUsage(opts: {
       cache_write_tokens: 0,
       cost_micros: opts.costMicros,
       job_id: opts.jobId,
-      metadata: { phase: 'doc_ocr', documentId: opts.documentId, page: opts.page },
+      metadata: { phase: 'doc_ocr', documentId: opts.documentId },
     });
     if (error) log.warn('doc-ocr: claude_usage_log insert failed', { err: error.message });
   } catch (e) {
@@ -274,34 +306,36 @@ async function postOcrComplete(body: {
 }
 
 /**
- * Transcribe one page image with Claude vision. Returns the text + token usage.
- * Throws on an API error so the caller can decide fail vs. defer.
+ * Transcribe the whole document in ONE streaming vision call.
+ * Streaming (messages.stream → finalMessage) is required: a 60-page verbatim
+ * transcription at max_tokens 64000 would blow the SDK's non-streaming HTTP
+ * timeout. Throws the SDK's typed errors on failure — the caller classifies.
  */
-async function transcribePage(img: OcrPageImage, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+async function transcribeDocument(
+  content: Anthropic.Messages.ContentBlockParam[],
+  signal: AbortSignal,
+): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const { anthropic } = await import('./anthropic-client.js');
-  const params = {
-    model: OCR_MODEL,
-    max_tokens: OCR_MAX_OUTPUT_TOKENS,
-    system: OCR_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: 'user' as const,
-        content: [
-          { type: 'image' as const, source: { type: 'base64' as const, media_type: img.mediaType, data: img.base64 } },
-          { type: 'text' as const, text: 'Transcribe this page.' },
-        ],
-      },
-    ],
-  };
-  const resp = await anthropic.messages.create(params, signal ? { signal } : undefined);
-  const text = (resp.content ?? [])
+  const stream = anthropic.messages.stream(
+    {
+      model: OCR_MODEL,
+      max_tokens: OCR_MAX_OUTPUT_TOKENS,
+      system: OCR_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content }],
+    },
+    // Per-call timeout override: the client default (120s) is tuned for short
+    // CUA turns; a full-document streamed transcription needs the long window.
+    { signal, timeout: OCR_CALL_TIMEOUT_MS },
+  );
+  const final = await stream.finalMessage();
+  const text = (final.content ?? [])
     .filter((c): c is Anthropic.Messages.TextBlock => c.type === 'text')
     .map((c) => c.text)
     .join('\n');
   return {
     text,
-    inputTokens: resp.usage?.input_tokens ?? 0,
-    outputTokens: resp.usage?.output_tokens ?? 0,
+    inputTokens: final.usage?.input_tokens ?? 0,
+    outputTokens: final.usage?.output_tokens ?? 0,
   };
 }
 
@@ -314,7 +348,7 @@ export async function runDocOcrJob(ctx: WorkflowContext): Promise<{ ok: boolean;
   if (!payload) {
     return { ok: false, error: 'doc_ocr payload missing propertyId/documentId/filePath/mime' };
   }
-  const { propertyId, documentId, filePath, mime } = payload;
+  const { propertyId, documentId, filePath, mime, pageCount } = payload;
 
   // 1. Budget guard — defer (non-counting) when over the daily cap.
   const spent = await ocrSpendTodayMicros(propertyId);
@@ -332,77 +366,52 @@ export async function runDocOcrJob(ctx: WorkflowContext): Promise<{ ok: boolean;
     return { ok: false, error: 'download failed' };
   }
 
-  // 3. Rasterize (PDF) or use image bytes as-is.
-  let images: OcrPageImage[];
-  let capped = false;
+  // 3. Build the single vision request. Buffer.toString('base64') emits no
+  // newlines — required by the PDF-input API.
+  const { content, pageCapped } = buildOcrUserContent({
+    mime, base64: Buffer.from(bytes).toString('base64'), pageCount,
+  });
+
+  if (ctx.signal.aborted) {
+    // Claimed right at the timeout boundary — defer, don't burn the attempt.
+    return { ok: false, defer: true, error: 'aborted before transcription — will retry' };
+  }
+
+  // 4-5. One streaming transcription call for the whole document.
+  let out: { text: string; inputTokens: number; outputTokens: number };
   try {
-    if (isOcrImageMime(mime)) {
-      const media = mime === 'image/png' ? 'image/png' : mime === 'image/webp' ? 'image/webp' : 'image/jpeg';
-      images = [{ page: 1, base64: Buffer.from(bytes).toString('base64'), mediaType: media }];
-    } else {
-      const r = await rasterizePdf(bytes);
-      images = r.pages;
-      capped = r.capped;
-    }
+    out = await transcribeDocument(content, ctx.signal);
   } catch (e) {
-    log.warn('doc-ocr: rasterize failed', { err: e instanceof Error ? e.message : String(e), documentId });
-    await markDocFailed(documentId, propertyId, 'Couldn\'t open this scan for reading — it may be corrupt or password-protected.');
-    return { ok: false, error: 'rasterize failed' };
-  }
-
-  if (images.length === 0) {
-    await markDocFailed(documentId, propertyId, 'This scan had no pages to read.');
-    return { ok: false, error: 'no pages' };
-  }
-
-  // 4-5. Transcribe each page. Record spend per page (workload 'cua_extraction')
-  // so the budget guard sees it and the Money tab attributes it.
-  const parts: { page: number; text: string }[] = [];
-  let inputTokens = 0;
-  let outputTokens = 0;
-  const { computeCostMicros } = await import('./usage-pricing.js');
-  let costMicros = 0;
-  for (const img of images) {
-    if (ctx.signal.aborted) {
-      // Timed out mid-run. Don't mark failed — a defer lets it re-run cleanly
-      // (idempotent: indexOcrText clears chunks first). Bounded by DEFER_MAX_AGE.
-      return { ok: false, defer: true, error: 'aborted (timeout) mid-transcription — will retry' };
-    }
-    let pageOut: { text: string; inputTokens: number; outputTokens: number };
-    try {
-      pageOut = await transcribePage(img, ctx.signal);
-    } catch (e) {
-      log.warn('doc-ocr: page transcription failed', {
-        err: e instanceof Error ? e.message : String(e), documentId, page: img.page,
-      });
-      await markDocFailed(documentId, propertyId, 'AI couldn\'t read this scan — please try a clearer copy.');
-      return { ok: false, error: `page ${img.page} transcription failed` };
-    }
-    parts.push({ page: img.page, text: pageOut.text });
-    inputTokens += pageOut.inputTokens;
-    outputTokens += pageOut.outputTokens;
-    const usage = { input_tokens: pageOut.inputTokens, output_tokens: pageOut.outputTokens };
-    const pageCostMicros = computeCostMicros(usage, OCR_MODEL);
-    costMicros += pageCostMicros;
-    // Per-page spend log — keeps the running per-property daily total fresh so
-    // the next job's budget guard is accurate. Written directly (NOT via
-    // logClaudeUsage) so OCR never touches the PMS $5/day session cost cap.
-    await logOcrUsage({
-      propertyId, jobId: ctx.jobId, documentId, page: img.page,
-      inputTokens: pageOut.inputTokens, outputTokens: pageOut.outputTokens,
-      costMicros: pageCostMicros,
+    const cls = classifyOcrError(e);
+    log.warn('doc-ocr: transcription failed', {
+      err: e instanceof Error ? e.message : String(e), documentId, classification: cls,
     });
+    if (cls === 'defer') {
+      return { ok: false, defer: true, error: 'transient AI error during transcription — will retry' };
+    }
+    await markDocFailed(documentId, propertyId, 'AI couldn\'t read this scan — it may be corrupt, password-protected, or unreadable.');
+    return { ok: false, error: 'transcription rejected' };
   }
 
-  const text = joinPageTranscripts(parts);
+  // Log the spend ONCE from the final message's usage.
+  const { computeCostMicros } = await import('./usage-pricing.js');
+  const usage = { input_tokens: out.inputTokens, output_tokens: out.outputTokens };
+  const costMicros = computeCostMicros(usage, OCR_MODEL);
+  await logOcrUsage({
+    propertyId, jobId: ctx.jobId, documentId,
+    inputTokens: out.inputTokens, outputTokens: out.outputTokens, costMicros,
+  });
+
+  const text = normalizeTranscript(out.text);
   const costUsd = costMicros / 1_000_000;
+  const pages = pageCapped ? OCR_MAX_PAGES : (pageCount ?? 1);
 
   // 6. Hand the text to the web pipeline (chunk → embed → search).
   let posted: { ok: boolean; status: number };
   try {
     posted = await postOcrComplete({
-      propertyId, documentId, text, pages: images.length,
-      inputTokens, outputTokens, costUsd, partial: capped,
+      propertyId, documentId, text, pages,
+      inputTokens: out.inputTokens, outputTokens: out.outputTokens, costUsd, partial: pageCapped,
     });
   } catch (e) {
     log.warn('doc-ocr: ocr-complete POST threw', { err: e instanceof Error ? e.message : String(e), documentId });
@@ -422,6 +431,6 @@ export async function runDocOcrJob(ctx: WorkflowContext): Promise<{ ok: boolean;
 
   return {
     ok: true,
-    result: { documentId, pages: images.length, capped, costUsd: Number(costUsd.toFixed(6)) },
+    result: { documentId, pages, capped: pageCapped, costUsd: Number(costUsd.toFixed(6)) },
   };
 }

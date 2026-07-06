@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import type { NextRequest } from 'next/server';
 
 import { isImageMime, KNOWLEDGE_IMAGE_MIME_TYPES } from '@/lib/knowledge/types';
-import { decideOcrStatus, DOC_OCR_JOB_KIND } from '@/lib/knowledge/ocr';
+import { decideOcrStatus, buildDocOcrJobRow, DOC_OCR_JOB_KIND, DOC_OCR_TIMEOUT_MS } from '@/lib/knowledge/ocr';
 import { POST as ocrCompletePOST } from '@/app/api/internal/knowledge/ocr-complete/route';
 
 const CRON = 'placeholder-cron-secret-min-16';
@@ -69,6 +69,43 @@ describe('OCR status transition table (decideOcrStatus)', () => {
   });
   test('job kind constant is doc_ocr', () => {
     assert.equal(DOC_OCR_JOB_KIND, 'doc_ocr');
+  });
+});
+
+describe('doc_ocr enqueue row (buildDocOcrJobRow)', () => {
+  const input = {
+    propertyId: UUID_A,
+    documentId: UUID_B,
+    filePath: `${UUID_A}/knowledge/x.pdf`,
+    mime: 'application/pdf',
+    pageCount: 7,
+  };
+
+  test('payload sets the 15-min timeout_ms override the worker runtime honors', () => {
+    const row = buildDocOcrJobRow(input);
+    assert.equal(row.payload.timeout_ms, 900_000);
+    assert.equal(row.payload.timeout_ms, DOC_OCR_TIMEOUT_MS);
+  });
+
+  test('payload carries the doc identity + pageCount for the worker', () => {
+    const row = buildDocOcrJobRow(input);
+    assert.equal(row.kind, 'doc_ocr');
+    assert.deepEqual(
+      { propertyId: row.payload.propertyId, documentId: row.payload.documentId, filePath: row.payload.filePath, mime: row.payload.mime, pageCount: row.payload.pageCount },
+      { propertyId: UUID_A, documentId: UUID_B, filePath: input.filePath, mime: 'application/pdf', pageCount: 7 },
+    );
+  });
+
+  test('omitted pageCount (images / backfill) normalizes to null', () => {
+    const row = buildDocOcrJobRow({ ...input, pageCount: undefined });
+    assert.equal(row.payload.pageCount, null);
+  });
+
+  test('stable-per-doc idempotency key + single attempt', () => {
+    const row = buildDocOcrJobRow(input);
+    assert.equal(row.idempotency_key, `doc_ocr:${UUID_B}`);
+    assert.equal(row.max_attempts, 1);
+    assert.equal(row.property_id, UUID_A);
   });
 });
 

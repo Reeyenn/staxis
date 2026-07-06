@@ -24,7 +24,10 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+// Mirrors src/lib/knowledge/ocr.ts (buildDocOcrJobRow) — that module is
+// 'server-only' so this script keeps its own copy of the two constants.
 const DOC_OCR_JOB_KIND = 'doc_ocr';
+const DOC_OCR_TIMEOUT_MS = 900_000;
 
 interface DocRow {
   id: string;
@@ -102,7 +105,13 @@ async function main(): Promise<void> {
         idempotency_key: `${DOC_OCR_JOB_KIND}:${r.id}`,
         max_attempts: 1,
         triggered_by: 'backfill:enqueue-ocr',
-        payload: { propertyId: r.property_id, documentId: r.id, filePath: r.file_path, mime },
+        // pageCount null — the old rows never stored a page count. The worker
+        // then skips the 60-page cap instruction; the 10MB upload cap bounds
+        // real scan sizes well below the API's 600-page limit anyway.
+        payload: {
+          propertyId: r.property_id, documentId: r.id, filePath: r.file_path, mime,
+          pageCount: null, timeout_ms: DOC_OCR_TIMEOUT_MS,
+        },
       });
     if (insErr) {
       // 23505 = the stable-per-doc key already exists → treat as already-enqueued.

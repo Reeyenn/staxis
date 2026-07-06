@@ -288,7 +288,9 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
     // this same chunk→embed pipeline. If the enqueue fails outright, fall back
     // to `unsupported` so the doc lands on a definite state (no stuck spinner).
     if (outcome.status === 'needs_ocr') {
-      const enqueued = await enqueueOcrJob({ propertyId, documentId: docId, filePath, mime });
+      const enqueued = await enqueueOcrJob({
+        propertyId, documentId: docId, filePath, mime, pageCount: outcome.pageCount,
+      });
       if (enqueued) {
         await setDocStatus(propertyId, docId, 'processing', { extractedText: null, error: outcome.error });
         return 'processing';

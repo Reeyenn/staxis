@@ -155,9 +155,10 @@ async function main(): Promise<void> {
 
   // feature/knowledge-ocr — doc_ocr handler. No-driver kind: it owns no PMS
   // browser. Downloads a scanned PDF / photo from the knowledge-docs bucket,
-  // rasterizes with mupdf, transcribes each page with Claude vision, and POSTs
-  // the text to /api/internal/knowledge/ocr-complete. Budget-guarded to
-  // $2/property/day (defers when over instead of failing).
+  // transcribes it in ONE streamed Claude vision call (native PDF input — no
+  // local rasterization), and POSTs the text to
+  // /api/internal/knowledge/ocr-complete. Budget-guarded to $2/property/day;
+  // transient AI errors defer (retry later) instead of failing the doc.
   runtime.registerHandler('doc_ocr', (ctx) => runDocOcrJob(ctx));
 
   log.info('cua-service ready', {

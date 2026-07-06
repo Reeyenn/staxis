@@ -68,9 +68,11 @@ function pickMapperTimeoutMs(job: WorkflowJobRow): number {
 // edit (delete a feed); it never needs an alive SessionDriver, so it shares the
 // no-driver claim lane + handler dispatch with mapper.learn_pms_family.
 // feature/knowledge-ocr — `doc_ocr` transcribes a scanned PDF / photo with
-// Claude vision (downloads the file, rasterizes via mupdf, one vision call per
-// page). It owns no PMS browser, so it rides the no-driver lane like the mapper
-// kinds — it must run for ANY property, including ones with no live session.
+// Claude vision (downloads the file, ONE streamed vision call using Anthropic's
+// native PDF input — no local rasterization). It owns no PMS browser, so it
+// rides the no-driver lane like the mapper kinds — it must run for ANY
+// property, including ones with no live session. Its 15-min timeout comes from
+// payload.timeout_ms (set at enqueue), honored by pickMapperTimeoutMs.
 const NO_DRIVER_KINDS = new Set<string>(['mapper.learn_pms_family', 'mapper.edit_recipe', 'mapper.capture_feed', 'doc_ocr']);
 
 interface WorkflowJobRow {
