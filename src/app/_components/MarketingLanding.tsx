@@ -87,38 +87,231 @@ const OLD_STEPS = [
   { icon: '✍️', text: 'Log it. Again.' },
 ];
 
-/* One page — the app's real pages, orbiting. Hover a chip and a summary
-   of that operation expands outward, away from the Today card. */
+/* One page — the app's real pages, orbiting. Hover a chip and a mini
+   live demo of that page blooms outward: the page's real sub-tabs
+   (clickable), a scrollable body, built from what the actual app
+   screens contain. */
 const ORBIT_PAGES = [
-  {
-    label: 'Dashboard', x: 10, y: 16, dir: 'left',
-    blurb: 'The morning picture: occupancy, arrivals and departures, today’s labor cost, and anything that needs attention.',
-  },
-  {
-    label: 'Financials', x: 48, y: 4, dir: 'up',
-    blurb: 'Labor costs, spending, and cost per occupied room, tracked for you. No spreadsheet, no formulas.',
-  },
-  {
-    label: 'Housekeeping', x: 82, y: 14, dir: 'right',
-    blurb: 'The live board: every room, every cleaner, statuses flipping as guests check out. Deep cleans scheduled and tracked.',
-  },
-  {
-    label: 'Maintenance', x: 8, y: 58, dir: 'left',
-    blurb: 'Work orders logged in seconds, assigned automatically, and tracked until the room is back in service.',
-  },
-  {
-    label: 'Inventory', x: 86, y: 56, dir: 'right',
-    blurb: 'Counts, par levels, and burn rates, with reorders drafted before you run out and checked against your budget.',
-  },
-  {
-    label: 'Staff', x: 18, y: 90, dir: 'down',
-    blurb: 'Your roster and schedules, with tomorrow’s crew confirmed by text in each person’s language.',
-  },
-  {
-    label: 'Communications', x: 72, y: 90, dir: 'down',
-    blurb: 'Team messages and a log book that writes itself, so nothing gets lost between shifts.',
-  },
-];
+  { id: 'dashboard', label: 'Dashboard', x: 10, y: 16, dir: 'up', shift: 15, tabs: ['Overview'] },
+  { id: 'financials', label: 'Financials', x: 48, y: 4, dir: 'up', shift: 50, tabs: ['Today', 'This week'] },
+  { id: 'housekeeping', label: 'Housekeeping', x: 82, y: 14, dir: 'up', shift: 85, tabs: ['Rooms', 'Schedule', 'Deep Clean', 'Quality'] },
+  { id: 'maintenance', label: 'Maintenance', x: 8, y: 58, dir: 'side-left', shift: 0, tabs: ['Work Orders', 'Preventive', 'Equipment'] },
+  { id: 'inventory', label: 'Inventory', x: 86, y: 56, dir: 'side-right', shift: 0, tabs: ['Stock', 'Orders', 'AI Report'] },
+  { id: 'staff', label: 'Staff', x: 18, y: 90, dir: 'down', shift: 25, tabs: ['Tomorrow', 'Roster'] },
+  { id: 'communications', label: 'Communications', x: 72, y: 90, dir: 'down', shift: 75, tabs: ['Log Book', 'Messages'] },
+] as const;
+
+const ROOM_STATUSES = ['ok', 'dirty', 'ok', 'occ', 'ok', 'dirty', 'insp', 'ok', 'occ', 'ok', 'dirty', 'ok', 'ok', 'insp', 'occ', 'ok', 'dirty', 'ok'];
+
+/* Mini live page inside each orbit popup, per page + sub-tab. */
+function ChipDemo({ id, sub }: { id: string; sub: number }) {
+  if (id === 'dashboard') {
+    return (
+      <div className="ap">
+        <div className="ap-statrow">
+          <div className="ap-card ap-stat"><div className="ap-ring" /><div><b>84%</b><span>occupied tonight</span></div></div>
+          <div className="ap-card ap-stat"><b>42<i>in</i>38<i>out</i></b><span>arrivals &amp; departures</span></div>
+        </div>
+        <div className="ap-h">ROOMS RIGHT NOW</div>
+        <div className="ap-roomgrid">
+          {ROOM_STATUSES.map((s, i) => (<span className={`ap-room r-${s}`} key={i}>{101 + i}</span>))}
+        </div>
+        <div className="ap-legend"><i className="r-ok" />Clean<i className="r-dirty" />Needs cleaning<i className="r-insp" />Inspect<i className="r-occ" />Occupied</div>
+        <div className="ap-h">ATTENTION</div>
+        <div className="ap-card ap-need"><span className="ti-dot warn" />Towels below par<span className="ap-btn">Open</span></div>
+        <div className="ap-card ap-need"><span className="ti-dot info" />2 late checkouts today<span className="ap-btn">View</span></div>
+      </div>
+    );
+  }
+  if (id === 'financials') {
+    return sub === 0 ? (
+      <div className="ap">
+        <div className="ap-card ap-stat"><b>$23.40</b><span>cost per occupied room</span></div>
+        <div className="ap-card ap-stat"><b>$612</b><span>labor today</span></div>
+        <div className="ap-card ap-stat"><b>$148</b><span>supplies this week</span></div>
+        <div className="ap-note">No spreadsheet, no formulas. The numbers are just there.</div>
+      </div>
+    ) : (
+      <div className="ap">
+        <div className="ap-h">THIS WEEK VS BUDGET</div>
+        {[['Labor', 72, 'good'], ['Supplies', 61, 'good'], ['Maintenance', 88, 'low']].map(([n, p, c]) => (
+          <div className="ap-card ap-stock" key={n as string}>
+            <b>{n}</b><div className="ap-bar big"><i className={`f-${c}`} style={{ width: `${p}%` }} /></div>
+            <span className={`ap-pct t-${c}`}>{p}%</span>
+          </div>
+        ))}
+        <div className="ap-note">Green means under budget. Staxis flags it before it turns red.</div>
+      </div>
+    );
+  }
+  if (id === 'housekeeping') {
+    if (sub === 1) {
+      return (
+        <div className="ap">
+          <div className="ap-h">TUESDAY BOARD · 31 ROOMS</div>
+          {[['MG', 'Maria', 8, 12], ['AR', 'Ana', 6, 10], ['LT', 'Luis', 5, 9]].map(([ini, name, done, total]) => (
+            <div className="ap-card ap-cleaner" key={name as string}>
+              <span className="ap-avatar">{ini}</span>
+              <div className="ap-cl-mid"><b>{name}</b><div className="ap-bar"><i style={{ width: `${(Number(done) / Number(total)) * 100}%` }} /></div></div>
+              <span className="ap-cl-count">{done}/{total}</span>
+            </div>
+          ))}
+          <div className="ap-note">Built from who confirmed by text. Re-sorts as guests check out.</div>
+        </div>
+      );
+    }
+    if (sub === 2) {
+      return (
+        <div className="ap">
+          <div className="ap-h">DEEP CLEANS</div>
+          {[['204', 'carpet + vents', 'Overdue', 'crit'], ['117', 'full turn', 'Due soon', 'low'], ['305', 'mattress flip', 'Fresh', 'good']].map(([r, w, st, c]) => (
+            <div className="ap-card ap-stock" key={r as string}>
+              <b style={{ width: 34 }}>{r}</b>
+              <div className="ap-wo-mid">{w}</div>
+              <span className={`ap-pct t-${c}`} style={{ width: 'auto' }}>{st}</span>
+            </div>
+          ))}
+          <div className="ap-note">Cadence per room. Staxis schedules them into slow days.</div>
+        </div>
+      );
+    }
+    if (sub === 3) {
+      return (
+        <div className="ap">
+          <div className="ap-h">INSPECTIONS</div>
+          <div className="ap-done"><span className="de-check">✓</span>204 · passed inspection</div>
+          <div className="ap-done"><span className="de-check">✓</span>211 · passed inspection</div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />118 · needs recheck<span className="ap-btn">Assign</span></div>
+          <div className="ap-note">Every clean gets checked before the room goes back on sale.</div>
+        </div>
+      );
+    }
+    return (
+      <div className="ap">
+        <div className="ap-roomgrid">
+          {ROOM_STATUSES.map((s, i) => (<span className={`ap-room r-${s}`} key={i}>{101 + i}</span>))}
+        </div>
+        <div className="ap-legend"><i className="r-ok" />Clean<i className="r-dirty" />Needs cleaning<i className="r-insp" />Inspect<i className="r-occ" />Occupied</div>
+        <div className="ap-note">Statuses flip live as the robot reads your property system.</div>
+      </div>
+    );
+  }
+  if (id === 'maintenance') {
+    if (sub === 1) {
+      return (
+        <div className="ap">
+          <div className="ap-h">PREVENTIVE</div>
+          <div className="ap-done"><span className="de-check">✓</span>Filter changes · floors 1–2 · done</div>
+          <div className="ap-done"><span className="de-check">✓</span>Water heater check · scheduled</div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />PTAC deep service due<span className="ap-btn">Schedule</span></div>
+        </div>
+      );
+    }
+    if (sub === 2) {
+      return (
+        <div className="ap">
+          <div className="ap-h">EQUIPMENT</div>
+          {[['Water heater', 'OK', 'good'], ['AC unit · 118', 'Attention', 'crit'], ['Boiler', 'OK', 'good'], ['Elevator', 'Service due', 'low']].map(([n, st, c]) => (
+            <div className="ap-card ap-stock" key={n as string}>
+              <b>{n}</b>
+              <span className={`ap-pct t-${c}`} style={{ width: 'auto', marginLeft: 'auto' }}>{st}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <div className="ap">
+        <div className="ap-h">WORK ORDERS</div>
+        {[['118', 'AC not cooling', 'In progress', 'prog', 'Luis'], ['204', 'Shower drip', 'Open', 'open', 'Unassigned'], ['312', 'Hallway bulb out', 'Fixed', 'done', 'Luis']].map(([room, what, status, cls, who]) => (
+          <div className="ap-card ap-wo" key={what as string}>
+            <b>{room}</b>
+            <div className="ap-wo-mid">{what}<span>{who}</span></div>
+            <span className={`ap-pill p-${cls}`}>{status}</span>
+          </div>
+        ))}
+        <div className="ap-note">Logged in seconds, assigned automatically, tracked to done.</div>
+      </div>
+    );
+  }
+  if (id === 'inventory') {
+    if (sub === 1) {
+      return (
+        <div className="ap">
+          <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
+          <div className="ap-h">RECENT</div>
+          <div className="ap-done"><span className="de-check">✓</span>Coffee · $86 · delivered Tuesday</div>
+          <div className="ap-done"><span className="de-check">✓</span>Amenities · $132 · delivered last week</div>
+        </div>
+      );
+    }
+    if (sub === 2) {
+      return (
+        <div className="ap">
+          <div className="ap-h">AI REPORT</div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />Towels: ~6 days left at this pace<span className="ap-btn">Reorder</span></div>
+          <div className="ap-done"><span className="de-check">✓</span>Coffee usage up 12% · breakfast crowd</div>
+          <div className="ap-done"><span className="de-check">✓</span>Soap steady · next order in 3 weeks</div>
+          <div className="ap-note">Staxis learns how fast each item burns and drafts the reorder first.</div>
+        </div>
+      );
+    }
+    return (
+      <div className="ap">
+        <div className="ap-h">STOCK</div>
+        {[['Towels', 28, 'crit'], ['Soap & amenities', 54, 'low'], ['Coffee', 81, 'good'], ['Sheets', 72, 'good']].map(([name, pct, cls]) => (
+          <div className="ap-card ap-stock" key={name as string}>
+            <b>{name}</b>
+            <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
+            <span className={`ap-pct t-${cls}`}>{pct}%</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (id === 'staff') {
+    return sub === 0 ? (
+      <div className="ap">
+        <div className="ap-h">TOMORROW&rsquo;S CREW</div>
+        {[['MG', 'Maria', 'Confirmed ✓', 'ES'], ['AR', 'Ana', 'Confirmed ✓', 'ES'], ['LT', 'Luis', 'Confirmed ✓', 'EN'], ['JD', 'Jade', 'Waiting…', 'EN']].map(([ini, name, st, lang]) => (
+          <div className="ap-card ap-person" key={name as string}>
+            <span className="ap-avatar">{ini}</span>
+            <div className="ap-cl-mid"><b>{name}</b></div>
+            <span className={`ap-conf ${String(st).startsWith('Confirmed') ? 'yes' : ''}`}>{st}</span>
+            <span className="ap-lang">{lang}</span>
+          </div>
+        ))}
+        <div className="ap-note">One text per day, in each person&rsquo;s language.</div>
+      </div>
+    ) : (
+      <div className="ap">
+        <div className="ap-h">ROSTER</div>
+        {[['MG', 'Maria', 'Housekeeping'], ['AR', 'Ana', 'Housekeeping'], ['LT', 'Luis', 'Maintenance'], ['JD', 'Jade', 'Front desk']].map(([ini, name, role]) => (
+          <div className="ap-card ap-person" key={name as string}>
+            <span className="ap-avatar">{ini}</span>
+            <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{role}</span></div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  /* communications */
+  return sub === 0 ? (
+    <div className="ap">
+      <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
+      {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel reorder drafted'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
+        <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
+      ))}
+    </div>
+  ) : (
+    <div className="ap">
+      <div className="ap-h">TEAM MESSAGES</div>
+      <div className="ap-msg them">Room 204 lista ✓</div>
+      <div className="ap-msg me">Gracias Maria! 118 next please</div>
+      <div className="ap-msg them">Ok voy 👍</div>
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -127,6 +320,7 @@ export default function MarketingLanding() {
     () => FEED_SCRIPT.slice(0, 4).map((f, i) => ({ ...f, id: i })).reverse()
   );
   const feedIdx = useRef(4);
+  const [chipTab, setChipTab] = useState<Record<string, number>>({});
   const [notifStage, setNotifStage] = useState<'idle' | 'pressed' | 'done'>('idle');
   const notifStarted = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -480,10 +674,33 @@ export default function MarketingLanding() {
               style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
             >
               {p.label}
-              <span className={`chip-pop pop-${p.dir}`}>
-                <b>{p.label}</b>
-                {p.blurb}
-                <i>LIVE IN THE APP</i>
+              <span
+                className={`chip-pop pop-${p.dir}`}
+                style={{ ['--shift' as string]: `${p.shift}%` }}
+              >
+                <span className="cp-head">
+                  <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
+                  <b>{p.label}</b>
+                  <i>LIVE DEMO · SCROLLS</i>
+                </span>
+                {p.tabs.length > 1 && (
+                  <span className="cp-tabs">
+                    {p.tabs.map((t, ti) => (
+                      <button
+                        type="button"
+                        key={t}
+                        tabIndex={-1}
+                        className={`cp-tab ${(chipTab[p.id] ?? 0) === ti ? 'on' : ''}`}
+                        onClick={() => setChipTab((prev) => ({ ...prev, [p.id]: ti }))}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </span>
+                )}
+                <span className="cp-body" key={chipTab[p.id] ?? 0}>
+                  <ChipDemo id={p.id} sub={chipTab[p.id] ?? 0} />
+                </span>
               </span>
             </span>
           ))}
@@ -1064,31 +1281,153 @@ const CSS = `
   50% { margin-top: -9px; }
 }
 
-/* hover summary — expands outward, away from the Today card */
-.chip-pop { position: absolute; width: 240px; white-space: normal;
+/* hover demo — a mini live Staxis page blooming out of the chip */
+.chip-pop { position: absolute; width: 380px; white-space: normal;
   text-transform: none; letter-spacing: 0; font-family: var(--sans);
-  font-size: 13px; line-height: 1.55; color: var(--muted); text-align: left;
-  background: #fff; border: 1px solid var(--rule); border-radius: 14px;
-  padding: 16px 18px; box-shadow: 0 24px 54px rgba(31,35,28,.16);
-  opacity: 0; pointer-events: none; z-index: 6;
-  transition: opacity .3s cubic-bezier(.19,1,.22,1), transform .35s cubic-bezier(.34,1.56,.64,1); }
-.chip-pop b { display: block; font-family: var(--serif); font-weight: 400;
-  font-size: 19px; color: var(--ink); margin-bottom: 6px; letter-spacing: -.005em; }
-.chip-pop i { display: block; font-style: normal; font-family: var(--mono);
-  font-size: 9px; letter-spacing: .18em; color: var(--sage-deep); margin-top: 12px; }
-.orbit-chip:hover .chip-pop { opacity: 1; pointer-events: auto; }
-.pop-left { right: calc(100% + 12px); top: 50%;
-  transform: translateY(-50%) scale(.6); transform-origin: right center; }
-.orbit-chip:hover .pop-left { transform: translateY(-50%) scale(1); }
-.pop-right { left: calc(100% + 12px); top: 50%;
-  transform: translateY(-50%) scale(.6); transform-origin: left center; }
-.orbit-chip:hover .pop-right { transform: translateY(-50%) scale(1); }
-.pop-up { bottom: calc(100% + 12px); left: 50%;
-  transform: translateX(-50%) scale(.6); transform-origin: center bottom; }
-.orbit-chip:hover .pop-up { transform: translateX(-50%) scale(1); }
-.pop-down { top: calc(100% + 12px); left: 50%;
-  transform: translateX(-50%) scale(.6); transform-origin: center top; }
-.orbit-chip:hover .pop-down { transform: translateX(-50%) scale(1); }
+  font-size: 13px; line-height: 1.5; color: var(--muted); text-align: left;
+  background: #fff; border: 1px solid var(--rule); border-radius: 16px;
+  box-shadow: 0 30px 70px rgba(31,35,28,.2);
+  display: flex; flex-direction: column;
+  opacity: 0; visibility: hidden; z-index: 6;
+  transition: opacity .3s cubic-bezier(.19,1,.22,1),
+    transform .4s cubic-bezier(.34,1.56,.64,1), visibility 0s .3s; }
+.chip-pop::before { content: ''; position: absolute; inset: -16px; z-index: -1; }
+.orbit-chip:hover .chip-pop { opacity: 1; visibility: visible;
+  transition: opacity .3s cubic-bezier(.19,1,.22,1),
+    transform .4s cubic-bezier(.34,1.56,.64,1), visibility 0s 0s; }
+.cp-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px;
+  border-bottom: 1px solid var(--rule-soft); background: var(--bg-warm); flex: none;
+  position: relative; border-radius: 16px 16px 0 0; }
+.cp-brand { width: 22px; height: 22px; border-radius: 6px; background: var(--mark);
+  display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.cp-head b { font-weight: 600; font-size: 13.5px; color: var(--ink);
+  letter-spacing: -.01em; }
+.cp-head i { margin-left: auto; font-style: normal; font-family: var(--mono);
+  font-size: 8.5px; letter-spacing: .16em; color: var(--dim); }
+.cp-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 9px 12px;
+  border-bottom: 1px solid var(--rule-soft); background: #fff; flex: none;
+  position: relative; }
+.cp-tab { font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--dim); background: #FAFAF7;
+  border: 1px solid var(--rule-soft); border-radius: 999px; padding: 6px 11px;
+  cursor: pointer; transition: all .2s ease; }
+.cp-tab:hover { color: var(--ink); }
+.cp-tab.on { color: var(--ink); background: var(--sage-dim);
+  border-color: rgba(92,122,96,.4); }
+.cp-body { display: block; height: 300px; overflow-y: auto; padding: 14px;
+  background: #F7F8F5; position: relative; border-radius: 0 0 16px 16px;
+  animation: pagein .4s cubic-bezier(.19,1,.22,1); }
+@keyframes pagein { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.cp-body::-webkit-scrollbar { width: 7px; }
+.cp-body::-webkit-scrollbar-thumb { background: rgba(31,35,28,.14); border-radius: 8px; }
+.cp-body::-webkit-scrollbar-track { background: transparent; }
+
+.pop-up { bottom: calc(100% + 10px); left: 50%;
+  transform: translateX(calc(-1 * var(--shift, 50%))) scale(.5);
+  transform-origin: var(--shift, 50%) bottom; }
+.orbit-chip:hover .pop-up { transform: translateX(calc(-1 * var(--shift, 50%))) scale(1); }
+.pop-down { top: calc(100% + 10px); left: 50%;
+  transform: translateX(calc(-1 * var(--shift, 50%))) scale(.5);
+  transform-origin: var(--shift, 50%) top; }
+.orbit-chip:hover .pop-down { transform: translateX(calc(-1 * var(--shift, 50%))) scale(1); }
+.pop-side-left { right: calc(100% - 80px); top: 50%;
+  transform: translateY(-50%) scale(.5); transform-origin: right center; }
+.orbit-chip:hover .pop-side-left { transform: translateY(-50%) scale(1); }
+.pop-side-right { left: calc(100% - 80px); top: 50%;
+  transform: translateY(-50%) scale(.5); transform-origin: left center; }
+.orbit-chip:hover .pop-side-right { transform: translateY(-50%) scale(1); }
+@media (max-width: 1380px) {
+  .pop-side-left { right: auto; left: -24px; top: calc(100% + 10px); bottom: auto;
+    transform: scale(.5); transform-origin: 44px top; }
+  .orbit-chip:hover .pop-side-left { transform: scale(1); }
+  .pop-side-right { left: auto; right: -24px; top: calc(100% + 10px);
+    transform: scale(.5); transform-origin: calc(100% - 44px) top; }
+  .orbit-chip:hover .pop-side-right { transform: scale(1); }
+}
+
+/* mock page primitives (inside popup demos) */
+.ap { display: flex; flex-direction: column; gap: 7px; }
+.ap-h { font-family: var(--mono); font-size: 9px; letter-spacing: .18em;
+  color: var(--dim); margin: 4px 0 1px; }
+.ap-card { background: #fff; border: 1px solid var(--rule-soft); border-radius: 10px;
+  padding: 10px 12px; display: flex; align-items: center; gap: 9px;
+  font-size: 12px; color: var(--ink-soft); }
+.ap-btn { margin-left: auto; font-size: 10.5px; font-weight: 600; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3);
+  border-radius: 999px; padding: 4px 10px; flex: none; }
+.ap-done { display: flex; align-items: center; gap: 8px; font-size: 11.5px;
+  color: var(--muted); padding: 3px 2px; }
+.ap-feedrow { display: flex; align-items: baseline; gap: 9px; font-size: 11px;
+  color: var(--ink-soft); background: #fff; border: 1px solid var(--rule-soft);
+  border-radius: 8px; padding: 8px 11px; }
+.ap-feedrow > span { font-family: var(--mono); font-size: 9px; color: var(--dim);
+  flex: none; width: 44px; }
+.ap-note { font-size: 11px; color: var(--dim); font-style: italic; padding: 3px 2px; }
+.ap-statrow { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.ap-stat { gap: 10px; }
+.ap-stat b { font-family: var(--serif); font-style: italic; font-weight: 400;
+  font-size: 20px; color: var(--ink); line-height: 1.1; }
+.ap-stat b i { font-family: var(--mono); font-style: normal; font-size: 8px;
+  color: var(--dim); letter-spacing: .1em; margin: 0 5px 0 2px; }
+.ap-stat span { display: block; font-size: 10px; color: var(--dim); }
+.ap-ring { width: 32px; height: 32px; border-radius: 50%; flex: none;
+  background: conic-gradient(var(--sage-deep) 0 84%, rgba(31,35,28,.08) 84% 100%);
+  -webkit-mask: radial-gradient(circle, transparent 9px, black 10px);
+  mask: radial-gradient(circle, transparent 9px, black 10px); }
+.ap-roomgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
+.ap-room { font-family: var(--mono); font-size: 8.5px; text-align: center;
+  padding: 7px 0; border-radius: 5px; color: var(--ink-soft); }
+.r-ok { background: rgba(92,122,96,.16); }
+.r-dirty { background: rgba(201,150,68,.2); }
+.r-insp { background: rgba(123,106,151,.16); }
+.r-occ { background: rgba(31,35,28,.06); color: var(--dim); }
+.ap-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 9.5px;
+  color: var(--dim); align-items: center; padding: 1px 1px 0; }
+.ap-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block;
+  margin-right: 4px; vertical-align: -1px; }
+.ap-avatar { width: 26px; height: 26px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3); }
+.ap-cl-mid { flex: 1; min-width: 0; }
+.ap-cl-mid b { display: block; font-size: 12px; font-weight: 600; color: var(--ink); }
+.ap-role { font-size: 10px; color: var(--dim); }
+.ap-bar { height: 5px; border-radius: 4px; background: rgba(31,35,28,.07);
+  margin-top: 5px; overflow: hidden; }
+.ap-bar i { display: block; height: 100%; border-radius: 4px;
+  background: var(--sage-deep); transition: width 1s cubic-bezier(.19,1,.22,1); }
+.ap-bar.big { height: 7px; flex: 1; margin-top: 0; }
+.f-good { background: var(--sage-deep) !important; }
+.f-low { background: var(--caramel) !important; }
+.f-crit { background: var(--warm) !important; }
+.ap-cl-count { font-family: var(--mono); font-size: 9.5px; color: var(--dim); flex: none; }
+.ap-stock b { font-size: 11.5px; font-weight: 600; width: 104px; flex: none; }
+.ap-pct { font-family: var(--mono); font-size: 9.5px; flex: none; width: 32px; text-align: right; }
+.t-good { color: var(--sage-deep); }
+.t-low { color: var(--caramel-deep); }
+.t-crit { color: var(--warm); }
+.ap-wo b { font-family: var(--mono); font-size: 9.5px; color: var(--dim);
+  width: 36px; flex: none; }
+.ap-wo-mid { flex: 1; font-size: 12px; color: var(--ink); }
+.ap-wo-mid span { display: block; font-size: 10px; color: var(--dim); }
+.ap-pill { font-family: var(--mono); font-size: 8px; letter-spacing: .08em;
+  border-radius: 999px; padding: 4px 9px; flex: none; }
+.p-open { color: var(--caramel-deep); background: var(--caramel-dim);
+  border: 1px solid rgba(201,150,68,.35); }
+.p-prog { color: var(--purple); background: rgba(123,106,151,.1);
+  border: 1px solid rgba(123,106,151,.3); }
+.p-done { color: var(--sage-deep); background: var(--sage-dim);
+  border: 1px solid rgba(92,122,96,.3); }
+.ap-conf { font-size: 10px; color: var(--dim); flex: none; }
+.ap-conf.yes { color: var(--sage-deep); font-weight: 600; }
+.ap-lang { font-family: var(--mono); font-size: 8px; color: var(--dim);
+  border: 1px solid var(--rule); border-radius: 4px; padding: 2px 5px; flex: none; }
+.ap-reorder { border-color: rgba(201,150,68,.35); background: #FDFBF4; }
+.ap-msg { max-width: 80%; font-size: 11.5px; padding: 8px 12px; border-radius: 12px; }
+.ap-msg.them { background: #fff; border: 1px solid var(--rule-soft);
+  align-self: flex-start; border-bottom-left-radius: 3px; }
+.ap-msg.me { background: var(--sage-dim); border: 1px solid rgba(92,122,96,.25);
+  align-self: flex-end; border-bottom-right-radius: 3px; color: var(--ink); }
 .today { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: 340px; max-width: 82%; background: #fff; border: 1px solid var(--rule);
   border-radius: 18px; padding: 20px;
