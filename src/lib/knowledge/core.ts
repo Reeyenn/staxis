@@ -68,6 +68,9 @@ export interface KnowledgeActor {
 // this and the client uploads with it, so the PUT's Content-Type always matches
 // one of the bucket's allowed_mime_types exactly. Extensions outside this map
 // are rejected at presign time.
+// Images (jpg/png/webp) are accepted for photo/scan OCR — the Fly vision
+// worker transcribes them into searchable text. The bucket's allowed_mime_types
+// is widened to match in migration 0301.
 const EXT_TO_MIME: Record<string, string> = {
   pdf: 'application/pdf',
   txt: 'text/plain',
@@ -76,6 +79,10 @@ const EXT_TO_MIME: Record<string, string> = {
   csv: 'text/csv',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
 };
 function extOf(filename: string): string {
   const dot = filename.lastIndexOf('.');
