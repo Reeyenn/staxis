@@ -92,15 +92,15 @@ const OLD_STEPS = [
    (clickable), a scrollable body, built from what the actual app
    screens contain. */
 const ORBIT_PAGES = [
-  { id: 'dashboard', label: 'Dashboard', x: 10, y: 16, dir: 'up-left', tabs: ['Overview'] },
-  { id: 'financials', label: 'Financials', x: 48, y: 4, dir: 'up', tabs: ['Checkbook', 'Budget', 'CapEx'] },
-  { id: 'housekeeping', label: 'Housekeeping', x: 82, y: 14, dir: 'up-right', tabs: ['Rooms', 'Schedule', 'Quality', 'Deep Clean'] },
-  { id: 'maintenance', label: 'Maintenance', x: 8, y: 58, dir: 'left', tabs: ['Work Orders', 'Preventive', 'Equipment'] },
+  { id: 'dashboard', label: 'Dashboard', x: 10, y: 14, dir: 'up-left', tabs: ['Overview'] },
+  { id: 'financials', label: 'Financials', x: 48, y: 3, dir: 'up', tabs: ['Checkbook', 'Budget', 'CapEx'] },
+  { id: 'housekeeping', label: 'Housekeeping', x: 84, y: 12, dir: 'up-right', tabs: ['Rooms', 'Schedule', 'Quality', 'Deep Clean'] },
+  { id: 'maintenance', label: 'Maintenance', x: 8, y: 50, dir: 'left', tabs: ['Work Orders', 'Preventive', 'Equipment'] },
   /* farther out than the rest, on purpose: it's not here yet */
-  { id: 'comingsoon', label: 'Coming Soon', x: 97, y: 34, dir: 'right', tabs: ['Guest Experience'], soon: true },
-  { id: 'inventory', label: 'Inventory', x: 86, y: 56, dir: 'right', tabs: ['Inventory'] },
-  { id: 'staff', label: 'Staff', x: 18, y: 90, dir: 'down-left', tabs: ['Schedule', 'Directory', 'Recognition'] },
-  { id: 'communications', label: 'Communications', x: 72, y: 90, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
+  { id: 'comingsoon', label: 'Coming Soon', x: 97, y: 30, dir: 'right', tabs: ['Guest Experience'], soon: true },
+  { id: 'inventory', label: 'Inventory', x: 87, y: 52, dir: 'right', tabs: ['Inventory'] },
+  { id: 'staff', label: 'Staff', x: 16, y: 92, dir: 'down-left', tabs: ['Schedule', 'Directory', 'Recognition'] },
+  { id: 'communications', label: 'Communications', x: 76, y: 94, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
 ] as const;
 
 /* Mini live page inside each orbit popup, per page + sub-tab —
@@ -108,22 +108,18 @@ const ORBIT_PAGES = [
 function ChipDemo({ id, sub }: { id: string; sub: number }) {
   if (id === 'comingsoon') {
     return (
-      <div className="ap">
-        <div className="ap-card cs-call">
-          <span className="cs-ring">✆</span>
-          <div className="ap-wo-mid">Guest calling after hours<span>AI answers on the first ring, in their language</span></div>
-          <span className="ap-pill p-open">SOON</span>
-        </div>
-        <div className="ap-h">GUEST EXPERIENCE · COMING SOON</div>
+      <div className="ap gx">
         {[
-          'An AI voice agent answering every guest call, 24/7',
-          'After-hours bookings, never missed again',
-          'Reservation changes handled automatically',
-          'Instant replies to guest texts and emails',
-          'Late checkouts and requests taken by phone',
-          'Guests greeted in their own language',
-        ].map((t) => (
-          <div className="ap-done" key={t}><span className="rm-soon-dot sm">✦</span>{t}</div>
+          ['✆', 'An AI voice agent answering every guest call, 24/7'],
+          ['☾', 'After-hours bookings, never missed again'],
+          ['⇄', 'Reservation changes handled automatically'],
+          ['✉', 'Instant replies to guest texts and emails'],
+          ['✓', 'Late checkouts and requests taken by phone'],
+          ['🌎', 'Guests greeted in their own language'],
+        ].map(([ic, t], i) => (
+          <div className="gx-item" key={t} style={{ animationDelay: `${i * 90}ms` }}>
+            <span className="gx-ic">{ic}</span>{t}
+          </div>
         ))}
         <div className="ap-note">Every request lands on the same one page that runs your operations.</div>
       </div>
@@ -1003,7 +999,7 @@ export default function MarketingLanding() {
               <span className={`chip-pop pop-${p.dir} ${'soon' in p ? 'pop-soon' : ''}`}>
                 <span className="cp-head">
                   <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
-                  <b>{p.label}</b>
+                  <b>{'soon' in p ? 'Guest Experience' : p.label}</b>
                   <i>{'soon' in p ? 'COMING SOON' : 'LIVE DEMO · SCROLLS'}</i>
                 </span>
                 {p.tabs.length > 1 && (
@@ -1675,7 +1671,7 @@ const CSS = `
 }
 
 /* ---------- one page (orbit) ---------- */
-.orbit { position: relative; margin: 70px auto 0; max-width: 920px; height: 540px; }
+.orbit { position: relative; margin: 70px auto 0; max-width: 920px; height: 620px; }
 .orbit-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
 .orbit-lines line { stroke: rgba(92,122,96,.3); stroke-width: .35;
   stroke-dasharray: 2 2.4; animation: march 2.4s linear infinite; }
@@ -2102,23 +2098,34 @@ const CSS = `
 .stx-note { font-size: 9px; color: var(--sage-deep); }
 .stx-need.hot .stx-note { color: var(--warm); }
 
-/* ---------- coming-soon chip ---------- */
+/* ---------- coming-soon chip + guest experience popup ---------- */
 .orbit-chip.chip-soon { border: 1.5px dashed rgba(201,150,68,.55);
   color: var(--caramel-deep); background: #FFFDF6; }
 .orbit-chip.chip-soon:hover { border-color: var(--caramel); color: var(--caramel-deep); }
 .orbit-lines line.l-soon { stroke: rgba(201,150,68,.45); }
-.cs-call { border-color: rgba(201,150,68,.35); background: #FDFBF4; }
-.cs-ring { width: 28px; height: 28px; border-radius: 50%; flex: none;
-  display: inline-flex; align-items: center; justify-content: center; font-size: 13px;
+/* always open below and right-aligned so it never leaves the screen */
+.chip-pop.pop-soon { left: auto; right: -8px; top: calc(100% + 12px); bottom: auto;
+  transform: scale(.5); transform-origin: calc(100% - 40px) top;
+  border: 1.5px dashed rgba(201,150,68,.5); }
+.orbit-chip:hover .chip-pop.pop-soon { transform: scale(1); }
+.pop-soon .cp-head i { color: var(--caramel-deep); }
+.ap.gx { gap: 4px; padding: 4px 2px; }
+.gx-item { display: flex; align-items: center; gap: 13px; font-size: 13.5px;
+  color: var(--ink); padding: 7px 4px; border-bottom: 1px dashed var(--rule-soft);
+  opacity: 0; animation: gxin .5s cubic-bezier(.19,1,.22,1) forwards; }
+.gx-item:last-of-type { border-bottom: none; }
+@keyframes gxin { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+.gx-ic { width: 28px; height: 28px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px;
   color: var(--caramel-deep); background: var(--caramel-dim);
-  border: 1px solid rgba(201,150,68,.4); animation: csring 1.6s ease-in-out infinite; }
+  border: 1px dashed rgba(201,150,68,.5); }
+.gx-item:first-child .gx-ic { animation: csring 2s ease-in-out infinite; }
 @keyframes csring {
   0%, 100% { transform: rotate(0deg); box-shadow: 0 0 0 0 rgba(201,150,68,.3); }
   15% { transform: rotate(-12deg); }
   30% { transform: rotate(10deg); }
   45% { transform: rotate(0deg); box-shadow: 0 0 0 8px rgba(201,150,68,0); }
 }
-.rm-soon-dot.sm { width: 16px; height: 16px; font-size: 8px; flex: none; }
 
 /* ---------- how AI runs your hotel (tiers) ---------- */
 .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
