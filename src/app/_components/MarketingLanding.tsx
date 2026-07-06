@@ -792,16 +792,13 @@ export default function MarketingLanding() {
             <span className="line"><span className="w" style={{ animationDelay: '.22s' }}><em className="shimmer">hotels.</em></span></span>
           </h1>
           <p className="lede rise" style={{ animationDelay: '.42s' }}>
-            Staxis runs your hotel&rsquo;s operations today. It watches your
-            property systems around the clock, handles the busywork, and comes to
-            you when something needs a person. And operations is just the start.
+            Hotel operations that finally run themselves. Staxis handles the
+            busywork around the clock and only taps you when something needs a
+            person.
           </p>
           <div className="cta-row rise" style={{ animationDelay: '.55s' }}>
             <a className="btn btn-solid btn-lg" href="#contact">Request a demo</a>
             <a className="btn btn-ghost btn-lg" href="#story">See why<span className="arrow">→</span></a>
-          </div>
-          <div className="hero-meta rise" style={{ animationDelay: '.68s' }}>
-            Built for limited &amp; select-service hotels · English + Español
           </div>
         </div>
 
@@ -1360,8 +1357,6 @@ const CSS = `
 .lede { margin-top: 26px; max-width: 52ch; font-size: clamp(15.5px, 1.35vw, 17.5px);
   color: var(--muted); }
 .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }
-.hero-meta { margin-top: 26px; font-family: var(--mono); font-size: 11.5px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
 
 .rise { opacity: 0; transform: translateY(22px);
   animation: rise .8s cubic-bezier(.19,1,.22,1) forwards; }
