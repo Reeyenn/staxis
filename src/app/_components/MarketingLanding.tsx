@@ -92,13 +92,13 @@ const OLD_STEPS = [
    (clickable), a scrollable body, built from what the actual app
    screens contain. */
 const ORBIT_PAGES = [
-  { id: 'dashboard', label: 'Dashboard', x: 10, y: 16, dir: 'up', shift: 15, tabs: ['Overview'] },
-  { id: 'financials', label: 'Financials', x: 48, y: 4, dir: 'up', shift: 50, tabs: ['Today', 'This week'] },
-  { id: 'housekeeping', label: 'Housekeeping', x: 82, y: 14, dir: 'up', shift: 85, tabs: ['Rooms', 'Schedule', 'Deep Clean', 'Quality'] },
-  { id: 'maintenance', label: 'Maintenance', x: 8, y: 58, dir: 'side-left', shift: 0, tabs: ['Work Orders', 'Preventive', 'Equipment'] },
-  { id: 'inventory', label: 'Inventory', x: 86, y: 56, dir: 'side-right', shift: 0, tabs: ['Stock', 'Orders', 'AI Report'] },
-  { id: 'staff', label: 'Staff', x: 18, y: 90, dir: 'down', shift: 25, tabs: ['Tomorrow', 'Roster'] },
-  { id: 'communications', label: 'Communications', x: 72, y: 90, dir: 'down', shift: 75, tabs: ['Log Book', 'Messages'] },
+  { id: 'dashboard', label: 'Dashboard', x: 10, y: 16, dir: 'up-left', tabs: ['Overview'] },
+  { id: 'financials', label: 'Financials', x: 48, y: 4, dir: 'up', tabs: ['Checkbook', 'Budget', 'CapEx'] },
+  { id: 'housekeeping', label: 'Housekeeping', x: 82, y: 14, dir: 'up-right', tabs: ['Rooms', 'Schedule', 'Quality', 'Deep Clean'] },
+  { id: 'maintenance', label: 'Maintenance', x: 8, y: 58, dir: 'left', tabs: ['Work Orders', 'Preventive', 'Equipment'] },
+  { id: 'inventory', label: 'Inventory', x: 86, y: 56, dir: 'right', tabs: ['Inventory'] },
+  { id: 'staff', label: 'Staff', x: 18, y: 90, dir: 'down-left', tabs: ['Schedule', 'Directory', 'Recognition'] },
+  { id: 'communications', label: 'Communications', x: 72, y: 90, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
 ] as const;
 
 const ROOM_STATUSES = ['ok', 'dirty', 'ok', 'occ', 'ok', 'dirty', 'insp', 'ok', 'occ', 'ok', 'dirty', 'ok', 'ok', 'insp', 'occ', 'ok', 'dirty', 'ok'];
@@ -124,23 +124,45 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     );
   }
   if (id === 'financials') {
-    return sub === 0 ? (
+    if (sub === 1) {
+      return (
+        <div className="ap">
+          <div className="ap-h">THIS MONTH VS BUDGET</div>
+          {[['Labor', 72, 'good'], ['Supplies', 61, 'good'], ['Maintenance', 88, 'low'], ['Utilities', 54, 'good']].map(([n, p, c]) => (
+            <div className="ap-card ap-stock" key={n as string}>
+              <b>{n}</b><div className="ap-bar big"><i className={`f-${c}`} style={{ width: `${p}%` }} /></div>
+              <span className={`ap-pct t-${c}`}>{p}%</span>
+            </div>
+          ))}
+          <div className="ap-note">Green means under budget. Staxis flags it before it turns red.</div>
+        </div>
+      );
+    }
+    if (sub === 2) {
+      return (
+        <div className="ap">
+          <div className="ap-h">CAPEX PROJECTS</div>
+          {[['PTAC replacements · floor 2', 'Planned', '$4,800', 'low'], ['Lobby refresh', 'Saving · 60%', '$12,000', 'good'], ['Parking lot reseal', 'Done ✓', '$3,200', 'good']].map(([n, st, amt, c]) => (
+            <div className="ap-card ap-wo" key={n as string}>
+              <div className="ap-wo-mid">{n}<span>{st}</span></div>
+              <span className={`ap-pct t-${c}`} style={{ width: 'auto' }}>{amt}</span>
+            </div>
+          ))}
+          <div className="ap-note">Big purchases planned and tracked, not scribbled on a legal pad.</div>
+        </div>
+      );
+    }
+    return (
       <div className="ap">
-        <div className="ap-card ap-stat"><b>$23.40</b><span>cost per occupied room</span></div>
-        <div className="ap-card ap-stat"><b>$612</b><span>labor today</span></div>
-        <div className="ap-card ap-stat"><b>$148</b><span>supplies this week</span></div>
-        <div className="ap-note">No spreadsheet, no formulas. The numbers are just there.</div>
-      </div>
-    ) : (
-      <div className="ap">
-        <div className="ap-h">THIS WEEK VS BUDGET</div>
-        {[['Labor', 72, 'good'], ['Supplies', 61, 'good'], ['Maintenance', 88, 'low']].map(([n, p, c]) => (
-          <div className="ap-card ap-stock" key={n as string}>
-            <b>{n}</b><div className="ap-bar big"><i className={`f-${c}`} style={{ width: `${p}%` }} /></div>
-            <span className={`ap-pct t-${c}`}>{p}%</span>
+        <div className="ap-h">CHECKBOOK</div>
+        {[['Jul 3', 'Linen supplier', '-$214', ''], ['Jul 2', 'Payroll run', '-$4,180', ''], ['Jul 1', 'OTA payout', '+$6,940', 'good'], ['Jun 30', 'Coffee vendor', '-$86', '']].map(([d, payee, amt, c]) => (
+          <div className="ap-feedrow" key={payee as string}>
+            <span>{d}</span>{payee}
+            <b className={`ap-amt ${c ? 't-good' : ''}`}>{amt}</b>
           </div>
         ))}
-        <div className="ap-note">Green means under budget. Staxis flags it before it turns red.</div>
+        <div className="ap-card ap-stat"><b>$23.40</b><span>cost per occupied room</span></div>
+        <div className="ap-note">Every dollar in and out, logged for you. No spreadsheet.</div>
       </div>
     );
   }
@@ -163,6 +185,17 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 2) {
       return (
         <div className="ap">
+          <div className="ap-h">QUALITY · INSPECTIONS</div>
+          <div className="ap-done"><span className="de-check">✓</span>204 · passed inspection</div>
+          <div className="ap-done"><span className="de-check">✓</span>211 · passed inspection</div>
+          <div className="ap-card ap-need"><span className="ti-dot warn" />118 · needs recheck<span className="ap-btn">Assign</span></div>
+          <div className="ap-note">Every clean gets checked before the room goes back on sale.</div>
+        </div>
+      );
+    }
+    if (sub === 3) {
+      return (
+        <div className="ap">
           <div className="ap-h">DEEP CLEANS</div>
           {[['204', 'carpet + vents', 'Overdue', 'crit'], ['117', 'full turn', 'Due soon', 'low'], ['305', 'mattress flip', 'Fresh', 'good']].map(([r, w, st, c]) => (
             <div className="ap-card ap-stock" key={r as string}>
@@ -172,17 +205,6 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
             </div>
           ))}
           <div className="ap-note">Cadence per room. Staxis schedules them into slow days.</div>
-        </div>
-      );
-    }
-    if (sub === 3) {
-      return (
-        <div className="ap">
-          <div className="ap-h">INSPECTIONS</div>
-          <div className="ap-done"><span className="de-check">✓</span>204 · passed inspection</div>
-          <div className="ap-done"><span className="de-check">✓</span>211 · passed inspection</div>
-          <div className="ap-card ap-need"><span className="ti-dot warn" />118 · needs recheck<span className="ap-btn">Assign</span></div>
-          <div className="ap-note">Every clean gets checked before the room goes back on sale.</div>
         </div>
       );
     }
@@ -235,44 +257,57 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     );
   }
   if (id === 'inventory') {
-    if (sub === 1) {
-      return (
-        <div className="ap">
-          <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
-          <div className="ap-h">RECENT</div>
-          <div className="ap-done"><span className="de-check">✓</span>Coffee · $86 · delivered Tuesday</div>
-          <div className="ap-done"><span className="de-check">✓</span>Amenities · $132 · delivered last week</div>
-        </div>
-      );
-    }
-    if (sub === 2) {
-      return (
-        <div className="ap">
-          <div className="ap-h">AI REPORT</div>
-          <div className="ap-card ap-need"><span className="ti-dot warn" />Towels: ~6 days left at this pace<span className="ap-btn">Reorder</span></div>
-          <div className="ap-done"><span className="de-check">✓</span>Coffee usage up 12% · breakfast crowd</div>
-          <div className="ap-done"><span className="de-check">✓</span>Soap steady · next order in 3 weeks</div>
-          <div className="ap-note">Staxis learns how fast each item burns and drafts the reorder first.</div>
-        </div>
-      );
-    }
+    /* the real inventory is one screen: a stock list plus a rail of
+       actions (count, scan, reorder, orders, reports, history, AI,
+       budgets, settings) */
     return (
       <div className="ap">
+        <div className="ap-rail">
+          {['Start Count', 'Scan Invoice', 'Reorder List', 'Orders', 'Reports', 'History', 'AI Helper', 'Budgets', 'Ordering Settings'].map((r) => (
+            <span className="ap-railbtn" key={r}>{r}</span>
+          ))}
+        </div>
+        <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder drafted · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
         <div className="ap-h">STOCK</div>
-        {[['Towels', 28, 'crit'], ['Soap & amenities', 54, 'low'], ['Coffee', 81, 'good'], ['Sheets', 72, 'good']].map(([name, pct, cls]) => (
+        {[['Towels', 28, 'crit'], ['Soap & amenities', 54, 'low'], ['Coffee', 81, 'good'], ['Sheets', 72, 'good'], ['Cleaning supplies', 43, 'low']].map(([name, pct, cls]) => (
           <div className="ap-card ap-stock" key={name as string}>
             <b>{name}</b>
             <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
             <span className={`ap-pct t-${cls}`}>{pct}%</span>
           </div>
         ))}
+        <div className="ap-note">Staxis learns how fast each item burns and drafts the reorder first.</div>
       </div>
     );
   }
   if (id === 'staff') {
-    return sub === 0 ? (
+    if (sub === 1) {
+      return (
+        <div className="ap">
+          <div className="ap-h">DIRECTORY</div>
+          {[['MG', 'Maria', 'Housekeeping', 'ES'], ['AR', 'Ana', 'Housekeeping', 'ES'], ['LT', 'Luis', 'Maintenance', 'EN'], ['JD', 'Jade', 'Front desk', 'EN']].map(([ini, name, role, lang]) => (
+            <div className="ap-card ap-person" key={name as string}>
+              <span className="ap-avatar">{ini}</span>
+              <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{role}</span></div>
+              <span className="ap-lang">{lang}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    if (sub === 2) {
+      return (
+        <div className="ap">
+          <div className="ap-h">RECOGNITION</div>
+          <div className="ap-card ap-need"><span className="ti-dot ok" />Maria · 12 perfect inspections in a row ⭐</div>
+          <div className="ap-card ap-need"><span className="ti-dot ok" />Luis · fastest work-order month yet 🔧</div>
+          <div className="ap-done"><span className="de-check">✓</span>Kudos go out by text, in their language</div>
+        </div>
+      );
+    }
+    return (
       <div className="ap">
-        <div className="ap-h">TOMORROW&rsquo;S CREW</div>
+        <div className="ap-h">SCHEDULE · TOMORROW&rsquo;S CREW</div>
         {[['MG', 'Maria', 'Confirmed ✓', 'ES'], ['AR', 'Ana', 'Confirmed ✓', 'ES'], ['LT', 'Luis', 'Confirmed ✓', 'EN'], ['JD', 'Jade', 'Waiting…', 'EN']].map(([ini, name, st, lang]) => (
           <div className="ap-card ap-person" key={name as string}>
             <span className="ap-avatar">{ini}</span>
@@ -281,31 +316,37 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
             <span className="ap-lang">{lang}</span>
           </div>
         ))}
-        <div className="ap-note">One text per day, in each person&rsquo;s language.</div>
-      </div>
-    ) : (
-      <div className="ap">
-        <div className="ap-h">ROSTER</div>
-        {[['MG', 'Maria', 'Housekeeping'], ['AR', 'Ana', 'Housekeeping'], ['LT', 'Luis', 'Maintenance'], ['JD', 'Jade', 'Front desk']].map(([ini, name, role]) => (
-          <div className="ap-card ap-person" key={name as string}>
-            <span className="ap-avatar">{ini}</span>
-            <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{role}</span></div>
-          </div>
-        ))}
+        <div className="ap-note">One text per day, in each person&rsquo;s language. Replies build the schedule.</div>
       </div>
     );
   }
   /* communications */
-  return sub === 0 ? (
+  if (sub === 1) {
+    return (
+      <div className="ap">
+        <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
+        {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel reorder drafted'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
+          <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
+        ))}
+      </div>
+    );
+  }
+  if (sub === 2) {
+    return (
+      <div className="ap">
+        <div className="ap-h">CALENDAR</div>
+        {[['Wed', 'Deep clean · 204'], ['Thu', 'Linen delivery expected'], ['Fri', 'Fire panel inspection'], ['Sat', 'Sold out night · 100%']].map(([d, ev]) => (
+          <div className="ap-feedrow" key={ev as string}><span>{d}</span>{ev}</div>
+        ))}
+      </div>
+    );
+  }
+  return (
     <div className="ap">
-      <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
-      {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel reorder drafted'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
-        <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
-      ))}
-    </div>
-  ) : (
-    <div className="ap">
-      <div className="ap-h">TEAM MESSAGES</div>
+      <div className="ap-h">CHANNELS</div>
+      <div className="ap-done"><span className="de-check">✓</span># announcements · new schedule posted</div>
+      <div className="ap-done"><span className="de-check">✓</span># housekeeping · 3 new</div>
+      <div className="ap-h">MESSAGES</div>
       <div className="ap-msg them">Room 204 lista ✓</div>
       <div className="ap-msg me">Gracias Maria! 118 next please</div>
       <div className="ap-msg them">Ok voy 👍</div>
@@ -674,10 +715,7 @@ export default function MarketingLanding() {
               style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
             >
               {p.label}
-              <span
-                className={`chip-pop pop-${p.dir}`}
-                style={{ ['--shift' as string]: `${p.shift}%` }}
-              >
+              <span className={`chip-pop pop-${p.dir}`}>
                 <span className="cp-head">
                   <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
                   <b>{p.label}</b>
@@ -1322,27 +1360,49 @@ const CSS = `
 .cp-body::-webkit-scrollbar-thumb { background: rgba(31,35,28,.14); border-radius: 8px; }
 .cp-body::-webkit-scrollbar-track { background: transparent; }
 
+/* Each popup blooms OUTWARD, continuing its dashed line's direction:
+   top-right chip opens up-and-right, bottom-left opens down-and-left,
+   side chips open sideways. Narrow-window fallbacks keep them on-screen. */
 .pop-up { bottom: calc(100% + 10px); left: 50%;
-  transform: translateX(calc(-1 * var(--shift, 50%))) scale(.5);
-  transform-origin: var(--shift, 50%) bottom; }
-.orbit-chip:hover .pop-up { transform: translateX(calc(-1 * var(--shift, 50%))) scale(1); }
-.pop-down { top: calc(100% + 10px); left: 50%;
-  transform: translateX(calc(-1 * var(--shift, 50%))) scale(.5);
-  transform-origin: var(--shift, 50%) top; }
-.orbit-chip:hover .pop-down { transform: translateX(calc(-1 * var(--shift, 50%))) scale(1); }
-.pop-side-left { right: calc(100% - 80px); top: 50%;
+  transform: translateX(-50%) scale(.5); transform-origin: center bottom; }
+.orbit-chip:hover .pop-up { transform: translateX(-50%) scale(1); }
+
+.pop-up-left, .pop-up-right, .pop-down-left, .pop-down-right {
+  transform: scale(.5); }
+.orbit-chip:hover .pop-up-left, .orbit-chip:hover .pop-up-right,
+.orbit-chip:hover .pop-down-left, .orbit-chip:hover .pop-down-right {
+  transform: scale(1); }
+.pop-up-left { bottom: calc(100% + 10px); right: calc(50% - 40px);
+  transform-origin: calc(100% - 40px) bottom; }
+.pop-up-right { bottom: calc(100% + 10px); left: calc(50% - 40px);
+  transform-origin: 40px bottom; }
+.pop-down-left { top: calc(100% + 10px); right: calc(50% - 40px);
+  transform-origin: calc(100% - 40px) top; }
+.pop-down-right { top: calc(100% + 10px); left: calc(50% - 40px);
+  transform-origin: 40px top; }
+
+.pop-left { right: calc(100% - 30px); top: 50%;
   transform: translateY(-50%) scale(.5); transform-origin: right center; }
-.orbit-chip:hover .pop-side-left { transform: translateY(-50%) scale(1); }
-.pop-side-right { left: calc(100% - 80px); top: 50%;
+.orbit-chip:hover .pop-left { transform: translateY(-50%) scale(1); }
+.pop-right { left: calc(100% - 30px); top: 50%;
   transform: translateY(-50%) scale(.5); transform-origin: left center; }
-.orbit-chip:hover .pop-side-right { transform: translateY(-50%) scale(1); }
-@media (max-width: 1380px) {
-  .pop-side-left { right: auto; left: -24px; top: calc(100% + 10px); bottom: auto;
-    transform: scale(.5); transform-origin: 44px top; }
-  .orbit-chip:hover .pop-side-left { transform: scale(1); }
-  .pop-side-right { left: auto; right: -24px; top: calc(100% + 10px);
-    transform: scale(.5); transform-origin: calc(100% - 44px) top; }
-  .orbit-chip:hover .pop-side-right { transform: scale(1); }
+.orbit-chip:hover .pop-right { transform: translateY(-50%) scale(1); }
+
+@media (max-width: 1500px) {
+  .pop-left { right: calc(50% - 40px); left: auto; top: calc(100% + 10px);
+    bottom: auto; transform: scale(.5); transform-origin: calc(100% - 40px) top; }
+  .orbit-chip:hover .pop-left { transform: scale(1); }
+  .pop-right { left: calc(50% - 40px); right: auto; top: calc(100% + 10px);
+    transform: scale(.5); transform-origin: 40px top; }
+  .orbit-chip:hover .pop-right { transform: scale(1); }
+}
+@media (max-width: 1150px) {
+  .pop-up-right, .pop-down-right, .pop-right { left: auto; right: -12px;
+    transform-origin: calc(100% - 40px) top; }
+  .pop-up-right { transform-origin: calc(100% - 40px) bottom; }
+  .pop-up-left, .pop-down-left, .pop-left { right: auto; left: -12px;
+    transform-origin: 40px top; }
+  .pop-up-left { transform-origin: 40px bottom; }
 }
 
 /* mock page primitives (inside popup demos) */
@@ -1363,6 +1423,13 @@ const CSS = `
 .ap-feedrow > span { font-family: var(--mono); font-size: 9px; color: var(--dim);
   flex: none; width: 44px; }
 .ap-note { font-size: 11px; color: var(--dim); font-style: italic; padding: 3px 2px; }
+.ap-rail { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px; }
+.ap-railbtn { font-family: var(--mono); font-size: 8.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-soft); background: #fff;
+  border: 1px solid var(--rule); border-radius: 7px; padding: 5px 8px; }
+.ap-railbtn:first-child { background: var(--mark); color: #fff; border-color: var(--mark); }
+.ap-amt { margin-left: auto; font-family: var(--mono); font-size: 10.5px;
+  font-weight: 600; color: var(--ink-soft); flex: none; }
 .ap-statrow { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .ap-stat { gap: 10px; }
 .ap-stat b { font-family: var(--serif); font-style: italic; font-weight: 400;
