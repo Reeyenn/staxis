@@ -19,7 +19,7 @@
  */
 
 import Link from 'next/link';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /* ------------------------------------------------------------------ */
 /* ChevronMark — the real in-app logo (src/components/layout/Header)  */
@@ -107,19 +107,16 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
   if (id === 'dashboard') {
     return (
       <div className="ap wide">
+        <div className="x-serifhead big"><em>Sunday, July 5</em></div>
         <div className="ap-cols">
-          <div className="ap-card ap-ringrow" style={{ flex: 'none' }}>
+          <div className="ap-card ap-ringrow" style={{ flex: 'none', flexDirection: 'column', alignItems: 'center' }}>
+            <div className="x-caps" style={{ margin: 0 }}>OCCUPANCY</div>
             <div className="ap-ring big" />
-            <div className="ap-ringlegend">
-              <span><i className="lg l-occ" />Occupied · 38</span>
-              <span><i className="lg l-arr" />Arriving · 8</span>
-              <span><i className="lg l-dep" />Departing · 6</span>
-              <span><i className="lg l-dirty" />Dirty · 5</span>
-            </div>
+            <div className="x-serifhead"><em className="t-good">84%</em></div>
           </div>
           <div className="ap-card ap-chart">
             <div className="ap-rail">
-              {['Occupancy', 'Revenue', 'ADR', 'RevPAR'].map((k, i) => (
+              {['Occupancy', 'Revenue', 'ADR', 'RevPAR', 'Profit'].map((k, i) => (
                 <span className={`ap-railbtn ${i === 0 ? 'on' : ''}`} key={k}>{k}</span>
               ))}
             </div>
@@ -129,13 +126,19 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
             </svg>
           </div>
         </div>
-        <div className="ap-h">RIGHT NOW</div>
-        <div className="ap-statgrid">
-          <div className="ap-cell"><b>42</b><span>IN HOUSE</span></div>
-          <div className="ap-cell"><b>8</b><span>ARRIVALS</span></div>
-          <div className="ap-cell"><b>34m</b><span>AVG TURNOVER</span></div>
+        <div className="x-caps">RIGHT NOW</div>
+        <div className="x-headrow x-nowrow">
+          <div className="x-stat"><span>GUESTS</span><b className="t-good">42</b><span>in-house</span></div>
+          <div className="x-stat"><span>ARRIVALS</span><b className="t-low">8</b><span>expected</span></div>
+          <div className="x-stat"><span>DEPARTURES</span><b className="t-low">6</b><span>checking out</span></div>
+          <div className="x-stat"><span>HOUSEKEEPING</span><b className="t-crit">12</b><span>rooms to clean</span></div>
+          <div className="x-stat"><span>TURNOVER</span><b>34</b><span>min / room</span></div>
         </div>
-        <div className="ap-h">NEEDS ATTENTION</div>
+        <div className="ap-card x-attention">
+          <span className="x-caps" style={{ margin: 0 }}>NEEDS ATTENTION</span>
+          <span className="x-spacer" />
+          <b className="x-attn-badge">2</b>
+        </div>
         <div className="ap-card ap-need"><span className="ti-dot warn" />2 urgent work orders<span className="ap-btn">View</span></div>
         <div className="ap-card ap-need"><span className="ti-dot warn" />Towels below par<span className="ap-btn">Open</span></div>
       </div>
@@ -172,20 +175,33 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     }
     return (
       <div className="ap">
-        <div className="ap-statgrid">
-          <div className="ap-cell"><b className="t-good">$48.2k</b><span>REVENUE</span></div>
-          <div className="ap-cell"><b className="t-low">$31.4k</b><span>EXPENSES</span></div>
-          <div className="ap-cell"><b className="t-good">$16.8k</b><span>PROFIT · 35%</span></div>
+        <div className="x-headrow">
+          <div className="x-serifhead big">Financials</div>
+          <span className="x-spacer" />
+          <span className="xb-light">‹</span>
+          <span className="x-serifhead"><em>July 2026</em></span>
+          <span className="xb-light">›</span>
         </div>
-        <div className="ap-h">CHECKBOOK</div>
-        {[['Jul 3', 'Linen supplier', '-$214', '', '$8,412'], ['Jul 2', 'Payroll run', '-$4,180', '', '$8,626'], ['Jul 1', 'OTA payout', '+$6,940', 'good', '$12,806'], ['Jun 30', 'Coffee vendor', '-$86', '', '$5,866']].map(([d, payee, amt, c, bal]) => (
+        <div className="ap-note" style={{ padding: 0, fontStyle: 'normal' }}>Your books, filled in for you.</div>
+        <div className="ap-statgrid four">
+          <div className="ap-cell"><b>$48.2k</b><span>REVENUE · FROM THE PMS</span></div>
+          <div className="ap-cell"><b className="t-crit">$31.4k</b><span>EXPENSES</span></div>
+          <div className="ap-cell"><b className="t-good">$16.8k</b><span>PROFIT</span></div>
+          <div className="ap-cell"><b>35%</b><span>MARGIN</span></div>
+        </div>
+        <div className="x-btnrow">
+          <span className="tv-mono">Month total</span><b className="x-monototal">$4,480.00</b>
+          <span className="x-spacer" />
+          <span className="xb-light">All departments ⌄</span>
+          <span className="xb-light">📷 Scan invoice</span>
+          <span className="xb-dark">+ Add expense</span>
+        </div>
+        {[['Jul 3', 'Linen supplier', '-$214', ''], ['Jul 2', 'Payroll run', '-$4,180', ''], ['Jul 1', 'OTA payout', '+$6,940', 'good'], ['Jun 30', 'Coffee vendor', '-$86', '']].map(([d, payee, amt, c]) => (
           <div className="ap-feedrow" key={payee as string}>
             <span>{d}</span>{payee}
             <b className={`ap-amt ${c ? 't-good' : ''}`}>{amt}</b>
-            <i className="ap-bal">{bal}</i>
           </div>
         ))}
-        <div className="ap-note">Every dollar in and out, logged for you. No spreadsheet.</div>
       </div>
     );
   }
@@ -193,15 +209,31 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 1) {
       return (
         <div className="ap">
-          <div className="ap-serif">Schedule · Today</div>
-          <div className="ap-statgrid">
-            <div className="ap-cell"><b>42</b><span>IN HOUSE</span></div>
-            <div className="ap-cell"><b>12</b><span>CHECKOUTS</span></div>
-            <div className="ap-cell hl"><b>3</b><span>RECOMMENDED HK</span></div>
+          <div className="x-caps">SCHEDULE · TODAY</div>
+          <div className="x-headrow">
+            <div className="x-serifhead"><em>Sunday</em> · Jul 5</div>
+            <span className="xb-light">← Yesterday</span>
+            <span className="xb-light">Today</span>
+            <span className="xb-light">Tomorrow →</span>
           </div>
-          <div className="ap-rail">
-            <span className="ap-railbtn">↻ Auto-assign</span>
-            <span className="ap-railbtn">→ Send links</span>
+          <div className="ap-card x-pmsstrip">
+            <div className="x-stat first"><span>LATEST PMS PULL ⚙</span><b className="sm">2m ago</b></div>
+            <div className="x-stat"><span>IN HOUSE</span><b>42</b></div>
+            <div className="x-stat"><span>ARRIVALS</span><b>8</b></div>
+            <div className="x-stat"><span>DEPARTURES</span><b>6</b></div>
+            <div className="x-stat"><span>CHECKOUTS</span><b>12</b></div>
+            <div className="x-stat"><span>STAYOVERS</span><b>19</b></div>
+            <div className="x-stat"><span>TOTAL TIME</span><b>310m</b></div>
+            <div className="x-stat"><span>RECOMMENDED</span><b className="t-good">3 HK</b></div>
+          </div>
+          <div className="x-btnrow">
+            <span className="xb-dark">▦ Board</span>
+            <span className="xb-light">▤ Timeline</span>
+            <span className="x-spacer" />
+            <span className="xb-light">★ Priority</span>
+            <span className="xb-light">Reset</span>
+            <span className="xb-dark">↻ Auto-assign</span>
+            <span className="xb-light">→ Send links</span>
           </div>
           {[['MG', 'Maria', 8, 12, ['204', '206', '210']], ['AR', 'Ana', 6, 10, ['102', '105', '107']], ['LT', 'Luis', 5, 9, ['301', '303']]].map(([ini, name, done, total, rooms]) => (
             <div className="ap-card ap-cleaner" key={name as string}>
@@ -213,7 +245,7 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
                   {(rooms as string[]).map((r) => (<span className="ap-chip" key={r}>{r}</span>))}
                 </div>
               </div>
-              <span className="ap-cl-count">{done}/{total}</span>
+              <span className="ap-cl-count">{done}/{total} rooms</span>
             </div>
           ))}
         </div>
@@ -268,13 +300,14 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     }
     return (
       <div className="ap">
-        <div className="ap-serif">12 rooms to turn</div>
-        <div className="ap-statgrid">
-          <div className="ap-cell"><b className="t-good">16</b><span>CLEAN</span></div>
-          <div className="ap-cell"><b className="t-low">12</b><span>DIRTY</span></div>
-          <div className="ap-cell"><b>62%</b><span>DONE</span></div>
+        <div className="x-headrow">
+          <div className="x-serifhead big"><em className="t-crit">12</em> rooms to turn</div>
+          <span className="x-spacer" />
+          <div className="x-stat"><b className="t-good">16</b><span>CLEAN</span></div>
+          <div className="x-stat"><b className="t-crit">12</b><span>DIRTY</span></div>
+          <div className="x-stat"><b>62%</b><span>DONE</span></div>
         </div>
-        <div className="ap-legendcaps">★ ARRIVAL · ◐ STAYOVER · ↗ CHECKOUT</div>
+        <div className="ap-legendcaps">ROOM TYPE&nbsp;&nbsp;★ Arrival&nbsp;&nbsp;◐ Stayover&nbsp;&nbsp;↗ Checkout</div>
         <div className="ap-h">FLOOR 1</div>
         <div className="ap-roomcards">
           {[['101', 'CLEAN', 'ok', ''], ['102', 'DIRTY', 'dirty', '★'], ['103', 'CLEAN', 'ok', ''], ['104', 'CLEANING', 'prog', ''], ['105', 'DIRTY', 'dirty', '↗'], ['106', 'CLEAN', 'ok', '◐'], ['107', 'DIRTY', 'dirty', ''], ['108', 'CLEAN', 'ok', '']].map(([n, st, c, g]) => (
@@ -298,7 +331,13 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 1) {
       return (
         <div className="ap">
-          <div className="ap-serif">Preventive · scheduled</div>
+          <div className="x-caps">PREVENTIVE · SCHEDULED</div>
+          <div className="x-headrow">
+            <div className="x-serifhead big"><em className="t-crit">2 overdue</em></div>
+            <span className="x-spacer" />
+            <span className="xb-light">Equipment assets</span>
+            <span className="xb-dark">+ New task</span>
+          </div>
           <div className="ap-laneh"><i className="lane-dot ld-warm" />OVERDUE · 1</div>
           <div className="ap-card ap-wo wo-warm">
             <div className="ap-wo-mid">Filter changes · floors 1–2<span>every 3 months</span></div>
@@ -319,7 +358,12 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     if (sub === 2) {
       return (
         <div className="ap">
-          <div className="ap-serif">Equipment · storeroom</div>
+          <div className="x-caps">EQUIPMENT · STOREROOM</div>
+          <div className="x-headrow">
+            <div className="x-serifhead big"><em className="t-crit">1 out of stock</em></div>
+            <span className="x-spacer" />
+            <span className="xb-dark">+ Add item</span>
+          </div>
           <div className="ap-laneh"><i className="lane-dot ld-warm" />OUT · 1</div>
           <div className="ap-card ap-wo wo-warm">
             <div className="ap-wo-mid">Plunger kit<span>bin B2 · reorder at 2</span></div>
@@ -344,7 +388,13 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     /* exact mini of the real screen: 4 priority lanes side by side */
     return (
       <div className="ap wide">
-        <div className="ap-serif">Work orders · today</div>
+        <div className="x-caps">WORK ORDERS · TODAY</div>
+        <div className="x-headrow">
+          <div className="x-serifhead big"><em>4 open</em> · <em className="dim-em">2 done</em></div>
+          <span className="x-spacer" />
+          <span className="xb-light">History (12) →</span>
+          <span className="xb-dark">+ New work order</span>
+        </div>
         <div className="ap-lanes">
           <div className="ap-lane">
             <div className="ap-laneh"><i className="lane-dot ld-sage" />LOW · 1</div>
@@ -379,44 +429,60 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     );
   }
   if (id === 'inventory') {
-    /* the real inventory is one screen: a stock list plus a rail of
-       actions (count, scan, reorder, orders, reports, history, AI,
-       budgets, settings) */
-    /* exact mini of the real screen: sidebar rail (224px scaled down)
-       + main column. Wider than the window on purpose; scroll any way. */
+    /* exact mini of the real screen: hero stats, DO/LOOK sidebar,
+       filter tabs, 2-col item cards. Wider than the window; scroll any way. */
     return (
       <div className="ap wide">
+        <div className="x-headrow x-invhero">
+          <div className="x-stat"><span>STOCK HEALTH <i className="hero-dot good" /></span><b className="t-good">78%</b></div>
+          <div className="x-stat"><span>ORDER NOW <i className="hero-dot crit" /></span><b>2</b></div>
+          <div className="x-stat"><span>ON THE SHELF</span><b>$3,480</b></div>
+          <span className="x-spacer" />
+          <div className="x-stat"><span>JUL 5, 2026</span><b className="sm">Sunday</b></div>
+        </div>
         <div className="ap-cols">
           <div className="ap-siderail">
-            <div className="rail-stat"><b className="t-good">78%</b><span>STOCK HEALTH</span></div>
-            <div className="rail-stat"><b>24</b><span>TOTAL ITEMS</span></div>
-            <div className="rail-stat"><b className="t-crit">2</b><span>REORDER NOW</span></div>
-            <div className="rail-stat"><b>$1.2k</b><span>SPEND / $2K CAP</span></div>
-            {['Start Count', 'Scan Invoice', 'Reorder List', 'Orders', 'Reports', 'History', 'AI Helper', 'Budgets', 'Add Item'].map((r, i) => (
-              <span className={`ap-railbtn block ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
-            ))}
+            <div className="ap-h">DO</div>
+            <span className="ap-railbtn block on">Start count<i className="rail-badge">16</i></span>
+            <span className="ap-railbtn block teal">→ Scan invoice</span>
+            <span className="ap-railbtn block">● Reorder list<i className="rail-badge">2</i></span>
+            <span className="ap-railbtn block">Orders</span>
+            <div className="ap-h">LOOK</div>
+            <span className="ap-railbtn block">Reports</span>
+            <span className="ap-railbtn block">History<i className="rail-badge">12</i></span>
+            <span className="ap-railbtn block">AI Helper</span>
+            <span className="ap-railbtn block">Budgets</span>
+            <span className="ap-railbtn block">Ordering settings</span>
+            <div className="ap-h">THIS MONTH</div>
+            <div className="rail-stat"><b>$1,240</b><span>OF $2,000</span></div>
           </div>
           <div className="ap-main">
-            <div className="ap-statgrid">
-              <div className="ap-cell"><b className="t-good">78%</b><span>● STOCK HEALTH</span></div>
-              <div className="ap-cell"><b className="t-crit">2</b><span>● ORDER NOW</span></div>
-              <div className="ap-cell"><b>$3,480</b><span>ON THE SHELF</span></div>
+            <div className="x-btnrow">
+              <span className="xb-dark">All <i className="xb-n">16</i></span>
+              <span className="xb-light">General inventory <i className="xb-n">15</i></span>
+              <span className="xb-light">Breakfast inventory <i className="xb-n">1</i></span>
+              <span className="ap-search">Search…</span>
+              <span className="xb-light">+ Add item</span>
             </div>
-            <div className="ap-rail">
-              {['All · 24', 'General', 'Breakfast'].map((r, i) => (
-                <span className={`ap-railbtn seg ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
+            <div className="ap-card ap-reorder">
+              <span className="ti-dot warn" />
+              <div className="ap-wo-mid">Running low<span>ORDER THESE SOON</span></div>
+              <b className="x-groupnum">2</b>
+              <span className="xb-dark">Count inventory</span>
+            </div>
+            <div className="inv-grid">
+              {[['KS', 'King Sheets', 'HK · —', 48, 80, 'sets', 'good'], ['BT', 'Bath Towels', 'HK · —', 52, 200, 'units', 'crit'], ['QS', 'Queen Sheets', 'HK · —', 84, 120, 'sets', 'good'], ['P', 'Pillowcases', 'HK · —', 110, 200, 'units', 'good'], ['S', 'Shampoo', 'HK · —', 38, 150, 'bottles', 'low'], ['CP', 'Coffee Pods', 'FB · —', 162, 200, 'pods', 'good']].map(([ini, name, sub2, have, par, unit, cls]) => (
+                <div className="ap-card inv-item" key={name as string}>
+                  <div className="inv-top">
+                    <span className="ap-avatar sq">{ini}</span>
+                    <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{sub2}</span></div>
+                    <span className="inv-refresh">↻</span>
+                  </div>
+                  <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${(Number(have) / Number(par)) * 100}%` }} /></div>
+                  <div className="inv-count">{have} / {par} {unit}</div>
+                </div>
               ))}
-              <span className="ap-search">⌕ Search items…</span>
             </div>
-            <div className="ap-card ap-reorder"><span className="ti-dot warn" />Towel reorder drafted · $214 · under budget ✓<span className="ap-btn">Approve</span></div>
-            {[['Towels', 28, 'crit', '6d left'], ['Soap & amenities', 54, 'low', '2w left'], ['Coffee', 81, 'good', '5w left'], ['Sheets', 72, 'good', '—'], ['Cleaning supplies', 43, 'low', '9d left']].map(([name, pct, cls, days]) => (
-              <div className="ap-card ap-stock" key={name as string}>
-                <b>{name}</b>
-                <div className="ap-bar big"><i className={`f-${cls}`} style={{ width: `${pct}%` }} /></div>
-                <span className={`ap-pct t-${cls}`}>{pct}%</span>
-                <i className="ap-days">{days}</i>
-              </div>
-            ))}
           </div>
         </div>
       </div>
@@ -460,22 +526,44 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
       );
     }
     return (
-      <div className="ap">
-        <div className="ap-week">
-          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
-            <span className={`ap-day ${i === 1 ? 'on' : ''}`} key={i}>{d}</span>
+      <div className="ap wide">
+        <div className="x-headrow">
+          <div className="x-serifhead big"><em>Sunday,</em> Jul 5</div>
+          <span className="x-caps" style={{ margin: 0 }}>TODAY</span>
+          <span className="x-spacer" />
+          <span className="xb-light">⎙ Print</span>
+          <span className="xb-light">↩ Undo</span>
+          <span className="xb-light">Fill</span>
+          <span className="xb-light">‹</span>
+          <span className="xb-light">›</span>
+          <span className="xb-dark">Day</span>
+          <span className="xb-light">Week</span>
+        </div>
+        <div className="ap-card x-floorstrip">
+          <span className="x-caps" style={{ margin: 0 }}>ON THE FLOOR TODAY</span>
+          <b className="x-groupnum">3</b>
+          <span className="fl-leg"><i className="lane-dot ld-sage" />Housekeeping (2)</span>
+          <span className="fl-leg"><i className="lane-dot ld-pur" />Front desk (1)</span>
+          <span className="fl-leg"><i className="lane-dot ld-warm" />Maintenance (0)</span>
+          <span className="x-spacer" />
+          <span className="xb-light">+ Add staff</span>
+        </div>
+        <div className="x-timeaxis">
+          {['6a', '9a', '12p', '3p', '6p', '9p'].map((t) => (<span key={t}>{t}</span>))}
+        </div>
+        <div className="ap-laneh"><i className="lane-dot ld-sage" />HOUSEKEEPING · 2</div>
+        <div className="x-shiftlane"><span className="x-shift sage" style={{ left: '13%', width: '38%' }}>Maria · 8a–2p</span></div>
+        <div className="x-shiftlane"><span className="x-shift sage" style={{ left: '13%', width: '38%' }}>Ana · 8a–2p</span></div>
+        <div className="ap-laneh"><i className="lane-dot ld-pur" />FRONT DESK · 1</div>
+        <div className="x-shiftlane"><span className="x-shift pur" style={{ left: '7%', width: '50%' }}>Jade · 7a–3p</span></div>
+        <div className="ap-laneh"><i className="lane-dot ld-warm" />MAINTENANCE · 0</div>
+        <div className="x-shiftlane empty">No one on MT yet — use + Add staff above.</div>
+        <div className="ap-h">THIS WEEK · JUL 5–11</div>
+        <div className="x-weekrow">
+          {[['SUN · NOW', '5', true], ['MON', '6', false], ['TUE', '7', false], ['WED', '8', false], ['THU', '9', false]].map(([d, n, on]) => (
+            <span className={`x-daycard ${on ? 'on' : ''}`} key={d as string}><i>{d}</i><b>{n}</b></span>
           ))}
         </div>
-        <div className="ap-h">TOMORROW&rsquo;S CREW</div>
-        {[['MG', 'Maria', '8:00–2:00', 'Confirmed ✓', 'ES'], ['AR', 'Ana', '8:00–2:00', 'Confirmed ✓', 'ES'], ['LT', 'Luis', '9:00–5:00', 'Confirmed ✓', 'EN'], ['JD', 'Jade', '7:00–3:00', 'Waiting…', 'EN']].map(([ini, name, shift, st, lang]) => (
-          <div className="ap-card ap-person" key={name as string}>
-            <span className="ap-avatar">{ini}</span>
-            <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{shift}</span></div>
-            <span className={`ap-conf ${String(st).startsWith('Confirmed') ? 'yes' : ''}`}>{st}</span>
-            <span className="ap-lang">{lang}</span>
-          </div>
-        ))}
-        <div className="ap-note">One text per day, in each person&rsquo;s language. Replies build the schedule.</div>
       </div>
     );
   }
@@ -485,17 +573,20 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     <div className="ap wide">
       <div className="ap-cols">
         <div className="ap-siderail">
-          <span className="ap-search">⌕ Jump or search…</span>
-          <div className="ap-catchup">⚡ Catch up<span className="ap-badge">3</span></div>
-          {['Threads', 'To-do · 2', 'Knowledge', 'Log book', 'Calendar', 'Contacts'].map((n) => (
-            <span className="ap-railbtn block" key={n}>{n}</span>
+          <div className="comms-head">Communications<span>○ 3 on shift</span></div>
+          <span className="ap-search">⌕ Jump to or search…</span>
+          <div className="ap-catchup">✨ Catch up<span className="ap-badge">3</span></div>
+          {['↩ Threads', '☰ To-do', '📖 Knowledge', '▤ Log book', '▦ Calendar', '✆ Contacts'].map((n) => (
+            <span className="side-chan nav" key={n}>{n}</span>
           ))}
-          <div className="ap-h">ANNOUNCEMENTS</div>
-          <div className="side-chan">📣 All-team<span className="ap-badge">1</span></div>
-          <div className="ap-h">CHANNELS</div>
-          <div className="side-chan"># housekeeping<span className="ap-badge">3</span></div>
-          <div className="side-chan"># front-desk</div>
-          <div className="ap-h">DIRECT MESSAGES</div>
+          <div className="ap-h">ANNOUNCEMENTS +</div>
+          <div className="side-chan">📣 Announcements<span className="ap-badge">1</span></div>
+          <div className="ap-h">CHANNELS +</div>
+          <div className="side-chan"># All Staff</div>
+          <div className="side-chan"># Front Desk</div>
+          <div className="side-chan"># Housekeeping<span className="ap-badge">3</span></div>
+          <div className="side-chan"># Maintenance</div>
+          <div className="ap-h">DIRECT MESSAGES +</div>
           <div className="side-chan"><span className="ap-online" />Maria</div>
           <div className="side-chan"><span className="ap-online off" />Luis</div>
         </div>
@@ -516,7 +607,7 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
             </>
           ) : (
             <>
-              <div className="ap-panehead"># housekeeping<span>4 members</span></div>
+              <div className="ap-panehead"># Housekeeping<span>4 members</span></div>
               <div className="ap-msgrow">
                 <span className="ap-avatar">MG</span>
                 <div className="mr-mid"><b>Maria <i>7:02 AM</i></b>Room 204 lista ✓</div>
@@ -643,23 +734,6 @@ export default function MarketingLanding() {
     onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
-  }, []);
-
-  /* cursor glow + 3d tilt on feature cards */
-  const onCardMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const r = el.getBoundingClientRect();
-    const x = e.clientX - r.left;
-    const y = e.clientY - r.top;
-    el.style.setProperty('--mx', `${x}px`);
-    el.style.setProperty('--my', `${y}px`);
-    el.style.setProperty('--ry', `${((x / r.width) - 0.5) * 6}deg`);
-    el.style.setProperty('--rx', `${(0.5 - (y / r.height)) * 6}deg`);
-  }, []);
-  const onCardLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    el.style.setProperty('--rx', '0deg');
-    el.style.setProperty('--ry', '0deg');
   }, []);
 
   return (
@@ -942,83 +1016,86 @@ export default function MarketingLanding() {
         </div>
       </section>
 
-      {/* ---------------- every benefit ---------------- */}
+      {/* ---------------- how AI runs your hotel ---------------- */}
       <section className="section" id="benefits">
-        <div className="kicker rv">EVERYTHING IT HANDLES</div>
+        <div className="kicker rv">HOW AI RUNS YOUR HOTEL</div>
         <h2 className="rv">Every corner of the hotel, <em>handled.</em></h2>
-
-        <div className="bens">
-          {[
-            'Housekeeping boards built every morning',
-            'Staff texted in English or Spanish',
-            'Live room status, all day',
-            'Work orders assigned and tracked to done',
-            'Inventory counted for you',
-            'Reorders drafted before you run out',
-            'Budgets checked on every order',
-            'Labor costs tracked daily',
-            'A log book that writes itself',
-            'Guest complaints followed to the end',
-            'Financials without the spreadsheet',
-            'A voice copilot you can talk to',
-            'Daily schedules confirmed by text',
-            'Your property system watched day and night',
-            'One page for everything that needs you',
-          ].map((b, i) => (
-            <div
-              className="ben rv"
-              key={b}
-              style={{ transitionDelay: `${i * 50}ms` }}
-              onMouseMove={onCardMove}
-              onMouseLeave={onCardLeave}
-            >
-              <span className="ben-check">✓</span>
-              {b}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ---------------- roadmap ---------------- */}
-      <section className="section" id="roadmap">
-        <div className="kicker rv">THE ROADMAP</div>
-        <h2 className="rv">Operations today. <em>Guests next.</em></h2>
         <p className="section-lede rv">
-          Staxis starts with the back of the house. The front of the house is next,
-          on the same one page.
+          Three levels of AI. One rule: you stay in control.
         </p>
 
-        <div className="roadmap">
-          <div className="rm-col rm-now rv">
-            <div className="vs-tag good-tag">LIVE TODAY · OPERATIONS</div>
+        <div className="tiers">
+          {/* AUTONOMOUS */}
+          <div className="tier tier-auto rv">
+            <div className="tier-gauge"><i className="on" /><i className="on" /><i className="on" /></div>
+            <h3>Autonomous</h3>
+            <div className="tier-tag">It just does it.</div>
+            <div className="tier-visual">
+              <span className="pulse-dot" />
+              <span className="tv-mono">WATCHING · 24/7</span>
+              <span className="tv-line">✓ board built · 31 rooms</span>
+            </div>
             {[
+              'Watches your property system day and night',
               'Housekeeping boards built every morning',
-              'Work orders assigned and tracked',
-              'Inventory counted, reorders drafted',
+              'Live room status, all day',
+              'A log book that writes itself',
+              'Labor costs tracked daily',
               'Staff texted in their language',
-              'Labor and budgets watched daily',
-              'One page for everything that needs you',
             ].map((t, i) => (
-              <div className="rm-item rv" key={t} style={{ transitionDelay: `${i * 80}ms` }}>
+              <div className="tier-item rv" key={t} style={{ transitionDelay: `${i * 60}ms` }}>
                 <span className="de-check">✓</span>{t}
               </div>
             ))}
+            <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>AI voice agent answering every call, 24/7<span className="soon-pill">SOON</span></div>
+            <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>Instant replies to guest texts<span className="soon-pill">SOON</span></div>
           </div>
-          <div className="rm-col rm-soon rv">
-            <div className="vs-tag soon-tag">COMING SOON · GUEST EXPERIENCE</div>
+
+          {/* SEMI-AUTONOMOUS */}
+          <div className="tier tier-semi rv" style={{ transitionDelay: '120ms' }}>
+            <div className="tier-gauge"><i className="on" /><i className="on" /><i /></div>
+            <h3>Semi-autonomous</h3>
+            <div className="tier-tag">It does the work, you tap approve.</div>
+            <div className="tier-visual">
+              <span className="ti-dot warn" />
+              <span className="tv-line">Towels low · reorder drafted</span>
+              <span className="tv-approve">Approve</span>
+            </div>
             {[
-              'An AI voice agent answering every guest call, 24/7',
-              'After-hours bookings, never missed again',
-              'Reservation changes handled automatically',
-              'Instant replies to guest texts and emails',
-              'Late checkouts and requests taken by phone',
-              'Guests greeted in their own language',
+              'Reorders drafted before you run out',
+              'Budgets checked on every order',
+              'Tomorrow’s crew confirmed by text',
+              'Work orders that need a decision come to you',
+              'Guest complaints followed to the end',
             ].map((t, i) => (
-              <div className="rm-item rv" key={t} style={{ transitionDelay: `${i * 80}ms` }}>
-                <span className="rm-soon-dot">✦</span>{t}
+              <div className="tier-item rv" key={t} style={{ transitionDelay: `${i * 60}ms` }}>
+                <span className="tier-ok semi">●</span>{t}
               </div>
             ))}
-            <div className="rm-note">Every request lands on the same page that runs your operations.</div>
+            <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>Reservation changes, with your rules<span className="soon-pill">SOON</span></div>
+            <div className="tier-note">Anything touching money or people gets your yes first.</div>
+          </div>
+
+          {/* ASSISTED */}
+          <div className="tier tier-assist rv" style={{ transitionDelay: '240ms' }}>
+            <div className="tier-gauge"><i className="on" /><i /><i /></div>
+            <h3>Assisted</h3>
+            <div className="tier-tag">You ask, it helps.</div>
+            <div className="tier-visual chat">
+              <span className="tv-q">“Who’s cleaning 204?”</span>
+              <span className="tv-a">Maria. Done in ~20 minutes.</span>
+            </div>
+            {[
+              'A voice copilot you can talk to',
+              'Scan an invoice, it logs itself',
+              'Reports and financials in one tap',
+              'Ask what happened overnight',
+              'Every page, one tap deeper',
+            ].map((t, i) => (
+              <div className="tier-item rv" key={t} style={{ transitionDelay: `${i * 60}ms` }}>
+                <span className="tier-ok assist">◆</span>{t}
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -1573,16 +1650,15 @@ const CSS = `
   letter-spacing: -.01em; }
 .cp-head i { margin-left: auto; font-style: normal; font-family: var(--mono);
   font-size: 8.5px; letter-spacing: .16em; color: var(--dim); }
-.cp-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 9px 12px;
+/* underline tabs, exactly like the app's sub-tab bar */
+.cp-tabs { display: flex; flex-wrap: wrap; gap: 16px; padding: 0 14px;
   border-bottom: 1px solid var(--rule-soft); background: #fff; flex: none;
   position: relative; }
-.cp-tab { font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em;
-  text-transform: uppercase; color: var(--dim); background: #FAFAF7;
-  border: 1px solid var(--rule-soft); border-radius: 999px; padding: 6px 11px;
-  cursor: pointer; transition: all .2s ease; }
+.cp-tab { font-family: var(--sans); font-size: 11px; font-weight: 500;
+  color: var(--muted); background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 9px 1px 8px; cursor: pointer; transition: color .2s ease, border-color .2s ease; }
 .cp-tab:hover { color: var(--ink); }
-.cp-tab.on { color: var(--ink); background: var(--sage-dim);
-  border-color: rgba(92,122,96,.4); }
+.cp-tab.on { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
 .cp-body { display: block; height: 300px; overflow: auto; padding: 14px;
   background: #F7F8F5; position: relative; border-radius: 0 0 16px 16px;
   animation: pagein .4s cubic-bezier(.19,1,.22,1); overscroll-behavior: contain; }
@@ -1844,6 +1920,145 @@ const CSS = `
 .ap-chart svg { width: 100%; height: 54px; margin-top: 8px; }
 .ap-chart polyline { fill: none; stroke: var(--sage-deep); stroke-width: 1.6; }
 .ap-chart circle { fill: var(--caramel); }
+
+/* ---------- exact-mini primitives (match the real app chrome) ---------- */
+.x-caps { font-family: var(--mono); font-size: 8.5px; letter-spacing: .18em;
+  color: var(--muted); margin: 2px 0; }
+.x-serifhead { font-family: var(--serif); font-size: 15px; color: var(--ink); }
+.x-serifhead.big { font-size: 20px; }
+.x-serifhead em { font-style: italic; }
+.x-serifhead .dim-em, .dim-em { font-style: italic; color: var(--dim); }
+.x-headrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.x-spacer { flex: 1; }
+.x-btnrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.xb-dark, .xb-light { font-size: 10px; font-weight: 600; border-radius: 999px;
+  padding: 6px 12px; white-space: nowrap; }
+.xb-dark { background: var(--mark); color: #fff; }
+.xb-light { background: #fff; color: var(--ink-soft); border: 1px solid var(--rule); }
+.xb-n { font-style: normal; font-family: var(--mono); font-size: 8.5px; opacity: .7;
+  margin-left: 3px; }
+.x-stat { padding-right: 12px; }
+.x-stat b { display: block; font-family: var(--serif); font-style: italic;
+  font-weight: 400; font-size: 17px; line-height: 1.15; color: var(--ink); }
+.x-stat b.sm { font-size: 12px; font-style: normal; }
+.x-stat span { display: block; font-family: var(--mono); font-size: 6.8px;
+  letter-spacing: .12em; color: var(--dim); white-space: nowrap; }
+.x-pmsstrip { display: flex; gap: 12px; overflow-x: auto; align-items: flex-end; }
+.x-pmsstrip .x-stat { border-right: 1px solid var(--rule-soft); }
+.x-pmsstrip .x-stat.first { min-width: 76px; }
+.hero-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
+.hero-dot.good { background: var(--sage-deep); }
+.hero-dot.crit { background: var(--warm); }
+.x-invhero { padding: 2px 2px 6px; }
+.x-groupnum { font-family: var(--serif); font-style: italic; font-weight: 400;
+  font-size: 20px; color: var(--ink); margin-left: auto; margin-right: 8px; }
+.x-monototal { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.rail-badge { font-style: normal; font-family: var(--mono); font-size: 8px;
+  float: right; background: rgba(255,255,255,.25); border-radius: 999px;
+  padding: 1px 6px; }
+.ap-railbtn.block .rail-badge { background: rgba(31,35,28,.08); }
+.ap-railbtn.block.on .rail-badge { background: rgba(255,255,255,.25); }
+.ap-railbtn.block.teal { background: rgba(96,140,255,.08);
+  border-color: rgba(96,140,255,.25); color: #45618f; }
+.ap-railbtn.block { text-align: left; }
+.inv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.inv-item { flex-direction: column; align-items: stretch; gap: 7px; }
+.inv-top { display: flex; align-items: center; gap: 8px; }
+.ap-avatar.sq { border-radius: 7px; background: rgba(96,140,255,.1);
+  border-color: rgba(96,140,255,.2); color: #45618f; }
+.inv-refresh { margin-left: auto; color: var(--dim); font-size: 10px; }
+.inv-count { font-size: 10px; color: var(--muted); }
+.comms-head { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.comms-head span { display: block; font-size: 9px; font-weight: 400; color: var(--dim); }
+.side-chan.nav { font-family: var(--sans); font-size: 10.5px; }
+.x-floorstrip { gap: 10px; flex-wrap: wrap; }
+.fl-leg { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px;
+  color: var(--muted); }
+.x-timeaxis { display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 8px; color: var(--dim); padding: 0 4px; }
+.x-shiftlane { position: relative; height: 22px; background: #fff;
+  border: 1px solid var(--rule-soft); border-radius: 6px; }
+.x-shiftlane.empty { display: flex; align-items: center; padding: 0 10px;
+  font-family: var(--mono); font-size: 8.5px; color: var(--dim); height: 26px; }
+.x-shift { position: absolute; top: 3px; bottom: 3px; border-radius: 4px;
+  font-size: 8.5px; font-weight: 600; display: flex; align-items: center;
+  padding: 0 7px; white-space: nowrap; overflow: hidden; }
+.x-shift.sage { background: rgba(92,122,96,.18); color: var(--sage-deep); }
+.x-shift.pur { background: rgba(123,106,151,.15); color: var(--purple); }
+.x-weekrow { display: flex; gap: 6px; }
+.x-daycard { background: #fff; border: 1px solid var(--rule-soft); border-radius: 9px;
+  padding: 7px 10px; min-width: 52px; }
+.x-daycard i { display: block; font-style: normal; font-family: var(--mono);
+  font-size: 6.5px; letter-spacing: .1em; color: var(--dim); }
+.x-daycard b { font-family: var(--serif); font-style: italic; font-weight: 400;
+  font-size: 15px; }
+.x-daycard.on { background: var(--mark); border-color: var(--mark); }
+.x-daycard.on i, .x-daycard.on b { color: #fff; }
+.x-nowrow { gap: 0; }
+.x-nowrow .x-stat { border-right: 1px solid var(--rule-soft); padding: 0 12px; }
+.x-nowrow .x-stat:first-child { padding-left: 0; }
+.x-nowrow .x-stat b { font-size: 20px; }
+.x-attention { background: var(--sage-dim); border-color: rgba(92,122,96,.25); }
+.x-attn-badge { width: 20px; height: 20px; border-radius: 50%; background: var(--sage-deep);
+  color: #fff; font-size: 10px; font-weight: 700; display: inline-flex;
+  align-items: center; justify-content: center; }
+
+/* ---------- how AI runs your hotel (tiers) ---------- */
+.tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  margin-top: 56px; align-items: start; }
+@media (max-width: 980px) { .tiers { grid-template-columns: 1fr; } }
+.tier { position: relative; border-radius: 20px; padding: clamp(24px, 2.5vw, 32px);
+  background: #fff; border: 1px solid var(--rule);
+  display: flex; flex-direction: column; gap: 10px;
+  transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1),
+    box-shadow .3s ease; }
+.tier:hover { box-shadow: 0 22px 54px rgba(31,35,28,.1); }
+.tier-auto { border-top: 4px solid var(--sage-deep);
+  background: radial-gradient(120% 60% at 50% 0%, var(--sage-dim), transparent 60%), #fff; }
+.tier-semi { border-top: 4px solid var(--caramel);
+  background: radial-gradient(120% 60% at 50% 0%, var(--caramel-dim), transparent 60%), #fff; }
+.tier-assist { border-top: 4px solid var(--purple);
+  background: radial-gradient(120% 60% at 50% 0%, rgba(123,106,151,.09), transparent 60%), #fff; }
+.tier-gauge { display: flex; gap: 4px; margin-bottom: 4px; }
+.tier-gauge i { height: 5px; flex: 1; border-radius: 4px; background: rgba(31,35,28,.08);
+  transform: scaleX(0); transform-origin: left;
+  transition: transform .7s cubic-bezier(.19,1,.22,1), background .3s ease; }
+.tier.in .tier-gauge i { transform: scaleX(1); }
+.tier.in .tier-gauge i:nth-child(2) { transition-delay: .15s; }
+.tier.in .tier-gauge i:nth-child(3) { transition-delay: .3s; }
+.tier-auto .tier-gauge i.on { background: var(--sage-deep); }
+.tier-semi .tier-gauge i.on { background: var(--caramel); }
+.tier-assist .tier-gauge i.on { background: var(--purple); }
+.tier h3 { font-family: var(--serif); font-weight: 400; font-size: 24px;
+  letter-spacing: -.005em; }
+.tier-tag { font-style: italic; font-family: var(--serif); font-size: 14.5px;
+  color: var(--muted); margin-bottom: 8px; }
+.tier-visual { display: flex; align-items: center; gap: 8px; background: var(--bg-warm);
+  border: 1px solid var(--rule-soft); border-radius: 11px; padding: 10px 13px;
+  margin-bottom: 8px; }
+.tier-visual.chat { flex-direction: column; align-items: stretch; gap: 6px; }
+.tv-mono { font-family: var(--mono); font-size: 9px; letter-spacing: .14em;
+  color: var(--sage-deep); }
+.tv-line { font-size: 11.5px; color: var(--ink-soft); }
+.tv-approve { margin-left: auto; font-size: 10.5px; font-weight: 600;
+  color: var(--sage-deep); background: var(--sage-dim);
+  border: 1px solid rgba(92,122,96,.35); border-radius: 999px; padding: 4px 11px;
+  animation: notifsettle 4s cubic-bezier(.19,1,.22,1) infinite; }
+.tv-q { font-size: 11.5px; color: var(--ink); font-weight: 600; }
+.tv-a { font-size: 11.5px; color: var(--muted); padding-left: 12px;
+  border-left: 2px solid rgba(123,106,151,.35); }
+.tier-item { display: flex; align-items: center; gap: 10px; font-size: 13.5px;
+  color: var(--ink-soft);
+  transition: opacity .9s cubic-bezier(.19,1,.22,1), transform .9s cubic-bezier(.19,1,.22,1); }
+.tier-item.rv:not(.in) { transform: translateX(14px); }
+.tier-item.soon { color: var(--muted); }
+.tier-ok { flex: none; width: 18px; text-align: center; font-size: 9px; }
+.tier-ok.semi { color: var(--caramel); }
+.tier-ok.assist { color: var(--purple); font-size: 8px; }
+.soon-pill { margin-left: auto; font-family: var(--mono); font-size: 7.5px;
+  letter-spacing: .14em; color: var(--caramel-deep); border: 1px dashed rgba(201,150,68,.5);
+  border-radius: 999px; padding: 2px 7px; flex: none; }
+.tier-note { margin-top: 6px; font-size: 11.5px; font-style: italic; color: var(--dim); }
 
 /* ---------- roadmap ---------- */
 .roadmap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 56px; }
