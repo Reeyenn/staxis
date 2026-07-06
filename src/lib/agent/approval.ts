@@ -1,24 +1,20 @@
-// ─── AI-assistant approval flow: tiers, summaries, and add-ons ─────────────
+// ─── AI-assistant approval flow: summaries and add-ons ─────────────────────
 //
-// SINGLE SOURCE OF TRUTH for everything the approval gate needs to know about a
-// mutation tool that ISN'T its handler:
+// SINGLE SOURCE OF TRUTH for the card COPY + deterministic add-ons a mutation
+// tool needs that ISN'T its handler:
 //
-//   1. approvalTierForTool(name)  — 'quick' | 'card' | null (null = read-only)
-//   2. buildActionSummary(name, args, lang)  — the bilingual one-liner shown on
+//   1. buildActionSummary(name, args, lang)  — the bilingual one-liner shown on
 //      the card ("Send Maria Garcia this message: '…'").
-//   3. ADDONS registry  — deterministic, non-model-driven extra actions a card
+//   2. ADDONS registry  — deterministic, non-model-driven extra actions a card
 //      can offer (e.g. "also add this to Maria's to-do list").
 //
-// The server reads the tier when it decides whether to gate a tool_use (see
-// llm.ts streamAgent), builds the summary when it persists the pending row, and
-// runs approved add-ons when the resolve route executes an approved action.
-//
-// Why a module and not per-tool metadata: the summary strings and add-ons need
-// to be reachable from the route + tests WITHOUT importing every tool handler
-// (which would pull in supabaseAdmin, the Anthropic SDK, etc. into the test's
-// module graph). Keeping them here means the card text stays consistent and the
-// completeness test can assert "every mutates tool has a tier + a summary" in
-// one place.
+// The approval TIER itself is NOT here — it lives on each tool's registry
+// definition (`approval:` field in tools/*), the single source of truth read
+// server-side via approvalTierFor() in tools.ts. This module only owns copy +
+// add-ons so they can be reached from the route + tests WITHOUT importing every
+// tool handler (which would pull supabaseAdmin, the Anthropic SDK, etc. into the
+// test's module graph). The completeness test asserts "every mutates:true tool
+// has a tier via the REGISTRY + a bespoke summary here" in one place.
 
 import type { AppRole } from '@/lib/roles';
 
@@ -28,46 +24,6 @@ export type ApprovalLang = 'en' | 'es';
 
 function pickLang(lang: string | undefined): ApprovalLang {
   return lang === 'es' ? 'es' : 'en';
-}
-
-// ─── Tier map ──────────────────────────────────────────────────────────────
-// Canonical mapping of mutation tool → approval tier. Read-only tools are
-// absent (approvalTierForTool returns null). Kept as a plain object so the
-// completeness test can diff it against the live registry's `mutates` set.
-//
-// quick: low-stakes, single-target, reversible floor actions — a housekeeper
-//        taps "Do it" once and it feels instant.
-// card:  higher-consequence actions that deserve a review (and often an edit)
-//        before firing — messages, complaints, work orders, announcements.
-export const APPROVAL_TIERS: Record<string, 'quick' | 'card'> = {
-  // ── quick ──
-  mark_room_clean: 'quick',
-  reset_room: 'quick',
-  toggle_dnd: 'quick',
-  flag_issue: 'quick',
-  request_help: 'quick',
-  log_reading: 'quick',
-  log_pm_check: 'quick',
-  log_found_item: 'quick',
-  remember: 'quick',
-  forget: 'quick',
-
-  // ── card ──
-  assign_room: 'card',
-  decide_time_off: 'card',
-  log_complaint: 'card',
-  createMaintenanceWorkOrder: 'card',
-  setup_compliance: 'card',
-  // The 4 new comms actions.
-  send_message: 'card',
-  create_todo: 'card',
-  add_logbook_entry: 'card',
-  post_announcement: 'card',
-};
-
-/** The tier for a tool, or null when the tool is read-only (no approval). */
-export function approvalTierForTool(name: string): 'quick' | 'card' | null {
-  return APPROVAL_TIERS[name] ?? null;
 }
 
 // ─── Summary builders ────────────────────────────────────────────────────────
@@ -95,29 +51,29 @@ type SummaryBuilder = (args: ArgRecord, lang: ApprovalLang) => string;
 
 const SUMMARIES: Record<string, SummaryBuilder> = {
   mark_room_clean: (a, l) =>
-    l === 'es' ? `Marcar la habitacion ${str(a.roomNumber)} como limpia` : `Mark room ${str(a.roomNumber)} clean`,
+    l === 'es' ? `Marcar la habitación ${str(a.roomNumber)} como limpia` : `Mark room ${str(a.roomNumber)} clean`,
   reset_room: (a, l) =>
-    l === 'es' ? `Restablecer la habitacion ${str(a.roomNumber)} a sucia` : `Reset room ${str(a.roomNumber)} to dirty`,
+    l === 'es' ? `Restablecer la habitación ${str(a.roomNumber)} a sucia` : `Reset room ${str(a.roomNumber)} to dirty`,
   toggle_dnd: (a, l) => {
     const on = a.on === true || str(a.on) === 'true';
-    if (l === 'es') return on ? `Activar No Molestar en la habitacion ${str(a.roomNumber)}` : `Quitar No Molestar de la habitacion ${str(a.roomNumber)}`;
+    if (l === 'es') return on ? `Activar No Molestar en la habitación ${str(a.roomNumber)}` : `Quitar No Molestar de la habitación ${str(a.roomNumber)}`;
     return on ? `Turn on Do-Not-Disturb for room ${str(a.roomNumber)}` : `Clear Do-Not-Disturb on room ${str(a.roomNumber)}`;
   },
   flag_issue: (a, l) =>
     l === 'es'
-      ? `Reportar un problema en la habitacion ${str(a.roomNumber)}: ${quoted(a.note)}`
+      ? `Reportar un problema en la habitación ${str(a.roomNumber)}: ${quoted(a.note)}`
       : `Flag an issue in room ${str(a.roomNumber)}: ${quoted(a.note)}`,
   request_help: (a, l) => {
     const room = str(a.roomNumber);
-    if (l === 'es') return room ? `Pedir ayuda al gerente para la habitacion ${room}` : `Ask the manager for help`;
+    if (l === 'es') return room ? `Pedir ayuda al gerente para la habitación ${room}` : `Pedir ayuda al gerente`;
     return room ? `Ask the manager for help with room ${room}` : `Ask the manager for help`;
   },
   log_reading: (a, l) =>
     l === 'es' ? `Registrar lectura: ${str(a.metric)} = ${str(a.value)}` : `Log reading: ${str(a.metric)} = ${str(a.value)}`,
   log_pm_check: (a, l) => {
-    const status = str(a.status) === 'fail' ? (l === 'es' ? 'FALLO' : 'FAIL') : (l === 'es' ? 'aprobado' : 'pass');
+    const status = str(a.status) === 'fail' ? (l === 'es' ? 'FALLÓ' : 'FAIL') : (l === 'es' ? 'aprobado' : 'pass');
     return l === 'es'
-      ? `Registrar revision de ${str(a.equipment)} (${status})`
+      ? `Registrar revisión de ${str(a.equipment)} (${status})`
       : `Record ${str(a.equipment)} check (${status})`;
   },
   log_found_item: (a, l) => {
@@ -132,7 +88,7 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
 
   assign_room: (a, l) =>
     l === 'es'
-      ? `Asignar la habitacion ${str(a.roomNumber)} a ${str(a.staffName)}`
+      ? `Asignar la habitación ${str(a.roomNumber)} a ${str(a.staffName)}`
       : `Assign room ${str(a.roomNumber)} to ${str(a.staffName)}`,
   decide_time_off: (a, l) => {
     const approve = str(a.decision) === 'approve';
@@ -141,13 +97,13 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
   },
   log_complaint: (a, l) => {
     const room = str(a.roomNumber);
-    if (l === 'es') return `Registrar una queja${room ? ` de la habitacion ${room}` : ''}: ${quoted(a.description)}`;
+    if (l === 'es') return `Registrar una queja${room ? ` de la habitación ${room}` : ''}: ${quoted(a.description)}`;
     return `Log a guest complaint${room ? ` for room ${room}` : ''}: ${quoted(a.description)}`;
   },
   createMaintenanceWorkOrder: (a, l) => {
     const room = str(a.room_number);
     const what = `${str(a.action)} ${str(a.item)}`.trim();
-    if (l === 'es') return `Crear orden de mantenimiento${room ? ` para la habitacion ${room}` : ''}: ${what}`;
+    if (l === 'es') return `Crear orden de mantenimiento${room ? ` para la habitación ${room}` : ''}: ${what}`;
     return `Create a maintenance ticket${room ? ` for room ${room}` : ''}: ${what}`;
   },
   setup_compliance: (_a, l) =>

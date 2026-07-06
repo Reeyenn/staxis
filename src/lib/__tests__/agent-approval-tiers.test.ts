@@ -7,11 +7,11 @@
  * a read-only tool must NOT carry a tier (it runs inline, no approval).
  *
  * This test walks the live registry and asserts:
- *   1. every `mutates: true` tool has `approval` ∈ {quick, card}
+ *   1. every `mutates: true` tool has `approval` ∈ {quick, card} via the REGISTRY
+ *      (the tool's own `approval:` field — the single source of truth)
  *   2. every `mutates: true` tool has a NON-generic summary in EN + ES
  *   3. no read-only tool has an `approval` tier
- *   4. approvalTierFor() (registry metadata) agrees with APPROVAL_TIERS (the
- *      approval.ts map) for every tool
+ *   4. approvalTierFor() reads the tier straight off the registry definition
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';
@@ -24,12 +24,13 @@ process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { listAllTools, approvalTierFor } from '@/lib/agent/tools';
+import { listAllTools, approvalTierFor, getToolsForRole } from '@/lib/agent/tools';
+import type { AppRole } from '@/lib/roles';
 import '@/lib/agent/tools/index'; // register everything
-import { approvalTierForTool, buildActionSummary } from '@/lib/agent/approval';
+import { buildActionSummary } from '@/lib/agent/approval';
 
 describe('approval tier completeness', () => {
-  test('every mutation tool has an approval tier', () => {
+  test('every mutation tool has an approval tier (via the registry)', () => {
     const missing = listAllTools()
       .filter((t) => t.mutates === true && (t.approval !== 'quick' && t.approval !== 'card'))
       .map((t) => t.name);
@@ -43,14 +44,17 @@ describe('approval tier completeness', () => {
     assert.deepEqual(stray, [], `read-only tools should not have a tier: ${stray.join(', ')}`);
   });
 
-  test('registry tier agrees with the approval.ts map', () => {
+  test('approvalTierFor() returns the registry tier for every mutation tool', () => {
     for (const t of listAllTools()) {
       if (t.mutates !== true) continue;
+      // The registry `approval:` field IS the single source of truth; the
+      // lookup helper must return exactly it (and never null for a mutation).
       assert.equal(
         approvalTierFor(t.name),
-        approvalTierForTool(t.name),
-        `tier mismatch for ${t.name}: registry=${approvalTierFor(t.name)} map=${approvalTierForTool(t.name)}`,
+        t.approval,
+        `approvalTierFor(${t.name})=${approvalTierFor(t.name)} but registry says ${t.approval}`,
       );
+      assert.ok(approvalTierFor(t.name) !== null, `${t.name} has a null tier`);
     }
   });
 
@@ -84,6 +88,42 @@ describe('approval tier completeness', () => {
       assert.ok(tool, `${name} is not registered`);
       assert.equal(tool!.mutates, true, `${name} should be a mutation`);
       assert.equal(tool!.approval, 'card', `${name} should be card-tier`);
+    }
+  });
+
+  // ── Voice-surface safety (regression, item i) ──────────────────────────────
+  // The approval gate ONLY runs on the chat surface (streamAgent with
+  // approvalMode). The voice surface runs streamAgent WITHOUT approvalMode, so a
+  // tiered mutation reachable from voice fires UN-GATED — no card.
+  //
+  // The 4 comms tools this feature adds (send_message / create_todo /
+  // add_logbook_entry / post_announcement) are card-tier mutations that MUST NOT
+  // leak onto voice, or they'd send messages / post announcements with no
+  // confirmation. They declare no `surfaces` → default chat-only; this pins that
+  // so a future edit can't accidentally add 'voice' and bypass the gate.
+  //
+  // NOTE: some PRE-EXISTING voice tools (createMaintenanceWorkOrder,
+  // log_complaint, and the quick-tier floor tools) are intentionally voice-
+  // exposed and run without a card — that is the established voice UX and out of
+  // scope for this branch. See the spawned follow-up for closing that broader
+  // gap (voice-side approval / confirmation).
+  test('the new comms mutation tools are NOT exposed on the voice surface (un-gated bypass)', () => {
+    const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
+    const NEW_COMMS = new Set(['send_message', 'create_todo', 'add_logbook_entry', 'post_announcement']);
+    const leaked = new Set<string>();
+    for (const role of roles) {
+      for (const t of getToolsForRole(role, 'voice')) {
+        if (NEW_COMMS.has(t.name)) leaked.add(t.name);
+      }
+    }
+    assert.deepEqual(
+      [...leaked],
+      [],
+      `these new card-tier comms tools are reachable UN-GATED on the voice surface: ${[...leaked].join(', ')}`,
+    );
+    // Belt-and-braces: they carry a tier AND are chat-only in the registry.
+    for (const name of NEW_COMMS) {
+      assert.equal(approvalTierFor(name), 'card', `${name} must be card-tier`);
     }
   });
 });
