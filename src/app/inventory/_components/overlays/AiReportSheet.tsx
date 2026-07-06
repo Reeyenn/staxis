@@ -141,9 +141,9 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
 
       {state === 'ready' && summary && (
         <>
-          {/* ── The road + the little "How it works" box (top right) ── */}
+          {/* ── The hero: how far to trusted predictions, measured by DATA ── */}
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18 }}>
-            <RoadHeader ai={ai} items={items} />
+            <TrustLine ai={ai} items={items} />
             <button
               type="button"
               onClick={() => setGuideOpen(true)}
@@ -168,8 +168,8 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
             </button>
           </div>
 
-          {/* ── Chips + the 14-day data pulse ── */}
-          <ChipsAndPulse ai={ai} lang={lang} summary={summary} />
+          {/* ── Stage chips + the 14-day data pulse ── */}
+          <ChipsAndPulse ai={ai} lang={lang} summary={summary} items={items} />
 
           {noJobsYet && <Banner tone="neutral" text={ai.noJobsWarning} />}
           {showStale && <Banner tone="warm" text={ai.staleWarning} />}
@@ -228,71 +228,86 @@ function progressOf(it: ReportItem): number {
 const STAGE_COLOR = (stage: 0 | 1 | 2): string =>
   stage === 2 ? statusColor.good : stage === 1 ? T.teal : T.ink3;
 
-function RoadHeader({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
-  const counts = [0, 0, 0];
-  for (const it of items) counts[stageOf(it)] += 1;
-  const stages: Array<{ label: string; n: number; stage: 0 | 1 | 2 }> = [
-    { label: ai.stageWatching, n: counts[0], stage: 0 },
-    { label: ai.stageProving, n: counts[1], stage: 1 },
-    { label: ai.stageTrusted, n: counts[2], stage: 2 },
-  ];
+// Fleet-level "how far to trusted" — measured by DATA COLLECTED (each item's
+// real gate progress: clean windows, passed tests, Trusted badges), never by
+// calendar days. The one number a GM opens this screen for.
+function fleetProgress(items: ReportItem[]): number {
+  if (items.length === 0) return 0;
+  const sum = items.reduce((acc, it) => acc + (it.status === 'graduated' ? 1 : progressOf(it)), 0);
+  return sum / items.length;
+}
+
+function TrustLine({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
+  const pct = Math.round(fleetProgress(items) * 100);
+  const markerLeft = `${Math.min(Math.max(pct, 0), 100)}%`;
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 0, maxWidth: 620 }}>
-        {stages.map((s, i) => (
-          <React.Fragment key={s.label}>
-            {i > 0 && (
-              <span
-                aria-hidden
-                style={{
-                  flex: 1,
-                  height: 0,
-                  borderTop: `2px dashed ${T.rule}`,
-                  margin: '0 10px',
-                  minWidth: 24,
-                  transform: 'translateY(-14px)',
-                }}
-              />
-            )}
-            <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7 }}>
-              <span
-                style={{
-                  width: 58,
-                  height: 58,
-                  borderRadius: '50%',
-                  border: `2px solid ${s.n > 0 ? STAGE_COLOR(s.stage) : T.rule}`,
-                  background: s.n > 0 ? `${STAGE_COLOR(s.stage)}0d` : T.paper,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Serif size={24} style={{ fontStyle: 'italic', color: s.n > 0 ? T.ink : T.ink3 }}>
-                  {s.n}
-                </Serif>
-              </span>
-              <Caps size={8.5} color={s.n > 0 ? STAGE_COLOR(s.stage) : undefined}>{s.label}</Caps>
-            </span>
-          </React.Fragment>
-        ))}
+      {/* the number */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 16 }}>
+        <Serif size={44} style={{ fontStyle: 'italic', lineHeight: 1 }}>{pct}%</Serif>
+        <span style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink2 }}>{ai.heroCaption}</span>
       </div>
-      <p style={{ margin: '10px 0 0', fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>
-        {ai.roadCaption}
-      </p>
+
+      {/* the line: fill → marker → GOAL flag */}
+      <div style={{ position: 'relative', paddingRight: 64, paddingTop: 6 }}>
+        <div style={{ position: 'relative', height: 10, borderRadius: 6, background: T.ruleSoft }}>
+          <div
+            style={{
+              position: 'absolute', left: 0, top: 0, bottom: 0,
+              width: markerLeft, minWidth: pct > 0 ? 10 : 0,
+              borderRadius: 6, background: T.teal,
+            }}
+          />
+          {/* current-position marker */}
+          <span
+            style={{
+              position: 'absolute', left: markerLeft, top: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 18, height: 18, borderRadius: '50%',
+              background: T.bg, border: `3px solid ${T.teal}`,
+            }}
+          />
+        </div>
+        {/* GOAL flag at the end of the line */}
+        <div
+          style={{
+            position: 'absolute', right: 0, top: -6,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+          }}
+        >
+          <svg width={16} height={22} viewBox="0 0 16 22" aria-hidden>
+            <line x1={3} y1={1} x2={3} y2={21} stroke={statusColor.good} strokeWidth={2} strokeLinecap="round" />
+            <path d="M4.5 2 L14 5 L4.5 8 Z" fill={statusColor.good} />
+          </svg>
+          <Caps size={8} color={statusColor.good}>{ai.heroGoal}</Caps>
+        </div>
+      </div>
+
+      {/* goal meaning + honest measurement note */}
+      <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <span style={{ fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600, color: T.ink }}>
+          {ai.heroGoalSub}
+        </span>
+        <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+          {ai.heroEst}
+        </span>
+      </div>
     </div>
   );
 }
 
-function ChipsAndPulse({ ai, lang, summary }: { ai: AiStrings; lang: Lang; summary: ReportSummary }) {
+function ChipsAndPulse({ ai, lang, summary, items }: { ai: AiStrings; lang: Lang; summary: ReportSummary; items: ReportItem[] }) {
   const days = summary.occupancyDays ?? [];
   const missing = summary.occupancyDaysMissing ?? 0;
+  const counts = [0, 0, 0];
+  for (const it of items) counts[stageOf(it)] += 1;
   return (
     <div
       style={{
         marginTop: 20,
         display: 'flex',
         alignItems: 'center',
-        gap: 14,
+        gap: 12,
         flexWrap: 'wrap',
         padding: '12px 16px',
         background: T.paper,
@@ -300,7 +315,10 @@ function ChipsAndPulse({ ai, lang, summary }: { ai: AiStrings; lang: Lang; summa
         borderRadius: 12,
       }}
     >
-      {/* accuracy + freshness, two tiny chips */}
+      {/* the three stages, as quiet chips */}
+      <Chip text={ai.stageChip(counts[0], ai.stageWatching)} />
+      <Chip text={ai.stageChip(counts[1], ai.stageProving)} accent={counts[1] > 0 ? T.teal : undefined} />
+      <Chip text={ai.stageChip(counts[2], ai.stageTrusted)} accent={counts[2] > 0 ? statusColor.good : undefined} />
       <Chip
         text={summary.gateRatio != null ? ai.accuracyChip((summary.gateRatio * 100).toFixed(1)) : ai.accuracyPending}
       />
@@ -346,15 +364,17 @@ function ChipsAndPulse({ ai, lang, summary }: { ai: AiStrings; lang: Lang; summa
   );
 }
 
-function Chip({ text, warm }: { text: string; warm?: boolean }) {
+function Chip({ text, warm, accent }: { text: string; warm?: boolean; accent?: string }) {
+  const color = warm ? T.warm : accent ?? T.ink2;
+  const border = warm ? `${T.warm}55` : accent ? `${accent}66` : T.rule;
   return (
     <span
       style={{
         fontFamily: fonts.mono,
         fontSize: 10.5,
         letterSpacing: '0.04em',
-        color: warm ? T.warm : T.ink2,
-        border: `1px solid ${warm ? `${T.warm}55` : T.rule}`,
+        color,
+        border: `1px solid ${border}`,
         borderRadius: 999,
         padding: '5px 12px',
         whiteSpace: 'nowrap',
@@ -458,7 +478,7 @@ function VisualGuide({ ai }: { ai: AiStrings }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, flexWrap: 'wrap' }}>
           <IconWithCaption icon={<IconClipboard />} caption={ai.g1Counts} />
           <BigGlyph>+</BigGlyph>
-          <IconWithCaption icon={<IconGuests />} caption={ai.g1Guests} />
+          <IconWithCaption icon={<IconGauge />} caption={ai.g1Occupancy} />
           <BigGlyph>=</BigGlyph>
           <IconWithCaption icon={<IconTag />} caption={ai.g1Learns} accent />
         </div>
@@ -480,7 +500,7 @@ function VisualGuide({ ai }: { ai: AiStrings }) {
         </p>
       </GuidePanel>
 
-      {/* 3 — accuracy grows */}
+      {/* 3 — accuracy grows: the curve AND the road, one shared timeline */}
       <GuidePanel title={ai.g3Title}>
         <AccuracyCurve ai={ai} />
       </GuidePanel>
@@ -511,21 +531,6 @@ function VisualGuide({ ai }: { ai: AiStrings }) {
         </div>
       </GuidePanel>
 
-      {/* 5 — the road, in time */}
-      <GuidePanel title={ai.g5Title}>
-        <TimelineRoad ai={ai} />
-      </GuidePanel>
-
-      {/* 6 — the one full sentence */}
-      <p
-        style={{
-          margin: 0, textAlign: 'center',
-          fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15.5,
-          color: T.ink2, lineHeight: 1.5,
-        }}
-      >
-        {ai.g6Footnote}
-      </p>
     </div>
   );
 }
@@ -577,54 +582,53 @@ function Arrow() {
 }
 
 function AccuracyCurve({ ai }: { ai: AiStrings }) {
-  // Curve rises from a mid start (industry averages) to the 85–90% band.
-  return (
-    <svg viewBox="0 0 560 170" style={{ width: '100%', height: 'auto', display: 'block' }} aria-hidden>
-      {/* the 85–90% band */}
-      <rect x={0} y={26} width={560} height={22} rx={4} fill={`${statusColor.good}18`} />
-      {/* label sits at the band's LEFT edge, where the curve is still low —
-          at the right edge it collides with the plateau line */}
-      <text x={10} y={42} textAnchor="start" style={{ font: `italic 400 14px ${fonts.serif}`, fill: statusColor.good }}>
-        {ai.g3Band}
-      </text>
-      {/* axis */}
-      <line x1={12} y1={152} x2={548} y2={152} stroke={T.rule} strokeWidth={1.5} />
-      {/* the learning curve */}
-      <path
-        d="M 24 120 C 120 116, 170 96, 250 66 C 330 42, 420 37, 536 36"
-        fill="none" stroke={T.teal} strokeWidth={3} strokeLinecap="round"
-      />
-      <circle cx={24} cy={120} r={5} fill={T.teal} />
-      <text x={24} y={143} textAnchor="start" style={{ font: `600 11px ${fonts.sans}`, fill: T.ink3 }}>
-        {ai.g3Start}
-      </text>
-      {/* the ~3 months marker */}
-      <line x1={400} y1={40} x2={400} y2={152} stroke={T.ink3} strokeWidth={1.2} strokeDasharray="4 4" />
-      <text x={400} y={143} textAnchor="middle" style={{ font: `600 11px ${fonts.sans}`, fill: T.ink2 }}>
-        {ai.g3Mark}
-      </text>
-    </svg>
-  );
-}
-
-function TimelineRoad({ ai }: { ai: AiStrings }) {
+  // ONE shared timeline: the accuracy curve on top (0% at day one, rising
+  // into the 85–90% band by ~3 months) and the road's milestone stops along
+  // the SAME axis below — every stage of the journey on a single picture.
+  // x positions keep every centered label inside the 0–560 viewBox (the
+  // first/last stops need breathing room or their sublabels clip).
   const stops = [
-    { x: 30, label: ai.g5M0, color: T.ink3 },
-    { x: 260, label: ai.g5M1, color: T.teal },
-    { x: 500, label: ai.g5M2, color: statusColor.good },
+    { x: 56, label: ai.g3M0, sub: ai.g3M0b, color: T.ink3, curveY: 175 },
+    { x: 170, label: ai.g3M1, sub: ai.g3M1b, color: T.ink3, curveY: 146 },
+    { x: 285, label: ai.g3M2, sub: ai.g3M2b, color: T.teal, curveY: 104 },
+    { x: 395, label: ai.g3M3, sub: ai.g3M3b, color: T.teal, curveY: 63 },
+    { x: 500, label: ai.g3M4, sub: ai.g3M4b, color: statusColor.good, curveY: 42 },
   ];
   return (
-    <svg viewBox="0 0 560 84" style={{ width: '100%', height: 'auto', display: 'block' }} aria-hidden>
-      <line x1={20} y1={30} x2={540} y2={30} stroke={T.rule} strokeWidth={2} strokeDasharray="6 5" />
+    <svg viewBox="0 0 560 268" style={{ width: '100%', height: 'auto', display: 'block' }} aria-hidden>
+      {/* the 85–90% goal band */}
+      <rect x={0} y={30} width={560} height={22} rx={4} fill={`${statusColor.good}18`} />
+      <text x={10} y={46} textAnchor="start" style={{ font: `italic 400 14px ${fonts.serif}`, fill: statusColor.good }}>
+        {ai.g3Band}
+      </text>
+      {/* the learning curve — starts at 0% on the axis */}
+      <path
+        d="M 56 178 C 130 172, 195 138, 285 104 C 365 74, 430 50, 500 42 C 515 40.5, 530 40, 540 40"
+        fill="none" stroke={T.teal} strokeWidth={3} strokeLinecap="round"
+      />
+      {/* axis (0% accuracy) */}
+      <line x1={14} y1={178} x2={546} y2={178} stroke={T.rule} strokeWidth={1.5} />
+      <text x={56} y={196} textAnchor="start" style={{ font: `600 11px ${fonts.sans}`, fill: T.ink3 }}>
+        {ai.g3Start}
+      </text>
+      <text x={500} y={196} textAnchor="middle" style={{ font: `600 11px ${fonts.sans}`, fill: T.ink2 }}>
+        {ai.g3Mark}
+      </text>
+      {/* the road itself (painted first so the stops sit on top of it) */}
+      <line x1={14} y1={226} x2={546} y2={226} stroke={T.rule} strokeWidth={2} strokeDasharray="6 5" />
+      {/* milestone stops: a dot ON the curve + a stop on the road below,
+          joined by a faint drop line */}
       {stops.map((s) => (
         <g key={s.label}>
-          <circle cx={s.x} cy={30} r={8} fill={T.bg} stroke={s.color} strokeWidth={2.5} />
-          <circle cx={s.x} cy={30} r={3} fill={s.color} />
-          <text
-            x={s.x} y={62} textAnchor="middle"
-            style={{ font: `600 11px ${fonts.sans}`, fill: T.ink2 }}
-          >
+          <circle cx={s.x} cy={s.curveY} r={4.5} fill={T.bg} stroke={s.color} strokeWidth={2.5} />
+          <line x1={s.x} y1={s.curveY + 8} x2={s.x} y2={218} stroke={T.rule} strokeWidth={1} strokeDasharray="3 4" />
+          <circle cx={s.x} cy={226} r={7} fill={T.bg} stroke={s.color} strokeWidth={2.5} />
+          <circle cx={s.x} cy={226} r={2.6} fill={s.color} />
+          <text x={s.x} y={248} textAnchor="middle" style={{ font: `700 10.5px ${fonts.sans}`, fill: T.ink }}>
             {s.label}
+          </text>
+          <text x={s.x} y={262} textAnchor="middle" style={{ font: `500 10px ${fonts.sans}`, fill: T.ink3 }}>
+            {s.sub}
           </text>
         </g>
       ))}
@@ -647,13 +651,16 @@ function IconClipboard() {
   );
 }
 
-function IconGuests() {
+function IconGauge() {
+  // Occupancy %: a half-dial with the needle high.
   return (
     <svg width={30} height={30} viewBox="0 0 30 30" {...stroke}>
-      <circle cx={11} cy={10.5} r={4} />
-      <path d="M4 25 C4 19.5, 8 17.5, 11 17.5 C14 17.5, 18 19.5, 18 25" />
-      <circle cx={21} cy={11.5} r={3.2} />
-      <path d="M19.5 17.5 C23.5 17.5, 26.5 20, 26.5 25" />
+      <path d="M4 21 A11 11 0 0 1 26 21" />
+      <line x1={15} y1={21} x2={21.5} y2={12.5} />
+      <circle cx={15} cy={21} r={1.6} fill="currentColor" stroke="none" />
+      <line x1={6} y1={16.5} x2={8} y2={17.8} />
+      <line x1={15} y1={10} x2={15} y2={12.4} />
+      <line x1={24} y1={16.5} x2={22} y2={17.8} />
     </svg>
   );
 }
