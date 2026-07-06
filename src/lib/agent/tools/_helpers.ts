@@ -201,7 +201,6 @@ export interface StaffRow {
   id: string;
   property_id: string;
   name: string;
-  role: string | null;
   phone: string | null;
   department: string | null;
   is_active: boolean;
@@ -219,7 +218,6 @@ function parseStaffRow(raw: unknown): StaffRow | null {
     id,
     property_id,
     name,
-    role: parseStringField(r.role) ?? null,
     phone: parseStringField(r.phone) ?? null,
     department: parseStringField(r.department) ?? null,
     is_active: parseBoolField(r.is_active) ?? false,
@@ -255,10 +253,14 @@ export async function resolveStaffByName(
   if (!raw) return { kind: 'none' };
 
   // Direct staff-id lookup.
+  // NOTE: the staff table has NO `role` column — selecting one makes PostgREST
+  // 400 and the swallowed error read as "no such person" (live bug caught by
+  // e2e 2026-07-06; the phantom column dated back to findStaffByName on main).
+  // Keep these select lists to real columns only.
   if (STAFF_UUID_RE.test(raw)) {
     const { data } = await supabaseAdmin
       .from('staff')
-      .select('id, property_id, name, role, phone, department, is_active')
+      .select('id, property_id, name, phone, department, is_active')
       .eq('property_id', propertyId)
       .eq('id', raw)
       .maybeSingle();
@@ -269,10 +271,15 @@ export async function resolveStaffByName(
 
   const { data, error } = await supabaseAdmin
     .from('staff')
-    .select('id, property_id, name, role, phone, department, is_active')
+    .select('id, property_id, name, phone, department, is_active')
     .eq('property_id', propertyId)
     .eq('is_active', true);
-  if (error || !data) return { kind: 'none' };
+  if (error || !data) {
+    // A query/schema error here would otherwise read as "person not found" —
+    // which is exactly how the phantom-column bug hid. Log loudly, fail closed.
+    if (error) console.error('[agent/_helpers] resolveStaffByName query failed', { propertyId, err: error.message });
+    return { kind: 'none' };
+  }
 
   const rows = data.map(parseStaffRow).filter((r): r is StaffRow => !!r);
   const q = raw.toLowerCase();
