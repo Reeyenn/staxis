@@ -26,6 +26,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ApiErrorCode, type ApiErrorCodeValue } from '@/lib/api-response';
 import { log } from '@/lib/log';
+import { env } from '@/lib/env';
 
 export interface PromotedMap {
   id: string;
@@ -56,7 +57,7 @@ export async function promoteMap(args: {
   // ── 1. Pre-check the target BEFORE mutating anything. ──────────────────
   const { data: target, error: readErr } = await supabaseAdmin
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status')
+    .select('id, pms_family, version, status, signature')
     .eq('id', id)
     .is('deleted_at', null)
     .maybeSingle();
@@ -70,6 +71,29 @@ export async function promoteMap(args: {
   // Stale-UI / wrong-id guard.
   if (target.version !== expectedVersion || target.status !== expectedStatus) {
     return { ok: false, status: 409, code: ApiErrorCode.ValidationFailed, message: 'This map changed since you opened it. Refresh and try again.' };
+  }
+
+  // ── TAMPER-SEAL guard (fix/cua-draft-resign) ───────────────────────────
+  // Every map is HMAC-signed over `knowledge` at learn time and re-signed by the
+  // Fly worker on every edit (RECIPE_SIGNING_KEY is Fly-only — the web can never
+  // sign). A NULL signature here means the seal is missing: in PROD, mapper
+  // drafts are ALWAYS signed (enforce mode is on), so a NULL seal means an
+  // out-of-band edit broke it — promoting it would push a map the CUA worker
+  // will REFUSE, auto-triggering a fresh ~$25 re-learn. Refuse loudly instead.
+  //
+  // We only null-check: PostgREST returns bytea as a '\x…' string, and the web
+  // has no key to verify the HMAC (and must not try) — a present signature is
+  // taken at face value; the worker is the authority that actually verifies it.
+  //
+  // Escape hatch — PROMOTE_ALLOW_UNSIGNED='1' — for a dev/local environment with
+  // no signing configured (so learn produces unsigned drafts). NEVER set in prod.
+  const hasSignature = target.signature !== null && target.signature !== undefined;
+  const allowUnsigned = env.PROMOTE_ALLOW_UNSIGNED === '1';
+  if (!hasSignature && !allowUnsigned) {
+    return {
+      ok: false, status: 409, code: ApiErrorCode.ValidationFailed,
+      message: 'This map is missing its tamper seal — open its editor and re-save it (any small edit re-seals it), then try again.',
+    };
   }
   if (target.status === 'active') {
     return { ok: false, status: 409, code: ApiErrorCode.ValidationFailed, message: 'That map is already live.' };

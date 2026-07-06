@@ -15,16 +15,26 @@
  *                        in the table's `raw` jsonb bucket. The selector is
  *                        authored here from the header's cell index.
  *
- * TWO write paths, mirroring delete-feed / draft-delete-feed:
+ * TWO write paths, BOTH now re-signing (fix/cua-draft-resign):
  *   - LIVE (active) map  → a recipe change must be re-signed (RECIPE_SIGNING_KEY
  *     is Fly-only), so this enqueues a non-browser `mapper.edit_recipe` worker
- *     job (edit_op delete_column / add_custom_column). The UI polls
+ *     job (edit_op delete_column / add_custom_column / set_column). The UI polls
  *     GET /api/admin/mapper/live/[jobId].
- *   - PARKED DRAFT (draftId) → drafts are unsigned (verified only at promote
- *     time), so it's a plain in-place jsonb edit — no worker, instant.
+ *   - PARKED DRAFT (draftId) → a draft is NOT unsigned: it is signed at learn
+ *     time (HMAC over `knowledge`, keyed by the Fly-only RECIPE_SIGNING_KEY) and
+ *     the worker verifies that seal before it will honour the draft. The old
+ *     path here mutated the draft's jsonb IN PLACE via supabaseAdmin without
+ *     re-signing — that silently broke the seal, so promoting the edited draft
+ *     made the worker REFUSE it and auto-trigger a fresh ~$25 re-learn. So the
+ *     draft path now enqueues the SAME `mapper.edit_recipe` job (draft-targeted
+ *     ops: draft_delete_column / draft_add_custom_column / draft_set_column).
+ *     The worker edits the draft row IN PLACE (same id, same version, re-signed)
+ *     and stamps result.knowledge_file_id = the draft id, so the client polls
+ *     GET /api/admin/mapper/live/[jobId] exactly as the LIVE path does.
  *
- * Guards here are fast-fail UX; the worker re-validates authoritatively against
- * the live active map (cua-service/src/recipe-edit.ts).
+ * Guards here are fast-fail UX (contract-column protection, can't-empty-feed,
+ * uuid/selector checks) run BEFORE enqueueing; the worker re-validates
+ * authoritatively against the row it re-signs (cua-service/src/recipe-edit.ts).
  *
  * Auth: requireAdmin. supabaseAdmin (pms_knowledge_files is deny-all-browser).
  */
@@ -44,6 +54,12 @@ import {
   authorSelectorForIndex,
   customColumnKeyConflict,
 } from '@/lib/pms/recipe-coverage';
+import {
+  draftDeleteColumnPayload,
+  draftAddCustomColumnPayload,
+  draftSetColumnPayload,
+  type DraftEditPayload,
+} from '@/lib/pms/draft-edit-ops';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -171,16 +187,13 @@ export async function POST(req: NextRequest): Promise<Response> {
       });
     }
 
-    // Parked draft → in-place jsonb edit (unsigned). Live → re-signing worker job.
+    // BOTH paths enqueue a re-signing worker job (fix/cua-draft-resign). The
+    // draft path targets the parked row by draft_id (worker op draft_delete_column,
+    // edits in place + re-signs); the live path re-points the family's active map.
     if (hasDraftId) {
-      const next = mutateDeleteColumn(sourceRow.knowledge, feedKey, columnName);
-      // Defense-in-depth: re-validate the mutated feed still has ≥1 column (the
-      // worker enforces the same post-mutation invariant).
-      const after = (next.actions as Record<string, unknown> | undefined)?.[feedKey];
-      if (Object.keys(columnsFromAction(after)).length + Object.keys(customColumnsFromAction(after)).length === 0) {
-        return err('This is the only column left — remove the whole feed instead.', { requestId, status: 409, code: 'conflict' });
-      }
-      return persistDraft(sourceRow.id, next, { removed: true, feedKey, columnName }, requestId);
+      return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version,
+        draftDeleteColumnPayload({ draftId: sourceRow.id, feedKey, columnName }),
+        `draft_column_delete:${pmsFamily}:${feedKey}:${columnName}`, 'Removing the column and re-saving the draft…', requestId);
     }
     return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version, {
       edit_op: 'delete_column', feed_key: feedKey, column_name: columnName,
@@ -221,8 +234,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!selector) return err('Could not work out where that column is on the page.', { requestId, status: 409, code: 'conflict' });
 
     if (hasDraftId) {
-      const next = mutateSetColumnSelector(sourceRow.knowledge, feedKey, columnName, selector, isCustom);
-      return persistDraft(sourceRow.id, next, { repointed: true, feedKey, columnName }, requestId);
+      return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version,
+        draftSetColumnPayload({ draftId: sourceRow.id, feedKey, columnName, selector, isCustom }),
+        `draft_column_set:${pmsFamily}:${feedKey}:${columnName}`, 'Re-pointing the column and re-saving the draft…', requestId);
     }
     return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version, {
       edit_op: 'set_column', feed_key: feedKey, column_name: columnName, selector,
@@ -307,13 +321,30 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   if (hasDraftId) {
-    const next = mutateAddCustomColumn(sourceRow.knowledge, feedKey, columnKey, selector, scope);
-    if (!next) return err('This feed isn’t a page table, so a custom column can’t be added.', { requestId, status: 409, code: 'conflict' });
-    return persistDraft(sourceRow.id, next, { added: true, feedKey, columnKey }, requestId);
+    // Fast-fail (mirrors the old mutateAddCustomColumn null-guard): a custom
+    // column is a DOM cell, so the feed must be a page table. The worker
+    // re-checks this authoritatively before re-signing.
+    if (!isTableFeed(action)) {
+      return err('This feed isn’t a page table, so a custom column can’t be added.', { requestId, status: 409, code: 'conflict' });
+    }
+    // scope is ALWAYS sent explicitly to the worker (the LIVE path below omits
+    // 'row' for a byte-identical legacy payload; the draft op has no legacy shape).
+    return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version,
+      draftAddCustomColumnPayload({ draftId: sourceRow.id, feedKey, columnKey, selector, scope }),
+      `draft_column_add:${pmsFamily}:${feedKey}:${columnKey}`, 'Adding the column and re-saving the draft…', requestId);
   }
   return enqueue(body.propertyId, admin.accountId, pmsFamily, sourceRow.version, {
     edit_op: 'add_custom_column', feed_key: feedKey, column_key: columnKey, selector, ...(scope === 'page' ? { scope } : {}),
   }, `column_add:${pmsFamily}:${feedKey}:${columnKey}`, 'Adding the column and re-publishing the map…', requestId);
+}
+
+/** A custom column is captured from a DOM cell, so the feed must parse as a page
+ *  table (parse.mode === 'table'). Mirrors the shape check the old
+ *  mutateAddCustomColumn used before returning null. */
+function isTableFeed(action: unknown): boolean {
+  if (!action || typeof action !== 'object') return false;
+  const parse = (action as Record<string, unknown>).parse;
+  return !!parse && typeof parse === 'object' && (parse as Record<string, unknown>).mode === 'table';
 }
 
 /** fix/cua-freeform-capture — a page-scope VALUE selector is SAFE iff it is a
@@ -383,13 +414,17 @@ async function fetchFeedValueSelectors(propertyId: string, feedKey: string): Pro
   return out;
 }
 
-/** Enqueue a re-signing worker job for a LIVE map edit. */
+/** Enqueue a re-signing `mapper.edit_recipe` worker job. Used by BOTH the LIVE
+ *  path (payloadExtra = the live edit_op fragment) and the DRAFT path
+ *  (payloadExtra = a typed DraftEditPayload from draft-edit-ops). The worker
+ *  re-signs the row it edits and stamps result.knowledge_file_id, so the client
+ *  polls GET /api/admin/mapper/live/[jobId] identically for both. */
 async function enqueue(
   propertyId: string,
   accountId: string,
   pmsFamily: string,
   fromVersion: number,
-  payloadExtra: Record<string, unknown>,
+  payloadExtra: DraftEditPayload | Record<string, unknown>,
   keyPrefix: string,
   note: string,
   requestId: string,
@@ -410,123 +445,4 @@ async function enqueue(
     return err(`could not start the edit: ${insErr?.message ?? 'unknown'}`, { requestId, status: 500, code: 'db_error' });
   }
   return ok({ jobId: inserted.id, fromVersion, note }, { requestId });
-}
-
-/** Plain jsonb UPDATE on a DRAFT (unsigned; scoped to non-active so a concurrent
- *  promote can't be overwritten). Mirrors draft/delete-feed. */
-async function persistDraft(
-  draftId: string,
-  nextKnowledge: Record<string, unknown>,
-  okData: Record<string, unknown>,
-  requestId: string,
-): Promise<Response> {
-  const { data: updated, error: upErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .update({ knowledge: nextKnowledge })
-    .eq('id', draftId)
-    .neq('status', 'active')
-    .select('id')
-    .maybeSingle();
-  if (upErr) return err(`could not save the draft: ${upErr.message}`, { requestId, status: 500, code: 'db_error' });
-  if (!updated) {
-    return err('This map just went live — edit it from the live map instead.', { requestId, status: 409, code: 'conflict' });
-  }
-  return ok(okData, { requestId });
-}
-
-/** Deep-clone the knowledge envelope (plain jsonb — no functions/dates). */
-function cloneKnowledge(knowledge: unknown): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(knowledge ?? {})) as Record<string, unknown>;
-}
-
-/** Draft mutation: drop a column (known or custom) from one feed's parse hint. */
-function mutateDeleteColumn(knowledge: unknown, feedKey: string, columnName: string): Record<string, unknown> {
-  const next = cloneKnowledge(knowledge);
-  const actions = (next.actions ?? {}) as Record<string, unknown>;
-  const action = (actions[feedKey] ?? {}) as Record<string, unknown>;
-  const parse = (action.parse ?? {}) as Record<string, unknown>;
-  const hint = (parse.hint ?? {}) as Record<string, unknown>;
-  const columns = (hint.columns ?? {}) as Record<string, unknown>;
-  const custom = (hint.customColumns ?? {}) as Record<string, unknown>;
-  const tiered = (hint.columnsTiered ?? {}) as Record<string, unknown>;
-  const inlineFields = (parse.fields ?? {}) as Record<string, unknown>;
-
-  if (columnName in columns) { delete columns[columnName]; delete tiered[columnName]; }
-  if (columnName in custom) delete custom[columnName];
-  if (columnName in inlineFields) delete inlineFields[columnName];
-
-  if ('columns' in hint) hint.columns = columns;
-  if (Object.keys(custom).length > 0) hint.customColumns = custom; else delete hint.customColumns;
-  if (Object.keys(tiered).length > 0) hint.columnsTiered = tiered; else delete hint.columnsTiered;
-  if ('hint' in parse) parse.hint = hint;
-  if ('fields' in parse) parse.fields = inlineFields;
-  action.parse = parse;
-  actions[feedKey] = action;
-  next.actions = actions;
-  return next;
-}
-
-/** Draft mutation: add a custom column to one TABLE feed's parse hint. Returns
- *  null when the feed isn't a page table (custom columns are DOM cells). */
-function mutateAddCustomColumn(
-  knowledge: unknown, feedKey: string, columnKey: string, selector: string, scope: 'row' | 'page' = 'row',
-): Record<string, unknown> | null {
-  const next = cloneKnowledge(knowledge);
-  const actions = (next.actions ?? {}) as Record<string, unknown>;
-  const action = (actions[feedKey] ?? {}) as Record<string, unknown>;
-  const parse = (action.parse ?? {}) as Record<string, unknown>;
-  if (parse.mode !== 'table') return null;
-  const hint = (parse.hint ?? {}) as Record<string, unknown>;
-  const custom = (hint.customColumns ?? {}) as Record<string, unknown>;
-  // fix/cua-freeform-capture — page-scope value stores the object form; a per-row
-  // column stays a flat string (byte-identical to the original shape).
-  custom[columnKey] = scope === 'page' ? { selector, scope: 'page' } : selector;
-  hint.customColumns = custom;
-  parse.hint = hint;
-  action.parse = parse;
-  actions[feedKey] = action;
-  next.actions = actions;
-  return next;
-}
-
-/** Draft mutation: RE-POINT an existing column (core or custom) at a new selector.
- *  A custom column updates customColumns; a core/contract column updates columns
- *  AND clears any stale columnsTiered[field] (the runtime prefers the tiered
- *  header-anchor, so a leftover would silently override the founder's pick). */
-function mutateSetColumnSelector(
-  knowledge: unknown, feedKey: string, columnName: string, selector: string, isCustom: boolean,
-): Record<string, unknown> {
-  const next = cloneKnowledge(knowledge);
-  const actions = (next.actions ?? {}) as Record<string, unknown>;
-  const action = (actions[feedKey] ?? {}) as Record<string, unknown>;
-  const parse = (action.parse ?? {}) as Record<string, unknown>;
-  const hint = (parse.hint ?? {}) as Record<string, unknown>;
-
-  if (isCustom) {
-    const custom = (hint.customColumns ?? {}) as Record<string, unknown>;
-    custom[columnName] = selector; // re-pointed custom columns stay a flat string (per-row)
-    hint.customColumns = custom;
-  } else {
-    const columns = (hint.columns ?? {}) as Record<string, unknown>;
-    columns[columnName] = selector;
-    hint.columns = columns;
-    const tiered = (hint.columnsTiered ?? {}) as Record<string, unknown>;
-    if (columnName in tiered) {
-      delete tiered[columnName];
-      if (Object.keys(tiered).length > 0) hint.columnsTiered = tiered; else delete hint.columnsTiered;
-    }
-  }
-  parse.hint = hint;
-  action.parse = parse;
-  // The founder's explicit re-point proves the column — drop it from the action's
-  // unproven list so the feed isn't badged "parked/unproven" after the fix.
-  const unproven = action.unprovenRequiredColumns;
-  if (Array.isArray(unproven)) {
-    const kept = unproven.filter((u) => u !== columnName);
-    if (kept.length > 0) action.unprovenRequiredColumns = kept;
-    else delete action.unprovenRequiredColumns;
-  }
-  actions[feedKey] = action;
-  next.actions = actions;
-  return next;
 }

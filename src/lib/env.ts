@@ -223,6 +223,15 @@ const ServerSchema = z.object({
   // form-encoded Twilio webhooks accepted).
   ALLOW_UNSIGNED_SMS_WEBHOOK: z.string().optional(),
 
+  // Dev/local escape hatch for promoteMap's tamper-seal guard: when set to
+  // '1', a NULL-signature (unsigned) knowledge file may still be promoted to
+  // active. Meant ONLY for a local environment with no RECIPE_SIGNING_KEY
+  // configured (so learn produces unsigned drafts). Must NEVER be set on a prod
+  // deploy — in prod, mapper drafts are ALWAYS signed (enforce mode on), so a
+  // NULL seal means an out-of-band edit broke it and promotion must refuse.
+  // Default unset → fail-closed (unsigned maps refused).
+  PROMOTE_ALLOW_UNSIGNED: z.string().optional(),
+
   // F-01 — 2FA-bypass env gate + allowlist. `accounts.skip_2fa` is a hard-set
   // DB column used today only by the role-demo investor accounts (test /
   // testhk / testfd at Comfort Suites). Without these gates, a future typo

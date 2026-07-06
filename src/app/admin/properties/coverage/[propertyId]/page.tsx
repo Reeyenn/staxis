@@ -456,10 +456,12 @@ export default function CoveragePage() {
   };
 
   // Delete → enqueue a worker recipe edit, then poll the job to completion.
-  // For a PARKED DRAFT (no live map) the worker/signed-envelope path doesn't
-  // apply — drafts are plain unsigned jsonb verified only at promote time — so
-  // draft removals go through the draft delete-feed route (a direct jsonb edit),
-  // never the active-map worker route.
+  // BOTH a LIVE map and a PARKED DRAFT now go through a re-signing worker job
+  // (fix/cua-draft-resign): a draft is signed at learn time, so the old in-place
+  // jsonb write silently broke its seal and made a later Make-live trigger a
+  // ~$25 re-learn. The draft removal hits the draft delete-feed route, which
+  // enqueues the SAME job kind and returns a jobId we poll — so the founder sees
+  // the same "removing…" progress (it now takes a few seconds, not instant).
   const confirmDelete = async () => {
     if (!pendingDelete?.actionKey || !data) return;
     setDeleteBusy(true);
@@ -470,17 +472,25 @@ export default function CoveragePage() {
         const res = await fetchWithAuth('/api/admin/mapper/draft/delete-feed', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ draftId: data.activeMap.draftId, feedKey: pendingDelete.actionKey }),
+          body: JSON.stringify({ draftId: data.activeMap.draftId, propertyId, feedKey: pendingDelete.actionKey }),
         });
         const json = await res.json();
         if (!res.ok || !json.ok) {
           setDeleteError(json.error ?? 'Could not remove the feed.');
           return;
         }
-        setPendingDelete(null);
-        if (json.data?.removed) {
-          setToast({ tone: 'good', text: `Removed “${pendingDelete.label}” from the draft.` });
+        // Already gone (idempotent, no job) → warn + reload. Otherwise poll the
+        // re-signing worker job to completion before reloading.
+        if (typeof json.data?.jobId === 'string') {
+          const outcome = await pollJob(json.data.jobId);
+          setPendingDelete(null);
+          if (outcome.ok) {
+            setToast({ tone: 'good', text: `Removed “${pendingDelete.label}” from the draft.` });
+          } else {
+            setToast({ tone: 'bad', text: outcome.error });
+          }
         } else {
+          setPendingDelete(null);
           setToast({ tone: 'warn', text: 'That feed was already gone from the draft.' });
         }
         await load();
@@ -571,10 +581,12 @@ export default function CoveragePage() {
   const slugifyHeader = (header: string): string =>
     header.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/^([0-9])/, 'c_$1').slice(0, 49) || 'field';
 
-  // Shared edit-column caller. A parked DRAFT edits its unsigned jsonb in place
-  // (instant); a LIVE map enqueues a re-signing worker job we poll to completion.
-  // On success we reload coverage so the new/removed column shows + the sample
-  // (which reads the live warehouse incl. the `raw` bucket) reflects it.
+  // Shared edit-column caller. BOTH a parked DRAFT and a LIVE map now enqueue a
+  // re-signing worker job we poll to completion (fix/cua-draft-resign): a draft
+  // is signed at learn time, so the old in-place jsonb write silently broke its
+  // seal and made a later Make-live trigger a ~$25 re-learn. On success we reload
+  // coverage so the new/removed column shows + the sample (which reads the live
+  // warehouse incl. the `raw` bucket) reflects it.
   // Returns true on success (column actually edited), false on any failure — so
   // callers can keep a form open + populated for the user to retry on error.
   const runColumnEdit = async (busyKey: string, payload: Record<string, unknown>, okText: string): Promise<boolean> => {
@@ -597,14 +609,22 @@ export default function CoveragePage() {
         setToast({ tone: 'bad', text: json.error ?? 'Could not edit the column.' });
         return false;
       }
-      // Draft path returns immediately; live path returns a jobId to poll.
+      // Both paths return a jobId to poll. A DRAFT edit keeps the map parked (it
+      // stays a draft the founder reviews right here), so its success is simply
+      // the caller's draft-aware okText — no auto-promote / Manage-maps framing.
+      // A LIVE edit re-publishes: auto-promote → okText, otherwise it parked as a
+      // new draft to review in Manage maps.
       if (typeof json.data?.jobId === 'string') {
         const outcome = await pollJob(json.data.jobId);
         if (!outcome.ok) { setToast({ tone: 'bad', text: outcome.error }); return false; }
-        const decision = (outcome.result?.promotion_decision as string | undefined) ?? '';
-        setToast(decision === 'auto_promote'
-          ? { tone: 'good', text: okText }
-          : { tone: 'warn', text: (outcome.result?.promotion_reason as string | undefined) ?? 'Saved as a draft to review in Manage maps.' });
+        if (draft) {
+          setToast({ tone: 'good', text: okText });
+        } else {
+          const decision = (outcome.result?.promotion_decision as string | undefined) ?? '';
+          setToast(decision === 'auto_promote'
+            ? { tone: 'good', text: okText }
+            : { tone: 'warn', text: (outcome.result?.promotion_reason as string | undefined) ?? 'Saved as a draft to review in Manage maps.' });
+        }
       } else {
         setToast({ tone: 'good', text: okText });
       }

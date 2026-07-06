@@ -32,11 +32,27 @@
  * column mappings, parsing notes.
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
 import { verifyRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import type { Recipe, LearnedValueTranslations, LearnedDateFormat } from './types.js';
+
+/**
+ * Injectable client used by loadActiveDetailed's SELECT — defaults to the
+ * service-role singleton (production). The seam exists ONLY so the
+ * refusedExisting decision (no-row vs present-but-tampered) can be unit-tested
+ * against a fake row without a live DB. Other functions here still use the
+ * module singleton directly. Never call __setDbForTests outside tests.
+ */
+let db: SupabaseClient = supabase;
+/** Test-only: swap loadActiveDetailed's DB client. Returns a restore fn. */
+export function __setDbForTests(fake: SupabaseClient): () => void {
+  const prev = db;
+  db = fake;
+  return () => { db = prev; };
+}
 
 // ─── Knowledge file schema ────────────────────────────────────────────────
 
@@ -218,10 +234,41 @@ export interface LoadedKnowledgeFile {
 /**
  * Load the currently-active knowledge file for a PMS family. Returns
  * null when no active version exists (new PMS family that hasn't been
- * mapped yet, or the only mapping was quarantined).
+ * mapped yet, or the only mapping was quarantined) OR when an active row
+ * exists but was REFUSED (signature verification failed under enforce).
+ *
+ * Thin wrapper over loadActiveDetailed — existing call sites (session-driver
+ * hot-reload, recipe-runner, admin) keep their exact "null ⟹ no usable file"
+ * contract. Callers that must DISTINGUISH "no row at all" from "a row that
+ * failed its tamper check" (session-driver.start — a refusal must NOT
+ * auto-enqueue a paid mapper learn) call loadActiveDetailed directly.
  */
 export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile | null> {
-  const { data, error } = await supabase
+  return (await loadActiveDetailed(pmsFamily)).file;
+}
+
+/**
+ * Load the active knowledge file AND report whether an active row physically
+ * EXISTED but was REFUSED at the signature-verification gate.
+ *
+ * WHY the extra bit: `file: null` alone is ambiguous — it means BOTH "this
+ * family was never mapped" (genuinely absent) AND "an active row exists but
+ * its signature didn't verify" (present-but-refused). session-driver.start()
+ * must tell these apart: a genuinely-absent map should auto-enqueue a mapper
+ * job, but a REFUSED map must NOT — a tamper-check failure is not a reason to
+ * spend ~$25 of Claude on a fresh full learn. The operator re-saves/re-promotes
+ * the map from Manage maps instead.
+ *
+ *   - refusedExisting=true  ⟹ a row was present but rejected (signature
+ *                             mismatch, unsigned-with-signing-configured, or
+ *                             no_key_configured). `file` is null.
+ *   - refusedExisting=false ⟹ either a usable `file`, OR truly no active row
+ *                             (nothing to refuse), OR a shape-invalid row.
+ */
+export async function loadActiveDetailed(
+  pmsFamily: string,
+): Promise<{ file: LoadedKnowledgeFile | null; refusedExisting: boolean }> {
+  const { data, error } = await db
     .from('pms_knowledge_files')
     .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
     .eq('pms_family', pmsFamily)
@@ -231,11 +278,16 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
 
   if (error) {
     log.error('knowledge-file: load failed', { pmsFamily, err: error });
-    return null;
+    // A query error is not a signature refusal — treat as "no usable file",
+    // don't set refusedExisting (a transient DB blip shouldn't suppress the
+    // mapper auto-enqueue any more than it should trigger it).
+    return { file: null, refusedExisting: false };
   }
-  if (!data) return null;
+  if (!data) return { file: null, refusedExisting: false };
   const loaded = unwrap(data as Record<string, unknown>);
-  if (!loaded) return null;
+  // A shape-invalid active row is broken, but NOT a signature refusal — leave
+  // refusedExisting false so the mapper auto-enqueue path is unchanged for it.
+  if (!loaded) return { file: null, refusedExisting: false };
 
   // Plan v8 P1-7 + Codex final review A2 hardening — verify the recipe
   // signature before handing the knowledge file to a polling driver.
@@ -278,19 +330,24 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
         signedWithKeyId: loaded.signedWithKeyId,
       };
       // Special case for #1 above — unsigned row with signing configured
-      // is a deployment hazard regardless of mode. Always refuse.
+      // is a deployment hazard regardless of mode. Always refuse. This IS a
+      // present-but-refused row → refusedExisting so the caller doesn't
+      // auto-spend a mapper learn on it.
       if (isRecipeSigningConfigured() && verify.reason === 'no_signature') {
         log.error('knowledge-file: unsigned active row with signing configured — refusing load (deployment hazard)', detail);
-        return null;
+        return { file: null, refusedExisting: true };
       }
       if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
         log.error('knowledge-file: signature verification FAILED — refusing load (enforce mode)', detail);
-        return null;
+        // A row EXISTS but failed its tamper check → present-but-refused.
+        return { file: null, refusedExisting: true };
       }
+      // Warn mode: the mismatch is logged but the (unverified) row is still
+      // returned + used — it was NOT refused, so refusedExisting stays false.
       log.warn('knowledge-file: signature verification failed (warn mode — proceeding)', detail);
     }
   }
-  return loaded;
+  return { file: loaded, refusedExisting: false };
 }
 
 /**

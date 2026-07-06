@@ -28,7 +28,7 @@ import type { Browser, BrowserContext, Page } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
-import { loadActive, type LoadedKnowledgeFile } from './knowledge-file.js';
+import { loadActive, loadActiveDetailed, type LoadedKnowledgeFile } from './knowledge-file.js';
 import { checkBudget, markResumed, checkDailyMappingSpend } from './cost-cap.js';
 import { schedule as singleFlight, getMetrics as getSingleFlightMetrics } from './single-flight.js';
 import { shouldRestart } from './memory-monitor.js';
@@ -136,6 +136,45 @@ export interface SessionDriverOptions {
   propertyId: string;
   pmsFamily: string;
   workerMachineId: string;
+}
+
+/**
+ * The "no usable active knowledge file" decision, factored out of start() so it
+ * can be unit-tested without booting a browser/session.
+ *
+ * WHY it exists: a signature-refused active row must be treated DIFFERENTLY from
+ * a genuinely-absent one. Both leave the session with no usable map and both
+ * park it under status='paused_no_knowledge_file' (so the admin UI surfaces it
+ * the same way), but:
+ *   - genuinely ABSENT ⟹ auto-enqueue a mapper.learn job (~$25 paid learn), the
+ *     original behavior — the family has never been mapped, learning IS correct.
+ *   - present-but-REFUSED (failed its HMAC tamper check under enforce) ⟹ do NOT
+ *     auto-spend. A tamper-check failure means a map EXISTS; the fix is to
+ *     re-save/re-promote it from Manage maps (which re-signs it), NOT to burn a
+ *     fresh full learn. Auto-enqueuing here was the bug: a signature refusal
+ *     silently triggered ~$25 of unprompted Claude spend.
+ *
+ * Returns the paused_reason to store + whether to auto-enqueue the mapper.
+ */
+export function decideNoKnowledgeFileAction(
+  pmsFamily: string,
+  refusedExisting: boolean,
+): { pausedReason: string; enqueueMapper: boolean } {
+  if (refusedExisting) {
+    return {
+      pausedReason:
+        `The active map for ${pmsFamily} failed its tamper check and was refused. ` +
+        `A mapper learn was NOT started (that would spend money re-learning a map you already have). ` +
+        `Re-save / re-promote it from Manage maps to re-sign it.`,
+      enqueueMapper: false,
+    };
+  }
+  return {
+    pausedReason:
+      `No active knowledge file for ${pmsFamily}. Auto-enqueued a mapper job; ` +
+      `check /admin/property-sessions for progress.`,
+    enqueueMapper: true,
+  };
 }
 
 // Plan v7 — priority order for the polling loop's table sweep.
@@ -250,26 +289,39 @@ export class SessionDriver {
 
     await this.updateStatus({ status: 'starting' });
 
-    // 1. Load knowledge file for this hotel's PMS family.
-    this.knowledgeFile = await loadActive(this.pmsFamily);
+    // 1. Load knowledge file for this hotel's PMS family. Use the DETAILED
+    //    variant so we can tell a genuinely-absent map (never mapped → mapper
+    //    learn is correct) apart from a present-but-REFUSED one (failed its
+    //    signature tamper check → must NOT auto-spend a fresh $25 learn).
+    const loaded = await loadActiveDetailed(this.pmsFamily);
+    this.knowledgeFile = loaded.file;
     if (!this.knowledgeFile) {
       // Graceful pause — distinct from failed_restart. paused_no_knowledge_file
-      // is admin-resolvable: someone needs to run the mapper or hand-seed
-      // a knowledge file for this PMS. Plan v7 Phase 2c: also auto-enqueue
-      // a mapper workflow job so the operator doesn't have to trigger it
-      // manually. The workflow-runtime's no-driver claim path picks it
-      // up; mapping-driver runs; auto-promotion may flip the new draft
-      // to active; this driver's next start (after the supervisor reconciles)
-      // loads the new recipe and goes alive. Whole flow: ~30-45 min.
-      log.warn('session-driver: no active knowledge file — pausing + auto-enqueuing mapper', {
-        propertyId: this.propertyId,
-        pmsFamily: this.pmsFamily,
-      });
+      // is admin-resolvable AND is the SAME status for both the absent and the
+      // refused case, so the admin UI still surfaces it either way. Only the
+      // paused_reason + whether we auto-enqueue a mapper differ (see
+      // decideNoKnowledgeFileAction): a signature refusal is NOT a reason to
+      // spend money re-learning a map that already exists.
+      //
+      // Absent case (enqueueMapper): Plan v7 Phase 2c — auto-enqueue a mapper
+      // workflow job so the operator doesn't have to trigger it manually. The
+      // workflow-runtime's no-driver claim path picks it up; mapping-driver
+      // runs; auto-promotion may flip the new draft to active; this driver's
+      // next start loads the new recipe and goes alive. Whole flow: ~30-45 min.
+      const decision = decideNoKnowledgeFileAction(this.pmsFamily, loaded.refusedExisting);
+      log.warn(
+        loaded.refusedExisting
+          ? 'session-driver: active knowledge file refused (tamper check) — pausing WITHOUT auto-enqueuing a paid mapper learn'
+          : 'session-driver: no active knowledge file — pausing + auto-enqueuing mapper',
+        { propertyId: this.propertyId, pmsFamily: this.pmsFamily, refusedExisting: loaded.refusedExisting },
+      );
       await this.updateStatus({
         status: 'paused_no_knowledge_file',
-        paused_reason: `No active knowledge file for ${this.pmsFamily}. Auto-enqueued a mapper job; check /admin/property-sessions for progress.`,
+        paused_reason: decision.pausedReason,
       });
-      await this.autoEnqueueMapperJob();
+      if (decision.enqueueMapper) {
+        await this.autoEnqueueMapperJob();
+      }
       this.running = false;
       return;
     }
