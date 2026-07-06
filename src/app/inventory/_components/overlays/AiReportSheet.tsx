@@ -7,7 +7,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { T, fonts, statusColor } from '../tokens';
 import { Caps } from '../Caps';
 import { Serif } from '../Serif';
-import { dateLocale, type Lang } from '../inv-i18n';
+import { type Lang } from '../inv-i18n';
 import { Overlay } from './Overlay';
 import { aiStrings, type AiStrings } from './ai-i18n';
 
@@ -141,14 +141,14 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
 
       {state === 'ready' && summary && (
         <>
-          {/* ── The hero: how far to trusted predictions, measured by DATA ── */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18 }}>
-            <TrustLine ai={ai} items={items} />
+          {/* ── The hero: how far to trusted predictions, measured by DATA.
+                 Centered; the little "How it works" box sits top-right in its
+                 own row so it can never overlap the centered text. ── */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 2 }}>
             <button
               type="button"
               onClick={() => setGuideOpen(true)}
               style={{
-                flex: 'none',
                 cursor: 'pointer',
                 background: `${T.teal}0d`,
                 border: `1.5px solid ${T.teal}55`,
@@ -167,9 +167,7 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
               <span aria-hidden style={{ color: T.teal, fontSize: 14 }}>→</span>
             </button>
           </div>
-
-          {/* ── Stage chips + the 14-day data pulse ── */}
-          <ChipsAndPulse ai={ai} lang={lang} summary={summary} items={items} />
+          <TrustLine ai={ai} items={items} />
 
           {noJobsYet && <Banner tone="neutral" text={ai.noJobsWarning} />}
           {showStale && <Banner tone="warm" text={ai.staleWarning} />}
@@ -241,15 +239,15 @@ function TrustLine({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
   const pct = Math.round(fleetProgress(items) * 100);
   const markerLeft = `${Math.min(Math.max(pct, 0), 100)}%`;
   return (
-    <div style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ maxWidth: 760, margin: '0 auto', textAlign: 'center', paddingTop: 6 }}>
       {/* the number */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 10, marginBottom: 20 }}>
         <Serif size={44} style={{ fontStyle: 'italic', lineHeight: 1 }}>{pct}%</Serif>
         <span style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink2 }}>{ai.heroCaption}</span>
       </div>
 
-      {/* the line: fill → marker → GOAL flag */}
-      <div style={{ position: 'relative', paddingRight: 64, paddingTop: 6 }}>
+      {/* the line: fill → marker → the 90% goal flag */}
+      <div style={{ position: 'relative', paddingRight: 74, paddingTop: 6 }}>
         <div style={{ position: 'relative', height: 10, borderRadius: 6, background: T.ruleSoft }}>
           <div
             style={{
@@ -268,23 +266,26 @@ function TrustLine({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
             }}
           />
         </div>
-        {/* GOAL flag at the end of the line */}
+        {/* the goal, with the 90 VISIBLE at the end of the line */}
         <div
           style={{
-            position: 'absolute', right: 0, top: -6,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+            position: 'absolute', right: 0, top: -16,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
           }}
         >
-          <svg width={16} height={22} viewBox="0 0 16 22" aria-hidden>
-            <line x1={3} y1={1} x2={3} y2={21} stroke={statusColor.good} strokeWidth={2} strokeLinecap="round" />
-            <path d="M4.5 2 L14 5 L4.5 8 Z" fill={statusColor.good} />
+          <svg width={16} height={20} viewBox="0 0 16 20" aria-hidden>
+            <line x1={3} y1={1} x2={3} y2={19} stroke={statusColor.good} strokeWidth={2} strokeLinecap="round" />
+            <path d="M4.5 2 L14 4.8 L4.5 7.6 Z" fill={statusColor.good} />
           </svg>
-          <Caps size={8} color={statusColor.good}>{ai.heroGoal}</Caps>
+          <Serif size={19} style={{ fontStyle: 'italic', color: statusColor.good, lineHeight: 1 }}>
+            {ai.heroGoalPct}
+          </Serif>
+          <Caps size={7.5} color={statusColor.good}>{ai.heroGoal}</Caps>
         </div>
       </div>
 
       {/* goal meaning + honest measurement note */}
-      <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
         <span style={{ fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600, color: T.ink }}>
           {ai.heroGoalSub}
         </span>
@@ -293,95 +294,6 @@ function TrustLine({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
         </span>
       </div>
     </div>
-  );
-}
-
-function ChipsAndPulse({ ai, lang, summary, items }: { ai: AiStrings; lang: Lang; summary: ReportSummary; items: ReportItem[] }) {
-  const days = summary.occupancyDays ?? [];
-  const missing = summary.occupancyDaysMissing ?? 0;
-  const counts = [0, 0, 0];
-  for (const it of items) counts[stageOf(it)] += 1;
-  return (
-    <div
-      style={{
-        marginTop: 20,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        flexWrap: 'wrap',
-        padding: '12px 16px',
-        background: T.paper,
-        border: `1px solid ${T.rule}`,
-        borderRadius: 12,
-      }}
-    >
-      {/* the three stages, as quiet chips */}
-      <Chip text={ai.stageChip(counts[0], ai.stageWatching)} />
-      <Chip text={ai.stageChip(counts[1], ai.stageProving)} accent={counts[1] > 0 ? T.teal : undefined} />
-      <Chip text={ai.stageChip(counts[2], ai.stageTrusted)} accent={counts[2] > 0 ? statusColor.good : undefined} />
-      <Chip
-        text={summary.gateRatio != null ? ai.accuracyChip((summary.gateRatio * 100).toFixed(1)) : ai.accuracyPending}
-      />
-      <Chip
-        text={ai.updatedChip(summary.lastInferenceAt ? relativeWhen(summary.lastInferenceAt, lang, ai) : ai.never)}
-        warm={summary.lastInferenceStale && summary.lastInferenceAt != null}
-      />
-
-      <span style={{ flex: 1 }} />
-
-      {/* the pulse: one tick per census day */}
-      {days.length > 0 && (
-        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Caps size={8}>{ai.pulseLabel}</Caps>
-          <span style={{ display: 'flex', gap: 3 }}>
-            {days.map((d) => (
-              <span
-                key={d.date}
-                title={d.date}
-                style={{
-                  width: 9,
-                  height: 18,
-                  borderRadius: 3,
-                  background: d.hasData ? T.teal : 'transparent',
-                  border: d.hasData ? 'none' : `1.5px dashed ${T.warm}88`,
-                }}
-              />
-            ))}
-          </span>
-          <span
-            style={{
-              fontFamily: fonts.sans,
-              fontSize: 11.5,
-              color: missing > 0 ? T.warm : T.ink3,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {missing > 0 ? ai.pulseMissing(missing) : ai.pulseAllGood}
-          </span>
-        </span>
-      )}
-    </div>
-  );
-}
-
-function Chip({ text, warm, accent }: { text: string; warm?: boolean; accent?: string }) {
-  const color = warm ? T.warm : accent ?? T.ink2;
-  const border = warm ? `${T.warm}55` : accent ? `${accent}66` : T.rule;
-  return (
-    <span
-      style={{
-        fontFamily: fonts.mono,
-        fontSize: 10.5,
-        letterSpacing: '0.04em',
-        color,
-        border: `1px solid ${border}`,
-        borderRadius: 999,
-        padding: '5px 12px',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {text}
-    </span>
   );
 }
 
@@ -505,32 +417,17 @@ function VisualGuide({ ai }: { ai: AiStrings }) {
         <AccuracyCurve ai={ai} />
       </GuidePanel>
 
-      {/* 4 — speed it up */}
+      {/* 4 — objection handling: what if it's wrong? Three safeties. */}
       <GuidePanel title={ai.g4Title}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
-          {[
-            { icon: <IconCalendar2x />, caption: ai.g4Count2x },
-            { icon: <IconInvoice />, caption: ai.g4Deliveries },
-            { icon: <IconRobot />, caption: ai.g4Robot },
-            { icon: <IconNetwork />, caption: ai.g4Hotels },
-          ].map((x) => (
-            <div
-              key={x.caption}
-              style={{
-                border: `1px solid ${T.rule}`, borderRadius: 12, padding: '16px 10px',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 9,
-                background: T.paper,
-              }}
-            >
-              <span style={{ color: T.teal }}>{x.icon}</span>
-              <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink, textAlign: 'center' }}>
-                {x.caption}
-              </span>
-            </div>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, flexWrap: 'wrap' }}>
+          <IconWithCaption icon={<IconShield />} caption={ai.g4Manual} />
+          <IconWithCaption icon={<IconMagnify />} caption={ai.g4Caught} />
+          <IconWithCaption icon={<IconBadge />} caption={ai.g4Badge} accent />
         </div>
+        <p style={{ margin: '14px 0 0', textAlign: 'center', fontFamily: fonts.mono, fontSize: 10.5, letterSpacing: '0.05em', color: T.ink3 }}>
+          {ai.g4Kicker}
+        </p>
       </GuidePanel>
-
     </div>
   );
 }
@@ -714,52 +611,25 @@ function IconBadge() {
   );
 }
 
-function IconCalendar2x() {
+function IconShield() {
+  // "It can't order anything": the inventory stays behind this shield —
+  // the AI never places orders or changes numbers on its own.
   return (
     <svg width={30} height={30} viewBox="0 0 30 30" {...stroke}>
-      <rect x={4} y={6} width={22} height={20} rx={2.5} />
-      <line x1={4} y1={12} x2={26} y2={12} />
-      <line x1={10} y1={3.5} x2={10} y2={8} />
-      <line x1={20} y1={3.5} x2={20} y2={8} />
-      <circle cx={10.5} cy={18} r={1.6} fill="currentColor" stroke="none" />
-      <circle cx={19.5} cy={18} r={1.6} fill="currentColor" stroke="none" />
+      <path d="M15 3.5 L25 7 C25 16, 21.5 23, 15 26.5 C8.5 23, 5 16, 5 7 Z" />
+      <line x1={11} y1={12} x2={19} y2={12} />
+      <line x1={11} y1={16.5} x2={16.5} y2={16.5} />
     </svg>
   );
 }
 
-function IconInvoice() {
+function IconMagnify() {
+  // "Every miss gets caught": each count inspects the last prediction.
   return (
     <svg width={30} height={30} viewBox="0 0 30 30" {...stroke}>
-      <path d="M7 3.5 L23 3.5 L23 26.5 L20 24.5 L17 26.5 L14 24.5 L11 26.5 L8 24.5 L7 25.5 Z" />
-      <line x1={11} y1={10} x2={19} y2={10} />
-      <line x1={11} y1={14.5} x2={19} y2={14.5} />
-      <line x1={11} y1={19} x2={15.5} y2={19} />
-    </svg>
-  );
-}
-
-function IconRobot() {
-  return (
-    <svg width={30} height={30} viewBox="0 0 30 30" {...stroke}>
-      <rect x={6.5} y={10} width={17} height={13} rx={3} />
-      <line x1={15} y1={6} x2={15} y2={10} />
-      <circle cx={15} cy={4.6} r={1.5} />
-      <circle cx={11.5} cy={16} r={1.4} fill="currentColor" stroke="none" />
-      <circle cx={18.5} cy={16} r={1.4} fill="currentColor" stroke="none" />
-      <path d="M12 20 C13 21, 17 21, 18 20" />
-    </svg>
-  );
-}
-
-function IconNetwork() {
-  return (
-    <svg width={30} height={30} viewBox="0 0 30 30" {...stroke}>
-      <circle cx={15} cy={7} r={3.4} />
-      <circle cx={7} cy={22} r={3.4} />
-      <circle cx={23} cy={22} r={3.4} />
-      <line x1={13.3} y1={10} x2={8.7} y2={19.2} />
-      <line x1={16.7} y1={10} x2={21.3} y2={19.2} />
-      <line x1={10.4} y1={22} x2={19.6} y2={22} />
+      <circle cx={13} cy={12.5} r={7.5} />
+      <line x1={18.5} y1={18} x2={26} y2={25.5} />
+      <path d="M9.8 12.8 L12.2 15.2 L16.5 10" />
     </svg>
   );
 }
@@ -843,15 +713,3 @@ function fmtRate(v: number): string {
   return v.toFixed(2);
 }
 
-// Relative "3h ago" / "2d ago" using the item date locale.
-function relativeWhen(iso: string, lang: Lang, ai: AiStrings): string {
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return ai.never;
-  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
-  if (mins < 60) return lang === 'es' ? `hace ${mins}m` : `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return lang === 'es' ? `hace ${hours}h` : `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return lang === 'es' ? `hace ${days}d` : `${days}d ago`;
-  return new Date(iso).toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric' });
-}
