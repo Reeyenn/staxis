@@ -13,13 +13,82 @@
 // `onPendingApproval` callback (persisting a pending row + emitting the card).
 
 import { log } from '@/lib/log';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AgentEvent, UsageReport } from '@/lib/agent/llm';
 import {
   recordAssistantTurn,
   recordToolResult,
   recordSyntheticAbortToolResult,
 } from '@/lib/agent/memory';
+import { createPendingActions, sweepConversationPending } from '@/lib/agent/pending-actions';
+import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
+import {
+  finalizeCostReservation,
+  cancelCostReservation,
+} from '@/lib/agent/cost-controls';
 import { handleToolCallFinished } from './_tool-result-handler';
+import type { AppRole } from '@/lib/roles';
+
+// ─── Shared user-context loader ────────────────────────────────────────────
+// Both /api/agent/command and .../resolve-action need the SAME account row +
+// role + staff.id + department for a (authUserId, propertyId) pair. Kept here so
+// the two routes can't drift on which columns they read or how staffId is
+// resolved. Returns a discriminated result the caller turns into the right HTTP
+// error.
+
+export interface AgentUserCtx {
+  uid: string;
+  accountId: string;
+  username: string;
+  displayName: string;
+  role: AppRole;
+  propertyAccess: string[];
+  dept: string | null;
+}
+
+export type LoadUserCtxResult =
+  | { ok: true; userCtx: AgentUserCtx; staffId: string | null }
+  | { ok: false; reason: 'account_not_found' };
+
+/**
+ * Load the caller's account (role, property access) + their staff.id and
+ * department on the given property. staffId is resolved for EVERY role (the
+ * comms tools post as the caller), matching the prior inline logic in both
+ * routes. Returns account_not_found when there's no accounts row for the auth
+ * user — the caller maps that to a 404.
+ */
+export async function loadAgentUserCtx(
+  authUserId: string,
+  propertyId: string,
+): Promise<LoadUserCtxResult> {
+  const { data: account, error: accountErr } = await supabaseAdmin
+    .from('accounts')
+    .select('id, username, display_name, role, property_access, data_user_id')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (accountErr || !account) return { ok: false, reason: 'account_not_found' };
+
+  const userCtx: AgentUserCtx = {
+    uid: account.data_user_id as string,
+    accountId: account.id as string,
+    username: account.username as string,
+    displayName: (account.display_name as string) ?? (account.username as string),
+    role: (account.role as AppRole) ?? 'staff',
+    propertyAccess: (account.property_access as string[]) ?? [],
+    dept: null,
+  };
+
+  const { data: staffRow } = await supabaseAdmin
+    .from('staff')
+    .select('id, department')
+    .eq('auth_user_id', userCtx.uid)
+    .eq('property_id', propertyId)
+    .maybeSingle();
+  const staffId = (staffRow?.id as string) ?? null;
+  userCtx.dept = (staffRow?.department as string | null) ?? null;
+
+  return { ok: true, userCtx, staffId };
+}
 
 export interface StreamRunnerContext {
   conversationId: string;
@@ -205,4 +274,135 @@ export async function drainDanglingToolCalls(
       }),
     ),
   );
+}
+
+/**
+ * Sweep any still-pending approval cards of a conversation to 'expired' so
+ * proposals the user walked away from can't be approved later, and persist a
+ * synthetic tool_result per swept tool_call_id so the abandoned assistant turn's
+ * tool_use blocks don't dangle on replay (idempotent via the (conversation_id,
+ * tool_call_id) unique index).
+ *
+ * MUST run BEFORE the new user turn is recorded — the synthetic tool_result has
+ * to land immediately after its assistant tool_use (Anthropic adjacency), i.e.
+ * before the new user message row exists. Returns the swept pending-action ids so
+ * the caller can emit a `pending_actions_superseded` SSE event once the stream is
+ * open (the browser drops the displayed cards). Best-effort: a failure here only
+ * leaves stale cards, so we log and return [] rather than abort the new turn.
+ */
+export async function sweepSupersededPending(
+  conversationId: string,
+  requestId: string,
+): Promise<string[]> {
+  let swept;
+  try {
+    swept = await sweepConversationPending(conversationId);
+  } catch (err) {
+    log.error('[agent/stream-runner] failed to sweep superseded pending actions', {
+      requestId, conversationId, err,
+    });
+    return [];
+  }
+  if (swept.length === 0) return [];
+  await Promise.allSettled(
+    swept.map((row) =>
+      recordSyntheticAbortToolResult(
+        conversationId,
+        row.toolCallId,
+        { ok: false, error: 'superseded — the user moved on without deciding' },
+      ).catch((err) => {
+        log.error('[agent/stream-runner] failed to persist superseded tool result', {
+          requestId, conversationId, callId: row.toolCallId, err,
+        });
+      }),
+    ),
+  );
+  return swept.map((r) => r.id);
+}
+
+/**
+ * Build the `onPendingApproval` handler both routes pass to runAgentStream:
+ * persist one pending row per proposed mutation, then stream the card SSE event
+ * (summary + add-ons in both languages). Extracted so the two near-verbatim
+ * copies can't drift. Returns null (skips the card) if the row couldn't be
+ * created — runAgentStream's own catch already surfaces a client error.
+ */
+export function makePendingApprovalHandler(opts: {
+  propertyId: string;
+  conversationId: string;
+  accountId: string;
+  send: (obj: unknown) => void;
+}): PendingApprovalHandler {
+  return async (ev) => {
+    const [row] = await createPendingActions({
+      propertyId: opts.propertyId,
+      conversationId: opts.conversationId,
+      accountId: opts.accountId,
+      turnKey: ev.turnKey,
+      actions: [{ toolCallId: ev.call.id, toolName: ev.call.name, toolArgs: ev.call.args, tier: ev.tier }],
+    });
+    if (!row) return;
+    opts.send({
+      type: 'tool_call_pending_approval',
+      pendingActionId: row.id,
+      toolCallId: ev.call.id,
+      toolName: ev.call.name,
+      args: ev.call.args,
+      tier: ev.tier,
+      // Both languages so the client picks by useLang() without a round-trip.
+      summary: {
+        en: buildActionSummary(ev.call.name, ev.call.args, 'en'),
+        es: buildActionSummary(ev.call.name, ev.call.args, 'es'),
+      },
+      addons: {
+        en: addonDescriptorsForCard(ev.call.name, ev.call.args, 'en'),
+        es: addonDescriptorsForCard(ev.call.name, ev.call.args, 'es'),
+      },
+    });
+  };
+}
+
+/**
+ * The cost-reservation reconciliation tail both routes run in their stream's
+ * finally block. Finalizes against real spend when we have a usage report;
+ * cancels the hold otherwise. The finalize→cancel-on-failure ladder (with its
+ * audit-row semantics) MUST stay identical across both routes, so it lives here
+ * once. Codex fix H1 lineage.
+ */
+export async function reconcileCostReservation(opts: {
+  reservationId: string;
+  conversationId: string;
+  finalUsage: UsageReport | null;
+  userId: string;
+  propertyId: string;
+  requestId: string;
+}): Promise<void> {
+  const { reservationId, conversationId, finalUsage, userId, propertyId, requestId } = opts;
+  if (finalUsage) {
+    try {
+      await finalizeCostReservation({
+        reservationId,
+        conversationId,
+        actualUsd: finalUsage.costUsd,
+        model: finalUsage.model,
+        modelId: finalUsage.modelId,
+        tokensIn: finalUsage.inputTokens,
+        tokensOut: finalUsage.outputTokens,
+        cachedInputTokens: finalUsage.cachedInputTokens,
+        userId,
+        propertyId,
+      });
+    } catch (finalizeErr) {
+      log.error('[agent/stream-runner] finalize failed after retries; cancelling to release budget hold (audit row written)', {
+        requestId, conversationId, reservationId, finalizeErr,
+      });
+      await cancelCostReservation(reservationId).catch((cancelErr) => {
+        log.error('[agent/stream-runner] cancel also failed; reservation will be stranded', {
+          requestId, conversationId, reservationId, cancelErr,
+        });
+      });
+    }
+  } else {
+    await cancelCostReservation(reservationId);
+  }
 }

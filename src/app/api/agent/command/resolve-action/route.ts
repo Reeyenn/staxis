@@ -21,7 +21,6 @@
 // emitted before the model's follow-up text.
 
 import type { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 
@@ -33,7 +32,6 @@ import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import { loadConversation, recordToolResult } from '@/lib/agent/memory';
 import {
   reserveCostBudget,
-  finalizeCostReservation,
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
 import {
@@ -44,10 +42,10 @@ import {
   getTurnActions,
   allActionsResolved,
   claimTurnResume,
+  releaseTurnResume,
   expiredWithoutResult,
-  createPendingActions,
 } from '@/lib/agent/pending-actions';
-import { buildActionSummary, addonDescriptorsForCard, findAddon } from '@/lib/agent/approval';
+import { buildActionSummary, findAddon } from '@/lib/agent/approval';
 import { validateToolArgs } from '@/lib/agent/validate-tool-args';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
@@ -56,9 +54,10 @@ import {
   runAgentStream,
   finishAgentStream,
   drainDanglingToolCalls,
+  loadAgentUserCtx,
+  makePendingApprovalHandler,
+  reconcileCostReservation,
 } from '../_stream-runner';
-
-import type { AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -95,38 +94,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 
-  // ── Load the caller's account row + role ──────────────────────────────
-  const { data: account, error: accountErr } = await supabaseAdmin
-    .from('accounts')
-    .select('id, username, display_name, role, property_access, data_user_id')
-    .eq('data_user_id', auth.userId)
-    .maybeSingle();
-  if (accountErr || !account) {
+  // ── Load account row + role + staff.id + department (shared with command) ─
+  const ctxLoad = await loadAgentUserCtx(auth.userId, body.pid);
+  if (!ctxLoad.ok) {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
-
-  const userCtx = {
-    uid: account.data_user_id as string,
-    accountId: account.id as string,
-    username: account.username as string,
-    displayName: (account.display_name as string) ?? (account.username as string),
-    role: (account.role as AppRole) ?? 'staff',
-    propertyAccess: (account.property_access as string[]) ?? [],
-    dept: null as string | null,
-  };
-
-  // ── Resolve staff.id + department (all roles — comms tools post as caller) ─
-  let staffId: string | null = null;
-  {
-    const { data: staffRow } = await supabaseAdmin
-      .from('staff')
-      .select('id, department')
-      .eq('auth_user_id', userCtx.uid)
-      .eq('property_id', body.pid)
-      .maybeSingle();
-    staffId = (staffRow?.id as string) ?? null;
-    userCtx.dept = (staffRow?.department as string | null) ?? null;
-  }
+  const { userCtx, staffId } = ctxLoad;
 
   // ── Load + validate the pending action ────────────────────────────────
   const pending = await getPendingAction(body.pendingActionId);
@@ -151,6 +124,50 @@ export async function POST(req: NextRequest): Promise<Response> {
   const convo = await loadConversation(pending.conversationId, userCtx.accountId);
   if (!convo || convo.propertyId !== body.pid) {
     return Response.json({ ok: false, error: 'that action was not found', requestId }, { status: 404 });
+  }
+
+  // ── Validate adjustedArgs BEFORE claiming the row (code-review finding) ──
+  // An invalid edit must NOT consume the card. We validate FIRST and, on
+  // failure, return 400 with the field error while leaving the row 'pending'
+  // so the card stays up and the user can fix the edit. Only once the args are
+  // known-good do we reserve budget + claim the row.
+  //
+  // effectiveArgs starts as the original proposal and is refined by any edit.
+  let effectiveArgs: Record<string, unknown> = pending.toolArgs;
+  if (body.decision === 'approve' && body.adjustedArgs && typeof body.adjustedArgs === 'object') {
+    const tool = getTool(pending.toolName);
+    if (!tool) {
+      return Response.json({ ok: false, error: 'That tool is no longer available.', code: 'invalid_edit', requestId }, { status: 400 });
+    }
+    // Merge edits over the original args, then validate the merged object.
+    const merged = { ...pending.toolArgs, ...(body.adjustedArgs as Record<string, unknown>) };
+    const v = validateToolArgs(tool, merged);
+    if (!v.ok) {
+      // Card stays up (row untouched). Client surfaces v.error inline on Adjust.
+      return Response.json({ ok: false, error: v.error, code: 'invalid_edit', requestId }, { status: 400 });
+    }
+    // Overlay the VALIDATED (schema-clean) args back onto the ORIGINAL proposal
+    // so any originally-proposed arg the tool doesn't declare in its
+    // inputSchema.properties survives the edit. validateToolArgs already dropped
+    // unknown keys the CLIENT tried to smuggle in; this merge re-adds keys that
+    // were in the model's own proposal.
+    //
+    // Adjust-clears-field semantics (code-review finding): an edit that
+    // EXPLICITLY sets an OPTIONAL field to empty/null means "clear it".
+    // validateToolArgs drops empty/null values, so without this the original
+    // would be re-overlaid and the clear silently ignored. Detect optional keys
+    // the user explicitly emptied and DELETE them from effectiveArgs. Required
+    // fields already fail validation above with a clear message, so any key that
+    // survived to here and was emptied is safe to drop.
+    const required = new Set(tool.inputSchema.required ?? []);
+    const cleared = new Set<string>();
+    for (const [k, val] of Object.entries(body.adjustedArgs as Record<string, unknown>)) {
+      if (required.has(k)) continue;
+      const isEmpty = val === null || val === undefined || (typeof val === 'string' && val.trim() === '');
+      if (isEmpty && k in (tool.inputSchema.properties ?? {})) cleared.add(k);
+    }
+    effectiveArgs = { ...pending.toolArgs, ...v.args };
+    for (const k of cleared) delete effectiveArgs[k];
   }
 
   // ── Reserve cost budget for the possible model resume ─────────────────
@@ -186,74 +203,51 @@ export async function POST(req: NextRequest): Promise<Response> {
   const addonErrors: string[] = [];
 
   if (body.decision === 'deny') {
-    await finalizePendingAction({ id: pending.id, status: 'failed', error: 'declined by user' });
+    // Deny is a TERMINAL 'denied' status — not 'failed'. A denial is a
+    // first-class, queryable outcome (allActionsResolved treats 'denied' as
+    // terminal; the DB CHECK allows it). Overwriting to 'failed' with a generic
+    // error made denials indistinguishable from real execution failures.
+    await finalizePendingAction({ id: pending.id, status: 'denied', error: 'declined by user' });
     toolResultForModel = 'The user declined this action.';
     toolResultIsError = true;
   } else {
-    // Approve — validate adjustedArgs (if any) against the tool's schema.
-    let effectiveArgs = pending.toolArgs;
-    if (body.adjustedArgs && typeof body.adjustedArgs === 'object') {
-      const tool = getTool(pending.toolName);
-      if (!tool) {
-        actionError = 'That tool is no longer available.';
-      } else {
-        // Merge edits over the original args, then validate the merged object.
-        const merged = { ...pending.toolArgs, ...body.adjustedArgs };
-        const v = validateToolArgs(tool, merged);
-        if (!v.ok) {
-          actionError = v.error;
-        } else {
-          // Overlay the VALIDATED (schema-clean) args back onto the ORIGINAL
-          // proposal so any originally-proposed arg the tool doesn't declare in
-          // its inputSchema.properties survives the edit — otherwise
-          // approve-with-edit would silently execute with fewer args than
-          // approve-as-is (code-review finding). validateToolArgs already
-          // dropped unknown keys the CLIENT tried to smuggle in adjustedArgs;
-          // this merge only re-adds keys that were in the model's own proposal.
-          effectiveArgs = { ...pending.toolArgs, ...v.args };
+    const res = await executeTool(pending.toolName, effectiveArgs, toolCtx);
+    actionOk = res.ok;
+    actionError = res.ok ? null : (res.error ?? 'Tool failed without a message');
+    toolResultForModel = res.ok ? (res.data ?? null) : actionError;
+    toolResultIsError = !res.ok;
+    await finalizePendingAction({
+      id: pending.id,
+      status: res.ok ? 'executed' : 'failed',
+      result: res.ok ? res.data ?? null : null,
+      error: res.ok ? null : actionError,
+    });
+
+    // ── Run selected add-ons (deterministic; failures never roll back the
+    // primary action) ──
+    if (res.ok && Array.isArray(body.addons) && body.addons.length > 0) {
+      for (const addonId of body.addons) {
+        const addon = findAddon(pending.toolName, addonId);
+        if (!addon) continue;
+        // Add-ons create attributed work (a to-do "from" the caller). With no
+        // caller staff identity we'd write an anonymous row — skip with a note
+        // instead, mirroring the tools' own null-staffId refusal (item 8).
+        if (!staffId) {
+          addonErrors.push(addonId);
+          continue;
         }
-      }
-    }
-
-    if (actionError) {
-      // A bad edit doesn't consume the action — but we've already claimed it
-      // 'approved'. Roll it back to failed with the validation error so the
-      // model sees a clean tool_result and can re-propose.
-      await finalizePendingAction({ id: pending.id, status: 'failed', error: actionError });
-      toolResultForModel = actionError;
-      toolResultIsError = true;
-    } else {
-      const res = await executeTool(pending.toolName, effectiveArgs, toolCtx);
-      actionOk = res.ok;
-      actionError = res.ok ? null : (res.error ?? 'Tool failed without a message');
-      toolResultForModel = res.ok ? (res.data ?? null) : actionError;
-      toolResultIsError = !res.ok;
-      await finalizePendingAction({
-        id: pending.id,
-        status: res.ok ? 'executed' : 'failed',
-        result: res.ok ? res.data ?? null : null,
-        error: res.ok ? null : actionError,
-      });
-
-      // ── Run selected add-ons (deterministic; failures never roll back the
-      // primary action) ──
-      if (res.ok && Array.isArray(body.addons) && body.addons.length > 0) {
-        for (const addonId of body.addons) {
-          const addon = findAddon(pending.toolName, addonId);
-          if (!addon) continue;
-          try {
-            const out = await addon.run({
-              propertyId: body.pid,
-              callerStaffId: staffId,
-              args: effectiveArgs,
-              primaryResult: res.data ?? null,
-              role: userCtx.role,
-            });
-            addonNotes.push(out.note);
-          } catch (err) {
-            log.error('[agent/resolve-action] add-on failed', { requestId, addonId, err });
-            addonErrors.push(addonId);
-          }
+        try {
+          const out = await addon.run({
+            propertyId: body.pid,
+            callerStaffId: staffId,
+            args: effectiveArgs,
+            primaryResult: res.data ?? null,
+            role: userCtx.role,
+          });
+          addonNotes.push(out.note);
+        } catch (err) {
+          log.error('[agent/resolve-action] add-on failed', { requestId, addonId, err });
+          addonErrors.push(addonId);
         }
       }
     }
@@ -284,16 +278,18 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const canResume = allActionsResolved(siblings);
 
-  // Build the client-facing result summary for the card confirmation.
-  const summaryEn = buildActionSummary(pending.toolName, pending.toolArgs, 'en');
-  const summaryEs = buildActionSummary(pending.toolName, pending.toolArgs, 'es');
+  // Build the client-facing result summary for the card confirmation. Use the
+  // EDITED args (effectiveArgs) so the confirmation reflects what actually ran,
+  // not the model's original proposal (code-review finding).
+  const summaryEn = buildActionSummary(pending.toolName, effectiveArgs, 'en');
+  const summaryEs = buildActionSummary(pending.toolName, effectiveArgs, 'es');
   const resultSummary = {
     en: body.decision === 'deny'
       ? 'Action cancelled'
       : actionOk ? summaryEn : (actionError ?? 'Action failed'),
     es: body.decision === 'deny'
-      ? 'Accion cancelada'
-      : actionOk ? summaryEs : (actionError ?? 'La accion fallo'),
+      ? 'Acción cancelada'
+      : actionOk ? summaryEs : (actionError ?? 'La acción falló'),
   };
 
   // ── Stream the response (action_result, then the model's follow-up) ──
@@ -330,6 +326,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       // runAgentStream throws mid-loop.
       const pendingToolCallIds = new Set<string>();
       let result: Awaited<ReturnType<typeof runAgentStream>> | null = null;
+      // Set true once THIS request wins claimTurnResume. If the resume stream
+      // then throws, the catch below best-effort clears resume_claimed_at so a
+      // later resolve can claim again — otherwise the turn is permanently stuck
+      // (nothing ever un-stamps the claim). Resume-crash recovery (item 5).
+      let resumeClaimed = false;
 
       try {
         if (!canResume) {
@@ -354,6 +355,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           try { controller.close(); } catch { /* noop */ }
           return;
         }
+        resumeClaimed = true;
 
         // ── Synthesize tool_results for EXPIRED siblings (code-review finding) ──
         // An 'expired' sibling is terminal (allActionsResolved) but the route
@@ -401,64 +403,40 @@ export async function POST(req: NextRequest): Promise<Response> {
         result = await runAgentStream(iter, runnerCtx, {
           pendingToolCallIds,
           // If the follow-up proposes MORE mutations, gate them too (one at a
-          // time). Same handler shape as the command route.
-          onPendingApproval: async (ev) => {
-            const [row] = await createPendingActions({
-              propertyId: body.pid,
-              conversationId: pending.conversationId,
-              accountId: userCtx.accountId,
-              turnKey: ev.turnKey,
-              actions: [{ toolCallId: ev.call.id, toolName: ev.call.name, toolArgs: ev.call.args, tier: ev.tier }],
-            });
-            if (!row) return;
-            send({
-              type: 'tool_call_pending_approval',
-              pendingActionId: row.id,
-              toolCallId: ev.call.id,
-              toolName: ev.call.name,
-              args: ev.call.args,
-              tier: ev.tier,
-              summary: {
-                en: buildActionSummary(ev.call.name, ev.call.args, 'en'),
-                es: buildActionSummary(ev.call.name, ev.call.args, 'es'),
-              },
-              addons: {
-                en: addonDescriptorsForCard(ev.call.name, ev.call.args, 'en'),
-                es: addonDescriptorsForCard(ev.call.name, ev.call.args, 'es'),
-              },
-            });
-          },
+          // time). Shared factory — same handler both routes use.
+          onPendingApproval: makePendingApprovalHandler({
+            propertyId: body.pid,
+            conversationId: pending.conversationId,
+            accountId: userCtx.accountId,
+            send,
+          }),
         });
 
         await finishAgentStream(result, runnerCtx);
       } catch (err) {
         log.error('[agent/resolve-action] resume stream threw', { requestId, reservationId, err });
         send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+        // Resume-crash recovery (item 5): if we had claimed the resume, release
+        // the claim so a later resolve attempt on this turn can pick it up
+        // again. Best-effort — a failure here only leaves the turn stuck, which
+        // is the pre-fix behaviour, so we just log.
+        if (resumeClaimed) {
+          await releaseTurnResume(pending.conversationId, pending.turnKey).catch((relErr) => {
+            log.error('[agent/resolve-action] failed to release resume claim after crash', { requestId, relErr });
+          });
+        }
       } finally {
         await drainDanglingToolCalls(pendingToolCallIds, runnerCtx);
 
-        const finalUsage = result?.finalUsage ?? result?.lastTurnUsage ?? null;
-        if (finalUsage) {
-          try {
-            await finalizeCostReservation({
-              reservationId,
-              conversationId: pending.conversationId,
-              actualUsd: finalUsage.costUsd,
-              model: finalUsage.model,
-              modelId: finalUsage.modelId,
-              tokensIn: finalUsage.inputTokens,
-              tokensOut: finalUsage.outputTokens,
-              cachedInputTokens: finalUsage.cachedInputTokens,
-              userId: userCtx.accountId,
-              propertyId: body.pid,
-            });
-          } catch (finalizeErr) {
-            log.error('[agent/resolve-action] finalize failed; cancelling', { requestId, reservationId, finalizeErr });
-            await cancelCostReservation(reservationId).catch(() => undefined);
-          }
-        } else {
-          await cancelCostReservation(reservationId);
-        }
+        // Shared tail — same finalize→cancel ladder both routes run.
+        await reconcileCostReservation({
+          reservationId,
+          conversationId: pending.conversationId,
+          finalUsage: result?.finalUsage ?? result?.lastTurnUsage ?? null,
+          userId: userCtx.accountId,
+          propertyId: body.pid,
+          requestId,
+        });
 
         try { controller.close(); } catch { /* noop */ }
       }

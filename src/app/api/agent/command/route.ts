@@ -36,7 +36,6 @@
 // containment, not a deterministic kill switch.
 
 import type { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 
@@ -52,11 +51,8 @@ import {
 } from '@/lib/agent/memory';
 import {
   reserveCostBudget,
-  finalizeCostReservation,
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
-import { createPendingActions } from '@/lib/agent/pending-actions';
-import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
@@ -64,9 +60,11 @@ import {
   runAgentStream,
   finishAgentStream,
   drainDanglingToolCalls,
+  loadAgentUserCtx,
+  makePendingApprovalHandler,
+  reconcileCostReservation,
+  sweepSupersededPending,
 } from './_stream-runner';
-
-import type { AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -115,52 +113,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 
-  // ── Load the user's account row + role ────────────────────────────────
-  const { data: account, error: accountErr } = await supabaseAdmin
-    .from('accounts')
-    .select('id, username, display_name, role, property_access, data_user_id')
-    .eq('data_user_id', auth.userId)
-    .maybeSingle();
-  if (accountErr || !account) {
+  // ── Load account row + role + staff.id + department (shared with resolve) ─
+  // Approval-cards feature: the new comms tools (send_message, create_todo,
+  // add_logbook_entry) post AS the caller, so staffId is resolved for EVERY
+  // role, not just floor roles. Room-mutation scoping is unaffected — that gate
+  // lives in assertFloorRoleCanMutateRoom, which only checks housekeeping/
+  // maintenance, so surfacing every role's staffId here is safe.
+  const ctxLoad = await loadAgentUserCtx(auth.userId, body.propertyId);
+  if (!ctxLoad.ok) {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
-
-  const userCtx = {
-    uid: account.data_user_id as string,
-    accountId: account.id as string,
-    username: account.username as string,
-    displayName: (account.display_name as string) ?? (account.username as string),
-    role: (account.role as AppRole) ?? 'staff',
-    propertyAccess: (account.property_access as string[]) ?? [],
-    dept: null as string | null,
-  };
-
-  // ── Resolve staff.id + department ────────────────────────────────────
-  // `rooms.assigned_to` references `staff.id`, not `accounts.id` — Codex
-  // review fix #4. Look it up by `staff.auth_user_id = user.uid`. We also
-  // pull `department` here to gate 'dept'-scoped knowledge documents in the
-  // search_knowledge tool (managers don't need it — role short-circuits the
-  // gate).
-  //
-  // Approval-cards feature: the new comms tools (send_message, create_todo,
-  // add_logbook_entry) post AS the caller, so they need staffId for EVERY
-  // role, not just floor roles. We now resolve it for all roles. To keep the
-  // prior rooms.assigned_to scoping behaviour intact, front_desk's staffId is
-  // still suppressed for room mutations — that scoping lives in
-  // assertFloorRoleCanMutateRoom, which only gates housekeeping/maintenance,
-  // so surfacing front_desk's staffId here is safe (it's used by the comms
-  // tools, not the room-mutation scope check).
-  let staffId: string | null = null;
-  {
-    const { data: staffRow } = await supabaseAdmin
-      .from('staff')
-      .select('id, department')
-      .eq('auth_user_id', userCtx.uid)
-      .eq('property_id', body.propertyId)
-      .maybeSingle();
-    staffId = (staffRow?.id as string) ?? null;
-    userCtx.dept = (staffRow?.department as string | null) ?? null;
-  }
+  const { userCtx, staffId } = ctxLoad;
 
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
   // Atomic: cap check + reservation insert happen under an advisory lock
@@ -189,8 +152,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   // race is possible; we still create + record-user-turn in JS.
   let conversationId = body.conversationId;
   let history: AgentMessage[] = [];
+  // IDs of approval cards this new turn superseded — emitted as an SSE event
+  // once the stream opens so the browser drops any still-displayed cards.
+  let supersededPendingIds: string[] = [];
   try {
     if (conversationId) {
+      // Sweep any still-pending approval cards BEFORE recording the new user
+      // turn: sending a fresh message abandons the earlier proposals. Flipping
+      // them to 'expired' + persisting a synthetic tool_result per tool_call_id
+      // here (before the user-turn row exists) keeps the abandoned assistant
+      // turn's tool_use blocks from dangling and stops an orphaned card from
+      // being approved later. Best-effort — never blocks the new turn.
+      supersededPendingIds = await sweepSupersededPending(conversationId, requestId);
+
       const prep = await lockLoadAndRecordUserTurn({
         conversationId,
         userAccountId: userCtx.accountId,
@@ -258,6 +232,15 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       send({ type: 'conversation_id', id: finalConversationId });
 
+      // Tell the browser to drop any approval cards this new message superseded.
+      if (supersededPendingIds.length > 0) {
+        send({
+          type: 'pending_actions_superseded',
+          conversationId: finalConversationId,
+          pendingActionIds: supersededPendingIds,
+        });
+      }
+
       const runnerCtx = {
         conversationId: finalConversationId,
         requestId,
@@ -298,34 +281,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           pendingToolCallIds,
           // Persist a pending row per proposed mutation + stream the card. The
           // browser renders it and POSTs /api/agent/command/resolve-action on
-          // the user's decision.
-          onPendingApproval: async (ev) => {
-            const [row] = await createPendingActions({
-              propertyId: body.propertyId,
-              conversationId: finalConversationId,
-              accountId: userCtx.accountId,
-              turnKey: ev.turnKey,
-              actions: [{ toolCallId: ev.call.id, toolName: ev.call.name, toolArgs: ev.call.args, tier: ev.tier }],
-            });
-            if (!row) return;
-            send({
-              type: 'tool_call_pending_approval',
-              pendingActionId: row.id,
-              toolCallId: ev.call.id,
-              toolName: ev.call.name,
-              args: ev.call.args,
-              tier: ev.tier,
-              // Both languages so the client picks by useLang() without a round-trip.
-              summary: {
-                en: buildActionSummary(ev.call.name, ev.call.args, 'en'),
-                es: buildActionSummary(ev.call.name, ev.call.args, 'es'),
-              },
-              addons: {
-                en: addonDescriptorsForCard(ev.call.name, ev.call.args, 'en'),
-                es: addonDescriptorsForCard(ev.call.name, ev.call.args, 'es'),
-              },
-            });
-          },
+          // the user's decision. Shared factory — same handler both routes use.
+          onPendingApproval: makePendingApprovalHandler({
+            propertyId: body.propertyId,
+            conversationId: finalConversationId,
+            accountId: userCtx.accountId,
+            send,
+          }),
         });
 
         // Persist the final assistant text turn + emit the held `done`
@@ -346,35 +308,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         // has no `done`/usage — but the model DID spend tokens on the proposal,
         // so we finalize against the last assistant_turn usage instead of
         // cancelling and losing that spend. The model's FOLLOW-UP (after the
-        // user decides) reserves its own budget on the resolve route. ──
-        const finalUsage = result?.finalUsage ?? result?.lastTurnUsage ?? null;
-        if (finalUsage) {
-          try {
-            await finalizeCostReservation({
-              reservationId,
-              conversationId: finalConversationId,
-              actualUsd: finalUsage.costUsd,
-              model: finalUsage.model,
-              modelId: finalUsage.modelId,
-              tokensIn: finalUsage.inputTokens,
-              tokensOut: finalUsage.outputTokens,
-              cachedInputTokens: finalUsage.cachedInputTokens,
-              userId: userCtx.accountId,
-              propertyId: body.propertyId,
-            });
-          } catch (finalizeErr) {
-            log.error('[agent/command] finalize failed after retries; cancelling to release budget hold (audit row written)', {
-              requestId, conversationId: finalConversationId, reservationId, finalizeErr,
-            });
-            await cancelCostReservation(reservationId).catch(cancelErr => {
-              log.error('[agent/command] cancel also failed; reservation will be stranded', {
-                requestId, conversationId: finalConversationId, reservationId, cancelErr,
-              });
-            });
-          }
-        } else {
-          await cancelCostReservation(reservationId);
-        }
+        // user decides) reserves its own budget on the resolve route. Shared
+        // tail — same finalize→cancel ladder both routes run. ──
+        await reconcileCostReservation({
+          reservationId,
+          conversationId: finalConversationId,
+          finalUsage: result?.finalUsage ?? result?.lastTurnUsage ?? null,
+          userId: userCtx.accountId,
+          propertyId: body.propertyId,
+          requestId,
+        });
 
         try {
           controller.close();
