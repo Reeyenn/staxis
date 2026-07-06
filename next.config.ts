@@ -73,7 +73,11 @@ function buildCsp(): string {
     // host whitelist.
     scriptSrc,
     `style-src 'self' 'unsafe-inline' ${googleFontsCss}`,
-    `img-src 'self' data: https:`,
+    // blob: — the invoice-scan staging step previews picked pages via
+    // URL.createObjectURL(file) thumbnails. Same-origin-only (see the
+    // media-src note below), so no attack-surface widening; without it the
+    // thumbnails render as broken images (caught in live QA 2026-07-05).
+    `img-src 'self' data: https: blob:`,
     `font-src 'self' data: ${googleFontsFile}`,
     // The Clicky walkthrough's Nova narration fetches MP3 from /api/agent/speak,
     // wraps the response in a Blob, and plays via URL.createObjectURL(blob).
