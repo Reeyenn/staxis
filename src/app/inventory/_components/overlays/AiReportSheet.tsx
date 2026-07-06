@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
@@ -78,6 +78,16 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
   const [state, setState] = useState<LoadState>('loading');
   const [data, setData] = useState<ReportData | null>(null);
 
+  // Beginner guide — a second overlay stacked ON TOP of the report card.
+  // While it's open, the report sheet must ignore its own ESC/scrim close
+  // (both overlays listen on window; without the ref-gate one ESC press
+  // would close both layers at once). Ref, not state, so the report
+  // overlay's already-registered handler reads the CURRENT value.
+  const [guideOpen, setGuideOpen] = useState(false);
+  const guideOpenRef = useRef(false);
+  useEffect(() => { guideOpenRef.current = guideOpen; }, [guideOpen]);
+  useEffect(() => { if (!open) setGuideOpen(false); }, [open]);
+
   // Fetch fresh on every open (when `open` flips true). Reset to loading first
   // so a reopen never flashes the previous property's stale report.
   useEffect(() => {
@@ -125,7 +135,7 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
   return (
     <Overlay
       open={open}
-      onClose={onClose}
+      onClose={() => { if (!guideOpenRef.current) onClose(); }}
       accent={T.teal}
       eyebrow={ai.eyebrow}
       italic={ai.title}
@@ -134,7 +144,7 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
       {/* Intro line — the same honest framing the page carried. */}
       <p
         style={{
-          margin: '0 0 24px',
+          margin: '0 0 18px',
           maxWidth: 720,
           fontFamily: fonts.sans,
           fontSize: 14,
@@ -144,6 +154,95 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
       >
         {ai.subtitle}
       </p>
+
+      {/* Big beginner-guide button — always visible, above the numbers. */}
+      <button
+        type="button"
+        onClick={() => setGuideOpen(true)}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          cursor: 'pointer',
+          background: `${T.teal}0d`,
+          border: `1.5px solid ${T.teal}55`,
+          borderRadius: 14,
+          padding: '18px 22px',
+          marginBottom: 24,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+        }}
+      >
+        <span style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+          <span
+            style={{
+              fontFamily: fonts.serif,
+              fontStyle: 'italic',
+              fontSize: 19,
+              color: T.ink,
+              letterSpacing: '-0.01em',
+            }}
+          >
+            {ai.guideButtonTitle}
+          </span>
+          <span style={{ fontFamily: fonts.sans, fontSize: 12.5, lineHeight: 1.45, color: T.ink2 }}>
+            {ai.guideButtonSub}
+          </span>
+        </span>
+        <span
+          aria-hidden
+          style={{
+            flex: 'none',
+            width: 34,
+            height: 34,
+            borderRadius: 10,
+            border: `1px solid ${T.teal}66`,
+            color: T.teal,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontFamily: fonts.sans,
+            fontSize: 17,
+          }}
+        >
+          →
+        </span>
+      </button>
+
+      {/* The guide itself — stacked on top of the report card. Rendered after
+          the report content in the DOM, so at the same z-index it paints
+          above; its own ESC/scrim close only dismisses the guide. */}
+      <Overlay
+        open={guideOpen}
+        onClose={() => setGuideOpen(false)}
+        accent={T.teal}
+        eyebrow={ai.guideEyebrow}
+        italic={ai.guideTitle}
+        width={760}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          {ai.guideSections.map((s) => (
+            <section key={s.h}>
+              <Caps size={9.5} color={T.teal} style={{ display: 'block', marginBottom: 7 }}>
+                {s.h}
+              </Caps>
+              <p
+                style={{
+                  margin: 0,
+                  fontFamily: fonts.sans,
+                  fontSize: 13.5,
+                  lineHeight: 1.65,
+                  color: T.ink,
+                  whiteSpace: 'pre-line',
+                }}
+              >
+                {s.p}
+              </p>
+            </section>
+          ))}
+        </div>
+      </Overlay>
 
       {state === 'loading' && <Centered text={ai.loading} />}
       {state === 'error' && <Centered text={ai.loadError} tone="warm" />}
