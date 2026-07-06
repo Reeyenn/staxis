@@ -5,6 +5,7 @@ import { Header } from './Header';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
+import { AiActivityButton } from '@/components/agent/AiActivityButton';
 import { WakeWord } from '@/components/agent/WakeWord';
 import { VoicePanelProvider } from '@/components/agent/VoicePanelContext';
 import { VoiceModeOverlay } from '@/components/agent/VoiceModeOverlay';
@@ -91,6 +92,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
       <FeedbackButton />
+      <AiActivityButton />
       <AskStaxisBar />
       {voiceSurfaceAvailable && <WakeWord />}
       {voiceSurfaceAvailable && <VoiceModeMount />}
