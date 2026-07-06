@@ -21,6 +21,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { Plus, Send, Trash2 } from 'lucide-react';
 import { MessageList } from '@/components/agent/MessageList';
 import { useAgentChat } from '@/components/agent/useAgentChat';
+import { ApprovalOverlay } from '@/components/agent/ApprovalOverlay';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
 const C = {
@@ -52,6 +53,10 @@ export default function ChatPage() {
     startNew,
     loadConversation,
     reloadConversations,
+    pendingActions,
+    resultCard,
+    resolveAction,
+    dismissResultCard,
   } = useAgentChat({ propertyId: activePropertyId, active: true });
 
   const [input, setInput] = useState('');
@@ -117,6 +122,12 @@ export default function ChatPage() {
       background: C.bg,
       borderTop: `1px solid ${C.rule}`,
     }}>
+      <ApprovalOverlay
+        pendingActions={pendingActions}
+        resultCard={resultCard}
+        resolveAction={resolveAction}
+        dismissResultCard={dismissResultCard}
+      />
       {/* ── Sidebar ── */}
       <aside style={{
         width: 280,

@@ -7,8 +7,10 @@
 // and call sendMessage().
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import type { DisplayMessage } from './MessageList';
+import type { BiText, PendingAction, ResultCard } from './approval-types';
 
 export interface ConversationListItem {
   id: string;
@@ -33,6 +35,18 @@ export interface UseAgentChatReturn {
   startNew: () => void;
   loadConversation: (id: string) => Promise<void>;
   reloadConversations: () => Promise<void>;
+  /** Approval cards queued for the user's decision (one shown at a time). */
+  pendingActions: PendingAction[];
+  /** The result-confirmation card currently showing (auto-dismissed on success). */
+  resultCard: ResultCard | null;
+  /** Approve / deny a pending action. Consumes the resume SSE stream. */
+  resolveAction: (
+    pendingActionId: string,
+    decision: 'approve' | 'deny',
+    opts?: { adjustedArgs?: Record<string, unknown>; addons?: string[] },
+  ) => Promise<void>;
+  /** Dismiss the current result card (used by the failure card's close button). */
+  dismissResultCard: () => void;
 }
 
 interface ServerMessage {
@@ -64,19 +78,58 @@ interface SsePayload {
   result?: unknown;
   isError?: boolean;
   message?: string;
+  // ── approval-flow fields ──
+  pendingActionId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  args?: Record<string, unknown>;
+  tier?: 'quick' | 'card';
+  summary?: BiText;
+  addons?: { en: { id: string; label: string }[]; es: { id: string; label: string }[] };
+  // action_result
+  ok?: boolean;
+  denied?: boolean;
+  resultSummary?: BiText;
+  error?: { en: string | null; es: string | null };
+  addonNotes?: string[];
+  addonErrors?: string[];
 }
 
 export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): UseAgentChatReturn {
+  const { lang } = useLang();
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [resultCard, setResultCard] = useState<ResultCard | null>(null);
+
+  // Language in a ref so the SSE closure resolves bilingual payloads with the
+  // current language without re-creating sendMessage on every language change.
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   // Index of the assistant bubble we're appending text deltas into. -1 means
   // start a new bubble on the next delta. Kept in a ref so the streaming
   // closure doesn't capture stale state.
   const assistantIndexRef = useRef<number>(-1);
+
+  // Auto-dismiss timer for the success result card.
+  const resultTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearResultTimer = useCallback(() => {
+    if (resultTimerRef.current) { clearTimeout(resultTimerRef.current); resultTimerRef.current = null; }
+  }, []);
+  const dismissResultCard = useCallback(() => {
+    clearResultTimer();
+    setResultCard(null);
+  }, [clearResultTimer]);
+  useEffect(() => () => clearResultTimer(), [clearResultTimer]);
+
+  const pick = useCallback((b: BiText | undefined): string => {
+    if (!b) return '';
+    return langRef.current === 'es' ? (b.es || b.en) : (b.en || b.es);
+  }, []);
 
   const reloadConversations = useCallback(async () => {
     try {
@@ -102,6 +155,8 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
 
   const loadConversation = useCallback(async (id: string) => {
     setError(null);
+    setPendingActions([]);
+    dismissResultCard();
     try {
       const res = await fetchWithAuth(`/api/agent/conversations/${id}`);
       if (!res.ok) {
@@ -128,14 +183,140 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
       if (e instanceof SessionEndedError) return;  // redirect in progress
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [dismissResultCard]);
 
   const startNew = useCallback(() => {
     setConversationId(null);
     setMessages([]);
     setError(null);
+    setPendingActions([]);
+    dismissResultCard();
     assistantIndexRef.current = -1;
-  }, []);
+  }, [dismissResultCard]);
+
+  // ── Shared SSE consumer ────────────────────────────────────────────────
+  // Reads an SSE Response from either /api/agent/command (a fresh turn) or
+  // .../resolve-action (an approval resume). Handles every event type the two
+  // routes emit, including the approval-flow additions.
+  const consumeStream = useCallback(async (res: Response): Promise<void> => {
+    // The 429 cap-hit / rate-limit / validation responses are JSON, not SSE.
+    const ct = res.headers.get('content-type') ?? '';
+    if (!res.ok || !ct.includes('text/event-stream') || !res.body) {
+      const errBody = await res.json().catch(() => null);
+      const friendly = errBody?.code === 'auth_unavailable'
+        ? 'Sign-in service is temporarily unavailable. Try again in a moment.'
+        : (errBody?.error ?? `Request failed: ${res.status}`);
+      setError(friendly);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const events = buf.split('\n\n');
+      buf = events.pop() ?? '';
+      for (const ev of events) {
+        const line = ev.split('\n').find(l => l.startsWith('data:'));
+        if (!line) continue;
+        let payload: SsePayload;
+        try {
+          payload = JSON.parse(line.slice(5).trim());
+        } catch {
+          continue;
+        }
+
+        // Side channel for non-chat observers (walkthrough overlay, voice TTS).
+        // Each SSE event is mirrored as a window CustomEvent so components
+        // mounted outside the hook can listen without forking the stream.
+        // NOTE: mutation tools no longer emit tool_call_started inline (they go
+        // through the approval flow), so the walkthrough overlay's
+        // agent:tool-call-started listener only ever fires for read-only tools
+        // like walk_user_through — exactly what it wants.
+        if (typeof window !== 'undefined' && payload.type) {
+          window.dispatchEvent(
+            new CustomEvent(`agent:${payload.type.replace(/_/g, '-')}`, {
+              detail: payload,
+            }),
+          );
+        }
+
+        if (payload.type === 'conversation_id' && typeof payload.id === 'string') {
+          setConversationId(payload.id);
+          void reloadConversations();
+        } else if (payload.type === 'text_delta' && typeof payload.delta === 'string') {
+          const delta = payload.delta;
+          setMessages(prev => {
+            const next = [...prev];
+            if (assistantIndexRef.current >= 0 && next[assistantIndexRef.current]?.role === 'assistant') {
+              next[assistantIndexRef.current] = {
+                ...next[assistantIndexRef.current],
+                text: next[assistantIndexRef.current].text + delta,
+              };
+            } else {
+              assistantIndexRef.current = next.length;
+              next.push({ role: 'assistant', text: delta });
+            }
+            return next;
+          });
+        } else if (payload.type === 'tool_call_started' && payload.call) {
+          const call = payload.call;
+          setMessages(prev => [
+            ...prev,
+            { role: 'assistant', text: '', toolName: call.name, toolArgs: call.args },
+          ]);
+          assistantIndexRef.current = -1;
+        } else if (payload.type === 'tool_call_finished') {
+          setMessages(prev => [
+            ...prev,
+            { role: 'tool', text: '', toolResult: payload.result, isError: Boolean(payload.isError) },
+          ]);
+          assistantIndexRef.current = -1;
+        } else if (payload.type === 'tool_call_pending_approval' && payload.pendingActionId) {
+          // A proposed mutation — queue an approval card.
+          const addonList = payload.addons ? (langRef.current === 'es' ? payload.addons.es : payload.addons.en) : [];
+          const card: PendingAction = {
+            pendingActionId: payload.pendingActionId,
+            toolCallId: payload.toolCallId ?? '',
+            toolName: payload.toolName ?? '',
+            args: payload.args ?? {},
+            tier: payload.tier === 'quick' ? 'quick' : 'card',
+            summary: payload.summary ?? { en: '', es: '' },
+            addons: addonList ?? [],
+          };
+          setPendingActions(prev => (prev.some(p => p.pendingActionId === card.pendingActionId) ? prev : [...prev, card]));
+          assistantIndexRef.current = -1;
+        } else if (payload.type === 'action_result' && payload.pendingActionId) {
+          // A decision resolved — show the result confirmation card.
+          const denied = payload.denied === true;
+          const okResult = payload.ok === true;
+          const card: ResultCard = {
+            pendingActionId: payload.pendingActionId,
+            toolName: payload.toolName ?? '',
+            ok: okResult,
+            denied,
+            summary: pick(payload.resultSummary),
+            error: payload.error ? pick({ en: payload.error.en ?? '', es: payload.error.es ?? '' }) : null,
+            addonNotes: payload.addonNotes ?? [],
+          };
+          clearResultTimer();
+          setResultCard(card);
+          // Success (and denials) auto-dismiss; failures stay until dismissed.
+          if (okResult) {
+            resultTimerRef.current = setTimeout(() => setResultCard(null), 2500);
+          }
+          assistantIndexRef.current = -1;
+        } else if (payload.type === 'error' && typeof payload.message === 'string') {
+          setError(payload.message);
+        }
+      }
+    }
+  }, [reloadConversations, pick, clearResultTimer]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || streaming || !propertyId) return;
@@ -149,107 +330,50 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
       const res = await fetchWithAuth('/api/agent/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId,
-          propertyId,
-          message: text,
-        }),
+        body: JSON.stringify({ conversationId, propertyId, message: text }),
       });
-
-      // The 429 cap-hit / rate-limit response is JSON, not SSE.
-      // 401s with code=token_expired/malformed/etc are intercepted by
-      // fetchWithAuth (refresh+retry or signout+redirect); the only 401
-      // that reaches here is the transient `auth_unavailable` (Supabase
-      // Auth 5xx). Surface that as a try-again message rather than the
-      // raw "invalid session token" string.
-      const ct = res.headers.get('content-type') ?? '';
-      if (!res.ok || !ct.includes('text/event-stream') || !res.body) {
-        const errBody = await res.json().catch(() => null);
-        const friendly = errBody?.code === 'auth_unavailable'
-          ? 'Sign-in service is temporarily unavailable. Try again in a moment.'
-          : (errBody?.error ?? `Request failed: ${res.status}`);
-        setError(friendly);
-        setStreaming(false);
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-
-        const events = buf.split('\n\n');
-        buf = events.pop() ?? '';
-        for (const ev of events) {
-          const line = ev.split('\n').find(l => l.startsWith('data:'));
-          if (!line) continue;
-          let payload: SsePayload;
-          try {
-            payload = JSON.parse(line.slice(5).trim());
-          } catch {
-            continue;
-          }
-
-          // Side channel for non-chat observers (walkthrough overlay, voice TTS).
-          // Each SSE event is mirrored as a window CustomEvent so components
-          // mounted outside the hook can listen without forking the stream.
-          // Event names: 'text_delta' → 'agent:text-delta', etc. Detail is the
-          // full SsePayload.
-          if (typeof window !== 'undefined' && payload.type) {
-            window.dispatchEvent(
-              new CustomEvent(`agent:${payload.type.replace(/_/g, '-')}`, {
-                detail: payload,
-              }),
-            );
-          }
-
-          if (payload.type === 'conversation_id' && typeof payload.id === 'string') {
-            setConversationId(payload.id);
-            void reloadConversations();
-          } else if (payload.type === 'text_delta' && typeof payload.delta === 'string') {
-            const delta = payload.delta;
-            setMessages(prev => {
-              const next = [...prev];
-              if (assistantIndexRef.current >= 0 && next[assistantIndexRef.current]?.role === 'assistant') {
-                next[assistantIndexRef.current] = {
-                  ...next[assistantIndexRef.current],
-                  text: next[assistantIndexRef.current].text + delta,
-                };
-              } else {
-                assistantIndexRef.current = next.length;
-                next.push({ role: 'assistant', text: delta });
-              }
-              return next;
-            });
-          } else if (payload.type === 'tool_call_started' && payload.call) {
-            const call = payload.call;
-            setMessages(prev => [
-              ...prev,
-              { role: 'assistant', text: '', toolName: call.name, toolArgs: call.args },
-            ]);
-            assistantIndexRef.current = -1;
-          } else if (payload.type === 'tool_call_finished') {
-            setMessages(prev => [
-              ...prev,
-              { role: 'tool', text: '', toolResult: payload.result, isError: Boolean(payload.isError) },
-            ]);
-            assistantIndexRef.current = -1;
-          } else if (payload.type === 'error' && typeof payload.message === 'string') {
-            setError(payload.message);
-          }
-        }
-      }
+      await consumeStream(res);
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error pill
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setStreaming(false);
     }
-  }, [conversationId, propertyId, streaming, reloadConversations]);
+  }, [conversationId, propertyId, streaming, consumeStream]);
+
+  // ── Approve / deny a pending action ────────────────────────────────────
+  const resolveAction = useCallback(async (
+    pendingActionId: string,
+    decision: 'approve' | 'deny',
+    opts?: { adjustedArgs?: Record<string, unknown>; addons?: string[] },
+  ) => {
+    if (!propertyId) return;
+    // Remove the card immediately — the decision is committed server-side and a
+    // stale card would let the user double-tap.
+    setPendingActions(prev => prev.filter(p => p.pendingActionId !== pendingActionId));
+    setError(null);
+    setStreaming(true);
+    assistantIndexRef.current = -1;
+    try {
+      const res = await fetchWithAuth('/api/agent/command/resolve-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid: propertyId,
+          pendingActionId,
+          decision,
+          adjustedArgs: opts?.adjustedArgs,
+          addons: opts?.addons,
+        }),
+      });
+      await consumeStream(res);
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStreaming(false);
+    }
+  }, [propertyId, consumeStream]);
 
   return {
     messages,
@@ -261,5 +385,9 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
     startNew,
     loadConversation,
     reloadConversations,
+    pendingActions,
+    resultCard,
+    resolveAction,
+    dismissResultCard,
   };
 }

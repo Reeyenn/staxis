@@ -24,6 +24,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useVoicePanel } from './VoicePanelContext';
 import { useAgentChat } from './useAgentChat';
+import { ApprovalOverlay } from './ApprovalOverlay';
 import type { DisplayMessage } from './MessageList';
 
 type ChatState = 'empty' | 'active' | 'collapsed';
@@ -75,6 +76,10 @@ export function AskStaxisBar() {
     error,
     sendMessage,
     loadConversation,
+    pendingActions,
+    resultCard,
+    resolveAction,
+    dismissResultCard,
   } = useAgentChat({
     propertyId: activePropertyId,
     // Lazily warm the conversation list once the user engages the bar, so the
@@ -261,6 +266,15 @@ export function AskStaxisBar() {
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: ASX_CSS }} />
+      {/* Approval + result cards render via a portal at z-index 10000 — above
+          the dock AND the voice overlay (z 9999), so an action card stays
+          clickable even while a voice call is up. */}
+      <ApprovalOverlay
+        pendingActions={pendingActions}
+        resultCard={resultCard}
+        resolveAction={resolveAction}
+        dismissResultCard={dismissResultCard}
+      />
       <div
         className={`asx-scrim${dimOn ? ' asx-scrim-on' : ''}${chatting ? ' asx-scrim-chat' : ''}`}
         style={{ ['--asx-dimrise']: `${dimRise}%` } as React.CSSProperties}
