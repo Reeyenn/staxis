@@ -26,6 +26,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 
 import { streamAgent, type AgentMessage } from '@/lib/agent/llm';
 import { executeTool, getTool, getToolsForRole, type ToolContext } from '@/lib/agent/tools';
+import { getEnabledSections } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
@@ -184,6 +185,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'that action was already handled', code: 'race', requestId }, { status: 409 });
   }
 
+  // Per-hotel section gate: re-check the CURRENT section state at execution
+  // time. Guards the toggle-while-pending race (a card proposed while the
+  // section was on, then turned off before approval) and the resume re-plan
+  // below. Cached + fail-soft to null (⇒ every section ON). Fed into both
+  // executeTool (via toolCtx) and getToolsForRole for the resume turn.
+  const enabledSections = await getEnabledSections(body.pid);
   const toolCtx: ToolContext = {
     user: userCtx,
     propertyId: body.pid,
@@ -191,6 +198,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     requestId,
     surface: 'chat',
     conversationId: pending.conversationId,
+    enabledSections,
   };
 
   // ── Execute (approve) or record decline (deny) ────────────────────────
@@ -388,7 +396,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         ]);
         const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, pending.conversationId, undefined, memoryBlock);
         runnerCtx.promptVersion = systemPrompt.versionLabel;
-        const tools = getToolsForRole(userCtx.role, 'chat');
+        const tools = getToolsForRole(userCtx.role, 'chat', undefined, enabledSections);
 
         const iter = streamAgent({
           systemPrompt,

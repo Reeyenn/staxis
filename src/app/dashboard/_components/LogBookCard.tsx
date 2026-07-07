@@ -64,7 +64,8 @@ export function LogBookCard() {
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
   useEffect(() => {
-    if (!canSee || !activePropertyId) return;
+    // Communications-owned embed: don't even fetch when the section is off.
+    if (!canSee || !activePropertyId || !commsEnabled) return;
     let alive = true;
     setLoaded(false);
     fetchWithAuth(`/api/comms/logbook?pid=${encodeURIComponent(activePropertyId)}`)
@@ -81,7 +82,7 @@ export function LogBookCard() {
     return () => {
       alive = false;
     };
-  }, [canSee, activePropertyId]);
+  }, [canSee, activePropertyId, commsEnabled]);
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;
   // Additive-only: nothing to show until there's at least one recap.

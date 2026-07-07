@@ -55,7 +55,8 @@ export function WorklistCard() {
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
   useEffect(() => {
-    if (!canSee || !activePropertyId) return;
+    // Communications-owned embed: don't even fetch when the section is off.
+    if (!canSee || !activePropertyId || !commsEnabled) return;
     let alive = true;
     setLoaded(false);
     fetch(`/api/worklist?pid=${activePropertyId}`)
@@ -68,7 +69,7 @@ export function WorklistCard() {
       })
       .catch(() => { if (alive) setLoaded(true); });
     return () => { alive = false; };
-  }, [canSee, activePropertyId]);
+  }, [canSee, activePropertyId, commsEnabled]);
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;
   const list = items ?? [];

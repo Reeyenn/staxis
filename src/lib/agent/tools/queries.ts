@@ -90,7 +90,11 @@ export async function getPropertyToday(propertyId: string): Promise<string> {
 
 registerTool<Record<string, never>>({
   name: 'get_hotel_state',
-  section: 'housekeeping',
+  // Deliberately NOT section-tagged: this is a cross-cutting read-only snapshot
+  // whose headline value is occupancy/arrivals (from PMS ingestion, which is
+  // never section-gated). Gating it under Housekeeping would break "what's our
+  // occupancy?" in the copilot for a hotel that turned only Housekeeping off —
+  // occupancy is still shown on the dashboard. Mirrors get_occupancy staying ungated.
   description:
     'Get a live snapshot of the hotel: occupancy (dirty/clean/in-progress/DND), staff active today, and (for housekeepers) the user\'s assigned rooms. Read-only. Use when the user asks about current property state ("what\'s our occupancy", "how many DND rooms", "what\'s next for me").',
   inputSchema: { type: 'object', properties: {} },

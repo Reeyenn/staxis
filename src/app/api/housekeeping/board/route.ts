@@ -30,6 +30,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -113,6 +114,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         requestId, status: 403, code: 'forbidden',
       });
     }
+
+    // Section gate (add-on, on top of the tenant guard above): if Housekeeping is off for this hotel, block this route.
+    const sectionGate = await requireSectionEnabled(req, propertyId, 'housekeeping');
+    if (!sectionGate.ok) return sectionGate.response;
 
     // 1. Tasks for today (any status — the UI surfaces in-progress and
     //    completed too so the manager has the full picture).

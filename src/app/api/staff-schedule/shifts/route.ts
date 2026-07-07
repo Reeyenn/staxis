@@ -18,6 +18,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
 import type { StaffDepartment, ScheduledShiftKind } from '@/types';
@@ -54,6 +55,10 @@ export async function POST(req: NextRequest) {
   if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  // Section gate (add-on, on top of the tenant guard above): if Staff is off for this hotel, block this route.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const s = body.shift;
   if (!s) return err('shift required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
@@ -146,6 +151,10 @@ export async function DELETE(req: NextRequest) {
   if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  // Section gate (add-on, on top of the tenant guard above): if Staff is off for this hotel, block this route.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const idCheck = validateUuid(searchParams.get('id'), 'id');
   if (idCheck.error) return err(idCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });

@@ -36,6 +36,7 @@ import { NextResponse } from 'next/server';
 
 import { streamAgent, type AgentMessage, type AgentToolCall, type UsageReport } from '@/lib/agent/llm';
 import { getToolsForRole, getTool } from '@/lib/agent/tools';
+import { getEnabledSections } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
@@ -586,7 +587,12 @@ export async function POST(req: NextRequest): Promise<Response> {
         // voiceModes: ['housekeeper_issue']) are only exposed when the
         // session is in that mode. General voice sessions get the memory
         // tools; housekeeper_issue mode gets just the issue-reporter tool.
-        const tools = getToolsForRole(ctx.role, 'voice', ctx.mode);
+        // Per-hotel section gate (parity with the chat command route): drop
+        // tools whose section is turned off for this hotel from the voice
+        // catalog, and thread the map into the tool context so executeTool
+        // double-enforces. Cached + fail-soft to null (⇒ every section ON).
+        const enabledSections = await getEnabledSections(ctx.propertyId);
+        const tools = getToolsForRole(ctx.role, 'voice', ctx.mode, enabledSections);
         // When an action is awaiting confirmation, add the confirm/cancel control
         // tools so the model can act on the user's spoken yes/no. They are
         // surfaces:['voice'], mutates:false, and available in ALL voice modes, so
@@ -630,6 +636,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             voiceSessionId: ctx.voiceSessionId,
             conversationId: ctx.conversationId,
             voiceLang,
+            enabledSections,
           },
         });
 
