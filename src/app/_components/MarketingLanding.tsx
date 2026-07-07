@@ -783,13 +783,9 @@ export default function MarketingLanding() {
       {/* ---------------- hero ---------------- */}
       <header className="hero">
         <div className="hero-copy">
-          <div className="pill rise" style={{ animationDelay: '.05s' }}>
-            <span className="pulse-dot" />
-            Live at a working hotel today
-          </div>
           <h1>
-            <span className="line"><span className="w" style={{ animationDelay: '.10s' }}>AI&nbsp;for</span></span>
-            <span className="line"><span className="w" style={{ animationDelay: '.22s' }}><em className="shimmer">hotels.</em></span></span>
+            <span className="line"><span className="w" style={{ animationDelay: '.10s' }}>AI&nbsp;<em className="shimmer">operations</em></span></span>
+            <span className="line"><span className="w" style={{ animationDelay: '.22s' }}>for&nbsp;hotels.</span></span>
           </h1>
           <p className="lede rise" style={{ animationDelay: '.42s' }}>
             Hotel operations that finally run themselves. Staxis handles the
@@ -1329,10 +1325,6 @@ const CSS = `
   gap: clamp(32px, 5vw, 72px); align-items: center; }
 @media (max-width: 980px) { .hero { grid-template-columns: 1fr; padding-top: 120px; } }
 
-.pill { display: inline-flex; align-items: center; gap: 9px; font-family: var(--mono);
-  font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--sage-deep);
-  border: 1px solid rgba(92,122,96,.3); border-radius: 999px; padding: 7px 16px;
-  background: var(--sage-dim); margin-bottom: 28px; }
 .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sage-deep);
   box-shadow: 0 0 0 0 rgba(92,122,96,.5); animation: pulse 2.2s infinite; flex: none; }
 @keyframes pulse {
