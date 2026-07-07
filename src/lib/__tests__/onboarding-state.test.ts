@@ -135,6 +135,46 @@ describe('deriveCurrentStep — sequential progress', () => {
   });
 });
 
+describe('deriveCurrentStep — Skip PMS (inventory-only hotel)', () => {
+  test('pmsSkippedAt jumps past PMS + mapping straight to Team (step 7)', () => {
+    const s: OnboardingState = {
+      step: 1,
+      accountCreatedAt: '2026-05-14T00:00:00Z',
+      emailVerifiedAt: '2026-05-14T00:01:00Z',
+      hotelDetailsAt: '2026-05-14T00:02:00Z',
+      pmsSkippedAt: '2026-05-14T00:03:00Z',
+      // NOTE: no pmsCredentialsAt / pmsJobId / mappingCompletedAt — PMS skipped.
+    };
+    assert.equal(deriveCurrentStep(s), 7);
+  });
+
+  test('skip does NOT leapfrog required steps — no hotel details yet → still step 4', () => {
+    const s: OnboardingState = {
+      step: 1,
+      accountCreatedAt: '2026-05-14T00:00:00Z',
+      emailVerifiedAt: '2026-05-14T00:01:00Z',
+      pmsSkippedAt: '2026-05-14T00:03:00Z',
+    };
+    assert.equal(deriveCurrentStep(s), 4);
+  });
+
+  test('skipped PMS + team added → step 8 (all set), no mapping ever required', () => {
+    const s: OnboardingState = {
+      step: 1,
+      accountCreatedAt: '2026-05-14T00:00:00Z',
+      emailVerifiedAt: '2026-05-14T00:01:00Z',
+      hotelDetailsAt: '2026-05-14T00:02:00Z',
+      pmsSkippedAt: '2026-05-14T00:03:00Z',
+      staffAt: '2026-05-14T00:09:00Z',
+    };
+    assert.equal(deriveCurrentStep(s), 8);
+  });
+
+  test('isValidPartialState accepts pmsSkippedAt (in the allowlist)', () => {
+    assert.equal(isValidPartialState({ pmsSkippedAt: '2026-05-14T00:03:00Z' }), true);
+  });
+});
+
 describe('deriveCurrentStep — out-of-order completion is ignored', () => {
   test('staff added before email verified → still step 3 (next-unfinished wins)', () => {
     // Defensive: if a buggy client manages to set a later step's

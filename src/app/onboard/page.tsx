@@ -923,6 +923,30 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
     }
   };
 
+  // Skip PMS entirely — no credentials, no CUA robot. The hotel goes live with
+  // no PMS ("No system detected"); pmsSkippedAt satisfies the connect + mapping
+  // gates so the wizard jumps straight to Team. For inventory-only properties.
+  const skipPms = async () => {
+    setErr(null);
+    setSubmitting(true);
+    try {
+      await fetch('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          partialState: { pmsSkippedAt: new Date().toISOString() },
+        }),
+      });
+      await onNext();
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
+      setErr(e instanceof Error ? e.message : 'Skip failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div>
       <WizardBackButton code={code} clearKeys={['hotelDetailsAt']} onNext={onNext} />
@@ -964,6 +988,14 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '12px' }}>
         {submitting ? 'Saving & starting…' : 'Save & start mapping →'}
       </button>
+      <button className="btn btn-secondary" onClick={skipPms} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}>
+        {lang === 'es' ? 'Omitir — este hotel no usa un PMS' : "Skip — this hotel doesn't use a PMS"}
+      </button>
+      <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '8px', textAlign: 'center', lineHeight: 1.5 }}>
+        {lang === 'es'
+          ? 'Se activa sin PMS ni robot. Puedes conectarlo después en Configuración.'
+          : 'Goes live with no PMS or robot — you can connect one later in Settings.'}
+      </p>
     </div>
   );
 }

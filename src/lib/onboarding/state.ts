@@ -43,6 +43,15 @@ export interface OnboardingState {
   /** Step 6: CUA mapping completed (pms_connected flipped to true). */
   mappingCompletedAt?: string;
 
+  /**
+   * Step 5: the owner clicked "Skip — this hotel doesn't use a PMS". No
+   * credentials saved, no CUA robot queued; the hotel goes live with no PMS
+   * ("No system detected") — e.g. an inventory-only property. Satisfies BOTH
+   * the PMS-connect (5) and mapping (6) gates in deriveCurrentStep so the wizard
+   * jumps straight to Team. The owner can connect a PMS later from Settings.
+   */
+  pmsSkippedAt?: string;
+
   /** Step 7: at least one staff row inserted (or step skipped). */
   staffAt?: string;
 
@@ -87,8 +96,11 @@ export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
   if (!state.accountCreatedAt) return state.step === 2 ? 2 : 1;
   if (!state.emailVerifiedAt) return 3;
   if (!state.hotelDetailsAt) return 4;
-  if (!state.pmsCredentialsAt) return 5;
-  if (!state.mappingCompletedAt) return 6;
+  // PMS is optional: the owner can Skip it (inventory-only hotel, no robot).
+  // pmsSkippedAt satisfies BOTH the connect (5) and mapping (6) gates so the
+  // wizard jumps straight to Team. Legacy flows (no pmsSkippedAt) are unchanged.
+  if (!state.pmsCredentialsAt && !state.pmsSkippedAt) return 5;
+  if (!state.mappingCompletedAt && !state.pmsSkippedAt) return 6;
   if (!state.staffAt) return 7;
   return 8;
 }
@@ -134,7 +146,7 @@ export const RESUME_GUARD_KEY = 'staxis-onboard-resume-tried';
 const ONBOARDING_STATE_STRING_KEYS = [
   'accountCreatedAt', 'emailVerifiedAt', 'hotelDetailsAt',
   'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-  'mappingCompletedAt', 'staffAt', 'pmsOtherName',
+  'mappingCompletedAt', 'staffAt', 'pmsOtherName', 'pmsSkippedAt',
 ] as const;
 const ONBOARDING_STATE_KEYS = new Set<string>(['step', ...ONBOARDING_STATE_STRING_KEYS]);
 /** Generous upper bound on any single persisted string field. Timestamps (~30),
