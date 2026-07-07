@@ -784,7 +784,7 @@ export default function MarketingLanding() {
       <header className="hero">
         <div className="hero-copy">
           <h1>
-            <span className="line"><span className="w" style={{ animationDelay: '.10s' }}>AI&nbsp;<em className="shimmer">operations</em></span></span>
+            <span className="line"><span className="w" style={{ animationDelay: '.10s' }}>AI&nbsp;Operations</span></span>
             <span className="line"><span className="w" style={{ animationDelay: '.22s' }}>for&nbsp;hotels.</span></span>
           </h1>
           <p className="lede rise" style={{ animationDelay: '.42s' }}>
