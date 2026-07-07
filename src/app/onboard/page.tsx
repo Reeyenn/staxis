@@ -44,6 +44,7 @@ import { ChevronMark } from '@/components/AuthShell';
 import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
 import { ot } from './_onboard-i18n';
 import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
+import { SECTION_LIST, resolveSections, type AppSection, type EnabledSections } from '@/lib/sections/registry';
 
 // PMS dropdown options come from the registry (src/lib/pms/registry.ts) — the
 // same single source of truth /settings/pms uses, so the wizard, the type
@@ -70,6 +71,7 @@ interface WizardStateResponse {
     propertyKind: string | null;
     pmsType: string | null;
     servicesEnabled: Record<string, boolean> | null;
+    enabledSections: EnabledSections;
   } | null;
   inviteRole: 'owner' | 'general_manager' | null;
 }
@@ -695,6 +697,7 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
 // ─── Step 4: Hotel details ──────────────────────────────────────────────
 
 function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+  const { lang } = useLang();
   const d = wizard.hotelDefaults;
   const [name, setName] = useState(d?.name && d.name !== PLACEHOLDER_HOTEL_NAME ? d.name : '');
   const [totalRooms, setTotalRooms] = useState<number>(d?.totalRooms ?? 0);
@@ -702,6 +705,13 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
   const [brand, setBrand] = useState(d?.brand ?? '');
   const [propertyKind, setPropertyKind] = useState(d?.propertyKind ?? 'limited_service');
   const [region, setRegion] = useState('');
+  // Per-hotel app on/off (WP4). Full 8-key map, default ALL ON. Re-hydrated on
+  // back-nav from hotelDefaults.enabledSections (resolveSections fills every
+  // missing key with its default-ON value, so a hotel with no stored map here
+  // shows all 8 apps checked).
+  const [enabledSections, setEnabledSections] = useState<Record<AppSection, boolean>>(
+    () => resolveSections(d?.enabledSections ?? null),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -725,6 +735,7 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
             property_kind: propertyKind,
             region: region || null,
             size_tier: deriveSizeTier(totalRooms),
+            enabled_sections: enabledSections,
           },
         }),
       });
@@ -772,6 +783,61 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
           {REGION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       </Field>
+
+      <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+        <label className="label">
+          {lang === 'es' ? '¿Qué aplicaciones quieres en la app de tu hotel?' : 'Which apps do you want in your hotel app?'}
+        </label>
+        <p style={{ color: '#5C625C', fontSize: '12px', margin: '2px 0 12px' }}>
+          {lang === 'es'
+            ? 'Todas están activas por defecto. Desactiva las que no necesites — puedes cambiarlo después.'
+            : 'All are on by default. Turn off any you don’t need — you can change this anytime later.'}
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {SECTION_LIST.map((m) => {
+            const on = enabledSections[m.key];
+            return (
+              <button
+                key={m.key}
+                type="button"
+                onClick={() => setEnabledSections((prev) => ({ ...prev, [m.key]: !prev[m.key] }))}
+                aria-pressed={on}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                  width: '100%', textAlign: 'left', cursor: 'pointer',
+                  padding: '10px 12px', borderRadius: '10px',
+                  background: on ? 'rgba(201,150,68,0.08)' : 'transparent',
+                  border: `1px solid ${on ? 'rgba(201,150,68,0.35)' : 'rgba(0,0,0,0.10)'}`,
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    flexShrink: 0, width: '38px', height: '22px', borderRadius: '999px',
+                    background: on ? '#C99644' : '#C9CEC9',
+                    position: 'relative', transition: 'background 0.15s',
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute', top: '2px', left: on ? '18px' : '2px',
+                    width: '18px', height: '18px', borderRadius: '999px', background: '#fff',
+                    transition: 'left 0.15s',
+                  }} />
+                </span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: '14px', fontWeight: 600, color: '#1B1F1B' }}>
+                    {lang === 'es' ? m.label_es : m.label_en}
+                  </span>
+                  <span style={{ display: 'block', fontSize: '12px', color: '#5C625C' }}>
+                    {lang === 'es' ? m.desc_es : m.desc_en}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '12px' }}>
         {submitting ? 'Saving…' : 'Save & continue →'}
       </button>

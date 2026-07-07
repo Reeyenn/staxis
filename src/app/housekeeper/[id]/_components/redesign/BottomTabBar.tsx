@@ -19,12 +19,16 @@ export function BottomTabBar({
   onRooms,
   onMessages,
   lang,
+  showMessages = true,
 }: {
   active: HkTab;
   unread: number;
   onRooms: () => void;
   onMessages: () => void;
   lang: HousekeeperLocale;
+  /** When false (Communications off for this hotel) the Messages tab is
+   *  hidden and the bar collapses to Rooms-only. Defaults to shown. */
+  showMessages?: boolean;
 }) {
   return (
     <div
@@ -42,13 +46,15 @@ export function BottomTabBar({
         icon={<BedDouble size={23} color={active === 'rooms' ? TOK.teal : '#9AA0A8'} />}
         onClick={onRooms}
       />
-      <Tab
-        active={active === 'messages'}
-        label={t('hkTabMessages', lang)}
-        icon={<MessageCircle size={23} color={active === 'messages' ? TOK.teal : '#9AA0A8'} />}
-        badge={unread}
-        onClick={onMessages}
-      />
+      {showMessages && (
+        <Tab
+          active={active === 'messages'}
+          label={t('hkTabMessages', lang)}
+          icon={<MessageCircle size={23} color={active === 'messages' ? TOK.teal : '#9AA0A8'} />}
+          badge={unread}
+          onClick={onMessages}
+        />
+      )}
     </div>
   );
 }

@@ -26,6 +26,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
@@ -311,6 +312,18 @@ export default function DashboardPage() {
   const today = useTodayStr();
   const ES = lang === 'es';
 
+  // Per-hotel section gates (default-ON while the property loads). Each embed
+  // below is owned by another section — when that section is off for the hotel
+  // it stops both rendering AND subscribing:
+  //   • communications → complaints / callbacks / lost-items
+  //   • maintenance    → work orders / compliance
+  //   • housekeeping   → dirty-room count
+  //   • financials     → the synthetic KPI / chart / month-to-date showcase
+  const communicationsEnabled = useSectionEnabled('communications');
+  const maintenanceEnabled = useSectionEnabled('maintenance');
+  const housekeepingEnabled = useSectionEnabled('housekeeping');
+  const financialsEnabled = useSectionEnabled('financials');
+
   useEffect(() => {
     if (authLoading || propLoading) return;
     if (!user) { router.replace('/signin'); return; }
@@ -363,26 +376,26 @@ export default function DashboardPage() {
     return () => { alive = false; clearInterval(iv); };
   }, [activePropertyId, today]);
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId || !maintenanceEnabled) return;
     return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, maintenanceEnabled]);
   useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId || !communicationsEnabled) return;
     return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, communicationsEnabled]);
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId || !communicationsEnabled) return;
     return subscribeLostFoundCounts(activePropertyId, setLostFound);
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, communicationsEnabled]);
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId || !maintenanceEnabled) return;
     let alive = true;
     const load = () => { void fetchComplianceSummary(activePropertyId).then(s => { if (alive) setCompliance(s); }); };
     load();
     const iv = setInterval(load, 60_000);
     return () => { alive = false; clearInterval(iv); };
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, maintenanceEnabled]);
 
   // ── derived live values ──────────────────────────────────────────────
   const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
@@ -491,7 +504,10 @@ export default function DashboardPage() {
   const hasRealData = occPct != null;
   const isDemo = !!activeProperty?.isTest;
   const ringReady = hasRealData || isDemo;
-  const showFinancials = isDemo;
+  // Synthetic financial showcase: demo-only AND only when the Financials
+  // section is on for the hotel (AND with the existing demo gate, never a
+  // replacement). Turning Financials off hides the KPI strip / chart / MTD.
+  const showFinancials = isDemo && financialsEnabled;
 
   // FULL roster of the property's rooms — one tick = one specific room, each
   // with a stable floor-based number (101.., 201..) and a unique idx. Sized to
@@ -579,15 +595,17 @@ export default function DashboardPage() {
   const callbacksDueCount = complaints.filter(c => isCallbackDue(c, nowD)).length;
   const attention = useMemo(() => {
     const out: { n: number; text: string }[] = [];
-    if (urgentOrders.length) out.push({ n: urgentOrders.length, text: ES ? `orden${urgentOrders.length > 1 ? 'es' : ''} de trabajo urgente${urgentOrders.length > 1 ? 's' : ''}` : `urgent work order${urgentOrders.length > 1 ? 's' : ''}` });
-    if (compliance && compliance.pmOverdueCount > 0) out.push({ n: compliance.pmOverdueCount, text: ES ? 'revisiones de cumplimiento vencidas' : `compliance check${compliance.pmOverdueCount > 1 ? 's' : ''} overdue` });
-    if (compliance && compliance.anomalyCount > 0) out.push({ n: compliance.anomalyCount, text: ES ? 'anomalías marcadas' : `anomaly flagged · Maintenance` });
-    if (overdueComplaints > 0) out.push({ n: overdueComplaints, text: ES ? 'quejas atrasadas' : `complaint${overdueComplaints > 1 ? 's' : ''} overdue` });
-    if (callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: ES ? 'llamadas de seguimiento hoy' : `guest callback${callbacksDueCount > 1 ? 's' : ''} due` });
-    if (dirtyRooms > 0) out.push({ n: dirtyRooms, text: ES ? 'habitaciones por limpiar' : `room${dirtyRooms > 1 ? 's' : ''} to clean` });
-    if (lostFound && lostFound.nearingDisposal > 0) out.push({ n: lostFound.nearingDisposal, text: ES ? 'objetos por desechar' : 'lost items nearing disposal' });
+    // Each line is filtered by the section that owns it — an off section
+    // contributes nothing (and its feed above never subscribed).
+    if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: ES ? `orden${urgentOrders.length > 1 ? 'es' : ''} de trabajo urgente${urgentOrders.length > 1 ? 's' : ''}` : `urgent work order${urgentOrders.length > 1 ? 's' : ''}` });
+    if (maintenanceEnabled && compliance && compliance.pmOverdueCount > 0) out.push({ n: compliance.pmOverdueCount, text: ES ? 'revisiones de cumplimiento vencidas' : `compliance check${compliance.pmOverdueCount > 1 ? 's' : ''} overdue` });
+    if (maintenanceEnabled && compliance && compliance.anomalyCount > 0) out.push({ n: compliance.anomalyCount, text: ES ? 'anomalías marcadas' : `anomaly flagged · Maintenance` });
+    if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: ES ? 'quejas atrasadas' : `complaint${overdueComplaints > 1 ? 's' : ''} overdue` });
+    if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: ES ? 'llamadas de seguimiento hoy' : `guest callback${callbacksDueCount > 1 ? 's' : ''} due` });
+    if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: ES ? 'habitaciones por limpiar' : `room${dirtyRooms > 1 ? 's' : ''} to clean` });
+    if (communicationsEnabled && lostFound && lostFound.nearingDisposal > 0) out.push({ n: lostFound.nearingDisposal, text: ES ? 'objetos por desechar' : 'lost items nearing disposal' });
     return out.slice(0, 5);
-  }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, lostFound, ES]);
+  }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, lostFound, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);
 
   // ── chart series ─────────────────────────────────────────────────────
@@ -839,10 +857,12 @@ export default function DashboardPage() {
                       : departuresState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : departuresState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
                       : (ES ? 'saliendo' : 'checking out'), C.gold],
-                  [ES ? 'Limpieza' : 'Housekeeping', roomStatusLearning ? '—' : dirtyRooms,
+                  // Housekeeping tile is owned by the housekeeping section —
+                  // dropped entirely when that section is off for the hotel.
+                  ...(housekeepingEnabled ? [[ES ? 'Limpieza' : 'Housekeeping', roomStatusLearning ? '—' : dirtyRooms,
                     connPending ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
                       : roomStatusLearning ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-                      : (ES ? 'por limpiar' : 'rooms to clean'), C.rust],
+                      : (ES ? 'por limpiar' : 'rooms to clean'), C.rust]] : []),
                   [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink],
                 ] as [string, React.ReactNode, string, string][]).map((o, i) => (
                   <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>

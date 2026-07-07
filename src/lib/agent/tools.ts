@@ -15,6 +15,11 @@
 import type { AppRole } from '@/lib/roles';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { canForProperty } from '@/lib/capabilities/server';
+import {
+  isSectionEnabled,
+  type AppSection,
+  type EnabledSections,
+} from '@/lib/sections/registry';
 import type { VoiceMode } from './voice-session';
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -70,6 +75,13 @@ export interface ToolContext {
    *  on the new row and a unique partial index refuses a duplicate insert
    *  from a retried model call. Voice-only. Codex 2026-05-25 (MAJOR fix). */
   voiceSessionId?: string;
+  /** The active hotel's resolved section on/off map, loaded once at the route
+   *  boundary (getEnabledSections(propertyId)). executeTool consults it to
+   *  refuse a tool whose `section` is turned off for this hotel — the
+   *  defense-in-depth twin of the getToolsForRole section filter, mirroring how
+   *  requiresCapability is double-enforced. FAIL-OPEN: undefined/null ⇒ treat
+   *  every section as ON (a read hiccup never hides a live section). */
+  enabledSections?: EnabledSections;
   /** The caller's spoken language ('en' | 'es'), resolved server-side from the
    *  staff row at the voice-brain boundary. Used ONLY for deterministic spoken
    *  copy in the voice control tools (confirm/cancel read-backs) — never for
@@ -167,6 +179,16 @@ export interface ToolDefinition<TArgs = unknown> {
    * still ask the copilot for revenue/budgets/wages. Security audit 2026-06-26.
    */
   requiresCapability?: CapabilityKey;
+  /**
+   * The app section this tool belongs to (one of the 8 per-hotel sections).
+   * When a hotel has this section turned OFF, the tool is dropped from the
+   * catalog handed to Claude (getToolsForRole) AND refused inside executeTool
+   * as defense-in-depth — a back-door parallel to requiresCapability. Absent on
+   * cross-cutting tools (memory, knowledge, reminders, PMS reads, walkthrough,
+   * complaints, lost-and-found) which are NEVER section-gated. FAIL-OPEN: when
+   * the hotel's section map is unavailable, every section is treated as ON.
+   */
+  section?: AppSection;
   /** Implementation — typically wraps an existing API handler. */
   handler: (args: TArgs, ctx: ToolContext) => Promise<ToolResult>;
 }
@@ -219,11 +241,19 @@ export function approvalTierFor(name: string): 'quick' | 'card' | null {
  *  is supplied, tools also filter on `voiceModes` — a tool with an explicit
  *  voiceModes list is hidden from any session whose mode isn't on it. The
  *  default (no `voiceModes` declared) means "all voice modes" so the
- *  existing voice catalog is unaffected. */
+ *  existing voice catalog is unaffected.
+ *
+ *  Sections (WP7): when the caller passes the active hotel's `enabledSections`
+ *  map, any tool tagged with a `section` that the hotel has turned OFF is
+ *  dropped from the catalog so the copilot can't offer an action for a section
+ *  that isn't live. FAIL-OPEN: when `enabledSections` is undefined/null (a read
+ *  hiccup, or a caller that doesn't thread it) every section resolves to ON via
+ *  isSectionEnabled, so the tool set is unchanged. */
 export function getToolsForRole(
   role: AppRole,
   surface: AgentSurface,
   voiceMode?: VoiceMode,
+  enabledSections?: EnabledSections,
 ): ToolDefinition[] {
   return Array.from(registry.values()).filter(t => {
     if (!t.allowedRoles.includes(role)) return false;
@@ -232,6 +262,9 @@ export function getToolsForRole(
     if (surface === 'voice' && t.voiceModes && voiceMode) {
       if (!t.voiceModes.includes(voiceMode)) return false;
     }
+    // Section gate: drop tools whose section is turned off for this hotel.
+    // isSectionEnabled treats a null/undefined map as all-ON (fail-open).
+    if (t.section && !isSectionEnabled(enabledSections, t.section)) return false;
     return true;
   });
 }
@@ -304,6 +337,18 @@ export async function executeTool(
     return {
       ok: false,
       error: 'Property access for this conversation is not in your account. The user must restart the conversation from a property they currently have access to.',
+    };
+  }
+  // Per-hotel section gate (WP7). Defense-in-depth twin of the getToolsForRole
+  // section filter, mirroring how requiresCapability is double-enforced below:
+  // even if a stale tool list leaks a tool for a section this hotel has turned
+  // off, the executor itself refuses it. FAIL-OPEN — isSectionEnabled treats an
+  // undefined/null enabledSections (unavailable map, or a caller that doesn't
+  // thread it) as every section ON, so a read hiccup never blocks a live tool.
+  if (tool.section && !isSectionEnabled(ctx.enabledSections, tool.section)) {
+    return {
+      ok: false,
+      error: `The ${tool.section} section is turned off for this hotel. Tell the user this part of the app is currently disabled here and don't try to complete the action another way.`,
     };
   }
   // Per-hotel capability gate (security audit 2026-06-26). Mirrors the HTTP

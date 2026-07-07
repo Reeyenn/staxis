@@ -26,6 +26,7 @@ import {
 import { phraseAnomalies, type NlpUsage } from '@/lib/compliance/nlp';
 import { resolveCostAccount } from '@/lib/compliance/api-helpers';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -90,6 +91,26 @@ async function handle(req: NextRequest) {
   } catch (e) {
     log.error('[cron/compliance-anomaly-sweep] property list failed', { requestId, msg: errToString(e) });
     return err('failed to list properties', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+
+  // Section gate (WP6): a hotel with Maintenance off pauses the compliance
+  // anomaly sweep. One batched read (not a per-property round-trip) maps each
+  // property to its enabled_sections. Fail-open — a read error or missing/null
+  // value leaves the property in the sweep.
+  if (propertyIds.length) {
+    const { data: propRows, error: propErr } = await supabaseAdmin
+      .from('properties')
+      .select('id, enabled_sections')
+      .in('id', propertyIds);
+    if (propErr) {
+      log.warn('[cron/compliance-anomaly-sweep] enabled_sections read failed — sweeping all', { requestId, msg: propErr.message });
+    } else {
+      const sectionsById = new Map<string, EnabledSections>();
+      for (const r of propRows ?? []) {
+        sectionsById.set(String((r as { id: string }).id), (r as { enabled_sections?: EnabledSections }).enabled_sections ?? null);
+      }
+      propertyIds = propertyIds.filter((pid) => isSectionEnabled(sectionsById.get(pid), 'maintenance'));
+    }
   }
 
   let detected = 0;

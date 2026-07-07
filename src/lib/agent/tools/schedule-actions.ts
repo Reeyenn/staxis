@@ -69,6 +69,7 @@ interface GetScheduleArgs {
 
 registerTool<GetScheduleArgs>({
   name: 'get_schedule',
+  section: 'staff',
   description:
     'Look up who is scheduled to work on a given date. Use for "who\'s working tomorrow?", "who\'s on Friday?", "quién trabaja mañana?", "is Maria working Saturday?". ' +
     'date can be "today", "tomorrow", or an ISO date (YYYY-MM-DD); defaults to today. Optionally filter by department (housekeeping/front_desk/maintenance). ' +
@@ -161,6 +162,7 @@ interface RemoveFromShiftArgs {
 
 registerTool<RemoveFromShiftArgs>({
   name: 'remove_from_shift',
+  section: 'staff',
   description:
     'Give a staff member a day off by removing their assigned shift on a date. Use for "give Maria Friday off", "take Carlos off Saturday", "dale el día libre a Ana el martes". ' +
     'Identify the person by name and pass the date ("tomorrow" or YYYY-MM-DD). This deletes their assigned shift for that day; it does not touch other days. Managers only.',
@@ -233,6 +235,7 @@ interface AssignShiftArgs {
 
 registerTool<AssignShiftArgs>({
   name: 'assign_shift',
+  section: 'staff',
   description:
     'Put a staff member on the schedule for a date (add/assign a shift). Use for "put Maria on Friday", "schedule Carlos tomorrow 7am to 3pm", "pon a Ana el sábado". ' +
     'Identify the person by name and pass the date. Hours are optional — default 08:00–16:00 if not given (startTime/endTime as HH:MM, 24-hour). Department defaults to the staff member\'s own. ' +

@@ -41,6 +41,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 
 import { streamAgent, type AgentMessage } from '@/lib/agent/llm';
 import { getToolsForRole } from '@/lib/agent/tools';
+import { getEnabledSections } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
@@ -209,12 +210,16 @@ export async function POST(req: NextRequest): Promise<Response> {
   // globally-active row).
   // Build the live snapshot and the hotel's long-term memory in parallel; both
   // feed the DYNAMIC prompt block. Memory retrieval is non-fatal (returns '').
-  const [snapshot, memoryBlock] = await Promise.all([
+  // enabledSections drives the section gate: any tool tagged with a section the
+  // hotel has turned OFF is dropped from the catalog (and refused in executeTool
+  // as defense-in-depth). Cached + fail-soft to null (⇒ all sections ON).
+  const [snapshot, memoryBlock, enabledSections] = await Promise.all([
     buildHotelSnapshot(body.propertyId, userCtx.role, staffId),
     retrieveMemoryForTurn(body.propertyId, userCtx.accountId),
+    getEnabledSections(body.propertyId),
   ]);
   const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId, undefined, memoryBlock);
-  const tools = getToolsForRole(userCtx.role, 'chat');
+  const tools = getToolsForRole(userCtx.role, 'chat', undefined, enabledSections);
 
   // ── Stream the agent response via SSE ────────────────────────────────
   const encoder = new TextEncoder();
@@ -274,6 +279,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             requestId,
             surface: 'chat',
             conversationId: finalConversationId,
+            enabledSections,
           },
         });
 

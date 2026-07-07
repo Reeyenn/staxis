@@ -16,6 +16,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
@@ -64,7 +65,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // own local clock (a Florida hotel must not predict a Texas-timed date).
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone, inventory_ai_mode')
+    .select('id, name, timezone, inventory_ai_mode, enabled_sections')
     .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
@@ -84,11 +85,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // ml-run-inference uses. Without this the inventory cron silently
   // defaults to America/Chicago for non-Texas hotels (the bug Phase 3.5
   // was supposed to close, missed on this cron).
-  type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string };
+  type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string; enabled_sections?: EnabledSections };
   const eligible: PropertyRow[] = [];
   const skipped: Array<{ property_id: string; status: string; detail?: string }> = [];
   for (const property of (sharded.items as unknown as PropertyRow[])) {
-    if (property.inventory_ai_mode === 'off') {
+    // Section gate (WP6): pause inventory predictions when the Inventory
+    // section is off, in addition to the existing per-hotel AI-mode toggle.
+    // Fail-open — only an explicit `false` skips. 'skipped_ai_off' is
+    // intentional (not a misconfig) so the heartbeat stays green.
+    if (property.inventory_ai_mode === 'off' || !isSectionEnabled(property.enabled_sections, 'inventory')) {
       skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
     } else if (!property.timezone) {
       log.warn('ml-predict-inventory: property missing timezone — skip', {

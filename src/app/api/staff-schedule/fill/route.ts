@@ -29,6 +29,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import type { StaffDepartment } from '@/types';
 
@@ -88,6 +89,11 @@ export async function POST(req: NextRequest) {
   if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  // Section gate (add-on, on top of the manager tenant guard above): if Staff is
+  // turned off for this hotel, block schedule writes.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const days = body.days;
   if (!Array.isArray(days) || days.length === 0 || days.length > MAX_DAYS) {

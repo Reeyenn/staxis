@@ -10,6 +10,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { getConversation, canAccessConversation, postMessage, getMessageScope } from '@/lib/comms/core';
 import type { MessageType } from '@/lib/comms/types';
 
@@ -38,6 +39,11 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, body.pid ?? null);
   if (!ctx.ok) return ctx.response;
+
+  // Section gate (add-on, on top of the comms tenant guard above): if
+  // Communications is turned off for this hotel, block sending messages.
+  const sectionGate = await requireSectionEnabled(req, ctx.pid, 'communications');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const convV = validateUuid(body.conversationId, 'conversationId');
   if (convV.error) {

@@ -28,6 +28,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { runWithConcurrency } from '@/lib/parallel';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import { log } from '@/lib/log';
 import { fetchCleanTimeStandardsIndex } from '@/lib/clean-time-standards-server';
 
@@ -365,9 +366,15 @@ async function fetchExistingTaskStatuses(
 export async function runRulesEngineForAllProperties(
   opts: EngineOptions = {},
 ): Promise<PropertyRunResult[]> {
-  const { data, error } = await supabaseAdmin.from('properties').select('id');
+  const { data, error } = await supabaseAdmin
+    .from('properties')
+    .select('id, enabled_sections');
   if (error) throw error;
-  const rows = ((data ?? []) as Array<{ id: string }>).filter((r) => r.id);
+  // Section gate (WP6): a hotel with Housekeeping off pauses cleaning-task
+  // generation. Fail-open — only an explicit `false` skips (null/missing ⇒ runs).
+  const rows = (
+    (data ?? []) as Array<{ id: string; enabled_sections: EnabledSections }>
+  ).filter((r) => r.id && isSectionEnabled(r.enabled_sections, 'housekeeping'));
 
   // Bounded concurrency (cap 5) instead of a serial for-await. At fleet scale a
   // strictly-serial loop (~5 DB round-trips/property) exceeds the 60s function

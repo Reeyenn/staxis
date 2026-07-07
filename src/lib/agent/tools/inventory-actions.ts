@@ -91,6 +91,7 @@ interface GetLowStockArgs {
 
 registerTool<GetLowStockArgs>({
   name: 'get_low_stock',
+  section: 'inventory',
   description:
     'List inventory items that are running LOW or CRITICAL right now. Use for "what\'s running low?", "what do we need to reorder?", "are we low on towels?", "qué se está acabando?". ' +
     'By default returns only low + critical items (below par). Set includeAll=true to list every item with its status. Optionally filter by category (housekeeping/maintenance/breakfast). ' +
@@ -155,6 +156,7 @@ interface AdjustStockArgs {
 
 registerTool<AdjustStockArgs>({
   name: 'adjust_stock',
+  section: 'inventory',
   description:
     'Update an inventory item\'s on-hand count and/or record that an order was placed for it. Use for "we have 40 rolls of toilet paper now", "set towels to 120", "mark the pillowcases as ordered", "pedí 2 cajas de jabón". ' +
     'itemName = the item (a partial name is fine if unique). Set newCount to the CURRENT on-hand quantity (not a delta). Set markOrdered=true to log that an order was placed; orderQuantity is how many were ordered. ' +

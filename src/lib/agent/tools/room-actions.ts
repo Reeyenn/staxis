@@ -36,6 +36,7 @@ const ROOM_NUMBER_SCHEMA = {
 
 registerTool<{ roomNumber: string }>({
   name: 'mark_room_clean',
+  section: 'housekeeping',
   description:
     'Mark a room as clean. Use when the user says variations like "302 clean", "marcar 302 limpia", "Im done with 305", "finished cleaning 410". Pass the room number as a string of digits (e.g. "302" not "three oh two").',
   inputSchema: {
@@ -97,6 +98,7 @@ registerTool<{ roomNumber: string }>({
 
 registerTool<{ roomNumber: string }>({
   name: 'reset_room',
+  section: 'housekeeping',
   description:
     'Reset a room back to dirty status. Use when a housekeeper says they marked the wrong room clean, or a manager wants to undo a clean status. Pass room number as digits.',
   inputSchema: {
@@ -143,6 +145,7 @@ registerTool<{ roomNumber: string }>({
 
 registerTool<{ roomNumber: string; on: boolean; note?: string }>({
   name: 'toggle_dnd',
+  section: 'housekeeping',
   description:
     'Mark a room as Do-Not-Disturb (on=true) or remove the DND flag (on=false). Use when guest hangs DND sign, or to clear it when guest leaves.',
   inputSchema: {
@@ -191,6 +194,7 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
 
 registerTool<{ roomNumber: string; note: string }>({
   name: 'flag_issue',
+  section: 'housekeeping',
   description:
     'Flag an issue or problem with a room (e.g. "broken TV in 302", "missing towels in 410"). Records the note for the manager to see. Use when the user describes a problem they noticed during cleaning or inspection.',
   inputSchema: {
@@ -231,6 +235,7 @@ registerTool<{ roomNumber: string; note: string }>({
 
 registerTool<{ roomNumber?: string; message?: string }>({
   name: 'request_help',
+  section: 'housekeeping',
   description:
     'Send a help signal to the manager. Use when a housekeeper says "I need help", "help me", "necesito ayuda", or describes a situation needing manager attention. Optionally include a room number and a short message.',
   inputSchema: {

@@ -24,6 +24,7 @@ import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { canViewFinancials, type AppRole } from '@/lib/roles';
 import { canForProperty } from '@/lib/capabilities/server';
+import { isSectionEnabledForProperty } from '@/lib/sections/server';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -61,6 +62,20 @@ export async function requireFinanceAccess(
         requestId,
         status: 400,
         code: 'invalid_pid',
+      }),
+    };
+  }
+
+  // 2b) Section gate (ABOVE role/capability): if Financials is turned off for this
+  //     hotel, finance is gone for EVERY role including owner/admin. Fail-soft to
+  //     ON via the helper, so a read hiccup never hides a live section.
+  if (!(await isSectionEnabledForProperty(pid, 'financials'))) {
+    return {
+      ok: false,
+      response: err('the financials section is turned off for this hotel', {
+        requestId,
+        status: 403,
+        code: 'section_disabled',
       }),
     };
   }

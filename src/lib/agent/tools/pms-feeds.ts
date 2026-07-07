@@ -37,6 +37,7 @@ const FEED_ROLES = ['admin', 'owner', 'general_manager', 'front_desk'] as const;
 
 registerTool<Record<string, never>>({
   name: 'get_outstanding_balances',
+  section: 'financials',
   description:
     'List guests who currently OWE money (outstanding folio balances), highest first. Use for "who owes a balance?", "outstanding balances", "who hasn\'t paid". Read-only.',
   inputSchema: { type: 'object', properties: {} },
@@ -77,6 +78,7 @@ registerTool<Record<string, never>>({
 
 registerTool<{ date?: string }>({
   name: 'get_payments_summary',
+  section: 'financials',
   description:
     'Get money COLLECTED for a day (cash + card + deposits), defaulting to today. Use for "how much did we collect today?", "today\'s payments", "cashier totals". Read-only.',
   inputSchema: {

@@ -16,6 +16,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { validateUuid, validateString, validateEnum, sanitizeForSms } from '@/lib/api-validate';
 
@@ -58,6 +59,11 @@ export async function GET(req: NextRequest) {
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
   const scope = searchParams.get('scope') === 'mine' ? 'mine' : 'feed';
+
+  // Section gate (add-on, on top of the per-scope tenant guards below): if Staff
+  // is turned off for this hotel, block recognition reads for both scopes.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   if (scope === 'mine') {
     // Any logged-in staff member can read THEIR OWN recognitions.
@@ -123,6 +129,11 @@ export async function POST(req: NextRequest) {
   if (!canManageHotel(caller, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  // Section gate (add-on, on top of the manager tenant guard above): if Staff is
+  // turned off for this hotel, block giving recognition.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const staffIdCheck = validateUuid(body.staffId, 'staffId');
   if (staffIdCheck.error) return err(staffIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });

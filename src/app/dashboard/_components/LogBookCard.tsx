@@ -14,6 +14,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 
 interface LogEntry {
   id: string;
@@ -52,6 +53,9 @@ export function LogBookCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  // The shift log book lives under Communications — hide this embed when that
+  // section is off for the hotel (default-ON while loading).
+  const commsEnabled = useSectionEnabled('communications');
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
 
@@ -79,7 +83,7 @@ export function LogBookCard() {
     };
   }, [canSee, activePropertyId]);
 
-  if (!canSee || !activePropertyId) return null;
+  if (!canSee || !activePropertyId || !commsEnabled) return null;
   // Additive-only: nothing to show until there's at least one recap.
   if (!loaded || entries.length === 0) return null;
 

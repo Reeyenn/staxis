@@ -26,6 +26,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { detectRateAnomalies, type RateObservation } from '@/lib/inventory-anomaly';
 import {
@@ -73,6 +74,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!(await userHasPropertyAccess(session.userId, propertyId))) {
     return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+  // Section gate (add-on, on top of the tenant guard above): if Inventory is
+  // turned off for this hotel, block the count post-processing entirely.
+  const sectionGate = await requireSectionEnabled(req, propertyId, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
   if (itemIds.length === 0) {
     return ok({ anomalies: 0, predictionLogs: 0 }, { requestId });
   }

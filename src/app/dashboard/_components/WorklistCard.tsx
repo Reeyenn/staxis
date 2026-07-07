@@ -13,6 +13,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
+import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import type { WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 
 const C = {
@@ -44,6 +45,9 @@ export function WorklistCard() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const es = lang === 'es';
+  // The unified worklist lives under Communications — hide this embed when
+  // that section is off for the hotel (default-ON while loading).
+  const commsEnabled = useSectionEnabled('communications');
   const [items, setItems] = useState<WorklistItem[] | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -66,7 +70,7 @@ export function WorklistCard() {
     return () => { alive = false; };
   }, [canSee, activePropertyId]);
 
-  if (!canSee || !activePropertyId) return null;
+  if (!canSee || !activePropertyId || !commsEnabled) return null;
   const list = items ?? [];
   // Additive-only: nothing to show until there is open work.
   if (!loaded || list.length === 0) return null;

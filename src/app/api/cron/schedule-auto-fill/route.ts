@@ -33,6 +33,7 @@ import { runWithConcurrency } from '@/lib/parallel';
 import { propertyLocalDateOffset } from '@/lib/schedule/local-date';
 import { selectActiveCrewWithReasons } from '@/lib/schedule/active-crew';
 import { fromStaffRow, parseStringField, parseNumberField } from '@/lib/db-mappers';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import type { StaffMember } from '@/types';
 
 export const runtime = 'nodejs';
@@ -49,6 +50,7 @@ interface PropertyRow {
   stayover_day2_minutes: number | null;
   prep_minutes_per_activity: number | null;
   shift_minutes: number | null;
+  enabled_sections: EnabledSections;
 }
 
 /** Runtime shape check for the SELECT in GET below. Audit finding H3. */
@@ -58,6 +60,7 @@ function parsePropertyRow(raw: unknown): PropertyRow | null {
   const id = parseStringField(r.id);
   const name = parseStringField(r.name);
   if (!id || !name) return null;
+  const rawSections = r.enabled_sections;
   return {
     id,
     name,
@@ -68,6 +71,10 @@ function parsePropertyRow(raw: unknown): PropertyRow | null {
     stayover_day2_minutes: parseNumberField(r.stayover_day2_minutes) ?? null,
     prep_minutes_per_activity: parseNumberField(r.prep_minutes_per_activity) ?? null,
     shift_minutes: parseNumberField(r.shift_minutes) ?? null,
+    enabled_sections:
+      rawSections && typeof rawSections === 'object' && !Array.isArray(rawSections)
+        ? (rawSections as EnabledSections)
+        : null,
   };
 }
 
@@ -351,7 +358,7 @@ export async function GET(req: NextRequest) {
       .select(
         'id, name, timezone, checkout_minutes, stayover_minutes, ' +
           'stayover_day1_minutes, stayover_day2_minutes, ' +
-          'prep_minutes_per_activity, shift_minutes',
+          'prep_minutes_per_activity, shift_minutes, enabled_sections',
       );
     if (propErr) throw propErr;
 
@@ -359,7 +366,17 @@ export async function GET(req: NextRequest) {
     const propertyJobs: PropertyRow[] = [];
     for (const raw of properties ?? []) {
       const p = parsePropertyRow(raw);
-      if (p) propertyJobs.push(p);
+      if (!p) continue;
+      // Section gate (WP6): crew scheduling straddles Housekeeping + Staff, so
+      // it only pauses when BOTH are off. Fail-open — only explicit `false` on
+      // both skips (null/missing ⇒ runs).
+      if (
+        !isSectionEnabled(p.enabled_sections, 'housekeeping') &&
+        !isSectionEnabled(p.enabled_sections, 'staff')
+      ) {
+        continue;
+      }
+      propertyJobs.push(p);
     }
     log.info('[schedule-auto-fill] start', {
       requestId, target: targetParam, propertyCount: propertyJobs.length,

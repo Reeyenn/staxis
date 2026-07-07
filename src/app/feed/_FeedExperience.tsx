@@ -31,6 +31,8 @@ import {
   Check, ChevronDown, Sparkles, Send, Sunrise, Sun, Moon, RotateCcw,
   type LucideIcon,
 } from 'lucide-react';
+import { useProperty } from '@/contexts/PropertyContext';
+import { isSectionEnabled, type AppSection } from '@/lib/sections/registry';
 
 // ─── palette + fonts (1:1 with the dashboard) ─────────────────────────
 const C = {
@@ -68,6 +70,10 @@ type Tone = 'save' | 'urgent' | 'info';
 export type DecisionCard = {
   id: string;
   dept: string;
+  // Which app section owns this card. When that section is off for the hotel
+  // the card is filtered out. Undefined ⇒ never gated (Guests + anything
+  // ambiguous). Future real cards inherit the same gate by setting this.
+  section?: AppSection;
   icon: LucideIcon;
   accent: string;
   tint: string;        // soft icon background
@@ -95,7 +101,7 @@ const SAMPLE: DecisionCard[] = [
   },
   {
     id: 'staff-maria',
-    dept: 'Staff',
+    dept: 'Staff', section: 'staff',
     icon: UserRound, accent: C.gold, tint: 'rgba(192,154,60,0.12)',
     title: 'Maria hasn’t confirmed tomorrow',
     detail: 'No reply since last night. Lupe is available as backup — want me to text her to be safe?',
@@ -105,7 +111,7 @@ const SAMPLE: DecisionCard[] = [
   },
   {
     id: 'crew-tomorrow',
-    dept: 'Housekeeping',
+    dept: 'Housekeeping', section: 'housekeeping',
     icon: BedDouble, accent: C.green, tint: 'rgba(53,107,76,0.10)',
     title: 'Tomorrow’s crew is ready',
     detail: '86 rooms · 4 housekeepers — Ana, Rosa, Maria, Lupe. Board balanced by floor and checkout load.',
@@ -115,7 +121,7 @@ const SAMPLE: DecisionCard[] = [
   },
   {
     id: 'inv-towels',
-    dept: 'Inventory',
+    dept: 'Inventory', section: 'inventory',
     icon: Package, accent: C.ink2, tint: 'rgba(32,37,31,0.07)',
     title: 'Towels run out Thursday',
     detail: 'At today’s pace you’ll be short by Thursday. Order drafted: 6 cases · $310 · ABC Supply.',
@@ -125,7 +131,7 @@ const SAMPLE: DecisionCard[] = [
   },
   {
     id: 'maint-214',
-    dept: 'Maintenance',
+    dept: 'Maintenance', section: 'maintenance',
     icon: Wrench, accent: C.gold, tint: 'rgba(192,154,60,0.12)',
     title: 'AC in 214 keeps coming back',
     detail: 'Reported twice this week. A work order is drafted and ready for José.',
@@ -134,7 +140,7 @@ const SAMPLE: DecisionCard[] = [
   },
   {
     id: 'comp-pool',
-    dept: 'Compliance',
+    dept: 'Compliance', section: 'maintenance',
     icon: Droplets, accent: C.green, tint: 'rgba(53,107,76,0.10)',
     title: 'Pool chlorine reading was overdue',
     detail: 'I reminded José and recorded the reading at 8:02a. Just confirming you saw it.',
@@ -358,7 +364,24 @@ function Card({ card, stage, index, onPrimary, onSecondary }: {
 
 // ─── the experience ───────────────────────────────────────────────────
 export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
-  const [cards, setCards] = useState<DecisionCard[]>(SAMPLE);
+  // Per-hotel section gate. activeProperty.enabledSections rides on
+  // PropertyContext (no fetch); on the login-free /demo/feed there's no
+  // provider, so useProperty yields the default (null ⇒ every card shown).
+  // A card whose owning section is off is filtered out; undefined section is
+  // never gated. isSectionEnabled is default-ON, so this is fail-open.
+  const { activeProperty } = useProperty();
+  const enabledSections = activeProperty?.enabledSections;
+  // Key on the CONTENT of the flags (not the object identity) so a routine
+  // PropertyContext refresh that re-creates activeProperty with the same flags
+  // doesn't recompute + reset the feed mid-session.
+  const enabledKey = enabledSections ? JSON.stringify(enabledSections) : '';
+  const visibleSample = useMemo(
+    () => SAMPLE.filter((c) => !c.section || isSectionEnabled(enabledSections, c.section)),
+    // enabledSections is derived from enabledKey; keying on the string is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabledKey],
+  );
+  const [cards, setCards] = useState<DecisionCard[]>(visibleSample);
   const [stages, setStages] = useState<Record<string, CardStage>>({});
   const [handled, setHandled] = useState<{ text: string; at: string; fresh?: boolean }[]>(PREHANDLED);
   const [logOpen, setLogOpen] = useState(false);
@@ -395,9 +418,21 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
     [],
   );
 
-  // day meter: how many of today's decisions are cleared
-  const totalDecisions = useRef(SAMPLE.length);
-  const cleared = totalDecisions.current - cards.length;
+  // When the section gate resolves after mount (property loads, or the hotel
+  // is switched), rebuild the feed from the freshly-filtered sample. Skips the
+  // first run so a straight mount keeps its lazy-initialized cards.
+  const gateSynced = useRef(true);
+  useEffect(() => {
+    if (gateSynced.current) { gateSynced.current = false; return; }
+    setCards(visibleSample);
+    setStages({});
+    setUndoItem(null);
+  }, [visibleSample]);
+
+  // day meter: how many of today's decisions are cleared. Denominator is the
+  // number of cards this hotel actually shows (post section-gate).
+  const totalDecisions = visibleSample.length;
+  const cleared = totalDecisions - cards.length;
   const allClear = cards.length === 0;
 
   // approve → button morphs → card folds shut → lands in the ledger
@@ -536,12 +571,12 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
           {/* day meter — one segment per decision, fills as you clear */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
             <div style={{ display: 'flex', gap: 5, flex: 1, maxWidth: 340 }}>
-              {Array.from({ length: totalDecisions.current }).map((_, i) => (
+              {Array.from({ length: totalDecisions }).map((_, i) => (
                 <span key={i} className={'stx-seg' + (i < cleared ? ' stx-seg-on' : '')} />
               ))}
             </div>
             <span style={{ fontFamily: MONO, fontSize: 11, color: C.ink3, letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
-              <Rolling value={cleared} /> of {totalDecisions.current} cleared
+              <Rolling value={cleared} /> of {totalDecisions} cleared
             </span>
           </div>
         </section>

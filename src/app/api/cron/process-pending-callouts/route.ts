@@ -25,6 +25,7 @@ import { errToString } from '@/lib/utils';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import {
   runRedistributionForCallout,
   sendCalloutNotifications,
@@ -76,12 +77,44 @@ export async function GET(req: NextRequest) {
       redistribute_at: string | null;
     }>;
 
+    // Section gate (WP6): callout redistribution straddles Housekeeping + Staff,
+    // so it only pauses when BOTH are off. One batched read (not a per-callout
+    // round-trip) maps each property to its enabled_sections. Fail-open — a read
+    // error or missing/null value leaves the property's callouts processing.
+    const bothSectionsOff = new Set<string>();
+    const calloutPropertyIds = Array.from(new Set(pending.map((r) => r.property_id)));
+    if (calloutPropertyIds.length) {
+      const { data: propRows, error: propErr } = await supabaseAdmin
+        .from('properties')
+        .select('id, enabled_sections')
+        .in('id', calloutPropertyIds);
+      if (propErr) {
+        log.warn('[cron/process-pending-callouts] enabled_sections read failed — processing all', {
+          requestId, err: errToString(propErr),
+        });
+      } else {
+        for (const r of propRows ?? []) {
+          const flags = (r as { enabled_sections?: EnabledSections }).enabled_sections ?? null;
+          if (
+            !isSectionEnabled(flags, 'housekeeping') &&
+            !isSectionEnabled(flags, 'staff')
+          ) {
+            bothSectionsOff.add(String((r as { id: string }).id));
+          }
+        }
+      }
+    }
+
     let processed = 0;
     let skipped = 0;
     let failed = 0;
     let waitingOnTask = 0;
 
     for (const row of pending) {
+      if (bothSectionsOff.has(row.property_id)) {
+        skipped += 1;
+        continue;
+      }
       try {
         // 'after_current_room' — gated on "no in-progress task for this
         // sick HK." If they still have one running, leave the callout

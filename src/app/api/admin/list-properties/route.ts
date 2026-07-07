@@ -26,6 +26,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { mapPropertySessionStatusToJobShape } from '@/lib/cua-session-job-mapping';
+import { normalizeSectionFlags, resolveSections } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,6 +49,8 @@ interface PropertyRow {
   // Drives the live onboarding-timeline on the admin surface.
   onboarding_state: Record<string, string | null> | null;
   onboarding_completed_at: string | null;
+  // Per-hotel section on/off map (jsonb). Missing/null ⇒ all 8 sections on.
+  enabled_sections: Record<string, boolean> | null;
 }
 
 export async function GET(req: NextRequest) {
@@ -77,7 +80,7 @@ export async function GET(req: NextRequest) {
       id, name, total_rooms, subscription_status, trial_ends_at,
       pms_type, pms_connected, last_synced_at,
       onboarding_source, property_kind, created_at, brand,
-      onboarding_state, onboarding_completed_at
+      onboarding_state, onboarding_completed_at, enabled_sections
     `, { count: 'exact' })
     .order('created_at', { ascending: false });
 
@@ -231,6 +234,9 @@ export async function GET(req: NextRequest) {
       // 1-of-9 journey position from these + sessionStatus.
       onboardingState: p.onboarding_state ?? null,
       onboardingCompletedAt: p.onboarding_completed_at ?? null,
+      // Full resolved 8-key section map (default-ON coalesced) so the Live
+      // card can show a "N off" pill and the Sections modal can pre-hydrate.
+      enabledSections: resolveSections(normalizeSectionFlags(p.enabled_sections)),
     };
   });
 

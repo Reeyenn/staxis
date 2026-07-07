@@ -14,6 +14,7 @@ import { processSmsJobs } from '@/lib/sms-jobs';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { runComplianceRemindersForProperty } from '@/lib/compliance/reminders';
 import { runWithConcurrency } from '@/lib/parallel';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,15 +50,22 @@ async function handle(req: NextRequest) {
   // time for every hotel, so non-Central hotels got their nudges and overdue
   // escalations at the wrong local hour. (Correctness audit 2026-06-18.)
   const tzById = new Map<string, string>();
+  const sectionsById = new Map<string, EnabledSections>();
   if (propertyIds.length) {
     const { data: tzRows } = await supabaseAdmin
       .from('properties')
-      .select('id, timezone')
+      .select('id, timezone, enabled_sections')
       .in('id', propertyIds);
     for (const r of tzRows ?? []) {
       tzById.set(String(r.id), (r as { timezone?: string | null }).timezone || 'America/Chicago');
+      sectionsById.set(String(r.id), (r as { enabled_sections?: EnabledSections }).enabled_sections ?? null);
     }
   }
+
+  // Section gate (WP6): a hotel with Maintenance off pauses compliance
+  // reminders + life-safety escalations. Fail-open — only an explicit `false`
+  // skips (null/missing ⇒ runs).
+  propertyIds = propertyIds.filter((id) => isSectionEnabled(sectionsById.get(id), 'maintenance'));
 
   let remindersSent = 0;
   let escalationsSent = 0;

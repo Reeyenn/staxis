@@ -34,6 +34,7 @@ import {
   daysElapsedInMonth,
   type Department,
 } from '@/lib/financials/shared';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import { budgetVsActual, sumExpensesByDepartment } from '@/lib/financials/db';
 import { getOccupancyPacingFactor } from '@/lib/financials/revenue';
 import { forecastDepartmentOverspend } from '@/lib/financials/forecast';
@@ -93,7 +94,28 @@ export async function GET(req: NextRequest): Promise<Response> {
 
     const pids = [...pidSet].slice(0, MAX_PROPERTIES);
 
+    // Section gate (WP6): a hotel with Financials off pauses the finance alert
+    // sweep entirely (no findings, no in-app events, no SMS). One batched read
+    // (not a per-property round-trip). Fail-open — a read error or missing/null
+    // value leaves the property in the sweep.
+    const financialsOff = new Set<string>();
+    if (pids.length) {
+      const { data: propRows, error: propRowsErr } = await supabaseAdmin
+        .from('properties')
+        .select('id, enabled_sections')
+        .in('id', pids);
+      if (propRowsErr) {
+        log.warn('[cron/financials-alert-sweep] enabled_sections read failed — sweeping all', { requestId, err: propRowsErr.message });
+      } else {
+        for (const r of propRows ?? []) {
+          const flags = (r as { enabled_sections?: EnabledSections }).enabled_sections ?? null;
+          if (!isSectionEnabled(flags, 'financials')) financialsOff.add(String((r as { id: string }).id));
+        }
+      }
+    }
+
     for (const pid of pids) {
+      if (financialsOff.has(pid)) continue;
       propertiesChecked++;
 
       // Build findings for this property.

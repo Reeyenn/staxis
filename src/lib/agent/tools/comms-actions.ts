@@ -67,6 +67,7 @@ interface SendMessageArgs {
 
 registerTool<SendMessageArgs>({
   name: 'send_message',
+  section: 'communications',
   description:
     'Send a direct message to another staff member AS THE USER (the message is from them, not from Staxis). ' +
     'Use for "message Maria that the lobby needs a mop", "tell Carlos his 3pm rooms are ready", "dile a Ana que ya llegaron las toallas". ' +
@@ -173,6 +174,7 @@ interface CreateTodoArgs {
 
 registerTool<CreateTodoArgs>({
   name: 'create_todo',
+  section: 'communications',
   description:
     'Add a task to the shared to-do list. Use for "add a to-do: restock the linen closet", "remind maintenance to check the pool heater", "crear una tarea: revisar el gimnasio". ' +
     'Optionally assign it to a person by name (assignee) or a whole department (front_desk/housekeeping/maintenance/general), set a due date/time (dueAt, ISO-8601), and a priority (normal/high/urgent).',
@@ -271,6 +273,7 @@ interface AddLogbookEntryArgs {
 
 registerTool<AddLogbookEntryArgs>({
   name: 'add_logbook_entry',
+  section: 'communications',
   description:
     'Add an entry to the shift log book (the running record managers read at shift change). Use for "log book: elevator 2 was out of service 2-4pm", "note in the log that we ran low on towels", "anotar en la bitacora que el aire de la 210 sigue fallando". ' +
     'category is one of front_desk / housekeeping / maintenance / general.',
@@ -324,6 +327,7 @@ interface PostAnnouncementArgs {
 
 registerTool<PostAnnouncementArgs>({
   name: 'post_announcement',
+  section: 'communications',
   description:
     'Broadcast an announcement to ALL staff at this property (the announcements feed + the housekeeper notice banner). ' +
     'Use for "announce that breakfast starts at 6am tomorrow", "tell everyone the pool is closed for repairs", "avisar a todos que habra reunion a las 3". ' +

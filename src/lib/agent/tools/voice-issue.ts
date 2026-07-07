@@ -64,6 +64,7 @@ function capString(v: unknown, max: number): string | null {
 
 registerTool<CreateMaintenanceWorkOrderArgs>({
   name: 'createMaintenanceWorkOrder',
+  section: 'maintenance',
   description:
     'Create a maintenance work order from a housekeeper voice report. ' +
     'CALL THIS at the end of every issue conversation — never just acknowledge verbally without creating a ticket. ' +

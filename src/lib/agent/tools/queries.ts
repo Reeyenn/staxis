@@ -90,6 +90,7 @@ export async function getPropertyToday(propertyId: string): Promise<string> {
 
 registerTool<Record<string, never>>({
   name: 'get_hotel_state',
+  section: 'housekeeping',
   description:
     'Get a live snapshot of the hotel: occupancy (dirty/clean/in-progress/DND), staff active today, and (for housekeepers) the user\'s assigned rooms. Read-only. Use when the user asks about current property state ("what\'s our occupancy", "how many DND rooms", "what\'s next for me").',
   inputSchema: { type: 'object', properties: {} },
@@ -111,6 +112,7 @@ registerTool<Record<string, never>>({
 
 registerTool<Record<string, never>>({
   name: 'list_my_rooms',
+  section: 'housekeeping',
   description:
     'List the rooms currently assigned to the user (housekeeper). Returns room number, status, and any flags (DND, issue, help requested) for each.',
   inputSchema: { type: 'object', properties: {} },
@@ -159,6 +161,7 @@ registerTool<Record<string, never>>({
 
 registerTool<Record<string, never>>({
   name: 'get_my_next_room',
+  section: 'housekeeping',
   description:
     'Get the next room the housekeeper should clean (first non-clean, non-DND room from their assigned list).',
   inputSchema: { type: 'object', properties: {} },
@@ -204,6 +207,7 @@ registerTool<Record<string, never>>({
 
 registerTool<{ roomNumber: string }>({
   name: 'query_room_status',
+  section: 'housekeeping',
   description:
     'Get current status of a specific room. Returns status, assigned housekeeper, DND state, any flagged issues. Read-only.',
   inputSchema: {
@@ -261,6 +265,7 @@ registerTool<{ roomNumber: string }>({
 
 registerTool<Record<string, never>>({
   name: 'get_today_summary',
+  section: 'housekeeping',
   description:
     'Get a quick rollup of today: rooms cleaned so far, in progress, dirty, DND, active issues, help requests. Useful when the manager asks "how are we doing today?".',
   inputSchema: { type: 'object', properties: {} },
@@ -365,6 +370,7 @@ registerTool<Record<string, never>>({
 
 registerTool<Record<string, never>>({
   name: 'get_deep_clean_queue',
+  section: 'housekeeping',
   description:
     'List rooms currently scheduled for deep cleaning (longer than standard turn). Returns room number, scheduled date, and status. Read-only.',
   inputSchema: { type: 'object', properties: {} },
