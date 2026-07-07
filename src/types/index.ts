@@ -1,6 +1,7 @@
 // ─── Property & Settings ───────────────────────────────────────────────────
 
 import type { OnboardingState } from '@/lib/onboarding/state';
+import type { EnabledSections } from '@/lib/sections/registry';
 
 export interface Property {
   id: string;
@@ -66,6 +67,14 @@ export interface Property {
    * only a demo property shows the full synthetic chart/KPI showcase.
    */
   isTest?: boolean;
+  /**
+   * Per-hotel section on/off map (properties.enabled_sections). Undefined / null
+   * / a missing key ⇒ that section is ON (default) — so existing hotels with no
+   * stored value show all 8 sections. Only an explicit `false` disables a
+   * section for EVERYONE at the hotel. Resolved through isSectionEnabled() in
+   * @/lib/sections/registry.
+   */
+  enabledSections?: EnabledSections;
   createdAt: Date;
 }
 
