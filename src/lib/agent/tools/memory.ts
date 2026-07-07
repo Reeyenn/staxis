@@ -77,6 +77,7 @@ registerTool<{ scope: string; topic: string; content: string; confidence?: strin
   surfaces: ['chat', 'voice'],
   voiceModes: ['general'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ scope, topic, content, confidence }, ctx: ToolContext): Promise<ToolResult> => {
     const sc = normalizeScope(scope);
     if (!sc) return { ok: false, error: 'scope must be "hotel" or "me".' };
@@ -154,6 +155,7 @@ registerTool<{ scope: string; topic: string }>({
   surfaces: ['chat', 'voice'],
   voiceModes: ['general'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ scope, topic }, ctx: ToolContext): Promise<ToolResult> => {
     const sc = normalizeScope(scope);
     if (!sc) return { ok: false, error: 'scope must be "hotel" or "me".' };

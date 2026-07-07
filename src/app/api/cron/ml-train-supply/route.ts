@@ -15,6 +15,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
+import { isSectionEnabled } from '@/lib/sections/registry';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { triggerMlTraining } from '@/lib/ml-invoke';
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name')
+    .select('id, name, enabled_sections')
     .order('id');
   if (error) {
     log.error('ml-train-supply: properties read failed', { requestId, err: error });
@@ -69,7 +70,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // M3.1 on-onboard hook. Cron-specific error mapping (the
   // property_misconfigured event emit + heartbeat status shape) stays
   // here — that's load-bearing for the doctor's degraded-heartbeat check.
-  const outcomes = await runWithConcurrency(sharded.items, async (property) => {
+  // Section gate (WP6): skip supply training for hotels with Housekeeping off.
+  // Fail-open — only an explicit `false` skips.
+  const eligible = sharded.items.filter(
+    (p) => isSectionEnabled(p.enabled_sections, 'housekeeping'),
+  );
+  const outcomes = await runWithConcurrency(eligible, async (property) => {
     const result = await triggerMlTraining(property.id, 'supply', { requestId });
 
     // Codex follow-up 2026-05-13 (A2 + A6): persist property_misconfigured

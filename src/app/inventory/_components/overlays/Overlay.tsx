@@ -1,14 +1,20 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { T, fonts } from '../tokens';
 import { Caps } from '../Caps';
 import { Serif } from '../Serif';
+import { EASE } from '../motion';
 
 // Triage modal shell used by every overlay. Click-outside or ESC closes.
 // Blurred ink scrim, white card (radius 18), eyebrow + serif title header with
 // a rounded-square ✕, optional left accent stripe, scrollable body, optional
-// sticky footer. Entrance via WAAPI (plays under prefers-reduced-motion).
+// sticky footer.
+//
+// Motion: spring-up entrance and a short settle-down exit. The card stays
+// mounted for ~200ms after `open` flips false so the exit can play (presence
+// management) — callers keep the exact same `open`/`onClose` contract.
+// WAAPI throughout, so it plays under prefers-reduced-motion.
 interface OverlayProps {
   open: boolean;
   onClose: () => void;
@@ -23,6 +29,8 @@ interface OverlayProps {
   footer?: React.ReactNode;
   children?: React.ReactNode;
 }
+
+const EXIT_MS = 190;
 
 export function Overlay({
   open,
@@ -39,6 +47,29 @@ export function Overlay({
 }: OverlayProps) {
   const scrimRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  // Presence: keep rendering during the exit animation, then unmount.
+  const [render, setRender] = useState(open);
+
+  useEffect(() => {
+    if (open) {
+      setRender(true);
+      return;
+    }
+    if (!render) return;
+    scrimRef.current?.animate(
+      [{ opacity: 1 }, { opacity: 0 }],
+      { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
+    );
+    cardRef.current?.animate(
+      [
+        { opacity: 1, transform: 'none' },
+        { opacity: 0, transform: full ? 'scale(.99)' : 'translateY(12px) scale(.985)' },
+      ],
+      { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
+    );
+    const timer = setTimeout(() => setRender(false), EXIT_MS + 30);
+    return () => clearTimeout(timer);
+  }, [open, full, render]);
 
   useEffect(() => {
     if (!open) return;
@@ -55,23 +86,25 @@ export function Overlay({
   }, [open, onClose]);
 
   // WAAPI entrance — fill:'none' so the resting state is the element's own
-  // visible style (never stuck invisible if the timeline is throttled).
+  // visible style (never stuck invisible if the timeline is throttled). Keyed
+  // on `render` too: the first open mounts the DOM one commit after `open`
+  // flips, and the animation must run on that commit, when the refs exist.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !render) return;
     scrimRef.current?.animate(
       [{ opacity: 0 }, { opacity: 1 }],
-      { duration: 180, delay: 20, easing: 'ease-out', fill: 'none' },
+      { duration: 200, delay: 10, easing: 'ease-out', fill: 'none' },
     );
     cardRef.current?.animate(
       [
-        { opacity: 0, transform: full ? 'scale(.99)' : 'translateY(14px) scale(.985)' },
+        { opacity: 0, transform: full ? 'scale(.985)' : 'translateY(20px) scale(.97)' },
         { opacity: 1, transform: 'none' },
       ],
-      { duration: 300, delay: 20, easing: 'cubic-bezier(.16,.84,.3,1)', fill: 'none' },
+      { duration: 380, delay: 10, easing: EASE.spring, fill: 'none' },
     );
-  }, [open, full]);
+  }, [open, render, full]);
 
-  if (!open) return null;
+  if (!render) return null;
 
   return (
     <div
@@ -82,13 +115,14 @@ export function Overlay({
         inset: 0,
         zIndex: 2000,
         background: 'rgba(24,22,17,0.28)',
-        backdropFilter: 'blur(2px)',
-        WebkitBackdropFilter: 'blur(2px)',
+        backdropFilter: 'blur(3px)',
+        WebkitBackdropFilter: 'blur(3px)',
         display: 'flex',
         alignItems: full ? 'stretch' : 'center',
         justifyContent: 'center',
         padding: full ? 0 : '32px 24px',
         overflow: 'auto',
+        pointerEvents: open ? 'auto' : 'none',
       }}
     >
       <div

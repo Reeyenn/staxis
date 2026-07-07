@@ -33,6 +33,8 @@ import { StatusDot } from './StatusPill';
 import { Sidebar, type SidebarAction } from './Sidebar';
 import { FilterBar } from './FilterBar';
 import { StockList } from './StockList';
+import { useRiseIn } from './motion';
+import { InvFx, HealthRing, CountUp, PingDot } from './fx';
 import { toDisplayItem } from './adapter';
 import { fmtMoney } from './format';
 import type { DisplayItem } from './types';
@@ -47,13 +49,14 @@ import { ScanInvoiceSheet } from './overlays/ScanInvoiceSheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
 import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
+import { AiReportSheet } from './overlays/AiReportSheet';
 import { apiGetMode } from './ordering-api';
 import { t, invLang, dateLocale } from './inv-i18n';
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
-// Helper" rail button now NAVIGATES to the /inventory/ai report screen instead
-// of opening an overlay (see openOverlay below). `ai` is intentionally NOT an
-// OverlayKey anymore.
+// Helper" rail button opens the AI report as a large overlay (`ai`) right on
+// the inventory tab — the silent predictions are surfaced there, the tab itself
+// stays manual. `?action=ai` deep-links to it.
 type OverlayKey =
   | 'count'
   | 'scan'
@@ -63,11 +66,12 @@ type OverlayKey =
   | 'reports'
   | 'history'
   | 'budgets'
+  | 'ai'
   | 'add'
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'add',
+  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'ai', 'add',
 ];
 
 export function InventoryShell() {
@@ -257,14 +261,10 @@ export function InventoryShell() {
 
   // ── Handlers ───────────────────────────────────────────────────────
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
-    // The "AI Helper" rail button navigates to the full AI report screen
-    // instead of opening an overlay — the inventory tab itself stays manual.
-    if (k === 'ai') {
-      router.push('/inventory/ai');
-      return;
-    }
+    // The "AI Helper" rail button opens the AI report as a large overlay like
+    // any other action — the inventory tab itself stays manual.
     setOverlay(k as OverlayKey);
-  }, [router]);
+  }, []);
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
@@ -310,7 +310,14 @@ export function InventoryShell() {
     }
   }, [user, activePropertyId, canViewFinancials]);
 
-  if (!user || !activePropertyId) {
+  // Page-load choreography: masthead blocks, rail and filter bar rise in as a
+  // cascade. Keyed on readiness (not mount) — on a hard page load the shell
+  // shows the loading branch first, and the cascade must fire when the real
+  // page appears. The board itself animates via FLIP in StockList.
+  const ready = !!user && !!activePropertyId;
+  const pageRef = useRiseIn<HTMLDivElement>([ready], { step: 75, dist: 16 });
+
+  if (!ready) {
     return (
       <div
         style={{
@@ -327,46 +334,68 @@ export function InventoryShell() {
 
   return (
     <div
+      ref={pageRef}
       style={{
-        padding: '26px 30px 48px',
+        padding: '12px 30px 48px',
         background: T.bg,
         color: T.ink,
         fontFamily: fonts.sans,
         minHeight: 'calc(100dvh - 90px)',
       }}
     >
-      {/* Header — centered stat cluster + date */}
+      <InvFx />
+
+      {/* Masthead — editorial title block on the left, living stats on the right.
+          Kept deliberately tight: this row + hairline is the only air above the board. */}
       <div
         style={{
           display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'flex-start',
-          marginBottom: 20,
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: '12px 40px',
+          flexWrap: 'wrap',
+          padding: '0 4px',
         }}
       >
+        <div data-rise>
+          <Caps size={9.5}>{todayLabel(L)} · {todayDow(L)}</Caps>
+          <div style={{ marginTop: 3 }}>
+            <Serif size={33}>{tx.pageTitle}</Serif>
+          </div>
+        </div>
+
         <div
           style={{
             display: 'flex',
-            gap: 32,
-            alignItems: 'flex-start',
+            gap: 34,
+            alignItems: 'center',
             flexWrap: 'wrap',
-            justifyContent: 'center',
           }}
         >
-          <HStat eyebrow={tx.stockHealth} big={stockHealth == null ? '—' : `${stockHealth}%`} dot="good" />
-          <HStat eyebrow={tx.orderNow} big={String(statusCounts.critical)} dot="critical" />
-          {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
-          {canViewFinancials && <HStat eyebrow={tx.onTheShelf} big={fmtMoney(shelfValue)} />}
-          <div style={{ paddingTop: 2 }}>
-            <Caps size={9}>{todayLabel(L)}</Caps>
-            <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim, marginTop: 2 }}>
-              {todayDow(L)}
-            </div>
+          <div data-rise style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <HealthRing pct={stockHealth} size={58} />
+            <Caps size={9}>{tx.stockHealth}</Caps>
           </div>
+          <HStat
+            eyebrow={tx.orderNow}
+            dot={statusCounts.critical > 0 ? 'critical' : 'good'}
+            ping={statusCounts.critical > 0}
+          >
+            <CountUp value={statusCounts.critical} />
+          </HStat>
+          {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
+          {canViewFinancials && (
+            <HStat eyebrow={tx.onTheShelf}>
+              <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
+            </HStat>
+          )}
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '224px 1fr', gap: 18, alignItems: 'start' }}>
+      {/* Editorial hairline that draws itself across on load */}
+      <div className="inv-rule-draw" style={{ height: 1, background: T.rule, margin: '10px 0 16px' }} />
+
+      <div className="inv-layout">
         <Sidebar
           lang={L}
           totalItems={totalItems}
@@ -379,7 +408,7 @@ export function InventoryShell() {
           onAction={openOverlay}
         />
         <div>
-          <div style={{ marginBottom: 16 }}>
+          <div data-rise style={{ marginBottom: 16 }}>
             <FilterBar
               lang={L}
               bucket={bucket}
@@ -466,6 +495,12 @@ export function InventoryShell() {
         budgets={budgets}
       />
 
+      <AiReportSheet
+        lang={L}
+        open={overlay === 'ai'}
+        onClose={closeOverlay}
+      />
+
       <ScanInvoiceSheet
         lang={L}
         open={overlay === 'scan'}
@@ -483,15 +518,29 @@ export function InventoryShell() {
   );
 }
 
-// Inline header stat: mono eyebrow (+ optional status dot) over a big serif value.
-function HStat({ eyebrow, big, dot }: { eyebrow: string; big: string; dot?: StockStatus }) {
+// Inline masthead stat: mono eyebrow (+ status dot, optionally pinging) over a
+// big italic-serif animated value.
+function HStat({
+  eyebrow,
+  dot,
+  ping,
+  children,
+}: {
+  eyebrow: string;
+  dot?: StockStatus;
+  ping?: boolean;
+  children: React.ReactNode;
+}) {
+  const dotColor = dot === 'critical' ? T.terra : dot === 'low' ? T.gold : T.forest;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+    <div data-rise style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <Caps size={9}>{eyebrow}</Caps>
-        {dot && <StatusDot s={dot} size={5} />}
+        {dot && (ping
+          ? <PingDot color={dotColor} size={5} />
+          : <StatusDot s={dot} size={5} />)}
       </div>
-      <Serif size={27}>{big}</Serif>
+      <Serif size={30}>{children}</Serif>
     </div>
   );
 }

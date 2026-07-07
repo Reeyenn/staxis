@@ -22,6 +22,8 @@ import { processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { fireDueReminders } from '@/lib/reminders/store';
+import { spawnDueRecurringTodos } from '@/lib/recurring-tasks/store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,18 +48,46 @@ export async function GET(req: NextRequest) {
   try {
     const stuckReset = await resetStuckSmsJobs(300); // 5 min
     const result = await processSmsJobs(TICK_LIMIT);
+
+    // Ride this 5-minute tick to fire due AI-assistant reminders (0302) and
+    // spawn today's recurring to-do instances (0303). Both are independent of
+    // SMS and wrapped so a failure here can NEVER break the SMS worker — the
+    // reminder/todo systems are best-effort per tick and self-heal (overdue
+    // reminders fire next tick; recurring spawns are idempotent per day).
+    let reminders = { due: 0, fired: 0, failed: 0 };
+    try {
+      reminders = await fireDueReminders();
+    } catch (remErr) {
+      log.error('[cron/process-sms-jobs] reminder firing failed (non-fatal)', {
+        requestId, msg: remErr instanceof Error ? remErr.message : String(remErr),
+      });
+    }
+    let recurring = { properties: 0, spawned: 0, skipped: 0 };
+    try {
+      recurring = await spawnDueRecurringTodos();
+    } catch (recErr) {
+      log.error('[cron/process-sms-jobs] recurring-todo spawn failed (non-fatal)', {
+        requestId, msg: recErr instanceof Error ? recErr.message : String(recErr),
+      });
+    }
+
     const durationMs = Date.now() - startedAt;
 
     log.info('[cron/process-sms-jobs] tick', {
       requestId,
       stuckReset,
       ...result,
+      reminders,
+      recurring,
       durationMs,
     });
 
     await writeCronHeartbeat('process-sms-jobs', {
       requestId,
-      notes: { claimed: result.claimed, sent: result.sent, retried: result.retried, dead: result.dead },
+      notes: {
+        claimed: result.claimed, sent: result.sent, retried: result.retried, dead: result.dead,
+        remindersFired: reminders.fired, recurringSpawned: recurring.spawned,
+      },
     });
     return ok({
       stuckReset,
@@ -65,6 +95,8 @@ export async function GET(req: NextRequest) {
       sent: result.sent,
       retried: result.retried,
       dead: result.dead,
+      reminders,
+      recurring,
       durationMs,
     }, { requestId });
   } catch (caughtErr) {

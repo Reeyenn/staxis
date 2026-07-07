@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { Header } from './Header';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
+import { AiActivityButton } from '@/components/agent/AiActivityButton';
 import { WakeWord } from '@/components/agent/WakeWord';
 import { VoicePanelProvider } from '@/components/agent/VoicePanelContext';
 import { VoiceModeOverlay } from '@/components/agent/VoiceModeOverlay';
@@ -16,13 +18,28 @@ import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
 import { WifiOff, RefreshCw } from 'lucide-react';
 import { GlobalAutoTranslate } from '@/components/i18n/GlobalAutoTranslate';
+import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { lang } = useLang();
   const { isOnline, pendingCount, isSyncing } = useSyncContext();
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { activePropertyId, activeProperty } = useProperty();
   const voiceSurfaceAvailable = Boolean(user && activePropertyId);
+
+  /* ── Per-hotel section gate ──
+     Block a page whose section this hotel has turned off — even via a direct
+     or bookmarked link. FAIL-OPEN while the property is still loading
+     (activeProperty null) so we never blank a page during load. No redirect:
+     the Header stays mounted so the user can navigate to an enabled section,
+     and redirecting would loop if Staxis (or every section) were off. */
+  const pathname = usePathname();
+  const currentSection = sectionForPath(pathname);
+  const sectionOff = Boolean(
+    activeProperty &&
+    currentSection &&
+    !isSectionEnabled(activeProperty.enabledSections, currentSection),
+  );
 
   /* ── Determine which banner (if any) to show ── */
   const showOffline  = !isOnline;
@@ -88,9 +105,36 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         maxWidth: '1920px',
         margin: '0 auto',
       }}>
-        {children}
+        {sectionOff ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            textAlign: 'center', gap: '10px',
+            padding: 'clamp(48px, 12vh, 120px) 24px',
+            minHeight: '50vh',
+          }}>
+            <div style={{
+              fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
+              fontSize: '18px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))',
+            }}>
+              {lang === 'es'
+                ? 'Esta sección está desactivada para tu hotel'
+                : 'This section is turned off for your hotel'}
+            </div>
+            <div style={{
+              fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
+              fontSize: '14px', color: 'var(--snow-ink2, var(--muted))', maxWidth: '420px', lineHeight: 1.5,
+            }}>
+              {lang === 'es'
+                ? 'Tu administrador de Staxis puede volver a activarla.'
+                : 'Your Staxis admin can turn it back on.'}
+            </div>
+          </div>
+        ) : (
+          children
+        )}
       </main>
       <FeedbackButton />
+      <AiActivityButton />
       <AskStaxisBar />
       {voiceSurfaceAvailable && <WakeWord />}
       {voiceSurfaceAvailable && <VoiceModeMount />}

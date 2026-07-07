@@ -16,6 +16,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { triggerMlTraining } from '@/lib/ml-invoke';
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, inventory_ai_mode')
+    .select('id, name, inventory_ai_mode, enabled_sections')
     .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
@@ -74,11 +75,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   log.info('ml-train-inventory: start', { requestId, shardHeader: sharded.header });
 
   // Skip ai_off properties before fan-out so they don't take a parallel slot.
-  type PropertyRow = { id: string; name: string; inventory_ai_mode?: string };
+  type PropertyRow = { id: string; name: string; inventory_ai_mode?: string; enabled_sections?: EnabledSections };
   const eligible: PropertyRow[] = [];
   const skipped: Array<{ property_id: string; status: string }> = [];
   for (const property of (sharded.items as unknown as PropertyRow[])) {
-    if (property.inventory_ai_mode === 'off') {
+    // Section gate (WP6): pause inventory training when the Inventory section
+    // is off, alongside the existing AI-mode toggle. Fail-open — only an
+    // explicit `false` skips. 'skipped_ai_off' is intentional, not a misconfig.
+    if (property.inventory_ai_mode === 'off' || !isSectionEnabled(property.enabled_sections, 'inventory')) {
       skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
     } else {
       eligible.push(property);

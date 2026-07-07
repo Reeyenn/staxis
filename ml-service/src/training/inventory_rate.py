@@ -54,7 +54,7 @@ from src.config import (
 from src.errors import PropertyMisconfiguredError, require_total_rooms
 from src.layers.bayesian_regression import BayesianRegression
 from src.supabase_client import get_supabase_client
-from src.training._exposure import build_exposure_rows, compose_exposure
+from src.training._exposure import build_exposure_rows, compose_exposure, to_local_naive
 from src.training._gates import should_force_deactivate
 from src.training._item_family import resolve_kappa, route_item_family
 from src.training._prospective_gate import (
@@ -430,6 +430,7 @@ def _train_single_item(
             total_rooms=total_rooms,
             settings=settings,
             client=client,
+            timezone=(property_meta or {}).get("timezone"),
         )
     return _train_occupancy_item(
         property_id=property_id,
@@ -444,6 +445,7 @@ def _train_single_item(
         total_rooms=total_rooms,
         settings=settings,
         client=client,
+        timezone=(property_meta or {}).get("timezone"),
     )
 
 
@@ -503,6 +505,7 @@ def _train_exposure_item(
     *,
     property_id, item, item_id, item_name, canonical_name, cohort_key,
     counts, orders, discards, daily_logs, total_rooms, settings, client,
+    timezone=None,
 ) -> Dict[str, Any]:
     """Reduced-exposure fit: window_consumption = s·(ΣCO + κ·ΣSO), no intercept.
 
@@ -516,6 +519,7 @@ def _train_exposure_item(
     rows, n_dropped_incomplete = build_exposure_rows(
         counts, orders, discards, daily_logs, kappa,
         settings.inventory_daily_process_var, settings.inventory_count_noise,
+        timezone=timezone,
     )
     if len(rows) < settings.inventory_min_events_per_item - 1:
         return {"skipped": True, "reason": "insufficient_exposure_windows",
@@ -593,6 +597,11 @@ def _train_exposure_item(
         baseline_pred = prior_s * X_train["exposure"].values
         baseline_mae = float(np.mean(np.abs(baseline_pred - y_train.values)))
         mean_observed = float(y.mean())
+    # Gate-2 denominator: with a tiny holdout (< 3 windows) one quiet week
+    # can make y_test.mean() ~0 and bench a good model on a coin flip. Use
+    # the pooled mean instead — a genuinely bad fit (MAE >= the item's
+    # overall mean) still trips the gate. See _gates.py docstring.
+    gate_mean_observed = float(y.mean()) if len(X_test) < 3 else mean_observed
     beats_baseline_pct = (
         float(max(0.0, (baseline_mae - validation_mae) / baseline_mae))
         if baseline_mae > 1e-9 else 0.0
@@ -601,6 +610,14 @@ def _train_exposure_item(
     trained_at_iso = datetime.utcnow().isoformat()
 
     # ── Prospective graduation gate ──────────────────────────────────────
+    # Per-pair baselines join on the count that closed each clean window:
+    # count_id → (exposure, days), so baseline = prior_s·exposure/days lands in
+    # the same daily-rate units as the pair's actual_value.
+    window_baselines = {
+        str(r["count_id"]): (float(r["exposure"]), float(r["days"]))
+        for r in rows
+        if r.get("count_id") and float(r.get("days") or 0) > 0
+    }
     grad = _evaluate_inventory_graduation(
         client=client,
         property_id=property_id,
@@ -609,6 +626,8 @@ def _train_exposure_item(
         prior_s=prior_s,
         kappa=kappa,
         settings=settings,
+        family_algorithms={INVENTORY_EXPOSURE_ALGORITHM},
+        window_baselines=window_baselines,
     )
     auto_fill_candidate = grad.passed
 
@@ -626,7 +645,7 @@ def _train_exposure_item(
         is_currently_active=is_active,
         validation_holdout_n=len(X_test),
         validation_mae=validation_mae,
-        mean_observed_rate=mean_observed,
+        mean_observed_rate=gate_mean_observed,
         training_row_count=len(X_train),
     )
     if _force_deactivate:
@@ -678,6 +697,11 @@ def _train_exposure_item(
             "graduation_wape": grad.wape,
             "graduation_prospective_mae": grad.prospective_mae,
             "graduation_baseline_mae": grad.baseline_mae,
+            # Thresholds persisted alongside the readings so the AI-report UI
+            # shows the trainer's ACTUAL bar (these are env-overridable — a
+            # TS-side mirror constant would silently lie after a tune).
+            "graduation_min_windows": settings.inventory_graduation_min_events,
+            "graduation_min_pairs": settings.inventory_graduation_min_prospective_pairs,
             **(model.get_config() if hasattr(model, "get_config") else {}),
         },
         "notes": mae_reject_notes,
@@ -709,6 +733,7 @@ def _train_exposure_item(
                 item_name=item_name, cohort_key=cohort_key, counts=counts,
                 orders=orders, discards=discards, daily_logs=daily_logs,
                 total_rooms=total_rooms, settings=settings, client=client,
+                timezone=timezone,
             )
         except Exception as exc:  # never let the challenger fail the primary
             print(json.dumps({
@@ -730,12 +755,13 @@ def _train_occupancy_shadow_challenger(
     *,
     property_id, item, item_id, item_name, cohort_key,
     counts, orders, discards, daily_logs, total_rooms, settings, client,
+    timezone=None,
 ) -> None:
     """Fit the legacy occupancy-form model and install it as a SHADOW run for an
     exposure-family item. Never auto_fill. Best-effort; failures are swallowed by
     the caller. Installed via p_should_shadow=true (the exposure primary stays
     active)."""
-    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms)
+    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms, timezone=timezone)
     if len(rows) < settings.inventory_min_events_per_item - 1:
         return
     df = pd.DataFrame(rows)
@@ -809,13 +835,14 @@ def _train_occupancy_item(
     *,
     property_id, item, item_id, item_name, cohort_key,
     counts, orders, discards, daily_logs, total_rooms, settings, client,
+    timezone=None,
 ) -> Dict[str, Any]:
     """LEGACY affine occupancy model for occupancy-independent public-area /
     staff items: daily_rate = a + b·(occupancy − baseline). Unchanged behavior
     from the pre-rebuild model (minus the dead XGBoost branch + retrain streak),
     now scoped to the occupancy family only.
     """
-    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms)
+    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms, timezone=timezone)
     if len(rows) < settings.inventory_min_events_per_item - 1:
         return {"skipped": True, "reason": "insufficient_consecutive_pairs",
                 "pairs": len(rows), "family": "occupancy"}
@@ -875,11 +902,10 @@ def _train_occupancy_item(
 
     # Occupancy family also graduates via the prospective gate now (streak
     # retired). n_training_windows = clean rows; baseline = per-room prior
-    # applied via the exposure-agnostic MAE path (baseline s isn't defined for
-    # occupancy items, so the prospective baseline uses the cohort per-room rate
-    # scaled to total_rooms — computed inside _evaluate_inventory_graduation
-    # falls back to prior_s=0 which makes the beat-baseline gate compare against
-    # "predict 0"; for occupancy items we instead reuse the per-room baseline).
+    # scaled to total_rooms (already a daily rate — no window join needed).
+    # Pairs are scoped to this family's own fitted runs ('bayesian'), so
+    # cold-start-prior pairs and exposure-generation pairs can neither
+    # graduate nor block an occupancy fit.
     grad = _evaluate_inventory_graduation(
         client=client,
         property_id=property_id,
@@ -888,6 +914,7 @@ def _train_occupancy_item(
         prior_s=None,  # occupancy items have no per-checkout s; baseline via per-room
         kappa=None,
         settings=settings,
+        family_algorithms={"bayesian"},
         occupancy_baseline_rate_abs=baseline_rate_abs,
     )
     auto_fill_candidate = grad.passed
@@ -897,13 +924,16 @@ def _train_occupancy_item(
     shadow_started_at = trained_at_iso if is_shadow else None
 
     mae_reject_notes: Optional[str] = None
+    # Pooled-mean denominator at tiny holdouts — same flap guard as the
+    # exposure path (see _gates.py docstring).
+    _gate_mean = float(y.mean()) if len(X_test) < 3 else mean_observed_rate
     _force_deactivate, _gate_note = should_force_deactivate(
         algorithm=algorithm,
         xgboost_inference_ready=False,
         is_currently_active=is_active,
         validation_holdout_n=len(X_test),
         validation_mae=validation_mae,
-        mean_observed_rate=mean_observed_rate,
+        mean_observed_rate=_gate_mean,
         training_row_count=len(X_train),
     )
     if _force_deactivate:
@@ -946,6 +976,10 @@ def _train_occupancy_item(
             "mean_observed_rate": mean_observed_rate,
             "graduation_reason": grad.reason,
             "graduation_n_pairs": grad.n_pairs,
+            "graduation_span_days": grad.span_days,
+            "graduation_wape": grad.wape,
+            "graduation_min_windows": settings.inventory_graduation_min_events,
+            "graduation_min_pairs": settings.inventory_graduation_min_prospective_pairs,
             **(model.get_config() if hasattr(model, "get_config") else {}),
         },
         "notes": mae_reject_notes,
@@ -971,6 +1005,7 @@ def _build_training_rows(
     discards: List[Dict[str, Any]],
     daily_logs: List[Dict[str, Any]],
     total_rooms: int,
+    timezone: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Compute (daily_rate, occupancy_pct) for each consecutive pair of counts.
 
@@ -988,8 +1023,11 @@ def _build_training_rows(
         prev = counts[i - 1]
         curr = counts[i]
         try:
-            t_prev = pd.to_datetime(prev["counted_at"]).tz_localize(None)
-            t_curr = pd.to_datetime(curr["counted_at"]).tz_localize(None)
+            # Property-local clock, matching build_exposure_rows — an evening
+            # count is next-day UTC and would shift the occupancy window's
+            # half-open day set one day forward (see _exposure.to_local_naive).
+            t_prev = to_local_naive(prev["counted_at"], timezone)
+            t_curr = to_local_naive(curr["counted_at"], timezone)
         except Exception:
             continue
         days_elapsed = (t_curr - t_prev).total_seconds() / 86400.0
@@ -1017,8 +1055,8 @@ def _build_training_rows(
         orders_between = sum(
             float(o.get("quantity") or 0)
             for o in orders
-            if pd.to_datetime(o.get("received_at")).tz_localize(None) > t_prev
-            and pd.to_datetime(o.get("received_at")).tz_localize(None) <= t_curr
+            if to_local_naive(o.get("received_at"), timezone) > t_prev
+            and to_local_naive(o.get("received_at"), timezone) <= t_curr
         )
         # Discards use `discarded_at` (NOT NULL, defaults now() per migration
         # 0061:71). The previous code used `created_at` which is also NOT
@@ -1029,8 +1067,8 @@ def _build_training_rows(
         discards_between = sum(
             float(d.get("quantity") or 0)
             for d in discards
-            if pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) > t_prev
-            and pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) <= t_curr
+            if to_local_naive(d.get("discarded_at") or d.get("created_at"), timezone) > t_prev
+            and to_local_naive(d.get("discarded_at") or d.get("created_at"), timezone) <= t_curr
         )
 
         prev_stock = float(prev.get("counted_stock") or 0)
@@ -1282,10 +1320,18 @@ def _lookup_exposure_prior_with_source(
             min(1.0, EXPOSURE_PRIOR_STRENGTH_CAP), "default")
 
 
-def _fetch_item_model_run_ids(client, property_id: str, item_id: str) -> List[str]:
-    """All model_run ids for this (property, item) — used to scope prediction_log
+def _fetch_item_model_run_ids(
+    client, property_id: str, item_id: str, algorithms: Optional[set] = None,
+) -> List[str]:
+    """Model_run ids for this (property, item) — used to scope prediction_log
     to this item (inventory prediction_log rows carry model_run_id, not a direct
-    item_id column; see post-count-process/route.ts)."""
+    item_id column; see post-count-process/route.ts).
+
+    When `algorithms` is given, only runs of those algorithms qualify. This is
+    the GENERATION filter: pairs logged against a cold-start prior or a retired
+    model family measure THAT system's accuracy, not the current fit's — they
+    must not certify (or block) the candidate being evaluated.
+    """
     runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "inventory_rate", "item_id": item_id},
@@ -1293,7 +1339,14 @@ def _fetch_item_model_run_ids(client, property_id: str, item_id: str) -> List[st
         descending=True,
         limit=200,
     )
-    return [str(r.get("id")) for r in (runs or []) if r.get("id")]
+    out: List[str] = []
+    for r in runs or []:
+        if not r.get("id"):
+            continue
+        if algorithms is not None and str(r.get("algorithm")) not in algorithms:
+            continue
+        out.append(str(r.get("id")))
+    return out
 
 
 def _evaluate_inventory_graduation(
@@ -1305,25 +1358,42 @@ def _evaluate_inventory_graduation(
     prior_s,
     kappa,
     settings,
+    family_algorithms: Optional[set] = None,
+    window_baselines: Optional[Dict[str, Tuple[float, float]]] = None,
     occupancy_baseline_rate_abs: Optional[float] = None,
 ):
     """Pull this item's prospective prediction_log pairs and run the pure gate.
 
     prediction_log inventory rows have no item_id column; they carry model_run_id
     (FK to model_runs, which IS per-item). We scope the pairs by this item's set
-    of model_run ids. predicted_value / actual_value are the per-DAY rates the
-    post-count-process route logged (predicted vs realized).
+    of model_run ids — restricted to `family_algorithms` (same-generation runs
+    only) — and to pairs no older than the recency window. An item with NO
+    qualifying runs gets NO pairs (never the whole property's — an empty scope
+    must fail gate B, not pool everyone else's evidence).
 
-    The baseline each pair is compared against:
-      • exposure family: prior_s (per-checkout-equivalent) — but prediction_log
-        stores daily RATES, and we don't have per-pair exposure here, so we use
-        the model's own predicted_value's implied baseline is not recoverable.
-        Instead we use the cohort prior's *rate* proxy: for exposure items we
-        approximate the baseline daily rate as prior_s (units per checkout-equiv)
-        — a conservative floor. When prior_s is None (occupancy family), we use
-        occupancy_baseline_rate_abs (the per-room prior scaled to total_rooms).
+    The baseline each pair is compared against (same units as actual_value,
+    which is a realized DAILY RATE over the pair's count window):
+      • exposure family: prior_s · (window_exposure / window_days) — the cohort
+        prior applied to the SAME window the actual was measured on. The join
+        key is prediction_log.inventory_count_id → window_baselines (built from
+        this train run's clean windows). Pairs without a matching clean window
+        are dropped: their window failed hygiene, so neither the actual nor a
+        baseline for it is trustworthy.
+      • occupancy family: occupancy_baseline_rate_abs (per-room prior × rooms),
+        already a daily rate — no window join needed.
     """
-    run_ids = set(_fetch_item_model_run_ids(client, property_id, item_id))
+    run_ids = set(_fetch_item_model_run_ids(
+        client, property_id, item_id, algorithms=family_algorithms,
+    ))
+    if not run_ids:
+        return evaluate_prospective_gate(
+            n_training_windows=n_training_windows,
+            pairs=[],
+            min_training_windows=settings.inventory_graduation_min_events,
+            min_pairs=settings.inventory_graduation_min_prospective_pairs,
+            span_days=settings.inventory_graduation_prospective_span_days,
+            wape_threshold=settings.inventory_graduation_prospective_wape,
+        )
     log_rows = client.fetch_many(
         "prediction_log",
         filters={"property_id": property_id, "layer": "inventory_rate"},
@@ -1331,26 +1401,48 @@ def _evaluate_inventory_graduation(
         descending=True,
         limit=5000,
     )
-    # Baseline daily-rate proxy per pair.
-    if prior_s is not None:
-        baseline_rate = float(prior_s)
-    elif occupancy_baseline_rate_abs is not None:
-        baseline_rate = float(occupancy_baseline_rate_abs)
-    else:
-        baseline_rate = 0.0
+
+    max_age_days = int(getattr(settings, "inventory_graduation_pair_max_age_days", 90))
+    oldest_allowed = datetime.utcnow().date() - timedelta(days=max_age_days)
 
     pairs: List[ProspectivePair] = []
+    seen_count_ids: set = set()
     for row in log_rows or []:
         mr = row.get("model_run_id")
-        if run_ids and str(mr) not in run_ids:
+        if str(mr) not in run_ids:
             continue
+        # One pair per count window: the two writers (count-time route +
+        # daily sweep) can rarely both land a row for the same count with
+        # different prediction ids; double-counting would double-weight
+        # that window in the WAPE. Rows are ordered date-desc, so the
+        # first (newest) row per count wins.
+        cid = row.get("inventory_count_id")
+        if cid is not None:
+            if str(cid) in seen_count_ids:
+                continue
+            seen_count_ids.add(str(cid))
         pv = row.get("predicted_value")
         av = row.get("actual_value")
         if pv is None or av is None:
             continue
         d = parse_operational_date(row.get("date"))
-        if d is None:
+        if d is None or d < oldest_allowed:
             continue
+
+        # Per-pair baseline in daily-rate units.
+        if prior_s is not None:
+            wb = (window_baselines or {}).get(str(row.get("inventory_count_id") or ""))
+            if wb is None:
+                continue  # no clean window behind this pair → not evidence
+            exposure, days = wb
+            if days <= 0:
+                continue
+            baseline_rate = float(prior_s) * float(exposure) / float(days)
+        elif occupancy_baseline_rate_abs is not None:
+            baseline_rate = float(occupancy_baseline_rate_abs)
+        else:
+            baseline_rate = 0.0
+
         try:
             pairs.append(ProspectivePair(
                 predicted=float(pv),

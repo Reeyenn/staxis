@@ -18,7 +18,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { localDatesForProjection, hasFreshPmsEvidence } from '@/app/api/cron/seal-daily/route';
+import {
+  localDatesForProjection,
+  hasFreshPmsEvidence,
+  preserveSealedOccupancy,
+  datesNeedingOccupancyBackfill,
+  type SealedOccupancyFields,
+} from '@/app/api/cron/seal-daily/route';
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -131,6 +137,101 @@ describe('seal-daily positive-evidence gate — hasFreshPmsEvidence', () => {
     assert.equal(
       hasFreshPmsEvidence({ has_error: false, last_good_at: hoursAgo(24), captured_at: null }, now),
       true,
+    );
+  });
+});
+
+describe('seal-daily last-good preservation — preserveSealedOccupancy', () => {
+  const real: SealedOccupancyFields = { occupied: 48, checkouts: 21, stayovers: 27, recommended_staff: 4 };
+  const allNull: SealedOccupancyFields = { occupied: null, checkouts: null, stayovers: null, recommended_staff: null };
+
+  test('a later NULL tick never erases sealed real values (the boundary-day bug)', () => {
+    // Tick 1 sealed real data; tick 2 runs after evidence crossed the 24h
+    // staleness line and computes all-NULL. The real values must survive.
+    assert.deepEqual(preserveSealedOccupancy(allNull, real), real);
+  });
+
+  test('fresh real values overwrite an earlier NULL seal', () => {
+    assert.deepEqual(preserveSealedOccupancy(real, allNull), real);
+  });
+
+  test('no existing row → computed values pass through unchanged', () => {
+    assert.deepEqual(preserveSealedOccupancy(allNull, null), allNull);
+    assert.deepEqual(preserveSealedOccupancy(real, null), real);
+  });
+
+  test('zero is a real value, not a gap — 0 wins over an existing non-zero', () => {
+    // An empty hotel sealing 0 checkouts from live data is truth; NULL is the
+    // only "no evidence" marker. ?? (not ||) is load-bearing here.
+    const zero: SealedOccupancyFields = { occupied: 0, checkouts: 0, stayovers: 0, recommended_staff: 0 };
+    assert.deepEqual(preserveSealedOccupancy(zero, real), zero);
+  });
+
+  test('per-field merge — each field preserves independently', () => {
+    const partial: SealedOccupancyFields = { occupied: 50, checkouts: null, stayovers: 30, recommended_staff: null };
+    assert.deepEqual(
+      preserveSealedOccupancy(partial, real),
+      { occupied: 50, checkouts: 21, stayovers: 30, recommended_staff: 4 },
+    );
+  });
+});
+
+describe('seal-daily outage repair — datesNeedingOccupancyBackfill', () => {
+  const target = '2026-07-10';
+  const row = (date: string, co: number | null, so: number | null) => ({ date, checkouts: co, stayovers: so });
+
+  test('no reservation history at all → nothing to backfill (never-connected hotel)', () => {
+    assert.deepEqual(
+      datesNeedingOccupancyBackfill({ targetDate: target, existing: [], historyFloor: null }),
+      [],
+    );
+  });
+
+  test('missing rows and NULL-checkout rows qualify; sealed rows do not', () => {
+    const existing = [
+      row('2026-07-09', 20, 30),   // sealed fine
+      row('2026-07-08', null, null), // outage day, sealed NULL
+      // 2026-07-07 has no row at all (seal never ran)
+      row('2026-07-06', 18, 25),   // sealed fine
+    ];
+    const got = datesNeedingOccupancyBackfill({
+      targetDate: target, existing, historyFloor: '2026-07-05', lookbackDays: 5,
+    });
+    assert.deepEqual(got, ['2026-07-05', '2026-07-07', '2026-07-08']);
+  });
+
+  test('dates before the reservation-history floor are excluded (pre-go-live)', () => {
+    const got = datesNeedingOccupancyBackfill({
+      targetDate: target, existing: [], historyFloor: '2026-07-08', lookbackDays: 14,
+    });
+    // Only the floor day and later qualify — never a date the robot can't know.
+    assert.deepEqual(got, ['2026-07-08', '2026-07-09']);
+  });
+
+  test('a row with one NULL of the pair still qualifies for repair', () => {
+    const got = datesNeedingOccupancyBackfill({
+      targetDate: target, existing: [row('2026-07-09', 20, null)], historyFloor: '2026-07-09', lookbackDays: 3,
+    });
+    assert.deepEqual(got, ['2026-07-09']);
+  });
+
+  test('the target date itself is never a candidate (main seal owns it)', () => {
+    const got = datesNeedingOccupancyBackfill({
+      targetDate: target, existing: [], historyFloor: '2026-01-01', lookbackDays: 2,
+    });
+    assert.deepEqual(got, ['2026-07-08', '2026-07-09']);
+    assert.ok(!got.includes(target));
+  });
+
+  test('fully healed window → empty candidate list (steady-state cheapness)', () => {
+    const existing = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date('2026-07-10T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() - (i + 1));
+      return row(d.toISOString().slice(0, 10), 10, 10);
+    });
+    assert.deepEqual(
+      datesNeedingOccupancyBackfill({ targetDate: target, existing, historyFloor: '2026-01-01' }),
+      [],
     );
   });
 });

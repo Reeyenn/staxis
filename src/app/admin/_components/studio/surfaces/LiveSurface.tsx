@@ -44,6 +44,8 @@ import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite, Backdrop, MODAL_CARD,
 } from '../surface-kit';
 import { CoveragePickerModal } from '../CoveragePickerModal';
+import { SectionsModal } from '../SectionsModal';
+import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
 const PAGE_SIZE = 50;
@@ -60,6 +62,8 @@ interface PropertyRow {
   syncFreshnessMin: number | null;
   staffCount: number;
   createdAt: string;
+  // Full resolved 8-key section on/off map (default-ON coalesced server-side).
+  enabledSections: Record<AppSection, boolean>;
 }
 interface ErrorGroup {
   source: string | null;
@@ -148,6 +152,8 @@ export function LiveSurface() {
   const [sel, setSel] = useState<EnrichedRow | null>(null);
   // Hotel currently being assigned a PMS coverage (null = picker closed).
   const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
+  // Hotel whose section on/off toggles are open (null = modal closed).
+  const [sectionsHotel, setSectionsHotel] = useState<EnrichedRow | null>(null);
   // Hotel pending permanent deletion (null = confirm closed).
   const [deleteHotel, setDeleteHotel] = useState<EnrichedRow | null>(null);
 
@@ -276,7 +282,7 @@ export function LiveSurface() {
             <div style={{ marginTop: 10 }}><DarkEmpty text="No live hotels yet — they'll appear once their first sync completes." /></div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-              {enriched.map((h) => <MapCard key={h.id} h={h} onOpen={() => setSel(h)} onAssign={() => setPickerHotel(h)} onDelete={() => setDeleteHotel(h)} />)}
+              {enriched.map((h) => <MapCard key={h.id} h={h} onOpen={() => setSel(h)} onAssign={() => setPickerHotel(h)} onSections={() => setSectionsHotel(h)} onDelete={() => setDeleteHotel(h)} />)}
             </div>
           )}
 
@@ -339,6 +345,7 @@ export function LiveSurface() {
           sms={sms}
           onClose={() => setSel(null)}
           onPickCoverage={() => setPickerHotel(sel)}
+          onOpenSections={() => { setSectionsHotel(sel); setSel(null); }}
           onDetached={() => { setSel(null); void load(); }}
           onRequestDelete={() => { setDeleteHotel(sel); setSel(null); }}
         />
@@ -350,6 +357,15 @@ export function LiveSurface() {
           currentPmsFamily={pickerHotel.pmsType}
           onClose={() => setPickerHotel(null)}
           onAssigned={() => { setPickerHotel(null); void load(); }}
+        />
+      )}
+
+      {sectionsHotel && (
+        <SectionsModal
+          propertyId={sectionsHotel.id}
+          currentSections={sectionsHotel.enabledSections}
+          onClose={() => setSectionsHotel(null)}
+          onSaved={() => { setSectionsHotel(null); void load(); }}
         />
       )}
 
@@ -438,11 +454,12 @@ function DarkHealth({ label, n, tone }: { label: string; n: number; tone: DotTon
 }
 
 // ── Hotel card — single-click flips front/back, double-click → detail ────
-function MapCard({ h, onOpen, onAssign, onDelete }: { h: EnrichedRow; onOpen: () => void; onAssign: () => void; onDelete: () => void }) {
+function MapCard({ h, onOpen, onAssign, onSections, onDelete }: { h: EnrichedRow; onOpen: () => void; onAssign: () => void; onSections: () => void; onDelete: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [back, setBack] = useState(false);
   const tone = cardTone(h);
   const unassigned = h.pmsType === null;
+  const sectionsOff = APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length;
   useEffect(() => {
     const el = ref.current;
     if (el && typeof el.animate === 'function') {
@@ -498,6 +515,19 @@ function MapCard({ h, onOpen, onAssign, onDelete }: { h: EnrichedRow; onOpen: ()
               {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · ${freshLabel(h.syncFreshnessMin)}` : ''}` : 'not connected'}
             </div>
           )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            <Btn
+              size="sm"
+              variant="ghost"
+              onClick={(e) => { e.stopPropagation(); onSections(); }}
+              style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}
+            >
+              Sections
+            </Btn>
+            {sectionsOff > 0 && (
+              <Pill tone="terracotta" style={{ fontSize: 9, padding: '2px 6px' }}>{sectionsOff} off</Pill>
+            )}
+          </div>
         </div>
       ) : (
         <div style={{ transform: 'scaleX(-1)' }}>
@@ -582,11 +612,12 @@ function DeleteHotelModal({ h, onClose, onDeleted }: {
 }
 
 // ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onRequestDelete }: {
+function MapDetail({ h, sms, onClose, onPickCoverage, onOpenSections, onDetached, onRequestDelete }: {
   h: EnrichedRow;
   sms: SmsHealthRow[];
   onClose: () => void;
   onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
+  onOpenSections: () => void;   // opens SectionsModal for this hotel
   onDetached: () => void;       // detach succeeded → refetch + close
   onRequestDelete: () => void;  // open the shared DeleteHotelModal for this hotel
 }) {
@@ -663,8 +694,11 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onDetached, onRequestDelet
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Btn variant="primary" href={`/admin/properties/${h.id}`}>Property page →</Btn>
+          <Btn variant="ghost" onClick={onOpenSections}>
+            Sections{APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length > 0 ? ` · ${APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length} off` : ''}
+          </Btn>
           <Btn variant="ghost" onClick={onClose}>Close</Btn>
         </div>
 

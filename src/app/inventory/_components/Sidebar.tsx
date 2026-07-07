@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useRef } from 'react';
-import { T, fonts, statusColor } from './tokens';
+import React, { useEffect, useRef } from 'react';
+import { T, fonts } from './tokens';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
-import { Motion } from './motion';
+import { Motion, EASE } from './motion';
+import { CountUp, TickNum } from './fx';
 import { fmtMoney } from './format';
 import { t, type Lang } from './inv-i18n';
 
@@ -37,7 +38,9 @@ interface SidebarProps {
 }
 
 // The Triage left action rail (224px, sticky). Full action set; Orders +
-// Ordering settings are management-only.
+// Ordering settings are management-only. The primary "Start count" button
+// carries a slow sheen sweep (decorative, reduced-motion gated) so the #1
+// daily action is always the brightest thing on the rail.
 export function Sidebar({
   lang,
   totalItems,
@@ -53,6 +56,8 @@ export function Sidebar({
 
   return (
     <aside
+      className="inv-rail"
+      data-rise
       style={{
         background: T.bg,
         border: `1px solid ${T.rule}`,
@@ -115,9 +120,12 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
     <button
       ref={ref}
       type="button"
+      className={[
+        'inv-rail-btn',
+        plain ? 'inv-rail-plain' : '',
+        primary ? 'inv-sheen' : '',
+      ].join(' ').trim()}
       onClick={() => { Motion.pop(ref.current, 0.96); onClick(); }}
-      onMouseEnter={(e) => { if (plain) e.currentTarget.style.background = T.inkWash; }}
-      onMouseLeave={(e) => { if (plain) e.currentTarget.style.background = 'transparent'; }}
       style={{
         padding: '9px 12px',
         borderRadius: 9,
@@ -138,7 +146,7 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
         {accent && <StatusDot s="critical" size={6} />}
-        {(primary || teal) && <Serif size={14}>→</Serif>}
+        {(primary || teal) && <Serif size={14}><span className="inv-arrow">→</span></Serif>}
         {label}
       </span>
       {badge != null && (
@@ -154,7 +162,7 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
             color: primary ? T.bg : T.dim,
           }}
         >
-          {badge}
+          <TickNum>{badge}</TickNum>
         </span>
       )}
     </button>
@@ -165,11 +173,35 @@ function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: La
   const tx = t(lang);
   const pct = cap > 0 ? Math.min(1, spent / cap) : 0;
   const remaining = Math.max(0, cap - spent);
+  // Honest utilization color: comfortably inside budget = forest, past 80% of
+  // the cap = gold, at/over the cap = terra. (Same family as stock statuses.)
+  const barColor = pct >= 1 ? T.terra : pct >= 0.8 ? T.gold : T.forest;
+
+  // The fill inks in from its previous level, like the stock bars.
+  const fillRef = useRef<HTMLSpanElement>(null);
+  const prevPct = useRef(0);
+  useEffect(() => {
+    const el = fillRef.current;
+    if (!el) return;
+    const from = prevPct.current;
+    if (from !== pct) {
+      el.animate(
+        [{ width: `${from * 100}%` }, { width: `${pct * 100}%` }],
+        { duration: 900, easing: EASE.settle, fill: 'none' },
+      );
+    }
+    prevPct.current = pct;
+  }, [pct]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginTop: 6 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 }}>
-        <Serif size={22}>{fmtMoney(spent)}</Serif>
-        <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>{tx.of} {fmtMoney(cap)}</span>
+        <Serif size={22}>
+          <CountUp value={spent} format={(n) => fmtMoney(n)} />
+        </Serif>
+        {cap > 0 && (
+          <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>{tx.of} {fmtMoney(cap)}</span>
+        )}
       </div>
       <span
         style={{
@@ -182,12 +214,14 @@ function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: La
         }}
       >
         <span
+          ref={fillRef}
           style={{
             display: 'block',
             height: '100%',
             width: `${pct * 100}%`,
-            background: statusColor.good,
+            background: barColor,
             borderRadius: 5,
+            transition: 'background .4s ease',
           }}
         />
       </span>

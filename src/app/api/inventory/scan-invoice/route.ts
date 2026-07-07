@@ -1,11 +1,18 @@
 /**
  * /api/inventory/scan-invoice — extract line items from a vendor invoice
- * image (or PDF page-as-image) using Claude Vision.
+ * using Claude Vision. Handles single or multi-page photo invoices and PDFs.
  *
- * Request:
- *   { pid: string, imageBase64: string, mediaType: 'image/jpeg'|... }
+ * Request — exactly ONE of three body shapes (pid always required):
+ *   1. Legacy single image:
+ *        { pid, imageBase64: string, mediaType: 'image/jpeg'|'image/png'|'image/webp'|'image/gif' }
+ *      (normalized internally to a one-entry pages array).
+ *   2. Multi-page photos:
+ *        { pid, pages: [{ imageBase64, mediaType }, ...] }  — 1 to 5 entries.
+ *   3. PDF (the model reads all pages in one call):
+ *        { pid, pdfBase64: string }                        — raw base64, no data: prefix.
+ *   Sending both `pages`/`imageBase64` and `pdfBase64`, or neither, is a 400.
  *
- * Response:
+ * Response (UNCHANGED — merged across pages):
  *   { ok: true, vendor_name, invoice_date, invoice_number, items: [...] }
  *
  * Capability check: pid must be a uuid, and the route uses supabaseAdmin so
@@ -15,6 +22,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
+import { mergeInvoicePages, type ExtractedInvoice } from '@/lib/invoice-scan-merge';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -27,32 +35,18 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-interface RequestBody {
-  pid: string;
-  imageBase64: string;
-  mediaType: string;
-}
-
-interface ExtractedInvoice {
-  vendor_name: string | null;
-  invoice_date: string | null;
-  invoice_number: string | null;
-  items: Array<{
-    item_name: string;
-    quantity: number;          // resolved units (cases × pack_size when applicable)
-    quantity_cases: number | null;
-    pack_size: number | null;  // hint for the user when they wire a new item
-    unit_cost: number | null;
-    total_cost: number | null;
-  }>;
-}
-
 const isUuid = (s: unknown): s is string =>
   typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
 // Anthropic Vision only accepts these four. iPhone HEIC/HEIF must be
 // converted (or rejected at the picker) before reaching here.
 const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
+type VisionMediaType = typeof SUPPORTED_MEDIA_TYPES[number];
+
+// Cap the multi-page photo fan-out. Each page is its own ~55s vision call
+// (parallel — see below), and 5 pages covers any realistic paper invoice a
+// housekeeper photographs. More than 5 is almost certainly a mis-tap.
+const MAX_PAGES = 5;
 
 const PROMPT = `Extract all line items from this invoice or receipt.
 
@@ -87,6 +81,25 @@ Return ONLY a JSON object with this exact shape, no prose, no code fences:
 
 If the image is not an invoice or receipt, return { "items": [] } and null vendor/date/number.`;
 
+// Per-page schema validator — same shape check the single-image route used.
+// Reject null, arrays, primitives, and missing-items so a malformed-but-valid-
+// JSON response produces a controlled 422 instead of a crash on result.items.
+function validateInvoice(raw: unknown): ExtractedInvoice {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new VisionSchemaError('expected an object at top level');
+  }
+  const obj = raw as Record<string, unknown>;
+  if (!Array.isArray(obj.items)) {
+    throw new VisionSchemaError('missing or non-array "items" field');
+  }
+  return {
+    vendor_name: typeof obj.vendor_name === 'string' ? obj.vendor_name : null,
+    invoice_date: typeof obj.invoice_date === 'string' ? obj.invoice_date : null,
+    invoice_number: typeof obj.invoice_number === 'string' ? obj.invoice_number : null,
+    items: obj.items as ExtractedInvoice['items'],
+  };
+}
+
 export async function POST(req: NextRequest) {
   // Auth gate: this route hits the Anthropic Vision API on each request.
   // Without a session check, anyone with a guessed property UUID could
@@ -94,38 +107,101 @@ export async function POST(req: NextRequest) {
   const session = await requireSession(req);
   if (!session.ok) return session.response;
 
-  let body: RequestBody;
+  let body: unknown;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
   }
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+  }
+  const b = body as Record<string, unknown>;
 
-  const { pid, imageBase64, mediaType } = body;
+  const pid = b.pid;
   if (!isUuid(pid)) {
     return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
   }
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
-  if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-    return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
+
+  // ── Normalize the three body shapes ────────────────────────────────
+  // 1. legacy   { imageBase64, mediaType }        → one-entry pages array
+  // 2. multi    { pages: [{ imageBase64, mediaType }] }
+  // 3. pdf      { pdfBase64 }
+  // Exactly one media input must be present. `pdfBase64` and any image
+  // input (pages/imageBase64) are mutually exclusive.
+  const hasPdf = b.pdfBase64 !== undefined;
+  const hasImages = b.pages !== undefined || b.imageBase64 !== undefined;
+  if (hasPdf && hasImages) {
+    return NextResponse.json({ ok: false, error: 'ambiguous_body' }, { status: 400 });
   }
-  if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as typeof SUPPORTED_MEDIA_TYPES[number])) {
-    return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
+  if (!hasPdf && !hasImages) {
+    return NextResponse.json({ ok: false, error: 'missing_image' }, { status: 400 });
   }
 
-  // ── Rate limit (May 2026 audit pass-5) ─────────────────────────────
-  // Vision calls cost $0.003-0.01 per image. Session-gated so this is
-  // never anonymous spam, but a compromised session or buggy retry
-  // loop in the client could fire hundreds of scans/hour with no cap.
-  // 50/hr per property is generous (Maria scanning a stack of weekly
-  // invoices); fail-open behavior on Postgres errors is documented in
-  // api-ratelimit.ts and now visible via the doctor's api_limits_
-  // writable check.
-  const rl = await checkAndIncrementRateLimit('scan-invoice', pid);
-  if (!rl.allowed) {
-    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) as NextResponse;
+  // Build the ordered list of image pages (empty for the PDF path).
+  let pages: Array<{ imageBase64: string; mediaType: VisionMediaType }> = [];
+  let pdfBase64: string | null = null;
+
+  if (hasPdf) {
+    if (typeof b.pdfBase64 !== 'string' || b.pdfBase64.length < 100) {
+      return NextResponse.json({ ok: false, error: 'invalid_pdf' }, { status: 400 });
+    }
+    pdfBase64 = b.pdfBase64;
+  } else {
+    // Collect the raw page entries: multi-page `pages` array, or the legacy
+    // single `{ imageBase64, mediaType }` wrapped as one page.
+    let rawPages: unknown[];
+    if (b.pages !== undefined) {
+      if (!Array.isArray(b.pages)) {
+        return NextResponse.json({ ok: false, error: 'invalid_pages' }, { status: 400 });
+      }
+      rawPages = b.pages;
+    } else {
+      rawPages = [{ imageBase64: b.imageBase64, mediaType: b.mediaType }];
+    }
+    if (rawPages.length < 1 || rawPages.length > MAX_PAGES) {
+      return NextResponse.json(
+        { ok: false, error: 'invalid_page_count', detail: `Send 1 to ${MAX_PAGES} pages.` },
+        { status: 400 },
+      );
+    }
+    // Validate each page: string of a plausible length + supported media type.
+    // (Deep magic-byte / size checks happen in vision-extract's validator.)
+    const normalized: Array<{ imageBase64: string; mediaType: VisionMediaType }> = [];
+    for (const p of rawPages) {
+      const entry = (p ?? {}) as Record<string, unknown>;
+      const img = entry.imageBase64;
+      const mt = entry.mediaType;
+      if (typeof img !== 'string' || img.length < 100) {
+        return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
+      }
+      if (!SUPPORTED_MEDIA_TYPES.includes(mt as VisionMediaType)) {
+        return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
+      }
+      normalized.push({ imageBase64: img, mediaType: mt as VisionMediaType });
+    }
+    pages = normalized;
+  }
+
+  // ── Rate limit (May 2026 audit pass-5; multi-page May extended) ─────
+  // Vision calls cost $0.003-0.01 per page. Count ONE increment per image
+  // page (a 5-page invoice = 5 hits) and ONE increment for a PDF (the model
+  // reads all its pages in a single Anthropic call, so it's one billable
+  // request regardless of page count). We increment per page BEFORE fanning
+  // out the vision calls, so a request that would push the property over its
+  // hourly cap is stopped (429) at the first denied page — we never fire the
+  // remaining vision calls once we're over. 50/hr per property is generous
+  // (Maria scanning a stack of weekly invoices); fail-open behavior on
+  // Postgres errors is documented in api-ratelimit.ts.
+  const increments = hasPdf ? 1 : pages.length;
+  for (let i = 0; i < increments; i++) {
+    const rl = await checkAndIncrementRateLimit('scan-invoice', pid);
+    if (!rl.allowed) {
+      return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) as NextResponse;
+    }
   }
 
   // Security review 2026-05-16 (Pattern F — unified cost cap): vision
@@ -150,38 +226,47 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Capture vision usage so we can book the spend post-call. The
-  // callback runs synchronously inside visionExtractJSON BEFORE any
-  // truncation/empty-text throw, so even error paths bill the cost
-  // (the Anthropic call already happened).
-  let usage: VisionUsageReport | null = null;
-  const captureUsage = (u: VisionUsageReport): void => { usage = u; };
+  // Capture vision usage so we can book the spend post-call. Each page's
+  // callback pushes into this array (fan-out below runs the calls in
+  // parallel); the finally block SUMS them into one recordNonRequestCost.
+  // The callbacks run synchronously inside visionExtractJSON BEFORE any
+  // truncation/empty-text throw, so even error paths bill whatever usage
+  // was captured (the Anthropic calls already happened).
+  const usages: VisionUsageReport[] = [];
+  const captureUsage = (u: VisionUsageReport): void => { usages.push(u); };
 
   try {
-    const result = await visionExtractJSON<ExtractedInvoice>(
-      { data: imageBase64, mediaType: mediaType as VisionMediaType },
-      PROMPT,
-      // Codex audit pass-6 P1 — validate the model's JSON shape before
-      // touching downstream logic. Reject null, arrays, primitives, and
-      // missing-items here so a malformed-but-valid-JSON response
-      // produces a controlled 422 instead of a crash on result.items.
-      (raw): ExtractedInvoice => {
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-          throw new VisionSchemaError('expected an object at top level');
-        }
-        const obj = raw as Record<string, unknown>;
-        if (!Array.isArray(obj.items)) {
-          throw new VisionSchemaError('missing or non-array "items" field');
-        }
-        return {
-          vendor_name: typeof obj.vendor_name === 'string' ? obj.vendor_name : null,
-          invoice_date: typeof obj.invoice_date === 'string' ? obj.invoice_date : null,
-          invoice_number: typeof obj.invoice_number === 'string' ? obj.invoice_number : null,
-          items: obj.items as ExtractedInvoice['items'],
-        };
-      },
-      captureUsage,
-    );
+    // Fan out ONE vision call per page IN PARALLEL. Each call carries its own
+    // 55s wire-abort (see vision-extract), and this route's maxDuration is 60s
+    // — running the (up to 5) pages sequentially would blow that ceiling, so
+    // they MUST be parallel. A continuation page with no invoice header simply
+    // returns null vendor/date/number; mergeInvoicePages handles that. The PDF
+    // path is a single call (the model reads all pages internally).
+    let extracted: ExtractedInvoice[];
+    if (pdfBase64) {
+      const one = await visionExtractJSON<ExtractedInvoice>(
+        { data: pdfBase64, mediaType: 'application/pdf' },
+        PROMPT,
+        validateInvoice,
+        captureUsage,
+      );
+      extracted = [one];
+    } else {
+      extracted = await Promise.all(
+        pages.map(p =>
+          visionExtractJSON<ExtractedInvoice>(
+            { data: p.imageBase64, mediaType: p.mediaType },
+            PROMPT,
+            validateInvoice,
+            captureUsage,
+          ),
+        ),
+      );
+    }
+
+    // Merge the per-page extractions into one invoice: items concatenated in
+    // page order, header fields = first non-null in page order.
+    const result = mergeInvoicePages(extracted);
 
     // Defensive normalization — coerce numbers, drop malformed rows. NaN
     // and non-finite values from the model are mapped to null/0 so we never
@@ -226,19 +311,21 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     // Surface "invoice too complex" as a distinct, actionable error so
-    // the cockpit can show "split this invoice into pages and rescan"
-    // instead of a generic vision_failed. (May 2026 audit pass-4.)
+    // the cockpit can show a "scan fewer pages" hint instead of a generic
+    // vision_failed. Now that multi-page + PDF exist, the message points at
+    // the real fix: fewer pages per scan / one page per photo. (May 2026
+    // audit pass-4; message updated for the multi-page contract.)
     if (e instanceof VisionTruncatedError) {
       return NextResponse.json(
         {
           ok: false,
           error: 'invoice_too_complex',
-          detail: 'This invoice has more line items than we can scan in one pass. Try splitting it into separate pages and scanning each page.',
+          detail: 'One page had more line items than we can read in a single pass. Scan fewer pages at a time — one page per photo — and try again.',
         },
         { status: 422 },
       );
     }
-    // Image rejected by validation in vision-extract.ts. Surface the
+    // Image (or PDF) rejected by validation in vision-extract.ts. Surface the
     // specific reason — these are user-actionable ("file too large",
     // "wrong format") and don't leak any internal detail.
     if (e instanceof VisionImageInvalidError) {
@@ -277,18 +364,26 @@ export async function POST(req: NextRequest) {
     // spend even on error paths. The cost was already incurred by the
     // time the response arrived — billing-honest = bill it. Caps
     // depend on agent_costs being authoritative for today's spend.
-    if (usage && accountId) {
-      const u = usage as VisionUsageReport;
+    //
+    // Multi-page: SUM every page's usage into a single ledger row. Some
+    // pages may have failed (Promise.all rejects on the first, but earlier
+    // pages' callbacks already fired) — record whatever was captured so we
+    // never under-bill a call Anthropic already ran.
+    if (usages.length > 0 && accountId) {
+      const tokensIn = usages.reduce((s, u) => s + u.inputTokens, 0);
+      const tokensOut = usages.reduce((s, u) => s + u.outputTokens, 0);
+      const costUsd = usages.reduce((s, u) => s + u.costUsd, 0);
+      const { model, modelId } = usages[0];
       try {
         await recordNonRequestCost({
           userId: accountId,
           propertyId: pid,
           conversationId: null,
-          model: u.model,
-          modelId: u.modelId,
-          tokensIn: u.inputTokens,
-          tokensOut: u.outputTokens,
-          costUsd: u.costUsd,
+          model,
+          modelId,
+          tokensIn,
+          tokensOut,
+          costUsd,
           kind: 'vision',
         });
       } catch (costErr) {
@@ -307,19 +402,14 @@ export async function POST(req: NextRequest) {
         log.error('[scan-invoice] cost-ledger write failed', {
           err: errObj,
           pid, accountId,
-          unrecorded: {
-            tokensIn: u.inputTokens,
-            tokensOut: u.outputTokens,
-            costUsd: u.costUsd,
-            modelId: u.modelId,
-          },
+          unrecorded: { tokensIn, tokensOut, costUsd, modelId },
         });
         captureException(errObj, {
           subsystem: 'cost-ledger',
           route: 'scan-invoice',
           severity: 'high',
           pid, accountId,
-          cost_usd: u.costUsd,
+          cost_usd: costUsd,
         });
         try {
           await supabaseAdmin.from('app_events').insert({
@@ -328,11 +418,11 @@ export async function POST(req: NextRequest) {
             metadata: {
               route: 'scan-invoice',
               accountId,
-              model: u.model,
-              modelId: u.modelId,
-              tokensIn: u.inputTokens,
-              tokensOut: u.outputTokens,
-              costUsd: u.costUsd,
+              model,
+              modelId,
+              tokensIn,
+              tokensOut,
+              costUsd,
             },
           });
         } catch { /* Sentry already paged; durable fallback best-effort */ }
@@ -340,5 +430,3 @@ export async function POST(req: NextRequest) {
     }
   }
 }
-
-type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';

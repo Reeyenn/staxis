@@ -34,6 +34,9 @@ function daysLeftLabel(it: DisplayItem, lang: Lang): string {
 
 // The flip unit on the Triage board. Front = at-a-glance stock; tapping the
 // card flips it (physical Y-axis turn) to a back face with row actions.
+// The outer wrapper carries `data-flip-id` so useFlipList in StockList can
+// glide the card between positions/columns; the inner card gets the hover
+// paper-lift (.inv-card) so lift and FLIP transforms never fight.
 export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardProps) {
   const tx = t(lang);
   const [flipped, setFlipped] = useState(false);
@@ -44,10 +47,10 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
     Motion.flip(ref.current, () => setFlipped((f) => !f), { axis: 'y', d1: 145, d2: 215 });
 
   return (
-    <div style={{ perspective: 800 }}>
+    <div data-flip-id={it.id} style={{ perspective: 800 }}>
       <div
-        data-rise
         ref={ref}
+        className="inv-card"
         style={{
           background: T.bg,
           border: `1px solid ${T.rule}`,
@@ -80,12 +83,23 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
                   {catGlyph[it.cat]} · {it.vendor || '—'}
                 </div>
               </div>
-              <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.dim }} aria-hidden>
+              <span
+                className="inv-flip-hint"
+                style={{ fontFamily: fonts.mono, fontSize: 11, color: T.dim }}
+                aria-hidden
+              >
                 ↻
               </span>
             </div>
             <div style={{ marginTop: 10 }}>
-              <StockBar current={it.estimated} par={it.par} status={it.status} height={6} neutral={uncounted} />
+              <StockBar
+                current={it.estimated}
+                par={it.par}
+                status={it.status}
+                height={6}
+                neutral={uncounted}
+                shimmer={!uncounted && it.status === 'critical'}
+              />
             </div>
             <div
               style={{

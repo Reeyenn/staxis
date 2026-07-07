@@ -64,6 +64,7 @@ function capString(v: unknown, max: number): string | null {
 
 registerTool<CreateMaintenanceWorkOrderArgs>({
   name: 'createMaintenanceWorkOrder',
+  section: 'maintenance',
   description:
     'Create a maintenance work order from a housekeeper voice report. ' +
     'CALL THIS at the end of every issue conversation — never just acknowledge verbally without creating a ticket. ' +
@@ -125,6 +126,7 @@ registerTool<CreateMaintenanceWorkOrderArgs>({
   surfaces: ['voice'],
   voiceModes: ['housekeeper_issue'],
   mutates: true,
+  approval: 'card',
   handler: async (args, ctx): Promise<ToolResult> => {
     // ─── 1. Resolve room number ─────────────────────────────────────────
     // Prefer the argument; fall back to the UI hint from session mint.

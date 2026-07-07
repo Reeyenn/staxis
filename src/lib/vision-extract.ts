@@ -12,33 +12,44 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
-import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
+import {
+  ANTHROPIC_MAX_RETRIES,
+  ANTHROPIC_VISION_TIMEOUT_MS,
+  ANTHROPIC_VISION_ABORT_MS,
+} from '@/lib/external-service-config';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
 const MODEL = 'claude-sonnet-4-6';
 
-// Per-request timeout. Vision calls typically complete in 3-8s; 30s is
-// generous and well under the route's 60s maxDuration so the Anthropic
-// SDK fails fast (and we surface a 503) rather than hanging Vercel's
-// function until the route timeout. May 2026 audit pass-5: the SDK
-// defaults to no timeout, so an Anthropic API hiccup could pin our
-// function memory for minutes at fleet scale.
+// Vision timeout budget. The per-attempt SDK timeout (50s) and the whole-call
+// wire abort (55s) both live in external-service-config now — per that file's
+// rule 1, a raw timeout number in an SDK client is a code-review red flag, so
+// these are imported (ANTHROPIC_VISION_TIMEOUT_MS / ANTHROPIC_VISION_ABORT_MS)
+// rather than hard-coded here. The consumer routes set maxDuration = 60, and
+// the 55s abort keeps the worst case under that ceiling.
+//
+// Why 50s (was 30s): a real 20-line supplier invoice measures ~23s (~1600
+// output tokens at ~70 tok/s). 30-plus-line invoices ran past the old 30s
+// per-attempt timeout and surfaced a misleading "vision_unavailable" error.
+// The old comment argued shorter-is-better-UX — a clean fail beats a long
+// spinner — but that's superseded by measured reality: legitimate long
+// invoices genuinely need ~45-50s, so failing them fast was failing them
+// wrong.
 //
 // Belt-and-suspenders (audit/concurrency #16): the SDK's `timeout` option
-// is a soft client-side deadline; under some HTTP-keepalive conditions
-// the request can keep running on the wire (and keep billing) past it.
-// Each call site also passes an `AbortSignal.timeout(VISION_ABORT_MS)`
-// to actually cut the fetch. We keep the SDK timeout below the abort so
-// the SDK is the first to fire under happy-path slowness, but the abort
-// is guaranteed to cut the wire if anything wedges.
+// is a soft client-side deadline; under some HTTP-keepalive conditions the
+// request can keep running on the wire (and keep billing) past it. Each call
+// site also passes an `AbortSignal.timeout(ANTHROPIC_VISION_ABORT_MS)` to
+// actually cut the fetch. The abort (55s) outlives one full attempt (50s) so
+// the SDK timeout is the first to fire under happy-path slowness, but the
+// abort is guaranteed to cut the wire — across the maxRetries=1 retry too —
+// if anything wedges.
 //
-// Audit/external-api-hardening (May 2026): `maxRetries` was the SDK
-// default of 2, which can push worst-case wall-clock past 90s — over the
-// route's maxDuration. Now imported from external-service-config so it
-// stays in lockstep with the main agent's budget math.
-const VISION_REQUEST_TIMEOUT_MS = 30_000;
-const VISION_ABORT_MS = 35_000;
+// Audit/external-api-hardening (May 2026): `maxRetries` was the SDK default
+// of 2, which can push worst-case wall-clock past 90s — over the route's
+// maxDuration. Now imported from external-service-config so it stays in
+// lockstep with the main agent's budget math.
 
 // Module-level singleton — matches the pattern in `src/lib/agent/llm.ts` and
 // `src/app/api/walkthrough/step/route.ts`. Re-instantiating `new Anthropic()`
@@ -57,7 +68,7 @@ function getClient(): Anthropic {
   }
   _visionClient = new Anthropic({
     apiKey: key,
-    timeout: VISION_REQUEST_TIMEOUT_MS,
+    timeout: ANTHROPIC_VISION_TIMEOUT_MS,
     maxRetries: ANTHROPIC_MAX_RETRIES,
   });
   return _visionClient;
@@ -73,6 +84,27 @@ export interface VisionImage {
 }
 
 export type VisionMediaType = VisionImage['mediaType'];
+
+/**
+ * PDF source for the same vision pipeline. Anthropic accepts a whole PDF via a
+ * `document` content block (claude-sonnet-4-6 supports it) — the model reads
+ * every page in one call, so multi-page invoices don't need to be exploded into
+ * per-page images client-side. Discriminated from VisionImage by the fixed
+ * `application/pdf` mediaType so `visionExtract*` can take either.
+ */
+export interface VisionPdf {
+  /** Base64-encoded PDF bytes (no data: prefix). */
+  data: string;
+  mediaType: 'application/pdf';
+}
+
+/** Either input the vision pipeline accepts. */
+export type VisionSource = VisionImage | VisionPdf;
+
+/** Narrow a VisionSource to the PDF branch. */
+function isPdf(src: VisionSource): src is VisionPdf {
+  return src.mediaType === 'application/pdf';
+}
 
 /**
  * Sentinel error subclass for image-validation failures. Routes catch this
@@ -164,6 +196,68 @@ function validateImage(image: VisionImage): void {
   }
 }
 
+// ── PDF validation ─────────────────────────────────────────────────────────
+//
+// Mirrors the image validation: decode the base64, sanity-check the byte
+// length, and match the leading magic bytes ("%PDF-") so a mislabeled or
+// garbage payload is rejected here (a friendly 400) instead of burning an
+// Anthropic call. Reuses VisionImageInvalidError so route error-mapping is
+// unchanged.
+//
+// 4MB decoded cap (tighter than the 5MB image cap): the whole request body
+// travels through Vercel, which caps serverless request bodies at ~4.5MB. A
+// base64 PDF is ~1.33× its decoded size, so a 4MB decoded PDF is already
+// ~5.3MB on the wire — right at the edge. Keeping the decoded ceiling at 4MB
+// leaves a little headroom before Vercel rejects the request outright. A real
+// multi-page supplier invoice PDF is well under this.
+const VISION_PDF_MAX_DECODED_BYTES = 4 * 1024 * 1024;
+const VISION_PDF_MIN_DECODED_BYTES = 256;
+
+// %PDF- — 0x25 0x50 0x44 0x46 0x2D. Every conforming PDF begins with this
+// header (optionally after a few junk bytes, but real exports lead with it).
+function pdfMagicOk(b: Uint8Array): boolean {
+  return (
+    b.length >= 5 &&
+    b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d
+  );
+}
+
+function validatePdf(pdf: VisionPdf): void {
+  if (typeof pdf.data !== 'string' || pdf.data.length === 0) {
+    throw new VisionImageInvalidError('empty PDF data');
+  }
+  // Reject data-URL prefixes — callers must strip them first (same trap as the
+  // image path: a sneaked-in "data:application/pdf;base64," corrupts the decode
+  // and masks the magic-byte check).
+  if (pdf.data.startsWith('data:')) {
+    throw new VisionImageInvalidError('data URL prefix not allowed; pass raw base64');
+  }
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(pdf.data, 'base64');
+  } catch {
+    throw new VisionImageInvalidError('not valid base64');
+  }
+  if (decoded.length < VISION_PDF_MIN_DECODED_BYTES) {
+    throw new VisionImageInvalidError(
+      `decoded payload is only ${decoded.length} bytes — too small to be a real PDF`,
+    );
+  }
+  if (decoded.length > VISION_PDF_MAX_DECODED_BYTES) {
+    throw new VisionImageInvalidError(
+      `decoded PDF is ${(decoded.length / 1024 / 1024).toFixed(1)}MB; ` +
+      `max is ${VISION_PDF_MAX_DECODED_BYTES / 1024 / 1024}MB. ` +
+      `Split the PDF or scan fewer pages at a time.`,
+    );
+  }
+  if (!pdfMagicOk(decoded)) {
+    throw new VisionImageInvalidError(
+      `payload does not start with valid PDF bytes (%PDF-) ` +
+      `(file may be corrupt or mislabeled)`,
+    );
+  }
+}
+
 /**
  * Send an image + a text prompt to Claude. Returns the model's text response.
  * The prompt should instruct the model to return JSON; the caller is
@@ -229,13 +323,40 @@ function estimateVisionCostUsd(inputTokens: number, outputTokens: number): numbe
 }
 
 export async function visionExtractText(
-  image: VisionImage,
+  source: VisionSource,
   prompt: string,
   onUsage?: (usage: VisionUsageReport) => void,
 ): Promise<string> {
   // Validate BEFORE we burn an API call. Throws VisionImageInvalidError
-  // which routes catch to return a structured 400.
-  validateImage(image);
+  // which routes catch to return a structured 400. PDFs go through the
+  // parallel PDF validator (magic bytes + tighter size cap); images keep
+  // the existing per-format magic-byte checks.
+  if (isPdf(source)) {
+    validatePdf(source);
+  } else {
+    validateImage(source);
+  }
+  // Build the media content block: a `document` block for PDFs (the model
+  // reads all pages in one call), an `image` block otherwise. Both are valid
+  // ContentBlockParam members in the installed SDK (@anthropic-ai/sdk 0.96.0 —
+  // Base64PDFSource + DocumentBlockParam), so no assertion is needed.
+  const mediaBlock: Anthropic.ContentBlockParam = isPdf(source)
+    ? {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: source.data,
+        },
+      }
+    : {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: source.mediaType,
+          data: source.data,
+        },
+      };
   const client = getClient();
   const response = await client.messages.create(
     {
@@ -245,14 +366,7 @@ export async function visionExtractText(
         {
           role: 'user',
           content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: image.mediaType,
-                data: image.data,
-              },
-            },
+            mediaBlock,
             { type: 'text', text: prompt },
           ],
         },
@@ -260,9 +374,9 @@ export async function visionExtractText(
     },
     // Hard wire-level abort (audit/concurrency #16). Without this an
     // Anthropic outage could leave the underlying fetch running past
-    // VISION_REQUEST_TIMEOUT_MS, still billing tokens for a response
+    // ANTHROPIC_VISION_TIMEOUT_MS, still billing tokens for a response
     // nobody is waiting for.
-    { signal: AbortSignal.timeout(VISION_ABORT_MS) },
+    { signal: AbortSignal.timeout(ANTHROPIC_VISION_ABORT_MS) },
   );
 
   // Capture usage for the optional callback BEFORE any error-throw — so
@@ -331,12 +445,12 @@ export class VisionSchemaError extends Error {
  * old unchecked-cast behavior (deprecated for new callers).
  */
 export async function visionExtractJSON<T>(
-  image: VisionImage,
+  source: VisionSource,
   prompt: string,
   validate?: (raw: unknown) => T,
   onUsage?: (usage: VisionUsageReport) => void,
 ): Promise<T> {
-  const text = await visionExtractText(image, prompt, onUsage);
+  const text = await visionExtractText(source, prompt, onUsage);
 
   const validated = (raw: unknown): T => {
     if (validate) return validate(raw);

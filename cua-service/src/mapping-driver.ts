@@ -60,7 +60,8 @@ import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { captureLiveFeedProvenance, uploadLiveFeedSample, upsertFeedValues } from './feed-capture.js';
-import { loadActive } from './knowledge-file.js';
+import { loadActive, sanitizeDisabledFeeds } from './knowledge-file.js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 // rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
 // from here, so this is a cycle — but BOTH cross-module references are call-time
 // (inside functions/methods), never load-time, so it resolves safely under CJS+ESM.
@@ -1527,14 +1528,104 @@ export async function captureFeedOnDemand(args: {
     // still sees the values — including a blank column they then drag to fix.
     // Feed-level PAGE values (e.g. "Guest Count: 23") ride along in the sample's
     // pageValues block AND are stored durably once per feed (pms_feed_values).
-    await uploadLiveFeedSample(propertyId, feedKey, run.sampleRows ?? run.rows, run.feedValues);
+    // run.ok is stamped into the artifact as `ok` (feature/coverage-gated-feeds):
+    // this branch runs even for a FAILED extraction ("capturing current page
+    // anyway" above), and the web Make-live gate keys "proven readable" on the
+    // artifact — without the flag a failed Re-read would count as proof. The
+    // artifact flag and the auto-enable below now apply the SAME run.ok rule.
+    await uploadLiveFeedSample(propertyId, feedKey, run.sampleRows ?? run.rows, run.ok, run.feedValues);
     await upsertFeedValues(propertyId, feedKey, run.feedValues, (template.pageColumns?.length ?? 0) > 0);
+    // feature/coverage-gated-feeds — a SUCCESSFUL Re-read PROVES this feed is
+    // readable, which is exactly the signal that turns collection back on. If the
+    // family's active knowledge-file row currently lists this feed in
+    // disabled_feeds, drop it so the session-driver's next hot-reload (~60s)
+    // starts polling it again. Gated on run.ok: a "capture the page anyway" shot
+    // (run.ok=false above) writes a preview for the founder to see, but did NOT
+    // prove the feed extracts rows, so it must NOT auto-enable. Best-effort +
+    // idempotent + never throws into the capture path (its own try/catch inside).
+    if (run.ok) {
+      await autoEnableFeedOnCaptureSuccess(pmsFamily, feedKey);
+    }
     return { ok: true };
   } catch (err) {
     if (err instanceof UnsafeNavigationError) return { ok: false, reason: `unsafe_url:${err.reason}` };
     return { ok: false, reason: (err as Error).message.slice(0, 200) };
   } finally {
     if (browser) await browser.close().catch(() => { /* best-effort */ });
+  }
+}
+
+/**
+ * feature/coverage-gated-feeds — remove `feedKey` from the ACTIVE knowledge-file
+ * row's `disabled_feeds` for family `pmsFamily`, best-effort. Called after a
+ * successful on-demand Re-read (captureFeedOnDemand): proving a feed is readable
+ * is exactly the founder's signal to turn its collection back on.
+ *
+ * Contract:
+ *   - Read-modify-write the sibling `disabled_feeds` jsonb column (it's OUTSIDE
+ *     the signed envelope, so we can update it without touching signature/knowledge
+ *     or re-signing — the whole point of keeping it a sibling column).
+ *   - The UPDATE is guarded `.eq('status','active').eq('pms_family', F)` so we only
+ *     ever touch the family's ONE live row, never a draft. Drafts are gated fresh
+ *     at promote time from the preview artifacts, so we must NOT mutate them here.
+ *   - IDEMPOTENT + tolerant: no active row, or the key already absent → no-op (we
+ *     skip the write entirely when the key isn't present, so a re-run is cheap and
+ *     never churns the row).
+ *   - NEVER throws: wrapped so an auto-enable failure can never fail the capture
+ *     (the capture already succeeded; re-enable is a follow-on nicety, retried on
+ *     the next successful Re-read).
+ *
+ * `db` is injectable (defaults to the module singleton) purely so this is unit-
+ * testable without a live Supabase — mirrors the feed-capture.ts dep convention.
+ */
+export async function autoEnableFeedOnCaptureSuccess(
+  pmsFamily: string,
+  feedKey: string,
+  db: SupabaseClient = supabase,
+): Promise<void> {
+  try {
+    // Read the current gate off the ACTIVE row only. maybeSingle → null when the
+    // family has no active row yet (parked-draft hotel) — nothing to re-enable.
+    const { data, error } = await db
+      .from('pms_knowledge_files')
+      .select('disabled_feeds')
+      .eq('pms_family', pmsFamily)
+      .eq('status', 'active')
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (error) {
+      log.warn('capture-feed: auto-enable read failed (non-fatal)', {
+        pmsFamily, feedKey, err: error.message,
+      });
+      return;
+    }
+    if (!data) return; // no active row → nothing to re-enable
+    const current = sanitizeDisabledFeeds((data as { disabled_feeds?: unknown }).disabled_feeds);
+    if (!current.includes(feedKey)) return; // already enabled (or never disabled) → idempotent no-op
+    const next = current.filter((k) => k !== feedKey);
+    // Re-guarded on status='active' + pms_family in case the active row moved
+    // between the read and the write (a concurrent promote): we only ever clear
+    // the gate on the family's live row.
+    const { error: updErr } = await db
+      .from('pms_knowledge_files')
+      .update({ disabled_feeds: next })
+      .eq('pms_family', pmsFamily)
+      .eq('status', 'active')
+      .is('deleted_at', null);
+    if (updErr) {
+      log.warn('capture-feed: auto-enable update failed (non-fatal)', {
+        pmsFamily, feedKey, err: updErr.message,
+      });
+      return;
+    }
+    log.info('capture-feed: feed re-enabled after successful Re-read', {
+      pmsFamily, feedKey, remainingDisabled: next.length,
+    });
+  } catch (err) {
+    // Belt-and-braces: this must never throw into the capture path.
+    log.warn('capture-feed: auto-enable threw (non-fatal)', {
+      pmsFamily, feedKey, err: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

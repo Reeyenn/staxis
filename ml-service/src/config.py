@@ -177,6 +177,12 @@ class Settings(BaseSettings):
     inventory_graduation_min_prospective_pairs: int = 8    # ≥8 predicted-vs-actual pairs
     inventory_graduation_prospective_span_days: int = 14   # pairs must span ≥14 days
     inventory_graduation_prospective_wape: float = 0.30    # Σ|pred−actual|/Σ|actual| < 0.30
+    # Prospective pairs older than this never count toward graduation. Without
+    # a recency window, a bad early history accumulates in Σ|err| forever and
+    # can permanently block a now-good model — or (the reverse) months-old
+    # pairs from a retired model generation can graduate an untested fit.
+    # 90 days ≈ 12-25 count cycles: enough evidence, bounded memory.
+    inventory_graduation_pair_max_age_days: int = 90
     # DEPRECATED — the streak gate is gone. mae_ratio + consecutive_passes are
     # no longer consulted for graduation (they gated the removed retrain streak).
     # Kept so environment overrides still parse and _streak.py (shared unit-test

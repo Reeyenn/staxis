@@ -48,6 +48,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     thread,
     byName: ctx.displayName,
     requestId: ctx.requestId,
+    // Caller identity — gates the Knowledge hub tools to this asker's role/dept,
+    // meters embedding cost to the ledger, and sets the reply language.
+    role: ctx.role,
+    dept: ctx.dept,
+    accountId: ctx.accountId,
+    lang: ctx.lang,
   });
 
   // Post the assistant's reply into the conversation (auto-translated per reader).

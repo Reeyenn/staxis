@@ -22,6 +22,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { OnboardingState } from '@/lib/onboarding/state';
+import { normalizeSectionFlags } from '@/lib/sections/registry';
 import type {
   Property,
   StaffMember,
@@ -234,6 +235,11 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     // see an honest "learning from your PMS" state until real data exists.
     // Absent (e.g. anon RLS hides the column) → false → honest, never fabricated.
     isTest: Boolean(r.is_test),
+    // Per-hotel section on/off map (properties.enabled_sections). NULL / missing
+    // key / unparseable ⇒ null ⇒ isSectionEnabled treats every section as ON, so
+    // existing hotels (no stored value) show all 8 sections. Parsed defensively
+    // (object OR JSON-string) via the shared normalizer.
+    enabledSections: normalizeSectionFlags(r.enabled_sections),
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }

@@ -36,6 +36,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { parseStringField, parseNumberField } from '@/lib/db-mappers';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -127,7 +128,39 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const s = parseShadowRow(raw);
     if (s) parsedShadows.push(s);
   }
+
+  // Section gate (WP6): pause inventory shadow promotion for hotels with the
+  // Inventory section off. One batched read (not a per-shadow round-trip) maps
+  // each property to its enabled_sections; inventory_rate shadows for a
+  // disabled-inventory property are left pending (resume when re-enabled).
+  // Fail-open — a read error or missing/null value leaves the shadow eligible.
+  const sectionsByProperty = new Map<string, EnabledSections>();
+  const shadowPropertyIds = Array.from(new Set(parsedShadows.map((s) => s.property_id)));
+  if (shadowPropertyIds.length > 0) {
+    const { data: propRows, error: propErr } = await supabaseAdmin
+      .from('properties')
+      .select('id, enabled_sections')
+      .in('id', shadowPropertyIds);
+    if (propErr) {
+      log.warn('ml-shadow-evaluate: enabled_sections read failed — evaluating all', {
+        requestId, err: propErr,
+      });
+    } else {
+      for (const r of propRows ?? []) {
+        sectionsByProperty.set(String((r as { id: string }).id), (r as { enabled_sections: EnabledSections }).enabled_sections);
+      }
+    }
+  }
+
   for (const shadow of parsedShadows) {
+    // Inventory-off hotels: skip their inventory_rate shadows only. Other
+    // layers (demand/supply) are not gated by the Inventory section.
+    if (
+      shadow.layer === 'inventory_rate' &&
+      !isSectionEnabled(sectionsByProperty.get(shadow.property_id), 'inventory')
+    ) {
+      continue;
+    }
     try {
       // Look up the corresponding active row for the same (property, layer,
       // item_id). For demand/supply/optimizer, item_id will be null on both

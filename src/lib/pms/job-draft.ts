@@ -19,13 +19,23 @@ export interface DraftRow {
 }
 
 export type ResolveDraftResult =
-  | { ok: true; row: DraftRow }
+  | {
+      ok: true;
+      row: DraftRow;
+      /**
+       * The property this mapper run learned against (workflow_jobs.property_id),
+       * or null if the job never recorded one. Save & Finish passes it to
+       * promoteMap's per-feed gate so a partial map saved from the Learning Board
+       * only lights up feeds that produced a preview for this property.
+       */
+      propertyId: string | null;
+    }
   | { ok: false; status: number; message: string };
 
 export async function resolveDraftForJob(jobId: string): Promise<ResolveDraftResult> {
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('workflow_jobs')
-    .select('id, result, payload')
+    .select('id, result, payload, property_id')
     .eq('id', jobId)
     .maybeSingle();
   if (jobErr) return { ok: false, status: 500, message: `job lookup failed: ${jobErr.message}` };
@@ -44,5 +54,9 @@ export async function resolveDraftForJob(jobId: string): Promise<ResolveDraftRes
     .maybeSingle();
   const row = (data as DraftRow | null) ?? null;
   if (!row) return { ok: false, status: 404, message: 'The map this run produced no longer exists.' };
-  return { ok: true, row };
+
+  const propertyId = typeof (job as { property_id?: unknown }).property_id === 'string'
+    ? (job as { property_id: string }).property_id
+    : null;
+  return { ok: true, row, propertyId };
 }

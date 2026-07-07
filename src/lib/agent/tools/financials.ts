@@ -49,6 +49,7 @@ function resolveMonth(period?: Period): { month: string; label: string } {
 // ─── get_finance_summary ───────────────────────────────────────────────────
 registerTool<{ period?: Period }>({
   name: 'get_finance_summary',
+  section: 'financials',
   description:
     'Get the finance summary for a month: revenue (from the PMS), total expenses, profit, cost per occupied room, and expenses as a % of revenue. Use for "how are we doing financially", "what\'s our profit", "how much have we spent". Period defaults to this month.',
   inputSchema: {
@@ -87,6 +88,7 @@ registerTool<{ period?: Period }>({
 // ─── check_budget_status ───────────────────────────────────────────────────
 registerTool<{ period?: Period }>({
   name: 'check_budget_status',
+  section: 'financials',
   description:
     'Check whether any department is over (or trending over) its monthly budget, and by how much. Use for "are we over budget anywhere", "how is the housekeeping budget", "which departments are over". Period defaults to this month.',
   inputSchema: {
@@ -138,6 +140,7 @@ registerTool<{ period?: Period }>({
 // ─── get_department_spend ──────────────────────────────────────────────────
 registerTool<{ department?: string; period?: Period }>({
   name: 'get_department_spend',
+  section: 'financials',
   description:
     'Get how much was spent in a specific department for a month (e.g. "how much did we spend on maintenance last month"). If no department is given, returns the breakdown across all departments. Period defaults to this month.',
   inputSchema: {

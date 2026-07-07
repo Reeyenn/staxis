@@ -34,11 +34,24 @@ import { timingSafeEqual } from 'node:crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/llm';
-import { getToolsForRole } from '@/lib/agent/tools';
+import { streamAgent, type AgentMessage, type AgentToolCall, type UsageReport } from '@/lib/agent/llm';
+import { getToolsForRole, getTool } from '@/lib/agent/tools';
+import { getEnabledSections } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
+import {
+  getLivePendingActions,
+  createPendingActions,
+  reapStaleApprovedActions,
+  type PendingActionRow,
+} from '@/lib/agent/pending-actions';
+import {
+  pickVoiceLang,
+  buildSpokenReadback,
+  buildPendingConfirmationPromptBlock,
+  type VoiceLang,
+} from '@/lib/agent/voice-confirm-copy';
 import { recordNonRequestCost, assertAudioBudget } from '@/lib/agent/cost-controls';
 import {
   resolveVoiceSession,
@@ -153,6 +166,27 @@ function extractElevenLabsConversationId(body: OpenAIChatRequest): string | null
     asString(body.user) ??
     null
   );
+}
+
+/**
+ * Resolve the caller's spoken language ('en' | 'es') for the deterministic
+ * spoken-confirmation read-back. Reads staff.language for the session's staffId;
+ * that column can be en/es/ht/tl/vi, but the approval copy only has EN + ES, so
+ * anything that isn't 'es' collapses to 'en'. Best-effort: any error (no staff
+ * row, DB hiccup) falls back to 'en' — the read-back must never block a turn.
+ */
+async function resolveVoiceLang(staffId: string | null): Promise<VoiceLang> {
+  if (!staffId) return 'en';
+  try {
+    const { data } = await supabaseAdmin
+      .from('staff')
+      .select('language')
+      .eq('id', staffId)
+      .maybeSingle();
+    return pickVoiceLang(data?.language as string | null | undefined);
+  } catch {
+    return 'en';
+  }
 }
 
 /**
@@ -459,6 +493,56 @@ export async function POST(req: NextRequest): Promise<Response> {
         // system prompt by buildSystemPrompt so the agent in 'housekeeper_issue'
         // mode knows it should only fire createMaintenanceWorkOrder and
         // defaults the room to whatever the UI hint says.
+        // Voice approval gate — cross-turn wiring (server-side, re-derived from
+        // the DB every turn). BEFORE building tools + prompt, check whether a
+        // CARD-tier action staged on a previous turn is still awaiting the
+        // user's spoken confirmation. If so, we (a) expose the confirm/cancel
+        // control tools this turn and (b) inject a prompt note so the model
+        // reads the user's "yes"/"no" as a decision on that action. Resolving
+        // this from getLivePendingActions means the confirmation state survives
+        // the stateless, history-replayed voice model with no session mutation.
+        // voiceLang drives the deterministic spoken read-back copy (EN/ES).
+        // A staged card is only surfaced for confirmation for a SHORT window: a
+        // spoken confirmation is a one-turn affair (stage on turn N → answer on
+        // N+1). If the user moved on without answering, an older row must NOT be
+        // silently confirmable against a later, unrelated "yes". We bound the
+        // surfaced row to CONFIRM_WINDOW_MS by created_at (well under the row's
+        // 10-min TTL). Codex review finding (voice had no stale-row sweep like
+        // chat's sweepConversationPending).
+        const CONFIRM_WINDOW_MS = 3 * 60_000;
+        let voiceLang: 'en' | 'es' = 'en';
+        let pendingRow: PendingActionRow | null = null;
+        try {
+          // Reap any row stuck 'approved' (claimed by a prior confirm that was
+          // killed before it finalized) so it becomes terminal instead of
+          // lingering. Best-effort, in parallel with the live-row read.
+          const [lang, livePending] = await Promise.all([
+            resolveVoiceLang(ctx.staffId),
+            getLivePendingActions(ctx.conversationId),
+            reapStaleApprovedActions(ctx.conversationId).catch((e) => {
+              log.warn('[voice-brain] reapStaleApprovedActions failed', { requestId, e });
+              return [];
+            }),
+          ]);
+          voiceLang = lang;
+          // Scope to this session's own account/property (defence in depth),
+          // require a recent creation (confirmation window), and pick the newest
+          // — we hold one action at a time.
+          const now = Date.now();
+          const owned = livePending.filter(
+            (r) =>
+              r.propertyId === ctx.propertyId &&
+              r.accountId === ctx.accountId &&
+              now - new Date(r.createdAt).getTime() <= CONFIRM_WINDOW_MS,
+          );
+          pendingRow = owned.length > 0 ? owned[owned.length - 1] : null;
+        } catch (e) {
+          // Best-effort: a failed lookup just means we don't wire the confirm
+          // tools this turn (the pending row, if any, stays live for a later
+          // turn). Never block the turn on it.
+          log.warn('[voice-brain] pending-action lookup failed', { requestId, e });
+        }
+
         let systemPrompt;
         try {
           const [snapshot, memoryBlock] = await Promise.all([
@@ -469,6 +553,14 @@ export async function POST(req: NextRequest): Promise<Response> {
             mode: ctx.mode,
             currentRoomNumber: ctx.currentRoomNumber,
           }, memoryBlock);
+          // Append the "awaiting confirmation" note to the DYNAMIC block (never
+          // the cached stable prefix) — it changes turn-to-turn with DB state.
+          if (pendingRow) {
+            systemPrompt = {
+              ...systemPrompt,
+              dynamic: `${systemPrompt.dynamic}\n\n${buildPendingConfirmationPromptBlock(pendingRow.toolName, pendingRow.toolArgs, voiceLang)}`,
+            };
+          }
         } catch (e) {
           log.error('[voice-brain] failed to build system prompt', { requestId, e });
           const id = makeOpenAiId();
@@ -495,7 +587,23 @@ export async function POST(req: NextRequest): Promise<Response> {
         // voiceModes: ['housekeeper_issue']) are only exposed when the
         // session is in that mode. General voice sessions get the memory
         // tools; housekeeper_issue mode gets just the issue-reporter tool.
-        const tools = getToolsForRole(ctx.role, 'voice', ctx.mode);
+        // Per-hotel section gate (parity with the chat command route): drop
+        // tools whose section is turned off for this hotel from the voice
+        // catalog, and thread the map into the tool context so executeTool
+        // double-enforces. Cached + fail-soft to null (⇒ every section ON).
+        const enabledSections = await getEnabledSections(ctx.propertyId);
+        const tools = getToolsForRole(ctx.role, 'voice', ctx.mode, enabledSections);
+        // When an action is awaiting confirmation, add the confirm/cancel control
+        // tools so the model can act on the user's spoken yes/no. They are
+        // surfaces:['voice'], mutates:false, and available in ALL voice modes, so
+        // getTool returns them regardless of mode. Only added when a row is live,
+        // so a normal turn's tool list is unchanged.
+        if (pendingRow) {
+          for (const name of ['confirm_pending_action', 'cancel_pending_action']) {
+            const t = getTool(name);
+            if (t && !tools.some((x) => x.name === name)) tools.push(t);
+          }
+        }
         const userCtx = {
           uid: ctx.userId,
           accountId: ctx.accountId,
@@ -512,6 +620,11 @@ export async function POST(req: NextRequest): Promise<Response> {
           newUserMessage,
           tools,
           abortSignal: req.signal,
+          // Voice approval gate: hold CARD-tier mutations (log_complaint,
+          // createMaintenanceWorkOrder) for spoken confirmation; quick-tier
+          // mutations (remember/forget/log_found_item/log_reading/log_pm_check)
+          // still execute inline this turn.
+          voiceApprovalMode: true,
           toolContext: {
             user: userCtx,
             propertyId: ctx.propertyId,
@@ -522,11 +635,49 @@ export async function POST(req: NextRequest): Promise<Response> {
             currentRoomNumber: ctx.currentRoomNumber,
             voiceSessionId: ctx.voiceSessionId,
             conversationId: ctx.conversationId,
+            voiceLang,
+            enabledSections,
           },
         });
 
+        // Card-tier actions the gate held THIS turn (each arrives as a
+        // tool_call_pending_approval event). We stage the FIRST one as a pending
+        // row and speak its read-back; if the model somehow proposed more than
+        // one card in a single turn, we hold only the first and tell the user
+        // we'll take them one at a time.
+        const heldThisTurn: AgentToolCall[] = [];
+        let stagedRow: PendingActionRow | null = null;
+        // When the gate holds a card it ENDS the turn with no `done` event (and
+        // so no finalUsage), but the model still spent tokens producing the
+        // proposal. Capture the most recent assistant_turn usage as a fallback so
+        // the cost ledger books that spend instead of silently dropping it.
+        let lastTurnUsage: UsageReport | null = null;
         for await (const event of iter) {
-          if (event.type === 'done') {
+          if (event.type === 'assistant_turn') {
+            lastTurnUsage = event.usage;
+          } else if (event.type === 'tool_call_pending_approval') {
+            heldThisTurn.push(event.call);
+            // Persist only the FIRST held card as a pending row (one at a time).
+            if (!stagedRow) {
+              try {
+                const [row] = await createPendingActions({
+                  propertyId: ctx.propertyId,
+                  conversationId: ctx.conversationId,
+                  accountId: ctx.accountId,
+                  turnKey: event.turnKey,
+                  actions: [{
+                    toolCallId: event.call.id,
+                    toolName: event.call.name,
+                    toolArgs: event.call.args,
+                    tier: event.tier,
+                  }],
+                });
+                stagedRow = row ?? null;
+              } catch (e) {
+                log.error('[voice-brain] failed to stage pending action', { requestId, e });
+              }
+            }
+          } else if (event.type === 'done') {
             finalText = event.finalText;
             finalUsage = event.usage;
           } else if (event.type === 'error') {
@@ -543,6 +694,34 @@ export async function POST(req: NextRequest): Promise<Response> {
           // ignored at this layer — the final text from `done` is what
           // ElevenLabs speaks.
         }
+
+        // If a card-tier action was held this turn, speak a DETERMINISTIC
+        // read-back built from buildActionSummary (never model free-text, so the
+        // confirmation is always accurate). This overrides finalText — the turn
+        // ended without a `done` (the gate stops after staging), so the model's
+        // own text isn't the right thing to speak here. On the NEXT turn the
+        // confirm/cancel tools + the injected prompt note carry it home.
+        if (stagedRow) {
+          finalText = buildSpokenReadback(
+            stagedRow.toolName,
+            stagedRow.toolArgs,
+            voiceLang,
+            heldThisTurn.length > 1,
+          );
+        } else if (heldThisTurn.length > 0) {
+          // The gate held a card but we couldn't persist the pending row
+          // (createPendingActions threw — logged above). The turn ended with no
+          // `done`, so the model produced no result text to speak. Speak a clear
+          // "couldn't set that up" instead of the generic "no response" fallback,
+          // so the user knows to retry rather than assuming it went through.
+          finalText =
+            voiceLang === 'es'
+              ? 'No pude preparar eso para confirmar. Inténtalo de nuevo, por favor.'
+              : "I couldn't set that up to confirm — please try that again.";
+        }
+
+        // Book spend for a held turn (no `done` → finalUsage stayed null).
+        if (!finalUsage && lastTurnUsage) finalUsage = lastTurnUsage;
 
         // Cost ledger — book the LLM spend for this turn under kind='audio'
         // so it joins the audio cap. ElevenLabs STT + TTS minutes are

@@ -16,6 +16,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
@@ -24,6 +25,7 @@ import {
   MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
 import { predictInventoryRates } from '@/lib/ml-predict-invoke';
+import { sweepUnpairedCounts } from '@/lib/inventory-pairing-sweep';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,7 +65,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // own local clock (a Florida hotel must not predict a Texas-timed date).
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone, inventory_ai_mode')
+    .select('id, name, timezone, inventory_ai_mode, enabled_sections')
     .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
@@ -83,11 +85,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // ml-run-inference uses. Without this the inventory cron silently
   // defaults to America/Chicago for non-Texas hotels (the bug Phase 3.5
   // was supposed to close, missed on this cron).
-  type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string };
+  type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string; enabled_sections?: EnabledSections };
   const eligible: PropertyRow[] = [];
   const skipped: Array<{ property_id: string; status: string; detail?: string }> = [];
   for (const property of (sharded.items as unknown as PropertyRow[])) {
-    if (property.inventory_ai_mode === 'off') {
+    // Section gate (WP6): pause inventory predictions when the Inventory
+    // section is off, in addition to the existing per-hotel AI-mode toggle.
+    // Fail-open — only an explicit `false` skips. 'skipped_ai_off' is
+    // intentional (not a misconfig) so the heartbeat stays green.
+    if (property.inventory_ai_mode === 'off' || !isSectionEnabled(property.enabled_sections, 'inventory')) {
       skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
     } else if (!property.timezone) {
       log.warn('ml-predict-inventory: property missing timezone — skip', {
@@ -177,6 +183,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }),
   ];
 
+  // ── Pairing sweep (2026-07-05 accuracy pass) ─────────────────────────
+  // Back-write prediction↔actual pairs for recent counts the browser's
+  // fire-and-forget post-count-process call lost (closed tab, hotel wifi).
+  // Best-effort: a sweep failure never fails the predict cron — the sweep
+  // re-runs tomorrow and pairs are only ever additive.
+  let pairsSwept = 0;
+  const sweepOutcomes = await runWithConcurrency(eligible, async (property) => {
+    return sweepUnpairedCounts(property.id, property.timezone as string, requestId);
+  }, 5);
+  for (const o of sweepOutcomes) {
+    if (o.ok) pairsSwept += o.value.paired;
+    else {
+      log.warn('ml-predict-inventory: pairing sweep failed', {
+        requestId, property_id: o.input.id, err: errToString(o.error),
+      });
+    }
+  }
+
   const anyError = results.some((r) => r.status === 'error');
   // Codex round-4 (G4): MISCONFIG_STATUSES now lives in the shared
   // helper module so all 4 ML crons (this + 3 training crons) read
@@ -190,6 +214,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       notes: {
         properties_processed: results.length,
         properties_misconfigured: propertiesMisconfigured,
+        pairs_swept: pairsSwept,
       },
     });
   }
@@ -199,6 +224,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       ok: !anyError,
       requestId,
       properties_processed: results.length,
+      pairs_swept: pairsSwept,
       results,
     },
     { status: anyError ? 502 : 200 },

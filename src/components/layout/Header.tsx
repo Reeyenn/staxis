@@ -11,6 +11,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LogOut, Globe, Settings, ChevronDown } from 'lucide-react';
 import { LanguageMenu } from '@/components/i18n/LanguageMenu';
+import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
+import { sectionForPath } from '@/lib/sections/registry';
 
 // Snow design system — chevron mark from the locked Dashboard
 // Explorations design. Drawn in a 64x64 viewBox so the strokes scale
@@ -39,6 +41,9 @@ export function Header() {
   const pathname = usePathname();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
   const [showNavMenu, setShowNavMenu] = React.useState(false);
+  // Per-hotel section toggles for the active property (default-ON; fail-open
+  // while loading). Filters off-sections out of the nav entirely.
+  const enabled = useEnabledSections();
 
   const baseNavLinks = [
     { href: '/feed',         label: 'Staxis' },
@@ -48,7 +53,10 @@ export function Header() {
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory' },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
-  ];
+  ].filter((l) => {
+    const s = sectionForPath(l.href);
+    return !s || enabled[s];
+  });
 
   // Admin tab is admin-only. ML now lives inside the Admin cockpit as a
   // sub-tab — the top nav doesn't need a separate ML link.
@@ -60,7 +68,7 @@ export function Header() {
   const showFinancials = !!user && can('view_financials');
   const navLinks = [
     ...baseNavLinks,
-    ...(showFinancials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),
+    ...(showFinancials && enabled.financials ? [{ href: '/financials', label: lang === 'es' ? 'Finanzas' : 'Financials' }] : []),
   ];
   // "Staxis" (the decision feed) stays as the one visible tab; the other
   // pages collapse into a single dropdown to its right. Admin (owner-only)
@@ -120,19 +128,22 @@ export function Header() {
 
         {/* Center: Staxis tab + a dropdown holding every other page */}
         <nav style={{ display: 'flex', alignItems: 'center', gap: '20px', minWidth: 0 }} className="header-nav-scroll">
-          {/* Staxis (the decision feed) — always visible */}
-          <Link
-            href="/feed"
-            style={{
-              fontFamily: sansFont, fontWeight: pathname.startsWith('/feed') ? 600 : 400,
-              fontSize: '13px', color: pathname.startsWith('/feed') ? ink : ink3,
-              textDecoration: 'none',
-              borderBottom: pathname.startsWith('/feed') ? `1.5px solid ${sage}` : 'none',
-              paddingBottom: '2px', transition: 'color 0.15s ease', whiteSpace: 'nowrap',
-            }}
-          >
-            Staxis
-          </Link>
+          {/* Staxis (the decision feed) — visible unless the hotel has the
+              Staxis section turned off. */}
+          {enabled.staxis && (
+            <Link
+              href="/feed"
+              style={{
+                fontFamily: sansFont, fontWeight: pathname.startsWith('/feed') ? 600 : 400,
+                fontSize: '13px', color: pathname.startsWith('/feed') ? ink : ink3,
+                textDecoration: 'none',
+                borderBottom: pathname.startsWith('/feed') ? `1.5px solid ${sage}` : 'none',
+                paddingBottom: '2px', transition: 'color 0.15s ease', whiteSpace: 'nowrap',
+              }}
+            >
+              Staxis
+            </Link>
+          )}
 
           {/* Everything else, collapsed into one dropdown */}
           <div style={{ position: 'relative' }}>

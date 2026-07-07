@@ -12,6 +12,7 @@ import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
 
 registerTool<{ roomNumber: string; staffName: string }>({
   name: 'assign_room',
+  section: 'housekeeping',
   description:
     'Assign a room to a specific housekeeper by name. Use when manager says "assign 302 to Maria" or "give 410 to Carlos". The name match is case-insensitive and partial.',
   inputSchema: {
@@ -24,6 +25,7 @@ registerTool<{ roomNumber: string; staffName: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
+  approval: 'card',
   handler: async ({ roomNumber, staffName }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -62,6 +64,7 @@ registerTool<{ roomNumber: string; staffName: string }>({
 
 registerTool<{ period?: 'today' | 'week' | 'month' }>({
   name: 'get_staff_performance',
+  section: 'staff',
   description:
     'Get per-staff cleaning performance metrics over a period. Returns: name, rooms cleaned, average duration in minutes, flagged events. Period defaults to "today".',
   inputSchema: {
@@ -138,6 +141,7 @@ registerTool<{ period?: 'today' | 'week' | 'month' }>({
 
 registerTool<{ date?: string }>({
   name: 'generate_schedule',
+  section: 'staff',
   description:
     'Generate (or look up) the housekeeper schedule for a given date. Returns which housekeepers are scheduled and how many rooms each has assigned. Date format: YYYY-MM-DD. Defaults to today.',
   inputSchema: {
@@ -225,6 +229,7 @@ const TOR_STATUS_FILTERS = ['pending', 'approved', 'denied', 'all'] as const;
 
 registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
   name: 'get_time_off_requests',
+  section: 'staff',
   description:
     'List staff time-off (PTO) requests for this property. Use when a manager asks things like "any time-off requests?", "who wants time off?", or "show pending PTO". Returns each request\'s staff name, date, reason, and status. Defaults to pending requests only.',
   inputSchema: {
@@ -285,6 +290,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; denyReason?: string }>({
   name: 'decide_time_off',
+  section: 'staff',
   description:
     'Approve or deny a PENDING staff time-off request. Identify the request by the staff member\'s name; pass the date (YYYY-MM-DD) too when they have more than one pending request. Approving also clears that day\'s scheduled shift. Use only when the manager clearly says to approve or deny someone\'s time off.',
   inputSchema: {
@@ -299,6 +305,7 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
+  approval: 'card',
   handler: async ({ staffName, decision, date, denyReason }, ctx): Promise<ToolResult> => {
     if (decision !== 'approve' && decision !== 'deny') {
       return { ok: false, error: 'decision must be "approve" or "deny".' };

@@ -116,6 +116,7 @@ registerTool<Record<string, never>>({
 
 registerTool<{ period?: 'today' | 'week' | 'month' | 'quarter' | 'year' }>({
   name: 'get_revenue',
+  section: 'financials',
   requiresCapability: 'view_financials',
   description:
     'Get revenue figures for a period. Returns total revenue, ADR (average daily rate), and RevPAR. Period defaults to "today".',
@@ -144,6 +145,7 @@ registerTool<{ period?: 'today' | 'week' | 'month' | 'quarter' | 'year' }>({
 
 registerTool<{ period?: 'week' | 'month' | 'quarter' }>({
   name: 'get_financial_report',
+  section: 'financials',
   requiresCapability: 'view_financials',
   description:
     'Get a detailed financial report for a period. Includes revenue breakdown, labor costs, and net margin. Returns structured data the chat can render as a table.',
@@ -170,6 +172,7 @@ registerTool<{ period?: 'week' | 'month' | 'quarter' }>({
 
 registerTool<{ category?: 'housekeeping' | 'maintenance' | 'breakfast' | 'all' }>({
   name: 'get_inventory',
+  section: 'inventory',
   description:
     'Get current inventory levels by category. Returns items, current stock, and any below the reorder threshold. Categories: housekeeping, maintenance, breakfast, or all.',
   inputSchema: {

@@ -57,6 +57,7 @@ import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { runWithConcurrency } from '@/lib/parallel';
+import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import {
   runAutoAssignForProperty,
   type PropertyRunResult,
@@ -82,14 +83,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const url = new URL(req.url);
     const overridePid = url.searchParams.get('propertyId');
 
-    let propsQuery = supabaseAdmin.from('properties').select('id, timezone');
+    let propsQuery = supabaseAdmin.from('properties').select('id, timezone, enabled_sections');
     if (overridePid) propsQuery = propsQuery.eq('id', overridePid);
     const { data: propsRows, error: propsErr } = await propsQuery;
     if (propsErr) {
       log.error('run-auto-assign: load properties failed', { requestId, msg: propsErr.message });
       return err('load properties failed', { requestId, status: 500, code: 'upstream_failure' });
     }
-    const properties = (propsRows ?? []) as Array<{ id: string; timezone: string | null }>;
+    const allProperties = (propsRows ?? []) as Array<{
+      id: string;
+      timezone: string | null;
+      enabled_sections: EnabledSections;
+    }>;
+    // Section gate (WP6): a hotel with Housekeeping off pauses auto-assignment.
+    // Fail-open — only an explicit `false` skips (null/missing ⇒ runs).
+    const properties = allProperties.filter(
+      (p) => isSectionEnabled(p.enabled_sections, 'housekeeping'),
+    );
 
     // Bounded concurrency (cap 5) instead of a serial for-await. A strictly
     // serial loop exceeds the 60s function cap at fleet scale and, because the

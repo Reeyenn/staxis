@@ -32,11 +32,27 @@
  * column mappings, parsing notes.
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
 import { verifyRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 import type { Recipe, LearnedValueTranslations, LearnedDateFormat } from './types.js';
+
+/**
+ * Injectable client used by loadActiveDetailed's SELECT — defaults to the
+ * service-role singleton (production). The seam exists ONLY so the
+ * refusedExisting decision (no-row vs present-but-tampered) can be unit-tested
+ * against a fake row without a live DB. Other functions here still use the
+ * module singleton directly. Never call __setDbForTests outside tests.
+ */
+let db: SupabaseClient = supabase;
+/** Test-only: swap loadActiveDetailed's DB client. Returns a restore fn. */
+export function __setDbForTests(fake: SupabaseClient): () => void {
+  const prev = db;
+  db = fake;
+  return () => { db = prev; };
+}
 
 // ─── Knowledge file schema ────────────────────────────────────────────────
 
@@ -211,6 +227,24 @@ export interface LoadedKnowledgeFile {
    *  NULL when the row pre-dates signing or signing was bypassed. */
   signature: Buffer | null;
   signedWithKeyId: string | null;
+  /**
+   * feature/coverage-gated-feeds (migration 0296) — action keys the founder's
+   * Make-live left OFF because no preview capture ever proved them readable.
+   * The session-driver excludes any polling template whose sourceActionKey is
+   * in this array; a later successful mapper.capture_feed re-enables one by
+   * removing its key (see feed-capture / captureFeedOnDemand).
+   *
+   * DELIBERATELY OUTSIDE THE SIGNED `knowledge` ENVELOPE — it's the sibling
+   * `disabled_feeds` jsonb column, not part of the HMAC. Toggling a feed on/off
+   * must never require a worker re-sign; and because a tampered value can only
+   * REDUCE what's collected (deny-of-data, never inject selectors/steps), it
+   * needs no signature protection. NEVER thread this into verifyRecipe.
+   *
+   * Sanitized defensively at load (see sanitizeDisabledFeeds): non-array →
+   * [], non-string entries dropped, deduped. Absent/legacy row → [] (collect
+   * everything).
+   */
+  disabledFeeds: string[];
 }
 
 // ─── Load ────────────────────────────────────────────────────────────────
@@ -218,12 +252,43 @@ export interface LoadedKnowledgeFile {
 /**
  * Load the currently-active knowledge file for a PMS family. Returns
  * null when no active version exists (new PMS family that hasn't been
- * mapped yet, or the only mapping was quarantined).
+ * mapped yet, or the only mapping was quarantined) OR when an active row
+ * exists but was REFUSED (signature verification failed under enforce).
+ *
+ * Thin wrapper over loadActiveDetailed — existing call sites (session-driver
+ * hot-reload, recipe-runner, admin) keep their exact "null ⟹ no usable file"
+ * contract. Callers that must DISTINGUISH "no row at all" from "a row that
+ * failed its tamper check" (session-driver.start — a refusal must NOT
+ * auto-enqueue a paid mapper learn) call loadActiveDetailed directly.
  */
 export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile | null> {
-  const { data, error } = await supabase
+  return (await loadActiveDetailed(pmsFamily)).file;
+}
+
+/**
+ * Load the active knowledge file AND report whether an active row physically
+ * EXISTED but was REFUSED at the signature-verification gate.
+ *
+ * WHY the extra bit: `file: null` alone is ambiguous — it means BOTH "this
+ * family was never mapped" (genuinely absent) AND "an active row exists but
+ * its signature didn't verify" (present-but-refused). session-driver.start()
+ * must tell these apart: a genuinely-absent map should auto-enqueue a mapper
+ * job, but a REFUSED map must NOT — a tamper-check failure is not a reason to
+ * spend ~$25 of Claude on a fresh full learn. The operator re-saves/re-promotes
+ * the map from Manage maps instead.
+ *
+ *   - refusedExisting=true  ⟹ a row was present but rejected (signature
+ *                             mismatch, unsigned-with-signing-configured, or
+ *                             no_key_configured). `file` is null.
+ *   - refusedExisting=false ⟹ either a usable `file`, OR truly no active row
+ *                             (nothing to refuse), OR a shape-invalid row.
+ */
+export async function loadActiveDetailed(
+  pmsFamily: string,
+): Promise<{ file: LoadedKnowledgeFile | null; refusedExisting: boolean }> {
+  const { data, error } = await db
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
     .is('deleted_at', null)
@@ -231,11 +296,16 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
 
   if (error) {
     log.error('knowledge-file: load failed', { pmsFamily, err: error });
-    return null;
+    // A query error is not a signature refusal — treat as "no usable file",
+    // don't set refusedExisting (a transient DB blip shouldn't suppress the
+    // mapper auto-enqueue any more than it should trigger it).
+    return { file: null, refusedExisting: false };
   }
-  if (!data) return null;
+  if (!data) return { file: null, refusedExisting: false };
   const loaded = unwrap(data as Record<string, unknown>);
-  if (!loaded) return null;
+  // A shape-invalid active row is broken, but NOT a signature refusal — leave
+  // refusedExisting false so the mapper auto-enqueue path is unchanged for it.
+  if (!loaded) return { file: null, refusedExisting: false };
 
   // Plan v8 P1-7 + Codex final review A2 hardening — verify the recipe
   // signature before handing the knowledge file to a polling driver.
@@ -278,19 +348,24 @@ export async function loadActive(pmsFamily: string): Promise<LoadedKnowledgeFile
         signedWithKeyId: loaded.signedWithKeyId,
       };
       // Special case for #1 above — unsigned row with signing configured
-      // is a deployment hazard regardless of mode. Always refuse.
+      // is a deployment hazard regardless of mode. Always refuse. This IS a
+      // present-but-refused row → refusedExisting so the caller doesn't
+      // auto-spend a mapper learn on it.
       if (isRecipeSigningConfigured() && verify.reason === 'no_signature') {
         log.error('knowledge-file: unsigned active row with signing configured — refusing load (deployment hazard)', detail);
-        return null;
+        return { file: null, refusedExisting: true };
       }
       if (env.RECIPE_SIGNING_ENFORCE === 'enforce') {
         log.error('knowledge-file: signature verification FAILED — refusing load (enforce mode)', detail);
-        return null;
+        // A row EXISTS but failed its tamper check → present-but-refused.
+        return { file: null, refusedExisting: true };
       }
+      // Warn mode: the mismatch is logged but the (unverified) row is still
+      // returned + used — it was NOT refused, so refusedExisting stays false.
       log.warn('knowledge-file: signature verification failed (warn mode — proceeding)', detail);
     }
   }
-  return loaded;
+  return { file: loaded, refusedExisting: false };
 }
 
 /**
@@ -303,7 +378,7 @@ export async function loadByVersion(
 ): Promise<LoadedKnowledgeFile | null> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .eq('version', version)
     .maybeSingle();
@@ -318,7 +393,7 @@ export async function loadByVersion(
 export async function listVersions(pmsFamily: string): Promise<LoadedKnowledgeFile[]> {
   const { data, error } = await supabase
     .from('pms_knowledge_files')
-    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id')
+    .select('id, pms_family, version, status, knowledge, learned_at, created_by, signature, signed_with_key_id, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .order('version', { ascending: false });
 
@@ -449,7 +524,36 @@ function unwrap(row: Record<string, unknown>): LoadedKnowledgeFile | null {
     createdBy: row.created_by as string,
     signature: decodeBytea(row.signature),
     signedWithKeyId: typeof row.signed_with_key_id === 'string' ? row.signed_with_key_id : null,
+    // feature/coverage-gated-feeds — sibling jsonb column, NOT part of the signed
+    // envelope. A row that fails shape validation above never gets here, so a
+    // disabled_feeds sanitize failure can never mask a broken knowledge blob.
+    disabledFeeds: sanitizeDisabledFeeds(row.disabled_feeds),
   };
+}
+
+/**
+ * feature/coverage-gated-feeds — coerce the raw `disabled_feeds` jsonb into a
+ * clean, deduped string[]. This value lives OUTSIDE the HMAC-signed envelope, so
+ * it can be tampered/malformed WITHOUT tripping signature verification — sanitize
+ * fully defensively here so a junk value degrades to "collect everything / this
+ * subset", never to a crash or a poisoned skip set:
+ *   - not an array (null, object, string, missing legacy row) → [] (collect all).
+ *   - non-string entries (numbers, nulls, nested arrays) → dropped.
+ *   - blank/whitespace-only entries → dropped (can't match a real action key).
+ *   - duplicates → collapsed.
+ * The worst a hostile value can do is name MORE keys to skip (reduce collection),
+ * which is admin-visible on the Coverage page — it can never inject a selector.
+ */
+export function sanitizeDisabledFeeds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (trimmed === '') continue;
+    out.add(trimmed);
+  }
+  return [...out];
 }
 
 /**

@@ -90,7 +90,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   // 2. The family's ACTIVE knowledge file.
   const { data: activeRow, error: kfErr } = await supabaseAdmin
     .from('pms_knowledge_files')
-    .select('id, version, status, knowledge, signature, signed_with_key_id, notes, learned_at')
+    .select('id, version, status, knowledge, signature, signed_with_key_id, notes, learned_at, disabled_feeds')
     .eq('pms_family', pmsFamily)
     .eq('status', 'active')
     .is('deleted_at', null)
@@ -113,7 +113,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const reviewRow = activeRow ?? await (async () => {
     const { data: draftRow } = await supabaseAdmin
       .from('pms_knowledge_files')
-      .select('id, version, status, knowledge, signature, signed_with_key_id, notes, learned_at')
+      .select('id, version, status, knowledge, signature, signed_with_key_id, notes, learned_at, disabled_feeds')
       .eq('pms_family', pmsFamily)
       .eq('status', 'draft')
       .is('deleted_at', null)
@@ -192,6 +192,14 @@ export async function GET(req: NextRequest): Promise<Response> {
       signed: reviewRow.signature != null && reviewRow.signed_with_key_id != null,
       shape: parsed.shape,
       editable: parsed.editable,
+      // feature/coverage-gated-feeds — action keys the session-driver is NOT
+      // polling (from pms_knowledge_files.disabled_feeds). On a LIVE map the page
+      // uses this to mark each feed "Collecting" vs "Off — Re-read to turn on";
+      // on a DRAFT it's typically [] (gating is applied at Make-live). Parsed
+      // defensively — a legacy row predating the column omits it → [].
+      disabledFeeds: Array.isArray(reviewRow.disabled_feeds)
+        ? (reviewRow.disabled_feeds as unknown[]).filter((k): k is string => typeof k === 'string')
+        : [],
       // self-repair provenance — the worker records a reanchor's origin as a
       // 'reanchor/' PREFIX on the active row's notes (promoteRecipeChange →
       // saveDraftKnowledgeFile, `${origin}/${decision}: …`). Surface it so the

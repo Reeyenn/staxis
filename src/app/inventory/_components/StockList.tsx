@@ -13,7 +13,8 @@ import {
 import { StatusDot } from './StatusPill';
 import { Serif } from './Serif';
 import { Caps } from './Caps';
-import { useRiseIn } from './motion';
+import { useFlipList } from './motion';
+import { AllClear, PingDot, TickNum } from './fx';
 import { BoardCard } from './BoardCard';
 import type { DisplayItem } from './types';
 import { t, type Lang } from './inv-i18n';
@@ -63,7 +64,10 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
   const counted = useMemo(() => filtered.filter((it) => !it.uncounted), [filtered]);
   const uncounted = useMemo(() => filtered.filter((it) => it.uncounted), [filtered]);
 
-  const boardRef = useRiseIn<HTMLDivElement>([bucket, query], { step: 14 });
+  // FLIP over every card on the board: filtering/searching glides the
+  // survivors into place, new cards rise in with a cascade, and an item that
+  // changes triage column after a recount physically travels there.
+  const boardRef = useFlipList<HTMLDivElement>();
 
   // Brand-new hotel (nothing counted at all, in the unfiltered "All" view) →
   // skip the empty triage board and show only the friendly "count to get
@@ -74,20 +78,14 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
   return (
     <div ref={boardRef} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {!dayOne && (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr',
-            gap: 13,
-            alignItems: 'start',
-          }}
-        >
+        <div className="inv-board">
           {COLUMNS.map((col) => {
             const c = statusColor[col.status];
             const colItems = counted
               .filter((it) => it.status === col.status)
               .slice()
               .sort((a, b) => sortKey(a) - sortKey(b));
+            const urgent = col.status === 'critical' && colItems.length > 0;
             return (
               <div
                 key={col.status}
@@ -99,14 +97,18 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 6px 12px' }}>
-                  <StatusDot s={col.status} size={10} />
+                  {urgent
+                    ? <PingDot color={c} size={10} />
+                    : <StatusDot s={col.status} size={10} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 700, color: c }}>
                       {col.label}
                     </div>
                     <Caps size={8.5} color={T.dim}>{col.sub}</Caps>
                   </div>
-                  <Serif size={24} color={c}>{colItems.length}</Serif>
+                  <Serif size={24} color={c}>
+                    <TickNum>{colItems.length}</TickNum>
+                  </Serif>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                   {colItems.map((it) => (
@@ -120,18 +122,23 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
                     />
                   ))}
                   {colItems.length === 0 && (
-                    <div
-                      style={{
-                        padding: '22px 0',
-                        textAlign: 'center',
-                        fontFamily: fonts.sans,
-                        fontSize: 12.5,
-                        color: T.dim,
-                        fontStyle: 'italic',
-                      }}
-                    >
-                      {tx.nothingHere}
-                    </div>
+                    col.status === 'critical' ? (
+                      // The one empty state that is good news — celebrate it.
+                      <AllClear label={tx.allClear} sub={tx.allClearSub} />
+                    ) : (
+                      <div
+                        style={{
+                          padding: '22px 0',
+                          textAlign: 'center',
+                          fontFamily: fonts.sans,
+                          fontSize: 12.5,
+                          color: T.dim,
+                          fontStyle: 'italic',
+                        }}
+                      >
+                        {tx.nothingHere}
+                      </div>
+                    )
                   )}
                 </div>
               </div>
@@ -177,7 +184,9 @@ function NotCountedSection({
           </div>
           <Caps size={8.5} color={T.dim}>{tx.notCountedSub}</Caps>
         </div>
-        <Serif size={24} color={T.ink3}>{items.length}</Serif>
+        <Serif size={24} color={T.ink3}>
+          <TickNum>{items.length}</TickNum>
+        </Serif>
         {onCount && (
           <button
             type="button"

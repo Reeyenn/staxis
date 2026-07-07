@@ -31,8 +31,8 @@ function statusBadge(status: ExtractionStatus, L: LFn): { label: string; color: 
   switch (status) {
     case 'ready':       return { label: L('Searchable by AI', 'Buscable por IA'), color: 'var(--snow-sage-deep)', tone: 'good' };
     case 'partial':     return { label: L('Partially indexed', 'Indexado parcial'), color: 'var(--snow-sage-deep)', tone: 'good' };
-    case 'pending':
-    case 'processing':  return { label: L('Processing…', 'Procesando…'), color: 'var(--snow-ink3)', tone: 'muted' };
+    case 'pending':     return { label: L('Processing…', 'Procesando…'), color: 'var(--snow-ink3)', tone: 'muted' };
+    case 'processing':  return { label: L('Reading scan…', 'Leyendo el escaneo…'), color: 'var(--snow-ink3)', tone: 'muted' };
     case 'unsupported': return { label: L('Not text-searchable', 'No buscable por texto'), color: 'var(--snow-ink3)', tone: 'muted' };
     case 'failed':      return { label: L('Couldn’t read', 'No se pudo leer'), color: 'var(--snow-warm)', tone: 'warn' };
     default:            return null;
@@ -284,7 +284,7 @@ function SopEditor({ pid, article, L, onDone, onCancel }: { pid: string; article
 
 // ══════════════════════════════ Documents ══════════════════════════════════
 
-const ACCEPT_DOCS = '.pdf,.txt,.md,.markdown,.csv,.doc,.docx';
+const ACCEPT_DOCS = '.pdf,.txt,.md,.markdown,.csv,.doc,.docx,.jpg,.jpeg,.png,.webp';
 
 function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
   const [items, setItems] = React.useState<KnowledgeDocumentDTO[] | null>(null);
@@ -435,7 +435,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
         ) : undefined}
       />
       {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-      {isManager && <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', marginBottom: 12 }}>{L('PDF, Word, Text, Markdown, CSV up to 10 MB. The assistant reads the full text of typed PDFs and Word docs — ask it anything about them. Scanned (photo) PDFs can’t be read yet.', 'PDF, Word, Texto, Markdown, CSV hasta 10 MB. El asistente lee el texto completo de los PDF y documentos de Word — pregúntale lo que sea. Los PDF escaneados (foto) aún no se pueden leer.')}</div>}
+      {isManager && <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', marginBottom: 12 }}>{L('PDF, Word, Text, Markdown, CSV, and photos (JPG, PNG, WebP) up to 10 MB. The assistant reads the full text — including scanned PDFs and photos, which it transcribes with AI (that takes a moment; the badge shows “Reading scan…” until it’s ready).', 'PDF, Word, Texto, Markdown, CSV y fotos (JPG, PNG, WebP) hasta 10 MB. El asistente lee el texto completo — incluidos los PDF escaneados y las fotos, que transcribe con IA (tarda un momento; la etiqueta muestra “Leyendo el escaneo…” hasta que esté listo).')}</div>}
       {addingFolder && isManager && (
         <div style={{ ...card, padding: 12, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <input

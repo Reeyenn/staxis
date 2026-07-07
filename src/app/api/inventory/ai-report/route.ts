@@ -31,6 +31,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { propertyLocalToday, addDaysInTz } from '@/lib/schedule/local-date';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,6 +50,14 @@ const STALE_INFERENCE_HOURS = 26;
 // evidence; see ml-service/src/training/_prospective_gate.py).
 const EVENTS_NEEDED = 15;
 
+// Gate B threshold — prospective predicted-vs-actual pairs required. Matches
+// ml-service config inventory_graduation_min_prospective_pairs.
+const PAIRS_NEEDED = 8;
+
+// How far back the robot-data-gap census looks. One NULL day voids every
+// learning window spanning it, so the report warns as soon as gaps exist.
+const OCCUPANCY_CENSUS_DAYS = 14;
+
 type ItemStatus = 'graduated' | 'learning' | 'not-enough-data';
 
 interface ReportItem {
@@ -64,6 +73,16 @@ interface ReportItem {
   status: ItemStatus;
   countEvents: number;
   eventsNeeded: number;
+  // ── True graduation progress (2026-07-05 accuracy pass) ──────────────
+  // countEvents alone lied: an item can sit at "15 of 15 counts" forever
+  // while windows keep getting voided or pairs never accumulate. These are
+  // the trainer's ACTUAL gate readings, persisted in model_runs.
+  cleanWindows: number | null;       // gate A progress (training_row_count)
+  prospectivePairs: number | null;   // gate B progress (graduation_n_pairs)
+  pairsNeeded: number;               // gate B threshold (8)
+  pairSpanDays: number | null;       // gate C progress
+  graduationWape: number | null;     // gate D reading (fraction, e.g. 0.22)
+  graduationReason: string | null;   // machine code: why not graduated yet
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -84,7 +103,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Service-role client so the multi-table aggregate doesn't fight RLS.
     // The auth check above guarantees the caller is authorized.
-    const [itemsRes, runsRes, predsRes, logRes, countsRes, lastPredRes, predsLast7Res] =
+    const censusStart = new Date(Date.now() - (OCCUPANCY_CENSUS_DAYS + 2) * 86400000)
+      .toISOString().slice(0, 10);
+
+    const [itemsRes, runsRes, predsRes, logRes, countsRes, lastPredRes, predsLast7Res, occRes, propRes] =
       await Promise.all([
         supabaseAdmin
           .from('inventory')
@@ -132,6 +154,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           .select('property_id', { count: 'exact', head: true })
           .eq('property_id', propertyId)
           .gte('predicted_at', sevenDaysAgoIso),
+        // Robot-data census: which recent days have real checkout/stayover
+        // numbers? NULL (or a missing row) = robot gap = every learning
+        // window spanning that day is voided. Drives the starvation banner.
+        supabaseAdmin
+          .from('daily_logs')
+          .select('date,checkouts,stayovers')
+          .eq('property_id', propertyId)
+          .gte('date', censusStart)
+          .limit(OCCUPANCY_CENSUS_DAYS + 4),
+        // Timezone for the census: daily_logs.date is a property-LOCAL day
+        // sealed through local yesterday — walking UTC dates here would fire
+        // the gap banner every evening on a healthy hotel.
+        supabaseAdmin
+          .from('properties')
+          .select('timezone')
+          .eq('id', propertyId)
+          .maybeSingle(),
       ]);
 
     const items = (itemsRes.data ?? []) as Array<{ id: string; name: string }>;
@@ -206,13 +245,37 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       countEventsByItem.set(id, set);
     }
 
-    // Per-item run signal (graduated + training-row progress).
-    const runByItem = new Map<string, { graduated: boolean; rowCount: number }>();
+    // Per-item run signal — graduated flag + the trainer's REAL gate readings
+    // (persisted in hyperparameters at every Sunday retrain).
+    const runByItem = new Map<string, {
+      graduated: boolean;
+      rowCount: number;
+      pairs: number | null;
+      spanDays: number | null;
+      wape: number | null;
+      reason: string | null;
+      windowsDropped: number;
+      minWindows: number | null;
+      minPairs: number | null;
+    }>();
+    const numOrNull = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v : null;
     for (const r of runs) {
       if (!r.item_id) continue;
+      const hp = (r.hyperparameters ?? {}) as Record<string, unknown>;
       runByItem.set(String(r.item_id), {
         graduated: !!r.auto_fill_enabled,
         rowCount: Number(r.training_row_count ?? 0),
+        pairs: numOrNull(hp.graduation_n_pairs),
+        spanDays: numOrNull(hp.graduation_span_days),
+        wape: numOrNull(hp.graduation_wape),
+        reason: typeof hp.graduation_reason === 'string' ? hp.graduation_reason : null,
+        windowsDropped: numOrNull(hp.windows_dropped_incomplete) ?? 0,
+        // Thresholds the trainer ACTUALLY applied (persisted per retrain,
+        // env-overridable Python-side) — the TS constants are fallbacks for
+        // runs that predate this field.
+        minWindows: numOrNull(hp.graduation_min_windows),
+        minPairs: numOrNull(hp.graduation_min_pairs),
       });
     }
 
@@ -244,7 +307,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         loggedAt: logged?.loggedAt ?? null,
         status,
         countEvents,
-        eventsNeeded: EVENTS_NEEDED,
+        eventsNeeded: run?.minWindows ?? EVENTS_NEEDED,
+        cleanWindows: run ? run.rowCount : null,
+        prospectivePairs: run?.pairs ?? null,
+        pairsNeeded: run?.minPairs ?? PAIRS_NEEDED,
+        pairSpanDays: run?.spanDays ?? null,
+        graduationWape: run?.wape ?? null,
+        graduationReason: run?.reason ?? null,
       });
     }
 
@@ -288,6 +357,46 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     })();
     const predictionsLast7Days = predsLast7Res.count ?? 0;
 
+    // ── Robot-data-gap census (starvation visibility) ────────────────────
+    // Fresh predictions keep flowing even when ZERO learning is happening —
+    // without this, "AI learning normally" and "AI has accumulated nothing
+    // for a month" look identical on this screen.
+    //
+    // Two false-alarm guards:
+    //   • Days are PROPERTY-LOCAL, starting at local yesterday — the seal
+    //     only ever writes local yesterday, so a UTC walk would flag "local
+    //     today" as missing every evening on a healthy US hotel.
+    //   • Days before the property's first daily_logs row don't count — a
+    //     hotel onboarded 3 days ago is not "missing" 11 pre-go-live days,
+    //     and those can never be repaired. No rows at all → no census (the
+    //     empty/no-jobs states already cover brand-new hotels).
+    const occRows = (occRes.data ?? []) as Array<{ date: string; checkouts: number | null; stayovers: number | null }>;
+    const occByDate = new Map<string, boolean>();
+    let earliestLogDate: string | null = null;
+    for (const r of occRows) {
+      const d = String(r.date);
+      occByDate.set(d, r.checkouts !== null && r.stayovers !== null);
+      if (earliestLogDate === null || d < earliestLogDate) earliestLogDate = d;
+    }
+    const tz = (propRes.data?.timezone as string | null) ?? null;
+    const localToday = propertyLocalToday(new Date(), tz);
+    let occupancyDaysMissing = 0;
+    // Oldest-first day strip for the UI's visual data-pulse (one tick per
+    // census day: did the robot deliver that day's numbers?). Pre-go-live
+    // days are excluded entirely — they're not gaps, they're before history.
+    const occupancyDays: Array<{ date: string; hasData: boolean }> = [];
+    if (earliestLogDate !== null) {
+      for (let back = OCCUPANCY_CENSUS_DAYS; back >= 1; back--) {
+        const d = addDaysInTz(localToday, -back);
+        if (d < earliestLogDate) continue; // pre-go-live — not a robot gap
+        const hasData = occByDate.get(d) === true;
+        occupancyDays.push({ date: d, hasData });
+        if (!hasData) occupancyDaysMissing += 1;
+      }
+    }
+    const windowsDroppedIncomplete = Array.from(runByItem.values())
+      .reduce((acc, r) => acc + r.windowsDropped, 0);
+
     return ok(
       {
         summary: {
@@ -300,6 +409,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           lastInferenceStale,
           predictionsLast7Days,
           eventsNeeded: EVENTS_NEEDED,
+          pairsNeeded: PAIRS_NEEDED,
+          occupancyDaysMissing,
+          occupancyCensusDays: OCCUPANCY_CENSUS_DAYS,
+          occupancyDays,
+          windowsDroppedIncomplete,
         },
         items: reportItems,
       },

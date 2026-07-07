@@ -1,33 +1,41 @@
 /**
  * POST /api/admin/mapper/draft/delete-feed
- *   body: { jobId, feedKey }   — Learning Board path (resolves the run's draft)
- *      OR { draftId, feedKey } — Coverage Editor path (parked-draft review)
+ *   body: { jobId, feedKey }              — Learning Board path (resolves the run's draft)
+ *      OR { draftId, propertyId, feedKey } — Coverage Editor path (parked-draft review)
  *
- * Per-feed DELETE on the LIVE Mapping Board, BEFORE the map goes live. A founder
+ * Per-feed DELETE on a PARKED DRAFT, BEFORE the map goes live. A founder
  * reviewing a finished run can drop a feed the robot mis-mapped (a wrong screen,
  * a junk extra feed) so it isn't carried into the live recipe — then either
  * re-run that feed or save the rest.
  *
  * feature/coverage-show-draft — the Coverage Editor ("What the robot captures")
- * now also shows a PARKED DRAFT when there's no live map, and removes feeds from
- * it. That path knows the draft's id directly (not a jobId), so the route accepts
- * `draftId` as an alternative to `jobId`. Both resolve to the same draft row and
- * run the identical plain-jsonb edit + safety checks below.
+ * also shows a PARKED DRAFT when there's no live map, and removes feeds from it.
+ * That path knows the draft's id directly (not a jobId), so the route accepts
+ * `draftId` (+ `propertyId`, needed to enqueue the worker job) as an alternative
+ * to `jobId`. Both resolve to the same draft row and enqueue the identical
+ * re-signing worker job below.
  *
- * SAFETY (the route refuses, in order):
+ * fix/cua-draft-resign — the bug this closes: this route used to delete
+ * knowledge.actions[feedKey] and re-save the draft row with a PLAIN in-place
+ * jsonb UPDATE via supabaseAdmin. But a draft is NOT unsigned — it is signed at
+ * learn time (HMAC over `knowledge`, keyed by the Fly-only RECIPE_SIGNING_KEY,
+ * which the web can NEVER produce) and the worker verifies that seal before it
+ * will honour the draft. Editing the jsonb in place silently broke the seal, so
+ * promoting the edited draft made the worker REFUSE it and auto-trigger a fresh
+ * ~$25 re-learn. So the delete now enqueues the SAME `mapper.edit_recipe` worker
+ * job the LIVE-map edits use (draft op `draft_delete_feeds`); the worker edits
+ * the draft row IN PLACE (same id, same version, re-signed) and stamps
+ * result.knowledge_file_id = the draft id, so the client polls
+ * GET /api/admin/mapper/live/[jobId] to completion.
+ *
+ * SAFETY — the route fast-fails (the worker re-validates authoritatively):
  *   1. The draft must NOT be active (409) — once live, edits go through the
- *      Coverage Editor's signed-envelope path, never a raw jsonb write here.
+ *      Coverage Editor's signed-envelope path, never here.
  *   2. The feed must NOT be a REQUIRED feed (400) — dropping room status /
  *      arrivals / departures / work orders would cripple every hotel on the
  *      family; the never-zero / required-feed guards own that decision.
  *   3. Deleting it must NOT empty the map (400) — a zero-feed draft is useless
  *      and would trip the promote guards anyway.
- *
- * Then it deletes knowledge.actions[feedKey] and re-saves the draft row with a
- * PLAIN jsonb UPDATE. NO re-signing and NO worker run: drafts are unsigned and
- * are verified ONLY at promote time (Save & Finish → promoteMap), so editing a
- * draft's jsonb in place is safe and never touches the signed-envelope path or
- * any guard.
  *
  * Auth: requireAdmin. supabaseAdmin (pms_knowledge_files is deny-all-browser).
  */
@@ -37,8 +45,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { resolveDraftForJob, type ResolveDraftResult, type DraftRow } from '@/lib/pms/job-draft';
 import { REQUIRED_ACTION_KEYS } from '@/lib/pms/recipe-coverage';
+import { draftDeleteFeedsPayload } from '@/lib/pms/draft-edit-ops';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,19 +54,98 @@ export const dynamic = 'force-dynamic';
 const UUID = /^[0-9a-f-]{36}$/i;
 const FEED_KEY = /^[A-Za-z0-9_.-]{1,80}$/;
 
-/** Resolve a draft row directly by its knowledge-file id (Coverage Editor path).
- *  Mirror of resolveDraftForJob's success/failure shape so the rest of the route
- *  is identical regardless of how the draft was identified. */
-async function resolveDraftById(draftId: string): Promise<ResolveDraftResult> {
+/** The draft row + the property/family we enqueue the worker job against. Both
+ *  entry paths resolve to this shape so the rest of the route is identical. */
+interface ResolvedDraft {
+  id: string;
+  version: number;
+  status: string;
+  pmsFamily: string;
+  propertyId: string;
+  knowledge: { actions?: Record<string, unknown> };
+}
+
+type ResolveResult =
+  | { ok: true; row: ResolvedDraft }
+  | { ok: false; status: number; message: string };
+
+/** Learning Board path — resolve the draft the run produced, AND carry the
+ *  original job's property_id/pms_family forward for the new worker job. */
+async function resolveFromJob(jobId: string): Promise<ResolveResult> {
+  const { data: job, error: jobErr } = await supabaseAdmin
+    .from('workflow_jobs')
+    .select('id, property_id, payload, result')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (jobErr) return { ok: false, status: 500, message: `job lookup failed: ${jobErr.message}` };
+  if (!job) return { ok: false, status: 404, message: 'job not found' };
+
+  const result = (job.result ?? {}) as Record<string, unknown>;
+  const knowledgeFileId = typeof result.knowledge_file_id === 'string' ? result.knowledge_file_id : null;
+  if (!knowledgeFileId) {
+    return { ok: false, status: 400, message: "Nothing to edit — this run didn't produce a map yet." };
+  }
+  if (typeof job.property_id !== 'string') {
+    return { ok: false, status: 409, message: 'This run has no property — refresh and try again.' };
+  }
+
   const { data, error: e } = await supabaseAdmin
     .from('pms_knowledge_files')
-    .select('id, version, status, pms_family')
+    .select('id, version, status, pms_family, knowledge')
+    .eq('id', knowledgeFileId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (e) return { ok: false, status: 500, message: `draft lookup failed: ${e.message}` };
+  if (!data) return { ok: false, status: 404, message: 'The map this run produced no longer exists.' };
+  return {
+    ok: true,
+    row: {
+      id: data.id as string,
+      version: data.version as number,
+      status: data.status as string,
+      pmsFamily: data.pms_family as string,
+      propertyId: job.property_id,
+      knowledge: (data.knowledge ?? {}) as { actions?: Record<string, unknown> },
+    },
+  };
+}
+
+/** Coverage Editor path — resolve the draft directly by its knowledge-file id.
+ *  propertyId comes from the caller (the editor is already property-scoped) and
+ *  is verified to sit on the SAME family as the draft (anti-spoof: never enqueue
+ *  one family's edit against another family's session/property). */
+async function resolveFromDraftId(draftId: string, propertyId: string): Promise<ResolveResult> {
+  const { data, error: e } = await supabaseAdmin
+    .from('pms_knowledge_files')
+    .select('id, version, status, pms_family, knowledge')
     .eq('id', draftId)
     .is('deleted_at', null)
     .maybeSingle();
   if (e) return { ok: false, status: 500, message: `draft lookup failed: ${e.message}` };
   if (!data) return { ok: false, status: 404, message: 'The map no longer exists.' };
-  return { ok: true, row: data as DraftRow };
+
+  const { data: sessionRow, error: sessErr } = await supabaseAdmin
+    .from('property_sessions')
+    .select('pms_family')
+    .eq('property_id', propertyId)
+    .maybeSingle();
+  if (sessErr) return { ok: false, status: 500, message: `could not load session: ${sessErr.message}` };
+  if (!sessionRow) return { ok: false, status: 404, message: 'This property has no CUA session.' };
+  if ((sessionRow.pms_family as string) !== (data.pms_family as string)) {
+    return { ok: false, status: 409, message: 'This map changed since you opened it — refresh and try again.' };
+  }
+
+  return {
+    ok: true,
+    row: {
+      id: data.id as string,
+      version: data.version as number,
+      status: data.status as string,
+      pmsFamily: data.pms_family as string,
+      propertyId,
+      knowledge: (data.knowledge ?? {}) as { actions?: Record<string, unknown> },
+    },
+  };
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -66,7 +153,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
 
-  let body: { jobId?: unknown; draftId?: unknown; feedKey?: unknown };
+  let body: { jobId?: unknown; draftId?: unknown; propertyId?: unknown; feedKey?: unknown };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
   }
@@ -75,12 +162,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!hasJobId && !hasDraftId) {
     return err('jobId or draftId (a uuid) is required', { requestId, status: 400, code: 'bad_request' });
   }
+  // The draftId path enqueues a worker job, which needs a property_id (the
+  // workflow_jobs.property_id column is NOT NULL); the editor always has it.
+  const hasPropertyId = typeof body.propertyId === 'string' && UUID.test(body.propertyId);
+  if (hasDraftId && !hasPropertyId) {
+    return err('propertyId (a uuid) is required', { requestId, status: 400, code: 'bad_request' });
+  }
   if (typeof body.feedKey !== 'string' || !FEED_KEY.test(body.feedKey)) {
     return err('feedKey is required', { requestId, status: 400, code: 'bad_request' });
   }
   const feedKey = body.feedKey;
 
-  // Never let a raw jsonb write hit a REQUIRED feed — that's guard territory.
+  // Never let a delete hit a REQUIRED feed — that's guard territory. (The worker
+  // re-checks; this is the fast-fail so the founder gets an instant, clear no.)
   if (REQUIRED_ACTION_KEYS.has(feedKey)) {
     return err(
       'This is a core feed the robot must always read — it can’t be removed here.',
@@ -89,8 +183,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const draft = hasDraftId
-    ? await resolveDraftById(body.draftId as string)
-    : await resolveDraftForJob(body.jobId as string);
+    ? await resolveFromDraftId(body.draftId as string, body.propertyId as string)
+    : await resolveFromJob(body.jobId as string);
   if (!draft.ok) return err(draft.message, { requestId, status: draft.status, code: 'bad_request' });
 
   // Once active, edits go through the signed Coverage Editor path — never here.
@@ -101,25 +195,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  // Read the draft's knowledge FRESH (resolveDraftForJob doesn't select it).
-  const { data: row, error: loadErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .select('knowledge')
-    .eq('id', draft.row.id)
-    .maybeSingle();
-  if (loadErr) {
-    return err(`could not load the draft: ${loadErr.message}`, { requestId, status: 500, code: 'db_error' });
-  }
-  if (!row) {
-    return err('The map this run produced no longer exists.', { requestId, status: 404, code: 'not_found' });
-  }
-
-  const knowledge = (row.knowledge ?? {}) as { actions?: Record<string, unknown> };
-  const actions = knowledge.actions && typeof knowledge.actions === 'object' && !Array.isArray(knowledge.actions)
-    ? { ...(knowledge.actions as Record<string, unknown>) }
+  const actions = draft.row.knowledge.actions && typeof draft.row.knowledge.actions === 'object'
+    && !Array.isArray(draft.row.knowledge.actions)
+    ? (draft.row.knowledge.actions as Record<string, unknown>)
     : null;
   if (!actions || !(feedKey in actions)) {
-    // Already gone (double-click / stale board) — idempotent success.
+    // Already gone (double-click / stale board) — idempotent success, no job.
     return ok({ removed: false, reason: 'not_present', remaining: actions ? Object.keys(actions).length : 0 }, { requestId });
   }
 
@@ -131,31 +212,34 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  delete actions[feedKey];
-  const nextKnowledge = { ...knowledge, actions };
-
-  // Plain jsonb UPDATE on a DRAFT — no re-sign, no worker. Scope to the draft
-  // status too, so a concurrent promote (draft → active) can't be overwritten.
-  const { data: updated, error: upErr } = await supabaseAdmin
-    .from('pms_knowledge_files')
-    .update({ knowledge: nextKnowledge })
-    .eq('id', draft.row.id)
-    .neq('status', 'active')
+  // Enqueue the re-signing worker job (fix/cua-draft-resign). The worker deletes
+  // the feed from the draft's knowledge, re-signs the SAME row (id + version
+  // preserved), and stamps result.knowledge_file_id = the draft id so the client
+  // polls GET /api/admin/mapper/live/[jobId]. Time-salted idempotency key so the
+  // founder can drop more than one feed on the same draft in a day.
+  const { data: inserted, error: insErr } = await supabaseAdmin
+    .from('workflow_jobs')
+    .insert({
+      property_id: draft.row.propertyId,
+      kind: 'mapper.edit_recipe',
+      idempotency_key: `mapper.draft_feed_delete:${draft.row.pmsFamily}:${feedKey}:${Date.now()}`,
+      max_attempts: 1,
+      triggered_by: `admin:${admin.accountId}:draft-delete-feed`,
+      payload: {
+        pms_family: draft.row.pmsFamily,
+        property_id: draft.row.propertyId,
+        edited_from_version: draft.row.version,
+        ...draftDeleteFeedsPayload({ draftId: draft.row.id, feedKeys: [feedKey] }),
+      },
+    })
     .select('id')
-    .maybeSingle();
-  if (upErr) {
-    return err(`could not save the draft: ${upErr.message}`, { requestId, status: 500, code: 'db_error' });
-  }
-  if (!updated) {
-    // The row flipped to active between our check and the write — refuse.
-    return err(
-      'This map just went live — remove feeds from the Coverage Editor instead.',
-      { requestId, status: 409, code: 'already_live' },
-    );
+    .single<{ id: string }>();
+  if (insErr || !inserted) {
+    return err(`could not start the edit: ${insErr?.message ?? 'unknown'}`, { requestId, status: 500, code: 'db_error' });
   }
 
   return ok(
-    { removed: true, feedKey, remaining: Object.keys(actions).length },
+    { jobId: inserted.id, feedKey, fromVersion: draft.row.version, note: 'Removing the feed and re-saving the draft…' },
     { requestId },
   );
 }

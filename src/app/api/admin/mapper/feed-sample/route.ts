@@ -19,16 +19,33 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+// The sanitizer AND the proven rule are SHARED with promoteMap's Make-live
+// gating so the two can never disagree on which artifact proves a feed
+// (feed-sample-key.ts).
+import { sanitizeFeedKey as sanitizeKey, sampleIndicatesSuccess } from '@/lib/pms/feed-sample-key';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const UUID = /^[0-9a-f-]{36}$/i;
 const FEED_KEY = /^[A-Za-z0-9_.-]{1,80}$/;
-const sanitizeKey = (k: string): string => k.replace(/[^a-z0-9_-]/gi, '_');
 
 interface SampleField { name: string; value: string }
-interface FeedSample { capturedAt: string; rowCount: number; fields: SampleField[]; pageValues?: SampleField[] }
+interface FeedSample {
+  /**
+   * Extraction success (feature/coverage-gated-feeds). The worker stamps
+   * `ok: boolean` into the stored sample — a partially-failed read still writes
+   * an artifact (a "see what went wrong" preview) but with ok:false. Absent in
+   * a legacy artifact → true (grandfathered as proven, shared rule
+   * sampleIndicatesSuccess). The coverage page uses this — not mere artifact
+   * presence — to predict whether Make-live will collect the feed.
+   */
+  ok: boolean;
+  capturedAt: string;
+  rowCount: number;
+  fields: SampleField[];
+  pageValues?: SampleField[];
+}
 
 /** Validate + clamp an array of {name,value} fields from the stored sample. */
 function sanitizeFields(raw: unknown): SampleField[] {
@@ -77,6 +94,7 @@ async function loadSample(propertyId: string, feedKey: string): Promise<FeedSamp
     const fields = sanitizeFields(parsed.fields);
     const pageValues = sanitizeFields(parsed.pageValues);
     return {
+      ok: sampleIndicatesSuccess(parsed),
       capturedAt: typeof parsed.capturedAt === 'string' ? parsed.capturedAt : '',
       rowCount: typeof parsed.rowCount === 'number' && Number.isFinite(parsed.rowCount) ? parsed.rowCount : 0,
       fields,

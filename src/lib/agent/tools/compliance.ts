@@ -29,6 +29,7 @@ function sourceFor(ctx: ToolContext): 'voice' | 'manual' {
 
 registerTool<{ metric: string; value: number }>({
   name: 'log_reading',
+  section: 'maintenance',
   description:
     'Log an engineering compliance READING (pool chemistry, utility meter, boiler, walk-in fridge/freezer temperature, etc.). ' +
     'Use when the user states a measurement, e.g. "pool pH 7.4", "free chlorine 3 ppm", "electric meter 48210", "walk-in fridge 38". ' +
@@ -46,6 +47,7 @@ registerTool<{ metric: string; value: number }>({
   surfaces: ['chat', 'voice'],
   voiceModes: ['compliance'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ metric, value }, ctx): Promise<ToolResult> => {
     if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1e9) {
       return { ok: false, error: 'value must be a finite number within ±1e9.' };
@@ -86,6 +88,7 @@ registerTool<{ metric: string; value: number }>({
 
 registerTool<{ equipment: string; status?: 'pass' | 'fail'; unitsChecked?: number }>({
   name: 'log_pm_check',
+  section: 'maintenance',
   description:
     'Record a preventive-maintenance / life-safety equipment CHECK-OFF for the current period (e.g. "fire extinguishers checked", "emergency lights all good", "AED inspected"). ' +
     'status defaults to "pass"; use "fail" when the user says something failed (that auto-creates a work order + texts maintenance).',
@@ -102,6 +105,7 @@ registerTool<{ equipment: string; status?: 'pass' | 'fail'; unitsChecked?: numbe
   surfaces: ['chat', 'voice'],
   voiceModes: ['compliance'],
   mutates: true,
+  approval: 'quick',
   handler: async ({ equipment, status, unitsChecked }, ctx): Promise<ToolResult> => {
     const task = await findPmTaskByName(ctx.propertyId, String(equipment || ''));
     if (!task) {
@@ -137,6 +141,7 @@ registerTool<{ equipment: string; status?: 'pass' | 'fail'; unitsChecked?: numbe
 
 registerTool<Record<string, never>>({
   name: 'get_compliance_status',
+  section: 'maintenance',
   description:
     'Get the property\'s engineering-compliance status right now: percent of readings logged today and how many life-safety checks are overdue.',
   inputSchema: { type: 'object', properties: {} },
@@ -163,6 +168,7 @@ registerTool<Record<string, never>>({
 
 registerTool<{ fromDate?: string; toDate?: string }>({
   name: 'generate_compliance_report',
+  section: 'maintenance',
   description:
     'Generate an inspector-ready compliance report (proof of readings + life-safety checks) for a date range. ' +
     'Use for "show me proof we did pool chemistry in May". Dates are YYYY-MM-DD; defaults to the last 31 days.',
@@ -204,6 +210,7 @@ registerTool<{ fromDate?: string; toDate?: string }>({
 
 registerTool<{ text?: string }>({
   name: 'setup_compliance',
+  section: 'maintenance',
   description:
     'One-line setup of the property\'s compliance schedule. Auto-detects the brand and pre-loads the required readings + life-safety logs. ' +
     'Pass the manager\'s description to tune counts, e.g. "we have 15 extinguishers, 18 emergency lights, a pool, and 3 walk-in fridges".',
@@ -216,6 +223,7 @@ registerTool<{ text?: string }>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   surfaces: ['chat'],
   mutates: true,
+  approval: 'card',
   handler: async ({ text }, ctx): Promise<ToolResult> => {
     const { data: prop } = await supabaseAdmin.from('properties').select('name, pms_type').eq('id', ctx.propertyId).maybeSingle();
     const template = detectTemplate(prop?.name as string | null, prop?.pms_type as string | null);

@@ -164,6 +164,22 @@ export interface FeedSample {
   /** Feed-level PAGE values (e.g. "Guest Count: 23") — one per feed, shown
    *  distinctly from per-row columns. Absent when the feed has none. */
   pageValues?: FeedSampleField[];
+  /**
+   * feature/coverage-gated-feeds — EXTRACTION-SUCCESS flag. The Re-read path
+   * (captureFeedOnDemand) uploads a sample even when the feed run FAILED
+   * ("capturing current page anyway", so the founder still sees something) —
+   * without this flag the web promote gate, which keys "proven readable" on the
+   * artifact's existence, would count that failed capture as proof and leave
+   * the feed collecting. Semantics, kept in lockstep with the web side's
+   * Make-live rule: "proven" = ok !== false — a LEGACY artifact written before
+   * this field existed is grandfathered as proven (absent ⟹ proven); a fresh
+   * artifact is proven only when its run genuinely extracted (ok:true). The
+   * worker's auto-enable (autoEnableFeedOnCaptureSuccess) already gates on
+   * run.ok; this flag makes the artifact tell the SAME story to the web gate.
+   * Optional in the TYPE only for legacy reads — every new upload stamps it
+   * (see uploadLiveFeedSample's required runOk parameter).
+   */
+  ok?: boolean;
 }
 
 /** PURE. Flatten the first row into [{name,value}] — top-level columns first,
@@ -207,11 +223,19 @@ export function buildFeedSample(
 
 /** Upsert the live sample for one feed. Best-effort: never throws. No-op only
  *  when there is nothing to preview (no rows AND no feed-level page values — so
- *  an empty feed that still has a "Guest Count: 0" total IS previewed). */
+ *  an empty feed that still has a "Guest Count: 0" total IS previewed).
+ *
+ *  `runOk` (REQUIRED — feature/coverage-gated-feeds) is the extraction-success
+ *  flag stamped into the artifact as `ok` (see FeedSample.ok for the full
+ *  semantics). Required rather than defaulted on purpose: the one production
+ *  caller (captureFeedOnDemand) uploads even for a FAILED run so the founder
+ *  sees the page, and a silent default of true would quietly re-open the exact
+ *  hole this closes (a failed Re-read's artifact counting as Make-live proof). */
 export async function uploadLiveFeedSample(
   propertyId: string,
   feedKey: string,
   rows: Array<Record<string, unknown>>,
+  runOk: boolean,
   feedValues?: Record<string, string>,
   deps?: { uploadJson?: (key: string, body: string) => Promise<void>; now?: () => string },
 ): Promise<void> {
@@ -219,7 +243,9 @@ export async function uploadLiveFeedSample(
     const hasPage = !!feedValues && Object.keys(feedValues).length > 0;
     if ((!rows || rows.length === 0) && !hasPage) return;
     const now = deps?.now ? deps.now() : new Date().toISOString();
-    const sample = buildFeedSample(rows ?? [], now, feedValues);
+    // buildFeedSample stays PURE over the rows; `ok` is a property of the RUN,
+    // not of the row data, so it's stamped here at upload time.
+    const sample: FeedSample = { ...buildFeedSample(rows ?? [], now, feedValues), ok: runOk };
     const body = JSON.stringify(sample);
     if (deps?.uploadJson) { await deps.uploadJson(liveFeedSamplePath(propertyId, feedKey), body); return; }
     const { supabase } = await import('./supabase.js');

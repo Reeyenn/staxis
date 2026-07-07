@@ -884,8 +884,11 @@ export default function LiveMappingPage() {
   }, [jobId]);
 
   // B4 — remove a non-required FOUND feed from the DRAFT before it goes live.
-  // On success, refetch the whole board so the row drops + the review counts
-  // update. The route owns the safety refusals (required / would-empty / live).
+  // fix/cua-draft-resign — the delete now enqueues a re-signing worker job (a
+  // draft is signed at learn time; the old in-place jsonb write broke its seal
+  // and made a later Make-live trigger a ~$25 re-learn), so we poll the returned
+  // edit-job (NOT this board's learn job) to completion before refetching. The
+  // route owns the safety refusals (required / would-empty / live).
   const removeFeed = useCallback(async (feedKey: string, label: string) => {
     if (!confirm(`Remove “${label}” from this map? It won’t be carried into the live recipe. You can re-run it later.`)) return;
     setRemovingFeed(feedKey);
@@ -897,6 +900,24 @@ export default function LiveMappingPage() {
       });
       const json = await res.json();
       if (!json.ok) { alert(json.error ?? 'Could not remove this feed.'); return; }
+      // Poll the re-signing edit job to completion (≈90s ceiling). If the feed
+      // was already gone the route returns no jobId (idempotent) — skip polling.
+      const editJobId = typeof json.data?.jobId === 'string' ? json.data.jobId : null;
+      if (editJobId) {
+        let done = false;
+        for (let i = 0; i < 45 && !done; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          try {
+            const jres = await fetchWithAuth(`/api/admin/mapper/live/${editJobId}`);
+            const j = (await jres.json())?.data?.job as { status?: string; error?: string } | undefined;
+            if (j?.status === 'completed') { done = true; }
+            else if (j?.status === 'failed' || j?.status === 'cancelled') {
+              alert(j.error ?? 'Could not remove this feed.'); return;
+            }
+          } catch { /* keep polling */ }
+        }
+        if (!done) { alert('Still removing the feed — check Manage maps in a moment.'); return; }
+      }
       // Clear any cached column/capture state for the removed feed.
       feedDetailReqRef.current.delete(feedKey);
       captureReqRef.current.delete(feedKey);

@@ -210,17 +210,32 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                     / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day,
                 case
                   when w.sum_checkouts is null or w.sum_stayovers is null then null
-                  when (w.sum_checkouts
-                        + coalesce(nullif(inv.usage_per_stayover, 0) / nullif(inv.usage_per_checkout, 0),
-                                   {default_kappa}) * w.sum_stayovers) <= 0 then null
+                  when (w.sum_checkouts + k.kappa * w.sum_stayovers) <= 0 then null
                   else (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock)
-                       / (w.sum_checkouts
-                          + coalesce(nullif(inv.usage_per_stayover, 0) / nullif(inv.usage_per_checkout, 0),
-                                     {default_kappa}) * w.sum_stayovers)::float8
+                       / (w.sum_checkouts + k.kappa * w.sum_stayovers)::float8
                 end as s_per_checkout_eq
             from with_window w
             join public.properties p on p.id = w.property_id
             join public.inventory inv on inv.id = w.item_id
+            -- κ resolution MUST mirror training/_item_family.resolve_kappa
+            -- exactly, or the cohort s_hat is denominated on a different κ
+            -- than the trainer will use when serving that prior:
+            --   • an EXPLICIT usage_per_stayover = 0 is honored as κ = 0
+            --     (the old nullif(...,0) silently swapped it for the 0.30
+            --     fallback);
+            --   • κ is clamped to <= 5.0 (the trainer clamps; unclamped SQL
+            --     let a fat-fingered usage_per_checkout=0.001 blow κ up);
+            --   • missing/invalid config falls back to {default_kappa}.
+            cross join lateral (
+                select case
+                         when inv.usage_per_checkout is not null
+                          and inv.usage_per_checkout > 0
+                          and inv.usage_per_stayover is not null
+                          and inv.usage_per_stayover >= 0
+                         then least(inv.usage_per_stayover / inv.usage_per_checkout, 5.0)::float8
+                         else {default_kappa}
+                       end as kappa
+            ) k
             -- Window hygiene — mirror training/inventory_rate._build_training_rows:
             -- drop sub-day pairs; keep positive consumption AND genuine zero-
             -- usage windows; drop unexplained increases + auto-stock-up zeros.

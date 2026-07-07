@@ -64,6 +64,12 @@ export const KNOWLEDGE_VISIBILITIES: readonly KnowledgeVisibility[] = ['all_staf
  * Document extraction lifecycle (the state machine). Source of truth for the
  * type lives here (client-safe); extraction.ts owns the logic + the
  * EXTRACTED_TEXT_MAX / TERMINAL list. KnowledgePane derives its badge from this.
+ *
+ * Note: a scanned PDF or an uploaded photo sits in `processing` while the Fly
+ * OCR worker transcribes it (KnowledgePane shows "Reading scan…"). That window
+ * is seconds-to-minutes for scans, vs. milliseconds for a typed doc — so
+ * `processing` doubles as the honest "OCR in progress" state (no new enum value,
+ * no migration on the status column).
  */
 export type ExtractionStatus =
   | 'pending'
@@ -72,6 +78,23 @@ export type ExtractionStatus =
   | 'partial'
   | 'failed'
   | 'unsupported';
+
+/**
+ * Image types the Knowledge hub accepts for photo/scan OCR. A scanned PDF and
+ * these image types both route to the Fly vision-OCR worker (Claude transcribes
+ * each page/photo, the text then flows through the normal chunk→embed→search
+ * pipeline). Kept as a shared constant so the client accept-list, the presign
+ * MIME map, and the extraction router agree on exactly one set. 10 MB cap
+ * (KNOWLEDGE upload limit) applies to these like every other upload.
+ */
+export const KNOWLEDGE_IMAGE_MIME_TYPES: readonly string[] = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+];
+export function isImageMime(mime: string | null | undefined): boolean {
+  return !!mime && KNOWLEDGE_IMAGE_MIME_TYPES.includes(mime);
+}
 
 /** A SOP article as returned to the client. */
 export interface KnowledgeArticleDTO {

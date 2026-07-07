@@ -53,11 +53,25 @@
 export const ANTHROPIC_REQUEST_TIMEOUT_MS = 50_000;
 
 /**
- * Per-request timeout for vision (invoice OCR, photo count). Shorter than
- * main agent because OCR is fast and the user is staring at a spinner —
- * a long retry chain is worse UX than a clean failure.
+ * Vision timeouts (invoice OCR, photo count). The vision consumer routes
+ * (`/api/inventory/scan-invoice`, `/api/inventory/photo-count`) set
+ * `maxDuration = 60`, so we have a 60s wall-clock budget per call.
+ *
+ * `ANTHROPIC_VISION_TIMEOUT_MS` is the per-attempt SDK timeout;
+ * `ANTHROPIC_VISION_ABORT_MS` is the call-site `AbortSignal` that spans the
+ * WHOLE call including the `maxRetries: 1` retry — so worst case fails
+ * cleanly at ~55s, under the 60s route ceiling (not `timeout × 2`, because
+ * the abort caps the whole thing, not each attempt).
+ *
+ * Why 50s and not the old 30s: a real 20-line supplier invoice measures
+ * ~23s (~1600 output tokens at ~70 tok/s on `claude-sonnet-4-6`). 30-plus-line
+ * invoices ran past the 30s per-attempt timeout and surfaced a misleading
+ * "vision_unavailable" error, so 30s was simply too tight for legitimate
+ * scans. 50s covers the long ones with headroom while the 55s abort keeps
+ * the worst case inside the route budget.
  */
-export const ANTHROPIC_VISION_TIMEOUT_MS = 30_000;
+export const ANTHROPIC_VISION_TIMEOUT_MS = 50_000;
+export const ANTHROPIC_VISION_ABORT_MS = 55_000;
 
 /**
  * Per-request timeout for the walkthrough step route. Capped below the

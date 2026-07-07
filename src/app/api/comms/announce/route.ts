@@ -16,6 +16,7 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext, listAccessiblePropertyIds } from '@/lib/comms/route-helpers';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { canForUserId } from '@/lib/capabilities/server';
 import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
@@ -36,6 +37,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!(await canForUserId(ctx.userId, 'post_announcements', ctx.pid))) {
     return err('posting announcements is restricted for your role at this property', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
+
+  // Section gate (add-on, on top of the tenant guard above): if Communications is off for this hotel, block this route.
+  const sectionGate = await requireSectionEnabled(req, ctx.pid, 'communications');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const text = (body.body ?? '').trim();
   if (!text) {

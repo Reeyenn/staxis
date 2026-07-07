@@ -7,6 +7,7 @@
 import type { NextRequest } from 'next/server';
 import { ok, err } from '@/lib/api-response';
 import { requireOrderingAccess } from '@/lib/ordering/api-gate';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { createPurchaseOrders } from '@/lib/ordering/db';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import type { CartLineInput } from '@/lib/ordering/types';
@@ -37,6 +38,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   const gate = await requireOrderingAccess(req, body.pid);
   if (!gate.ok) return gate.response;
   const { pid, requestId } = gate;
+
+  // Section gate (add-on, on top of the tenant guard above): if Inventory is off for this hotel, block this route.
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const rl = await checkAndIncrementRateLimit('inventory-order-create', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

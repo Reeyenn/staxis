@@ -14,6 +14,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   executeTool,
   toAnthropicTools,
+  isMutationTool,
+  approvalTierFor,
   type ToolContext,
   type ToolDefinition,
 } from './tools';
@@ -349,8 +351,10 @@ export interface RunAgentOpts {
   systemPrompt: SystemPromptBlocks;
   /** Conversation history (the past). */
   history: AgentMessage[];
-  /** The user's new turn. */
-  newUserMessage: string;
+  /** The user's new turn. `null` when RESUMING after an approval decision —
+   *  the history already ends with the tool_result user turn Anthropic needs,
+   *  so no new user message is appended. */
+  newUserMessage: string | null;
   /** Tools the model can call this turn. */
   tools: ToolDefinition[];
   /** Tool execution context (user + property + request id). */
@@ -371,6 +375,29 @@ export interface RunAgentOpts {
    *  ($3/$15 per M). Normal user-driven requests omit this and get
    *  pickModel()'s default. Longevity L4 part B, 2026-05-13. */
   model?: ModelTier;
+  /**
+   * When true, MUTATION tool calls are NOT executed inline. Instead the loop
+   * yields a `tool_call_pending_approval` event per mutation and ENDS the turn
+   * (read-only calls in the same turn still execute inline as before). The
+   * chat route sets this; evals + the sync runAgent path leave it off so their
+   * behaviour is unchanged. The action resumes via a fresh streamAgent call
+   * (newUserMessage: null) once the user approves/denies on a card.
+   */
+  approvalMode?: boolean;
+  /**
+   * Voice variant of the approval gate. When true, only CARD-tier mutations are
+   * HELD (staged as a spoken read-back the user confirms next turn); QUICK-tier
+   * mutations still execute INLINE this turn (they're low-stakes logging, and a
+   * spoken yes/no on every compliance reading would ruin the walkthrough). A
+   * turn with only quick mutations runs to completion and the model speaks its
+   * result — the gate does NOT end early in that case.
+   *
+   * The voice-brain route sets this; chat leaves it off (chat uses
+   * `approvalMode`, which holds ALL mutations). The two flags are mutually
+   * exclusive in practice; if both were set, `approvalMode` wins (chat semantics
+   * are byte-for-byte preserved) because its branch is checked first.
+   */
+  voiceApprovalMode?: boolean;
 }
 
 export interface RunAgentResult {
@@ -409,7 +436,7 @@ type ClaudeContent = Anthropic.Messages.ContentBlockParam;
  * abort-cleanup row racing a new user turn) be misclassified as
  * "matched" while still producing an invalid message sequence.
  */
-export function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessage[] {
+export function toClaudeMessages(history: AgentMessage[], newUser: string | null): ClaudeMessage[] {
   const out: ClaudeMessage[] = [];
 
   // Iterate over history with explicit index control so we can peek
@@ -504,8 +531,12 @@ export function toClaudeMessages(history: AgentMessage[], newUser: string): Clau
     out.push({ role: 'user', content: resultBlocks });
   }
 
-  // The new user turn always goes at the end.
-  out.push({ role: 'user', content: newUser });
+  // The new user turn always goes at the end — UNLESS we're resuming after an
+  // approval decision, where `newUser` is null and the history already ends
+  // with the tool_result user turn Anthropic needs to continue the generation.
+  if (newUser !== null) {
+    out.push({ role: 'user', content: newUser });
+  }
   return out;
 }
 
@@ -691,6 +722,71 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   };
 }
 
+// ─── Approval-gate held-set computation ────────────────────────────────────
+//
+// SINGLE SOURCE OF TRUTH for "which of this turn's tool calls must be HELD for
+// approval rather than executed inline." Pure + exported so the gate decision is
+// unit-testable WITHOUT mocking the whole Anthropic stream.
+//
+//   • Chat (approvalMode)      → hold EVERY mutation. Byte-for-byte the prior
+//                                behaviour; the only mode where any mutation is
+//                                held. Quick vs card tier is irrelevant here —
+//                                both go to a card.
+//   • Voice (voiceApprovalMode) → hold ONLY card-tier mutations. Quick-tier
+//                                mutations (remember/forget/log_found_item/
+//                                log_reading/log_pm_check) run inline this turn.
+//   • Neither                  → hold nothing (evals + sync runAgent path).
+//
+// `held` and `inline` together partition the mutation calls; read-only calls are
+// never held and are handled by the normal read-only path.
+export type ApprovalGateMode = 'chat' | 'voice' | 'off';
+
+export function approvalGateMode(opts: {
+  approvalMode?: boolean;
+  voiceApprovalMode?: boolean;
+}): ApprovalGateMode {
+  // approvalMode (chat) takes precedence so chat semantics are never altered by
+  // a caller that (mistakenly) also set voiceApprovalMode.
+  if (opts.approvalMode) return 'chat';
+  if (opts.voiceApprovalMode) return 'voice';
+  return 'off';
+}
+
+/**
+ * Partition a turn's proposed tool calls into the mutations that must be HELD
+ * for approval and the rest that execute inline, under the given gate mode.
+ * Read-only calls are always inline. In 'voice' mode a card-tier mutation is
+ * held; a quick-tier (or tier-less, treated as 'card' defensively — matching the
+ * gate's own default) mutation... see below.
+ *
+ * Defaulting rule mirrors the gate: a mutation missing an explicit tier defaults
+ * to 'card' (the safe, held choice). In voice that means an untiered mutation is
+ * HELD, not silently executed — fail-safe.
+ */
+export function partitionGatedCalls(
+  calls: AgentToolCall[],
+  mode: ApprovalGateMode,
+): { held: AgentToolCall[]; inline: AgentToolCall[] } {
+  if (mode === 'off') return { held: [], inline: calls };
+  const held: AgentToolCall[] = [];
+  const inline: AgentToolCall[] = [];
+  for (const c of calls) {
+    if (!isMutationTool(c.name)) {
+      inline.push(c); // read-only — never held
+      continue;
+    }
+    if (mode === 'chat') {
+      held.push(c); // chat holds every mutation
+      continue;
+    }
+    // voice: hold only card-tier mutations; quick-tier runs inline.
+    const tier = approvalTierFor(c.name) ?? 'card';
+    if (tier === 'card') held.push(c);
+    else inline.push(c);
+  }
+  return { held, inline };
+}
+
 // ─── Streaming agent loop ──────────────────────────────────────────────────
 
 export type AgentEvent =
@@ -702,6 +798,11 @@ export type AgentEvent =
   | { type: 'assistant_turn'; text: string; toolCalls: AgentToolCall[]; usage: UsageReport }
   | { type: 'tool_call_started'; call: AgentToolCall }
   | { type: 'tool_call_finished'; call: AgentToolCall; result: unknown; isError: boolean }
+  // Emitted (approvalMode only) when the model proposes a MUTATION tool. The
+  // action is NOT executed — the route persists a pending row and streams a
+  // card to the browser. `tier` + `summary` drive the card; `turnKey` groups
+  // all mutations of this assistant turn so resume waits for all to resolve.
+  | { type: 'tool_call_pending_approval'; call: AgentToolCall; tier: 'quick' | 'card'; turnKey: string }
   | { type: 'done'; usage: UsageReport; finalText: string }
   // Error events carry `usage` whenever the stream consumed any tokens
   // before the error fired (iteration-cap exit, mid-stream exception).
@@ -876,6 +977,84 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         }
         yield { type: 'done', usage: buildUsage(), finalText: refusal };
         return;
+      }
+
+      // ── Approval gate (approvalMode / voiceApprovalMode) ───────────────
+      // Some proposed calls must be HELD for approval rather than executed:
+      //   • Chat (approvalMode)       → hold EVERY mutation. Unchanged.
+      //   • Voice (voiceApprovalMode) → hold only CARD-tier mutations; quick-tier
+      //                                 mutations run inline this turn (below).
+      // partitionGatedCalls is the single source of truth for that split.
+      //
+      // If nothing is held, we FALL THROUGH to the normal execution path so the
+      // turn runs to completion and emits `done`. Critical for voice: a turn
+      // with only quick-tier mutations (e.g. "log the pool reading") must run
+      // fully so the model speaks its result — it must NOT end early here.
+      //
+      // If something IS held, we do NOT run the held calls. We stage a
+      // `tool_call_pending_approval` per held call FIRST, then execute every
+      // NON-held call in this turn inline (read-only calls AND, in voice,
+      // quick-tier mutations), then STOP — the turn ends here (no `done`).
+      //
+      // Why stop instead of continue: Anthropic requires EVERY tool_use in the
+      // assistant message to get a tool_result before the conversation can go
+      // on. The held tool_use blocks have no result yet (they await the user's
+      // decision), so we can't safely feed the other results back and keep
+      // looping. The inline results are persisted (via the route's
+      // tool_call_finished handler); resume replays them alongside the held
+      // results once every pending action is resolved.
+      const gateMode = approvalGateMode(opts);
+      if (gateMode !== 'off') {
+        const { held, inline } = partitionGatedCalls(calls, gateMode);
+        if (held.length > 0) {
+          // Group key for this assistant turn = its first tool_call_id. Stable
+          // and unique; the resolve route uses it to know when all siblings
+          // are resolved before resuming.
+          const turnKey = calls[0].id;
+
+          // Yield the pending-approval proposals FIRST, BEFORE running any
+          // inline calls of the same turn (code-review finding: ordering).
+          // The route persists a pending row per proposal as it consumes each
+          // event. If we ran inline calls first and the client aborted in
+          // that window, the held proposals would be silently discarded —
+          // no card, no pending row, and the turn would hang until TTL. Staging
+          // the durable proposals up front closes that window. Persistence
+          // order still holds: the route already recorded the assistant turn
+          // (assistant_turn event) before this branch runs, and each
+          // tool_call_pending_approval removes its id from pendingToolCallIds so
+          // the drain doesn't synthesize an abort result for a held mutation.
+          // Tier comes from the tool's registry metadata (server-decided — the
+          // client can't downgrade it); default to 'card' for any held mutation
+          // missing a tier.
+          for (const call of held) {
+            const tier = approvalTierFor(call.name) ?? 'card';
+            yield { type: 'tool_call_pending_approval', call, tier, turnKey };
+          }
+
+          // Non-held calls in the same turn still run inline, AFTER the held
+          // proposals are staged. In chat these are all read-only; in voice
+          // they may also include quick-tier mutations (which the gate does
+          // not hold), so they really do execute and mutate here.
+          for (const call of inline) {
+            if (checkAborted()) {
+              yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+              return;
+            }
+            yield { type: 'tool_call_started', call };
+            const result = await executeTool(call.name, call.args, {
+              ...opts.toolContext,
+              dryRun: opts.dryRun,
+            });
+            yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError: !result.ok };
+          }
+
+          // Turn ends here — no `done`. The route holds the stream open only
+          // long enough to persist, then closes; the browser shows the card(s)
+          // / voice speaks the read-back confirmation.
+          return;
+        }
+        // held.length === 0 → fall through to normal execution (voice quick-only
+        // turn runs fully; chat with no mutations runs fully).
       }
 
       // Run the tools and feed results back.

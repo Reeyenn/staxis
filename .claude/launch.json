@@ -1,0 +1,48 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "propsel-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.chdir('/tmp/staxis-propsel-preview'); from http.server import HTTPServer, SimpleHTTPRequestHandler; HTTPServer(('127.0.0.1',4601), SimpleHTTPRequestHandler).serve_forever()"
+      ],
+      "port": 4601
+    },
+    {
+      "name": "inventory-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "3123"],
+      "port": 3123
+    },
+    {
+      "name": "feed-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "/Users/reeyen/Projects/staxis-current/.claude/worktrees/feed-redesign",
+        "--",
+        "--port",
+        "3131"
+      ],
+      "port": 3131
+    },
+    {
+      "name": "marketing-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "/Users/reeyen/Projects/staxis-current/.claude/worktrees/marketing-page",
+        "--",
+        "--port",
+        "3117"
+      ],
+      "port": 3117
+    }
+  ]
+}

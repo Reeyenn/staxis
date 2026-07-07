@@ -24,6 +24,7 @@ import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { canViewFinancials, type AppRole } from '@/lib/roles';
 import { canForProperty } from '@/lib/capabilities/server';
+import { isSectionEnabledForProperty } from '@/lib/sections/server';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -129,6 +130,22 @@ export async function requireFinanceAccess(
     };
   }
 
+  // 6) Section gate — checked LAST (after the caller's property access is proven,
+  //    so a stranger can't probe another hotel's section state) but it OVERRIDES
+  //    the capability result: if Financials is turned off for this hotel, finance
+  //    is gone for EVERY role including owner/admin. Fail-soft to ON via the
+  //    helper, so a read hiccup never hides a live section.
+  if (!(await isSectionEnabledForProperty(pid, 'financials'))) {
+    return {
+      ok: false,
+      response: err('the financials section is turned off for this hotel', {
+        requestId,
+        status: 403,
+        code: 'section_disabled',
+      }),
+    };
+  }
+
   return {
     ok: true,
     userId: session.userId,
@@ -202,14 +219,21 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
     propertyIds = access.filter((p) => isUuid(p));
   }
 
-  // Per-hotel capability filter: the rollup only includes hotels where this role
-  // is allowed Financials — admins always; everyone else honors each hotel's
-  // Access-tab restriction. A role switched OFF for Financials at a hotel can't
-  // see that hotel's money in the rollup either (no leak via aggregation).
+  // Per-hotel capability + section filter: the rollup only includes hotels where
+  // this role is allowed Financials AND the hotel hasn't turned the Financials
+  // section off — admins always; everyone else honors each hotel's Access-tab
+  // restriction and section toggle. A role switched OFF (or a section switched
+  // OFF) for Financials at a hotel can't see that hotel's money in the rollup
+  // either (no leak via aggregation). Both reads are request-cached + fail-soft.
   if (role !== 'admin') {
     const allowed: string[] = [];
     for (const p of propertyIds) {
-      if (await canForProperty({ role }, 'view_financials', p)) allowed.push(p);
+      if (
+        (await canForProperty({ role }, 'view_financials', p)) &&
+        (await isSectionEnabledForProperty(p, 'financials'))
+      ) {
+        allowed.push(p);
+      }
     }
     propertyIds = allowed;
   }

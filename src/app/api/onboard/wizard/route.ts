@@ -45,6 +45,7 @@ import {
   isValidPartialState,
   type OnboardingState,
 } from '@/lib/onboarding/state';
+import { parseSectionFlags, normalizeSectionFlags } from '@/lib/sections/registry';
 
 /**
  * Extract a stable IP for rate-limit keying. Vercel sets `x-forwarded-for`;
@@ -129,7 +130,7 @@ export async function GET(req: NextRequest) {
   // anchor for unauth reads here.
   const { data: prop, error: propErr } = await supabaseAdmin
     .from('properties')
-    .select('id, name, total_rooms, timezone, brand, property_kind, pms_type, services_enabled, onboarding_state, onboarding_completed_at')
+    .select('id, name, total_rooms, timezone, brand, property_kind, pms_type, services_enabled, enabled_sections, onboarding_state, onboarding_completed_at')
     .eq('id', resolved.propertyId)
     .maybeSingle();
   if (propErr || !prop) {
@@ -244,6 +245,11 @@ export async function GET(req: NextRequest) {
       // re-hydrate them when the operator navigates back, instead of resetting
       // every toggle to ON and silently overwriting their prior choices.
       servicesEnabled: (prop.services_enabled as Record<string, boolean> | null) ?? null,
+      // Per-hotel app on/off (WP4). Return the stored map so Step 4 can
+      // re-hydrate its 8 toggles on back-nav instead of resetting to all-ON
+      // and silently overwriting the owner's prior choices. Normalized so the
+      // client always gets an object-or-null (never a jsonb string).
+      enabledSections: normalizeSectionFlags(prop.enabled_sections),
     },
     inviteRole: resolved.codeRow.role,
   }, { requestId });
@@ -268,6 +274,7 @@ interface PatchBody {
 const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
   'name', 'total_rooms', 'timezone', 'brand', 'property_kind',
   'region', 'climate_zone', 'size_tier', 'services_enabled',
+  'enabled_sections',
 ]);
 
 // Back-navigation allow-list. Clearing one of these completion markers makes
@@ -334,6 +341,20 @@ export async function PATCH(req: NextRequest) {
         return err(`propertyUpdates.${key} is not in the allow-list`, {
           requestId, status: 400, code: ApiErrorCode.ValidationFailed,
         });
+      }
+      // Per-hotel app on/off (WP4). Store the SAME validated full 8-key map the
+      // admin card writes — parseSectionFlags is the one source of truth, so an
+      // invalid payload is rejected here rather than persisting garbage into the
+      // enabled_sections column the section gate reads on every request.
+      if (key === 'enabled_sections') {
+        const parsed = parseSectionFlags(value);
+        if (!parsed.ok) {
+          return err(`Invalid enabled_sections: ${parsed.error}`, {
+            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+          });
+        }
+        propertyUpdates[key] = parsed.value;
+        continue;
       }
       propertyUpdates[key] = value;
     }

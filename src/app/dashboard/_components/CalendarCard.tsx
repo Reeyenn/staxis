@@ -15,6 +15,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 
 interface CalEvent {
   id: string;
@@ -58,6 +59,9 @@ export function CalendarCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  // Upcoming events live under Communications — hide this embed when that
+  // section is off for the hotel (default-ON while loading).
+  const commsEnabled = useSectionEnabled('communications');
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [loaded, setLoaded] = useState(false);
 
@@ -66,7 +70,8 @@ export function CalendarCard() {
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
   useEffect(() => {
-    if (!canSee || !activePropertyId) return;
+    // Communications-owned embed: don't even fetch when the section is off.
+    if (!canSee || !activePropertyId || !commsEnabled) return;
     let alive = true;
     setLoaded(false);
     // Clear any prior property's events up-front so a slow OR failed reload can
@@ -92,9 +97,9 @@ export function CalendarCard() {
     return () => {
       alive = false;
     };
-  }, [canSee, activePropertyId]);
+  }, [canSee, activePropertyId, commsEnabled]);
 
-  if (!canSee || !activePropertyId) return null;
+  if (!canSee || !activePropertyId || !commsEnabled) return null;
   // Additive-only: nothing to show until there's at least one upcoming event.
   if (!loaded || events.length === 0) return null;
 

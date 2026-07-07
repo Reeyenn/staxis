@@ -21,6 +21,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
+import { isSectionEnabled } from '@/lib/sections/registry';
 import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
@@ -69,7 +70,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // not predict a Texas-timed date.
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone')
+    .select('id, name, timezone, enabled_sections')
     .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
@@ -80,7 +81,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // sharding (this instance handles every property).
   const url = new URL(req.url);
   const sharded = applyShardFilter(properties ?? [], url.searchParams);
-  const propertiesForThisShard = sharded.items;
+  // Section gate (WP6): a hotel with Housekeeping turned off pauses ML
+  // demand/supply/optimizer inference for that property. Fail-open — only an
+  // explicit `false` skips (null/missing ⇒ runs). PMS ingestion/occupancy are
+  // never gated here.
+  const propertiesForThisShard = sharded.items.filter(
+    (p) => isSectionEnabled(p.enabled_sections, 'housekeeping'),
+  );
   log.info('ml-run-inference: start', { requestId, shardHeader: sharded.header });
 
   const tomorrowInTz = (tz: string): string => {

@@ -9,6 +9,7 @@
 
 import { NextRequest } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
@@ -34,6 +35,11 @@ export async function GET(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+
+  // Section gate (add-on, on top of the tenant guard above): if Maintenance is
+  // turned off for this hotel, block the equipment list.
+  const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
+  if (!sectionGate.ok) return sectionGate.response;
 
   try {
     const equipment = await listEquipment(pid);
@@ -62,6 +68,11 @@ export async function POST(req: NextRequest) {
   if (!(await canForUserId(session.userId, 'manage_equipment', pid))) {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+
+  // Section gate (add-on, on top of the tenant guard above): if Maintenance is
+  // turned off for this hotel, block creating equipment.
+  const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const rl = await checkAndIncrementRateLimit('equipment-config', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);

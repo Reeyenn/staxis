@@ -115,6 +115,11 @@ export default function HousekeeperRoomPage({
   // gated call. We show a friendly "ask your manager to resend" screen
   // instead of spinning on "Loading…" forever.
   const [linkError, setLinkError] = useState(false);
+  // Whether the Communications section is on for this hotel. Resolved
+  // server-side (the public page can't use the client section hook) and read
+  // from the /me bootstrap below. Default ON so a read hiccup never hides the
+  // Messages tab. Only gates the in-app tab — SMS is untouched.
+  const [communicationsEnabled, setCommunicationsEnabled] = useState(true);
 
   const [savingStart, setSavingStart] = useState<string | null>(null);
   const [savingPause, setSavingPause] = useState<string | null>(null);
@@ -184,6 +189,16 @@ export default function HousekeeperRoomPage({
         if (!cancelled && res.status === 401) {
           setLinkError(true);
           setLoading(false);
+          return;
+        }
+        // Consume the section gate from the same bootstrap read. Only an
+        // explicit `false` from the server hides the Messages tab; any other
+        // shape (older response without the field, parse failure) leaves it ON.
+        const json = (await res.json().catch(() => null)) as
+          | { ok?: boolean; data?: { communicationsEnabled?: unknown } }
+          | null;
+        if (!cancelled && json?.ok && json.data?.communicationsEnabled === false) {
+          setCommunicationsEnabled(false);
         }
       } catch {
         // Network hiccup — leave the normal spinner/offline handling in
@@ -203,6 +218,11 @@ export default function HousekeeperRoomPage({
   const [openRoomId, setOpenRoomId] = useState<string | null>(null); // accordion: one open at a time
   const [messagesUnread, setMessagesUnread] = useState(0);
   const roomsScrollRef = useRef<HTMLDivElement | null>(null);
+  // If Communications is turned off for this hotel, never sit on the Messages
+  // tab — fall back to Rooms (the render also hard-guards below).
+  useEffect(() => {
+    if (!communicationsEnabled && activeTab === 'messages') setActiveTab('rooms');
+  }, [communicationsEnabled, activeTab]);
   useEffect(() => {
     let cancelled = false;
     const code = searchParams.get('code');
@@ -947,7 +967,7 @@ export default function HousekeeperRoomPage({
           background: '#F4F5F7',
         }}
       >
-        {activeTab === 'rooms' ? (
+        {activeTab === 'rooms' || !communicationsEnabled ? (
         <div
           ref={roomsScrollRef}
           data-confetti-host
@@ -1351,6 +1371,7 @@ export default function HousekeeperRoomPage({
           onRooms={() => setActiveTab('rooms')}
           onMessages={() => setActiveTab('messages')}
           lang={lang}
+          showMessages={communicationsEnabled}
         />
 
         {/* ── Modals ── */}

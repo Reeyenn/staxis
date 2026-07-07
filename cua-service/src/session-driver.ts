@@ -28,7 +28,7 @@ import type { Browser, BrowserContext, Page } from 'playwright';
 import { supabase } from './supabase.js';
 import { log } from './log.js';
 import { env } from './env.js';
-import { loadActive, type LoadedKnowledgeFile } from './knowledge-file.js';
+import { loadActive, loadActiveDetailed, type LoadedKnowledgeFile } from './knowledge-file.js';
 import { checkBudget, markResumed, checkDailyMappingSpend } from './cost-cap.js';
 import { schedule as singleFlight, getMetrics as getSingleFlightMetrics } from './single-flight.js';
 import { shouldRestart } from './memory-monitor.js';
@@ -138,6 +138,45 @@ export interface SessionDriverOptions {
   workerMachineId: string;
 }
 
+/**
+ * The "no usable active knowledge file" decision, factored out of start() so it
+ * can be unit-tested without booting a browser/session.
+ *
+ * WHY it exists: a signature-refused active row must be treated DIFFERENTLY from
+ * a genuinely-absent one. Both leave the session with no usable map and both
+ * park it under status='paused_no_knowledge_file' (so the admin UI surfaces it
+ * the same way), but:
+ *   - genuinely ABSENT ⟹ auto-enqueue a mapper.learn job (~$25 paid learn), the
+ *     original behavior — the family has never been mapped, learning IS correct.
+ *   - present-but-REFUSED (failed its HMAC tamper check under enforce) ⟹ do NOT
+ *     auto-spend. A tamper-check failure means a map EXISTS; the fix is to
+ *     re-save/re-promote it from Manage maps (which re-signs it), NOT to burn a
+ *     fresh full learn. Auto-enqueuing here was the bug: a signature refusal
+ *     silently triggered ~$25 of unprompted Claude spend.
+ *
+ * Returns the paused_reason to store + whether to auto-enqueue the mapper.
+ */
+export function decideNoKnowledgeFileAction(
+  pmsFamily: string,
+  refusedExisting: boolean,
+): { pausedReason: string; enqueueMapper: boolean } {
+  if (refusedExisting) {
+    return {
+      pausedReason:
+        `The active map for ${pmsFamily} failed its tamper check and was refused. ` +
+        `A mapper learn was NOT started (that would spend money re-learning a map you already have). ` +
+        `Re-save / re-promote it from Manage maps to re-sign it.`,
+      enqueueMapper: false,
+    };
+  }
+  return {
+    pausedReason:
+      `No active knowledge file for ${pmsFamily}. Auto-enqueued a mapper job; ` +
+      `check /admin/property-sessions for progress.`,
+    enqueueMapper: true,
+  };
+}
+
 // Plan v7 — priority order for the polling loop's table sweep.
 // Lower number = runs earlier. Dashboard / in-house snapshot first
 // (cheapest, most-displayed); then list pages; then drill-down.
@@ -159,6 +198,56 @@ const TABLE_PRIORITY: Record<string, number> = {
 };
 function priorityOf(tableName: string): number {
   return TABLE_PRIORITY[tableName] ?? 99;
+}
+
+/**
+ * feature/coverage-gated-feeds — POLL-TIME gate. Given a recipe's action keys and
+ * the family's `disabled_feeds` list, return only the action keys the recurring
+ * poll sweep should build templates for (i.e. everything NOT disabled).
+ *
+ * SCOPING: this applies ONLY to the recurring poll. On-demand Re-read
+ * (mapper.capture_feed → captureFeedOnDemand) and write-back (pms.write) build
+ * their OWN templates from the recipe directly and MUST still reach a disabled
+ * feed — a successful Re-read is exactly how a feed gets re-enabled. So the skip
+ * lives here in session-driver's runAllFeeds path, never in recipe-adapter (which
+ * both paths share).
+ *
+ * Pure + side-effect-free so it's unit-testable without a browser. Returns the
+ * kept keys AND the skipped keys (for the log-once at template build). Preserves
+ * input order; a disabled key that isn't even in the recipe is simply absent from
+ * both lists (harmless — nothing to skip).
+ */
+export function filterActionsForPolling(
+  actionKeys: string[],
+  disabledFeeds: string[],
+): { kept: string[]; skipped: string[] } {
+  const disabled = new Set(disabledFeeds);
+  const kept: string[] = [];
+  const skipped: string[] = [];
+  for (const key of actionKeys) {
+    if (disabled.has(key)) skipped.push(key);
+    else kept.push(key);
+  }
+  return { kept, skipped };
+}
+
+/**
+ * feature/coverage-gated-feeds — order-insensitive equality for the hot-reload
+ * check. `disabled_feeds` can change WITHOUT a knowledge VERSION bump (the web
+ * side writes it at Make-live; a successful capture clears one key), so the
+ * driver's version-only hot-reload wouldn't notice a pure gating change. This
+ * lets checkKnowledgeReload also rebuild when the gate set changed.
+ *
+ * Compares as SETS (dedupe + ignore order): the DB array order is not meaningful
+ * and a re-serialized identical set must NOT trigger a needless rebuild. Cheap:
+ * one Set build + size/has checks, run once per 60s reload tick.
+ */
+export function disabledFeedsEqual(a: string[], b: string[]): boolean {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) return false;
+  for (const k of setA) if (!setB.has(k)) return false;
+  return true;
 }
 
 /**
@@ -232,6 +321,20 @@ export class SessionDriver {
    */
   private loggedIncompleteFeeds: Set<string> = new Set();
 
+  /**
+   * feature/coverage-gated-feeds — the `disabled_feeds` set the poll sweep is
+   * currently excluding (mirrors the loaded knowledge-file's disabledFeeds, kept
+   * as a field so the hot-reload can compare-and-rebuild on a pure gating change
+   * that carries no version bump — see checkKnowledgeReload). Sorted-join of this
+   * set drives the log-ONCE at template build (loggedDisabledFeedsSig): we log
+   * which feeds are skipped exactly once per distinct set, not every 30s poll.
+   */
+  private disabledFeeds: string[] = [];
+  /** Signature (sorted-join) of the disabled set we last emitted the "skipping
+   *  N feeds" info log for. '' = never logged yet. Reset on hot-reload so a
+   *  changed gate re-logs once under the new set. */
+  private loggedDisabledFeedsSig: string = '';
+
   constructor(opts: SessionDriverOptions) {
     this.propertyId = opts.propertyId;
     this.pmsFamily = opts.pmsFamily;
@@ -250,26 +353,39 @@ export class SessionDriver {
 
     await this.updateStatus({ status: 'starting' });
 
-    // 1. Load knowledge file for this hotel's PMS family.
-    this.knowledgeFile = await loadActive(this.pmsFamily);
+    // 1. Load knowledge file for this hotel's PMS family. Use the DETAILED
+    //    variant so we can tell a genuinely-absent map (never mapped → mapper
+    //    learn is correct) apart from a present-but-REFUSED one (failed its
+    //    signature tamper check → must NOT auto-spend a fresh $25 learn).
+    const loaded = await loadActiveDetailed(this.pmsFamily);
+    this.knowledgeFile = loaded.file;
     if (!this.knowledgeFile) {
       // Graceful pause — distinct from failed_restart. paused_no_knowledge_file
-      // is admin-resolvable: someone needs to run the mapper or hand-seed
-      // a knowledge file for this PMS. Plan v7 Phase 2c: also auto-enqueue
-      // a mapper workflow job so the operator doesn't have to trigger it
-      // manually. The workflow-runtime's no-driver claim path picks it
-      // up; mapping-driver runs; auto-promotion may flip the new draft
-      // to active; this driver's next start (after the supervisor reconciles)
-      // loads the new recipe and goes alive. Whole flow: ~30-45 min.
-      log.warn('session-driver: no active knowledge file — pausing + auto-enqueuing mapper', {
-        propertyId: this.propertyId,
-        pmsFamily: this.pmsFamily,
-      });
+      // is admin-resolvable AND is the SAME status for both the absent and the
+      // refused case, so the admin UI still surfaces it either way. Only the
+      // paused_reason + whether we auto-enqueue a mapper differ (see
+      // decideNoKnowledgeFileAction): a signature refusal is NOT a reason to
+      // spend money re-learning a map that already exists.
+      //
+      // Absent case (enqueueMapper): Plan v7 Phase 2c — auto-enqueue a mapper
+      // workflow job so the operator doesn't have to trigger it manually. The
+      // workflow-runtime's no-driver claim path picks it up; mapping-driver
+      // runs; auto-promotion may flip the new draft to active; this driver's
+      // next start loads the new recipe and goes alive. Whole flow: ~30-45 min.
+      const decision = decideNoKnowledgeFileAction(this.pmsFamily, loaded.refusedExisting);
+      log.warn(
+        loaded.refusedExisting
+          ? 'session-driver: active knowledge file refused (tamper check) — pausing WITHOUT auto-enqueuing a paid mapper learn'
+          : 'session-driver: no active knowledge file — pausing + auto-enqueuing mapper',
+        { propertyId: this.propertyId, pmsFamily: this.pmsFamily, refusedExisting: loaded.refusedExisting },
+      );
       await this.updateStatus({
         status: 'paused_no_knowledge_file',
-        paused_reason: `No active knowledge file for ${this.pmsFamily}. Auto-enqueued a mapper job; check /admin/property-sessions for progress.`,
+        paused_reason: decision.pausedReason,
       });
-      await this.autoEnqueueMapperJob();
+      if (decision.enqueueMapper) {
+        await this.autoEnqueueMapperJob();
+      }
       this.running = false;
       return;
     }
@@ -277,6 +393,10 @@ export class SessionDriver {
     // when admin/auto promotes a new active version, we reload without
     // a full driver restart).
     this.knowledgeFileVersion = this.knowledgeFile.version;
+    // feature/coverage-gated-feeds — snapshot the per-feed collection gate. Kept
+    // as a field so the hot-reload can detect a change that carries NO version
+    // bump (web writes it at Make-live; a capture clears one key).
+    this.disabledFeeds = this.knowledgeFile.disabledFeeds;
 
     // 2. Load credentials.
     this.credentials = await this.loadCredentials();
@@ -1130,12 +1250,43 @@ export class SessionDriver {
       }
     }
 
+    // feature/coverage-gated-feeds — POLL-ONLY per-feed collection gate. Drop
+    // any action the founder's Make-live left OFF (no proven preview capture)
+    // BEFORE building templates, so a disabled feed is never navigated to, never
+    // counted toward a zero-row streak, and — because no template exists for it —
+    // maybeFireSelfRepair can never fire for it (the skip at construction makes
+    // that automatic; there's simply no template to pass in). This is scoped to
+    // the recurring poll ONLY: on-demand Re-read (captureFeedOnDemand) and
+    // pms.write build their own templates from the full recipe and still reach a
+    // disabled feed — a successful Re-read is how a feed gets re-enabled.
+    const { kept, skipped: skippedDisabled } = filterActionsForPolling(
+      Object.keys(actions),
+      this.disabledFeeds,
+    );
+    // Log ONCE per distinct disabled set (keys + count), not every 30s poll.
+    const disabledSig = [...this.disabledFeeds].sort().join(',');
+    if (skippedDisabled.length > 0 && disabledSig !== this.loggedDisabledFeedsSig) {
+      this.loggedDisabledFeedsSig = disabledSig;
+      log.info('session-driver: skipping disabled feeds this poll cycle (gated OFF at Make-live; re-enable via Re-read)', {
+        propertyId: this.propertyId,
+        pmsFamily: this.pmsFamily,
+        knowledgeFileVersion: this.knowledgeFileVersion,
+        skippedCount: skippedDisabled.length,
+        skippedFeeds: [...skippedDisabled].sort(),
+      });
+    }
+    const pollActions: Recipe['actions'] = {};
+    for (const key of kept) {
+      // key came from Object.keys(actions), so this narrowing is safe.
+      (pollActions as Record<string, unknown>)[key] = (actions as Record<string, unknown>)[key];
+    }
+
     // Recipe.actions → TableTemplate[]. Each template knows its target
     // pms_* table, write strategy, sources, fields, parsers.
     const recipe: Recipe = {
       schema: 1,
       login: this.knowledgeFile.knowledge.login as Recipe['login'],
-      actions,
+      actions: pollActions,
     };
     // feat/pms-universal-translate — hand the adapter the self-learned VALUE
     // translation saved in this family's knowledge file (date order + enum
@@ -1539,15 +1690,39 @@ export class SessionDriver {
     try {
       const latest = await loadActive(this.pmsFamily);
       if (!latest) return;
-      if (latest.version === this.knowledgeFileVersion) return;
+      // Reload when EITHER the active VERSION changed (a promoted draft, the
+      // original trigger) OR — feature/coverage-gated-feeds — only the per-feed
+      // collection gate changed. `disabled_feeds` lives outside the signed
+      // envelope and the web side writes it at Make-live (and a successful
+      // capture clears one key) WITHOUT bumping the version, so a version-only
+      // check would leave the poll sweep polling a just-disabled feed (or still
+      // skipping a just-re-enabled one) until the 3am restart. Compared as SETS
+      // (order-insensitive) so a re-serialized identical list is a no-op.
+      const versionChanged = latest.version !== this.knowledgeFileVersion;
+      const gatingChanged = !disabledFeedsEqual(latest.disabledFeeds, this.disabledFeeds);
+      if (!versionChanged && !gatingChanged) return;
       log.info('session-driver: hot-reloading knowledge file', {
         propertyId: this.propertyId,
         pmsFamily: this.pmsFamily,
         oldVersion: this.knowledgeFileVersion,
         newVersion: latest.version,
+        versionChanged,
+        gatingChanged,
+        ...(gatingChanged
+          ? {
+              oldDisabledFeeds: [...this.disabledFeeds].sort(),
+              newDisabledFeeds: [...latest.disabledFeeds].sort(),
+            }
+          : {}),
       });
       this.knowledgeFile = latest;
       this.knowledgeFileVersion = latest.version;
+      // feature/coverage-gated-feeds — adopt the new gate and reset the log-once
+      // signature so the next poll re-logs which feeds it's skipping under the
+      // new set (or stops logging when the set is now empty). The template
+      // rebuild is automatic: runAllFeeds re-reads this.disabledFeeds every poll.
+      this.disabledFeeds = latest.disabledFeeds;
+      this.loggedDisabledFeedsSig = '';
       // Re-anchor the host guard to the per-hotel login URL (per-hotel >
       // family). Credentials don't change on a knowledge hot-reload, so this
       // must NOT silently revert allowedHost to the family startUrl's host —

@@ -11,6 +11,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateString, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { listLogEntries, createLogEntry } from '@/lib/comms/core';
 
 export const runtime = 'nodejs';
@@ -22,6 +23,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   const { searchParams } = new URL(req.url);
   const ctx = await commsContext(req, searchParams.get('pid'));
   if (!ctx.ok) return ctx.response;
+  // Section gate (add-on, on top of the tenant guard above): if Communications is off for this hotel, block this route.
+  const sectionGate = await requireSectionEnabled(req, ctx.pid, 'communications');
+  if (!sectionGate.ok) return sectionGate.response;
   // Polled read (~8s) → shared 'comms-read' bucket (3600/hr), like tasks GET.
   const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -35,6 +39,10 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, body.pid ?? null);
   if (!ctx.ok) return ctx.response;
+
+  // Section gate (add-on, on top of the tenant guard above): if Communications is off for this hotel, block this route.
+  const sectionGate = await requireSectionEnabled(req, ctx.pid, 'communications');
+  if (!sectionGate.ok) return sectionGate.response;
 
   // Trim before validating so a whitespace-only title is rejected (the reply
   // route does the same) — otherwise a direct API call could log a blank recap.

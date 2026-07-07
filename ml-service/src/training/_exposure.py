@@ -51,6 +51,31 @@ def compose_exposure(sum_co: float, sum_so: float, kappa: float) -> float:
     return float(sum_co) + float(kappa) * float(sum_so)
 
 
+def to_local_naive(ts: Any, timezone: Optional[str]) -> pd.Timestamp:
+    """Parse a timestamp and express it in the property's LOCAL clock (naive).
+
+    daily_logs.date is a property-local operational day, but counted_at /
+    received_at / discarded_at are UTC timestamptz. Stripping tz without
+    converting (the old behavior) put an evening count — 7pm Central is
+    next-day UTC — on the WRONG operational day, shifting the whole window
+    boundary by one day for evening-counting hotels.
+
+    timezone=None (or an unknown zone) preserves the legacy UTC-naive
+    behavior exactly, so callers without a timezone lose nothing.
+    """
+    t = pd.to_datetime(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    if timezone:
+        try:
+            t = t.tz_convert(timezone)
+        except Exception:
+            t = t.tz_convert("UTC")
+    else:
+        t = t.tz_convert("UTC")
+    return t.tz_localize(None)
+
+
 def row_weight(days: float, daily_process_var: float, count_noise: float) -> float:
     """w = 1 / (σ_d²·d + 2·τ²). Always finite and positive."""
     denom = float(daily_process_var) * max(float(days), 0.0) + 2.0 * float(count_noise)
@@ -147,6 +172,7 @@ def build_exposure_rows(
     kappa: float,
     daily_process_var: float,
     count_noise: float,
+    timezone: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Build exposure training rows from consecutive count pairs.
 
@@ -179,8 +205,10 @@ def build_exposure_rows(
         prev = counts[i - 1]
         curr = counts[i]
         try:
-            t_prev = pd.to_datetime(prev["counted_at"]).tz_localize(None)
-            t_curr = pd.to_datetime(curr["counted_at"]).tz_localize(None)
+            # Property-local clock, so window day-boundaries line up with
+            # daily_logs' operational days (see to_local_naive).
+            t_prev = to_local_naive(prev["counted_at"], timezone)
+            t_curr = to_local_naive(curr["counted_at"], timezone)
         except Exception:
             continue
         days_elapsed = (t_curr - t_prev).total_seconds() / 86400.0
@@ -191,12 +219,12 @@ def build_exposure_rows(
         orders_between = sum(
             float(o.get("quantity") or 0)
             for o in orders
-            if _in_window(o.get("received_at"), t_prev, t_curr)
+            if _in_window(o.get("received_at"), t_prev, t_curr, timezone)
         )
         discards_between = sum(
             float(d.get("quantity") or 0)
             for d in discards
-            if _in_window(d.get("discarded_at") or d.get("created_at"), t_prev, t_curr)
+            if _in_window(d.get("discarded_at") or d.get("created_at"), t_prev, t_curr, timezone)
         )
 
         prev_stock = float(prev.get("counted_stock") or 0)
@@ -229,15 +257,25 @@ def build_exposure_rows(
             "sum_so": sum_so,
             "days": days_elapsed,
             "weight": row_weight(days_elapsed, daily_process_var, count_noise),
+            # The count that CLOSED this window. prediction_log pairs carry
+            # inventory_count_id, so this is the join key that lets the
+            # graduation gate compute a per-pair baseline in daily-rate units
+            # (prior_s · exposure/days) instead of the old unit-broken
+            # prior_s-vs-daily-rate comparison.
+            "count_id": str(curr.get("id")) if curr.get("id") else None,
         })
     return (rows, n_dropped_incomplete)
 
 
-def _in_window(ts: Any, t_prev: pd.Timestamp, t_curr: pd.Timestamp) -> bool:
+def _in_window(
+    ts: Any, t_prev: pd.Timestamp, t_curr: pd.Timestamp, timezone: Optional[str] = None,
+) -> bool:
     if ts is None:
         return False
     try:
-        t = pd.to_datetime(ts).tz_localize(None)
+        # Same clock as the window bounds — mixing UTC events into local
+        # bounds would drop orders/discards near the boundary hours.
+        t = to_local_naive(ts, timezone)
     except Exception:
         return False
     return bool(t > t_prev and t <= t_curr)

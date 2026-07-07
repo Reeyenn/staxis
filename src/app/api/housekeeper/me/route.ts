@@ -30,6 +30,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { SUPPORTED_LOCALES, type HousekeeperLocale } from '@/lib/translations';
+import { getEnabledSections } from '@/lib/sections/server';
+import { isSectionEnabled } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -65,5 +67,16 @@ export async function GET(req: NextRequest) {
     (SUPPORTED_LOCALES as readonly string[]).includes(data.language)
       ? (data.language as HousekeeperLocale)
       : null;
-  return ok({ id: data.staffId, name: data.name, language: lang }, { requestId });
+
+  // Per-hotel section gate. The public housekeeper page can't use the client
+  // hook (anon, no PropertyContext), so the Messages tab's on/off state is
+  // resolved server-side here and rides along on the bootstrap. Fail-soft to
+  // ON (getEnabledSections + isSectionEnabled both default-ON). SMS is never
+  // gated — this only controls the in-app Messages tab.
+  const communicationsEnabled = isSectionEnabled(await getEnabledSections(pid), 'communications');
+
+  return ok(
+    { id: data.staffId, name: data.name, language: lang, communicationsEnabled },
+    { requestId },
+  );
 }
