@@ -864,6 +864,14 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // True once /api/pms/save-credentials has run for this property (this wizard
+  // session OR a prior one whose pms_type is already persisted). When set we
+  // HIDE the Skip button: skipping would only write pmsSkippedAt and orphan the
+  // already-provisioned scraper_session + property_sessions row + credentials —
+  // finalizing a "no PMS" hotel that still has a live robot. Skip is only for a
+  // clean slate; to abandon an entered PMS, correct it or detach from Settings.
+  const [pmsProvisioned, setPmsProvisioned] = useState(false);
+  const pmsAlreadyEntered = pmsProvisioned || !!wizard.hotelDefaults?.pmsType;
 
   // Picking a PMS prefills its standard login URL (mirrors /settings/pms) when
   // the field is still empty — saves typing for the common case; editable after.
@@ -889,6 +897,9 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       });
       const credJson = await credRes.json();
       if (!credRes.ok || !credJson.ok) { setErr(credJson.error || 'Credentials save failed'); return; }
+      // Credentials + a scraper_session/property_sessions row now exist for this
+      // property — hide Skip so it can't orphan them (see pmsProvisioned above).
+      setPmsProvisioned(true);
 
       // 2. Queue onboarding job
       const jobRes = await fetchWithAuth('/api/pms/onboard', {
@@ -930,7 +941,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
     setErr(null);
     setSubmitting(true);
     try {
-      await fetch('/api/onboard/wizard', {
+      const res = await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -938,6 +949,13 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
           partialState: { pmsSkippedAt: new Date().toISOString() },
         }),
       });
+      // A failed PATCH (expired code, validation, server hiccup) would otherwise
+      // be a silent dead-click — surface it and stay on the step, like submit().
+      if (!res.ok) {
+        const j = await res.json().catch(() => null);
+        setErr(j?.error || 'Could not skip — please try again.');
+        return;
+      }
       await onNext();
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
@@ -988,14 +1006,18 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '12px' }}>
         {submitting ? 'Saving & starting…' : 'Save & start mapping →'}
       </button>
-      <button className="btn btn-secondary" onClick={skipPms} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}>
-        {lang === 'es' ? 'Omitir — este hotel no usa un PMS' : "Skip — this hotel doesn't use a PMS"}
-      </button>
-      <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '8px', textAlign: 'center', lineHeight: 1.5 }}>
-        {lang === 'es'
-          ? 'Se activa sin PMS ni robot. Puedes conectarlo después en Configuración.'
-          : 'Goes live with no PMS or robot — you can connect one later in Settings.'}
-      </p>
+      {!pmsAlreadyEntered && (
+        <>
+          <button className="btn btn-secondary" onClick={skipPms} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}>
+            {lang === 'es' ? 'Omitir — este hotel no usa un PMS' : "Skip — this hotel doesn't use a PMS"}
+          </button>
+          <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '8px', textAlign: 'center', lineHeight: 1.5 }}>
+            {lang === 'es'
+              ? 'Se activa sin PMS ni robot. Puedes conectarlo después en Configuración.'
+              : 'Goes live with no PMS or robot — you can connect one later in Settings.'}
+          </p>
+        </>
+      )}
     </div>
   );
 }
