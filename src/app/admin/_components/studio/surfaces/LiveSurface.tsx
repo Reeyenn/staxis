@@ -45,6 +45,7 @@ import {
 } from '../surface-kit';
 import { CoveragePickerModal } from '../CoveragePickerModal';
 import { SectionsModal } from '../SectionsModal';
+import { AddHotelModal } from '../AddHotelModal';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
@@ -154,6 +155,8 @@ export function LiveSurface() {
   const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
   // Hotel whose section on/off toggles are open (null = modal closed).
   const [sectionsHotel, setSectionsHotel] = useState<EnrichedRow | null>(null);
+  // "+ Add hotel" modal — create a new property directly from this tab.
+  const [addOpen, setAddOpen] = useState(false);
   // Hotel pending permanent deletion (null = confirm closed).
   const [deleteHotel, setDeleteHotel] = useState<EnrichedRow | null>(null);
 
@@ -277,7 +280,10 @@ export function LiveSurface() {
 
         {/* Column 1 — Hotels */}
         <section style={{ minWidth: 0 }}>
-          <span className="caps" style={{ color: dimWhite(.5) }}>Hotels · {enriched.length}</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span className="caps" style={{ color: dimWhite(.5) }}>Hotels · {enriched.length}</span>
+            <Btn size="sm" variant="ghost" onClick={() => setAddOpen(true)} style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 9px' }}>+ Add hotel</Btn>
+          </div>
           {enriched.length === 0 ? (
             <div style={{ marginTop: 10 }}><DarkEmpty text="No live hotels yet — they'll appear once their first sync completes." /></div>
           ) : (
@@ -366,6 +372,13 @@ export function LiveSurface() {
           currentSections={sectionsHotel.enabledSections}
           onClose={() => setSectionsHotel(null)}
           onSaved={() => { setSectionsHotel(null); void load(); }}
+        />
+      )}
+
+      {addOpen && (
+        <AddHotelModal
+          onClose={() => setAddOpen(false)}
+          onCreated={() => { void load(); }}
         />
       )}
 
