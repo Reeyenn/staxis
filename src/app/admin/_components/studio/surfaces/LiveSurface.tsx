@@ -378,7 +378,18 @@ export function LiveSurface() {
       {addOpen && (
         <AddHotelModal
           onClose={() => setAddOpen(false)}
-          onCreated={() => { void load(); }}
+          onCreated={() => {
+            // Reset the fleet view so the freshly-created hotel is actually
+            // visible. It's a no-PMS, newest-first row, so an active search, a
+            // non-'all' status filter, or page > 1 would hide it — and the
+            // success view saying "it's in your fleet" while the list looks
+            // unchanged reads as a silent failure (and invites a duplicate).
+            setSearchInput('');
+            setSearchTerm('');
+            setStatusFilter('all');
+            setPage(1);
+            void load();
+          }}
         />
       )}
 

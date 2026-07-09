@@ -39,6 +39,10 @@ interface CreatedResult {
 
 export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
   const cardRef = useRef<HTMLDivElement>(null);
+  // Synchronous re-entrancy latch — `submitting` state commits async, so a fast
+  // double-click / Enter+click could otherwise fire two POSTs (the create route
+  // has no idempotency key → duplicate hotels).
+  const submittingRef = useRef(false);
   const [name, setName] = useState('');
   const [rooms, setRooms] = useState('');
   const [isTest, setIsTest] = useState(false);
@@ -69,6 +73,8 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
       totalRooms = n;
     }
 
+    if (submittingRef.current) return;  // guard against a double-fire before setState commits
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       const res = await fetchWithAuth('/api/admin/properties/create', {
@@ -97,6 +103,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
       setError(e instanceof Error ? e.message : 'Network error');
     } finally {
       setSubmitting(false);
+      submittingRef.current = false;
     }
   };
 
@@ -111,7 +118,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
   };
 
   return (
-    <Backdrop onClose={onClose}>
+    <Backdrop onClose={() => { if (!submitting) onClose(); }}>
       <div
         ref={cardRef}
         className="admin-studio"
@@ -193,7 +200,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
 
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', marginTop: 4, marginBottom: 6 }}>
               <input type="checkbox" checked={isTest} onChange={(e) => setIsTest(e.target.checked)} />
-              Test hotel (kept out of fleet totals)
+              Test hotel (a demo / test property)
             </label>
 
             <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
