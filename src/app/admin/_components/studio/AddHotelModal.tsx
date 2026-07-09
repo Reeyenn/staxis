@@ -43,6 +43,9 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
   // double-click / Enter+click could otherwise fire two POSTs (the create route
   // has no idempotency key → duplicate hotels).
   const submittingRef = useRef(false);
+  // Timer for the "Copied" flash — cleared on unmount so a late tick can't
+  // setState after the modal closes.
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [name, setName] = useState('');
   const [rooms, setRooms] = useState('');
   const [isTest, setIsTest] = useState(false);
@@ -52,6 +55,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => { riseIn(cardRef.current, { dy: 26, dur: 440 }); }, []);
+  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
 
   const submit = async () => {
     setError(null);
@@ -100,7 +104,12 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
         signupUrl: (json.data.signupUrl as string | null) ?? null,
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Network error');
+      // A dropped/timed-out response could mean the hotel WAS created
+      // server-side (the route has no idempotency key). Warn the admin to check
+      // the fleet before retrying rather than implying a clean failure.
+      setError(
+        `Couldn't confirm the result${e instanceof Error && e.message ? ` (${e.message})` : ''} — the hotel may or may not have been created. Check the fleet below before trying again.`,
+      );
     } finally {
       setSubmitting(false);
       submittingRef.current = false;
@@ -111,7 +120,8 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
     } catch {
       window.prompt('Copy this link:', text);
     }
@@ -133,8 +143,9 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               <span style={{ fontStyle: 'italic' }}>{created.name}</span> is in your fleet
             </h3>
             <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 16px', lineHeight: 1.5 }}>
-              It&apos;s live now with no PMS. Open it to set up its sections, inventory, and the rest —
-              or hand the optional owner link below to an outside owner.
+              It&apos;s now in your fleet with no PMS connected — set its sections right from its card.
+              The owner signup link below is optional: hand it to an outside owner, or ignore it and
+              manage the hotel yourself.
             </p>
 
             {created.signupUrl && (
@@ -155,8 +166,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
             )}
 
             <div style={{ display: 'flex', gap: 8 }}>
-              <Btn variant="primary" href={`/admin/properties/${created.propertyId}`}>Open hotel →</Btn>
-              <Btn variant="ghost" onClick={onClose}>Done</Btn>
+              <Btn variant="primary" onClick={onClose}>Done</Btn>
             </div>
           </>
         ) : (
@@ -175,6 +185,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               <label style={{ display: 'block', marginBottom: 6 }}><Caps size={9}>Hotel name (optional)</Caps></label>
               <input
                 autoFocus
+                aria-label="Hotel name (optional)"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Comfort Suites Beaumont"
@@ -188,6 +199,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               <label style={{ display: 'block', marginBottom: 6 }}><Caps size={9}>Rooms (optional)</Caps></label>
               <input
                 type="number"
+                aria-label="Rooms (optional)"
                 min={1}
                 max={2000}
                 value={rooms}

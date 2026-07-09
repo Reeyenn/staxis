@@ -149,6 +149,11 @@ export function LiveSurface() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<Pagination | null>(null);
+  // Bumped after a create to force EXACTLY ONE refetch off the reset filter
+  // state. Calling load() directly there would fire a second fetch with the
+  // stale pre-reset closure that can resolve last and clobber the fresh list
+  // (hiding the just-created hotel) — the race all three reviewers flagged.
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const [sel, setSel] = useState<EnrichedRow | null>(null);
   // Hotel currently being assigned a PMS coverage (null = picker closed).
@@ -200,7 +205,11 @@ export function LiveSurface() {
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
     }
-  }, [page, statusFilter, searchTerm]);
+    // reloadNonce is an intentional refetch nonce — not read in the body, but
+    // bumping it recreates `load` so the [load] effect below refetches after a
+    // create even when the filters were already at their defaults.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, statusFilter, searchTerm, reloadNonce]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -388,7 +397,9 @@ export function LiveSurface() {
             setSearchTerm('');
             setStatusFilter('all');
             setPage(1);
-            void load();
+            // Force one refetch off the (now-reset) state — never the stale
+            // load() closure. A single fetch with the correct params, no race.
+            setReloadNonce((n) => n + 1);
           }}
         />
       )}
