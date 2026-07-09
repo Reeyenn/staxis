@@ -113,7 +113,19 @@ export async function GET(req: NextRequest): Promise<Response> {
       .eq('property_id', pid)
       .order('name')
       .limit(5);
-    staffSample = data ?? [];
+    // Coalesce nullable columns to the non-null shape the page's HealthData
+    // types (department/is_active) so the sample is well-formed if ever rendered.
+    staffSample = (data ?? []).map((s) => {
+      const r = s as Record<string, unknown>;
+      return {
+        id: String(r.id ?? ''),
+        name: String(r.name ?? ''),
+        phone: (r.phone as string | null) ?? null,
+        language: String(r.language ?? 'en'),
+        department: String(r.department ?? 'other'),
+        is_active: (r.is_active as boolean | null) ?? true,
+      };
+    });
   } catch { /* keep defaults */ }
 
   // ─── Owner (accounts + auth email) ─────────────────────────────────────
