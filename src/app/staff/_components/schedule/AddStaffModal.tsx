@@ -80,8 +80,8 @@ export function AddStaffModal({
           <div>
             <Caps>{es ? 'Directorio de personal' : 'Staff directory'}</Caps>
             <h2 style={{
-              margin: '3px 0 0', fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic',
-              fontWeight: 400, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
+              margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
+              fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
             }}>{dayTitle}</h2>
           </div>
           <button
@@ -130,7 +130,7 @@ export function AddStaffModal({
                         opacity: tor ? 0.75 : 1,
                       }}
                       onMouseEnter={e => {
-                        e.currentTarget.style.background = '#FBFAF6';
+                        e.currentTarget.style.background = 'rgba(31,35,28,0.03)';
                         e.currentTarget.style.borderColor = T.rule;
                       }}
                       onMouseLeave={e => {
@@ -199,13 +199,13 @@ export function AddStaffModal({
 
         <div style={{
           borderTop: `1px solid ${T.rule}`, padding: '12px 16px',
-          display: 'flex', alignItems: 'flex-start', gap: 9, background: '#FBFAF6',
+          display: 'flex', alignItems: 'flex-start', gap: 9, background: 'rgba(31,35,28,0.03)',
         }}>
           <span style={{
             width: 18, height: 18, borderRadius: '50%', background: T.paper,
             border: `1px solid ${T.rule}`, flexShrink: 0,
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: fonts.serif, fontSize: 12, fontStyle: 'italic', color: T.ink2, marginTop: 1,
+            fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, marginTop: 1,
           }}>i</span>
           <span style={{ fontSize: 11.5, color: T.ink2, lineHeight: 1.5 }}>
             {es ? '¿No ves a alguien? Las personas nuevas se agregan en ' : 'Don’t see someone? New hires are added in '}

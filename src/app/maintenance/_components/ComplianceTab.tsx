@@ -20,9 +20,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { Btn, Pill, Caps } from '@/app/housekeeping/_components/_snow';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO, Btn, Pill, Caps,
   Modal, Field, TextInput, TextArea, ChipChoose,
 } from './_mt-snow';
 import {
@@ -126,12 +125,12 @@ export function ComplianceTab() {
   };
 
   return (
-    <div style={{ padding: '24px 48px 64px', fontFamily: FONT_SANS, color: T.ink, background: T.bg, minHeight: '60dvh' }}>
+    <div style={{ padding: '24px 48px 64px', fontFamily: FONT_SANS, color: T.ink, background: 'transparent', minHeight: '60dvh' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
         <div>
           <Caps c={T.ink3}>{tr(lang, 'Engineering Compliance', 'Cumplimiento de Ingeniería')}</Caps>
-          <h2 style={{ fontFamily: FONT_SERIF, fontSize: 30, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 0', fontStyle: 'italic', color: T.ink }}>
+          <h2 style={{ fontFamily: FONT_SANS, fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', margin: '6px 0 0', color: T.ink }}>
             {tr(lang, "Today's readings & safety checks", 'Lecturas y revisiones de hoy')}
           </h2>
         </div>
@@ -250,7 +249,7 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
     <div style={{ flex: '1 1 200px', minWidth: 200, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16, padding: '14px 18px' }}>
       <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.ink3 }}>{label}</div>
       <div style={{ marginTop: 8, display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 34, fontWeight: 500, color, letterSpacing: '-0.03em', lineHeight: 1 }}>{value}</span>
+        <span style={{ fontFamily: FONT_SANS, fontSize: 26, fontWeight: 600, color, letterSpacing: '-0.02em', lineHeight: 1 }}>{value}</span>
         <span style={{ fontSize: 12, color: T.ink3 }}>{sub}</span>
       </div>
     </div>
@@ -323,7 +322,7 @@ function PmRow({ p, lang, onCheck }: { p: PmTaskStatus; lang: string; onCheck: (
 function EmptySetup({ lang, onSetup }: { lang: string; onSetup: () => void }) {
   return (
     <div style={{ textAlign: 'center', padding: '48px 20px', background: T.paper, border: `1px dashed ${T.rule}`, borderRadius: 18 }}>
-      <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color: T.ink, marginBottom: 8 }}>
+      <div style={{ fontFamily: FONT_SANS, fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink, marginBottom: 8 }}>
         {tr(lang, 'No compliance schedule yet', 'Aún no hay programa de cumplimiento')}
       </div>
       <div style={{ fontSize: 13.5, color: T.ink2, maxWidth: 460, margin: '0 auto 18px' }}>
@@ -395,7 +394,7 @@ function LogReadingModal({ pid, lang, target, onClose, onSaved }: {
         <div>
           <button type="button" onClick={() => fileRef.current?.click()} disabled={scanBusy} style={{
             width: '100%', padding: '10px', borderRadius: 10, cursor: 'pointer',
-            background: T.sageDim, color: T.sageDeep, border: `1px solid rgba(104,131,114,0.3)`,
+            background: T.sageDim, color: T.sageDeep, border: `1px solid rgba(92,122,96,0.3)`,
             fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600,
           }}>
             {scanBusy ? tr(lang, 'Reading photo…', 'Leyendo foto…') : tr(lang, '📷 Snap-to-log (read from photo)', '📷 Leer desde foto')}

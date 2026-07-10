@@ -387,7 +387,7 @@ export function PhotoSlot({
         style={{
           width: '100%', height, borderRadius: 12, cursor: 'pointer',
           background: attached
-            ? 'repeating-linear-gradient(135deg, rgba(104,131,114,0.10) 0 10px, rgba(104,131,114,0.04) 10px 20px)'
+            ? 'repeating-linear-gradient(135deg, rgba(92,122,96,0.10) 0 10px, rgba(92,122,96,0.04) 10px 20px)'
             : 'repeating-linear-gradient(135deg, rgba(31,35,28,0.04) 0 10px, transparent 10px 20px)',
           border: `1px dashed ${attached ? 'rgba(92,122,96,0.4)' : T.rule}`,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',

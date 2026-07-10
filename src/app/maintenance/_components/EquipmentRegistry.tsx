@@ -22,10 +22,10 @@ import {
   type Equipment, type EquipmentCategory, type EquipmentStatus,
   type EquipmentDetail, type EquipmentInput,
 } from '@/lib/equipment/types';
-import { Btn, Caps } from '@/app/housekeeping/_components/_snow';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO, Btn, Caps,
   Modal, Field, TextInput, TextArea, daysBetween,
+  CX_CARD_SHADOW,
 } from './_mt-snow';
 
 const tr = (lang: string, en: string, es: string) => (lang === 'es' ? es : en);
@@ -110,10 +110,11 @@ function StatusPill({ s, lang }: { s: EquipmentStatus; lang: string }) {
     <span style={{
       padding: '4px 11px', borderRadius: 999, height: 22,
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      background: `${c}14`, color: c, border: `1px solid ${c}33`,
-      fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+      background: `${c}1A`, color: c,
+      fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap',
+      letterSpacing: '0.06em', textTransform: 'uppercase',
     }}>
-      <span style={{ width: 7, height: 7, borderRadius: '50%', background: c, display: 'inline-block' }} />
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: c, display: 'inline-block' }} />
       {statusLabel(s, lang)}
     </span>
   );
@@ -121,9 +122,11 @@ function StatusPill({ s, lang }: { s: EquipmentStatus; lang: string }) {
 function WarrantyBadge({ w }: { w: WarrantyInfo }) {
   return (
     <span style={{
-      padding: '4px 11px', borderRadius: 999,
-      background: w.bg, color: w.tone, border: `1px solid ${w.bd}`,
-      fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+      padding: '4px 11px', borderRadius: 999, height: 22,
+      display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box',
+      background: w.bg, color: w.tone,
+      fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap',
+      letterSpacing: '0.06em', textTransform: 'uppercase',
     }}>{w.label}</span>
   );
 }
@@ -391,7 +394,7 @@ function EquipmentDetailModal({
             ].map((s, i) => (
               <div key={i} style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '12px 14px' }}>
                 <Caps size={9}>{s.k}</Caps>
-                <p style={{ fontFamily: FONT_SERIF, fontSize: 26, color: s.tone, margin: '4px 0 0', fontWeight: 400, letterSpacing: '-0.02em' }}>{s.v}</p>
+                <p style={{ fontFamily: FONT_SANS, fontSize: 20, color: s.tone, margin: '4px 0 0', fontWeight: 600, letterSpacing: '-0.02em' }}>{s.v}</p>
               </div>
             ))}
           </div>
@@ -412,19 +415,19 @@ function EquipmentDetailModal({
           {eq.notes && (
             <div>
               <Caps size={9}>{tr(lang, 'Notes', 'Notas')}</Caps>
-              <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '6px 0 0', lineHeight: 1.5, fontStyle: 'italic' }}>{eq.notes}</p>
+              <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '6px 0 0', lineHeight: 1.5 }}>{eq.notes}</p>
             </div>
           )}
 
           {/* history */}
           <div>
             <Caps>{tr(lang, 'Service history', 'Historial de servicio')}</Caps>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px', fontStyle: 'italic' }}>
+            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px' }}>
               {tr(lang, 'Every work order and preventive task linked to this asset.', 'Cada orden de trabajo y tarea preventiva vinculada a este activo.')}
             </p>
 
             {detail.history.length === 0 ? (
-              <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '24px', textAlign: 'center', fontFamily: FONT_SERIF, fontSize: 16, color: T.ink2, fontStyle: 'italic' }}>
+              <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '24px', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink2 }}>
                 {tr(lang, 'No linked history yet.', 'Sin historial vinculado todavía.')}
               </div>
             ) : (
@@ -471,18 +474,18 @@ function EquipmentCard({ e, lang, onOpen }: { e: Equipment; lang: string; onOpen
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
       padding: '16px 22px 16px 26px', display: 'grid',
       gridTemplateColumns: 'minmax(200px, 1.6fr) 150px auto auto', gap: 16, alignItems: 'center',
-      position: 'relative', overflow: 'hidden',
+      position: 'relative', overflow: 'hidden', boxShadow: CX_CARD_SHADOW,
     }}>
       <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: tone }} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400 }}>{e.name}</span>
+        <span style={{ fontFamily: FONT_SANS, fontSize: 17, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1.2, fontWeight: 600 }}>{e.name}</span>
         <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, letterSpacing: '0.04em' }}>
           {catLabel(e.category, lang)}{e.location ? ` · ${e.location}` : ''}
         </span>
       </div>
       <StatusPill s={e.status} lang={lang} />
       <WarrantyBadge w={w} />
-      <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: T.ink2, fontStyle: 'italic', justifySelf: 'end' }}>→</span>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 18, color: T.ink3, justifySelf: 'end' }}>→</span>
     </button>
   );
 }
@@ -586,8 +589,8 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
             ← {tr(lang, 'Back to preventive', 'Volver a preventivo')}
           </button>
           <Caps>{tr(lang, 'Equipment registry', 'Registro de equipos')}</Caps>
-          <h1 style={{ fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400 }}>
-            <span style={{ fontStyle: 'italic' }}>{list.length} {tr(lang, list.length === 1 ? 'asset' : 'assets', list.length === 1 ? 'activo' : 'activos')}</span>
+          <h1 style={{ fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.02em', lineHeight: 1.25, fontWeight: 600 }}>
+            <span>{list.length} {tr(lang, list.length === 1 ? 'asset' : 'assets', list.length === 1 ? 'activo' : 'activos')}</span>
           </h1>
         </div>
         {isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add equipment', 'Agregar equipo')}</Btn>}
@@ -611,7 +614,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         )}
         {!loading && list.length === 0 && (
           <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: T.ink, fontStyle: 'italic' }}>{tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}</span>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}</span>
             <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '8px 0 18px' }}>
               {tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps — anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina — todo lo que da servicio.')}
             </p>
@@ -619,7 +622,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
           </div>
         )}
         {!loading && list.length > 0 && filtered.length === 0 && (
-          <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SERIF, fontSize: 18, color: T.ink2, fontStyle: 'italic' }}>{tr(lang, 'Nothing matches that search.', 'Nada coincide con esa búsqueda.')}</div>
+          <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{tr(lang, 'Nothing matches that search.', 'Nada coincide con esa búsqueda.')}</div>
         )}
         {!loading && filtered.map((e) => <EquipmentCard key={e.id} e={e} lang={lang} onOpen={openDetail} />)}
       </div>

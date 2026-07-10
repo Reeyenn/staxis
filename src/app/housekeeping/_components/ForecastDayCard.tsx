@@ -7,7 +7,7 @@
 // doesn't depend on color alone.
 
 import React from 'react';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill } from './_snow';
+import { T, FONT_SANS, FONT_MONO, Caps, Pill } from './_snow';
 import type { AccuracyLabel, GapStatus } from '@/lib/forecast';
 
 export interface DayCardData {
@@ -78,8 +78,9 @@ export function ForecastDayCard({ data, laborCostVisible = true, isExpanded, onT
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <Caps size={9}>{relativeDayHeader(data.date, lang)}</Caps>
         <span style={{
-          fontFamily: FONT_SERIF,
+          fontFamily: FONT_SANS,
           fontSize: 22,
+          fontWeight: 600,
           lineHeight: 1.15,
           letterSpacing: '-0.02em',
           color: T.ink,
@@ -127,7 +128,7 @@ export function ForecastDayCard({ data, laborCostVisible = true, isExpanded, onT
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <Caps size={9}>{lang === 'es' ? 'Personal' : 'Staffing'}</Caps>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: accent, letterSpacing: '-0.02em' }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 22, fontWeight: 600, color: accent, letterSpacing: '-0.02em' }}>
             {data.housekeepersScheduled}
           </span>
           <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink3 }}>
@@ -193,7 +194,7 @@ export function ForecastDayCard({ data, laborCostVisible = true, isExpanded, onT
 function RoomCount({ value, label, color }: { value: number; label: string; color: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      <span style={{ fontFamily: FONT_SERIF, fontSize: 18, color, letterSpacing: '-0.02em' }}>{value}</span>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 18, fontWeight: 600, color, letterSpacing: '-0.02em' }}>{value}</span>
       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.04em' }}>
         {label}
       </span>

@@ -117,8 +117,8 @@ export function FillModal({
             )}
             <div>
               <h2 style={{
-                margin: 0, fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic',
-                fontWeight: 400, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
+                margin: 0, fontFamily: fonts.sans, fontSize: 22,
+                fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
               }}>{title}</h2>
               <div style={{ fontFamily: fonts.mono, fontSize: 10.5, color: T.ink3, marginTop: 3 }}>
                 {(preview || wPreview)
@@ -273,7 +273,7 @@ export function FillModal({
                               <span style={{ display: 'block', fontFamily: fonts.mono, fontSize: 8.5, fontWeight: 600, color: T.ink3 }}>
                                 {d.dow.toUpperCase()}
                               </span>
-                              <span style={{ display: 'block', fontFamily: fonts.serif, fontSize: 15, fontStyle: 'italic', color: T.ink }}>
+                              <span style={{ display: 'block', fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>
                                 {d.dayNum}
                               </span>
                             </button>
@@ -448,7 +448,7 @@ function DayPreview({
                       width: 80, fontSize: 12, fontWeight: 600, color: T.ink, flexShrink: 0,
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>{shortName(nameOf(s.staffId))}</span>
-                    <div style={{ position: 'relative', flex: 1, height: 18, borderRadius: 6, background: '#FBFAF6' }}>
+                    <div style={{ position: 'relative', flex: 1, height: 18, borderRadius: 6, background: 'rgba(31,35,28,0.03)' }}>
                       <div style={{
                         position: 'absolute', top: 2, bottom: 2, left: `${left}%`, width: `${width}%`,
                         borderRadius: 5, background: m.dim, border: `1px solid ${m.tone}55`, boxSizing: 'border-box',

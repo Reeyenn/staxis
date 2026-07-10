@@ -6,6 +6,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useTodayStr } from '@/lib/use-today-str';
 import { t } from '@/lib/translations';
+import { T, FONT_SANS } from './_snow';
 
 /**
  * ManagerNotesEditor — renders inside the RoomsTab room-detail modal.
@@ -124,17 +125,17 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
       style={{
         marginTop: 12,
         padding: 12,
-        background: '#F9FAFB',
-        border: '1px solid #E5E7EB',
-        borderRadius: 12,
+        background: 'rgba(31,35,28,0.03)',
+        border: `1px solid ${T.rule}`,
+        borderRadius: 14,
         display: 'flex',
         flexDirection: 'column',
         gap: 10,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <NotebookPen size={16} color="#6B7280" />
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#374151' }}>
+        <NotebookPen size={16} color={T.ink2} />
+        <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, letterSpacing: '-0.01em', color: T.ink }}>
           {t('mgrNotesTitle', lang)}
         </span>
       </div>
@@ -148,10 +149,12 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
         style={{
           width: '100%',
           padding: 10,
-          border: '1px solid #D1D5DB',
-          borderRadius: 8,
+          background: T.paper,
+          border: '1px solid rgba(31,35,28,0.14)',
+          borderRadius: 10,
           fontSize: 13,
-          fontFamily: 'inherit',
+          color: T.ink,
+          fontFamily: FONT_SANS,
           resize: 'vertical',
           boxSizing: 'border-box',
         }}
@@ -162,13 +165,14 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
         disabled={!draft.trim() || posting}
         style={{
           alignSelf: 'flex-end',
-          padding: '6px 14px',
-          background: !draft.trim() || posting ? '#D1D5DB' : '#2563EB',
+          padding: '6px 16px',
+          background: !draft.trim() || posting ? 'rgba(31,35,28,0.18)' : '#3E5C48',
           color: 'white',
           border: 'none',
-          borderRadius: 8,
-          fontSize: 13,
-          fontWeight: 700,
+          borderRadius: 999,
+          fontFamily: FONT_SANS,
+          fontSize: 12.5,
+          fontWeight: 600,
           cursor: !draft.trim() || posting ? 'not-allowed' : 'pointer',
         }}
       >
@@ -176,7 +180,7 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
       </button>
 
       {loaded && notes.length === 0 && (
-        <div style={{ fontSize: 12, color: '#9CA3AF', textAlign: 'center', padding: '4px 0' }}>
+        <div style={{ fontSize: 12, color: T.ink3, textAlign: 'center', padding: '4px 0' }}>
           {t('mgrNotesEmpty', lang)}
         </div>
       )}
@@ -191,14 +195,14 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
                 alignItems: 'flex-start',
                 gap: 6,
                 padding: '8px 10px',
-                background: 'white',
-                border: '1px solid #E5E7EB',
-                borderRadius: 8,
+                background: T.paper,
+                border: `1px solid ${T.rule}`,
+                borderRadius: 10,
               }}
             >
-              <div style={{ flex: 1, fontSize: 12, color: '#374151', lineHeight: 1.4 }}>
+              <div style={{ flex: 1, fontSize: 12, color: T.ink, lineHeight: 1.4 }}>
                 {n.note_text}
-                <div style={{ fontSize: 10, color: '#9CA3AF', marginTop: 2 }}>
+                <div style={{ fontSize: 10, color: T.ink3, marginTop: 2 }}>
                   {new Date(n.posted_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
                 </div>
               </div>
@@ -218,7 +222,7 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
                   opacity: 0.5,
                 }}
               >
-                <Trash2 size={12} color="#9CA3AF" />
+                <Trash2 size={12} color={T.ink3} />
               </button>
             </div>
           ))}
@@ -232,7 +236,7 @@ export function ManagerNotesEditor({ roomNumber, onChange }: Props) {
             bottom: 24,
             left: '50%',
             transform: 'translateX(-50%)',
-            background: '#0F172A',
+            background: T.ink,
             color: 'white',
             padding: '8px 14px',
             borderRadius: 999,

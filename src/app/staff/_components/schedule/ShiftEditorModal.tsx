@@ -77,8 +77,8 @@ export function ShiftEditorModal({
             <Avatar staffId={shift.staffId} name={staffName} size={32}/>
             <div style={{ minWidth: 0 }}>
               <h2 style={{
-                margin: 0, fontFamily: fonts.serif, fontSize: 22, fontStyle: 'italic',
-                fontWeight: 400, letterSpacing: '-0.02em', color: T.ink,
+                margin: 0, fontFamily: fonts.sans, fontSize: 20,
+                fontWeight: 600, letterSpacing: '-0.02em', color: T.ink,
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
               }}>{staffName}</h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 2 }}>
@@ -141,8 +141,8 @@ export function ShiftEditorModal({
 
         {errorMsg && (
           <div role="alert" style={{
-            marginTop: 12, padding: '9px 13px', background: 'rgba(160,74,44,0.08)',
-            border: '1px solid rgba(160,74,44,0.25)', borderRadius: 10,
+            marginTop: 12, padding: '9px 13px', background: 'rgba(184,92,61,0.08)',
+            border: '1px solid rgba(184,92,61,0.25)', borderRadius: 10,
             color: T.red, fontSize: 12.5,
           }}>{errorMsg}</div>
         )}
@@ -150,7 +150,7 @@ export function ShiftEditorModal({
         <div style={{ display: 'flex', gap: 8, marginTop: 18, alignItems: 'center' }}>
           <Btn
             variant="ghost" size="md" onClick={onRemove}
-            style={{ color: T.red, borderColor: 'rgba(160,74,44,0.25)' }}
+            style={{ color: T.red, borderColor: 'rgba(184,92,61,0.25)' }}
           >{es ? 'Quitar' : 'Remove'}</Btn>
           <span style={{ flex: 1 }}/>
           <Btn variant="ghost" size="md" onClick={onClose}>{es ? 'Cancelar' : 'Cancel'}</Btn>

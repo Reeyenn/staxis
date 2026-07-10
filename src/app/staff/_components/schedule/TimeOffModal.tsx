@@ -69,7 +69,7 @@ export function TimeOffSection({
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px',
-        background: '#FBFAF6', borderBottom: `1px solid ${T.rule}`,
+        background: 'rgba(31,35,28,0.03)', borderBottom: `1px solid ${T.rule}`,
       }}>
         <Caps size={9}>{es ? 'Tiempo libre' : 'Time off'}</Caps>
         <span style={{
@@ -102,9 +102,9 @@ export function TimeOffSection({
               <Avatar staffId={r.staffId} name={name} size={24}/>
               <span style={{ minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: T.ink }}>{name}</span>
-                <span style={{ display: 'block', fontFamily: fonts.serif, fontSize: 13.5, fontStyle: 'italic', color: T.ink2 }}>
+                <span style={{ display: 'block', fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink2 }}>
                   {fmtDate(r.requestDate)}
-                  {r.reason && <span style={{ fontFamily: fonts.sans, fontStyle: 'normal', fontSize: 11.5, color: T.ink3 }}> — “{r.reason}”</span>}
+                  {r.reason && <span style={{ fontFamily: fonts.sans, fontWeight: 400, letterSpacing: 0, fontSize: 11.5, color: T.ink3 }}> — “{r.reason}”</span>}
                 </span>
               </span>
               <span style={{ flex: 1 }}/>
@@ -139,7 +139,7 @@ export function TimeOffSection({
                   variant="ghost" size="sm"
                   onClick={() => decide(r, 'deny', denyReason.trim() || undefined)}
                   disabled={busy}
-                  style={{ color: T.red, borderColor: 'rgba(160,74,44,0.30)' }}
+                  style={{ color: T.red, borderColor: 'rgba(184,92,61,0.30)' }}
                 >
                   {busy ? '…' : es ? 'Confirmar' : 'Confirm deny'}
                 </Btn>
@@ -152,7 +152,7 @@ export function TimeOffSection({
       {errorMsg && (
         <div role="alert" style={{
           padding: '9px 16px', fontSize: 12, color: T.red,
-          background: 'rgba(160,74,44,0.08)', borderTop: `1px solid ${T.rule}`,
+          background: 'rgba(184,92,61,0.08)', borderTop: `1px solid ${T.rule}`,
         }}>{errorMsg}</div>
       )}
     </div>
@@ -203,8 +203,8 @@ export function TimeOffHistoryModal({
           <div>
             <Caps>{es ? 'Tiempo libre' : 'Time off'}</Caps>
             <h2 style={{
-              margin: '3px 0 0', fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic',
-              fontWeight: 400, letterSpacing: '-0.02em', color: T.ink,
+              margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
+              fontWeight: 600, letterSpacing: '-0.02em', color: T.ink,
             }}>{es ? 'Historial' : 'History'}</h2>
           </div>
           <button
@@ -244,9 +244,9 @@ export function TimeOffHistoryModal({
                 <span style={{ flex: 1 }}/>
                 <span style={{
                   fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                  color: approved ? '#3F5A43' : T.red,
-                  background: approved ? 'rgba(92,122,96,0.12)' : 'rgba(160,74,44,0.10)',
-                  border: `1px solid ${approved ? 'rgba(92,122,96,0.30)' : 'rgba(160,74,44,0.30)'}`,
+                  color: approved ? T.sageDeep : T.red,
+                  background: approved ? 'rgba(92,122,96,0.12)' : 'rgba(184,92,61,0.10)',
+                  border: `1px solid ${approved ? 'rgba(92,122,96,0.30)' : 'rgba(184,92,61,0.30)'}`,
                   padding: '1px 7px', borderRadius: 999, flexShrink: 0,
                 }}>{approved ? (es ? 'APROBADO' : 'APPROVED') : (es ? 'RECHAZADO' : 'DENIED')}</span>
               </div>

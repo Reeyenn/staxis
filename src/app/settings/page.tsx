@@ -11,6 +11,7 @@ import { t } from '@/lib/translations';
 import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
 import { useCan } from '@/lib/capabilities/useCan';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
+import { T, fonts } from '@/app/staff/_components/_tokens';
 
 export default function SettingsPage() {
   const { lang }           = useLang();
@@ -37,11 +38,11 @@ export default function SettingsPage() {
 
   return (
     <AppLayout>
-      <div style={{ padding:'20px 16px', display:'flex', flexDirection:'column', gap:'14px' }}>
+      <div style={{ padding:'20px 16px', display:'flex', flexDirection:'column', gap:'14px', fontFamily:fonts.sans }}>
 
         {/* ── Header ── */}
         <div className="animate-in">
-          <h1 style={{ fontFamily:'var(--font-sans)', fontWeight:700, fontSize:'17px', color:'var(--text-primary)', letterSpacing:'-0.01em' }}>
+          <h1 style={{ fontFamily:fonts.sans, fontWeight:600, fontSize:'18px', color:T.ink, letterSpacing:'-0.02em' }}>
             {t('settings', lang)}
           </h1>
         </div>
@@ -55,28 +56,30 @@ export default function SettingsPage() {
                   padding:'16px 18px',
                   display:'flex', alignItems:'center', gap:'16px',
                   animationDelay:`${idx * 40}ms`,
+                  background:T.paper, border:`1px solid ${T.rule}`,
+                  borderRadius:16, boxShadow:T.cardShadow,
                 }}
               >
                 <div style={{
-                  width:'48px', height:'48px', borderRadius:'13px', flexShrink:0,
-                  background:'rgba(27,58,92,0.06)',
-                  border:'1px solid rgba(27,58,92,0.12)',
+                  width:'48px', height:'48px', borderRadius:'14px', flexShrink:0,
+                  background:T.sageDim,
+                  border:'1px solid rgba(92,122,96,0.25)',
                   display:'flex', alignItems:'center', justifyContent:'center',
                 }}>
-                  <Icon size={21} color="var(--navy)" />
+                  <Icon size={21} color={T.brand} />
                 </div>
 
                 <div style={{ flex:1, minWidth:0 }}>
                   <p style={{
-                    fontWeight:700, fontSize:'16px',
-                    color:'var(--text-primary)', marginBottom:'3px', lineHeight:1.2,
+                    fontFamily:fonts.sans, fontWeight:600, fontSize:'15px', letterSpacing:'-0.01em',
+                    color:T.ink, marginBottom:'3px', lineHeight:1.2,
                   }}>
                     {label}
                   </p>
-                  <p style={{ fontSize:'13px', color:'var(--text-muted)', lineHeight:1.4 }}>{desc}</p>
+                  <p style={{ fontSize:'13px', color:T.ink2, lineHeight:1.4 }}>{desc}</p>
                 </div>
 
-                <ChevronRight size={18} color="var(--text-muted)" style={{ flexShrink:0 }} />
+                <ChevronRight size={18} color={T.ink3} style={{ flexShrink:0 }} />
               </div>
             </Link>
           ))}

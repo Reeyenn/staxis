@@ -299,8 +299,8 @@ function ShiftRow({
         {otTitle && (
           <span title={otTitle} style={{
             fontFamily: fonts.mono, fontSize: 8, fontWeight: 700, letterSpacing: '0.04em',
-            color: T.red, background: 'rgba(160,74,44,0.12)',
-            border: '1px solid rgba(160,74,44,0.35)',
+            color: T.red, background: 'rgba(184,92,61,0.12)',
+            border: '1px solid rgba(184,92,61,0.35)',
             padding: '0px 4px', borderRadius: 999, flexShrink: 0,
           }}>OT</span>
         )}

@@ -65,7 +65,7 @@ export function WeekRoster({
       border: `1px solid ${T.rule}`, borderRadius: 16, overflow: 'hidden', background: T.paper,
     }}>
       {/* day header */}
-      <div style={{ display: 'grid', gridTemplateColumns: cols, background: '#FBFAF6', borderBottom: `1px solid ${T.rule}` }}>
+      <div style={{ display: 'grid', gridTemplateColumns: cols, background: 'rgba(31,35,28,0.03)', borderBottom: `1px solid ${T.rule}` }}>
         <div style={{
           padding: '10px 14px', fontFamily: fonts.mono, fontSize: 9,
           color: T.ink3, letterSpacing: '0.08em', fontWeight: 600,
@@ -86,7 +86,7 @@ export function WeekRoster({
               fontFamily: fonts.mono, fontSize: 8.5,
               color: d.today ? T.caramelDeep : T.ink3, fontWeight: 600, letterSpacing: '0.05em',
             }}>{d.dow.toUpperCase()}{d.today ? (lang === 'es' ? ' · HOY' : ' · NOW') : ''}</div>
-            <div style={{ fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic', color: T.ink }}>{d.dayNum}</div>
+            <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{d.dayNum}</div>
           </button>
         ))}
       </div>
@@ -99,7 +99,7 @@ export function WeekRoster({
           <React.Fragment key={dep}>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 7, padding: '5px 14px',
-              background: '#FCFBF8', borderBottom: `1px solid ${T.ruleSoft}`,
+              background: 'rgba(31,35,28,0.02)', borderBottom: `1px solid ${T.ruleSoft}`,
             }}>
               <span style={{ width: 5, height: 5, borderRadius: '50%', background: m.tone }}/>
               <Caps size={8.5} c={T.ink2}>{m.label}</Caps>
@@ -127,8 +127,8 @@ export function WeekRoster({
                         fontWeight: over ? 700 : 500,
                         color: over ? T.red : T.ink3,
                         ...(over ? {
-                          background: 'rgba(160,74,44,0.10)',
-                          border: '1px solid rgba(160,74,44,0.35)',
+                          background: 'rgba(184,92,61,0.10)',
+                          border: '1px solid rgba(184,92,61,0.35)',
                           padding: '0 4px', borderRadius: 999,
                         } : {}),
                       }}

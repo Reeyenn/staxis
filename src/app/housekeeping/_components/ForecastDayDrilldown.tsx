@@ -188,7 +188,7 @@ function HourCurve({
         <LegendDot color={T.caramelDeep} label={lang === 'es' ? 'Salidas' : 'Departures'} />
         {hasSynthetic && (
           <span style={{
-            fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, fontStyle: 'italic',
+            fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
           }}>
             {lang === 'es'
               ? `Incluye ${unknown.arrivals + unknown.departures} reservas sin hora registrada (asignadas a horarios típicos).`
@@ -275,7 +275,6 @@ function Housekeepers({ list, lang }: { list: HousekeeperItem[]; lang: 'en' | 'e
       {list.length === 0 ? (
         <p style={{
           marginTop: 10, fontFamily: FONT_SANS, fontSize: 13, color: T.warm,
-          fontStyle: 'italic',
         }}>
           {lang === 'es' ? 'Nadie programado todavía.' : 'No one scheduled yet.'}
         </p>
@@ -310,7 +309,6 @@ function Reservations({ list, lang }: { list: ReservationItem[]; lang: 'en' | 'e
         <Caps>{lang === 'es' ? 'Reservas del día' : "Day's reservations"}</Caps>
         <p style={{
           marginTop: 10, fontFamily: FONT_SANS, fontSize: 13, color: T.ink3,
-          fontStyle: 'italic',
         }}>
           {lang === 'es' ? 'Sin reservas registradas.' : 'No reservations on file.'}
         </p>

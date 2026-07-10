@@ -138,7 +138,7 @@ export function CalloutBanner({ shiftDate }: Props) {
               so the manager knows the data on screen may be lagging
               (Codex review 2026-05-24, Probe 6). */}
           {error ? (
-            <div style={{ fontSize: 12, color: T.warm, fontStyle: 'italic' }}>
+            <div style={{ fontSize: 12, color: T.warm }}>
               {error}
             </div>
           ) : null}

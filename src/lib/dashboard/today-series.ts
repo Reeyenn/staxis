@@ -57,10 +57,10 @@ export interface MetricDef {
 // The five chartable headline metrics (matches the KPI strip + ring click).
 export const METRIC_DEFS: MetricDef[] = [
   { key: 'occ',     label: 'Occupancy', fmt: 'pct',   color: '#356B4C' },
-  { key: 'revenue', label: 'Revenue',   fmt: 'money', color: '#BC5E37' },
-  { key: 'adr',     label: 'ADR',       fmt: 'money', color: '#20251F' },
-  { key: 'revpar',  label: 'RevPAR',    fmt: 'money', color: '#9A4A29' },
-  { key: 'profit',  label: 'Profit',    fmt: 'money', color: '#5C8E6F' },
+  { key: 'revenue', label: 'Revenue',   fmt: 'money', color: '#B85C3D' },
+  { key: 'adr',     label: 'ADR',       fmt: 'money', color: '#1F231C' },
+  { key: 'revpar',  label: 'RevPAR',    fmt: 'money', color: '#8C6A33' },
+  { key: 'profit',  label: 'Profit',    fmt: 'money', color: '#5C7A60' },
 ];
 
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
