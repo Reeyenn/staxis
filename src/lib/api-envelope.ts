@@ -39,8 +39,16 @@ export type EnvelopeResult<T> =
  * On error, `code` (machine-stable, see ApiErrorCode) and `status` ride
  * along so callers can special-case e.g. rate limiting; `requestId` rides
  * along on both paths for support/Sentry triage.
+ *
+ * `fallbackError` (optional) replaces the generic `Failed (<status>)` text
+ * when the body carries no usable error string — pages with bespoke
+ * bilingual copy pass their own message. A server-provided error string
+ * still wins over the fallback.
  */
-export async function readEnvelope<T>(res: Response): Promise<EnvelopeResult<T>> {
+export async function readEnvelope<T>(
+  res: Response,
+  fallbackError?: string,
+): Promise<EnvelopeResult<T>> {
   const body = (await res.json().catch(() => null)) as Partial<ApiResponse<T>> | null;
   const requestId =
     body && typeof body.requestId === 'string' ? body.requestId : undefined;
@@ -49,7 +57,9 @@ export async function readEnvelope<T>(res: Response): Promise<EnvelopeResult<T>>
     const message =
       body && typeof body.error === 'string' && body.error.length > 0
         ? body.error
-        : `Failed (${res.status})`;
+        : fallbackError !== undefined && fallbackError.length > 0
+          ? fallbackError
+          : `Failed (${res.status})`;
     return {
       error: message,
       status: res.status,

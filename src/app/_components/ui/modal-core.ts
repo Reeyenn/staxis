@@ -11,7 +11,7 @@
 
 import type { CSSProperties } from 'react';
 
-export type ModalVariant = 'center' | 'sheet';
+export type ModalVariant = 'center' | 'sheet' | 'drawer-right';
 
 export interface ModalTheme {
   /** Scrim (backdrop) color, e.g. 'rgba(24,22,17,0.28)'. */
@@ -22,9 +22,11 @@ export interface ModalTheme {
   bg?: string;
   /** Card border (CSS shorthand), e.g. `1px solid ${T.rule}`. Default none. */
   border?: string;
-  /** Card border-radius (CSS length). Sheets apply it to the top corners only. */
+  /** Card border-radius (CSS length). Sheets apply it to the top corners
+   *  only; drawer-right to the left corners only. */
   radius?: string;
-  /** Card max-width (CSS length). Ignored by the sheet variant (full width). */
+  /** Card max-width (CSS length). Ignored by the sheet variant (full width);
+   *  the drawer-right variant uses it as the panel width. */
   maxWidth?: string;
   /** Card padding (CSS shorthand). */
   padding?: string;
@@ -73,7 +75,8 @@ export function resolveModalTheme(theme?: ModalTheme): ResolvedModalTheme {
   };
 }
 
-/** Fixed full-viewport scrim. Centers for 'center', bottom-aligns for 'sheet'. */
+/** Fixed full-viewport scrim. Centers for 'center', bottom-aligns for
+ *  'sheet', right-aligns full-height for 'drawer-right'. */
 export function modalScrimStyle(variant: ModalVariant, t: ResolvedModalTheme): CSSProperties {
   return {
     position: 'fixed',
@@ -83,14 +86,16 @@ export function modalScrimStyle(variant: ModalVariant, t: ResolvedModalTheme): C
     backdropFilter: t.scrimFilter,
     WebkitBackdropFilter: t.scrimFilter, // iOS Safari — most housekeeper devices
     display: 'flex',
-    alignItems: variant === 'sheet' ? 'flex-end' : 'center',
-    justifyContent: 'center',
-    padding: variant === 'sheet' ? 0 : '32px 24px',
+    alignItems:
+      variant === 'sheet' ? 'flex-end' : variant === 'drawer-right' ? 'stretch' : 'center',
+    justifyContent: variant === 'drawer-right' ? 'flex-end' : 'center',
+    padding: variant === 'center' ? '32px 24px' : 0,
     overflow: 'auto',
   };
 }
 
-/** The dialog card itself. Sheet = full-width, top corners rounded only. */
+/** The dialog card itself. Sheet = full-width, top corners rounded only;
+ *  drawer-right = full-height right-edge panel, theme maxWidth = its width. */
 export function modalCardStyle(variant: ModalVariant, t: ResolvedModalTheme): CSSProperties {
   if (variant === 'sheet') {
     return {
@@ -99,6 +104,20 @@ export function modalCardStyle(variant: ModalVariant, t: ResolvedModalTheme): CS
       background: t.bg,
       border: t.border,
       borderRadius: `${t.radius} ${t.radius} 0 0`,
+      boxShadow: t.shadow,
+      padding: t.padding,
+      overflow: 'auto',
+      boxSizing: 'border-box',
+    };
+  }
+  if (variant === 'drawer-right') {
+    return {
+      width: `min(100%, ${t.maxWidth})`,
+      height: '100%',
+      maxHeight: '100vh',
+      background: t.bg,
+      border: t.border,
+      borderRadius: `${t.radius} 0 0 ${t.radius}`,
       boxShadow: t.shadow,
       padding: t.padding,
       overflow: 'auto',
@@ -121,9 +140,19 @@ export function modalCardStyle(variant: ModalVariant, t: ResolvedModalTheme): CS
 // Entrance/exit transforms per variant — used by the WAAPI animations in
 // Modal.tsx (same presence-managed pattern as inventory's Overlay.tsx).
 export function modalEnterTransform(variant: ModalVariant): string {
-  return variant === 'sheet' ? 'translateY(100%)' : 'translateY(20px) scale(.97)';
+  if (variant === 'sheet') return 'translateY(100%)';
+  if (variant === 'drawer-right') return 'translateX(100%)';
+  return 'translateY(20px) scale(.97)';
 }
 
 export function modalExitTransform(variant: ModalVariant): string {
-  return variant === 'sheet' ? 'translateY(100%)' : 'translateY(12px) scale(.985)';
+  if (variant === 'sheet') return 'translateY(100%)';
+  if (variant === 'drawer-right') return 'translateX(100%)';
+  return 'translateY(12px) scale(.985)';
+}
+
+/** Variants that slide in from an edge (opacity stays 1; motion carries the
+ *  entrance/exit) as opposed to the center card's fade + settle. */
+export function modalVariantSlides(variant: ModalVariant): boolean {
+  return variant === 'sheet' || variant === 'drawer-right';
 }

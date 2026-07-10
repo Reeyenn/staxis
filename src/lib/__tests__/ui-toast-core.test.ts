@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 
 import {
   addToast,
+  markToastExiting,
   removeToast,
   resolveDurationMs,
   toastContainerStyle,
@@ -61,6 +62,31 @@ describe('addToast / removeToast', () => {
   test('removeToast with unknown id is a no-op', () => {
     const list = [t(1)];
     assert.deepEqual(removeToast(list, 99), list);
+  });
+});
+
+describe('markToastExiting — exit-transition hold', () => {
+  test('flags only the matching toast, without mutating the original list', () => {
+    const list = [t(1), t(2)];
+    const next = markToastExiting(list, 1);
+    assert.equal(next[0].exiting, true);
+    assert.equal(next[1].exiting, undefined);
+    assert.equal(list[0].exiting, undefined, 'input list must not be mutated');
+  });
+
+  test('unknown id is a no-op (same list back)', () => {
+    const list = [t(1)];
+    assert.equal(markToastExiting(list, 99), list);
+  });
+
+  test('already-exiting toast is a no-op (same list back)', () => {
+    const once = markToastExiting([t(1)], 1);
+    assert.equal(markToastExiting(once, 1), once);
+  });
+
+  test('an exiting toast is still removable by removeToast', () => {
+    const next = removeToast(markToastExiting([t(1), t(2)], 1), 1);
+    assert.deepEqual(next.map((x) => x.id), [2]);
   });
 });
 

@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import {
   applyOutcome,
   createRequestGate,
+  shouldHoldDataOnSourceChange,
   shouldPollTick,
 } from '@/lib/hooks/api-resource-core';
 
@@ -101,6 +102,59 @@ describe('shouldPollTick — poll gating', () => {
         }
       }
     }
+  });
+});
+
+describe('shouldHoldDataOnSourceChange — keepDataOnSourceChange semantics', () => {
+  test('default (opt-out): a URL switch never holds — old data drops, spinner shows', () => {
+    for (const isFirstIdentity of [true, false]) {
+      for (const hasData of [true, false]) {
+        assert.equal(
+          shouldHoldDataOnSourceChange({
+            keepDataOnSourceChange: false,
+            isFirstIdentity,
+            hasData,
+          }),
+          false,
+          `isFirstIdentity=${isFirstIdentity} hasData=${hasData}`,
+        );
+      }
+    }
+  });
+
+  test('opted in: a later source switch with last-good data holds it (no blank, no spinner)', () => {
+    assert.equal(
+      shouldHoldDataOnSourceChange({
+        keepDataOnSourceChange: true,
+        isFirstIdentity: false,
+        hasData: true,
+      }),
+      true,
+    );
+  });
+
+  test('opted in: the FIRST identity still shows the initial loading state', () => {
+    assert.equal(
+      shouldHoldDataOnSourceChange({
+        keepDataOnSourceChange: true,
+        isFirstIdentity: true,
+        hasData: false,
+      }),
+      false,
+    );
+  });
+
+  test('opted in: nothing to hold (no prior data) falls back to the loading state', () => {
+    // Holding "nothing" would render a silent blank page — worse than the
+    // spinner. E.g. the previous URL errored with keepDataOnError=false.
+    assert.equal(
+      shouldHoldDataOnSourceChange({
+        keepDataOnSourceChange: true,
+        isFirstIdentity: false,
+        hasData: false,
+      }),
+      false,
+    );
   });
 });
 

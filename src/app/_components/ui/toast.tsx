@@ -23,6 +23,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addToast,
+  markToastExiting,
   removeToast,
   resolveDurationMs,
   toastContainerStyle,
@@ -46,6 +47,13 @@ export interface UseToastOptions {
   durationMs?: number;
   /** Cap on simultaneously visible toasts; oldest is dropped. Default 3. */
   max?: number;
+  /**
+   * Exit-transition hold (ms): a dismissed/expired toast stays in the list
+   * flagged `exiting` for this long before removal, so <ToastHost
+   * transition> can play its unmountStyle. Default absent = instant removal
+   * (current behavior, no animation).
+   */
+  exitMs?: number;
 }
 
 export function useToast(options?: UseToastOptions): {
@@ -58,6 +66,7 @@ export function useToast(options?: UseToastOptions): {
   const seqRef = useRef(0);
   const defaultMs = options?.durationMs ?? 4000;
   const max = options?.max ?? 3;
+  const exitMs = options?.exitMs;
 
   const clearTimer = useCallback((id: number) => {
     const timer = timersRef.current.get(id);
@@ -66,6 +75,26 @@ export function useToast(options?: UseToastOptions): {
       timersRef.current.delete(id);
     }
   }, []);
+
+  // Retire a toast: instantly (default) or via the exiting-flag hold so the
+  // host can play an exit transition (exitMs set).
+  const beginExit = useCallback(
+    (id: number) => {
+      if (exitMs !== undefined && exitMs > 0) {
+        setToasts((list) => markToastExiting(list, id));
+        timersRef.current.set(
+          id,
+          setTimeout(() => {
+            timersRef.current.delete(id);
+            setToasts((list) => removeToast(list, id));
+          }, exitMs),
+        );
+        return;
+      }
+      setToasts((list) => removeToast(list, id));
+    },
+    [exitMs],
+  );
 
   const dismiss = useCallback(
     (id?: number) => {
@@ -76,9 +105,9 @@ export function useToast(options?: UseToastOptions): {
         return;
       }
       clearTimer(id);
-      setToasts((list) => removeToast(list, id));
+      beginExit(id);
     },
-    [clearTimer],
+    [clearTimer, beginExit],
   );
 
   const show = useCallback(
@@ -91,13 +120,13 @@ export function useToast(options?: UseToastOptions): {
           id,
           setTimeout(() => {
             timersRef.current.delete(id);
-            setToasts((list) => removeToast(list, id));
+            beginExit(id);
           }, duration),
         );
       }
       return id;
     },
-    [defaultMs, max],
+    [defaultMs, max, beginExit],
   );
 
   // Clear all pending timers on unmount.
@@ -110,6 +139,25 @@ export function useToast(options?: UseToastOptions): {
   );
 
   return { toasts, show, dismiss };
+}
+
+export interface ToastTransition {
+  /**
+   * Style each toast STARTS at on mount (e.g. { opacity: 0, transform:
+   * 'translateY(-8px)' }); it transitions to the resting style over
+   * durationMs — a slide/fade-in.
+   */
+  mountStyle?: React.CSSProperties;
+  /**
+   * Style an exiting toast transitions TO before unmount. Only plays when
+   * the owning useToast() was given exitMs (which holds the toast in the
+   * list long enough for this to be visible).
+   */
+  unmountStyle?: React.CSSProperties;
+  /** Transition duration in ms. Default 200. */
+  durationMs?: number;
+  /** CSS transition easing. Default 'ease'. */
+  easing?: string;
 }
 
 export interface ToastHostProps {
@@ -130,6 +178,12 @@ export interface ToastHostProps {
   dismissOnClick?: boolean;
   /** Screen-reader urgency. Default 'polite'; housekeeper errors use 'assertive'. */
   ariaLive?: 'polite' | 'assertive';
+  /**
+   * Optional enter/exit animation (slide/fade). Default absent = no
+   * animation, exactly today's rendering. Exit additionally needs
+   * useToast({ exitMs }) so the toast is held while unmountStyle plays.
+   */
+  transition?: ToastTransition;
 }
 
 export function ToastHost({
@@ -143,6 +197,7 @@ export function ToastHost({
   renderIcon,
   dismissOnClick,
   ariaLive = 'polite',
+  transition,
 }: ToastHostProps): React.ReactElement | null {
   if (toasts.length === 0) return null;
   const clickable = dismissOnClick ?? onDismiss !== undefined;
@@ -152,10 +207,12 @@ export function ToastHost({
       {toasts.map((t) => {
         const icon = renderIcon?.(t.tone);
         return (
-          <div
+          <ToastRow
             key={t.id}
+            toast={t}
+            transition={transition}
             role={ariaLive === 'assertive' ? 'alert' : 'status'}
-            aria-live={ariaLive}
+            ariaLive={ariaLive}
             onClick={clickable && onDismiss ? () => onDismiss(t.id) : undefined}
             style={{
               display: 'flex',
@@ -166,12 +223,67 @@ export function ToastHost({
               ...toastStyle,
               ...toneStyles?.[t.tone],
             }}
-          >
-            {icon != null && <span style={{ flexShrink: 0 }}>{icon}</span>}
-            <span style={{ flex: 1 }}>{t.message}</span>
-          </div>
+            icon={icon}
+          />
         );
       })}
+    </div>
+  );
+}
+
+// One rendered toast. Without `transition` this outputs exactly the same
+// element as before (no transition CSS property, no extra styles). With it,
+// the row mounts at mountStyle and transitions to rest (double-rAF so the
+// browser paints the start state first), and transitions to unmountStyle
+// while the item is flagged `exiting` (useToast's exitMs hold).
+function ToastRow({
+  toast,
+  transition,
+  role,
+  ariaLive,
+  onClick,
+  style,
+  icon,
+}: {
+  toast: ToastItem;
+  transition?: ToastTransition;
+  role: string;
+  ariaLive: 'polite' | 'assertive';
+  onClick?: () => void;
+  style: React.CSSProperties;
+  icon: React.ReactNode;
+}): React.ReactElement {
+  const hasEnter = transition?.mountStyle !== undefined;
+  const [entered, setEntered] = useState(!hasEnter);
+  useEffect(() => {
+    if (entered) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setEntered(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [entered]);
+
+  const animStyle: React.CSSProperties = transition
+    ? {
+        transition: `all ${transition.durationMs ?? 200}ms ${transition.easing ?? 'ease'}`,
+        ...(!entered ? transition.mountStyle : null),
+        ...(toast.exiting ? transition.unmountStyle : null),
+      }
+    : {};
+
+  return (
+    <div
+      role={role}
+      aria-live={ariaLive}
+      onClick={onClick}
+      style={{ ...style, ...animStyle }}
+    >
+      {icon != null && <span style={{ flexShrink: 0 }}>{icon}</span>}
+      <span style={{ flex: 1 }}>{toast.message}</span>
     </div>
   );
 }

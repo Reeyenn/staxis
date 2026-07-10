@@ -26,6 +26,7 @@ import {
   modalEnterTransform,
   modalExitTransform,
   modalScrimStyle,
+  modalVariantSlides,
   resolveModalTheme,
   type ModalTheme,
   type ModalVariant,
@@ -39,7 +40,8 @@ const ENTER_EASE = 'cubic-bezier(.22,1.4,.36,1)';
 export interface ModalProps {
   open: boolean;
   onClose: () => void;
-  /** 'center' (default) = centered card; 'sheet' = bottom sheet. */
+  /** 'center' (default) = centered card; 'sheet' = bottom sheet;
+   *  'drawer-right' = full-height right-edge panel (theme.maxWidth = width). */
   variant?: ModalVariant;
   /** true = createPortal to document.body (escapes transform containers). Default false. */
   portal?: boolean;
@@ -47,6 +49,14 @@ export interface ModalProps {
   escToClose?: boolean;
   /** Default true. Pass false to disable click-outside-to-close. */
   scrimClose?: boolean;
+  /** Default true. Pass false to mount/unmount instantly — no WAAPI
+   *  entrance/exit, and no exit-animation hold (unmounts the moment `open`
+   *  flips false). For areas whose current modals appear/disappear with no
+   *  motion. */
+  animated?: boolean;
+  /** Default true (body scroll locked while open). Pass false for overlays
+   *  that must leave the page scrollable behind them. */
+  lockScroll?: boolean;
   /** id of the element that titles this dialog (aria-labelledby). */
   labelledBy?: string;
   theme?: ModalTheme;
@@ -60,6 +70,8 @@ export function Modal({
   portal = false,
   escToClose = true,
   scrimClose = true,
+  animated = true,
+  lockScroll = true,
   labelledBy,
   theme,
   children,
@@ -75,12 +87,17 @@ export function Modal({
   const t = useMemo(() => resolveModalTheme(theme), [theme]);
 
   // Exit: play the fade/settle-out, then unmount after EXIT_MS.
+  // animated=false bypasses the hold entirely — unmount on the same commit.
   useEffect(() => {
     if (open) {
       setRender(true);
       return;
     }
     if (!render) return;
+    if (!animated) {
+      setRender(false);
+      return;
+    }
     scrimRef.current?.animate(
       [{ opacity: 1 }, { opacity: 0 }],
       { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
@@ -88,13 +105,13 @@ export function Modal({
     cardRef.current?.animate(
       [
         { opacity: 1, transform: 'none' },
-        { opacity: variant === 'sheet' ? 1 : 0, transform: modalExitTransform(variant) },
+        { opacity: modalVariantSlides(variant) ? 1 : 0, transform: modalExitTransform(variant) },
       ],
       { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
     );
     const timer = setTimeout(() => setRender(false), EXIT_MS + 30);
     return () => clearTimeout(timer);
-  }, [open, variant, render]);
+  }, [open, variant, render, animated]);
 
   // ESC + body scroll lock while open.
   useEffect(() => {
@@ -105,13 +122,14 @@ export function Modal({
         }
       : null;
     if (onKey) window.addEventListener('keydown', onKey);
+    const locked = lockScroll;
     const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    if (locked) document.body.style.overflow = 'hidden';
     return () => {
       if (onKey) window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
+      if (locked) document.body.style.overflow = prev;
     };
-  }, [open, escToClose, onClose]);
+  }, [open, escToClose, onClose, lockScroll]);
 
   // WAAPI entrance — fill:'none' so the resting state is the element's own
   // visible style (never stuck invisible if the timeline is throttled). Keyed
@@ -128,28 +146,30 @@ export function Modal({
       enterPlayedRef.current = false;
       return;
     }
+    if (!animated) return; // instant mount — resting styles are already visible
     // Refs are null while a portal modal waits for `mounted` — skip WITHOUT
     // marking played so the mounted-flip re-run animates for real.
     if (!scrimRef.current || !cardRef.current) return;
     if (enterPlayedRef.current) return;
     enterPlayedRef.current = true;
+    const slides = modalVariantSlides(variant);
     scrimRef.current.animate(
       [{ opacity: 0 }, { opacity: 1 }],
       { duration: 200, delay: 10, easing: 'ease-out', fill: 'none' },
     );
     cardRef.current.animate(
       [
-        { opacity: variant === 'sheet' ? 1 : 0, transform: modalEnterTransform(variant) },
+        { opacity: slides ? 1 : 0, transform: modalEnterTransform(variant) },
         { opacity: 1, transform: 'none' },
       ],
       {
         duration: ENTER_MS,
         delay: 10,
-        easing: variant === 'sheet' ? 'cubic-bezier(.16,.84,.3,1)' : ENTER_EASE,
+        easing: slides ? 'cubic-bezier(.16,.84,.3,1)' : ENTER_EASE,
         fill: 'none',
       },
     );
-  }, [open, render, mounted, variant]);
+  }, [open, render, mounted, variant, animated]);
 
   if (!render) return null;
   if (portal && !mounted) return null;

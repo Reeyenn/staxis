@@ -21,6 +21,9 @@ export interface ToastItem {
   message: ReactNode;
   /** Free-form tone key ('success', 'error', …) — the host maps it to colors. */
   tone: string;
+  /** True while the toast is playing its exit transition (only ever set when
+   *  useToast is given exitMs; absent otherwise — removal is instant). */
+  exiting?: boolean;
 }
 
 /** Append a toast; when `max` is set, drop the oldest beyond it. */
@@ -34,6 +37,13 @@ export function addToast(list: ToastItem[], item: ToastItem, max?: number): Toas
 
 export function removeToast(list: ToastItem[], id: number): ToastItem[] {
   return list.filter((t) => t.id !== id);
+}
+
+/** Flag a toast as exiting (kept in the list so the host can play its exit
+ *  transition before removeToast). Unknown id / already-exiting = no-op. */
+export function markToastExiting(list: ToastItem[], id: number): ToastItem[] {
+  if (!list.some((t) => t.id === id && !t.exiting)) return list;
+  return list.map((t) => (t.id === id ? { ...t, exiting: true } : t));
 }
 
 /**

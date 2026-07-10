@@ -33,6 +33,7 @@ import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
 import {
   applyOutcome,
   createRequestGate,
+  shouldHoldDataOnSourceChange,
   shouldPollTick,
   type ResourceOutcome,
 } from './api-resource-core';
@@ -59,6 +60,16 @@ export interface UseApiResourceOptions {
    * Default true.
    */
   enabled?: boolean;
+  /**
+   * When true, switching URL/source does NOT blank data or re-show the
+   * loading spinner — the previous resource's last-good data stays visible
+   * until the new fetch resolves (tab switches, filter changes). The
+   * stale-drop guard still applies: a late response for the OLD URL can
+   * never land after the switch. Default false: a URL switch drops the old
+   * data and shows the loading state (property switches must never render
+   * one property's rows under another's spinner).
+   */
+  keepDataOnSourceChange?: boolean;
 }
 
 export interface UseApiResourceResult<T> {
@@ -67,8 +78,13 @@ export interface UseApiResourceResult<T> {
    *  reloads refresh silently — no loading flicker). */
   loading: boolean;
   error: string | null;
-  /** Imperative refetch (e.g. after a mutation elsewhere on the page). */
-  reload: () => void;
+  /**
+   * Imperative refetch (e.g. after a mutation elsewhere on the page).
+   * Awaitable: the promise resolves once the triggered fetch settles (state
+   * updated, or the result was dropped as stale). Never rejects — callers
+   * that ignore the return value keep the old fire-and-forget behavior.
+   */
+  reload: () => Promise<void>;
 }
 
 function isDocumentHidden(): boolean {
@@ -121,7 +137,7 @@ export function useApiResource<T>(
   source: string | ApiFetcher<T>,
   opts: UseApiResourceOptions = {},
 ): UseApiResourceResult<T> {
-  const { pollMs, keepDataOnError = false, enabled = true } = opts;
+  const { pollMs, keepDataOnError = false, enabled = true, keepDataOnSourceChange = false } = opts;
 
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState<boolean>(enabled);
@@ -137,7 +153,12 @@ export function useApiResource<T>(
   keepRef.current = keepDataOnError;
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const keepOnSourceChangeRef = useRef(keepDataOnSourceChange);
+  keepOnSourceChangeRef.current = keepDataOnSourceChange;
   const dataRef = useRef<T | null>(null);
+  // False until the identity effect has run once while enabled — the first
+  // (initial) load must always show the loading state, opt-in or not.
+  const hadIdentityRef = useRef(false);
 
   // String sources are resource identities: switching URL (e.g. property
   // change) drops the old resource's data instead of showing it under the
@@ -181,22 +202,38 @@ export function useApiResource<T>(
 
     if (!enabled) {
       // Cancel anything in flight; clear state so a gated section never
-      // shows another capability's leftovers.
+      // shows another capability's leftovers. Re-enabling later counts as a
+      // fresh first identity (loading state shows again).
       gate.invalidate();
       inFlightRef.current = false;
       dataRef.current = null;
+      hadIdentityRef.current = false;
       setData(null);
       setError(null);
       setLoading(false);
       return;
     }
 
-    // New resource identity (or first mount): drop the previous resource's
-    // data before fetching so it can't render under the new one.
-    dataRef.current = null;
-    setData(null);
-    setError(null);
-    void load('initial');
+    const hold = shouldHoldDataOnSourceChange({
+      keepDataOnSourceChange: keepOnSourceChangeRef.current,
+      isFirstIdentity: !hadIdentityRef.current,
+      hasData: dataRef.current !== null,
+    });
+    hadIdentityRef.current = true;
+
+    if (hold) {
+      // Opt-in silent switch: keep last-good data on screen, no spinner.
+      // The cleanup below already invalidated the old identity's ticket, so
+      // a late response for the previous URL can never land.
+      void load('reload');
+    } else {
+      // Default: new resource identity (or first mount) drops the previous
+      // resource's data before fetching so it can't render under the new one.
+      dataRef.current = null;
+      setData(null);
+      setError(null);
+      void load('initial');
+    }
 
     return () => {
       gate.invalidate();
@@ -225,9 +262,7 @@ export function useApiResource<T>(
     return () => clearInterval(timer);
   }, [enabled, pollMs, sourceKey, load]);
 
-  const reload = useCallback(() => {
-    void load('reload');
-  }, [load]);
+  const reload = useCallback(() => load('reload'), [load]);
 
   return { data, loading, error, reload };
 }

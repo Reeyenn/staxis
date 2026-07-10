@@ -73,7 +73,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
   const afterChange = (focusId?: string) => {
     setNonce((n) => n + 1);
     onChanged();
-    if (focusId) detailRes.reload();
+    if (focusId) void detailRes.reload();
   };
 
   const pending = useMemo(() => projects.filter((p) => CAPEX_PENDING_STATUSES.includes(p.status)), [projects]);

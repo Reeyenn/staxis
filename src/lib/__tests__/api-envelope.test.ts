@@ -120,3 +120,43 @@ describe('readEnvelope — error paths', () => {
     assert.equal(result.error, 'Failed (200)');
   });
 });
+
+describe('readEnvelope — fallbackError parameter', () => {
+  test('replaces the generic Failed (status) when the body has no error string', async () => {
+    const res = new Response('<html>502</html>', { status: 502 });
+    const result = await readEnvelope(res, 'No se pudo cargar / Could not load');
+    assert.equal(result.error, 'No se pudo cargar / Could not load');
+    assert.equal(result.status, 502);
+  });
+
+  test('server-provided error message still wins over the fallback', async () => {
+    const res = jsonResponse({ ok: false, requestId: 'r', error: 'Rate limited' }, 429);
+    const result = await readEnvelope(res, 'Bespoke fallback');
+    assert.equal(result.error, 'Rate limited');
+  });
+
+  test('empty-string error in the body still uses the fallback', async () => {
+    const res = jsonResponse({ ok: false, requestId: 'r', error: '' }, 400);
+    const result = await readEnvelope(res, 'Bespoke fallback');
+    assert.equal(result.error, 'Bespoke fallback');
+  });
+
+  test('empty-string fallback is ignored (never blank UI text)', async () => {
+    const res = new Response('', { status: 500 });
+    const result = await readEnvelope(res, '');
+    assert.equal(result.error, 'Failed (500)');
+  });
+
+  test('does not touch the success path', async () => {
+    const res = jsonResponse({ ok: true, requestId: 'r', data: 7 });
+    const result = await readEnvelope<number>(res, 'Bespoke fallback');
+    assert.equal(result.error, undefined);
+    assert.equal(result.data, 7);
+  });
+
+  test('omitted → default Failed (status) unchanged', async () => {
+    const res = new Response('', { status: 503 });
+    const result = await readEnvelope(res);
+    assert.equal(result.error, 'Failed (503)');
+  });
+});

@@ -60,6 +60,29 @@ export function shouldPollTick(state: {
   return state.enabled && !state.hidden && !state.inFlight;
 }
 
+/**
+ * Whether a resource-identity change (URL switch) should HOLD the previous
+ * data on screen instead of blanking + re-showing the loading spinner.
+ *
+ * Only true when ALL of:
+ *  - the caller opted in (keepDataOnSourceChange) — default behavior stays
+ *    "switching URL drops the old resource's data";
+ *  - this is not the first identity (first mount / re-enable must still show
+ *    the initial loading state);
+ *  - there IS last-good data to hold (holding nothing = a silent blank page,
+ *    worse than the spinner).
+ *
+ * The stale-drop guard is unaffected either way: the old identity's ticket
+ * is invalidated, so a late response for the previous URL never lands.
+ */
+export function shouldHoldDataOnSourceChange(state: {
+  keepDataOnSourceChange: boolean;
+  isFirstIdentity: boolean;
+  hasData: boolean;
+}): boolean {
+  return state.keepDataOnSourceChange && !state.isFirstIdentity && state.hasData;
+}
+
 /** Outcome of one settled request, normalized by the hook. */
 export type ResourceOutcome<T> =
   | { kind: 'success'; data: T }

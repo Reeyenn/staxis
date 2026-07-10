@@ -18,6 +18,7 @@ import {
   modalEnterTransform,
   modalExitTransform,
   modalScrimStyle,
+  modalVariantSlides,
   resolveModalTheme,
 } from '@/app/_components/ui/modal-core';
 
@@ -97,6 +98,18 @@ describe('modalScrimStyle', () => {
     assert.equal(s.alignItems, 'flex-end');
     assert.equal(s.padding, 0);
   });
+
+  test('drawer-right variant right-aligns full-height with zero padding', () => {
+    const s = modalScrimStyle('drawer-right', t);
+    assert.equal(s.justifyContent, 'flex-end');
+    assert.equal(s.alignItems, 'stretch');
+    assert.equal(s.padding, 0);
+  });
+
+  test('center and sheet keep their horizontal centering (unchanged by the new variant)', () => {
+    assert.equal(modalScrimStyle('center', t).justifyContent, 'center');
+    assert.equal(modalScrimStyle('sheet', t).justifyContent, 'center');
+  });
 });
 
 describe('modalCardStyle', () => {
@@ -128,12 +141,26 @@ describe('modalCardStyle', () => {
     assert.equal(s.borderRadius, '18px 18px 0 0');
   });
 
-  test('both variants cap height so long content scrolls inside', () => {
-    for (const variant of ['center', 'sheet'] as const) {
+  test('all variants cap height so long content scrolls inside', () => {
+    for (const variant of ['center', 'sheet', 'drawer-right'] as const) {
       const s = modalCardStyle(variant, t);
       assert.ok(typeof s.maxHeight === 'string' && s.maxHeight.endsWith('vh'));
       assert.equal(s.overflow, 'auto');
     }
+  });
+
+  test('drawer-right card is a full-height panel, theme maxWidth = its width, left corners rounded', () => {
+    const s = modalCardStyle('drawer-right', t);
+    assert.equal(s.width, 'min(100%, 480px)');
+    assert.equal(s.height, '100%');
+    assert.equal(s.borderRadius, '18px 0 0 18px');
+    assert.equal(s.background, '#FFF');
+    assert.equal(s.padding, '24px');
+  });
+
+  test('theme border reaches the drawer-right card too', () => {
+    const bordered = resolveModalTheme({ border: '1px solid #E4E0D5' });
+    assert.equal(modalCardStyle('drawer-right', bordered).border, '1px solid #E4E0D5');
   });
 });
 
@@ -143,8 +170,19 @@ describe('enter/exit transforms', () => {
     assert.equal(modalExitTransform('sheet'), 'translateY(100%)');
   });
 
+  test('drawer-right slides from/to the right edge', () => {
+    assert.equal(modalEnterTransform('drawer-right'), 'translateX(100%)');
+    assert.equal(modalExitTransform('drawer-right'), 'translateX(100%)');
+  });
+
   test('center uses the Overlay-style rise + settle', () => {
     assert.match(modalEnterTransform('center'), /translateY\(.+\) scale\(.+\)/);
     assert.match(modalExitTransform('center'), /translateY\(.+\) scale\(.+\)/);
+  });
+
+  test('slide classification: sheet + drawer-right slide (opacity 1), center fades', () => {
+    assert.equal(modalVariantSlides('sheet'), true);
+    assert.equal(modalVariantSlides('drawer-right'), true);
+    assert.equal(modalVariantSlides('center'), false);
   });
 });
