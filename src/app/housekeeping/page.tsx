@@ -76,7 +76,7 @@ export default function HousekeepingPage() {
       <AppLayout>
         <div style={{
           minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: T.bg, fontFamily: FONT_SANS,
+          background: 'transparent', fontFamily: FONT_SANS,
         }}>
           <div className="animate-spin" style={{
             width: '28px', height: '28px',
@@ -90,12 +90,14 @@ export default function HousekeepingPage() {
   return (
     <AppLayout>
       {/* ── Snow sub-tab bar ──
-          Sticky directly under the global Header (64px). White background,
-          1px hairline rule on the bottom, 1.5px ink underline on the active
-          tab — matches the design's SubTabBar from hk-shared.jsx. */}
+          Sticky just below the floating pill bar. Frosted (not solid white)
+          so it sits on the Concourse page wash without a color seam; 1px
+          hairline rule on the bottom, 1.5px ink underline on the active tab. */}
       <div style={{
         padding: '18px 48px 0',
-        background: T.bg,
+        background: 'rgba(255,255,255,.72)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
         borderBottom: `1px solid ${T.rule}`,
         position: 'sticky', top: 64, zIndex: 10,
       }}>

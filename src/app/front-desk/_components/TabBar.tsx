@@ -37,7 +37,9 @@ export function FrontDeskTabBar({
     <div
       style={{
         padding: '18px 48px 0',
-        background: T.bg,
+        background: 'rgba(255,255,255,.72)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
         borderBottom: `1px solid ${T.rule}`,
         position: 'sticky',
         top: 64,
