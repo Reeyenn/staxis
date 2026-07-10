@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
+import { currentMonthLabel, shortMonthFromYmd } from '@/lib/format-date';
 import { T, fonts, statusColor } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
@@ -12,7 +13,7 @@ import { Sparkline } from '../Sparkline';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import type { DisplayItem } from '../types';
-import { dateLocale, type Lang } from '../inv-i18n';
+import { type Lang } from '../inv-i18n';
 
 interface ReportsPanelProps {
   lang: Lang;
@@ -396,13 +397,3 @@ function MonthlyChart({ ytd, loading, rp, lang }: { ytd: YtdRow[]; loading: bool
   );
 }
 
-function currentMonthLabel(lang: Lang): string {
-  return new Date().toLocaleDateString(dateLocale(lang), { month: 'long' });
-}
-
-function shortMonthFromYmd(s: string, lang: Lang): string {
-  // s is "YYYY-MM-01" or similar — pull the month index and format.
-  const m = Number(s.slice(5, 7));
-  if (!Number.isFinite(m)) return '—';
-  return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString(dateLocale(lang), { month: 'short' });
-}

@@ -27,8 +27,9 @@ import { Btn } from '../Btn';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { Overlay } from './Overlay';
+import { numGuard } from './form-kit';
 import type { DisplayItem } from '../types';
-import { t, catLabelFor, type Lang } from '../inv-i18n';
+import { catLabelFor, type Lang } from '../inv-i18n';
 
 interface CountSheetProps {
   lang: Lang;
@@ -467,10 +468,9 @@ function CountRow({
             min="0"
             inputMode="decimal"
             value={entry.value}
-            // Reject anything that isn't empty or a non-negative decimal in progress.
-            // Blocks "-5", "abc", "NaN", scientific notation at type-time so the
-            // count we save can't be a negative or non-finite number.
-            onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) onChange(v); }}
+            // numGuard blocks "-5", "abc", "NaN", scientific notation at
+            // type-time so the count we save can't be negative or non-finite.
+            onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
             placeholder="—"
             style={{
               width: '100%',

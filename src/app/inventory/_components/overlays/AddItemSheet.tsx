@@ -16,6 +16,7 @@ import { T, fonts, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
+import { numGuard, intGuard, inputLg as inputStyle } from './form-kit';
 import { apiListVendors } from '../ordering-api';
 import { catLabelFor, type Lang } from '../inv-i18n';
 
@@ -362,9 +363,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               min="0"
               inputMode="decimal"
               value={currentStock}
-              // Reject anything that isn't empty or a non-negative decimal in progress.
-              // Blocks "-5", "abc", "1e10" at type-time so the saved value can't be junk.
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCurrentStock(v); }}
+              // numGuard blocks "-5", "abc", "1e10" at type-time so the saved
+              // value can't be junk.
+              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setCurrentStock(v); }}
               style={inputStyle}
             />
           </Field>
@@ -374,7 +375,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               min="0"
               inputMode="decimal"
               value={parLevel}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setParLevel(v); }}
+              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setParLevel(v); }}
               style={inputStyle}
             />
           </Field>
@@ -397,7 +398,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               step="0.01"
               inputMode="decimal"
               value={unitCost}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setUnitCost(v); }}
+              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setUnitCost(v); }}
               placeholder="0.00"
               style={inputStyle}
             />
@@ -436,7 +437,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               min="0"
               inputMode="numeric"
               value={leadDays}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setLeadDays(v); }}
+              onChange={(e) => { const v = e.target.value; if (intGuard(v)) setLeadDays(v); }}
               style={inputStyle}
             />
           </Field>
@@ -485,7 +486,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
                   min="0"
                   inputMode="decimal"
                   value={woQty}
-                  onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) { setWoQty(v); setWoDone(false); } }}
+                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) { setWoQty(v); setWoDone(false); } }}
                   placeholder="0"
                   style={inputStyle}
                 />
@@ -544,17 +545,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </div>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  height: 40,
-  padding: '0 14px',
-  borderRadius: 10,
-  boxSizing: 'border-box',
-  background: T.bg,
-  border: `1px solid ${T.rule}`,
-  fontFamily: fonts.sans,
-  fontSize: 14,
-  color: T.ink,
-  outline: 'none',
-};

@@ -8,6 +8,7 @@ import type { OrderStatus, OrderingMode, PurchaseOrder, SpendRollup } from '@/li
 import { T, fonts, statusColor } from '../tokens';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
+import { banner } from './form-kit';
 import { fmtMoney } from '../format';
 import {
   apiApproveOrder,
@@ -49,6 +50,85 @@ function statusMeta(s: OrderStatus, lang: 'en' | 'es'): { label: string; color: 
   return { label: L[s][lang], color: L[s].color };
 }
 
+// Co-located strings for the orders panel — same factory convention as the
+// other overlays (ssStrings / csStrings / rpStrings…).
+function opStrings(lang: 'en' | 'es') {
+  return {
+    en: {
+      eyebrow: 'Purchase orders',
+      loading: 'Loading orders…',
+      empty: 'No orders yet. Place one from the Reorder list.',
+      done: 'Done',
+      send: 'Send to vendor',
+      sendEmail: 'Email order',
+      resend: 'Resend',
+      approve: 'Approve',
+      receive: 'Receive',
+      receiveFull: 'Receive in full',
+      confirmReceive: 'Confirm received',
+      cancel: 'Cancel',
+      vendor: 'Vendor',
+      noEmail: 'No vendor email — type one to send:',
+      emailPlaceholder: 'vendor@example.com',
+      ordered: 'Ordered',
+      received: 'Received',
+      receivedTotal: 'Received total',
+      short: 'Short delivery',
+      lines: 'items',
+      sentTo: 'sent to',
+      ordersTab: 'Orders',
+      spendTab: 'Cross-property spend',
+      total: 'Total',
+      byProperty: 'By property',
+      byVendor: 'By vendor',
+      byCategory: 'By category',
+      noSpend: 'No spend recorded in this window.',
+      spendLoading: 'Loading spend…',
+      last30: '30 days',
+      last90: '90 days',
+      last365: '12 months',
+      order: 'order',
+      orders: 'orders',
+    },
+    es: {
+      eyebrow: 'Órdenes de compra',
+      loading: 'Cargando órdenes…',
+      empty: 'Aún no hay órdenes. Crea una desde la lista de reorden.',
+      done: 'Listo',
+      send: 'Enviar al proveedor',
+      sendEmail: 'Enviar por correo',
+      resend: 'Reenviar',
+      approve: 'Aprobar',
+      receive: 'Recibir',
+      receiveFull: 'Recibir completo',
+      confirmReceive: 'Confirmar recibido',
+      cancel: 'Cancelar',
+      vendor: 'Proveedor',
+      noEmail: 'Sin correo del proveedor — escribe uno para enviar:',
+      emailPlaceholder: 'proveedor@ejemplo.com',
+      ordered: 'Pedido',
+      received: 'Recibido',
+      receivedTotal: 'Total recibido',
+      short: 'Entrega incompleta',
+      lines: 'artículos',
+      sentTo: 'enviada a',
+      ordersTab: 'Órdenes',
+      spendTab: 'Gasto entre propiedades',
+      total: 'Total',
+      byProperty: 'Por propiedad',
+      byVendor: 'Por proveedor',
+      byCategory: 'Por categoría',
+      noSpend: 'Sin gastos registrados en este período.',
+      spendLoading: 'Cargando gasto…',
+      last30: '30 días',
+      last90: '90 días',
+      last365: '12 meses',
+      order: 'orden',
+      orders: 'órdenes',
+    },
+  }[lang];
+}
+
 export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged }: OrdersPanelProps) {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
@@ -72,45 +152,7 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
   const [emailFor, setEmailFor] = useState<string | null>(null);
   const [emailDraft, setEmailDraft] = useState('');
 
-  const tt = useMemo(
-    () => ({
-      eyebrow: { en: 'Purchase orders', es: 'Órdenes de compra' }[L],
-      loading: { en: 'Loading orders…', es: 'Cargando órdenes…' }[L],
-      empty: { en: 'No orders yet. Place one from the Reorder list.', es: 'Aún no hay órdenes. Crea una desde la lista de reorden.' }[L],
-      done: { en: 'Done', es: 'Listo' }[L],
-      send: { en: 'Send to vendor', es: 'Enviar al proveedor' }[L],
-      sendEmail: { en: 'Email order', es: 'Enviar por correo' }[L],
-      resend: { en: 'Resend', es: 'Reenviar' }[L],
-      approve: { en: 'Approve', es: 'Aprobar' }[L],
-      receive: { en: 'Receive', es: 'Recibir' }[L],
-      receiveFull: { en: 'Receive in full', es: 'Recibir completo' }[L],
-      confirmReceive: { en: 'Confirm received', es: 'Confirmar recibido' }[L],
-      cancel: { en: 'Cancel', es: 'Cancelar' }[L],
-      vendor: { en: 'Vendor', es: 'Proveedor' }[L],
-      noEmail: { en: 'No vendor email — type one to send:', es: 'Sin correo del proveedor — escribe uno para enviar:' }[L],
-      emailPlaceholder: { en: 'vendor@example.com', es: 'proveedor@ejemplo.com' }[L],
-      ordered: { en: 'Ordered', es: 'Pedido' }[L],
-      received: { en: 'Received', es: 'Recibido' }[L],
-      receivedTotal: { en: 'Received total', es: 'Total recibido' }[L],
-      short: { en: 'Short delivery', es: 'Entrega incompleta' }[L],
-      lines: { en: 'items', es: 'artículos' }[L],
-      sentTo: { en: 'sent to', es: 'enviada a' }[L],
-      ordersTab: { en: 'Orders', es: 'Órdenes' }[L],
-      spendTab: { en: 'Cross-property spend', es: 'Gasto entre propiedades' }[L],
-      total: { en: 'Total', es: 'Total' }[L],
-      byProperty: { en: 'By property', es: 'Por propiedad' }[L],
-      byVendor: { en: 'By vendor', es: 'Por proveedor' }[L],
-      byCategory: { en: 'By category', es: 'Por categoría' }[L],
-      noSpend: { en: 'No spend recorded in this window.', es: 'Sin gastos registrados en este período.' }[L],
-      spendLoading: { en: 'Loading spend…', es: 'Cargando gasto…' }[L],
-      last30: { en: '30 days', es: '30 días' }[L],
-      last90: { en: '90 days', es: '90 días' }[L],
-      last365: { en: '12 months', es: '12 meses' }[L],
-      order: { en: 'order', es: 'orden' }[L],
-      orders: { en: 'orders', es: 'órdenes' }[L],
-    }),
-    [L],
-  );
+  const tt = useMemo(() => opStrings(L), [L]);
 
   const load = useCallback(async () => {
     if (!activePropertyId) return;
@@ -521,16 +563,3 @@ const emptyBox: React.CSSProperties = {
   color: T.ink2,
   fontStyle: 'italic',
 };
-
-function banner(color: string): React.CSSProperties {
-  return {
-    background: T.paper,
-    border: `1px solid ${color}`,
-    borderLeft: `3px solid ${color}`,
-    borderRadius: 10,
-    padding: '10px 14px',
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    color: T.ink,
-  };
-}

@@ -120,39 +120,49 @@ export function InventoryShell() {
     return () => unsub();
   }, [user, activePropertyId]);
 
+  // ONE assembly of the board's data fetch — shared by the initial-load effect
+  // and refreshData so the two query sets can never drift apart.
+  // Manual page: fetch occupancy + daily averages (needed for the rule-based
+  // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
+  // no auto-fill map, no ai-status/ai-mode call.
+  const fetchBoardData = useCallback(async (uid: string, pid: string) => {
+    const monthStart = startOfMonth(new Date());
+    const monthEnd = startOfMonth(addMonths(new Date(), 1));
+    const [occ, avg, ct, od, bd, spend] = await Promise.all([
+      fetchOccupancyBundle(pid, daysAgo(14)),
+      fetchDailyAverages(pid, 14),
+      listInventoryCounts(uid, pid, 200),
+      listInventoryOrders(uid, pid, 200),
+      // Budget + spend are money — only fetch them for the money capability
+      // so the dollar figures never reach a line-staff browser.
+      canViewFinancials
+        ? listInventoryBudgets(uid, pid)
+        : Promise.resolve([] as InventoryBudget[]),
+      canViewFinancials
+        ? monthToDateSpendByCategory(uid, pid, monthStart, monthEnd)
+        : Promise.resolve({} as Record<string, number>),
+    ]);
+    return { occ, avg, ct, od, bd, spend };
+  }, [canViewFinancials]);
+
+  const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
+    setOccupancy(d.occ);
+    setAverages(d.avg);
+    setCounts(d.ct);
+    setOrders(d.od);
+    setBudgets(d.bd);
+    setSpendByCat(d.spend as Record<string, number>);
+  }, []);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
     let cancelled = false;
 
     void (async () => {
       try {
-        // Manual page: fetch occupancy + daily averages (needed for the
-        // rule-based days-left) + counts/orders/budgets/spend only. No ML
-        // predicted-rate fetch, no auto-fill map, no ai-status/ai-mode call.
-        const monthStart = startOfMonth(new Date());
-        const monthEnd = startOfMonth(addMonths(new Date(), 1));
-        const [occ, avg, ct, od, bd, spend] =
-          await Promise.all([
-            fetchOccupancyBundle(activePropertyId, daysAgo(14)),
-            fetchDailyAverages(activePropertyId, 14),
-            listInventoryCounts(user.uid, activePropertyId, 200),
-            listInventoryOrders(user.uid, activePropertyId, 200),
-            // Budget + spend are money — only fetch them for the money capability
-            // so the dollar figures never reach a line-staff browser.
-            canViewFinancials
-              ? listInventoryBudgets(user.uid, activePropertyId)
-              : Promise.resolve([] as InventoryBudget[]),
-            canViewFinancials
-              ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
-              : Promise.resolve({} as Record<string, number>),
-          ]);
+        const d = await fetchBoardData(user.uid, activePropertyId);
         if (cancelled) return;
-        setOccupancy(occ);
-        setAverages(avg);
-        setCounts(ct);
-        setOrders(od);
-        setBudgets(bd);
-        setSpendByCat(spend as Record<string, number>);
+        applyBoardData(d);
       } catch (err) {
         console.error('[inventory] data load failed', err);
       }
@@ -161,7 +171,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [user, activePropertyId, canViewFinancials]);
+  }, [user, activePropertyId, fetchBoardData, applyBoardData]);
 
   // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
   useEffect(() => {
@@ -285,30 +295,11 @@ export function InventoryShell() {
   const refreshData = useCallback(async () => {
     if (!user || !activePropertyId) return;
     try {
-      const monthStart = startOfMonth(new Date());
-      const monthEnd = startOfMonth(addMonths(new Date(), 1));
-      const [ct, od, bd, spend, occ, avg] = await Promise.all([
-        listInventoryCounts(user.uid, activePropertyId, 200),
-        listInventoryOrders(user.uid, activePropertyId, 200),
-        canViewFinancials
-          ? listInventoryBudgets(user.uid, activePropertyId)
-          : Promise.resolve([] as InventoryBudget[]),
-        canViewFinancials
-          ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
-          : Promise.resolve({} as Record<string, number>),
-        fetchOccupancyBundle(activePropertyId, daysAgo(14)),
-        fetchDailyAverages(activePropertyId, 14),
-      ]);
-      setCounts(ct);
-      setOrders(od);
-      setBudgets(bd);
-      setSpendByCat(spend as Record<string, number>);
-      setOccupancy(occ);
-      setAverages(avg);
+      applyBoardData(await fetchBoardData(user.uid, activePropertyId));
     } catch (err) {
       console.error('[inventory] refresh failed', err);
     }
-  }, [user, activePropertyId, canViewFinancials]);
+  }, [user, activePropertyId, fetchBoardData, applyBoardData]);
 
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
   // cascade. Keyed on readiness (not mount) — on a hard page load the shell

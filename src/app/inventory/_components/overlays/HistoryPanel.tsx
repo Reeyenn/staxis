@@ -2,10 +2,11 @@
 
 import React, { useMemo } from 'react';
 import type { InventoryCount, InventoryOrder } from '@/types';
+import { shortDateFromDate } from '@/lib/format-date';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
-import { dateLocale, type Lang } from '../inv-i18n';
+import { type Lang } from '../inv-i18n';
 
 interface HistoryPanelProps {
   lang: Lang;
@@ -172,7 +173,7 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
                     letterSpacing: '-0.01em',
                   }}
                 >
-                  {shortDate(row.date, lang)}
+                  {shortDateFromDate(row.date, lang)}
                 </span>
                 <span
                   style={{
@@ -237,8 +238,4 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
       </div>
     </Overlay>
   );
-}
-
-function shortDate(d: Date, lang: Lang): string {
-  return d.toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric' });
 }
