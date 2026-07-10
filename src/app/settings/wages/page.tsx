@@ -14,8 +14,7 @@ export const dynamic = 'force-dynamic';
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { LABOR_ROLE_DEPARTMENTS, MAX_HOURLY_WAGE_CENTS, type LaborRole } from '@/lib/labor-cost';
@@ -28,14 +27,13 @@ import {
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, Card } from '@/app/staff/_components/_tokens';
 
 export default function WagesSettingsPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
   // Sensitive pay data — gated by view_wages (default: every role; an admin can
   // switch a role OFF per hotel from the Access tab).
-  if (!user || !can('view_wages')) {
+  if (!uid || !can('view_wages')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
@@ -45,7 +43,7 @@ export default function WagesSettingsPage() {
     );
   }
 
-  return <AppLayout><WagesBody pid={activePropertyId ?? ''} lang={lang} /></AppLayout>;
+  return <AppLayout><WagesBody pid={pid ?? ''} lang={lang} /></AppLayout>;
 }
 
 /** cents → an editable dollar string ('' when unset). */

@@ -11,8 +11,7 @@ export const dynamic = 'force-dynamic';
 // pages (e.g. settings/shifts) rather than the giant translations.ts map.
 
 import React, { useEffect, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
@@ -42,14 +41,13 @@ const TYPE_META: Record<EditableCleaningType, { en: string; es: string; enHint: 
 };
 
 export default function CleanTimesPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
   // Gated by per-hotel manage_clean_times (default: every role; admin can
   // switch a role OFF per hotel from the Access tab).
-  if (!user || !can('manage_clean_times')) {
+  if (!uid || !can('manage_clean_times')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
@@ -59,7 +57,7 @@ export default function CleanTimesPage() {
     );
   }
 
-  return <AppLayout><CleanTimesBody pid={activePropertyId ?? ''} lang={lang} /></AppLayout>;
+  return <AppLayout><CleanTimesBody pid={pid ?? ''} lang={lang} /></AppLayout>;
 }
 
 function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {

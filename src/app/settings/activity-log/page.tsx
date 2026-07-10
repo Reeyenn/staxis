@@ -14,11 +14,11 @@ import Link from 'next/link';
 import { ChevronLeft, Download, Filter, Search, X } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { exportBlob, filenameFromDisposition } from '@/lib/export-blob';
 import { T, fonts, Btn, Caps, Pill } from '@/app/staff/_components/_tokens';
 import {
   ACTIVITY_CATEGORIES,
@@ -64,12 +64,11 @@ function rangeFor(key: DateRangeKey, customFrom?: string, customTo?: string): Ra
 const PAGE_SIZE = 50;
 
 export default function ActivityLogPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
-  if (!user) {
+  if (!uid) {
     return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
   }
   if (!can('view_activity_log')) {
@@ -94,7 +93,7 @@ export default function ActivityLogPage() {
 
   return (
     <AppLayout>
-      <ActivityLogBody pid={activePropertyId ?? ''} lang={lang}/>
+      <ActivityLogBody pid={pid ?? ''} lang={lang}/>
     </AppLayout>
   );
 }
@@ -187,15 +186,11 @@ function ActivityLogBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         setError(body?.error ?? `Export failed (${r.status})`);
         return;
       }
-      const blob = await r.blob();
-      const disposition = r.headers.get('Content-Disposition') ?? '';
-      const m = /filename="([^"]+)"/.exec(disposition);
-      const filename = m?.[1] ?? `activity-log.${format === 'xlsx' ? 'xls' : format}`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 250);
+      const fallback = `activity-log.${format === 'xlsx' ? 'xls' : format}`;
+      exportBlob(
+        filenameFromDisposition(r.headers.get('Content-Disposition')) ?? fallback,
+        await r.blob(),
+      );
     } catch (e) {
       setError((e as Error)?.message ?? 'Export failed');
     }

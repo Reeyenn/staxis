@@ -11,8 +11,7 @@ export const dynamic = 'force-dynamic';
 // scheduled_shifts.preset_id but doesn't remove the shift).
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
@@ -45,17 +44,16 @@ const DEFAULT_TEMPLATES: Omit<DraftPreset, 'localId' | 'sortOrder'>[] = [
 ];
 
 export default function ShiftPresetsPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
   // Gated by per-hotel manage_shifts (default: every role; admin can restrict).
-  if (!user || !can('manage_shifts')) {
+  if (!uid || !can('manage_shifts')) {
     return <AppLayout><div style={{ padding: 24 }}>Manager access only.</div></AppLayout>;
   }
 
-  return <AppLayout><ShiftPresetsBody pid={activePropertyId ?? ''} lang={lang}/></AppLayout>;
+  return <AppLayout><ShiftPresetsBody pid={pid ?? ''} lang={lang}/></AppLayout>;
 }
 
 function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
