@@ -8,14 +8,16 @@
 // (same posture as LogBookCard / MemoryRecapCard). Reads go through
 // /api/knowledge/events (service-role behind a session + property access).
 
-import React, { useEffect, useState } from 'react';
+import React, { useMemo } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
-import { fetchWithAuth } from '@/lib/api-fetch';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
+import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { GlassCard } from './GlassCard';
+import { CARD, CARD_MONO, CARD_LABEL } from './palette';
 
 interface CalEvent {
   id: string;
@@ -23,25 +25,6 @@ interface CalEvent {
   eventDate: string;      // YYYY-MM-DD
   endDate: string | null; // YYYY-MM-DD or null (single-day)
 }
-
-const C = {
-  ink: '#15191A',
-  ink2: '#586056',
-  ink3: '#9CA29C',
-  rule: 'rgba(15,20,17,0.07)',
-  green: '#2F7A51',
-} as const;
-
-const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
-
-const LABEL: React.CSSProperties = {
-  fontFamily: FONT_MONO,
-  fontSize: 10,
-  letterSpacing: '0.18em',
-  textTransform: 'uppercase',
-  color: C.ink3,
-  fontWeight: 600,
-};
 
 // Format a date range the same way the Calendar tab does (weekday · month · day).
 function fmtRange(start: string, end: string | null, es: boolean): string {
@@ -62,68 +45,45 @@ export function CalendarCard() {
   // Upcoming events live under Communications — hide this embed when that
   // section is off for the hotel (default-ON while loading).
   const commsEnabled = useSectionEnabled('communications');
-  const [events, setEvents] = useState<CalEvent[]>([]);
-  const [loaded, setLoaded] = useState(false);
 
   const es = lang === 'es';
   // Management OR front desk — same gate as the Log Book card.
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
-  useEffect(() => {
-    // Communications-owned embed: don't even fetch when the section is off.
-    if (!canSee || !activePropertyId || !commsEnabled) return;
-    let alive = true;
-    setLoaded(false);
-    // Clear any prior property's events up-front so a slow OR failed reload can
-    // never flash the wrong hotel's calendar after a property switch.
-    setEvents([]);
-    fetchWithAuth(`/api/knowledge/events?pid=${encodeURIComponent(activePropertyId)}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (!alive) return;
-        const list = (j?.ok ? (j.data?.events as CalEvent[] | undefined) : undefined) ?? [];
-        // The route returns events ascending by start date. Keep only those that
-        // haven't finished yet (today inclusive) and take the soonest few.
-        const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD local
-        const upcoming = list
-          .filter((e) => (e.endDate ?? e.eventDate) >= todayStr)
-          .slice(0, 4);
-        setEvents(upcoming);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (alive) setLoaded(true);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [canSee, activePropertyId, commsEnabled]);
+  // Communications-owned embed: `enabled` gates the FETCH, not just the
+  // render — nothing hits the wire when the section is off. The hook drops
+  // the prior property's data on switch, so a slow OR failed reload can
+  // never flash the wrong hotel's calendar.
+  const { data, loading } = useApiResource<{ events: CalEvent[] }>(
+    `/api/knowledge/events?pid=${encodeURIComponent(activePropertyId ?? '')}`,
+    { enabled: canSee && !!activePropertyId && commsEnabled },
+  );
+
+  // The route returns events ascending by start date. Keep only those that
+  // haven't finished yet (today inclusive) and take the soonest few.
+  // Memoized on data so "today" is pinned at fetch time, as before.
+  const events = useMemo(() => {
+    const list = data?.events ?? [];
+    const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD local
+    return list.filter((e) => (e.endDate ?? e.eventDate) >= todayStr).slice(0, 4);
+  }, [data]);
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;
   // Additive-only: nothing to show until there's at least one upcoming event.
-  if (!loaded || events.length === 0) return null;
+  if (loading || events.length === 0) return null;
 
   return (
-    <div
-      style={{
-        background: 'rgba(255,255,255,0.78)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255,255,255,0.75)',
-        borderRadius: 16,
-        padding: '18px 20px',
-      }}
-    >
+    <GlassCard>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <div style={LABEL}>{es ? 'Próximos eventos' : 'Upcoming events'}</div>
+        <div style={CARD_LABEL}>{es ? 'Próximos eventos' : 'Upcoming events'}</div>
         <Link
           href="/communications?view=calendar"
           style={{
-            fontFamily: FONT_MONO,
+            fontFamily: CARD_MONO,
             fontSize: 11,
             letterSpacing: '0.1em',
             textTransform: 'uppercase',
-            color: C.green,
+            color: CARD.green,
             textDecoration: 'none',
             fontWeight: 600,
           }}
@@ -143,21 +103,21 @@ export function CalendarCard() {
               justifyContent: 'space-between',
               gap: 12,
               padding: '9px 0',
-              borderTop: i === 0 ? 'none' : `1px solid ${C.rule}`,
+              borderTop: i === 0 ? 'none' : `1px solid ${CARD.rule}`,
               textDecoration: 'none',
             }}
           >
             <span style={{ minWidth: 0 }}>
-              <span style={{ display: 'block', fontSize: 13.5, color: C.ink, lineHeight: 1.4, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ display: 'block', fontSize: 13.5, color: CARD.ink, lineHeight: 1.4, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {e.title}
               </span>
-              <span style={{ display: 'block', fontSize: 11.5, color: C.ink3, marginTop: 2 }}>
+              <span style={{ display: 'block', fontSize: 11.5, color: CARD.ink3, marginTop: 2 }}>
                 {fmtRange(e.eventDate, e.endDate, es)}
               </span>
             </span>
           </Link>
         ))}
       </div>
-    </div>
+    </GlassCard>
   );
 }

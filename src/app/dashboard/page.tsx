@@ -29,6 +29,10 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { C, SERIF, SANS, MONO, LABEL, RING, STATUS_EN, STATUS_ES, type RingKey } from './_components/palette';
+import { RoomRing, type RingTick } from './_components/RoomRing';
+import { MetricChart } from './_components/MetricChart';
+import { Sparkline } from './_components/Sparkline';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
 import { WorklistCard } from './_components/WorklistCard';
 import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
@@ -51,58 +55,12 @@ import type { FeedKey } from '@/lib/pms/feed-status';
 import type { Room, WorkOrder } from '@/types';
 import {
   RANGES, METRIC_DEFS, buildHistory, seriesFor,
-  fmtMoney, fmtCompact, fmtVal, smoothPath,
-  type TodayMetricKey, type HistRow, type SeriesPoint,
+  fmtMoney, fmtCompact, fmtVal,
+  type TodayMetricKey, type HistRow,
 } from '@/lib/dashboard/today-series';
 
-// ─── palette (design colors, on our kept #F8F8F5 background) ──────────
-const C = {
-  paper:  '#FFFFFF',   // white — every other page renders a white surface
-  paper2: '#F1F2F4',   // subtle light-gray fill for the active KPI / pill (shows on white)
-  card:   '#FFFFFF',
-  ink:    '#20251F',
-  ink2:   '#4A5249',
-  ink3:   '#8A9187',
-  ink4:   '#B4B9AE',
-  green:  '#356B4C',
-  greenL: '#5C8E6F',
-  sage:   '#9DB8A6',
-  rust:   '#BC5E37',
-  rustD:  '#9A4A29',
-  rustBg: '#F4E2D6',
-  gold:   '#C09A3C',
-  line:   'rgba(32,37,31,0.10)',
-  line2:  'rgba(32,37,31,0.16)',
-} as const;
-
-const SERIF = 'var(--font-fraunces), Georgia, "Times New Roman", serif';
-const SANS  = 'var(--font-geist), system-ui, -apple-system, sans-serif';
-const MONO  = 'var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace';
-
-type RingKey = 'occupied' | 'departing' | 'arriving' | 'clean' | 'dirty' | 'inprog' | 'ooo' | 'none';
-
-const RING: Record<RingKey, string> = {
-  occupied: '#356B4C', departing: '#C79A3C', arriving: '#6FA384',
-  clean: '#CBDBCF', dirty: '#C2704E', inprog: '#9DB8A6', ooo: '#B4B9AE', none: '#E2E5DE',
-};
-const STATUS_EN: Record<RingKey, string> = {
-  occupied: 'Occupied', departing: 'Departing', arriving: 'Arriving soon',
-  clean: 'Clean / ready', dirty: 'Dirty', inprog: 'Being cleaned', ooo: 'Out of order', none: 'No data yet',
-};
-const STATUS_ES: Record<RingKey, string> = {
-  occupied: 'Ocupada', departing: 'Saliendo', arriving: 'Por llegar',
-  clean: 'Limpia / lista', dirty: 'Sucia', inprog: 'En limpieza', ooo: 'Fuera de servicio', none: 'Sin datos',
-};
-
-// One tick = one specific room. `idx` is a stable unique identity so hover
-// highlights only the room under the cursor (matching on room number would
-// pop out every room that shares it).
-type RingTick = { idx: number; num: string; status: RingKey };
-
-const LABEL: React.CSSProperties = {
-  fontFamily: SANS, textTransform: 'uppercase', letterSpacing: '0.14em',
-  fontWeight: 600, fontSize: 11, color: C.ink3,
-};
+// Palette / fonts / ring status maps live in ./_components/palette.ts;
+// RoomRing, MetricChart and Sparkline are pure moves into their own files.
 
 // ─── tween a row of numbers smoothly toward target (scrub / playback) ──
 function useTweenRow(target: Record<string, number>): Record<string, number> {
@@ -144,19 +102,6 @@ function useTweenRow(target: Record<string, number>): Record<string, number> {
   return disp;
 }
 
-// ─── Sparkline ────────────────────────────────────────────────────────
-function Sparkline({ data, w = 56, h = 16, stroke = C.green }: { data: number[]; w?: number; h?: number; stroke?: string }) {
-  if (!data.length) return null;
-  const min = Math.min(...data), max = Math.max(...data), rng = max - min || 1;
-  const pts: [number, number][] = data.map((v, i) => [(i / (data.length - 1 || 1)) * w, h - ((v - min) / rng) * (h - 2) - 1]);
-  return (
-    <svg width={w} height={h} style={{ display: 'block', overflow: 'visible' }}>
-      <path d={smoothPath(pts)} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r={2} fill={stroke} />
-    </svg>
-  );
-}
-
 // ─── Delta badge ──────────────────────────────────────────────────────
 function Delta({ v, size = 12 }: { v: number; size?: number }) {
   const up = v >= 0;
@@ -170,125 +115,6 @@ function Delta({ v, size = 12 }: { v: number; size?: number }) {
     </span>
   );
 }
-
-// ─── Room ring ────────────────────────────────────────────────────────
-const RoomRing = React.memo(function RoomRing({ rooms, onHover, hovered }: {
-  rooms: RingTick[];
-  onHover: (r: RingTick | null) => void;
-  hovered: RingTick | null;
-}) {
-  const size = 300, cx = size / 2, cy = size / 2, rOut = 140, rIn = 112;
-  const n = rooms.length || 1;
-  return (
-    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ display: 'block', overflow: 'visible' }}>
-      {rooms.map((r, i) => {
-        const a = (-90 + (i + 0.5) / n * 360) * Math.PI / 180;
-        const isH = hovered != null && hovered.idx === r.idx;
-        const ri = isH ? rIn - 5 : rIn, ro = isH ? rOut + 6 : rOut;
-        return (
-          <line key={r.idx}
-            x1={cx + Math.cos(a) * ri} y1={cy + Math.sin(a) * ri}
-            x2={cx + Math.cos(a) * ro} y2={cy + Math.sin(a) * ro}
-            stroke={RING[r.status]} strokeWidth={isH ? 9 : 6} strokeLinecap="round"
-            onMouseEnter={() => onHover(r)} onMouseLeave={() => onHover(null)}
-            style={{ cursor: 'pointer', transition: 'stroke-width .12s' }} />
-        );
-      })}
-    </svg>
-  );
-});
-
-// ─── metric chart (draw-in line/area, hover-scrub, today + playhead) ──
-const MetricChart = React.memo(function MetricChart({ series, color, onHover, marker }: {
-  series: SeriesPoint[];
-  color: string;
-  onHover: (i: number | null) => void;
-  marker: number | null;
-}) {
-  const ref = useRef<SVGSVGElement>(null);
-  const pathRef = useRef<SVGPathElement>(null);
-  const [hi, setHi] = useState<number | null>(null);
-  // Measure the real rendered width so the chart fills the full container
-  // (a fixed viewBox would scale-to-fit and leave white space on the sides).
-  const [w, setW] = useState(1100);
-  const h = 236, pad = { t: 26, r: 10, b: 26, l: 10 };
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const measure = () => { const x = el.getBoundingClientRect().width; if (x > 0) setW(Math.round(x)); };
-    measure();
-    const obs = new ResizeObserver(measure);
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-  const vals = series.map(d => d.v);
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const lo = min - (max - min) * 0.16 - 0.001, span = (max - lo) * 1.16 || 1;
-  const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
-  const X = (i: number) => pad.l + (i / (series.length - 1 || 1)) * iw;
-  const Y = (v: number) => pad.t + ih - ((v - lo) / span) * ih;
-  const pts: [number, number][] = series.map((d, i) => [X(i), Y(d.v)]);
-  const line = smoothPath(pts);
-  const area = `${line} L ${X(series.length - 1)},${pad.t + ih} L ${X(0)},${pad.t + ih} Z`;
-
-  useEffect(() => {
-    const p = pathRef.current;
-    if (!p) return;
-    if (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const L = p.getTotalLength();
-    p.style.transition = 'none';
-    p.style.strokeDasharray = String(L);
-    p.style.strokeDashoffset = String(L);
-    requestAnimationFrame(() => {
-      p.style.transition = 'stroke-dashoffset .9s cubic-bezier(.4,0,.1,1)';
-      p.style.strokeDashoffset = '0';
-    });
-    // Fallback: rAF is throttled in hidden/background tabs, which would
-    // leave the line invisible. Guarantee it reveals regardless.
-    const reveal = setTimeout(() => { if (pathRef.current) pathRef.current.style.strokeDashoffset = '0'; }, 700);
-    return () => clearTimeout(reveal);
-  }, [series, color, w]);
-
-  const move = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) * (w / rect.width);
-    let i = Math.round(((x - pad.l) / iw) * (series.length - 1));
-    i = Math.max(0, Math.min(series.length - 1, i));
-    setHi(i); onHover(i);
-  };
-  const leave = () => { setHi(null); onHover(null); };
-  const shown = hi != null ? hi : marker;
-
-  return (
-    <svg ref={ref} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" width="100%" height={h} onMouseMove={move} onMouseLeave={leave}
-      style={{ display: 'block', overflow: 'visible', cursor: 'crosshair' }}>
-      <defs>
-        <linearGradient id="stx-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.2" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill="url(#stx-grad)" />
-      <path ref={pathRef} d={line} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-      {series.map((d, i) => d.today ? (
-        <g key="today">
-          <line x1={X(i)} y1={pad.t} x2={X(i)} y2={pad.t + ih} stroke={color} strokeWidth="1" strokeDasharray="2 4" opacity=".5" />
-          <circle cx={X(i)} cy={Y(d.v)} r="5" fill={C.paper} stroke={color} strokeWidth="2.5" />
-        </g>
-      ) : null)}
-      {shown != null && series[shown] ? (
-        <g style={{ pointerEvents: 'none' }}>
-          <line x1={X(shown)} y1={pad.t} x2={X(shown)} y2={pad.t + ih} stroke={C.ink} strokeWidth="1" opacity=".25" />
-          <circle cx={X(shown)} cy={Y(series[shown].v)} r="5" fill={color} stroke={C.paper} strokeWidth="2" />
-        </g>
-      ) : null}
-      {[0, Math.floor(series.length / 2), series.length - 1].map(i => series[i] ? (
-        <text key={i} x={Math.min(Math.max(X(i), 16), w - 16)} y={h - 6} textAnchor="middle" fontSize="10" fontFamily={MONO} fill={C.ink3}>{series[i].d}</text>
-      ) : null)}
-    </svg>
-  );
-});
 
 // ─── ops tile ─────────────────────────────────────────────────────────
 function OpsTile({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub: string; tone?: string }) {
