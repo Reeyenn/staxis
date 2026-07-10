@@ -13,6 +13,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { GlassCard } from './GlassCard';
 import { CARD, CARD_SERIF, CARD_MONO, CARD_LABEL } from './palette';
 
@@ -39,6 +40,9 @@ export function MemoryRecapCard() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const [removing, setRemoving] = useState<string | null>(null);
+  // A removal that came back failed (HTTP error / offline / non-JSON body) —
+  // the fact stays on screen AND we say so, instead of the old silent no-op.
+  const [removeFailed, setRemoveFailed] = useState(false);
   // Facts removed in this session — filtered out locally after a successful
   // POST, exactly like the previous in-place setData filter.
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
@@ -46,27 +50,38 @@ export function MemoryRecapCard() {
   const es = lang === 'es';
   const canSee = !!user && canManageTeam(user.role);
 
+  // Nightly-consolidation data: a slow 5-min poll keeps a long-lived (wall-TV)
+  // dashboard from going permanently stale; keepDataOnError holds last-good
+  // through a failed poll so the card never blinks out on a blip.
   const { data, loading } = useApiResource<RecapData>(
     `/api/memory/recap?propertyId=${activePropertyId}`,
-    { enabled: canSee && !!activePropertyId },
+    { enabled: canSee && !!activePropertyId, pollMs: 300_000, keepDataOnError: true },
   );
 
   useEffect(() => {
     setRemoved(new Set());
+    setRemoveFailed(false);
   }, [activePropertyId]);
 
   const remove = useCallback(
     async (id: string) => {
       if (!activePropertyId) return;
       setRemoving(id);
+      setRemoveFailed(false);
       try {
-        const r = await fetch('/api/memory/recap', {
+        // fetchWithAuth (not bare fetch): the write path rides the same
+        // token/401-recovery as the card's GET.
+        const r = await fetchWithAuth('/api/memory/recap', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ propertyId: activePropertyId, id }),
         });
-        const j = await r.json();
+        const j = (await r.json().catch(() => null)) as { ok?: boolean } | null;
         if (j?.ok) setRemoved((prev) => new Set(prev).add(id));
+        else setRemoveFailed(true);
+      } catch (e) {
+        // Signed out mid-request → redirect already firing, show nothing.
+        if (!(e instanceof SessionEndedError)) setRemoveFailed(true);
       } finally {
         setRemoving(null);
       }
@@ -172,6 +187,14 @@ export function MemoryRecapCard() {
             ))}
           </div>
         </>
+      )}
+
+      {removeFailed && (
+        <div style={{ marginTop: 10, fontSize: 12, color: CARD.attn }}>
+          {es
+            ? 'No se pudo quitar la nota. Revisa tu conexión e inténtalo de nuevo.'
+            : 'Couldn’t remove that note — check your connection and try again.'}
+        </div>
       )}
 
       <div style={{ marginTop: 12, fontSize: 11, color: CARD.ink3, fontFamily: CARD_MONO, lineHeight: 1.5 }}>

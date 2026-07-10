@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 // /api routes (everything reads/writes through /api/settings/reports/* with
 // service-role on the server — never the browser client).
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Calendar, ChevronLeft, Clock, Download, Mail, Play, Plus, Sparkles, Star, Trash2, X,
@@ -103,7 +103,7 @@ export default function ReportsPage() {
   const can = useCan();
 
   if (!uid) {
-    return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
+    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('run_reports')) {
     return (
@@ -299,19 +299,28 @@ function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite
 
   const bounds = useMemo(() => rangeFor(rangeKey, customFrom, customTo), [rangeKey, customFrom, customTo]);
 
+  // Race guard: the effect below refires run() on every range change
+  // (including each keystroke in the custom date inputs) without cancelling
+  // the in-flight request — an older response landing last used to display
+  // the previous range's numbers under the newly selected range. Stale
+  // responses are dropped by sequence number.
+  const runSeqRef = useRef(0);
   const run = useCallback(async () => {
     if (!pid) return;
+    const seq = ++runSeqRef.current;
     setLoading(true); setError(null);
     try {
       const p = new URLSearchParams({ reportKey: entry.key, propertyId: pid, from: bounds.from, to: bounds.to, lang, summary: '1' });
       const r = await fetchWithAuth(`/api/settings/reports/run?${p.toString()}`);
       const body = await r.json().catch(() => null);
+      if (seq !== runSeqRef.current) return; // superseded by a newer run
       if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); setResult(null); return; }
       setResult((body?.data ?? body) as RunResult);
     } catch (e) {
+      if (seq !== runSeqRef.current) return;
       setError((e as Error)?.message ?? 'Network error');
     } finally {
-      setLoading(false);
+      if (seq === runSeqRef.current) setLoading(false);
     }
   }, [pid, entry.key, bounds.from, bounds.to, lang]);
 
@@ -499,11 +508,22 @@ function ScheduleModal({ pid, lang, reportKey, reportTitle, existing, onClose, o
   }, [pid, reportKey, cadence, hourLocal, dayOfWeek, dayOfMonth, rangeKind, recipients, onChanged]);
 
   const remove = useCallback(async (id: string) => {
+    setError(null);
     try {
       const r = await fetchWithAuth(`/api/settings/reports/schedules?id=${encodeURIComponent(id)}&propertyId=${encodeURIComponent(pid)}`, { method: 'DELETE' });
-      if (r.ok) onChanged();
-    } catch { /* ignore */ }
-  }, [pid, onChanged]);
+      if (!r.ok) {
+        // A failed delete used to be silently ignored — the row stayed in
+        // the list with no error and the report kept emailing.
+        const body = await r.json().catch(() => null);
+        setError(body?.error ?? (lang === 'es' ? `No se pudo eliminar la programación (${r.status})` : `Couldn’t delete the schedule (${r.status})`));
+        return;
+      }
+      onChanged();
+    } catch (e) {
+      console.error('[reports:settings] schedule delete failed', e);
+      setError(lang === 'es' ? 'No se pudo eliminar la programación — revisa tu conexión' : 'Couldn’t delete the schedule — check your connection');
+    }
+  }, [pid, onChanged, lang]);
 
   const DOW = lang === 'es'
     ? ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']

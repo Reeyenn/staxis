@@ -6,7 +6,7 @@
 // line items right after the create). Split out of CapexTab so the board
 // file keeps only the list + workflow orchestration. Money is integer cents.
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Modal, Field, TextInput, TextArea } from '@/app/maintenance/_components/_mt-snow';
 import { useApiAction } from '@/lib/hooks/use-api-resource';
 import {
@@ -51,7 +51,11 @@ export function RequestModal({
   onCreated: () => void;
 }) {
   const S = ft(lang);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   // One action = create + (on success) the scanned line items, sequentially.
+  // Returns an error result when the CREATE fails (the modal must stay open —
+  // closing would silently discard everything typed); line-item failures are
+  // counted so a partial add is surfaced, not swallowed.
   const create = useApiAction(async (f: RequestForm) => {
     const res = await finSend<{ project: CapexProject }>('/api/financials/capex', 'POST', {
       pid,
@@ -63,19 +67,30 @@ export function RequestModal({
       targetDate: f.targetDate || null,
       vendor: f.vendor.trim() || null,
     });
-    if (res.data) {
-      const newId = res.data.project.id;
-      for (const l of f.pendingLines) {
-        await finSend('/api/financials/capex/line-items', 'POST', { pid, projectId: newId, label: l.label, amountCents: l.amountCents ?? 0, source: 'invoice_scan' });
-      }
+    if (res.error !== undefined) return res;
+    const newId = res.data.project.id;
+    let failedLines = 0;
+    for (const l of f.pendingLines) {
+      const lineRes = await finSend('/api/financials/capex/line-items', 'POST', { pid, projectId: newId, label: l.label, amountCents: l.amountCents ?? 0, source: 'invoice_scan' });
+      if (lineRes.error) failedLines += 1;
     }
-    return res;
+    return { data: { project: res.data.project, failedLines } };
   });
   const submit = async () => {
     if (!form.name.trim()) return;
-    await create.run(form);
+    setSubmitError(null);
+    const res = await create.run(form);
+    if (res.error) {
+      setSubmitError(S.couldNotSave);
+      return;
+    }
     onClose();
     onCreated();
+    if (res.data && res.data.failedLines > 0) {
+      // The project itself saved (the board refetch shows it) — but don't
+      // pretend the scanned line items all made it in.
+      window.alert(S.linesPartial);
+    }
   };
   return (
     <Modal
@@ -128,6 +143,7 @@ export function RequestModal({
         <Field label={`${S.description} (${S.optional})`}>
           <TextArea value={form.description} onChange={(v) => setForm({ ...form, description: v })} rows={2} />
         </Field>
+        {submitError && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{submitError}</span>}
       </div>
     </Modal>
   );

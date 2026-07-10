@@ -44,7 +44,11 @@ interface FormState {
 }
 
 function todayYmd(): string {
-  return new Date().toISOString().slice(0, 10);
+  // LOCAL calendar day — toISOString() is UTC and pre-fills tomorrow's date
+  // during the evening hours west of Greenwich (e.g. after 6-7pm in Texas),
+  // silently booking end-of-month expenses into next month.
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function blankForm(): FormState {
@@ -170,10 +174,15 @@ export function CheckbookTab({
   const del = async (id: string) => {
     if (!window.confirm(S.confirmDelete)) return;
     const res = await finSend('/api/financials/expenses', 'DELETE', { pid, id, month });
-    if (!res.error) {
-      reloadAll();
-      onChanged();
+    if (res.error) {
+      // The card lives outside any modal, and the delete was confirmed via a
+      // native dialog — surface the failure the same native way rather than
+      // silently leaving the expense on the board.
+      window.alert(S.couldNotDelete);
+      return;
     }
+    reloadAll();
+    onChanged();
   };
 
   const deptOptions = useMemo(
@@ -209,7 +218,7 @@ export function CheckbookTab({
               </option>
             ))}
           </select>
-          <ScanButton mode="invoice" pid={pid} label={S.scanInvoice} scanningLabel={S.scanning} failLabel={S.scanFailed} onInvoice={onScanDraft} />
+          <ScanButton mode="invoice" pid={pid} lang={lang} label={S.scanInvoice} scanningLabel={S.scanning} failLabel={S.scanFailed} onInvoice={onScanDraft} />
           <Btn onClick={openAdd}>+ {S.addExpense}</Btn>
         </div>
       </div>

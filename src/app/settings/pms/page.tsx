@@ -2,7 +2,7 @@
 
 
 export const dynamic = 'force-dynamic';
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -33,6 +33,19 @@ export default function PMSPage() {
 
   const [pmsType, setPmsType] = useState(activeProperty?.pmsType ?? '');
   const [pmsUrl, setPmsUrl] = useState(activeProperty?.pmsUrl ?? '');
+
+  // On a hard page load (refresh/bookmark) the property context resolves
+  // AFTER first mount, so the useState initializers above ran with
+  // activeProperty === null and the form rendered blank under a green
+  // "Connected" banner. Re-seed once per property when it resolves — but
+  // never clobber text the user has already typed.
+  const seededPropertyRef = useRef<string | null>(activeProperty?.id ?? null);
+  useEffect(() => {
+    if (!activeProperty || seededPropertyRef.current === activeProperty.id) return;
+    seededPropertyRef.current = activeProperty.id;
+    setPmsType(prev => prev || (activeProperty.pmsType ?? ''));
+    setPmsUrl(prev => prev || (activeProperty.pmsUrl ?? ''));
+  }, [activeProperty]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -460,7 +473,7 @@ export default function PMSPage() {
                 advanced progress in 5 min. Distinct from "failed" because
                 the job COULD still complete; we just don't have a recent
                 signal. Audit Flow 2 #4. */}
-            {pollState === 'stalled-warn' && jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
+            {pollState === 'stalled-warn' && !userStopped && jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
               <p style={{
                 fontSize: '13px',
                 color: 'var(--amber)',

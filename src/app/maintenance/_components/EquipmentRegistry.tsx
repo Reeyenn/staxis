@@ -15,8 +15,9 @@ import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { tr } from '@/lib/i18n-utils';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import {
-  fetchEquipmentList, fetchEquipmentDetail,
+  fetchEquipmentDetail,
   createEquipmentAsset, updateEquipmentAsset, deleteEquipmentAsset,
 } from '@/lib/db';
 import {
@@ -58,6 +59,18 @@ const STATUS_TONE: Record<EquipmentStatus, string> = {
 };
 
 const catLabel = (c: EquipmentCategory, lang: string) => tr(lang, CATEGORY_LABEL[c].en, CATEGORY_LABEL[c].es);
+
+// List loader that actually THROWS on failure. The shared fetchEquipmentList
+// helper flattens API errors into an empty list, which made a failed load
+// indistinguishable from an empty registry — the page showed "No equipment
+// yet" during a network blip (silent-empty-state bug class).
+async function loadEquipmentList(pid: string): Promise<Equipment[]> {
+  const res = await fetchWithAuth(`/api/maintenance/equipment?pid=${encodeURIComponent(pid)}`);
+  const json = (await res.json().catch(() => null)) as
+    { ok?: boolean; data?: { equipment: Equipment[] }; error?: string } | null;
+  if (!res.ok || !json?.ok || !json.data) throw new Error(json?.error || `http ${res.status}`);
+  return json.data.equipment;
+}
 const statusLabel = (s: EquipmentStatus, lang: string) => tr(lang, STATUS_LABEL[s].en, STATUS_LABEL[s].es);
 
 function fmtMoney(n: number | null, lang: string): string {
@@ -335,7 +348,7 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 function EquipmentDetailModal({
-  open, onClose, detail, loading, lang, isMgr, onEdit, onDelete,
+  open, onClose, detail, loading, lang, isMgr, onEdit, onDelete, onRetry,
 }: {
   open: boolean;
   onClose: () => void;
@@ -345,6 +358,7 @@ function EquipmentDetailModal({
   isMgr: boolean;
   onEdit: (e: Equipment) => void;
   onDelete: (e: Equipment) => void;
+  onRetry: () => void;
 }) {
   const eq = detail?.equipment ?? null;
   const w = useMemo(() => (eq ? warrantyInfo(eq.warrantyExpiresAt, lang) : null), [eq, lang]);
@@ -370,9 +384,18 @@ function EquipmentDetailModal({
         </>
       }
     >
-      {loading || !detail || !eq ? (
+      {loading ? (
         <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
           {tr(lang, 'Loading…', 'Cargando…')}
+        </div>
+      ) : !detail || !eq ? (
+        // Fetch settled with nothing — an error (or a deleted asset). The old
+        // code fell back to "Loading…" here and hung forever.
+        <div style={{ padding: '36px 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
+            {tr(lang, "Couldn't load this asset — check your connection.", 'No se pudo cargar este activo — revisa la conexión.')}
+          </span>
+          <Btn variant="primary" size="md" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -499,6 +522,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
 
   const [list, setList] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [q, setQ] = useState('');
 
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -514,17 +538,29 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
 
   const refresh = useCallback(async () => {
     if (!pid) return;
-    const l = await fetchEquipmentList(pid);
-    setList(l);
-    setLoading(false);
+    try {
+      const l = await loadEquipmentList(pid);
+      setList(l);
+      setLoadError(false);
+    } catch {
+      // Failed load: flag it. The render only swaps to the error card when
+      // there is nothing to show — a failed post-save refetch keeps the list
+      // we already have. `finally` guarantees the "Loading…" line can never
+      // hang forever (the old code skipped setLoading(false) on a throw).
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [pid]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // fetchEquipmentDetail returns null on ANY failure — treat that as an error
+  // state instead of leaving the modal on "Loading…" forever.
   const loadDetail = useCallback(async (id: string) => {
     if (!pid) return;
     setDetailLoading(true);
-    const d = await fetchEquipmentDetail(pid, id);
+    const d = await fetchEquipmentDetail(pid, id).catch(() => null);
     setDetail(d);
     setDetailLoading(false);
   }, [pid]);
@@ -605,7 +641,16 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         {loading && (
           <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>{tr(lang, 'Loading…', 'Cargando…')}</div>
         )}
-        {!loading && list.length === 0 && (
+        {!loading && loadError && list.length === 0 && (
+          <MtEmptyCard
+            titleSize={24}
+            bodySize={13}
+            title={tr(lang, "Couldn't load the registry.", 'No se pudo cargar el registro.')}
+            body={tr(lang, 'Your equipment is safe — check your connection and try again.', 'Tus equipos están a salvo — revisa la conexión e inténtalo de nuevo.')}
+            action={<Btn variant="primary" size="md" onClick={() => { setLoading(true); void refresh(); }}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>}
+          />
+        )}
+        {!loading && !loadError && list.length === 0 && (
           <MtEmptyCard
             titleSize={24}
             bodySize={13}
@@ -630,6 +675,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         isMgr={isMgr}
         onEdit={(e) => { closeDetail(); openEdit(e); }}
         onDelete={handleDelete}
+        onRetry={() => { if (detailId) void loadDetail(detailId); }}
       />
 
       <ToastHost

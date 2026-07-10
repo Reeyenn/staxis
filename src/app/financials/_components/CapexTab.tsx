@@ -80,7 +80,12 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
   const active = useMemo(() => projects.filter((p) => CAPEX_ACTIVE_STATUSES.includes(p.status)), [projects]);
   const closed = useMemo(() => projects.filter((p) => CAPEX_CLOSED_STATUSES.includes(p.status)), [projects]);
 
-  const totalEstimated = projects.reduce((a, p) => a + capexEstimateCents(p), 0);
+  // "Committed" / "Estimated" exclude rejected and cancelled requests — a
+  // rejected $50k roof quote is not an obligation. "Spent" stays truthful
+  // across all projects (money already out the door is real either way).
+  const totalEstimated = projects
+    .filter((p) => p.status !== 'rejected' && p.status !== 'cancelled')
+    .reduce((a, p) => a + capexEstimateCents(p), 0);
   const totalSpent = projects.reduce((a, p) => a + (p.spentCents ?? 0), 0);
   const emergency = projects.filter((p) => p.requestType === 'emergency').length;
 
@@ -148,7 +153,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink }}>{formatCents(totalEstimated, { showCents: false })} {lang === 'es' ? 'comprometido' : 'committed'}</span>
-          <ScanButton mode="quote" pid={pid} label={S.scanQuote} scanningLabel={S.scanning} failLabel={S.scanFailed} onQuote={onScanQuote} />
+          <ScanButton mode="quote" pid={pid} lang={lang} label={S.scanQuote} scanningLabel={S.scanning} failLabel={S.scanFailed} onQuote={onScanQuote} />
           <Btn onClick={() => setRequestForm(blankRequest())}>+ {S.newRequest}</Btn>
         </div>
       </div>
@@ -248,6 +253,8 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
           pid={pid}
           lang={lang}
           project={detail}
+          loadError={detail == null ? detailRes.error : null}
+          onRetryLoad={() => void detailRes.reload()}
           onClose={() => setOpenId(null)}
           onDecision={openDecision}
           onChanged={() => afterChange(openId)}

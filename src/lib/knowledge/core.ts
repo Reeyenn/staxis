@@ -639,14 +639,22 @@ export async function deleteContact(pid: string, id: string): Promise<boolean> {
 const EVENT_COLS = 'id, title, event_date, end_date, notes, created_by_name, created_at';
 
 export async function listEvents(pid: string): Promise<KnowledgeEventDTO[]> {
+  // Take the 500 LATEST-dated rows, then re-sort ascending. With the old
+  // `.order(ascending).limit(500)` a hotel that accumulated >500 events kept
+  // serving its 500 OLDEST rows — every future event fell off the end, so
+  // the dashboard's Upcoming-events card and the Calendar tab's Upcoming
+  // list silently went empty forever. Descending-then-reverse keeps every
+  // upcoming event (plus the most recent past ones for the Calendar tab's
+  // Past section) while preserving the ascending contract both consumers
+  // (dashboard CalendarCard, communications CalendarPane) rely on.
   const { data, error } = await supabaseAdmin
     .from('knowledge_events')
     .select(EVENT_COLS)
     .eq('property_id', pid)
-    .order('event_date', { ascending: true })
+    .order('event_date', { ascending: false })
     .limit(500);
   if (error) log.warn('knowledge.listEvents failed', { err: error.message });
-  return ((data ?? []) as Record<string, unknown>[]).map(toEventDTO);
+  return ((data ?? []) as Record<string, unknown>[]).map(toEventDTO).reverse();
 }
 
 export async function createEvent(

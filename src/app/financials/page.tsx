@@ -21,7 +21,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { monthLabelFromYm } from '@/lib/format-date';
-import { monthKey, priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
+import { priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
 import { Notice, T, FONT_SANS, FONT_SERIF, FONT_MONO } from './_components/fin-ui';
 import { SummaryTile, BigMoney } from './_components/fin-board';
 import { ft } from './_components/fin-i18n';
@@ -39,6 +39,13 @@ function nextMonthKey(m: string): string {
   return `${ny}-${String(nm).padStart(2, '0')}`;
 }
 
+// The viewer's LOCAL calendar month. shared.ts's monthKey() uses UTC getters,
+// which rolls the page over to next (empty) month during the evening hours
+// west of Greenwich (e.g. after 6-7pm in Texas on the month's last day).
+function localMonthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
 export default function FinancialsPage() {
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propLoading } = useProperty();
@@ -48,13 +55,13 @@ export default function FinancialsPage() {
   const S = ft(lang as Lang);
 
   const [tab, setTab] = useState<TabKey>('checkbook');
-  const [month, setMonth] = useState(() => monthKey(new Date()));
+  const [month, setMonth] = useState(() => localMonthKey(new Date()));
   // Bumped by onChanged() after any tab mutation. It rides the URL as a
   // FRAGMENT (never sent over HTTP) so useApiResource treats the refetch as a
   // new resource — replaying the same "Loading…" flash the old load() showed.
   const [summaryNonce, setSummaryNonce] = useState(0);
 
-  const currentMonth = monthKey(new Date());
+  const currentMonth = localMonthKey(new Date());
   const allowed = !!user && can('view_financials');
 
   // Redirect a restricted role away (client guard; the API gate is the real
@@ -135,7 +142,8 @@ export default function FinancialsPage() {
             </span>
             <button
               onClick={() => setMonth(nextMonthKey(month))}
-              style={{ ...stepBtn, opacity: month >= currentMonth ? 0.35 : 1, pointerEvents: month >= currentMonth ? 'none' : 'auto' }}
+              disabled={month >= currentMonth}
+              style={{ ...stepBtn, opacity: month >= currentMonth ? 0.35 : 1, cursor: month >= currentMonth ? 'default' : 'pointer' }}
               aria-label="Next month"
             >
               ›
@@ -148,6 +156,12 @@ export default function FinancialsPage() {
           {summaryLoading ? (
             <div style={{ flex: 1 }}>
               <Notice text={S.loading} />
+            </div>
+          ) : summaryRes.error != null ? (
+            // A failed summary read must not render confident $0.00 tiles —
+            // show the load error with the standard tap-to-retry affordance.
+            <div style={{ flex: 1 }}>
+              <Notice text={S.errorLoading} onRetry={onTabChanged} />
             </div>
           ) : (
             <>
@@ -188,7 +202,7 @@ export default function FinancialsPage() {
             </>
           )}
         </div>
-        {!summaryLoading && summary?.revenueCents == null && (
+        {!summaryLoading && summaryRes.error == null && summary?.revenueCents == null && (
           <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, margin: '12px 0 0', fontStyle: 'italic' }}>{S.revenueComingSoon}</p>
         )}
 

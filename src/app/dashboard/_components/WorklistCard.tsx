@@ -40,10 +40,13 @@ export function WorklistCard() {
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
   // Communications-owned embed: `enabled` gates the FETCH, not just the
-  // render — nothing hits the wire when the section is off.
+  // render — nothing hits the wire when the section is off. Polled so a
+  // long-lived (wall-TV) dashboard doesn't keep showing work completed hours
+  // ago; keepDataOnError holds last-good through a failed poll so the card
+  // never blinks out on a blip.
   const { data, loading } = useApiResource<{ items: WorklistItem[] }>(
     `/api/worklist?pid=${activePropertyId}`,
-    { enabled: canSee && !!activePropertyId && commsEnabled },
+    { enabled: canSee && !!activePropertyId && commsEnabled, pollMs: 60_000, keepDataOnError: true },
   );
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;
@@ -65,7 +68,7 @@ export function WorklistCard() {
 
       <div style={{ marginTop: 8, fontFamily: CARD_SERIF, fontStyle: 'italic', fontSize: 22, color: CARD.ink, lineHeight: 1.2 }}>
         {list.length} {es ? (list.length === 1 ? 'pendiente' : 'pendientes') : (list.length === 1 ? 'open item' : 'open items')}
-        {overdue > 0 && <span style={{ fontSize: 14, fontStyle: 'normal', color: CARD.terracotta, fontFamily: CARD_MONO, marginLeft: 10 }}>{overdue} {es ? 'vencidas' : 'overdue'}</span>}
+        {overdue > 0 && <span style={{ fontSize: 14, fontStyle: 'normal', color: CARD.terracotta, fontFamily: CARD_MONO, marginLeft: 10 }}>{overdue} {es ? (overdue === 1 ? 'vencida' : 'vencidas') : 'overdue'}</span>}
       </div>
 
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>

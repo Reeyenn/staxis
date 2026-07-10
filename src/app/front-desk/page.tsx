@@ -184,6 +184,18 @@ export default function FrontDeskPage() {
     });
   }, [user, activePropertyId, today]);
 
+  // Keep the open room sheet in sync with the live board. It used to render
+  // a tap-time snapshot, so a rush set from the sheet (or a housekeeper
+  // finishing the room on their phone) never updated the open sheet until
+  // it was closed and reopened.
+  useEffect(() => {
+    setSelectedRoom(prev => {
+      if (!prev) return prev;
+      const fresh = rooms.find(r => r.id === prev.id);
+      return fresh ?? prev;
+    });
+  }, [rooms]);
+
   // Honesty derivations — all false until feed status arrives (manual
   // hotels / older servers) so the page renders exactly as today.
   // Review pass: banners pick ONE message, but neutralization is a union —
@@ -225,6 +237,11 @@ export default function FrontDeskPage() {
     // Neutral (no-signal) rooms are excluded from the status counts, so
     // exclude them from status filters too — otherwise "Dirty (2)" opens a
     // grid of 80 "No data" cards (review pass, senior #4).
+    // The "Clean" pill counts clean + inspected (stats.clean above), so the
+    // filter must match both too — otherwise "Clean (12)" opens a grid of 8.
+    if (statusFilter === 'clean') {
+      return rooms.filter(r => (r.status === 'clean' || r.status === 'inspected') && !isNeutralRoom(r));
+    }
     return rooms.filter(r => r.status === statusFilter && !isNeutralRoom(r));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, statusFilter, roomStatusLearning, connPending]);
@@ -843,7 +860,15 @@ export default function FrontDeskPage() {
                   </button>
                 )}
 
-                <RushButton roomNumber={selectedRoom.number} isAlreadyRush={!!(selectedRoom as { isRush?: boolean }).isRush} />
+                <RushButton
+                  roomNumber={selectedRoom.number}
+                  isAlreadyRush={!!selectedRoom.isRush}
+                  onChange={({ cleared }) => {
+                    // Reflect the confirmed set/clear immediately — the label
+                    // flips to "Clear rush" without waiting for the next poll.
+                    setSelectedRoom(prev => (prev ? { ...prev, isRush: !cleared } : prev));
+                  }}
+                />
 
                 <button
                   onClick={() => setSelectedRoom(null)}

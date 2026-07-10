@@ -66,6 +66,10 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [defaults, setDefaults] = useState<Record<string, number>>({ ...CLEAN_TIME_DEFAULT_MINUTES });
   const [loading, setLoading] = useState(true);
+  // A failed load must NOT silently fill the form with industry defaults —
+  // Save PUTs the full standards array, so saving from that state would
+  // overwrite every customized time. Block the form until a load succeeds.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -75,8 +79,14 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     let active = true;
     setLoading(true);
     setError(null);
+    setLoadFailed(false);
     fetchWithAuth(`/api/settings/clean-times?propertyId=${pid}`)
-      .then(r => r.ok ? r.json() : null)
+      .then(r => {
+        // A non-OK response must NOT fall through to the defaults-filled
+        // form — Save would then replace the hotel's tuned times wholesale.
+        if (!r.ok) throw new Error(`clean-times load failed (${r.status})`);
+        return r.json();
+      })
       .then((body: {
         data?: {
           standards?: Array<{ cleaningType: string; baseMinutes: number }>;
@@ -98,7 +108,13 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       })
       .catch(err => {
         console.error('[clean-times:settings] load failed', err);
-        if (active) { setError(lang === 'es' ? 'No se pudieron cargar los tiempos' : 'Failed to load times'); setLoading(false); }
+        if (active) {
+          setLoadFailed(true);
+          setError(lang === 'es'
+            ? 'No se pudieron cargar los tiempos de limpieza. Recarga la página para intentar de nuevo.'
+            : 'Couldn’t load your clean times. Refresh the page to try again.');
+          setLoading(false);
+        }
       });
     return () => { active = false; };
   }, [pid, lang]);
@@ -121,6 +137,9 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
   const save = async () => {
     if (!pid) return;
+    // Never save on top of a failed load — the drafts would just be the
+    // industry defaults, overwriting the hotel's customized times.
+    if (loadFailed) return;
     const standards: Array<{ cleaningType: string; baseMinutes: number }> = [];
     for (const t of EDITABLE_CLEANING_TYPES) {
       const n = Number(drafts[t]);
@@ -192,6 +211,14 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
         {loading ? (
           <Caps>{lang === 'es' ? 'CARGANDO…' : 'LOADING…'}</Caps>
+        ) : loadFailed ? (
+          // Load-error state — deliberately hides the form so Save can't
+          // overwrite the hotel's tuned times with the industry defaults.
+          <div role="alert" style={{
+            padding: '14px 16px', background: 'rgba(160,74,44,0.08)',
+            border: '1px solid rgba(160,74,44,0.25)', borderRadius: 12,
+            color: '#A04A2C', fontSize: 13, lineHeight: 1.5,
+          }}>{error}</div>
         ) : (
           <>
             <section style={{

@@ -40,6 +40,8 @@ export function Forecast({ pid, lang }: { pid: string; lang: Lang }) {
   const S = ft(lang);
   const res = useApiResource<{ forecast: ForecastMonth[] }>(`/api/financials/capex/forecast?pid=${pid}`);
   if (res.loading) return <Notice text={S.loading} />;
+  // A failed load must not read as "no upcoming capital spend".
+  if (res.error != null) return <Notice text={S.errorLoading} onRetry={() => void res.reload()} />;
   const rows = res.data?.forecast ?? [];
   if (rows.length === 0) return <Notice text={S.noForecastCapex} />;
   return (
@@ -66,6 +68,8 @@ export function RollupView({ lang }: { lang: Lang }) {
   const S = ft(lang);
   const res = useApiResource<{ rollup: Rollup }>('/api/financials/capex/rollup');
   if (res.loading) return <Notice text={S.loading} />;
+  // A failed load must not render confident all-zero totals.
+  if (res.error != null) return <Notice text={S.errorLoading} onRetry={() => void res.reload()} />;
   const data = res.data?.rollup ?? EMPTY_ROLLUP;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

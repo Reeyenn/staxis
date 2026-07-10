@@ -69,7 +69,7 @@ type ViewFilter = 'held' | 'picked_up' | 'all';
 const INITIAL_COUNTS: PackageCounts = { held: 0, pickedUp: 0 };
 
 export function PackagesTab({ pid, lang }: { pid: string; lang: Lang }) {
-  const { items, counts, loading, refetch } = useRegisterFeed<PackageRow, PackageCounts>(
+  const { items, counts, loading, loadFailed, refetch } = useRegisterFeed<PackageRow, PackageCounts>(
     pid, subscribePackages, fetchPackages, INITIAL_COUNTS,
   );
   const [search, setSearch] = useState('');
@@ -129,6 +129,7 @@ export function PackagesTab({ pid, lang }: { pid: string; lang: Lang }) {
 
       <RegisterList
         loading={loading}
+        loadFailed={loadFailed}
         lang={lang}
         isEmpty={filtered.length === 0}
         emptyTitle={

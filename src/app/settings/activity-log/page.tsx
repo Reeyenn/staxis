@@ -28,38 +28,9 @@ import {
   type ActivitySource,
 } from '@/lib/activity-log/types';
 import { categoryLabel, renderDescription, sourceLabel } from '@/lib/activity-log/renderer';
-
-type DateRangeKey = 'today' | 'yesterday' | 'last7' | 'last30' | 'custom';
-
-interface RangeBounds { from: string; to: string; }
-
-function rangeFor(key: DateRangeKey, customFrom?: string, customTo?: string): RangeBounds {
-  const now = new Date();
-  const startOf = (d: Date) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-  const today = startOf(now);
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate()+1);
-  switch (key) {
-    case 'today':     return { from: today.toISOString(), to: tomorrow.toISOString() };
-    case 'yesterday': {
-      const y = new Date(today); y.setDate(today.getDate()-1);
-      return { from: y.toISOString(), to: today.toISOString() };
-    }
-    case 'last7': {
-      const f = new Date(today); f.setDate(today.getDate()-7);
-      return { from: f.toISOString(), to: tomorrow.toISOString() };
-    }
-    case 'last30': {
-      const f = new Date(today); f.setDate(today.getDate()-30);
-      return { from: f.toISOString(), to: tomorrow.toISOString() };
-    }
-    case 'custom':
-    default:
-      return {
-        from: customFrom ? new Date(customFrom).toISOString() : new Date(today.getTime() - 7*86400000).toISOString(),
-        to:   customTo   ? new Date(customTo).toISOString()   : tomorrow.toISOString(),
-      };
-  }
-}
+// Range math lives in ./date-range (pure, unit-tested): the custom range is
+// local-midnight based and end-EXCLUSIVE-safe (includes the whole end day).
+import { rangeFor, type DateRangeKey } from './date-range';
 
 const PAGE_SIZE = 50;
 
@@ -69,7 +40,7 @@ export default function ActivityLogPage() {
   const can = useCan();
 
   if (!uid) {
-    return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
+    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('view_activity_log')) {
     return (

@@ -255,6 +255,7 @@ type TranslationKey =
   | 'rushTitle' | 'rushPrompt' | 'rush15min' | 'rush30min' | 'rush1hr'
   | 'rushSubmit' | 'rushAlreadyActive' | 'rushCleared' | 'rushClearButton'
   | 'rushNotifySent' | 'rushButton'
+  | 'rushSetFailed' | 'rushClearFailed' | 'rushNoAssignment'
   // Add Note (housekeeper-facing on job card)
   | 'hkAddNote' | 'hkAddNoteTitle' | 'hkAddNotePlaceholder' | 'hkAddNoteSubmit'
   | 'hkAddNoteSaved' | 'hkAddNoteClear'
@@ -856,6 +857,9 @@ const translations: TranslationMaps = {
     rushClearButton: 'Clear rush',
     rushNotifySent: 'Housekeeper notified',
     rushButton: 'Rush',
+    rushSetFailed: "Couldn't set rush — please try again",
+    rushClearFailed: "Couldn't clear rush — please try again",
+    rushNoAssignment: "Couldn't set rush — this room isn't on today's cleaning plan",
     hkAddNote: 'Add note',
     hkAddNoteTitle: 'Quick note',
     hkAddNotePlaceholder: 'Note for the manager',
@@ -1720,6 +1724,9 @@ const translations: TranslationMaps = {
     rushClearButton: 'Quitar urgencia',
     rushNotifySent: 'Camarista notificada',
     rushButton: 'Urgente',
+    rushSetFailed: 'No se pudo marcar urgente — inténtalo de nuevo',
+    rushClearFailed: 'No se pudo quitar la urgencia — inténtalo de nuevo',
+    rushNoAssignment: 'No se pudo marcar urgente — la habitación no está en el plan de limpieza de hoy',
     hkAddNote: 'Agregar nota',
     hkAddNoteTitle: 'Nota rápida',
     hkAddNotePlaceholder: 'Nota para el gerente',

@@ -351,6 +351,8 @@ export function BudgetStatCard({
   spentCents,
   budgetCents,
   noBudget = false,
+  spentWord = 'spent',
+  ofWord = 'of',
   footnote,
 }: {
   name: string;
@@ -363,6 +365,9 @@ export function BudgetStatCard({
   spentCents: number;
   budgetCents: number;
   noBudget?: boolean;
+  /** Localized footer words for "$1,200 spent / of $2,000" (EN/ES). */
+  spentWord?: string;
+  ofWord?: string;
   footnote?: React.ReactNode;
 }) {
   const statusColor = noBudget ? T.ink3 : over ? T.warm : color;
@@ -398,8 +403,8 @@ export function BudgetStatCard({
       </div>
       {!noBudget && (
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>{formatCents(spentCents, { showCents: false })} spent</span>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>of {formatCents(budgetCents, { showCents: false })}</span>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>{formatCents(spentCents, { showCents: false })} {spentWord}</span>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>{ofWord} {formatCents(budgetCents, { showCents: false })}</span>
         </div>
       )}
       {footnote && <div style={{ marginTop: 8 }}>{footnote}</div>}

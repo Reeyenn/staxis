@@ -55,6 +55,7 @@ export function useJoinCodes(user: AppUser | null, hotelId: string): {
   const { lang } = useLang();
 
   const [codes, setCodes] = useState<CodeRow[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [codeSubmitting, setCodeSubmitting] = useState(false);
   const [codeError, setCodeError] = useState('');
@@ -62,10 +63,15 @@ export function useJoinCodes(user: AppUser | null, hotelId: string): {
 
   const loadCodes = useCallback(async () => {
     if (!user || !hotelId) return;
-    const res = await fetchWithAuth(`/api/auth/join-codes?hotelId=${hotelId}`);
-    if (res.ok) {
+    try {
+      const res = await fetchWithAuth(`/api/auth/join-codes?hotelId=${hotelId}`);
+      if (!res.ok) { setLoadError(true); return; } // don't render "no codes" for a failed load
       const body = await res.json() as { data?: { codes?: CodeRow[] } };
       setCodes(body.data?.codes ?? []);
+      setLoadError(false);
+    } catch (err) {
+      console.error('[accounts:join-codes] load failed', err);
+      setLoadError(true);
     }
   }, [user, hotelId]);
 
@@ -88,6 +94,9 @@ export function useJoinCodes(user: AppUser | null, hotelId: string): {
       }
       setCodeResult(body.data?.joinCode ?? null);
       void loadCodes();
+    } catch (err) {
+      console.error('[accounts:join-codes] generate failed', err);
+      setCodeError(lang === 'es' ? 'No se pudo generar el código — revisa tu conexión' : 'Failed to generate the code — check your connection');
     } finally {
       setCodeSubmitting(false);
     }
@@ -95,12 +104,30 @@ export function useJoinCodes(user: AppUser | null, hotelId: string): {
 
   const handleRevokeCode = async (id: string) => {
     if (!confirm(lang === 'es' ? '¿Revocar este código?' : 'Revoke this code?')) return;
-    await fetchWithAuth(`/api/auth/join-codes?id=${id}`, { method: 'DELETE' });
-    void loadCodes();
+    // A failed revoke must not look like success — the leaked code would stay
+    // usable. Same alert idiom as TeamMembers.handleRemoveMember.
+    try {
+      const res = await fetchWithAuth(`/api/auth/join-codes?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        alert(body.error ?? (lang === 'es' ? 'No se pudo revocar el código. Sigue activo — intenta de nuevo.' : 'Failed to revoke the code. It is still active — try again.'));
+        return;
+      }
+      void loadCodes();
+    } catch (err) {
+      console.error('[accounts:join-codes] revoke failed', err);
+      alert(lang === 'es' ? 'No se pudo revocar el código — revisa tu conexión. Sigue activo.' : 'Failed to revoke the code — check your connection. It is still active.');
+    }
   };
 
   // Active codes
-  const list = codes.length > 0 ? (
+  const list = loadError ? (
+    <ErrorBox>
+      {lang === 'es'
+        ? 'No se pudieron cargar los códigos activos. Recarga la página para intentar de nuevo.'
+        : 'Couldn’t load active codes. Refresh the page to try again.'}
+    </ErrorBox>
+  ) : codes.length > 0 ? (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       <h3 style={subHeadingStyle}>{lang === 'es' ? 'Códigos activos' : 'Active codes'}</h3>
       {codes.map(c => (

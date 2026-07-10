@@ -8,6 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Check, Copy } from 'lucide-react';
 
+import { useLang } from '@/contexts/LanguageContext';
 import type { AppRole } from '@/lib/roles';
 
 export interface AccountRow {
@@ -36,6 +37,7 @@ export function CopyButton({ value, label, small }: {
   label: string;
   small?: boolean;
 }) {
+  const { lang } = useLang();
   const [copied, setCopied] = useState(false);
   const handleClick = async () => {
     try {
@@ -75,9 +77,9 @@ export function CopyButton({ value, label, small }: {
         }}
       >
         <Icon size={iconSize} strokeWidth={copied ? 3 : 2} />
-        {copied && <span>Copied!</span>}
+        {copied && <span>{lang === 'es' ? '¡Copiado!' : 'Copied!'}</span>}
       </button>
-      {copied && <CopyToast text="Copied to clipboard" />}
+      {copied && <CopyToast text={lang === 'es' ? 'Copiado al portapapeles' : 'Copied to clipboard'} />}
     </>
   );
 }

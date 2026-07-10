@@ -32,7 +32,14 @@ async function readEnvelope<T>(res: Response): Promise<T | null> {
 export async function fetchLostFoundRegister(pid: string): Promise<RegisterPayload> {
   const res = await fetchWithAuth(`${BASE}?pid=${encodeURIComponent(pid)}`, { cache: 'no-store' });
   const data = await readEnvelope<RegisterPayload>(res);
-  return data ?? { items: [], counts: { open: 0, awaitingReturn: 0, nearingDisposal: 0 } };
+  if (data === null) {
+    // An HTTP error envelope (e.g. a transient 500) must NOT masquerade as an
+    // empty register — returning the empty payload here let a brief server
+    // blip wipe the list to "Nothing here yet" mid-shift. Throw instead so
+    // subscribers keep last-good data (their catch) and the next poll heals.
+    throw new Error(`lost_found_list_failed_${res.status}`);
+  }
+  return data;
 }
 
 export async function fetchLostFoundCounts(pid: string): Promise<LostFoundCounts> {
@@ -40,7 +47,12 @@ export async function fetchLostFoundCounts(pid: string): Promise<LostFoundCounts
     cache: 'no-store',
   });
   const data = await readEnvelope<{ counts: LostFoundCounts }>(res);
-  return data?.counts ?? { open: 0, awaitingReturn: 0, nearingDisposal: 0 };
+  if (data === null) {
+    // Same silent-empty class as the register fetch — don't report zeros on a
+    // failed response; let the subscriber keep its last-good counts.
+    throw new Error(`lost_found_counts_failed_${res.status}`);
+  }
+  return data.counts;
 }
 
 /**
@@ -52,6 +64,7 @@ export function subscribeLostFound(
   pid: string,
   onData: (payload: RegisterPayload) => void,
   pollMs = 30_000,
+  onError?: () => void,
 ): () => void {
   let active = true;
   const refresh = async () => {
@@ -59,7 +72,9 @@ export function subscribeLostFound(
       const payload = await fetchLostFoundRegister(pid);
       if (active) onData(payload);
     } catch {
-      /* keep last good — transient network blip */
+      // Keep last good — transient network/server blip. onError lets the UI
+      // show a load-error state when there is no last-good data yet.
+      if (active) onError?.();
     }
   };
   void refresh();

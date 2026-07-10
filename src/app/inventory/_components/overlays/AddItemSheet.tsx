@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import {
@@ -135,6 +135,13 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
   const [name, setName] = useState('');
   const [category, setCategory] = useState<InvCat>(defaultCategory);
   const [currentStock, setCurrentStock] = useState<string>('0');
+  // What the on-hand field was seeded with (item value at open, or the DB's
+  // post-write-off value). On edit-save we only send currentStock if the user
+  // actually CHANGED it — unconditionally sending the open-time snapshot used
+  // to fake a physical count (stamping last_counted_at, resetting the
+  // occupancy drain estimate) and overwrite counts saved concurrently by
+  // someone else while the sheet was open.
+  const stockBaselineRef = useRef<number>(0);
   const [parLevel, setParLevel] = useState<string>('0');
   const [unit, setUnit] = useState('each');
   const [unitCost, setUnitCost] = useState<string>('');
@@ -175,6 +182,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setName(item.name);
       setCategory(item.category as InvCat);
       setCurrentStock(String(item.currentStock ?? 0));
+      stockBaselineRef.current = item.currentStock ?? 0;
       setParLevel(String(item.parLevel ?? 0));
       setUnit(item.unit || 'each');
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
@@ -186,6 +194,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setName('');
       setCategory(defaultCategory);
       setCurrentStock('0');
+      stockBaselineRef.current = 0;
       setParLevel('0');
       setUnit('each');
       setUnitCost('');
@@ -204,7 +213,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       const base = {
         name: name.trim(),
         category: category as InventoryCategory,
-        currentStock: Number(currentStock) || 0,
         parLevel: Number(parLevel) || 0,
         unit: unit.trim() || 'each',
         unitCost: unitCost ? Number(unitCost) : undefined,
@@ -214,10 +222,23 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         notes: notes.trim() || undefined,
       };
       if (isEdit && item) {
-        await updateInventoryItem(user.uid, activePropertyId, item.id, base);
+        // Metadata edit: only send currentStock if the user deliberately
+        // changed the on-hand field (an intentional stock correction — the db
+        // layer then rightly treats it as a count). An untouched or emptied
+        // field sends NO stock, so last_counted_at / the consumption-estimate
+        // window are left alone and a count saved on another device while
+        // this sheet was open can't be overwritten by a typo-fix Save.
+        const stockNum = currentStock.trim() === '' ? NaN : Number(currentStock);
+        const stockChanged =
+          Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
+        await updateInventoryItem(user.uid, activePropertyId, item.id, {
+          ...base,
+          ...(stockChanged ? { currentStock: stockNum } : {}),
+        });
       } else {
         await addInventoryItem(user.uid, activePropertyId, {
           ...base,
+          currentStock: Number(currentStock) || 0,
           propertyId: activePropertyId,
         });
       }
@@ -275,6 +296,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       // Save. Fall back to the stored item value if the read-back failed.
       const nextStock = res.newStock ?? Math.max(0, (item.currentStock ?? 0) - woQtyNum);
       setCurrentStock(String(nextStock));
+      // The DB already holds nextStock after the write-off — rebase so a
+      // later Save doesn't re-send it as a "stock change" (fake count).
+      stockBaselineRef.current = nextStock;
       setWoQty('');
       setWoNotes('');
       setWoDone(true);

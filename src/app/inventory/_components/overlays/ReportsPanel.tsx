@@ -8,7 +8,6 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { currentMonthLabel, shortMonthFromYmd } from '@/lib/format-date';
 import { T, fonts, statusColor } from '../tokens';
 import { Caps } from '../Caps';
-import { Btn } from '../Btn';
 import { Sparkline } from '../Sparkline';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
@@ -28,8 +27,6 @@ function rpStrings(lang: Lang) {
       eyebrow: 'Reports · this property',
       italic: 'At a glance',
       mtd: 'MTD',
-      compare: 'Compare ▾',
-      export: 'Export ↓',
       costPerOccRoom: 'Cost / occ-room',
       rooms: 'rooms',
       thisProperty: 'this property',
@@ -50,8 +47,6 @@ function rpStrings(lang: Lang) {
       eyebrow: 'Informes · esta propiedad',
       italic: 'De un vistazo',
       mtd: 'del mes',
-      compare: 'Comparar ▾',
-      export: 'Exportar ↓',
       costPerOccRoom: 'Costo / hab. ocupada',
       rooms: 'habitaciones',
       thisProperty: 'esta propiedad',
@@ -122,8 +117,10 @@ export function ReportsPanel({ lang, open, onClose, display }: ReportsPanelProps
   const totalRooms = (activeProperty as { totalRooms?: number } | null)?.totalRooms ?? 0;
 
   // Cost / occ-room — use receipts ÷ rough occupied-room-nights estimate.
+  // LOCAL day-of-month: getUTCDate() would already read "1" on the evening of
+  // the month's last day in US timezones, skewing the MTD divisor.
   const now = new Date();
-  const daysElapsed = Math.max(1, now.getUTCDate());
+  const daysElapsed = Math.max(1, now.getDate());
   // Without a real occupancy figure here we use 78% as a baseline. This is a
   // qualitative metric on the dashboard — the source-of-truth is in the
   // accounting export.
@@ -150,13 +147,9 @@ export function ReportsPanel({ lang, open, onClose, display }: ReportsPanelProps
       italic={rp.italic}
       suffix={`${currentMonthLabel(lang)}, ${rp.mtd}`}
       width={1080}
-      footer={
-        <>
-          <Btn variant="ghost" size="md">{currentMonthLabel(lang)} ▾</Btn>
-          <Btn variant="ghost" size="md">{rp.compare}</Btn>
-          <Btn variant="ghost" size="md">{rp.export}</Btn>
-        </>
-      }
+      /* No footer: the old month-picker / Compare / Export buttons had no
+         handlers — they looked clickable but silently did nothing. Removed
+         until those features actually exist. */
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>

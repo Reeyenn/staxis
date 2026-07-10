@@ -97,13 +97,20 @@ export function ComplaintsTab() {
 
   const flash = (m: string) => { show(m); };
 
-  const now = new Date(); // render-time clock, used only in list-row badges (JSX)
+  // Ticking clock (30s) — callbacks-due and overdue are pure time comparisons,
+  // so on an idle desk terminal they'd otherwise only recompute when complaint
+  // data happened to change; a scheduled callback could surface hours late.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   const callbacksDue = useMemo(() => {
-    const n = new Date();
     return complaints
-      .filter((c) => isCallbackDue(c, n))
+      .filter((c) => isCallbackDue(c, now))
       .sort((a, b) => (a.callbackAt?.getTime() ?? 0) - (b.callbackAt?.getTime() ?? 0));
-  }, [complaints]);
+  }, [complaints, now]);
 
   // repeat-issue map: key room|category → count (for the "3rd AC complaint" flag)
   const repeatKey = (c: Complaint) => `${c.roomNumber ?? ''}|${c.category}`;
@@ -128,13 +135,12 @@ export function ComplaintsTab() {
   }, [complaints, statusFilter, catFilter]);
 
   const counts = useMemo(() => {
-    const n = new Date();
     return {
       open: complaints.filter((c) => isOpenStatus(c.status)).length,
-      overdue: complaints.filter((c) => isOverdue(c, n)).length,
-      callbacks: complaints.filter((c) => isCallbackDue(c, n)).length,
+      overdue: complaints.filter((c) => isOverdue(c, now)).length,
+      callbacks: complaints.filter((c) => isCallbackDue(c, now)).length,
     };
-  }, [complaints]);
+  }, [complaints, now]);
 
   const detail = detailId ? complaints.find((c) => c.id === detailId) ?? null : null;
 
@@ -279,7 +285,7 @@ export function ComplaintsTab() {
 
   async function doCallbackDone(id: string) {
     const r = await postJson('/api/complaints/update', { pid: activePropertyId, complaintId: id, action: 'callback_done' });
-    flash(r.ok ? (es ? 'Llamada marcada como hecha' : 'Callback marked done') : (es ? 'Error' : `Error: ${r.error}`));
+    flash(r.ok ? (es ? 'Llamada marcada como hecha' : 'Callback marked done') : `Error: ${r.error}`);
   }
 }
 

@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
 // _components/ChecklistEditor.tsx; this file keeps the two editors' state
 // machines, label maps, and payload shapes.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, Check, AlertTriangle, ShieldCheck } from 'lucide-react';
 
@@ -123,7 +123,7 @@ export default function ChecklistsPage() {
   const can = useCan();
 
   if (!uid) {
-    return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
+    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('manage_checklists')) {
     return (
@@ -242,27 +242,50 @@ function CleaningEditor({ pid, lang, properties }: {
   const [showCopy, setShowCopy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
+  // Race guard: switching cleaning types refires load() without cancelling
+  // the in-flight request, so the OLDER response could land last and render
+  // type A's items under the type-B selector — and Save (a bulk-replace)
+  // would then overwrite B's checklist with A's items. Each load takes a
+  // sequence number; stale responses are dropped. loadedTypeRef records
+  // which type the on-screen items actually belong to, and save() refuses
+  // to write when it doesn't match the selector.
+  const loadSeqRef = useRef(0);
+  const loadedTypeRef = useRef<CleaningType | null>(null);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true); setError(null); setNotice(null);
     try {
       const r = await fetchWithAuth(`/api/settings/checklists/cleaning?propertyId=${encodeURIComponent(pid)}&cleaningType=${type}`);
       const body = await r.json().catch(() => null);
-      if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
+      if (seq !== loadSeqRef.current) return; // superseded by a newer load
+      if (!r.ok) { loadedTypeRef.current = null; setError(body?.error ?? `Failed (${r.status})`); return; }
       const cl = (body?.data?.checklist ?? null) as CleaningChecklist | null;
+      loadedTypeRef.current = type;
       setData(cl);
       setItems((cl?.items ?? []).map((it) => ({
         area: it.area, itemEn: it.itemEn, itemEs: it.itemEs, isCritical: it.isCritical, _key: nextKey(),
       })));
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
+      loadedTypeRef.current = null;
       setError((e as Error)?.message ?? 'Network error');
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [pid, type]);
 
   useEffect(() => { void load(); }, [load]);
 
   const save = useCallback(async () => {
+    // Bulk-replace safety: never write items that belong to another cleaning
+    // type (or to a failed load) under the currently selected one.
+    if (loadedTypeRef.current !== type) {
+      setError(lang === 'es'
+        ? 'Esta lista no terminó de cargar. Recarga la página antes de guardar.'
+        : 'This checklist didn’t finish loading. Refresh the page before saving.');
+      return;
+    }
     const blank = items.find((it) => !it.itemEn.trim() || !it.itemEs.trim());
     if (blank) { setError(lang === 'es' ? 'Cada tarea necesita texto en inglés y español.' : 'Every item needs English and Spanish text.'); return; }
     setSaving(true); setError(null); setNotice(null);
@@ -447,13 +470,21 @@ function InspectionEditor({ pid, lang, properties }: {
   const [showCopy, setShowCopy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
+  // Same race/failed-load guards as CleaningEditor: drop stale responses and
+  // refuse the bulk-replace save until a load has actually succeeded.
+  const loadSeqRef = useRef(0);
+  const loadedRef = useRef(false);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true); setError(null); setNotice(null);
     try {
       const r = await fetchWithAuth(`/api/settings/checklists/inspection?propertyId=${encodeURIComponent(pid)}`);
       const body = await r.json().catch(() => null);
-      if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
+      if (seq !== loadSeqRef.current) return; // superseded by a newer load
+      if (!r.ok) { loadedRef.current = false; setError(body?.error ?? `Failed (${r.status})`); return; }
       const cl = (body?.data?.checklist ?? null) as InspectionChecklist | null;
+      loadedRef.current = true;
       setData(cl);
       setName(cl?.name ?? '');
       setApplies(cl?.appliesToCleaningTypes ?? []);
@@ -462,15 +493,23 @@ function InspectionEditor({ pid, lang, properties }: {
         severityDefault: it.severityDefault, requiresPhotoOnFail: it.requiresPhotoOnFail, _key: nextKey(),
       })));
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
+      loadedRef.current = false;
       setError((e as Error)?.message ?? 'Network error');
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [pid]);
 
   useEffect(() => { void load(); }, [load]);
 
   const save = useCallback(async () => {
+    if (!loadedRef.current) {
+      setError(lang === 'es'
+        ? 'Esta lista no terminó de cargar. Recarga la página antes de guardar.'
+        : 'This checklist didn’t finish loading. Refresh the page before saving.');
+      return;
+    }
     if (!name.trim()) { setError(lang === 'es' ? 'La lista necesita un nombre.' : 'The checklist needs a name.'); return; }
     const blank = items.find((it) => !it.label.trim() || !it.labelEs.trim());
     if (blank) { setError(lang === 'es' ? 'Cada punto necesita texto en inglés y español.' : 'Every item needs English and Spanish text.'); return; }

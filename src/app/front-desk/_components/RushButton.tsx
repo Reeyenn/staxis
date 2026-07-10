@@ -51,17 +51,21 @@ export function RushButton({ roomNumber, isAlreadyRush, onChange }: Props) {
         }),
       });
       const json = (await res.json().catch(() => null)) as
-        | { ok?: boolean; data?: { cleared?: boolean; smsSent?: boolean } }
+        | { ok?: boolean; error?: string; data?: { cleared?: boolean; smsSent?: boolean } }
         | null;
       if (res.ok && json?.ok) {
         showToast(json.data?.smsSent ? t('rushNotifySent', lang) : t('rushSubmit', lang));
         setOpen(false);
         onChange?.({ cleared: false, smsSent: !!json.data?.smsSent });
       } else {
-        showToast("Couldn't set rush");
+        // 'no_assignment_today' = the room isn't on today's cleaning plan, so
+        // the rush had nothing to attach to — tell the clerk to call instead.
+        showToast(json?.error === 'no_assignment_today'
+          ? t('rushNoAssignment', lang)
+          : t('rushSetFailed', lang));
       }
     } catch {
-      showToast("Couldn't set rush");
+      showToast(t('rushSetFailed', lang));
     } finally {
       setSubmitting(false);
     }
@@ -85,10 +89,10 @@ export function RushButton({ roomNumber, isAlreadyRush, onChange }: Props) {
         setOpen(false);
         onChange?.({ cleared: true, smsSent: false });
       } else {
-        showToast("Couldn't clear rush");
+        showToast(t('rushClearFailed', lang));
       }
     } catch {
-      showToast("Couldn't clear rush");
+      showToast(t('rushClearFailed', lang));
     } finally {
       setSubmitting(false);
     }

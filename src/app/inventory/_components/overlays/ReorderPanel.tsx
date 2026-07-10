@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -17,6 +17,8 @@ import { Btn } from '../Btn';
 import { StockBar } from '../StockBar';
 import { StatusDot } from '../StatusPill';
 import { Overlay } from './Overlay';
+import { seedCartState, type LineState } from './reorder-cart';
+import { isBudgetForLocalMonth } from '../month';
 import { fmtMoney } from '../format';
 import { recommendReorder, suggestQuantity } from '../adapter';
 import type { DisplayItem, ReorderRec } from '../types';
@@ -42,8 +44,6 @@ interface ReorderPanelProps {
   /** Jump to the Orders panel after placing. */
   onViewOrders: () => void;
 }
-
-type LineState = { checked: boolean; qty: number };
 
 // Co-located strings for the reorder panel — same factory convention as the
 // other overlays (ssStrings / csStrings / rpStrings…).
@@ -189,20 +189,23 @@ export function ReorderPanel({
     { placed: number; sent: number; draft: number; errors: string[] } | null
   >(null);
 
-  // Reset state whenever recs change (e.g. panel reopens with new data).
-  // Honesty-audit Phase 4: only pre-check items that have REAL signal
-  // (ML prediction or operator-configured rule). Items that ended up in
-  // the panel via the par/60 fallback don't have enough evidence to
-  // auto-include in the cart — the GM should explicitly opt them in.
+  // Seed cart state. On OPEN: rebuild from defaults and clear any stale
+  // "orders placed" banner. While the panel STAYS open: any realtime
+  // inventory change (a housekeeper saving a count on another device)
+  // refetches the list and produces a fresh-identity `recs` array — that must
+  // NOT wipe the GM's ticked lines, typed quantities, or the success banner
+  // mid-order. seedCartState preserves existing lines and only adds defaults
+  // for recs that don't have a line yet. (Race fix — see reorder-cart.ts.)
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    setPlaceResult(null);
-    const next: Record<string, LineState> = {};
-    for (const r of recs) {
-      const hasRealSignal = r.burnSource === 'ml' || r.burnSource === 'rule-occupancy';
-      next[r.itemId] = { checked: r.urgency === 'now' && hasRealSignal, qty: r.suggestQty };
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
     }
-    setState(next);
+    const firstOpen = !wasOpenRef.current;
+    wasOpenRef.current = true;
+    if (firstOpen) setPlaceResult(null);
+    setState((prev) => seedCartState(recs, prev, firstOpen));
   }, [open, recs]);
 
   const cartItems = recs.filter((r) => state[r.itemId]?.checked);
@@ -473,13 +476,11 @@ export function ReorderPanel({
 }
 
 function budgetFor(budgets: InventoryBudget[], cat: InventoryCategory): number {
+  // LOCAL month match — see month.ts for the end-of-month UTC-drift fix.
   const now = new Date();
   for (const b of budgets) {
     if (b.category !== cat || !b.monthStart) continue;
-    if (
-      b.monthStart.getUTCFullYear() === now.getUTCFullYear() &&
-      b.monthStart.getUTCMonth() === now.getUTCMonth()
-    ) {
+    if (isBudgetForLocalMonth(b.monthStart, now)) {
       return b.budgetCents / 100;
     }
   }

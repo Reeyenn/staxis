@@ -77,13 +77,18 @@ export function usePmsOnboardJob({
   // ─── Job polling ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!jobId) return;
+    // The user pressed Stop: halt polling entirely until start() kicks off a
+    // new job. Do NOT reset userStopped here — this effect is keyed on
+    // userStopped, so flipping it back inside the effect used to immediately
+    // re-run the effect and silently restart the 3s poll loop (Stop button
+    // did nothing). userStopped is reset only in start().
+    if (userStopped) return;
     let cancelled = false;
     // Reset stalled-state tracking on a new job.
     lastProgressChangeRef.current = Date.now();
     lastProgressPctRef.current = -1;
     setPollState('polling');
     setPollNetworkFailures(0);
-    setUserStopped(false);
 
     const poll = async () => {
       if (cancelled || userStopped) return;
@@ -172,6 +177,7 @@ export function usePmsOnboardJob({
     pollNetworkFailures,
     userStopped,
     start: (id, initialStatus) => {
+      setUserStopped(false); // a fresh job clears a previous manual Stop
       setJobId(id);
       setJobStatus(initialStatus);
       // Polling kicks in via the useEffect above.

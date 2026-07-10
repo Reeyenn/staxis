@@ -30,6 +30,8 @@ import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { C, SERIF, SANS, MONO, LABEL, RING, STATUS_EN, STATUS_ES, type RingKey } from './_components/palette';
+import { attentionText } from './_components/attention-text';
+import { holdLastGoodCounts } from './_components/counts-hold';
 import { RoomRing, type RingTick } from './_components/RoomRing';
 import { MetricChart } from './_components/MetricChart';
 import { Sparkline } from './_components/Sparkline';
@@ -193,7 +195,17 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!activePropertyId) return;
     let alive = true;
-    const load = () => { void fetchTodayPropertyCounts(activePropertyId, today).then(c => { if (alive) setCounts(c); }); };
+    // New property/day scope: drop the previous scope's counts first so the
+    // last-good hold below can never carry one hotel's numbers onto another.
+    setCounts(null);
+    const load = () => {
+      void fetchTodayPropertyCounts(activePropertyId, today).then(c => {
+        // Hold last-good: a transient RPC failure comes back as the all-zero
+        // shape — overwriting real numbers with it made the ring + Departures
+        // tile blink out for 30s on every connectivity blip (see counts-hold).
+        if (alive) setCounts(prev => holdLastGoodCounts(prev, c));
+      });
+    };
     load();
     const iv = setInterval(load, 30_000);
     return () => { alive = false; clearInterval(iv); };
@@ -211,9 +223,21 @@ export default function DashboardPage() {
     return subscribeLostFoundCounts(activePropertyId, setLostFound);
   }, [user, activePropertyId, communicationsEnabled]);
   useEffect(() => {
+    // Property switch / section toggle: never let the previous scope's
+    // compliance lines linger under the new one.
+    setCompliance(null);
     if (!user || !activePropertyId || !maintenanceEnabled) return;
     let alive = true;
-    const load = () => { void fetchComplianceSummary(activePropertyId).then(s => { if (alive) setCompliance(s); }); };
+    // fetchComplianceSummary maps any HTTP/parse failure to null — treating
+    // that as "no compliance issues" flipped 'Needs attention' to a green
+    // 'All clear' during transient API failures. Hold last-good instead and
+    // let the next 60s tick recover; network-level throws are swallowed for
+    // the same reason (they were an unhandled rejection before).
+    const load = () => {
+      void fetchComplianceSummary(activePropertyId)
+        .then(s => { if (alive && s) setCompliance(s); })
+        .catch(() => { /* transient poll failure — hold last-good, retry next tick */ });
+    };
     load();
     const iv = setInterval(load, 60_000);
     return () => { alive = false; clearInterval(iv); };
@@ -418,13 +442,13 @@ export default function DashboardPage() {
     const out: { n: number; text: string }[] = [];
     // Each line is filtered by the section that owns it — an off section
     // contributes nothing (and its feed above never subscribed).
-    if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: ES ? `orden${urgentOrders.length > 1 ? 'es' : ''} de trabajo urgente${urgentOrders.length > 1 ? 's' : ''}` : `urgent work order${urgentOrders.length > 1 ? 's' : ''}` });
-    if (maintenanceEnabled && compliance && compliance.pmOverdueCount > 0) out.push({ n: compliance.pmOverdueCount, text: ES ? 'revisiones de cumplimiento vencidas' : `compliance check${compliance.pmOverdueCount > 1 ? 's' : ''} overdue` });
-    if (maintenanceEnabled && compliance && compliance.anomalyCount > 0) out.push({ n: compliance.anomalyCount, text: ES ? 'anomalías marcadas' : `anomaly flagged · Maintenance` });
-    if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: ES ? 'quejas atrasadas' : `complaint${overdueComplaints > 1 ? 's' : ''} overdue` });
-    if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: ES ? 'llamadas de seguimiento hoy' : `guest callback${callbacksDueCount > 1 ? 's' : ''} due` });
-    if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: ES ? 'habitaciones por limpiar' : `room${dirtyRooms > 1 ? 's' : ''} to clean` });
-    if (communicationsEnabled && lostFound && lostFound.nearingDisposal > 0) out.push({ n: lostFound.nearingDisposal, text: ES ? 'objetos por desechar' : 'lost items nearing disposal' });
+    if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: attentionText('urgentOrders', urgentOrders.length, ES) });
+    if (maintenanceEnabled && compliance && compliance.pmOverdueCount > 0) out.push({ n: compliance.pmOverdueCount, text: attentionText('complianceOverdue', compliance.pmOverdueCount, ES) });
+    if (maintenanceEnabled && compliance && compliance.anomalyCount > 0) out.push({ n: compliance.anomalyCount, text: attentionText('anomalies', compliance.anomalyCount, ES) });
+    if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: attentionText('complaintsOverdue', overdueComplaints, ES) });
+    if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: attentionText('callbacksDue', callbacksDueCount, ES) });
+    if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: attentionText('roomsToClean', dirtyRooms, ES) });
+    if (communicationsEnabled && lostFound && lostFound.nearingDisposal > 0) out.push({ n: lostFound.nearingDisposal, text: attentionText('lostFoundDisposal', lostFound.nearingDisposal, ES) });
     return out.slice(0, 5);
   }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, lostFound, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);

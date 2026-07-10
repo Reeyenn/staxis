@@ -27,6 +27,7 @@ import type {
 } from '@/types';
 
 import { T, fonts } from './tokens';
+import { startOfLocalMonth, addLocalMonths, isBudgetForLocalMonth } from './month';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
@@ -126,8 +127,10 @@ export function InventoryShell() {
   // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
   // no auto-fill map, no ai-status/ai-mode call.
   const fetchBoardData = useCallback(async (uid: string, pid: string) => {
-    const monthStart = startOfMonth(new Date());
-    const monthEnd = startOfMonth(addMonths(new Date(), 1));
+    // LOCAL month window — "this month" means the hotel's calendar month, not
+    // the UTC one (which flips hours early in US timezones).
+    const monthStart = startOfLocalMonth(new Date());
+    const monthEnd = addLocalMonths(new Date(), 1);
     const [occ, avg, ct, od, bd, spend] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
@@ -254,15 +257,14 @@ export function InventoryShell() {
     [spendByCat],
   );
 
-  // Sum the active month's budget caps (use the cap relevant for today's month).
+  // Sum the active month's budget caps (use the cap relevant for today's
+  // LOCAL month — see month.ts for the UTC-drift fix).
   const totalCap = useMemo(() => {
     const now = new Date();
-    const ymStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     let sum = 0;
     for (const b of budgets) {
       if (!b.monthStart) continue;
-      if (b.monthStart.getUTCFullYear() === ymStart.getUTCFullYear()
-          && b.monthStart.getUTCMonth() === ymStart.getUTCMonth()) {
+      if (isBudgetForLocalMonth(b.monthStart, now)) {
         sum += b.budgetCents / 100;
       }
     }
@@ -546,12 +548,6 @@ function todayLabel(lang: 'en' | 'es'): string {
 function todayDow(lang: 'en' | 'es'): string {
   const d = new Date();
   return d.toLocaleDateString(dateLocale(lang), { weekday: 'long' });
-}
-function startOfMonth(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
-function addMonths(d: Date, n: number): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
 }
 function daysAgo(n: number): Date {
   return new Date(Date.now() - n * 86_400_000);

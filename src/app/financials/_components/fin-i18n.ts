@@ -4,7 +4,7 @@
 // that file is edited by every parallel feature, so co-locating avoids a merge
 // conflict while staying fully lang-driven via useLang().
 
-import type { Department, CapexStatus, CapexCategory, RequestType } from '@/lib/financials/shared';
+import { formatCents, type Department, type CapexStatus, type CapexCategory, type RequestType } from '@/lib/financials/shared';
 
 type Lang = 'en' | 'es';
 
@@ -222,6 +222,18 @@ const STRINGS = {
     errorLoading: 'Could not load. Tap to retry.',
     close: 'Close',
     saving: 'Saving…',
+    // errors / validation (mutation failures must never be silent)
+    couldNotSave: 'Could not save. Try again.',
+    couldNotDelete: 'Could not delete. Try again.',
+    invalidAmount: 'Enter a valid amount.',
+    linesPartial: 'Request saved, but some scanned line items could not be added. Add them in the project binder.',
+    attachmentOpenFailed: 'Could not open the attachment. Try again.',
+    scanRateLimited: 'Scan limit reached — wait a bit and try again.',
+    scanBudgetCap: 'Daily AI budget reached — scanning is paused until tomorrow.',
+    scanServiceDown: 'The scan service is temporarily unavailable. Try again soon.',
+    // budget card footer words ("$1,200 spent / of $2,000")
+    spentWord: 'spent',
+    ofWord: 'of',
   },
   es: {
     title: 'Finanzas',
@@ -351,6 +363,18 @@ const STRINGS = {
     errorLoading: 'No se pudo cargar. Toca para reintentar.',
     close: 'Cerrar',
     saving: 'Guardando…',
+    // errors / validation
+    couldNotSave: 'No se pudo guardar. Inténtalo de nuevo.',
+    couldNotDelete: 'No se pudo eliminar. Inténtalo de nuevo.',
+    invalidAmount: 'Ingresa un monto válido.',
+    linesPartial: 'Solicitud guardada, pero algunas partidas escaneadas no se pudieron agregar. Agrégalas en la carpeta del proyecto.',
+    attachmentOpenFailed: 'No se pudo abrir el adjunto. Inténtalo de nuevo.',
+    scanRateLimited: 'Límite de escaneos alcanzado — espera un poco e inténtalo de nuevo.',
+    scanBudgetCap: 'Presupuesto diario de IA alcanzado — el escaneo se pausa hasta mañana.',
+    scanServiceDown: 'El servicio de escaneo no está disponible por ahora. Inténtalo pronto.',
+    // budget card footer words
+    spentWord: 'gastado',
+    ofWord: 'de',
   },
 };
 
@@ -366,4 +390,68 @@ export function deptLabel(lang: Lang, d: Department): string {
 
 export function capexStatusLabel(lang: Lang, s: CapexStatus): string {
   return CAPEX_STATUS_LABELS[lang]?.[s] ?? CAPEX_STATUS_LABELS.en[s] ?? s;
+}
+
+/**
+ * Map a scan failure to the right user-facing message (used by ScanButton;
+ * lives here so it stays a pure, test-importable function). The server
+ * distinguishes rate limiting (429 rate_limited — note: NOT the standard
+ * envelope, the error text itself is 'rate_limited' with no code), the daily
+ * AI budget cap (429 user_cap/property_cap/global_cap), and the vision
+ * service being down (503/500 vision_unavailable/vision_failed) — telling
+ * the manager "try a clearer photo" for those sends them retaking photos
+ * pointlessly.
+ */
+export function scanErrorLabel(
+  S: Pick<FinStrings, 'scanRateLimited' | 'scanBudgetCap' | 'scanServiceDown'>,
+  fallback: string,
+  code: string | undefined,
+  status: number | undefined,
+  errorText: string | undefined,
+): string {
+  if (code === 'user_cap' || code === 'property_cap' || code === 'global_cap') return S.scanBudgetCap;
+  if (code === 'rate_limited' || errorText === 'rate_limited' || status === 429) return S.scanRateLimited;
+  if (code === 'vision_unavailable' || code === 'vision_failed' || status === 503) return S.scanServiceDown;
+  return fallback;
+}
+
+// ── Bilingual rebuilds of server-generated alert sentences ──────────────────
+// The forecast/anomaly APIs return English-only `message` strings (built in
+// src/lib/financials/forecast.ts / anomaly.ts, which have no lang). The
+// responses also carry the structured numbers, so the client rebuilds the
+// sentence in the viewer's language. EN output matches the server string
+// byte-for-byte so English users see no change.
+
+/** "Housekeeping is trending 23% over budget (projected $4,100.00 vs $3,200.00)." */
+export function forecastTrendingMsg(
+  lang: Lang,
+  department: Department,
+  pctOverBudget: number,
+  projectedCents: number,
+  budgetCents: number,
+): string {
+  const dept = deptLabel(lang, department);
+  const pct = Math.round(pctOverBudget);
+  const projected = formatCents(projectedCents);
+  const budget = formatCents(budgetCents);
+  return lang === 'es'
+    ? `${dept} va camino a exceder el presupuesto en ${pct}% (proyectado ${projected} vs ${budget}).`
+    : `${dept} is trending ${pct}% over budget (projected ${projected} vs ${budget}).`;
+}
+
+/** "Utilities spend is 40% over last month ($700.00 vs $500.00)." */
+export function anomalySpikeMsg(
+  lang: Lang,
+  department: Department,
+  ratio: number,
+  currentCents: number,
+  baselineCents: number,
+): string {
+  const dept = deptLabel(lang, department);
+  const pct = Math.round((ratio - 1) * 100);
+  const cur = formatCents(currentCents);
+  const base = formatCents(baselineCents);
+  return lang === 'es'
+    ? `El gasto de ${dept} está ${pct}% por encima del mes pasado (${cur} vs ${base}).`
+    : `${dept} spend is ${pct}% over last month (${cur} vs ${base}).`;
 }

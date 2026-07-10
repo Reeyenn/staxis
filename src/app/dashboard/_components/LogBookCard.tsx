@@ -40,10 +40,12 @@ export function LogBookCard() {
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
   // Communications-owned embed: `enabled` gates the FETCH, not just the
-  // render — nothing hits the wire when the section is off.
+  // render — nothing hits the wire when the section is off. Polled so new
+  // shift recaps appear on a long-lived (wall-TV) dashboard without a reload;
+  // keepDataOnError holds last-good through a failed poll.
   const { data, loading } = useApiResource<{ entries: LogEntry[] }>(
     `/api/comms/logbook?pid=${encodeURIComponent(activePropertyId ?? '')}`,
-    { enabled: canSee && !!activePropertyId && commsEnabled },
+    { enabled: canSee && !!activePropertyId && commsEnabled, pollMs: 60_000, keepDataOnError: true },
   );
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;

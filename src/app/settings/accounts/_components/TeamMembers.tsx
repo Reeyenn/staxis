@@ -25,14 +25,20 @@ export function TeamMembers({ user, hotelId }: { user: AppUser; hotelId: string 
   const { lang } = useLang();
 
   const [team, setTeam] = useState<AccountRow[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const [editMember, setEditMember] = useState<AccountRow | null>(null);
 
   const loadTeam = useCallback(async () => {
     if (!user || !hotelId) return;
-    const res = await fetchWithAuth(`/api/auth/team?hotelId=${hotelId}`);
-    if (res.ok) {
+    try {
+      const res = await fetchWithAuth(`/api/auth/team?hotelId=${hotelId}`);
+      if (!res.ok) { setLoadError(true); return; } // don't render "no team" for a failed load
       const body = await res.json() as { data?: { team?: AccountRow[] } };
       setTeam(body.data?.team ?? []);
+      setLoadError(false);
+    } catch (err) {
+      console.error('[accounts:team] load failed', err);
+      setLoadError(true);
     }
   }, [user, hotelId]);
   useEffect(() => { void loadTeam(); }, [loadTeam]);
@@ -62,6 +68,13 @@ export function TeamMembers({ user, hotelId }: { user: AppUser; hotelId: string 
       {/* Existing team members for the selected hotel — visible to
           admin/owner/GM. Admins are included since they implicitly
           have access to every hotel. */}
+      {loadError && (
+        <ErrorBox>
+          {lang === 'es'
+            ? 'No se pudieron cargar los miembros del equipo. Recarga la página para intentar de nuevo.'
+            : 'Couldn’t load team members. Refresh the page to try again.'}
+        </ErrorBox>
+      )}
       {team.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <h3 style={subHeadingStyle}>
@@ -180,10 +193,14 @@ function EditMemberModal({ member, hotelId, isSelf, onClose, onSaved }: {
       });
       const body = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? 'Failed to save');
+        setError(body.error ?? (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
         return;
       }
       onSaved();
+    } catch (err) {
+      // A network throw used to leave the modal open with no message at all.
+      console.error('[accounts:team] edit save failed', err);
+      setError(lang === 'es' ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Failed to save — check your connection and try again');
     } finally {
       setSaving(false);
     }

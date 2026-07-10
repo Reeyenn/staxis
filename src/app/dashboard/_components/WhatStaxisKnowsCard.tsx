@@ -39,9 +39,12 @@ export function WhatStaxisKnowsCard() {
   const es = lang === 'es';
   const canSee = !!user && canManageTeam(user.role);
 
+  // Nightly-consolidation stats: a slow 5-min poll keeps a long-lived
+  // (wall-TV) dashboard from going permanently stale; keepDataOnError holds
+  // last-good through a failed poll so the box never blinks out on a blip.
   const { data, loading } = useApiResource<KnowsData>(
     `/api/memory/knows?propertyId=${activePropertyId}`,
-    { enabled: canSee && !!activePropertyId },
+    { enabled: canSee && !!activePropertyId, pollMs: 300_000, keepDataOnError: true },
   );
 
   if (!canSee || !activePropertyId || loading || !data) return null;

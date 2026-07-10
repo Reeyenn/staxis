@@ -111,12 +111,25 @@ function disposalInfo(item: LostFoundItem, lang: Lang): { label: string; color: 
   return { label: tr(lang, `Hold ${days}d left`, `Quedan ${days}d`), color: T.ink3 };
 }
 
+/** AI match-confidence label — bilingual (the raw 'high'/'medium'/'low' value
+ *  used to leak through untranslated on the Spanish UI). */
+function confidenceLabel(c: 'high' | 'medium' | 'low', lang: Lang): string {
+  switch (c) {
+    case 'high':
+      return tr(lang, 'High confidence', 'Confianza alta');
+    case 'medium':
+      return tr(lang, 'Medium confidence', 'Confianza media');
+    default:
+      return tr(lang, 'Low confidence', 'Confianza baja');
+  }
+}
+
 type ViewFilter = 'unresolved' | 'found' | 'lost' | 'resolved' | 'all';
 
 const INITIAL_COUNTS: LostFoundCounts = { open: 0, awaitingReturn: 0, nearingDisposal: 0 };
 
 export function LostFoundTab({ pid, lang }: { pid: string; lang: Lang }) {
-  const { items, counts, loading, refetch } = useRegisterFeed<LostFoundItem, LostFoundCounts>(
+  const { items, counts, loading, loadFailed, refetch } = useRegisterFeed<LostFoundItem, LostFoundCounts>(
     pid, subscribeLostFound, fetchLostFoundRegister, INITIAL_COUNTS,
   );
   const [search, setSearch] = useState('');
@@ -190,6 +203,7 @@ export function LostFoundTab({ pid, lang }: { pid: string; lang: Lang }) {
 
       <RegisterList
         loading={loading}
+        loadFailed={loadFailed}
         lang={lang}
         isEmpty={filtered.length === 0}
         emptyTitle={tr(lang, 'Nothing here yet', 'Nada por aquí todavía')}
@@ -334,11 +348,16 @@ function ItemCard({
               </SmallBtn>
             </>
           )}
-          {!isFound && item.status === 'open' && (
+          {!isFound && (item.status === 'open' || item.status === 'matched') && (
             <>
-              <SmallBtn busy={busy} tone={T.ink} onClick={runAutoMatch}>
-                {matching ? tr(lang, 'Searching…', 'Buscando…') : '✨ ' + tr(lang, 'Find matches', 'Buscar coincidencias')}
-              </SmallBtn>
+              {item.status === 'open' && (
+                <SmallBtn busy={busy} tone={T.ink} onClick={runAutoMatch}>
+                  {matching ? tr(lang, 'Searching…', 'Buscando…') : '✨ ' + tr(lang, 'Find matches', 'Buscar coincidencias')}
+                </SmallBtn>
+              )}
+              {/* Matched lost reports keep "Close report" — resolving the FOUND
+                  side never cascades here, so without this the card would sit
+                  in the Active view forever with no way to clear it. */}
               <SmallBtn busy={busy} tone={T.ink3} onClick={() =>
                 act(() => updateLostFoundItem(pid, item.id, { status: 'returned' }), tr(lang, 'Closed', 'Cerrado'))
               }>
@@ -376,7 +395,7 @@ function ItemCard({
                       {m.item.itemDescription}
                       {m.aiConfidence && (
                         <span style={{ marginLeft: 8, fontSize: 11, color: m.aiConfidence === 'high' ? T.sageDeep : m.aiConfidence === 'medium' ? T.caramel : T.ink3 }}>
-                          {tr(lang, m.aiConfidence + ' confidence', m.aiConfidence)}
+                          {confidenceLabel(m.aiConfidence, lang)}
                         </span>
                       )}
                     </div>
@@ -495,7 +514,13 @@ function LogModal({
         {/* Type toggle */}
         <ChipChoose
           value={type}
-          onChange={(v) => setType(v)}
+          onChange={(v) => {
+            // Switching to a lost report hides the photo picker, but the
+            // prepared blob would silently survive and get uploaded onto the
+            // guest's report — drop it so no invisible photo is attached.
+            if (v === 'lost') photo.clear();
+            setType(v);
+          }}
           options={[
             { value: 'found', label: tr(lang, 'Found item', 'Objeto encontrado') },
             { value: 'lost', label: tr(lang, 'Guest lost report', 'Reporte de pérdida') },

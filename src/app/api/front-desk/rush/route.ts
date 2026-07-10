@@ -29,7 +29,6 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
-  hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
 import { enqueueSms, processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 
@@ -100,9 +99,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
+  // Raw pid as the property key (api_limits.property_id FKs properties.id —
+  // a hashed pseudo-UUID would FK-violate and the limit would silently fail
+  // open); per-user bucketing goes in the endpoint text via subKey.
   const rl = await checkAndIncrementRateLimit(
     'front-desk-rush',
-    hashToRateLimitKey(`${pid}:${session.userId}`),
+    pid,
+    { subKey: session.userId },
   );
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -112,9 +115,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   const dueByIso = isClear ? null : new Date(now.getTime() + DUE_OFFSET_MS[body.due_label!]).toISOString();
 
   try {
+    // Property-local "today" — the same date semantics the rules engine uses
+    // for cleaning_tasks.business_date (propertyLocalDate). Using the UTC date
+    // here made evening rushes (after ~6-7pm Central) target tomorrow's rows
+    // and silently match nothing.
+    const { data: propRow } = await supabaseAdmin
+      .from('properties')
+      .select('timezone')
+      .eq('id', pid)
+      .maybeSingle();
+    const tz = (propRow as { timezone?: string | null } | null)?.timezone;
     // Find the room on today's board via the pms_* merge (single source) —
     // also yields the assigned housekeeper for the SMS.
-    const date = todayStr();
+    const date = tz ? todayStr(tz) : todayStr();
     const merged = await mergePmsRoomsForDate(pid, date);
     const room = merged.find((r) => r.number === roomNumber);
     if (!room) {
@@ -161,17 +174,28 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!rushRows || rushRows.length === 0) {
       // Room is in inventory but has no HK assignment row for today, so the
       // rush didn't persist (UPDATE-only, to avoid materializing a phantom
-      // dirty tile). Surface it so a "Housekeeper notified" isn't silently a
-      // no-op. Rare in practice — rushed rooms are checkouts already on the plan.
+      // dirty tile). Rare in practice — rushed rooms are checkouts already on
+      // the plan.
       log.warn('front-desk/rush: no assignment row for today — rush not persisted', {
         requestId, pid, roomNumber, date,
       });
+      if (!isClear) {
+        // Setting a rush that didn't persist is a FAILURE — returning ok()
+        // here made the client toast "Housekeeper notified" while nothing was
+        // saved and no SMS went out. Surface it so the clerk knows to call.
+        // (Clearing falls through: nothing to clear means the desired state —
+        // no rush — already holds, so the idempotent success stands.)
+        return err('no_assignment_today', {
+          requestId, status: 404, code: ApiErrorCode.NotFound, headers,
+        });
+      }
     }
 
     // Mirror into cleaning_tasks if a Staxis-side task exists. Use the same
-    // dedupe key shape the rules engine uses: room_number + business_date.
+    // dedupe key shape the rules engine uses: room_number + business_date —
+    // and the same property-local date (the engine writes business_date via
+    // propertyLocalDate; the UTC date diverges from ~6-7pm Central onward).
     if (!isClear) {
-      const today = new Date().toISOString().slice(0, 10);
       const { error: tasksErr } = await supabaseAdmin
         .from('cleaning_tasks')
         .update({
@@ -180,7 +204,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         })
         .eq('property_id', pid)
         .eq('room_number', roomNumber)
-        .eq('business_date', today);
+        .eq('business_date', date);
       if (tasksErr) {
         log.warn('front-desk/rush: cleaning_tasks update failed (non-fatal)', {
           requestId, err: errToString(tasksErr),
@@ -189,14 +213,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     } else {
       // Clearing a rush: drop priority back to 'normal' (rules engine
       // default). Leave due_by alone — the original rule-engine-derived
-      // value should re-apply on next run.
-      const today = new Date().toISOString().slice(0, 10);
+      // value should re-apply on next run. Same property-local date as above.
       await supabaseAdmin
         .from('cleaning_tasks')
         .update({ priority: 'normal' })
         .eq('property_id', pid)
         .eq('room_number', roomNumber)
-        .eq('business_date', today);
+        .eq('business_date', date);
     }
 
     // Notify housekeeper(s). Fire-and-forget — DON'T `await` the SMS

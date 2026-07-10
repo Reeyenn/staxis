@@ -53,6 +53,12 @@ export default function VoiceSettingsPage() {
         if (prefRes.ok) {
           const body = await prefRes.json();
           setPref(body.data as VoicePreference);
+        } else {
+          // Without this, pref stays null and the toggle sits permanently
+          // disabled with no explanation.
+          setError(isEs
+            ? 'No se pudieron cargar tus preferencias de voz. Recarga la página para intentar de nuevo.'
+            : 'Couldn’t load your voice preferences. Refresh the page to try again.');
         }
         if (availRes.ok) {
           const body = await availRes.json();
@@ -63,7 +69,7 @@ export default function VoiceSettingsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, isEs]);
 
   const updateWakeWord = async (next: boolean) => {
     if (!pref) return;
@@ -88,8 +94,11 @@ export default function VoiceSettingsPage() {
       const ok = await res.json();
       setPref(ok.data as VoicePreference);
       if (next && !wakeWordToastShown) setWakeWordToastShown(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch {
+      // Roll back the optimistic flip — a network throw used to leave the
+      // toggle showing a state that never persisted.
+      setPref(prev => prev ? { ...prev, wakeWordEnabled: !next } : prev);
+      setError(isEs ? 'No se pudo guardar.' : 'Couldn’t save.');
     } finally {
       setSaving(false);
     }

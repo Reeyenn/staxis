@@ -16,6 +16,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { useTodayStr } from '@/lib/use-today-str';
 import { GlassCard } from './GlassCard';
 import { CARD, CARD_MONO, CARD_LABEL } from './palette';
 
@@ -53,20 +54,24 @@ export function CalendarCard() {
   // Communications-owned embed: `enabled` gates the FETCH, not just the
   // render — nothing hits the wire when the section is off. The hook drops
   // the prior property's data on switch, so a slow OR failed reload can
-  // never flash the wrong hotel's calendar.
+  // never flash the wrong hotel's calendar. Polled so newly added events
+  // appear on a long-lived (wall-TV) dashboard without a reload;
+  // keepDataOnError holds last-good through a failed poll.
   const { data, loading } = useApiResource<{ events: CalEvent[] }>(
     `/api/knowledge/events?pid=${encodeURIComponent(activePropertyId ?? '')}`,
-    { enabled: canSee && !!activePropertyId && commsEnabled },
+    { enabled: canSee && !!activePropertyId && commsEnabled, pollMs: 60_000, keepDataOnError: true },
   );
 
   // The route returns events ascending by start date. Keep only those that
   // haven't finished yet (today inclusive) and take the soonest few.
-  // Memoized on data so "today" is pinned at fetch time, as before.
+  // `today` is reactive (midnight rollover, same hook as the page hero) —
+  // pinning it at fetch time left an ended event listed as "upcoming"
+  // forever on an always-open dashboard.
+  const today = useTodayStr();
   const events = useMemo(() => {
     const list = data?.events ?? [];
-    const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD local
-    return list.filter((e) => (e.endDate ?? e.eventDate) >= todayStr).slice(0, 4);
-  }, [data]);
+    return list.filter((e) => (e.endDate ?? e.eventDate) >= today).slice(0, 4);
+  }, [data, today]);
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;
   // Additive-only: nothing to show until there's at least one upcoming event.

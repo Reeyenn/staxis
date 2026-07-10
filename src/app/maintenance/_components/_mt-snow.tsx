@@ -10,8 +10,9 @@
 // this shell is top-aligned (alignItems flex-start, 48px scrim padding), lets
 // tall modals grow past the viewport with the SCRIM scrolling (no card
 // max-height / inner scroll), and closes on scrim *click* (mouseup) rather
-// than mousedown — none of which F6's fixed 'center' geometry can reproduce
-// today. It is also imported by financials + front-desk + the parked
+// than mousedown (guarded: the interaction must both start AND end on the
+// scrim, so a text-selection drag out of the card can't close it) — none of
+// which F6's fixed 'center' geometry can reproduce today. It is also imported by financials + front-desk + the parked
 // ComplianceTab, so its behavior must not move. If F6 ever grows scrim
 // align/padding + card max-height overrides, this shell can become a themed
 // wrapper. (Wave-1 precedent: keep the hand-roll when the foundation can't
@@ -19,7 +20,7 @@
 
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn,
@@ -29,6 +30,12 @@ import { EmptyState } from '@/app/_components/ui/EmptyState';
 // Re-export the shared Snow primitives so the maintenance tabs have a single
 // import source (tokens + Caps/Pill/Btn live in housekeeping/_snow).
 export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn };
+// Pure date/cadence helpers live in mt-dates.ts (plain .ts, unit-testable);
+// re-exported here so the tabs keep a single import source.
+export {
+  fmtDate, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
+  daysBetween, addDaysLocal, relDue, displayLoc, cadenceLabel,
+} from './mt-dates';
 export type Priority = 'urgent' | 'normal' | 'low';
 
 // ── Priority colors ────────────────────────────────────────────────────────
@@ -89,6 +96,12 @@ export function Modal({
   width?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // True only while the current pointer interaction STARTED on the scrim.
+  // A text-selection drag that starts inside the card and releases over the
+  // scrim fires a browser-synthesized click on the scrim (the common
+  // ancestor of mousedown/mouseup targets) — without this guard that click
+  // closed the modal and ate the half-typed form.
+  const downOnScrim = useRef(false);
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
@@ -102,7 +115,14 @@ export function Modal({
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div onClick={onClose} style={{
+    <div
+      onMouseDown={(e) => { downOnScrim.current = e.target === e.currentTarget; }}
+      onClick={(e) => {
+        const wasDownOnScrim = downOnScrim.current;
+        downOnScrim.current = false;
+        if (e.target === e.currentTarget && wasDownOnScrim) onClose();
+      }}
+      style={{
       position: 'fixed', inset: 0, zIndex: 1000,
       background: 'rgba(31,35,28,0.32)',
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
@@ -253,53 +273,6 @@ export function ChipChoose<V extends string>({
   );
 }
 
-// ── Date helpers ──────────────────────────────────────────────────────────
-export function fmtDate(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-export function fmtDateShort(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-// "May 12 · 7:51 AM" / "May 11 · 1d ago" — used in the open-card byline.
-export function fmtSubmittedAt(d: Date | null, now: Date = new Date()): string {
-  if (!d) return '';
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) {
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) + ' · today';
-  }
-  const daysAgo = Math.floor((now.getTime() - d.getTime()) / (24 * 60 * 60 * 1000));
-  if (daysAgo === 1) return `${fmtDateShort(d)} · 1d ago`;
-  if (daysAgo < 7)   return `${fmtDateShort(d)} · ${daysAgo}d ago`;
-  return fmtDate(d);
-}
-
-// Days between two dates ignoring time-of-day. Positive = b is later.
-export function daysBetween(a: Date, b: Date): number {
-  const aa = new Date(a.getFullYear(), a.getMonth(), a.getDate());
-  const bb = new Date(b.getFullYear(), b.getMonth(), b.getDate());
-  return Math.round((bb.getTime() - aa.getTime()) / (24 * 60 * 60 * 1000));
-}
-
-// Due-relative string from "days until due" (negative = overdue). Used on the
-// Preventive board cards. Spanish variants for the bilingual UI.
-export function relDue(days: number, es = false): string {
-  if (days === 0)  return es ? 'vence hoy'    : 'due today';
-  if (days < 0)    return es ? `${-days}d vencido` : `${-days}d overdue`;
-  if (days === 1)  return es ? 'vence mañana' : 'due tomorrow';
-  if (days <= 7)   return es ? `en ${days}d`  : `in ${days}d`;
-  if (days <= 60)  return es ? `en ${Math.round(days / 7)}sem` : `in ${Math.round(days / 7)}w`;
-  return es ? `en ${Math.round(days / 30)}mes` : `in ${Math.round(days / 30)}mo`;
-}
-
-// Format a location for display: bare room numbers get a "Rm " prefix; named
-// areas ("Lobby", "Pool Deck") pass through verbatim.
-export function displayLoc(loc: string, es = false): string {
-  const t = (loc || '').trim();
-  return /^\d{1,4}$/.test(t) ? `${es ? 'Hab' : 'Rm'} ${t}` : t;
-}
-
 // ── Board primitives (shared by the three maintenance tabs) ────────────────
 
 // Page header: mono eyebrow + serif headline (italic lead · faint rest) +
@@ -429,6 +402,76 @@ export function MtEmptyCard({
   );
 }
 
+// ── Board load gate ────────────────────────────────────────────────────────
+// subscribeTable's initial fetch failure is only logged — the callback never
+// fires — so a board that got NO data was indistinguishable from a board that
+// loaded an EMPTY list, and the tabs rendered their happy "all caught up"
+// empty state during a network blip (the silent-empty-state bug class, here
+// for signed-in users). This hook runs a 1-row probe against the same table
+// so the tab can tell "loaded empty" apart from "failed to load", plus a
+// stall timer so a probe-passed-but-subscription-failed race still surfaces
+// as an error instead of an infinite spinner. `loaded` = the subscription
+// callback has fired at least once (data always wins).
+export type BoardLoadStatus = 'loading' | 'error' | 'ready';
+
+export function useBoardGate(
+  pid: string | null | undefined,
+  table: string,
+  loaded: boolean,
+): { status: BoardLoadStatus; retryKey: number; retry: () => void } {
+  const [probe, setProbe] = useState<'pending' | 'ok' | 'error'>('pending');
+  const [stalled, setStalled] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    if (!pid || loaded) return;
+    let alive = true;
+    setProbe('pending');
+    setStalled(false);
+    void (async () => {
+      try {
+        const { supabase } = await import('@/lib/supabase');
+        const { error } = await supabase.from(table).select('id').eq('property_id', pid).limit(1);
+        if (alive) setProbe(error ? 'error' : 'ok');
+      } catch {
+        if (alive) setProbe('error');
+      }
+    })();
+    return () => { alive = false; };
+  }, [pid, table, retryKey, loaded]);
+
+  // Probe passed but the subscription's own initial fetch never delivered —
+  // don't spin forever, offer the retry instead.
+  useEffect(() => {
+    if (loaded || probe !== 'ok') { setStalled(false); return; }
+    const t = window.setTimeout(() => setStalled(true), 15000);
+    return () => window.clearTimeout(t);
+  }, [probe, loaded, retryKey]);
+
+  const status: BoardLoadStatus = loaded ? 'ready' : (probe === 'error' || stalled) ? 'error' : 'loading';
+  return { status, retryKey, retry: () => setRetryKey((k) => k + 1) };
+}
+
+// Neutral first-load placeholder (matches the registry's "Loading…" line).
+export function BoardLoading({ es }: { es: boolean }) {
+  return (
+    <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
+      {es ? 'Cargando…' : 'Loading…'}
+    </div>
+  );
+}
+
+// Load-error card with a retry (same recover idiom as MaintenanceErrorBoundary).
+export function BoardLoadError({ es, onRetry }: { es: boolean; onRetry: () => void }) {
+  return (
+    <MtEmptyCard
+      title={es ? 'No se pudo cargar.' : "Couldn't load this."}
+      body={es ? 'Tus datos están a salvo — revisa la conexión e inténtalo de nuevo.' : 'Your data is safe — check your connection and try again.'}
+      action={<Btn variant="primary" onClick={onRetry}>↻ {es ? 'Reintentar' : 'Retry'}</Btn>}
+    />
+  );
+}
+
 // Error boundary: catches a render error in the maintenance subtree and shows
 // a recover card instead of a blank screen (the white-screen-on-tab bug class).
 export class MaintenanceErrorBoundary extends React.Component<
@@ -516,6 +559,7 @@ export function StorageImage({
   alt?: string;
   height?: number;
 }) {
+  const { lang } = useLang();
   const [url, setUrl] = React.useState<string | null>(null);
   React.useEffect(() => {
     let alive = true;
@@ -547,7 +591,7 @@ export function StorageImage({
         fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
         letterSpacing: '0.08em', textTransform: 'uppercase',
       }}>
-        Loading photo…
+        {lang === 'es' ? 'Cargando foto…' : 'Loading photo…'}
       </div>
     );
   }

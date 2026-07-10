@@ -36,6 +36,7 @@ export function useInvites(user: AppUser | null, hotelId: string): {
   const { lang } = useLang();
 
   const [invites, setInvites] = useState<InviteRow[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<AssignableRole>('housekeeping');
@@ -45,10 +46,15 @@ export function useInvites(user: AppUser | null, hotelId: string): {
 
   const loadInvites = useCallback(async () => {
     if (!user || !hotelId) return;
-    const res = await fetchWithAuth(`/api/auth/invites?hotelId=${hotelId}`);
-    if (res.ok) {
+    try {
+      const res = await fetchWithAuth(`/api/auth/invites?hotelId=${hotelId}`);
+      if (!res.ok) { setLoadError(true); return; } // don't render "no invites" for a failed load
       const body = await res.json() as { data?: { invites?: InviteRow[] } };
       setInvites(body.data?.invites ?? []);
+      setLoadError(false);
+    } catch (err) {
+      console.error('[accounts:invites] load failed', err);
+      setLoadError(true);
     }
   }, [user, hotelId]);
 
@@ -72,6 +78,9 @@ export function useInvites(user: AppUser | null, hotelId: string): {
       setInviteResult(body.data?.inviteLink ?? '');
       setInviteEmail('');
       void loadInvites();
+    } catch (err) {
+      console.error('[accounts:invites] send failed', err);
+      setInviteError(lang === 'es' ? 'No se pudo enviar la invitación — revisa tu conexión' : 'Failed to send the invite — check your connection');
     } finally {
       setInviteSubmitting(false);
     }
@@ -79,12 +88,30 @@ export function useInvites(user: AppUser | null, hotelId: string): {
 
   const handleRevokeInvite = async (id: string) => {
     if (!confirm(lang === 'es' ? '¿Revocar esta invitación?' : 'Revoke this invite?')) return;
-    await fetchWithAuth(`/api/auth/invites?id=${id}`, { method: 'DELETE' });
-    void loadInvites();
+    // A failed revoke must not look like success — the invite link would stay
+    // redeemable. Same alert idiom as TeamMembers.handleRemoveMember.
+    try {
+      const res = await fetchWithAuth(`/api/auth/invites?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        alert(body.error ?? (lang === 'es' ? 'No se pudo revocar la invitación. Sigue activa — intenta de nuevo.' : 'Failed to revoke the invite. It is still active — try again.'));
+        return;
+      }
+      void loadInvites();
+    } catch (err) {
+      console.error('[accounts:invites] revoke failed', err);
+      alert(lang === 'es' ? 'No se pudo revocar la invitación — revisa tu conexión. Sigue activa.' : 'Failed to revoke the invite — check your connection. It is still active.');
+    }
   };
 
   // Pending invites
-  const list = invites.length > 0 ? (
+  const list = loadError ? (
+    <ErrorBox>
+      {lang === 'es'
+        ? 'No se pudieron cargar las invitaciones pendientes. Recarga la página para intentar de nuevo.'
+        : 'Couldn’t load pending invites. Refresh the page to try again.'}
+    </ErrorBox>
+  ) : invites.length > 0 ? (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       <h3 style={subHeadingStyle}>{lang === 'es' ? 'Invitaciones pendientes' : 'Pending invites'}</h3>
       {invites.map(iv => (

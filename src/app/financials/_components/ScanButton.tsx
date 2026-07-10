@@ -8,6 +8,9 @@
 import React, { useRef, useState } from 'react';
 import { resizeImageForVision } from '@/lib/image-resize';
 import { finSend, Btn, T, FONT_SANS } from './fin-ui';
+import { ft, scanErrorLabel } from './fin-i18n';
+
+type Lang = 'en' | 'es';
 
 export interface InvoiceDraft {
   vendor: string | null;
@@ -29,6 +32,7 @@ export interface QuoteDraft {
 export function ScanButton({
   mode,
   pid,
+  lang,
   label,
   scanningLabel,
   failLabel,
@@ -37,12 +41,14 @@ export function ScanButton({
 }: {
   mode: 'invoice' | 'quote';
   pid: string;
+  lang: Lang;
   label: string;
   scanningLabel: string;
   failLabel: string;
   onInvoice?: (draft: InvoiceDraft, anomalyWarning: string | null) => void;
   onQuote?: (draft: QuoteDraft) => void;
 }) {
+  const S = ft(lang);
   const inputRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +64,10 @@ export function ScanButton({
         imageBase64: resized.base64,
         mediaType: resized.mediaType,
       });
+      if (res.error !== undefined) {
+        setError(scanErrorLabel(S, failLabel, res.code, res.status, res.error));
+        return;
+      }
       if (!res.data) {
         setError(failLabel);
         return;

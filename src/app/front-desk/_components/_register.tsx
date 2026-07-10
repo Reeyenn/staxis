@@ -143,31 +143,63 @@ export async function uploadPreparedPhoto(
 
 export function useRegisterFeed<I, C>(
   pid: string,
-  subscribe: (pid: string, onData: (payload: { items: I[]; counts: C }) => void) => () => void,
+  subscribe: (
+    pid: string,
+    onData: (payload: { items: I[]; counts: C }) => void,
+    pollMs?: number,
+    onError?: () => void,
+  ) => () => void,
   fetchRegister: (pid: string) => Promise<{ items: I[]; counts: C }>,
   initialCounts: C,
-): { items: I[]; counts: C; loading: boolean; refetch: () => Promise<void> } {
+): { items: I[]; counts: C; loading: boolean; loadFailed: boolean; refetch: () => Promise<void> } {
   const [items, setItems] = useState<I[]>([]);
   const [counts, setCounts] = useState<C>(initialCounts);
   const [loading, setLoading] = useState(true);
+  // True only while we've NEVER successfully loaded for this pid — a failed
+  // poll after a good load keeps last-good data silently (poll self-heals).
+  const [loadFailed, setLoadFailed] = useState(false);
+  const hasLoadedRef = useRef(false);
 
   const refetch = useCallback(async () => {
-    const payload = await fetchRegister(pid);
-    setItems(payload.items);
-    setCounts(payload.counts);
+    try {
+      const payload = await fetchRegister(pid);
+      setItems(payload.items);
+      setCounts(payload.counts);
+      hasLoadedRef.current = true;
+      setLoadFailed(false);
+    } catch {
+      /* keep last good — the action itself already reported its outcome */
+    }
   }, [pid, fetchRegister]);
 
   useEffect(() => {
     if (!pid) return;
     setLoading(true);
-    return subscribe(pid, (payload) => {
-      setItems(payload.items);
-      setCounts(payload.counts);
-      setLoading(false);
-    });
+    setLoadFailed(false);
+    hasLoadedRef.current = false;
+    return subscribe(
+      pid,
+      (payload) => {
+        setItems(payload.items);
+        setCounts(payload.counts);
+        setLoading(false);
+        hasLoadedRef.current = true;
+        setLoadFailed(false);
+      },
+      undefined,
+      () => {
+        // First load failed: show an honest error instead of an infinite
+        // spinner or a fake "nothing here" empty state. Later poll failures
+        // (data already on screen) keep last-good data.
+        if (!hasLoadedRef.current) {
+          setLoading(false);
+          setLoadFailed(true);
+        }
+      },
+    );
   }, [pid, subscribe]);
 
-  return { items, counts, loading, refetch };
+  return { items, counts, loading, loadFailed, refetch };
 }
 
 // ── Toast (F7): bottom-center T.ink pill, 2.6s — both registers' exact look ──
@@ -373,6 +405,7 @@ export function RegisterList({
   isEmpty,
   emptyTitle,
   emptyHint,
+  loadFailed,
   children,
 }: {
   loading: boolean;
@@ -380,12 +413,26 @@ export function RegisterList({
   isEmpty: boolean;
   emptyTitle: string;
   emptyHint: string;
+  /** First load failed (no data yet) — show an error card, not a fake empty. */
+  loadFailed?: boolean;
   children: React.ReactNode;
 }): React.ReactElement {
   if (loading) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center', color: T.ink3, fontFamily: FONT_SANS, fontSize: 14 }}>
         {tr(lang, 'Loading…', 'Cargando…')}
+      </div>
+    );
+  }
+  if (loadFailed) {
+    return (
+      <div style={{ padding: '60px 16px', textAlign: 'center', border: `1px dashed ${T.rule}`, borderRadius: 14 }}>
+        <div style={{ fontFamily: FONT_SERIF, fontSize: 20, color: T.warm }}>
+          {tr(lang, "Couldn't load the list", 'No se pudo cargar la lista')}
+        </div>
+        <div style={{ fontSize: 13, color: T.ink3, fontFamily: FONT_SANS, marginTop: 6 }}>
+          {tr(lang, 'Check the connection — it retries automatically.', 'Revisa la conexión — se reintenta automáticamente.')}
+        </div>
       </div>
     );
   }
