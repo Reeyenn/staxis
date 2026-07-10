@@ -122,7 +122,9 @@ export function RoomAccordionCard(props: RoomAccordionCardProps) {
     : inProg
       ? paused
         ? t('hkPaused', lang)
-        : `${t('hkCleaningLabel', lang)} · ${checklistChecked}/${checklistTotal || tasks.length}`
+        : checklistTotal > 0
+          ? `${t('hkCleaningLabel', lang)} · ${checklistChecked}/${checklistTotal}`
+          : t('hkCleaningLabel', lang)
       : `${t('hkFloorPrefix', lang)} ${floorLabel}${eta ? ` · ${t('hkETALabel', lang)} ${eta}` : ''}`;
 
   return (

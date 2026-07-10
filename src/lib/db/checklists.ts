@@ -73,7 +73,8 @@ export interface EffectiveCleaningChecklist {
   nameEs: string;
   /** True when a per-property override exists (the manager has customized it). */
   isOverride: boolean;
-  /** True when a global Staxis default exists for this type. */
+  /** Retained for API compatibility. Always false as of 0305: global Staxis
+   *  defaults are no longer a fallback — a hotel with no override is empty. */
   hasDefault: boolean;
   items: CleaningItemDTO[];
 }
@@ -109,25 +110,25 @@ function toCleaningItemDTO(r: CleaningItemRow): CleaningItemDTO {
 }
 
 /**
- * Load the per-property override and the global default rows for a
- * (property, cleaning_type). Both are active-only, matching how the
- * housekeeper checklist read resolves them.
+ * Load the per-property override row for a (property, cleaning_type),
+ * active-only. Global Staxis defaults (property_id IS NULL) are deliberately
+ * NOT loaded: as of migration 0305 they are inert and a property with no
+ * per-property template has an EMPTY effective checklist, never the default.
+ * The (property_id, cleaning_type) unique index guarantees at most one row.
  */
-async function loadCleaningTemplates(
+async function loadCleaningOverrideTemplate(
   propertyId: string,
   cleaningType: CleaningType,
-): Promise<{ override: CleaningTemplateRow | null; def: CleaningTemplateRow | null }> {
+): Promise<CleaningTemplateRow | null> {
   const { data, error } = await supabaseAdmin
     .from('cleaning_checklist_templates')
     .select('id, property_id, cleaning_type, name_en, name_es, is_default, is_active')
-    .or(`property_id.eq.${propertyId},and(property_id.is.null,is_default.eq.true)`)
+    .eq('property_id', propertyId)
     .eq('cleaning_type', cleaningType)
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .maybeSingle();
   if (error) throw error;
-  const rows = (data ?? []) as CleaningTemplateRow[];
-  const override = rows.find((t) => t.property_id === propertyId) ?? null;
-  const def = rows.find((t) => t.property_id === null && t.is_default) ?? null;
-  return { override, def };
+  return (data as CleaningTemplateRow | null) ?? null;
 }
 
 async function loadCleaningItems(templateId: string): Promise<CleaningItemDTO[]> {
@@ -142,16 +143,16 @@ async function loadCleaningItems(templateId: string): Promise<CleaningItemDTO[]>
 
 /**
  * The effective cleaning checklist a property's housekeepers would see for a
- * cleaning type: the per-property override if one exists, otherwise the global
- * default shown as the starting point.
+ * cleaning type: the per-property override if one exists, otherwise EMPTY.
+ * The global Staxis default is no longer a fallback (0305) — a hotel with no
+ * per-property checklist starts from scratch and a manager builds their own.
  */
 export async function getEffectiveCleaningChecklist(
   propertyId: string,
   cleaningType: CleaningType,
 ): Promise<EffectiveCleaningChecklist> {
-  const { override, def } = await loadCleaningTemplates(propertyId, cleaningType);
-  const chosen = override ?? def;
-  if (!chosen) {
+  const override = await loadCleaningOverrideTemplate(propertyId, cleaningType);
+  if (!override) {
     return {
       cleaningType,
       nameEn: '',
@@ -161,13 +162,13 @@ export async function getEffectiveCleaningChecklist(
       items: [],
     };
   }
-  const items = await loadCleaningItems(chosen.id);
+  const items = await loadCleaningItems(override.id);
   return {
     cleaningType,
-    nameEn: chosen.name_en,
-    nameEs: chosen.name_es,
-    isOverride: Boolean(override),
-    hasDefault: Boolean(def),
+    nameEn: override.name_en,
+    nameEs: override.name_es,
+    isOverride: true,
+    hasDefault: false,
     items,
   };
 }
@@ -331,7 +332,8 @@ export interface EffectiveInspectionChecklist {
   appliesToRoomTypes: string[];
   /** True when the resolved checklist is a per-property one (manager-owned). */
   isOverride: boolean;
-  /** True when a global Staxis default inspection checklist exists. */
+  /** Retained for API compatibility. Always false as of 0305: global Staxis
+   *  defaults are no longer a fallback — a hotel with no checklist is empty. */
   hasDefault: boolean;
   /** Count of ADDITIONAL active per-property checklists this property has beyond
    *  the one shown. The editor manages the most-recent; >0 means others exist
@@ -397,20 +399,6 @@ async function loadPropertyInspectionChecklists(propertyId: string): Promise<Ins
   return (data ?? []) as InspectionChecklistRow[];
 }
 
-/** Most-recently-updated active global default inspection checklist, or null. */
-async function loadDefaultInspectionChecklist(): Promise<InspectionChecklistRow | null> {
-  const { data, error } = await supabaseAdmin
-    .from('inspection_checklists')
-    .select('id, property_id, name, applies_to_cleaning_types, applies_to_room_types, is_active, version, updated_at')
-    .is('property_id', null)
-    .eq('is_active', true)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as InspectionChecklistRow | null) ?? null;
-}
-
 function toEffectiveInspection(
   row: InspectionChecklistRow,
   items: InspectionItemDTO[],
@@ -432,19 +420,16 @@ function toEffectiveInspection(
 
 /**
  * The effective inspection checklist for a property: its own per-property
- * checklist if one exists, otherwise the global default shown as the starting
- * point. Mirrors the "property-specific wins" precedence of selectChecklist.
+ * checklist if one exists, otherwise EMPTY. The global Staxis default is no
+ * longer a fallback (0305) — a hotel with no per-property checklist starts
+ * from scratch and a manager builds their own.
  */
 export async function getEffectiveInspectionChecklist(
   propertyId: string,
 ): Promise<EffectiveInspectionChecklist> {
-  const [propRows, defRow] = await Promise.all([
-    loadPropertyInspectionChecklists(propertyId),
-    loadDefaultInspectionChecklist(),
-  ]);
+  const propRows = await loadPropertyInspectionChecklists(propertyId);
   const propRow = propRows[0] ?? null;
-  const chosen = propRow ?? defRow;
-  if (!chosen) {
+  if (!propRow) {
     return {
       checklistId: null,
       name: '',
@@ -456,9 +441,9 @@ export async function getEffectiveInspectionChecklist(
       items: [],
     };
   }
-  const items = await loadInspectionItems(chosen.id);
-  const otherCount = propRow ? Math.max(0, propRows.length - 1) : 0;
-  return toEffectiveInspection(chosen, items, Boolean(propRow), Boolean(defRow), otherCount);
+  const items = await loadInspectionItems(propRow.id);
+  const otherCount = Math.max(0, propRows.length - 1);
+  return toEffectiveInspection(propRow, items, true, false, otherCount);
 }
 
 /** Replace an inspection checklist's items wholesale (delete-then-insert). Same

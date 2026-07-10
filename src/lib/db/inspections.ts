@@ -127,17 +127,17 @@ function fromChecklistRow(row: ChecklistRow, items: InspectionChecklistItem[]): 
 // ─── Checklists ───────────────────────────────────────────────────────────
 
 /**
- * Returns every active checklist visible to the property — both the
- * global defaults (property_id is null) and any property-specific
- * checklists. Items are loaded and attached to each checklist.
+ * Returns every active PER-PROPERTY checklist for the property. As of
+ * migration 0305 the global defaults (property_id IS NULL) are NOT included:
+ * a hotel with no per-property inspection checklist has none, and an inspector
+ * can only inspect once a manager builds one. Items are attached to each.
  */
 export async function getActiveChecklists(propertyId: string): Promise<InspectionChecklist[]> {
   const { data: lists, error: listErr } = await supabaseAdmin
     .from('inspection_checklists')
     .select('id, property_id, name, applies_to_cleaning_types, applies_to_room_types, is_active, version, created_at, updated_at')
-    .or(`property_id.is.null,property_id.eq.${propertyId}`)
+    .eq('property_id', propertyId)
     .eq('is_active', true)
-    .order('property_id', { ascending: false, nullsFirst: false })
     .order('name', { ascending: true });
 
   if (listErr) throw listErr;

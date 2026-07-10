@@ -88,11 +88,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     const { data: tpl } = await supabaseAdmin
       .from('cleaning_checklist_templates')
       .select('id')
-      // Property-specific override wins if present, default otherwise.
-      .or(`property_id.eq.${gate.pid},and(property_id.is.null,is_default.eq.true)`)
+      // Per-property template only — no global-default fallback (0305). A hotel
+      // with no checklist starts the room with no steps (templateId stays null).
+      .eq('property_id', gate.pid)
       .eq('cleaning_type', cleaningType)
       .eq('is_active', true)
-      .order('property_id', { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle();
     if (tpl?.id) templateId = tpl.id as string;

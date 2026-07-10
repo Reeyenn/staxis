@@ -1,9 +1,10 @@
 /**
  * GET /api/housekeeper/checklist/[cleaningType]?pid=...&staffId=...
  *
- * Returns the active checklist template for a cleaning type, with all
- * items grouped by area. Property-specific override wins over the
- * global default.
+ * Returns the active per-property checklist template for a cleaning type,
+ * with all items grouped by area. As of migration 0305 there is NO global
+ * default fallback: a hotel with no per-property checklist returns an empty
+ * list, and a manager builds their own in Settings → Checklists.
  *
  * No mutation — read-only. Same capability check as the rest of the
  * housekeeper surface so a leaked pid/staffId can't enumerate
@@ -98,11 +99,11 @@ export async function GET(
   if (!gate.ok) return gate.response;
 
   try {
-    // Prefer property-specific template, fall back to default.
+    // Per-property template only — no global-default fallback (0305).
     const { data: templates, error: tplErr } = await supabaseAdmin
       .from('cleaning_checklist_templates')
       .select('id, property_id, cleaning_type, name_en, name_es, is_default, is_active')
-      .or(`property_id.eq.${pid},and(property_id.is.null,is_default.eq.true)`)
+      .eq('property_id', pid)
       .eq('cleaning_type', cleaningType)
       .eq('is_active', true);
     if (tplErr) {
@@ -118,7 +119,7 @@ export async function GET(
       });
     }
 
-    // Pick the property-specific one if present, else the default.
+    // At most one per-property row per cleaning type (unique index).
     type TemplateRow = {
       id: string;
       property_id: string | null;
@@ -129,9 +130,7 @@ export async function GET(
       is_active: boolean;
     };
     const list = (templates ?? []) as TemplateRow[];
-    const propertyTemplate = list.find((t) => t.property_id === pid);
-    const defaultTemplate = list.find((t) => t.property_id === null && t.is_default);
-    const template = propertyTemplate ?? defaultTemplate;
+    const template = list.find((t) => t.property_id === pid) ?? null;
     if (!template) {
       return ok(
         { template: null, items: [] as ChecklistItem[] },

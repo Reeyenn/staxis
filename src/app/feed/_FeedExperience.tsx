@@ -32,6 +32,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { isSectionEnabled, type AppSection } from '@/lib/sections/registry';
 
 // ─── palette + fonts (1:1 with the dashboard) ─────────────────────────
@@ -363,23 +364,32 @@ function Card({ card, stage, index, onPrimary, onSecondary }: {
 }
 
 // ─── the experience ───────────────────────────────────────────────────
-export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
-  // Per-hotel section gate. activeProperty.enabledSections rides on
-  // PropertyContext (no fetch); on the login-free /demo/feed there's no
-  // provider, so useProperty yields the default (null ⇒ every card shown).
-  // A card whose owning section is off is filtered out; undefined section is
-  // never gated. isSectionEnabled is default-ON, so this is fail-open.
+export function FeedExperience({ phaseOverride, demo = false }: { phaseOverride?: Phase; demo?: boolean }) {
+  // The cards / handled ledger / labor $ / pulse counts / day-meter below are a
+  // realistic DESIGN SAMPLE, not real data. Per Reeyen (2026-07-09): a real
+  // hotel must only ever see its own real info — never demo/example content. So
+  // the sample renders ONLY when `demo` is set (the login-free /demo/feed
+  // showcase) or the active hotel is a demo/test hotel (properties.is_test →
+  // activeProperty.isTest). Every real hotel gets the honest quiet state
+  // instead. Mirrors the dashboard's synthetic-KPI gate (!!activeProperty?.isTest).
   const { activeProperty } = useProperty();
+  const { lang } = useLang();
+  const showSample = demo || !!activeProperty?.isTest;
+
+  // Per-hotel section gate. activeProperty.enabledSections rides on
+  // PropertyContext (no fetch). A card whose owning section is off is filtered
+  // out; undefined section is never gated. isSectionEnabled is default-ON, so
+  // this is fail-open. Only consulted when the sample is shown at all.
   const enabledSections = activeProperty?.enabledSections;
   // Key on the CONTENT of the flags (not the object identity) so a routine
   // PropertyContext refresh that re-creates activeProperty with the same flags
   // doesn't recompute + reset the feed mid-session.
   const enabledKey = enabledSections ? JSON.stringify(enabledSections) : '';
   const visibleSample = useMemo(
-    () => SAMPLE.filter((c) => !c.section || isSectionEnabled(enabledSections, c.section)),
+    () => (showSample ? SAMPLE.filter((c) => !c.section || isSectionEnabled(enabledSections, c.section)) : []),
     // enabledSections is derived from enabledKey; keying on the string is stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [enabledKey],
+    [enabledKey, showSample],
   );
   const [cards, setCards] = useState<DecisionCard[]>(visibleSample);
   const [stages, setStages] = useState<Record<string, CardStage>>({});
@@ -534,7 +544,9 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: C.ink2, fontSize: 13.5 }}>
             <span className="stx-livedot" />
-            <span>78% tonight · 22 rooms to clean · all shifts staffed</span>
+            <span>{showSample
+              ? '78% tonight · 22 rooms to clean · all shifts staffed'
+              : (lang === 'es' ? 'Todo tranquilo por ahora' : 'All quiet right now')}</span>
           </div>
         </header>
 
@@ -568,7 +580,8 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
             )}
           </p>
 
-          {/* day meter — one segment per decision, fills as you clear */}
+          {/* day meter — one segment per decision, fills as you clear (sample only) */}
+          {showSample && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
             <div style={{ display: 'flex', gap: 5, flex: 1, maxWidth: 340 }}>
               {Array.from({ length: totalDecisions }).map((_, i) => (
@@ -579,9 +592,11 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
               <Rolling value={cleared} /> of {totalDecisions} cleared
             </span>
           </div>
+          )}
         </section>
 
-        {/* ── labor scoreboard ── */}
+        {/* ── labor scoreboard (sample only) ── */}
+        {showSample && (
         <section className="stx-rise stx-glass" style={{
           animationDelay: '150ms',
           borderRadius: 18, padding: '16px 18px',
@@ -606,6 +621,7 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
             <div style={{ fontSize: 12, color: C.ink3, marginTop: 4 }}>under budget</div>
           </div>
         </section>
+        )}
 
         {/* ── needs you ── */}
         <section>
@@ -638,10 +654,14 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
                 <DrawnCheck size={26} delay={250} />
               </div>
               <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 'clamp(22px, 4vw, 28px)', color: C.green }}>
-                Nothing needs you right now.
+                {showSample
+                  ? 'Nothing needs you right now.'
+                  : (lang === 'es' ? 'Todo en orden — nada requiere tu atención aún.' : 'All clear — nothing needs you yet.')}
               </div>
               <div style={{ fontSize: 13.5, color: C.ink2, marginTop: 7 }}>
-                Staxis is running the floor. I’ll bring you anything worth a decision.
+                {showSample
+                  ? 'Staxis is running the floor. I’ll bring you anything worth a decision.'
+                  : (lang === 'es' ? 'Cuando algo necesite una decisión, aparecerá aquí.' : 'When something needs a decision, it’ll show up here.')}
               </div>
             </div>
           ) : (
@@ -655,7 +675,8 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
           )}
         </section>
 
-        {/* ── handled automatically ── */}
+        {/* ── handled automatically (sample only) ── */}
+        {showSample && (
         <section className={'stx-rise stx-ledger' + (ledgerFlash ? ' stx-ledger-flash' : '')}
           style={{ animationDelay: '740ms', borderRadius: 18, overflow: 'hidden' }}>
           <button onClick={() => setLogOpen(v => !v)}
@@ -694,6 +715,7 @@ export function FeedExperience({ phaseOverride }: { phaseOverride?: Phase }) {
             </div>
           </div>
         </section>
+        )}
 
         {/* ── ask hint (the real Ask bar is global, bottom of screen) ── */}
         <div className="stx-rise" style={{ animationDelay: '840ms', textAlign: 'center', color: C.ink4, fontSize: 13, marginTop: 2 }}>

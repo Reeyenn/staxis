@@ -68,7 +68,10 @@ export default function DemoFeedPage() {
 
       <style>{`@media (max-width: 640px) { .stx-demo-note { display: none; } }`}</style>
 
-      <FeedExperience phaseOverride={phase} />
+      {/* `demo` forces the full sample content: this login-free preview has no
+          PropertyContext, so without it the gate would fall back to a real
+          hotel's honest quiet state. */}
+      <FeedExperience phaseOverride={phase} demo />
     </div>
   );
 }

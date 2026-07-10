@@ -326,7 +326,6 @@ function CleaningEditor({ pid, lang, properties }: {
       <StatusRow
         lang={lang}
         isOverride={data?.isOverride ?? false}
-        hasDefault={data?.hasDefault ?? false}
       />
 
       {error && <Banner tone="warm">{error}</Banner>}
@@ -543,7 +542,7 @@ function InspectionEditor({ pid, lang, properties }: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <StatusRow lang={lang} isOverride={data?.isOverride ?? false} hasDefault={data?.hasDefault ?? false} />
+      <StatusRow lang={lang} isOverride={data?.isOverride ?? false} />
 
       {(data?.otherCount ?? 0) > 0 && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontFamily: fonts.sans, fontSize: 12.5, color: T.caramelDeep, background: 'rgba(215,176,126,0.14)', border: '1px solid rgba(140,106,51,0.25)', borderRadius: 8, padding: '8px 12px' }}>
@@ -724,16 +723,18 @@ function InspectionEditor({ pid, lang, properties }: {
 
 // ─── Shared pieces ──────────────────────────────────────────────────────────
 
-function StatusRow({ lang, isOverride, hasDefault }: { lang: Lang; isOverride: boolean; hasDefault: boolean }) {
+function StatusRow({ lang, isOverride }: { lang: Lang; isOverride: boolean }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      {isOverride
-        ? <Pill tone="sage"><Check size={12} /> {lang === 'es' ? 'Personalizada para esta propiedad' : 'Customized for this property'}</Pill>
-        : <Pill tone="neutral">{lang === 'es' ? 'Usando el valor de Staxis' : 'Using the Staxis default'}</Pill>}
-      {!hasDefault && !isOverride && (
-        <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>
-          {lang === 'es' ? 'Aún no hay valor predeterminado — empieza desde cero.' : 'No default yet — start from scratch.'}
-        </span>
+      {isOverride ? (
+        <Pill tone="sage"><Check size={12} /> {lang === 'es' ? 'Personalizada para esta propiedad' : 'Customized for this property'}</Pill>
+      ) : (
+        <>
+          <Pill tone="neutral">{lang === 'es' ? 'Sin configurar' : 'Not set up yet'}</Pill>
+          <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>
+            {lang === 'es' ? 'Empieza desde cero — sin pasos predeterminados.' : 'Start from scratch — no built-in steps.'}
+          </span>
+        </>
       )}
     </div>
   );
