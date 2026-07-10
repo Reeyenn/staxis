@@ -783,3 +783,90 @@ body {
   0%, 100% { opacity: 0.6; transform: scale(0.9); }
   50%      { opacity: 1;   transform: scale(1.15); }
 }
+
+/* ── Shared light/dark theme bridge ─────────────────────────────────────────
+   New staff-shell components use semantic tokens, while Snow-based pages use
+   the variables below. Legacy Ops form/button tokens intentionally stay light
+   until those screens receive complete dark component states. */
+:root.dark {
+  --staxis-approval-primary: #d0bcff;
+  --staxis-approval-on-primary: #381e72;
+  --snow-bg: #141218;
+  --snow-ink: #e6e0e9;
+  --snow-ink-soft: #d9d3dc;
+  --snow-ink2: #cac4d0;
+  --snow-ink3: #938f99;
+  --snow-rule: rgba(230, 224, 233, 0.14);
+  --snow-rule-soft: rgba(230, 224, 233, 0.08);
+  --snow-sage: #a8c8b2;
+  --snow-sage-deep: #b9d8c0;
+  --snow-sage-dim: rgba(185, 216, 192, 0.12);
+  --snow-caramel: #e5b66c;
+  --snow-caramel-deep: #f0c681;
+  --snow-warm: #f2b8b5;
+  --snow-warm-dim: rgba(242, 184, 181, 0.12);
+  --snow-purple: #d0bcff;
+  --snow-purple-dim: rgba(208, 188, 255, 0.12);
+  --snow-mark: #f5eff7;
+
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --staxis-approval-primary: #d0bcff;
+    --staxis-approval-on-primary: #381e72;
+    --snow-bg: #141218;
+    --snow-ink: #e6e0e9;
+    --snow-ink-soft: #d9d3dc;
+    --snow-ink2: #cac4d0;
+    --snow-ink3: #938f99;
+    --snow-rule: rgba(230, 224, 233, 0.14);
+    --snow-rule-soft: rgba(230, 224, 233, 0.08);
+    --snow-sage: #a8c8b2;
+    --snow-sage-deep: #b9d8c0;
+    --snow-sage-dim: rgba(185, 216, 192, 0.12);
+    --snow-caramel: #e5b66c;
+    --snow-caramel-deep: #f0c681;
+    --snow-warm: #f2b8b5;
+    --snow-warm-dim: rgba(242, 184, 181, 0.12);
+    --snow-purple: #d0bcff;
+    --snow-purple-dim: rgba(208, 188, 255, 0.12);
+    --snow-mark: #f5eff7;
+  }
+}
+
+.stx-theme-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--snow-rule);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--snow-bg) 82%, transparent);
+  color: var(--snow-ink2);
+  font: 600 13px/1 var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  cursor: pointer;
+  transition: background-color 150ms ease-out, color 150ms ease-out, transform 150ms ease-out;
+}
+.stx-theme-toggle--compact { width: 44px; padding: 0; }
+.stx-theme-toggle__icon { display: inline-flex; }
+.stx-theme-toggle:hover { background: var(--snow-rule-soft); color: var(--snow-ink); }
+.stx-theme-toggle:active { transform: scale(0.98); }
+.stx-theme-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.stx-theme-toggle:disabled { cursor: wait; opacity: .62; transform: none; }
+
+html,
+body {
+  transition: background-color 200ms cubic-bezier(0.2, 0, 0, 1), color 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html,
+  body,
+  .stx-theme-toggle {
+    transition: none !important;
+  }
+}

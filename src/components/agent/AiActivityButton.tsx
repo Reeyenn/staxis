@@ -55,7 +55,7 @@ const OUTCOME: Record<ActivityOutcome, OutcomeStyle> = {
   pending: { en: 'Pending',         es: 'Pendiente',        fg: C.ink2,     bg: C.ruleSoft,                Icon: Clock },
 };
 
-export function AiActivityButton() {
+export function AiActivityButton({ placement = 'floating' }: { placement?: 'floating' | 'inline' }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
@@ -75,17 +75,20 @@ export function AiActivityButton() {
           aria-label={es ? 'Actividad de la IA' : 'AI activity'}
           title={es ? 'Actividad de la IA' : 'AI activity'}
           style={{
-            position: 'fixed',
+            position: placement === 'floating' ? 'fixed' : 'relative',
             // Sits ABOVE the bottom-center Ask bar (~46px tall, bottom:22px +
             // safe-area) and clear of the feedback FAB (48px, bottom:20px), so
             // it never overlaps either on phone or desktop.
-            bottom: 'calc(84px + env(safe-area-inset-bottom, 0px))',
-            right: '20px',
+            bottom: placement === 'floating'
+              ? 'calc(84px + var(--staff-bottom-nav-height, 0px) + env(safe-area-inset-bottom, 0px))'
+              : 'auto',
+            right: placement === 'floating' ? '20px' : 'auto',
             display: 'inline-flex',
             alignItems: 'center',
             gap: '7px',
-            padding: '8px 13px',
-            borderRadius: '999px',
+            minHeight: '44px',
+            padding: placement === 'floating' ? '8px 13px' : '8px 12px',
+            borderRadius: '12px',
             background: C.bg,
             color: C.ink2,
             border: `1px solid ${C.rule}`,
@@ -93,8 +96,8 @@ export function AiActivityButton() {
             fontFamily: FONT_SANS,
             fontSize: '12.5px',
             fontWeight: 600,
-            boxShadow: '0 6px 18px -8px rgba(20, 30, 20, 0.28)',
-            zIndex: 90,
+            boxShadow: placement === 'floating' ? '0 6px 18px -8px rgba(20, 30, 20, 0.28)' : 'none',
+            zIndex: placement === 'floating' ? 90 : 'auto',
           }}
         >
           <Sparkles size={14} strokeWidth={2.2} color={C.sageDeep} />

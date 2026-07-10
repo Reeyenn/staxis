@@ -10,7 +10,30 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import type { Property } from '@/types';
-import { Building2, LogOut } from 'lucide-react';
+import { LanguageMenu } from '@/components/i18n/LanguageMenu';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { ChevronMark } from '@/components/AuthShell';
+import { ArrowRight, BedDouble, Building2, LogOut, UserRound } from 'lucide-react';
+import styles from './property-selector.module.css';
+
+function SelectorChrome() {
+  return (
+    <header className={styles.topbar}>
+      <div className={styles.topbarInner}>
+        <div className={styles.brand}>
+          <span className={styles.brandMark}>
+            <ChevronMark size={24} color="var(--snow-mark, #1A1F1B)" />
+          </span>
+          <span className={styles.brandName}>Staxis</span>
+        </div>
+        <div className={styles.utilityControls}>
+          <LanguageMenu compact />
+          <ThemeToggle compact />
+        </div>
+      </div>
+    </header>
+  );
+}
 
 export default function PropertySelectorPage() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -75,158 +98,97 @@ export default function PropertySelectorPage() {
 
   if (isLoading) {
     return (
-      <div style={{
-        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'var(--bg)',
-      }}>
-        <div style={{
-          width: '40px', height: '40px',
-          border: '3px solid rgba(37,99,235,0.15)',
-          borderTopColor: 'var(--navy-light)',
-          borderRadius: '50%',
-          animation: 'spin 0.8s linear infinite',
-        }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <div className={styles.page}>
+        <SelectorChrome />
+        <main className={styles.loadingMain}>
+          <div className={styles.loadingCard} role="status" aria-live="polite">
+            <span className={styles.spinner} aria-hidden="true" />
+            <span>{t('loading', lang)}</span>
+          </div>
+        </main>
       </div>
     );
   }
 
+  const copy = {
+    eyebrow: lang === 'es' ? 'Acceso a propiedades' : 'Property access',
+    description: lang === 'es'
+      ? 'Elige el hotel que quieres abrir.'
+      : 'Choose the hotel you want to open.',
+    open: lang === 'es' ? 'Abrir propiedad' : 'Open property',
+    available: lang === 'es' ? 'Propiedades disponibles' : 'Available properties',
+  };
+
   return (
-    <div style={{
-      minHeight: '100dvh',
-      background: 'var(--bg)',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '32px 24px',
-    }}>
-      <div style={{ width: '100%', maxWidth: '480px' }}>
-
-        {/* Header */}
-        <div style={{ marginBottom: '40px', textAlign: 'center' }}>
-          <div style={{
-            width: '48px', height: '48px', borderRadius: '12px',
-            background: 'var(--amber)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            margin: '0 auto 16px',
-          }}>
-            <span style={{ fontSize: '22px', fontWeight: 700, color: '#FFFFFF', fontFamily: 'var(--font-mono)' }}>S</span>
+    <div className={styles.page}>
+      <SelectorChrome />
+      <main className={styles.main}>
+        <section className={styles.panel} aria-labelledby="property-selector-title">
+          <div className={styles.intro}>
+            <div>
+              <p className={styles.eyebrow}>{copy.eyebrow}</p>
+              <h1 className={styles.title} id="property-selector-title">
+                {t('selectProperty', lang)}
+              </h1>
+              <p className={styles.description}>{copy.description}</p>
+            </div>
+            {user && (
+              <div className={styles.accountChip}>
+                <UserRound size={16} aria-hidden="true" />
+                <span className={styles.accountChipText}>
+                  {t('signedInAs', lang)} <strong>{user.username}</strong>
+                </span>
+              </div>
+            )}
           </div>
-          <h1 style={{
-            fontFamily: 'var(--font-sans)', fontWeight: 700,
-            fontSize: '24px', letterSpacing: '-0.02em',
-            color: 'var(--text-primary)', marginBottom: '8px',
-          }}>
-            {t('selectProperty', lang)}
-          </h1>
-          {user && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-              {t('signedInAs', lang)} {user.username}
-            </p>
+
+          {properties.length === 0 ? (
+            <div className={styles.emptyState} role="status" aria-live="polite">
+              <div className={styles.emptyIcon} aria-hidden="true">
+                <Building2 size={28} />
+              </div>
+              <h2 className={styles.emptyTitle}>{t('noPropertiesFound', lang)}</h2>
+              <p className={styles.emptyDescription}>{t('noPropertiesDesc', lang)}</p>
+            </div>
+          ) : (
+            <ul className={styles.propertyGrid} aria-label={copy.available}>
+              {properties.map((p, index) => (
+                <li className={styles.propertyItem} key={p.id}>
+                  <button
+                    type="button"
+                    className={styles.propertyCard}
+                    onClick={() => handleSelect(p.id)}
+                    aria-label={`${p.name}. ${p.totalRooms} ${t('rooms', lang)}. ${copy.open}.`}
+                    style={{ animationDelay: `${100 + index * 55}ms` }}
+                  >
+                    <span className={styles.propertyIcon} aria-hidden="true">
+                      <Building2 size={22} />
+                    </span>
+                    <span className={styles.propertyCopy}>
+                      <span className={styles.propertyName}>{p.name}</span>
+                      <span className={styles.propertyMeta}>
+                        <BedDouble size={14} aria-hidden="true" />
+                        {p.totalRooms} {t('rooms', lang)}
+                      </span>
+                    </span>
+                    <span className={styles.openCue} aria-hidden="true">
+                      <span>{copy.open}</span>
+                      <ArrowRight size={18} />
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
-        </div>
 
-        {/* Property list or empty state */}
-        {properties.length === 0 ? (
-          <div style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '40px 24px',
-            textAlign: 'center',
-          }}>
-            <Building2 size={32} color="var(--text-muted)" style={{ margin: '0 auto 16px' }} />
-            <p style={{
-              fontSize: '15px', fontWeight: 600,
-              color: 'var(--text-primary)', marginBottom: '8px',
-              fontFamily: 'var(--font-sans)',
-            }}>
-              {t('noPropertiesFound', lang)}
-            </p>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              {t('noPropertiesDesc', lang)}
-            </p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {properties.map(p => (
-              <button
-                key={p.id}
-                onClick={() => handleSelect(p.id)}
-                style={{
-                  width: '100%',
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: '18px 20px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '16px',
-                  textAlign: 'left',
-                  transition: 'border-color 150ms, background 150ms',
-                }}
-                onMouseEnter={e => {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(37,99,235,0.25)';
-                  (e.currentTarget as HTMLButtonElement).style.background = 'rgba(37,99,235,0.04)';
-                }}
-                onMouseLeave={e => {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
-                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-card)';
-                }}
-              >
-                <div style={{
-                  width: '40px', height: '40px', borderRadius: '10px',
-                  background: 'rgba(27,58,92,0.06)',
-                  border: '1px solid rgba(27,58,92,0.12)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}>
-                  <Building2 size={18} color="var(--navy)" />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: '15px', fontWeight: 600,
-                    color: 'var(--text-primary)',
-                    fontFamily: 'var(--font-sans)',
-                    marginBottom: '2px',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>
-                    {p.name}
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {p.totalRooms} {t('rooms', lang)}
-                  </div>
-                </div>
-                <div style={{
-                  fontSize: '18px', color: 'var(--text-muted)', fontWeight: 300, flexShrink: 0,
-                }}>
-                  →
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Sign out */}
-        <div style={{ marginTop: '32px', textAlign: 'center' }}>
-          <button
-            onClick={handleSignOut}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: '6px',
-              background: 'transparent', border: 'none',
-              color: 'var(--text-muted)', fontSize: '13px',
-              cursor: 'pointer', fontFamily: 'var(--font-sans)',
-              padding: '8px 12px',
-            }}
-          >
-            <LogOut size={13} />
-            {t('signOut', lang)}
-          </button>
-        </div>
-
-      </div>
+          <footer className={styles.footer}>
+            <button type="button" className={styles.signOut} onClick={handleSignOut}>
+              <LogOut size={15} aria-hidden="true" />
+              {t('signOut', lang)}
+            </button>
+          </footer>
+        </section>
+      </main>
     </div>
   );
 }

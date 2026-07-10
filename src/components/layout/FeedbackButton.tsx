@@ -75,7 +75,7 @@ export function FeedbackButton() {
           aria-label={lang === 'es' ? 'Enviar comentarios' : 'Send feedback'}
           style={{
             position: 'fixed',
-            bottom: '20px',
+            bottom: 'calc(var(--staff-feedback-bottom, 20px) + var(--staff-bottom-nav-height, 0px) + env(safe-area-inset-bottom, 0px))',
             right: '20px',
             width: '48px',
             height: '48px',
@@ -98,7 +98,7 @@ export function FeedbackButton() {
       {open && (
         <div style={{
           position: 'fixed',
-          bottom: '20px',
+          bottom: 'calc(var(--staff-feedback-bottom, 20px) + var(--staff-bottom-nav-height, 0px) + env(safe-area-inset-bottom, 0px))',
           right: '20px',
           width: '320px',
           maxWidth: 'calc(100vw - 40px)',

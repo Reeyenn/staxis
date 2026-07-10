@@ -6,6 +6,7 @@ import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
 import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
+import { ThemeProvider } from '@/contexts/ThemeContext';
 
 // Snow design system — typography from the locked Dashboard Explorations
 // design. Geist for body, Geist Mono for small caps / numeric callouts,
@@ -83,8 +84,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable} ${fraunces.variable} ${newsreader.variable} ${hankenGrotesk.variable} ${jetbrainsMono.variable}`}>
+    <html suppressHydrationWarning lang="en" className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable} ${fraunces.variable} ${newsreader.variable} ${hankenGrotesk.variable} ${jetbrainsMono.variable}`}>
       <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var s=localStorage.getItem('staxis-theme');var d=s==='dark'||(!s&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);document.documentElement.dataset.theme=d?'dark':'light';document.documentElement.style.colorScheme=d?'dark':'light'}catch(e){}})();`,
+          }}
+        />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Staxis" />
@@ -115,19 +121,21 @@ export default function RootLayout({
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
       </head>
       <body>
-        <SyncProvider>
-          <AuthProvider>
-            <LanguageProvider>
-              <PropertyProvider>
-                {children}
-                {/* Mounted at the root so the loop survives page navigations
-                    (AppLayout is per-page and unmounts when the URL changes,
-                    which would kill an in-flight multi-step walkthrough). */}
-                <WalkthroughOverlay />
-              </PropertyProvider>
-            </LanguageProvider>
-          </AuthProvider>
-        </SyncProvider>
+        <ThemeProvider>
+          <SyncProvider>
+            <AuthProvider>
+              <LanguageProvider>
+                <PropertyProvider>
+                  {children}
+                  {/* Mounted at the root so the loop survives page navigations
+                      (AppLayout is per-page and unmounts when the URL changes,
+                      which would kill an in-flight multi-step walkthrough). */}
+                  <WalkthroughOverlay />
+                </PropertyProvider>
+              </LanguageProvider>
+            </AuthProvider>
+          </SyncProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

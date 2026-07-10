@@ -17,7 +17,7 @@
 // Only one approval card shows at a time (the queue head). Bilingual via
 // useLang(). Snow design tokens + the shared staxis-* keyframes.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, X, Pencil, Send } from 'lucide-react';
 import { useLang } from '@/contexts/LanguageContext';
@@ -52,11 +52,55 @@ export interface ApprovalOverlayProps {
 }
 
 export function ApprovalOverlay({ pendingActions, resultCard, resolveAction, dismissResultCard, actionErrors }: ApprovalOverlayProps) {
+  const { lang } = useLang();
   const [mounted, setMounted] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const priorFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => setMounted(true), []);
-  if (!mounted) return null;
-
   const head = pendingActions[0] ?? null;
+  const openKey = resultCard?.pendingActionId ?? head?.pendingActionId ?? null;
+
+  useEffect(() => {
+    if (!mounted || !openKey) return;
+    priorFocusRef.current = document.activeElement as HTMLElement | null;
+    const frame = requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const first = dialog.querySelector<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      );
+      (first ?? dialog).focus();
+    });
+
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      )).filter((el) => el.offsetParent !== null);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', trapFocus);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('keydown', trapFocus);
+      priorFocusRef.current?.focus();
+    };
+  }, [mounted, openKey]);
+
+  if (!mounted) return null;
   if (!head && !resultCard) return null;
 
   return createPortal(
@@ -71,6 +115,11 @@ export function ApprovalOverlay({ pendingActions, resultCard, resolveAction, dis
       }}
       role="dialog"
       aria-modal="true"
+      aria-label={resultCard
+        ? (lang === 'es' ? 'Resultado de la acción de Staxis' : 'Staxis action result')
+        : (lang === 'es' ? 'Revisar acción de Staxis' : 'Review Staxis action')}
+      tabIndex={-1}
+      ref={dialogRef}
     >
       {/* Render priority: show a just-resolved RESULT confirmation FIRST, then
           the next queued approval card. A failure result requires an explicit
@@ -191,7 +240,7 @@ function ApprovalCard({
       {action.addons.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
           {action.addons.map((a) => (
-            <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: C.ink2, fontFamily: FONT_SANS }}>
+            <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 44, cursor: 'pointer', fontSize: 13, color: C.ink2, fontFamily: FONT_SANS }}>
               <input
                 type="checkbox"
                 checked={!!checkedAddons[a.id]}
@@ -283,13 +332,13 @@ const inlineErrorStyle: React.CSSProperties = {
 const inputStyle: React.CSSProperties = {
   width: '100%', boxSizing: 'border-box', resize: 'vertical',
   padding: '8px 10px', fontFamily: FONT_SANS, fontSize: 13.5, color: C.ink,
-  background: C.bg, border: `1px solid ${C.rule}`, borderRadius: 8, outline: 'none',
+  background: C.bg, border: `1px solid ${C.rule}`, borderRadius: 8,
 };
 const baseBtn: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-  padding: '9px 14px', borderRadius: 10, fontFamily: FONT_SANS, fontSize: 13.5, fontWeight: 600,
+  minHeight: 44, padding: '9px 14px', borderRadius: 10, fontFamily: FONT_SANS, fontSize: 13.5, fontWeight: 600,
   cursor: 'pointer', border: '1px solid transparent', transition: 'filter 0.14s, background 0.14s',
 };
-const primaryBtn: React.CSSProperties = { ...baseBtn, background: C.ink, color: 'white', flex: 1 };
+const primaryBtn: React.CSSProperties = { ...baseBtn, background: 'var(--staxis-approval-primary, #1F231C)', color: 'var(--staxis-approval-on-primary, #FFFFFF)', flex: 1 };
 const secondaryBtn: React.CSSProperties = { ...baseBtn, background: C.ruleSoft, color: C.ink2, border: `1px solid ${C.rule}` };
 const ghostBtn: React.CSSProperties = { ...baseBtn, background: 'transparent', color: C.ink2, padding: '9px 10px' };

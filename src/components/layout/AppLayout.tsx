@@ -3,6 +3,7 @@
 import React, { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { Header } from './Header';
+import { StaffShell } from './StaffShell';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
@@ -66,13 +67,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       .catch(() => { /* best effort — old browsers */ });
   }, []);
 
-  return (
-    <VoicePanelProvider>
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
-      <Header />
-      <ActivityTracker />
-      <GlobalAutoTranslate />
-
+  const pageFrame = (
+    <>
       {/* ── Status banner ── */}
       {showBanner && (
         <div style={{
@@ -133,12 +129,42 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           children
         )}
       </main>
+    </>
+  );
+
+  const fixedVoiceSurfaces = (
+    <>
       <FeedbackButton />
-      <AiActivityButton />
       <AskStaxisBar />
       {voiceSurfaceAvailable && <WakeWord />}
       {voiceSurfaceAvailable && <VoiceModeMount />}
-    </div>
+    </>
+  );
+
+  // The Staxis-internal admin console keeps its existing chrome. Hotel owners,
+  // managers, and staff receive the redesigned shell; owner-only capabilities
+  // such as Financials are still resolved inside StaffShell.
+  const useLegacyAdminShell = pathname.startsWith('/admin') || user?.role === 'admin';
+
+  return (
+    <VoicePanelProvider>
+      <ActivityTracker />
+      <GlobalAutoTranslate />
+      {useLegacyAdminShell ? (
+        <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
+          <Header />
+          {pageFrame}
+          <AiActivityButton />
+          {fixedVoiceSurfaces}
+        </div>
+      ) : (
+        <StaffShell
+          aiActivityAction={<AiActivityButton placement="inline" />}
+          fixedSurfaces={fixedVoiceSurfaces}
+        >
+          {pageFrame}
+        </StaffShell>
+      )}
     </VoicePanelProvider>
   );
 }
