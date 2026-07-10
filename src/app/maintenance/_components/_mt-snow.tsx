@@ -5,6 +5,17 @@
 // Caps) so the Maintenance tab stays visually locked to the rest of
 // the app. The extras here are: priority colors/labels, person avatar, modal
 // shell, form fields, chip chooser, date helpers.
+//
+// Why Modal below is NOT the shared F6 primitive (@/app/_components/ui/Modal):
+// this shell is top-aligned (alignItems flex-start, 48px scrim padding), lets
+// tall modals grow past the viewport with the SCRIM scrolling (no card
+// max-height / inner scroll), and closes on scrim *click* (mouseup) rather
+// than mousedown — none of which F6's fixed 'center' geometry can reproduce
+// today. It is also imported by financials + front-desk + the parked
+// ComplianceTab, so its behavior must not move. If F6 ever grows scrim
+// align/padding + card max-height overrides, this shell can become a themed
+// wrapper. (Wave-1 precedent: keep the hand-roll when the foundation can't
+// hit byte-identical.)
 
 'use client';
 
@@ -13,6 +24,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn,
 } from '@/app/housekeeping/_components/_snow';
+import { EmptyState } from '@/app/_components/ui/EmptyState';
 
 // Re-export the shared Snow primitives so the maintenance tabs have a single
 // import source (tokens + Caps/Pill/Btn live in housekeeping/_snow).
@@ -389,6 +401,31 @@ export function CenteredBoard({ children }: { children: React.ReactNode }) {
         <div style={{ flex: '1 1 0', minWidth: 280, maxWidth: 520 }}>{c}</div>
       ))}
     </div>
+  );
+}
+
+// Empty-board card (shared by the three boards + the asset registry): paper
+// card, serif-italic headline, sans body line, action button(s) under it.
+// Thin exact-theme wrapper over the shared EmptyState primitive.
+export function MtEmptyCard({
+  title, body, action, titleSize = 26, bodySize = 14,
+}: {
+  title: React.ReactNode;
+  body: React.ReactNode;
+  action?: React.ReactNode;
+  titleSize?: number;
+  bodySize?: number;
+}) {
+  return (
+    <EmptyState
+      style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18 }}
+      padding="48px 24px"
+      title={<span style={{ fontFamily: FONT_SERIF, fontSize: titleSize, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{title}</span>}
+      body={<>
+        <p style={{ fontFamily: FONT_SANS, fontSize: bodySize, color: T.ink2, margin: '8px 0 18px' }}>{body}</p>
+        {action}
+      </>}
+    />
   );
 }
 

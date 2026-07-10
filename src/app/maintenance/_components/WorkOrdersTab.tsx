@@ -21,7 +21,8 @@ import type { WorkOrder, WorkOrderPriority } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, Avatar, Modal, Field, TextInput, TextArea, ChipChoose,
-  StorageImage, PageHead, displayLoc, fmtDateShort, fmtSubmittedAt,
+  StorageImage, PageHead, BoardColumn, MtEmptyCard,
+  displayLoc, fmtDateShort, fmtSubmittedAt,
   prioColor, prioLabel,
 } from './_mt-snow';
 import { EquipmentPicker } from './EquipmentPicker';
@@ -149,29 +150,6 @@ function OpenCard({
         </span>
       </div>
     </button>
-  );
-}
-
-// ── board column ────────────────────────────────────────────────────────────
-function Lane({
-  color, label, items, onOpen, enterId, es,
-}: {
-  color: string; label: string; items: WorkOrder[];
-  onOpen: (w: WorkOrder) => void; enterId: string | null; es: boolean;
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 2px 11px', borderBottom: `2px solid ${color}`, marginBottom: 12 }}>
-        <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>{label}</span>
-        <span style={{ marginLeft: 'auto', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color, lineHeight: 1 }}>{items.length}</span>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-        {items.length === 0
-          ? <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 16, color: T.ink3, padding: '6px 2px' }}>{es ? 'Nada aquí.' : 'Nothing here.'}</span>
-          : items.map((w) => <OpenCard key={w.id} w={w} onOpen={onOpen} isEnter={w.id === enterId} es={es} />)}
-      </div>
-    </div>
   );
 }
 
@@ -676,16 +654,22 @@ export function WorkOrdersTab() {
       />
 
       {open.length === 0 ? (
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Todo al día.' : 'All caught up.'}</span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>{es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}</p>
-          <Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
-        </div>
+        <MtEmptyCard
+          titleSize={28}
+          title={es ? 'Todo al día.' : 'All caught up.'}
+          body={es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}
+          action={<Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>}
+        />
       ) : (
         <div ref={boardRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, alignItems: 'start' }}>
-          {lanes.map((l) => (
-            <Lane key={l.key} color={LANE_COLOR[l.key]} label={l.label} items={laneItems(l.key)} onOpen={(w) => setDetailId(w.id)} enterId={enterId} es={es} />
-          ))}
+          {lanes.map((l) => {
+            const items = laneItems(l.key);
+            return (
+              <BoardColumn key={l.key} color={LANE_COLOR[l.key]} label={l.label} count={items.length} empty={es ? 'Nada aquí.' : 'Nothing here.'}>
+                {items.map((w) => <OpenCard key={w.id} w={w} onOpen={(x) => setDetailId(x.id)} isEnter={w.id === enterId} es={es} />)}
+              </BoardColumn>
+            );
+          })}
         </div>
       )}
 

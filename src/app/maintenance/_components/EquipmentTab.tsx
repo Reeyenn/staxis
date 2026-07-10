@@ -19,7 +19,7 @@ import type { InventoryItem } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, Modal, Field, TextInput,
-  PageHead, BoardColumn, BoardCard, CenteredBoard,
+  PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
 } from './_mt-snow';
 
 type Status = 'out' | 'low' | 'ok';
@@ -224,13 +224,11 @@ export function EquipmentTab() {
       />
 
       {parts.length === 0 ? (
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 26, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}</span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
-            {es ? 'Agrega filtros, focos, piezas — lo que guardes para reparaciones.' : 'Add filters, bulbs, parts — anything you keep on hand for repairs.'}
-          </p>
-          <Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar tu primer artículo' : 'Add your first item'}</Btn>
-        </div>
+        <MtEmptyCard
+          title={es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}
+          body={es ? 'Agrega filtros, focos, piezas — lo que guardes para reparaciones.' : 'Add filters, bulbs, parts — anything you keep on hand for repairs.'}
+          action={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar tu primer artículo' : 'Add your first item'}</Btn>}
+        />
       ) : (
         <CenteredBoard>
           {liveBands.map((s) => {

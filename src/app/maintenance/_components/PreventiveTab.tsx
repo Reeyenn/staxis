@@ -24,7 +24,7 @@ import type { PreventiveTask } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, Modal, Field, TextInput, TextArea,
-  PageHead, BoardColumn, BoardCard, CenteredBoard,
+  PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
   relDue, fmtDate, fmtDateShort, daysBetween,
 } from './_mt-snow';
 import { EquipmentRegistry } from './EquipmentRegistry';
@@ -57,6 +57,17 @@ function bandFor(t: PreventiveTask): Band {
   if (d < 0) return 'overdue';
   if (d <= 30) return 'soon';
   return 'upcoming';
+}
+// Editor draft (count text + unit + optional last-done ISO date) → concrete
+// cadence numbers. Shared by the New-task and edit modals, which previously
+// each re-derived it inline.
+function cadenceFrom(count: string, unit: Unit, last: string): {
+  n: number; freqDays: number; lastDate: Date; nextDue: Date;
+} {
+  const n = parseInt(count, 10) || 0;
+  const freqDays = Math.max(1, n) * UNITS.find((u) => u.value === unit)!.mult;
+  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
+  return { n, freqDays, lastDate, nextDue: new Date(lastDate.getTime() + freqDays * DAY) };
 }
 // Best count+unit for a day-count (prefilling the editor): largest unit that
 // divides evenly.
@@ -121,11 +132,7 @@ function NewTaskModal({
   const reset = () => { setName(''); setArea(''); setCount('1'); setUnit('months'); setLast(''); setBusy(false); };
   const close = () => { reset(); onClose(); };
 
-  const mult = UNITS.find((u) => u.value === unit)!.mult;
-  const n = parseInt(count, 10) || 0;
-  const freqDays = Math.max(1, n) * mult;
-  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
-  const nextDue = new Date(lastDate.getTime() + freqDays * DAY);
+  const { n, freqDays, nextDue } = cadenceFrom(count, unit, last);
   const can = name.trim() && area.trim() && n > 0 && !busy;
 
   const submit = async () => {
@@ -201,11 +208,7 @@ function TaskModal({
 
   if (!task) return null;
 
-  const mult = UNITS.find((u) => u.value === unit)!.mult;
-  const n = parseInt(count, 10) || 0;
-  const freqDays = Math.max(1, n) * mult;
-  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
-  const nextDue = new Date(lastDate.getTime() + freqDays * DAY);
+  const { freqDays, lastDate, nextDue } = cadenceFrom(count, unit, last);
   const du = daysBetween(new Date(), nextDue);
   const band: Band = du < 0 ? 'overdue' : du <= 30 ? 'soon' : 'upcoming';
   const meta = BAND[band];
@@ -324,13 +327,11 @@ export function PreventiveTab() {
       />
 
       {tasks.length === 0 ? (
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 26, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}</span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
-            {es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
-          </p>
-          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>
-        </div>
+        <MtEmptyCard
+          title={es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}
+          body={es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
+          action={<Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>}
+        />
       ) : (
         <CenteredBoard>
           {liveBands.map((b) => {

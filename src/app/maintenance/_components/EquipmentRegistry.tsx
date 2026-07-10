@@ -8,11 +8,13 @@
 // equipment table is deny-all RLS). Create / edit / delete are management-gated
 // both server-side (isManager) and here (canManageTeam hides the controls).
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
+import { tr } from '@/lib/i18n-utils';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import {
   fetchEquipmentList, fetchEquipmentDetail,
   createEquipmentAsset, updateEquipmentAsset, deleteEquipmentAsset,
@@ -25,10 +27,8 @@ import {
 import { Btn, Caps } from '@/app/housekeeping/_components/_snow';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
-  Modal, Field, TextInput, TextArea, daysBetween,
+  Modal, Field, TextInput, TextArea, MtEmptyCard, daysBetween,
 } from './_mt-snow';
-
-const tr = (lang: string, en: string, es: string) => (lang === 'es' ? es : en);
 
 const CATEGORY_LABEL: Record<EquipmentCategory, { en: string; es: string }> = {
   hvac:       { en: 'HVAC',        es: 'HVAC' },
@@ -508,13 +508,9 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   const [formOpen, setFormOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Equipment | null>(null);
 
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flash = useCallback((m: string) => {
-    setToast(m);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3200);
-  }, []);
+  // Single replace-on-reshow toast (max: 1 drops the previous one, and each
+  // show gets a fresh 3200ms timer — same semantics as the old hand-roll).
+  const { toasts, show: flash } = useToast({ durationMs: 3200, max: 1 });
 
   const refresh = useCallback(async () => {
     if (!pid) return;
@@ -610,13 +606,13 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
           <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>{tr(lang, 'Loading…', 'Cargando…')}</div>
         )}
         {!loading && list.length === 0 && (
-          <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: T.ink, fontStyle: 'italic' }}>{tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}</span>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '8px 0 18px' }}>
-              {tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps — anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina — todo lo que da servicio.')}
-            </p>
-            {isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add your first asset', 'Agregar su primer activo')}</Btn>}
-          </div>
+          <MtEmptyCard
+            titleSize={24}
+            bodySize={13}
+            title={tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}
+            body={tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps — anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina — todo lo que da servicio.')}
+            action={isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add your first asset', 'Agregar su primer activo')}</Btn>}
+          />
         )}
         {!loading && list.length > 0 && filtered.length === 0 && (
           <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SERIF, fontSize: 18, color: T.ink2, fontStyle: 'italic' }}>{tr(lang, 'Nothing matches that search.', 'Nada coincide con esa búsqueda.')}</div>
@@ -636,11 +632,13 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         onDelete={handleDelete}
       />
 
-      {toast && (
-        <div style={{ position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)', zIndex: 1100, background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}>
-          {toast}
-        </div>
-      )}
+      <ToastHost
+        toasts={toasts}
+        position="bottom"
+        offset="28px"
+        zIndex={1100}
+        toastStyle={{ background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}
+      />
     </div>
   );
 }
