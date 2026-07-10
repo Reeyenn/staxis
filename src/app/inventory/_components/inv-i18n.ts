@@ -104,6 +104,8 @@ const STRINGS = {
     reorder: 'Reorder',
     edit: 'Edit',
     flipBack: 'Flip back',
+    // ── Empty catalog (zero items — StockList panel; noItemsYet reused below) ──
+    noItemsBody: 'Add your first item to start tracking stock.',
     // ── HeroStats ──
     itemsHaveEnough: 'items have enough', // "{n} of {m} items have enough"
     noItemsYet: 'No items yet',
@@ -170,6 +172,8 @@ const STRINGS = {
     reorder: 'Pedir',
     edit: 'Editar',
     flipBack: 'Voltear',
+    // ── Empty catalog (zero items — StockList panel; noItemsYet reused below) ──
+    noItemsBody: 'Agrega tu primer artículo para empezar a controlar el stock.',
     // ── HeroStats ──
     itemsHaveEnough: 'artículos con suficiente',
     noItemsYet: 'Aún no hay artículos',

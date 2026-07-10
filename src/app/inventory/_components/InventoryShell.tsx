@@ -429,6 +429,7 @@ export function InventoryShell() {
             onEdit={onEditItem}
             onCount={() => setOverlay('count')}
             onReorder={() => setOverlay('reorder')}
+            onAdd={() => { setEditItem(null); setOverlay('add'); }}
           />
         </div>
       </div>

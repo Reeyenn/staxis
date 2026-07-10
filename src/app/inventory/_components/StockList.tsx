@@ -13,6 +13,7 @@ import {
 import { StatusDot } from './StatusPill';
 import { Serif } from './Serif';
 import { Caps } from './Caps';
+import { Btn } from './Btn';
 import { useFlipList } from './motion';
 import { AllClear, PingDot, TickNum } from './fx';
 import { BoardCard } from './BoardCard';
@@ -27,6 +28,7 @@ interface StockListProps {
   onEdit?: (item: DisplayItem) => void;
   onCount?: () => void;
   onReorder?: () => void;
+  onAdd?: () => void;
 }
 
 function columnsFor(lang: Lang): Array<{ status: StockStatus; label: string; sub: string }> {
@@ -45,7 +47,7 @@ function sortKey(it: DisplayItem): number {
   return it.daysLeft;
 }
 
-export function StockList({ lang, items, bucket, query, onEdit, onCount, onReorder }: StockListProps) {
+export function StockList({ lang, items, bucket, query, onEdit, onCount, onReorder, onAdd }: StockListProps) {
   const tx = t(lang);
   const COLUMNS = columnsFor(lang);
   const filtered = useMemo(() => {
@@ -74,6 +76,16 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
   // started" panel. A filtered-empty bucket on an established hotel keeps the
   // normal empty columns (scoped so the day-1 CTA never shows there).
   const dayOne = counted.length === 0 && bucket === 'all' && !query.trim();
+
+  // Empty catalog (no inventory items at all) → skip the board AND the
+  // not-counted section entirely and show a single "add your first item" panel.
+  // Short-circuits ahead of any bucket/query filtering so switching filters on
+  // an empty catalog can't surface bare triage columns. Distinct from `dayOne`
+  // above, which is "items exist but none counted yet" (keeps the board + the
+  // not-counted section). Guard sits after every hook so hook order is stable.
+  if (items.length === 0) {
+    return <NoItemsPanel lang={lang} onAdd={onAdd} />;
+  }
 
   return (
     <div ref={boardRef} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -156,6 +168,48 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
           onCount={onCount}
           onReorder={onReorder}
         />
+      )}
+    </div>
+  );
+}
+
+// Empty-catalog panel — a brand-new hotel with zero inventory items. Quiet
+// paper card inviting the first item, mirroring AiReportSheet's EmptyState
+// idiom (serif headline + sans body). The button reuses the FilterBar "+ Add
+// item" flow via the threaded onAdd callback, opening the AddItemSheet.
+function NoItemsPanel({ lang, onAdd }: { lang: Lang; onAdd?: () => void }) {
+  const tx = t(lang);
+  return (
+    <div
+      style={{
+        background: T.paper,
+        border: `1px solid ${T.rule}`,
+        borderRadius: 16,
+        padding: '48px 32px',
+        textAlign: 'center',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 12,
+      }}
+    >
+      <Serif size={24} style={{ fontStyle: 'italic' }}>{tx.noItemsYet}</Serif>
+      <p
+        style={{
+          margin: 0,
+          maxWidth: 420,
+          fontFamily: fonts.sans,
+          fontSize: 13.5,
+          lineHeight: 1.55,
+          color: T.ink2,
+        }}
+      >
+        {tx.noItemsBody}
+      </p>
+      {onAdd && (
+        <Btn variant="primary" size="md" onClick={onAdd} style={{ marginTop: 4 }}>
+          {tx.addItem}
+        </Btn>
       )}
     </div>
   );

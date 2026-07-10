@@ -46,7 +46,6 @@ import {
   OWNER_CODE_MAX_USES,
 } from '@/lib/join-codes';
 import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
-import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
 import { validateRoomNumbers } from '@/lib/api-validate';
 import { env } from '@/lib/env';
 import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
@@ -68,8 +67,8 @@ interface CreateBody {
   sendEmail?: unknown;   // boolean (default false). Requires ownerEmail.
   // Round 15 follow-up: capture the master room list at creation time so
   // phantom-seed has something to work with from day 1. Optional —
-  // omitted means inventory stays empty and the doctor warns until
-  // it's populated (e.g., via PMS sync).
+  // omitted means room_inventory stays empty until populated (e.g., via
+  // PMS sync). The doctor does not warn on this.
   roomNumbers?: unknown;
 }
 
@@ -291,8 +290,7 @@ export async function POST(req: NextRequest) {
       // re-derives total_rooms from this if non-empty (defense against
       // a typed totalRooms ≠ list-length mismatch); the API validation
       // above already enforces equality, so the trigger normally no-ops.
-      // Empty array means "capture later" (e.g., via PMS sync); the
-      // doctor warns in that state.
+      // Empty array means "capture later" (e.g., via PMS sync).
       ...(v.roomNumbers.length > 0 ? { room_inventory: v.roomNumbers } : {}),
     })
     .select('id, name, created_at')
@@ -306,40 +304,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Phase M1.5: seed the 16 default inventory items immediately so the
-  // wizard can confidently say "your inventory is set up" at Step 9 and
-  // ML cold-start training can begin as soon as the first count event
-  // arrives (instead of waiting for the owner to open the inventory
-  // page once to trigger the auto-seed). Idempotent — the unique index
-  // (property_id, lower(name)) makes re-running this a no-op.
-  //
-  // Best-effort: a failure here doesn't roll back the property. The
-  // inventory page's existing client-side seed (page.tsx:38) is the
-  // backstop — if the server-side seed flakes, the owner gets the same
-  // items the next time they open the page.
-  try {
-    const inventoryRows = DEFAULT_INVENTORY_ITEMS.map((item) => ({
-      property_id: created.id,
-      name: item.name,
-      category: item.category,
-      current_stock: item.currentStock,
-      par_level: item.parLevel,
-      unit: item.unit,
-    }));
-    const { error: seedErr } = await supabaseAdmin
-      .from('inventory')
-      .insert(inventoryRows);
-    if (seedErr && !String(seedErr.message ?? '').toLowerCase().includes('duplicate')) {
-      // Non-duplicate errors are real; log them so ops can investigate.
-      log.error('[admin/properties/create] inventory seed failed (non-fatal)', {
-        requestId, propertyId: created.id, msg: seedErr.message,
-      });
-    }
-  } catch (e) {
-    log.error('[admin/properties/create] inventory seed threw (non-fatal)', {
-      requestId, propertyId: created.id, msg: e instanceof Error ? e.message : String(e),
-    });
-  }
+  // Deliberately NO preset inventory (2026-07-09, Reeyen): new hotels start
+  // with an empty inventory list — owners add their own items. The old Phase
+  // M1.5 seed of 16 default items lived here; removing it means inventory ML
+  // cold-start simply waits for the first real items/counts, which is fine.
 
   // Phase M3.1 (2026-05-14): trigger demand+supply cold-start ML training
   // for the new property AFTER response is sent. Matches the wizard finalize

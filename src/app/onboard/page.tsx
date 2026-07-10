@@ -1590,6 +1590,7 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
 // ─── Step 9: All set ────────────────────────────────────────────────────
 
 function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
+  const { lang } = useLang();
   const [going, setGoing] = useState(false);
   const finalize = async () => {
     setGoing(true);
@@ -1620,7 +1621,9 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
       </p>
       <div style={{ background: 'rgba(201,150,68,0.10)', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
         <p style={{ fontSize: '13px', margin: 0, lineHeight: 1.5 }}>
-          ✓ Your inventory has 16 default items (sheets, towels, soap, etc.). Customize anytime in the Inventory tab.
+          {lang === 'es'
+            ? '✓ Tu inventario empieza vacío. Agrega tus propios artículos cuando quieras en la pestaña de Inventario.'
+            : '✓ Your inventory starts empty. Add your own items anytime in the Inventory tab.'}
         </p>
         <p style={{ fontSize: '13px', margin: '8px 0 0 0', lineHeight: 1.5 }}>
           ✓ Once your housekeepers start cleaning rooms, the AI will start predicting your needs. Usually within 7 days.
