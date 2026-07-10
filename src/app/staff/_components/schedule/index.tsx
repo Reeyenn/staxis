@@ -34,7 +34,7 @@ import { ShiftEditorModal } from './ShiftEditorModal';
 
 const DEFAULT_WEEKLY_CAP = 40;
 
-const HL_SHADOW = `inset 0 0 0 1px ${T.ink}`;
+const HL_SHADOW = `inset 0 0 0 1px ${T.brand}`;
 
 export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => void }) {
   const { activePropertyId, activeProperty, staff } = useProperty();
@@ -438,21 +438,21 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
     return (
       <button key={d.date} onClick={() => setSelDate(d.date)} style={{
         flex: '0 0 auto', width: 118, textAlign: 'left', cursor: 'pointer',
-        border: `1px solid ${isSel ? T.ink : (d.today ? T.ink : T.rule)}`,
+        border: `1px solid ${isSel ? T.brand : (d.today ? T.brand : T.rule)}`,
         borderRadius: 14, padding: '12px 13px',
-        background: isSel ? T.ink : T.paper,
-        color: isSel ? T.bg : T.ink, transition: 'all .12s',
-        boxShadow: isSel ? '0 6px 18px rgba(31,35,28,0.16)' : (d.today ? HL_SHADOW : 'none'),
+        background: isSel ? T.brand : T.paper,
+        color: isSel ? T.bg : T.ink, transition: 'all .3s cubic-bezier(.22,1,.36,1)',
+        boxShadow: isSel ? '0 8px 18px -8px rgba(62,92,72,0.55)' : (d.today ? HL_SHADOW : T.cardShadow),
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{
             fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.08em',
             fontWeight: d.today ? 800 : 600,
-            color: isSel ? 'rgba(255,255,255,0.7)' : (d.today ? T.ink : T.ink3),
+            color: isSel ? 'rgba(255,255,255,0.7)' : (d.today ? T.brand : T.ink3),
           }}>{d.dow.toUpperCase()}{d.today ? (es ? ' · HOY' : ' · NOW') : ''}</span>
         </div>
         <div style={{
-          fontFamily: fonts.serif, fontSize: 26, fontStyle: 'italic', lineHeight: 1,
+          fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1,
           margin: '3px 0 0', color: isSel ? T.bg : T.ink,
         }}>{d.dayNum}</div>
       </button>
@@ -465,32 +465,32 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
     return (
       <button key={w.start} data-week={w.start} onClick={onPick} style={{
         flex: '0 0 auto', width: 158, textAlign: 'left', cursor: 'pointer',
-        border: `1px solid ${isSel ? T.ink : (w.current ? T.ink : T.rule)}`,
+        border: `1px solid ${isSel ? T.brand : (w.current ? T.brand : T.rule)}`,
         borderRadius: 14, padding: '12px 14px',
-        background: isSel ? T.ink : T.paper,
-        color: isSel ? T.bg : T.ink, transition: 'all .12s',
-        boxShadow: isSel ? '0 6px 18px rgba(31,35,28,0.16)' : (w.current ? HL_SHADOW : 'none'),
+        background: isSel ? T.brand : T.paper,
+        color: isSel ? T.bg : T.ink, transition: 'all .3s cubic-bezier(.22,1,.36,1)',
+        boxShadow: isSel ? '0 8px 18px -8px rgba(62,92,72,0.55)' : (w.current ? HL_SHADOW : T.cardShadow),
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{
             fontFamily: fonts.mono, fontSize: 9.5, letterSpacing: '0.1em',
             fontWeight: w.current ? 800 : 600,
-            color: isSel ? 'rgba(255,255,255,0.7)' : (w.current ? T.ink : T.ink3),
+            color: isSel ? 'rgba(255,255,255,0.7)' : (w.current ? T.brand : T.ink3),
           }}>{w.current ? (es ? 'ESTA SEMANA' : 'THIS WEEK') : w.past ? (es ? 'HISTORIAL' : 'HISTORY') : (es ? 'SEMANA' : 'WEEK')}</span>
           {done && (
             <span style={{
               fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-              color: isSel ? '#A8C4AE' : T.sageDeep,
+              color: isSel ? '#9EB7A6' : T.sageDeep,
             }}>✓</span>
           )}
         </div>
         <div style={{
-          fontFamily: fonts.serif, fontSize: 20, fontStyle: 'italic', lineHeight: 1.05,
+          fontFamily: fonts.sans, fontSize: 14.5, fontWeight: 600, lineHeight: 1.15,
           margin: '4px 0 9px', whiteSpace: 'nowrap', color: isSel ? T.bg : T.ink,
         }}>{w.label}</div>
         <div style={{
           fontFamily: fonts.mono, fontSize: 9.5, letterSpacing: '0.03em', fontWeight: 600,
-          color: done ? (isSel ? '#A8C4AE' : T.sageDeep) : (isSel ? 'rgba(255,255,255,0.6)' : T.ink3),
+          color: done ? (isSel ? '#9EB7A6' : T.sageDeep) : (isSel ? 'rgba(255,255,255,0.6)' : T.ink3),
         }}>
           {done
             ? (es ? '✓ LISTA' : '✓ DONE')
@@ -505,7 +505,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
 
   // ── render ─────────────────────────────────────────────────────────────
   return (
-    <div style={{ background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%', padding: '22px 48px 30px' }}>
+    <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%', padding: '22px 48px 130px' }}>
 
       {/* header */}
       <div style={{
@@ -513,12 +513,12 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
         marginBottom: 18, gap: 16, minHeight: 44, flexWrap: 'wrap',
       }}>
         <h1 style={{
-          fontFamily: fonts.serif, fontSize: 34, margin: 0, letterSpacing: '-0.03em',
-          lineHeight: 1.05, fontWeight: 400, whiteSpace: 'nowrap', color: T.ink,
+          fontFamily: fonts.sans, fontSize: 26, margin: 0, letterSpacing: '-0.02em',
+          lineHeight: 1.1, fontWeight: 600, whiteSpace: 'nowrap', color: T.ink,
         }}>
           {view === 'day' ? (
             <>
-              <span style={{ fontStyle: 'italic' }}>{day.dowFull},</span>{' '}
+              <span>{day.dowFull},</span>{' '}
               {es ? `${day.dayNum} ${day.mon}` : `${day.mon} ${day.dayNum}`}
               {dayTag && (
                 <span style={{
@@ -530,7 +530,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
             </>
           ) : (
             <>
-              <span style={{ fontStyle: 'italic' }}>{es ? 'Semana,' : 'Week,'}</span> {selWeek.label}
+              <span>{es ? 'Semana,' : 'Week,'}</span> {selWeek.label}
               {weekTag && (
                 <span style={{
                   fontFamily: fonts.mono, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em',
@@ -564,7 +564,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
             disabled={view === 'day' ? dayFwdDisabled : weekFwdDisabled}
             onClick={() => (view === 'day' ? stepDay(1) : stepWeek(1))}>›</Btn>
           <div style={{
-            display: 'inline-flex', gap: 3, background: '#FBFAF6',
+            display: 'inline-flex', gap: 3, background: 'rgba(31,35,28,0.05)',
             border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3,
           }}>
             {([['day', es ? 'Día' : 'Day'], ['week', es ? 'Semana' : 'Week']] as const).map(([k, lab]) => (
@@ -572,7 +572,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
                 border: 'none', borderRadius: 999, padding: '6px 12px', cursor: 'pointer',
                 fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
                 background: view === k ? T.ink : 'transparent',
-                color: view === k ? T.bg : T.ink2, transition: 'all .12s',
+                color: view === k ? T.bg : T.ink2, transition: 'all .3s cubic-bezier(.22,1,.36,1)',
               }}>{lab}</button>
             ))}
           </div>
@@ -585,14 +585,14 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           <Card style={{ overflow: 'hidden', marginBottom: 14, padding: 0 }}>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 16,
-              borderBottom: `1px solid ${T.rule}`, background: '#FBFAF6', padding: '13px 22px',
+              borderBottom: `1px solid ${T.rule}`, background: 'rgba(31,35,28,0.03)', padding: '13px 22px',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 22, flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexShrink: 0 }}>
                   <Caps size={9} style={{ whiteSpace: 'nowrap' }}>{eyebrow}</Caps>
-                  <span style={{ fontFamily: fonts.serif, fontSize: 28, lineHeight: 1, whiteSpace: 'nowrap', color: T.ink }}>
+                  <span style={{ fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, whiteSpace: 'nowrap', color: T.ink }}>
                     {dayShifts.length}
-                    <span style={{ fontSize: 14, color: T.ink3 }}> {es ? 'en turno' : 'on'}</span>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: T.ink3, letterSpacing: '0' }}> {es ? 'en turno' : 'on'}</span>
                   </span>
                 </div>
                 <span style={{ width: 1, height: 24, background: T.rule, flexShrink: 0 }}/>
@@ -603,7 +603,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
                       <span key={c.dept} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                         <span style={{ width: 7, height: 7, borderRadius: '50%', background: m.tone }}/>
                         <span style={{ fontSize: 13, fontWeight: 600, color: T.ink, whiteSpace: 'nowrap' }}>{m.label}</span>
-                        <span style={{ fontFamily: fonts.serif, fontSize: 20, color: T.ink, lineHeight: 1, marginLeft: 2 }}>{c.have}</span>
+                        <span style={{ fontFamily: fonts.sans, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', color: T.ink, lineHeight: 1, marginLeft: 2 }}>{c.have}</span>
                       </span>
                     );
                   })}
@@ -694,10 +694,10 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
       {toast && (
         <div style={{
           position: 'fixed', bottom: 22, left: '50%', transform: 'translateX(-50%)', zIndex: 1200,
-          padding: '11px 18px', background: 'rgba(244,247,244,0.97)',
-          border: '1px solid rgba(104,131,114,0.3)', borderRadius: 999,
+          padding: '11px 18px', background: 'rgba(255,255,255,0.95)',
+          border: '1px solid rgba(92,122,96,0.3)', borderRadius: 999,
           fontSize: 13, fontWeight: 600, color: T.sageDeep,
-          boxShadow: '0 10px 30px rgba(31,35,28,0.12)', whiteSpace: 'nowrap',
+          boxShadow: '0 18px 36px -20px rgba(62,92,72,0.5)', whiteSpace: 'nowrap',
         }}>✓ {toast}</div>
       )}
 
@@ -837,7 +837,7 @@ function printableWeekHtml({
   .chip { font-weight: 600; white-space: nowrap; }
   .note { font-size: 8.5px; color: #5C625C; margin-top: 2px; }
   td.hours { font-weight: 700; white-space: nowrap; }
-  td.hours.ot { color: #A04A2C; }
+  td.hours.ot { color: #B85C3D; }
   tr.count td { background: #F7F6F2; font-weight: 700; }
   @media print { body { margin: 10mm; } }
 </style></head><body>

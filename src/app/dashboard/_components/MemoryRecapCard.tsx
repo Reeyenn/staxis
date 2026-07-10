@@ -32,21 +32,21 @@ interface RecapData {
 }
 
 const C = {
-  ink: '#15191A',
-  ink2: '#586056',
-  ink3: '#9CA29C',
-  rule: 'rgba(15,20,17,0.07)',
-  attn: '#9A5B0B', // amber-ink for "noticed" attention insights
-  attnRule: 'rgba(154,91,11,0.16)',
+  ink: '#1F231C',
+  ink2: '#5C625C',
+  ink3: '#A6ABA6',
+  rule: 'rgba(31,35,28,0.06)',
+  attn: '#8C6A33', // amber warn-text for "noticed" attention insights
+  attnRule: 'rgba(201,150,68,0.25)',
 } as const;
 
-const FONT_SERIF = 'var(--font-fraunces), Georgia, serif';
+const FONT_SANS = 'var(--font-geist), system-ui, -apple-system, sans-serif';
 const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
 
 const LABEL: React.CSSProperties = {
   fontFamily: FONT_MONO,
-  fontSize: 10,
-  letterSpacing: '0.18em',
+  fontSize: 9.5,
+  letterSpacing: '0.14em',
   textTransform: 'uppercase',
   color: C.ink3,
   fontWeight: 600,
@@ -140,11 +140,10 @@ export function MemoryRecapCard() {
   return (
     <div
       style={{
-        background: 'rgba(255,255,255,0.78)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255,255,255,0.75)',
+        background: '#FFFFFF',
+        border: '1px solid rgba(31,35,28,0.08)',
         borderRadius: 16,
+        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
         padding: '18px 20px',
       }}
     >
@@ -188,11 +187,11 @@ export function MemoryRecapCard() {
             <div
               style={{
                 marginTop: 10,
-                fontFamily: FONT_SERIF,
-                fontStyle: 'italic',
-                fontSize: 18,
+                fontFamily: FONT_SANS,
+                fontWeight: 500,
+                fontSize: 15,
                 color: C.ink,
-                lineHeight: 1.35,
+                lineHeight: 1.5,
               }}
             >
               {data.recap}

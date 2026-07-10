@@ -9,8 +9,9 @@ export const dynamic = 'force-dynamic';
 // same gate server-side (defense in depth). Reads/writes go through /api with
 // the service-role finance gate — no anon finance reads anywhere.
 //
-// Visual: the "Kanban" Snow redesign — serif headline, 4-up summary tiles,
-// board-style tabs. The data layer is unchanged; this is a re-skin.
+// Visual: the Concourse skin — Geist 600 headline, 4-up summary tiles,
+// board-style tabs, hairline cards on the app-wide radial wash. The data
+// layer is unchanged; this is a re-skin.
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -20,7 +21,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
 import { monthKey, priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
-import { apiGet, Notice, T, FONT_SANS, FONT_SERIF, FONT_MONO } from './_components/fin-ui';
+import { apiGet, Notice, T, FONT_SANS, FONT_MONO } from './_components/fin-ui';
 import { SummaryTile, BigMoney } from './_components/fin-board';
 import { ft } from './_components/fin-i18n';
 import { CheckbookTab } from './_components/CheckbookTab';
@@ -118,21 +119,21 @@ export default function FinancialsPage() {
   return (
     <AppLayout>
       <div style={{ background: 'transparent', minHeight: 'calc(100dvh - 64px)' }}>
-        <div style={{ maxWidth: 1240, margin: '0 auto', padding: '28px clamp(16px,3vw,40px) 96px' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto', padding: '28px clamp(16px,3vw,40px) 130px' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
           <div>
-            <h1 style={{ fontFamily: FONT_SERIF, fontSize: 44, fontWeight: 400, color: T.ink, margin: 0, letterSpacing: '-0.02em', lineHeight: 1 }}>
+            <h1 style={{ fontFamily: FONT_SANS, fontSize: 26, fontWeight: 600, color: T.ink, margin: 0, letterSpacing: '-0.02em', lineHeight: 1.15 }}>
               {S.title}
             </h1>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '6px 0 0' }}>{S.tagline}</p>
+            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '4px 0 0' }}>{S.tagline}</p>
           </div>
           {/* Month stepper */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button onClick={() => setMonth(priorMonthKey(month))} style={stepBtn} aria-label="Previous month">
               ‹
             </button>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 17, fontWeight: 600, color: T.ink, minWidth: 116, textAlign: 'center', textTransform: 'capitalize' }}>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 14.5, fontWeight: 600, color: T.ink, minWidth: 116, textAlign: 'center', textTransform: 'capitalize' }}>
               {monthDisplay(month, lang as Lang)}
             </span>
             <button
@@ -172,26 +173,26 @@ export default function FinancialsPage() {
               </SummaryTile>
               <SummaryTile label={S.margin}>
                 {marginPct != null ? (
-                  <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 27, fontWeight: 500, color: T.ink, letterSpacing: '-0.02em' }}>{marginPct}%</span>
+                  <span style={{ fontFamily: FONT_SANS, fontSize: 23, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>{marginPct}%</span>
                 ) : (
                   <span style={{ fontFamily: FONT_MONO, fontSize: 18, color: T.ink3 }}>—</span>
                 )}
               </SummaryTile>
               {summary?.costPerOccupiedRoomCents != null && (
                 <SummaryTile label={S.costPerRoom}>
-                  <BigMoney cents={summary.costPerOccupiedRoomCents} size={24} showCents />
+                  <BigMoney cents={summary.costPerOccupiedRoomCents} size={23} showCents />
                 </SummaryTile>
               )}
               {summary?.expensesPctOfRevenue != null && (
                 <SummaryTile label={S.pctOfRevenue}>
-                  <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 27, fontWeight: 500, color: T.ink, letterSpacing: '-0.02em' }}>{summary.expensesPctOfRevenue.toFixed(0)}%</span>
+                  <span style={{ fontFamily: FONT_SANS, fontSize: 23, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>{summary.expensesPctOfRevenue.toFixed(0)}%</span>
                 </SummaryTile>
               )}
             </>
           )}
         </div>
         {!summaryLoading && summary?.revenueCents == null && (
-          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, margin: '12px 0 0', fontStyle: 'italic' }}>{S.revenueComingSoon}</p>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, margin: '12px 0 0' }}>{S.revenueComingSoon}</p>
         )}
 
         {/* Tab bar */}
@@ -208,11 +209,12 @@ export default function FinancialsPage() {
                   cursor: 'pointer',
                   padding: '0 0 12px',
                   fontFamily: FONT_SANS,
-                  fontSize: 16,
-                  fontWeight: active ? 700 : 500,
+                  fontSize: 14,
+                  fontWeight: 600,
                   color: active ? T.ink : T.ink3,
-                  borderBottom: active ? `2px solid ${T.ink}` : '2px solid transparent',
+                  borderBottom: active ? `2px solid ${T.sageBrand}` : '2px solid transparent',
                   marginBottom: -1,
+                  transition: `color 0.3s ${SPRING_EASE}, border-color 0.3s ${SPRING_EASE}`,
                 }}
               >
                 {t.label}
@@ -233,12 +235,14 @@ export default function FinancialsPage() {
   );
 }
 
+const SPRING_EASE = 'cubic-bezier(.22,1,.36,1)';
+
 const stepBtn: React.CSSProperties = {
   width: 36,
   height: 36,
-  borderRadius: 9,
-  border: `1px solid ${T.rule}`,
-  background: 'transparent',
+  borderRadius: 999,
+  border: '1px solid rgba(31,35,28,0.14)',
+  background: '#fff',
   color: T.ink2,
   cursor: 'pointer',
   fontSize: 16,

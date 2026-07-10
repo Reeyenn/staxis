@@ -289,10 +289,10 @@ export function BudgetsPanel({ lang, open, onClose, budgets }: BudgetsPanelProps
                       left: 14,
                       top: '50%',
                       transform: 'translateY(-50%)',
-                      fontFamily: fonts.serif,
+                      fontFamily: fonts.sans,
                       fontSize: 18,
+                      fontWeight: 600,
                       color: T.ink2,
-                      fontStyle: 'italic',
                     }}
                   >
                     $
@@ -309,9 +309,9 @@ export function BudgetsPanel({ lang, open, onClose, budgets }: BudgetsPanelProps
                       boxSizing: 'border-box',
                       background: T.bg,
                       border: `1px solid ${T.rule}`,
-                      fontFamily: fonts.serif,
+                      fontFamily: fonts.sans,
                       fontSize: 20,
-                      fontStyle: 'italic',
+                      fontWeight: 600,
                       color: T.ink,
                       letterSpacing: '-0.02em',
                       outline: 'none',
@@ -342,12 +342,11 @@ export function BudgetsPanel({ lang, open, onClose, budgets }: BudgetsPanelProps
             <Caps>{bp.totalThisMonth}</Caps>
             <div
               style={{
-                fontFamily: fonts.serif,
+                fontFamily: fonts.sans,
                 fontSize: 30,
                 color: T.ink,
                 letterSpacing: '-0.02em',
-                fontStyle: 'italic',
-                fontWeight: 400,
+                fontWeight: 600,
                 lineHeight: 1.05,
                 marginTop: 4,
               }}

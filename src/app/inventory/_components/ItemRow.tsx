@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { T, fonts, statusColor } from './tokens';
+import { T, fonts, statusColor, statusText } from './tokens';
 import { ItemThumb } from './ItemThumb';
 import { StockBar } from './StockBar';
 import { StatusPill } from './StatusPill';
@@ -25,7 +25,7 @@ export function ItemRow({ it, onClick }: ItemRowProps) {
       style={{
         background: T.paper,
         border: `1px solid ${T.rule}`,
-        borderRadius: 13,
+        borderRadius: 14,
         padding: '12px 14px',
         display: 'grid',
         gridTemplateColumns: '36px minmax(140px, 1.6fr) 84px minmax(110px, 1fr) 70px 70px',
@@ -81,13 +81,12 @@ export function ItemRow({ it, onClick }: ItemRowProps) {
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, minWidth: 0 }}>
         <span
           style={{
-            fontFamily: fonts.serif,
+            fontFamily: fonts.sans,
             fontSize: 22,
             color: T.ink,
             letterSpacing: '-0.02em',
-            fontWeight: 400,
+            fontWeight: 600,
             lineHeight: 1,
-            fontStyle: 'italic',
           }}
         >
           {fmtInt(it.estimated)}
@@ -110,7 +109,7 @@ export function ItemRow({ it, onClick }: ItemRowProps) {
           style={{
             fontFamily: fonts.sans,
             fontSize: 11,
-            color: statusColor[it.status],
+            color: statusText[it.status],
             fontWeight: 600,
             whiteSpace: 'nowrap',
           }}

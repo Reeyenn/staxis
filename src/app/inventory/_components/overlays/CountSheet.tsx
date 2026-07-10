@@ -346,7 +346,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           fontWeight: 600,
         }}
       >
-        <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 15 }}>‹</span>
+        <span style={{ fontFamily: fonts.sans, fontWeight: 600, fontSize: 15 }}>‹</span>
         {cs.changeWhatToCount}
       </button>
 
@@ -480,9 +480,9 @@ function CountRow({
               boxSizing: 'border-box',
               background: fill.bg,
               border: `1px solid ${fill.border}`,
-              fontFamily: fonts.serif,
+              fontFamily: fonts.sans,
               fontSize: 20,
-              fontStyle: 'italic',
+              fontWeight: 600,
               color: T.ink,
               letterSpacing: '-0.02em',
               outline: 'none',
@@ -626,7 +626,7 @@ function PhotoCountPanel({
         marginBottom: 22,
       }}
     >
-      <span style={{ fontFamily: fonts.serif, fontSize: 17, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
+      <span style={{ fontFamily: fonts.sans, fontSize: 17, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
         {cs.countByPhoto}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, flex: '1 1 200px', minWidth: 0 }}>

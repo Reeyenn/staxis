@@ -32,7 +32,7 @@ import {
 import { useTodayStr } from '@/lib/use-today-str';
 import type { DeepCleanConfig, DeepCleanRecord } from '@/types';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn,
 } from './_snow';
 
@@ -55,7 +55,7 @@ interface LogEntry {
   sortTs: number;
 }
 
-// ── Freshness chip — caps label over a big italic serif value ──────────────
+// ── Freshness chip — caps label over a big Geist stat value ────────────────
 function StatChip({
   label, value, color,
 }: {
@@ -68,8 +68,8 @@ function StatChip({
     }}>
       <Caps size={10}>{label}</Caps>
       <span style={{
-        fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 30,
-        lineHeight: 0.9, fontWeight: 400, color: color ?? T.ink,
+        fontFamily: FONT_SANS, fontSize: 23, letterSpacing: '-0.02em',
+        lineHeight: 0.95, fontWeight: 600, color: color ?? T.ink,
       }}>{value}</span>
     </div>
   );
@@ -326,7 +326,7 @@ export function DeepCleanTab() {
   if (!loaded) {
     return (
       <div style={{
-        padding: '24px 48px 48px', background: 'transparent', color: T.ink,
+        padding: '24px 48px 130px', background: 'transparent', color: T.ink,
         fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexDirection: 'column', gap: 12,
@@ -344,7 +344,7 @@ export function DeepCleanTab() {
 
   return (
     <div style={{
-      padding: '24px 48px 48px', background: 'transparent', color: T.ink,
+      padding: '24px 48px 130px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       {/* Two-column board collapses to one column on narrow windows. Scoped
@@ -361,10 +361,10 @@ export function DeepCleanTab() {
       }}>
         <div>
           <h1 style={{
-            fontFamily: FONT_SERIF, fontSize: 36, fontWeight: 400, lineHeight: 1,
+            fontFamily: FONT_SANS, fontSize: 26, fontWeight: 600, lineHeight: 1.1,
             color: T.ink, margin: 0, letterSpacing: '-0.02em',
           }}>
-            <span style={{ fontStyle: 'italic' }}>{es ? 'Limpieza' : 'Deep'}</span>{' '}
+            <span>{es ? 'Limpieza' : 'Deep'}</span>{' '}
             {es ? 'profunda' : 'clean'}
           </h1>
           <div style={{
@@ -416,7 +416,7 @@ export function DeepCleanTab() {
           {overdue.length === 0 && (
             <p style={{
               fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
-              padding: '22px 6px', fontStyle: 'italic', margin: 0,
+              padding: '22px 6px', margin: 0,
             }}>
               {es ? 'Nada vencido — buen trabajo.' : 'Nothing overdue — nice work.'}
             </p>
@@ -430,8 +430,8 @@ export function DeepCleanTab() {
                 padding: '11px 6px', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center',
               }}>
                 <span style={{
-                  fontFamily: FONT_SERIF, fontSize: 23, color: T.ink, fontStyle: 'italic',
-                  letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400,
+                  fontFamily: FONT_MONO, fontSize: 17, color: T.ink,
+                  letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 600,
                 }}>{r.number}</span>
                 <span>
                   {r.daysSince === Infinity
@@ -483,7 +483,7 @@ export function DeepCleanTab() {
             {recentLog.length === 0 && (
               <p style={{
                 fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
-                padding: '16px 0', fontStyle: 'italic', margin: 0,
+                padding: '16px 0', margin: 0,
               }}>
                 {es ? 'Sin registro reciente.' : 'No recent records yet.'}
               </p>
@@ -497,8 +497,8 @@ export function DeepCleanTab() {
                   {agoLabel(e.agoDays)}
                 </span>
                 <span style={{
-                  fontFamily: FONT_SERIF, fontSize: 19, color: T.ink, fontStyle: 'italic',
-                  letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400,
+                  fontFamily: FONT_MONO, fontSize: 15, color: T.ink,
+                  letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 600,
                 }}>{e.roomNumber}</span>
                 <span style={{
                   fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink,
@@ -540,8 +540,8 @@ export function DeepCleanTab() {
             <div>
               <Caps>{es ? 'Configuración' : 'Settings'}</Caps>
               <h3 style={{
-                fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, margin: '4px 0 0',
-                fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400,
+                fontFamily: FONT_SANS, fontSize: 18, color: T.ink, margin: '4px 0 0',
+                letterSpacing: '-0.02em', lineHeight: 1.2, fontWeight: 600,
               }}>
                 {es ? 'Cadencia de limpieza profunda' : 'Deep clean cadence'}
               </h3>
@@ -590,7 +590,7 @@ export function DeepCleanTab() {
           zIndex: 9999, padding: '12px 18px',
           background: toastKind === 'error' ? T.warmDim : T.sageDim,
           color:      toastKind === 'error' ? T.warm     : T.sageDeep,
-          border: `1px solid ${toastKind === 'error' ? 'rgba(184,92,61,0.3)' : 'rgba(104,131,114,0.3)'}`,
+          border: `1px solid ${toastKind === 'error' ? 'rgba(184,92,61,0.3)' : 'rgba(92,122,96,0.3)'}`,
           borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
         }}>{toast}</div>,
         document.body,

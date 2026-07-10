@@ -130,9 +130,9 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
         padding: '9px 12px',
         borderRadius: 9,
         cursor: 'pointer',
-        background: primary ? T.ink : teal ? T.tealDim : 'transparent',
-        color: primary ? T.bg : teal ? T.tealText : T.ink,
-        border: `1px solid ${primary ? T.ink : teal ? `${T.teal}33` : 'transparent'}`,
+        background: primary ? T.brand : teal ? T.tealDim : 'transparent',
+        color: primary ? '#fff' : teal ? T.tealText : T.ink,
+        border: `1px solid ${primary ? T.brand : teal ? 'rgba(92,122,96,0.28)' : 'transparent'}`,
         fontFamily: fonts.sans,
         fontSize: 13.5,
         fontWeight: primary || teal ? 600 : 500,
@@ -159,7 +159,7 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
             fontFamily: fonts.mono,
             fontSize: 10,
             fontWeight: 600,
-            color: primary ? T.bg : T.dim,
+            color: primary ? '#fff' : T.dim,
           }}
         >
           <TickNum>{badge}</TickNum>

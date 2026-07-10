@@ -3,9 +3,8 @@
 import React from 'react';
 import { T, fonts } from './tokens';
 
-// Triage button used across the inventory tab. Rounded-rect (radius 10), not a
-// pill — matches the handoff. Variants: primary (ink), ghost (hairline),
-// teal (AI/scan tone), paper.
+// Concourse button used across the inventory tab. Radius-999 pill. Variants:
+// primary (sage), ghost (hairline), teal (AI/scan tone → sage wash), paper.
 
 type Variant = 'primary' | 'ghost' | 'teal' | 'sage' | 'paper';
 type Size = 'sm' | 'md' | 'lg';
@@ -22,7 +21,7 @@ const PADDING: Record<Size, string> = {
   lg: '0 22px',
 };
 const HEIGHT: Record<Size, number> = { sm: 30, md: 38, lg: 42 };
-const FONT_SIZE: Record<Size, number> = { sm: 11.5, md: 13, lg: 14 };
+const FONT_SIZE: Record<Size, number> = { sm: 11.5, md: 12.5, lg: 13.5 };
 
 export function Btn({
   variant = 'ghost',
@@ -36,16 +35,16 @@ export function Btn({
   const v = (() => {
     switch (variant) {
       case 'primary':
-        return { bg: T.ink, fg: T.bg, border: T.ink, weight: 600 };
+        return { bg: T.brand, fg: '#fff', border: T.brand, weight: 600 };
       // 'sage' is a legacy alias — repointed onto the teal (AI / scan) tone.
       case 'teal':
       case 'sage':
-        return { bg: T.tealDim, fg: T.tealText, border: `${T.teal}33`, weight: 600 };
+        return { bg: T.tealDim, fg: T.tealText, border: 'rgba(92,122,96,0.28)', weight: 600 };
       case 'paper':
-        return { bg: T.paper, fg: T.ink, border: T.rule, weight: 500 };
+        return { bg: T.paper, fg: T.ink, border: 'rgba(31,35,28,0.14)', weight: 500 };
       case 'ghost':
       default:
-        return { bg: 'transparent', fg: T.ink, border: T.rule, weight: 500 };
+        return { bg: 'transparent', fg: T.ink2, border: 'rgba(31,35,28,0.14)', weight: 500 };
     }
   })();
   return (
@@ -56,7 +55,7 @@ export function Btn({
       style={{
         height: HEIGHT[size],
         padding: PADDING[size],
-        borderRadius: 10,
+        borderRadius: 999,
         background: v.bg,
         color: v.fg,
         border: `1px solid ${v.border}`,

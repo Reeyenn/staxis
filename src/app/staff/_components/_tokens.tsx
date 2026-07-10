@@ -1,8 +1,8 @@
-// Staff design tokens — Cloud palette + serif/sans/mono fonts + primitives.
-// Mirrors the Claude Design handoff (Staff.html, hk-shared.jsx). The
-// brand-level --snow-* vars in globals.css match this palette 1:1; this
-// module exists so the staff page can use inline styles without touching
-// CSS vars (keeps the JSX close to the design source).
+// Staff design tokens — Concourse skin (soft radial wash + sage brand) +
+// Geist/Geist Mono type + primitives. Palette and card/button treatments
+// mirror src/components/concourse/concourse-css.tsx 1:1; this module exists
+// so the staff page can use inline styles without touching CSS vars (keeps
+// the JSX close to the design source).
 
 import React from 'react';
 
@@ -14,32 +14,38 @@ export const T = {
   ink2:      '#5C625C',
   ink3:      '#A6ABA6',
   rule:      'rgba(31,35,28,0.08)',
-  ruleSoft:  'rgba(31,35,28,0.04)',
+  ruleSoft:  'rgba(31,35,28,0.05)',
+  brand:     '#3E5C48',
   sage:      '#9EB7A6',
   sageDeep:  '#5C7A60',
-  sageDim:   'rgba(92,122,96,0.10)',
+  sageDim:   'rgba(92,122,96,0.14)',
+  okDeep:    '#356B4C',
+  okDim:     'rgba(53,107,76,0.10)',
   caramel:   '#C99644',
   caramelDeep:'#8C6A33',
   warm:      '#B85C3D',
   warmDim:   'rgba(184,92,61,0.10)',
-  red:       '#A04A2C',
-  redDim:    'rgba(160,74,44,0.10)',
-  purple:    '#7B6A97',
-  purpleDim: 'rgba(123,106,151,0.10)',
+  red:       '#B85C3D',
+  redDim:    'rgba(184,92,61,0.10)',
+  purple:    '#5C625C',
+  purpleDim: 'rgba(31,35,28,0.06)',
+  cardShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
 } as const;
 
 export const fonts = {
-  sans:  "'Geist', system-ui, sans-serif",
-  mono:  "'Geist Mono', ui-monospace, monospace",
-  serif: "'Instrument Serif', Georgia, serif",
+  sans:  'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
+  mono:  'var(--font-geist-mono), ui-monospace, monospace',
+  // Concourse drops serif display type — kept as a Geist alias so the many
+  // settings/staff callers of fonts.serif restyle in place without a sweep.
+  serif: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
 } as const;
 
 // Department visual tokens. Shared by Avatar rings, DeptChip, dept-grouped rows.
 export const deptMeta = {
-  housekeeping: { label: 'Housekeeping', short: 'HK', tone: '#5C7A60', dim: 'rgba(92,122,96,0.10)' },
-  front_desk:   { label: 'Front desk',   short: 'FD', tone: '#3A5670', dim: 'rgba(58,86,112,0.10)' },
+  housekeeping: { label: 'Housekeeping', short: 'HK', tone: '#5C7A60', dim: 'rgba(92,122,96,0.14)' },
+  front_desk:   { label: 'Front desk',   short: 'FD', tone: '#8C6A33', dim: 'rgba(201,150,68,0.14)' },
   maintenance:  { label: 'Maintenance',  short: 'MT', tone: '#B85C3D', dim: 'rgba(184,92,61,0.10)' },
-  other:        { label: 'Other',        short: 'OT', tone: '#7B6A97', dim: 'rgba(123,106,151,0.10)' },
+  other:        { label: 'Other',        short: 'OT', tone: '#5C625C', dim: 'rgba(31,35,28,0.06)' },
 } as const;
 
 export type DeptKey = keyof typeof deptMeta;
@@ -52,7 +58,7 @@ export function asDeptKey(d?: string | null): DeptKey {
 
 // ── Caps — uppercase mono eyebrow ──────────────────────────────────────────
 export function Caps({
-  children, size = 10, tracking = '0.16em', c, weight = 500, style = {},
+  children, size = 9.5, tracking = '0.14em', c, weight = 500, style = {},
 }: {
   children: React.ReactNode;
   size?: number;
@@ -82,11 +88,11 @@ export function Pill({
 }) {
   const p = {
     neutral: { bg: 'transparent', fg: T.ink2, br: T.rule },
-    sage:    { bg: T.sageDim, fg: T.sageDeep, br: 'rgba(104,131,114,0.25)' },
-    warm:    { bg: T.warmDim, fg: T.warm, br: 'rgba(184,119,94,0.25)' },
-    caramel: { bg: 'rgba(215,176,126,0.14)', fg: T.caramelDeep, br: 'rgba(140,106,51,0.25)' },
-    red:     { bg: T.redDim, fg: T.red, br: 'rgba(160,74,44,0.25)' },
-    purple:  { bg: T.purpleDim, fg: T.purple, br: 'rgba(123,106,151,0.25)' },
+    sage:    { bg: T.sageDim, fg: T.sageDeep, br: 'rgba(92,122,96,0.25)' },
+    warm:    { bg: T.warmDim, fg: T.warm, br: 'rgba(184,92,61,0.25)' },
+    caramel: { bg: 'rgba(201,150,68,0.14)', fg: T.caramelDeep, br: 'rgba(140,106,51,0.25)' },
+    red:     { bg: T.redDim, fg: T.red, br: 'rgba(184,92,61,0.25)' },
+    purple:  { bg: T.purpleDim, fg: T.purple, br: 'rgba(31,35,28,0.14)' },
     ink:     { bg: T.ink, fg: T.bg, br: T.ink },
   }[tone];
   return (
@@ -117,14 +123,14 @@ export function Btn({
 }) {
   const sizes = {
     sm: { h: 28, px: 12, fs: 12 },
-    md: { h: 36, px: 16, fs: 13 },
+    md: { h: 36, px: 16, fs: 12.5 },
     lg: { h: 44, px: 22, fs: 14 },
   }[size];
   const variants = {
-    primary: { bg: T.ink, fg: T.bg, br: 'transparent' },
-    ghost:   { bg: 'transparent', fg: T.ink, br: T.rule },
-    sage:    { bg: T.sageDim, fg: T.sageDeep, br: 'rgba(104,131,114,0.3)' },
-    paper:   { bg: T.paper, fg: T.ink, br: T.rule },
+    primary: { bg: T.brand, fg: '#FFFFFF', br: 'transparent', fw: 600 },
+    ghost:   { bg: 'transparent', fg: T.ink2, br: 'rgba(31,35,28,0.14)', fw: 500 },
+    sage:    { bg: T.sageDim, fg: T.sageDeep, br: 'rgba(92,122,96,0.3)', fw: 600 },
+    paper:   { bg: T.paper, fg: T.ink, br: T.rule, fw: 500 },
   }[variant];
   return (
     <button
@@ -135,7 +141,7 @@ export function Btn({
         height: sizes.h, padding: `0 ${sizes.px}px`, borderRadius: 999,
         background: variants.bg, color: variants.fg,
         border: `1px solid ${variants.br}`,
-        fontFamily: fonts.sans, fontSize: sizes.fs, fontWeight: 500,
+        fontFamily: fonts.sans, fontSize: sizes.fs, fontWeight: variants.fw,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.55 : 1,
         display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -155,6 +161,7 @@ export function Card({
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+      boxShadow: T.cardShadow,
       padding: '20px 22px', ...style,
     }}>{children}</div>
   );

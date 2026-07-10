@@ -35,9 +35,9 @@ interface Kudos {
 
 const CATEGORY_META: Record<KudosCategory, { en: string; es: string; tone: string; dim: string }> = {
   'guest-praise':     { en: 'Guest praise',   es: 'Elogio de huésped', tone: '#8C6A33', dim: 'rgba(201,150,68,0.14)' },
-  'teamwork':         { en: 'Teamwork',       es: 'Trabajo en equipo', tone: '#5C7A60', dim: 'rgba(92,122,96,0.12)' },
-  'above-and-beyond': { en: 'Above & beyond', es: 'Excepcional',       tone: '#7B6A97', dim: 'rgba(123,106,151,0.12)' },
-  'attendance':       { en: 'Attendance',     es: 'Asistencia',        tone: '#3A5670', dim: 'rgba(58,86,112,0.12)' },
+  'teamwork':         { en: 'Teamwork',       es: 'Trabajo en equipo', tone: '#5C7A60', dim: 'rgba(92,122,96,0.14)' },
+  'above-and-beyond': { en: 'Above & beyond', es: 'Excepcional',       tone: '#356B4C', dim: 'rgba(53,107,76,0.10)' },
+  'attendance':       { en: 'Attendance',     es: 'Asistencia',        tone: '#5C625C', dim: 'rgba(31,35,28,0.06)' },
 };
 const CATEGORY_ORDER: KudosCategory[] = ['guest-praise', 'teamwork', 'above-and-beyond', 'attendance'];
 
@@ -146,8 +146,8 @@ export function ManagerRecognition() {
 
   return (
     <div style={{
-      background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
-      padding: '24px 48px 48px',
+      background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
+      padding: '24px 48px 130px',
     }}>
       <style>{`
         .kudos-layout { display: grid; grid-template-columns: 380px 1fr; gap: 20px; align-items: start; }
@@ -237,8 +237,8 @@ export function ManagerRecognition() {
           {error && (
             <div role="alert" style={{
               marginTop: 10, padding: '10px 14px',
-              background: 'rgba(160,74,44,0.08)', border: '1px solid rgba(160,74,44,0.25)',
-              borderRadius: 12, color: '#A04A2C', fontFamily: fonts.sans, fontSize: 13,
+              background: 'rgba(184,92,61,0.08)', border: '1px solid rgba(184,92,61,0.25)',
+              borderRadius: 12, color: '#B85C3D', fontFamily: fonts.sans, fontSize: 13,
             }}>{error}</div>
           )}
 
@@ -264,7 +264,7 @@ export function ManagerRecognition() {
             }}>{lang === 'es' ? 'CARGANDO…' : 'LOADING…'}</div>
           ) : feed.length === 0 ? (
             <Card style={{ textAlign: 'center', padding: '34px 22px' }}>
-              <div style={{ fontFamily: fonts.serif, fontSize: 20, fontStyle: 'italic', color: T.ink3 }}>
+              <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink3 }}>
                 {lang === 'es' ? 'Aún no hay reconocimientos.' : 'No recognition yet.'}
               </div>
               <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink3, marginTop: 6 }}>
@@ -293,6 +293,7 @@ function KudosCard({ kudos, recipient, lang }: { kudos: Kudos; recipient: StaffM
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+      boxShadow: T.cardShadow,
       padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'flex-start',
     }}>
       {recipient
@@ -300,7 +301,7 @@ function KudosCard({ kudos, recipient, lang }: { kudos: Kudos; recipient: StaffM
         : <span style={{
             width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
             background: T.rule, display: 'inline-flex', alignItems: 'center',
-            justifyContent: 'center', color: T.ink3, fontFamily: fonts.serif, fontSize: 16,
+            justifyContent: 'center', color: T.ink3, fontFamily: fonts.sans, fontSize: 16,
           }}>★</span>}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

@@ -92,13 +92,12 @@ export function HeroStats({ items, lastCount, lang = 'en' }: HeroStatsProps) {
           >
             <span
               style={{
-                fontFamily: fonts.serif,
+                fontFamily: fonts.sans,
                 fontSize: 32,
                 color: T.ink,
-                letterSpacing: '-0.03em',
+                letterSpacing: '-0.02em',
                 lineHeight: 1,
-                fontStyle: 'italic',
-                fontWeight: 400,
+                fontWeight: 600,
               }}
             >
               {s.big}

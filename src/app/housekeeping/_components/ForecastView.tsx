@@ -13,7 +13,7 @@
 // page refresh lands the manager back where they were.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn } from './_snow';
+import { T, FONT_SANS, FONT_MONO, Caps, Btn } from './_snow';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { captureException } from '@/lib/sentry';
 import { ForecastSummaryBanner, type ForecastSummary } from './ForecastSummaryBanner';
@@ -181,10 +181,10 @@ export function ForecastView({ propertyId, lang }: Props) {
         <div>
           <Caps>{lang === 'es' ? 'Pronóstico' : 'Forecast'}</Caps>
           <h2 style={{
-            fontFamily: FONT_SERIF, fontSize: 28, margin: '4px 0 0',
-            letterSpacing: '-0.02em', lineHeight: 1.2, fontWeight: 400, color: T.ink,
+            fontFamily: FONT_SANS, fontSize: 18, margin: '4px 0 0',
+            letterSpacing: '-0.02em', lineHeight: 1.2, fontWeight: 600, color: T.ink,
           }}>
-            <span style={{ fontStyle: 'italic' }}>
+            <span>
               {lang === 'es' ? 'Demanda vs. capacidad' : 'Demand vs. capacity'}
             </span>
           </h2>
@@ -249,7 +249,7 @@ export function ForecastView({ propertyId, lang }: Props) {
 
       {!loading && !errMsg && payload && dayCards.length === 0 && (
         <p style={{
-          fontFamily: FONT_SANS, fontSize: 13, color: T.ink3, fontStyle: 'italic',
+          fontFamily: FONT_SANS, fontSize: 13, color: T.ink3,
         }}>
           {lang === 'es' ? 'No hay días en el rango seleccionado.' : 'No days in the selected range.'}
         </p>

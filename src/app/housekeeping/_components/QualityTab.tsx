@@ -42,7 +42,7 @@ import {
 } from '@/lib/db';
 import type { CleaningEvent } from '@/lib/db';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Card, HousekeeperDot,
 } from './_snow';
 import type { StaffMember } from '@/types';
@@ -583,7 +583,7 @@ export function QualityTab() {
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div style={{
-      padding: '24px 48px 64px', background: 'transparent', color: T.ink,
+      padding: '24px 48px 130px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       {toast && <Toast text={toast} onDismiss={() => setToast(null)} />}
@@ -595,10 +595,10 @@ export function QualityTab() {
       }}>
         <div>
           <h1 style={{
-            fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: 0,
-            letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400,
+            fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: 0,
+            letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 600,
           }}>
-            <span style={{ fontStyle: 'italic' }}>{tr(lang, 'Quality', 'Calidad')}</span>
+            <span>{tr(lang, 'Quality', 'Calidad')}</span>
             {tr(lang, ' & performance', ' y rendimiento')}
           </h1>
           <Caps style={{ display: 'block', marginTop: 8 }} c={T.ink3}>
@@ -636,8 +636,8 @@ export function QualityTab() {
           <Card padding="18px 22px 20px">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
               <h2 style={{
-                fontFamily: FONT_SERIF, fontStyle: 'italic', fontWeight: 400,
-                fontSize: 24, margin: 0, color: T.ink, letterSpacing: '-0.02em',
+                fontFamily: FONT_SANS, fontWeight: 600,
+                fontSize: 18, margin: 0, color: T.ink, letterSpacing: '-0.02em',
               }}>{tr(lang, 'Inspection queue', 'Cola de inspección')}</h2>
               <Pill tone="caramel">
                 {queue.length} {tr(lang, 'waiting', 'en espera')}
@@ -677,8 +677,8 @@ export function QualityTab() {
               </div>
             ) : visibleQueue.length === 0 ? (
               <div style={{
-                textAlign: 'center', color: T.ink2, fontStyle: 'italic',
-                fontFamily: FONT_SERIF, fontSize: 16, padding: '28px 12px',
+                textAlign: 'center', color: T.ink2,
+                fontFamily: FONT_SANS, fontSize: 13, padding: '28px 12px',
                 border: `1px solid ${T.ruleSoft}`, borderRadius: 12,
               }}>
                 {queue.length === 0
@@ -764,7 +764,7 @@ export function QualityTab() {
                 <Caps>{tr(lang, 'Flagged · review', 'A revisar')}</Caps>
                 <Pill tone="warm">{flagged.length} {tr(lang, 'over 60m', 'sobre 60m')}</Pill>
               </div>
-              <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 10px', fontStyle: 'italic' }}>
+              <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 10px' }}>
                 {tr(lang, 'Do these long cleans count toward averages?', '¿Estas limpiezas largas cuentan en los promedios?')}
               </p>
               {flagged.map((f) => (
@@ -773,8 +773,8 @@ export function QualityTab() {
                   gap: 10, alignItems: 'center', padding: '10px 0', borderTop: `1px solid ${T.ruleSoft}`,
                 }}>
                   <span style={{
-                    fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 18,
-                    color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400,
+                    fontFamily: FONT_MONO, fontSize: 15,
+                    color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 600,
                   }}>{f.roomNumber}</span>
                   <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink, minWidth: 0 }}>
                     {f.staffName}
@@ -833,8 +833,8 @@ function StatBand({ stats, lang }: { stats: InspectionStats | null; lang: 'en' |
     display: 'flex', flexDirection: 'column', gap: 7, background: T.paper,
   };
   const valStyle: React.CSSProperties = {
-    fontFamily: FONT_SERIF, fontSize: 40, lineHeight: 0.9, color: T.ink,
-    letterSpacing: '-0.02em', fontWeight: 400,
+    fontFamily: FONT_SANS, fontSize: 32, lineHeight: 0.95, color: T.ink,
+    letterSpacing: '-0.02em', fontWeight: 600,
   };
   const reClean = stats?.reCleanRatePct ?? 0;
   return (
@@ -898,7 +898,7 @@ function QueueRow({ row, lang, onInspect }: { row: InspectionQueueRoom; lang: 'e
       display: 'flex', alignItems: 'center', gap: 12,
       padding: '11px 13px', border: `1px solid ${T.rule}`, borderRadius: 12, background: T.paper,
     }}>
-      <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 24, color: T.ink, lineHeight: 1, minWidth: 46, letterSpacing: '-0.02em' }}>
+      <span style={{ fontFamily: FONT_MONO, fontWeight: 600, fontSize: 18, color: T.ink, lineHeight: 1, minWidth: 46, letterSpacing: '-0.02em' }}>
         {row.roomNumber}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -986,7 +986,7 @@ function Leaderboard({
         </p>
       )}
       {!loading && rows.length === 0 && (
-        <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, padding: '18px 0', fontStyle: 'italic' }}>
+        <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, padding: '18px 0' }}>
           {tr(lang, 'Not enough data in this period yet.', 'Sin datos suficientes en este período.')}
         </p>
       )}
@@ -998,7 +998,7 @@ function Leaderboard({
             padding: '11px 0', borderTop: `1px solid ${T.ruleSoft}`,
           }}>
             <span style={{
-              fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22,
+              fontFamily: FONT_MONO, fontWeight: 600, fontSize: 14,
               color: i < 3 ? T.ink : T.ink3, lineHeight: 1, letterSpacing: '-0.02em',
             }}>{i + 1}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
@@ -1049,11 +1049,11 @@ function EfficiencyCard({
       <div style={{ paddingBottom: 12, borderBottom: `1px solid ${T.ruleSoft}` }}>
         <Caps size={9}>{tr(lang, 'Overall avg', 'Promedio general')}</Caps>
         <div style={{ marginTop: 6 }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 40, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400 }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 32, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 600 }}>
             {typeAvgs.overall != null ? (
               <>
-                <span style={{ fontStyle: 'italic' }}>{typeAvgs.overall.toFixed(1)}</span>
-                <span style={{ fontSize: 20, color: T.ink2, fontStyle: 'italic' }}>m</span>
+                <span>{typeAvgs.overall.toFixed(1)}</span>
+                <span style={{ fontSize: 18, color: T.ink2 }}>m</span>
               </>
             ) : '—'}
           </span>
@@ -1067,11 +1067,11 @@ function EfficiencyCard({
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{e.l}</span>
               <Caps size={9} tracking="0.06em">{e.sub}</Caps>
             </div>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: e.tone, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400 }}>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: e.tone, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 600 }}>
               {e.v != null ? (
                 <>
-                  <span style={{ fontStyle: 'italic' }}>{e.v.toFixed(1)}</span>
-                  <span style={{ fontSize: 13, color: T.ink2, fontStyle: 'italic' }}>m</span>
+                  <span>{e.v.toFixed(1)}</span>
+                  <span style={{ fontSize: 12, color: T.ink2 }}>m</span>
                 </>
               ) : '—'}
             </span>
@@ -1129,7 +1129,7 @@ function InspectDrawer({
   return (
     <div
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,0.34)', zIndex: 1000, display: 'flex' }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.34)', zIndex: 1000, display: 'flex' }}
     >
       <div style={{
         marginLeft: 'auto', width: 'min(460px, 96vw)', height: '100%', background: T.paper,
@@ -1139,7 +1139,7 @@ function InspectDrawer({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <Caps>{tr(lang, 'Inspect room', 'Inspeccionar habitación')}</Caps>
-            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 40, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, margin: '2px 0 4px' }}>
+            <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 32, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, margin: '2px 0 4px' }}>
               {active.inspection.roomNumber}
             </div>
             <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
@@ -1224,7 +1224,7 @@ function ChecklistRow({
   const isCritical = draft.state === 'critical';
   return (
     <div style={{
-      border: `1px solid ${isFail ? (isCritical ? 'rgba(160,74,44,0.35)' : 'rgba(184,92,61,0.35)') : T.rule}`,
+      border: `1px solid ${isFail ? (isCritical ? 'rgba(184,92,61,0.55)' : 'rgba(184,92,61,0.35)') : T.rule}`,
       borderRadius: 12, padding: '11px 13px',
       background: isFail ? (isCritical ? T.redDim : T.warmDim) : T.paper,
     }}>
@@ -1322,7 +1322,7 @@ function Toast({ text, onDismiss }: { text: string; onDismiss: () => void }) {
         background: T.sageDim, color: T.sageDeep, border: `1px solid rgba(92,122,96,0.3)`,
         padding: '11px 18px', borderRadius: 999,
         fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+        boxShadow: '0 8px 24px rgba(31,42,32,0.12)',
       }}
     >{text}</div>
   );

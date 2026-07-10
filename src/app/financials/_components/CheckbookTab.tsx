@@ -303,7 +303,7 @@ export function CheckbookTab({
               <TextInput value={form.vendor} onChange={(v) => setForm({ ...form, vendor: v })} placeholder={lang === 'es' ? 'p. ej. Sysco' : 'e.g. Sysco'} />
             </Field>
             <Field label={S.department} required>
-              <select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value as Department })} style={{ ...selectStyle, width: '100%', height: 40 }}>
+              <select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value as Department })} style={{ ...selectStyle, width: '100%', height: 40, borderRadius: 10, color: T.ink }}>
                 {DEPARTMENTS.map((d) => (
                   <option key={d} value={d}>
                     {deptLabel(lang, d)}
@@ -328,12 +328,12 @@ export function CheckbookTab({
 const selectStyle: React.CSSProperties = {
   height: 38,
   padding: '0 12px',
-  borderRadius: 10,
+  borderRadius: 999,
   background: T.bg,
-  border: `1px solid ${T.rule}`,
+  border: `1px solid ${T.ruleInput}`,
   fontFamily: FONT_SANS,
   fontSize: 13,
-  color: T.ink,
+  color: T.ink2,
   cursor: 'pointer',
   outline: 'none',
 };
@@ -342,7 +342,7 @@ const dateStyle: React.CSSProperties = {
   padding: '0 12px',
   borderRadius: 10,
   background: T.bg,
-  border: `1px solid ${T.rule}`,
+  border: `1px solid ${T.ruleInput}`,
   fontFamily: FONT_SANS,
   fontSize: 14,
   color: T.ink,

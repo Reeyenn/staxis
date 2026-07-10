@@ -22,10 +22,11 @@ import {
 } from '@/lib/db';
 import type { PreventiveTask } from '@/types';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Modal, Field, TextInput, TextArea,
   PageHead, BoardColumn, BoardCard, CenteredBoard,
   relDue, fmtDate, fmtDateShort, daysBetween,
+  CX_CARD_SHADOW,
 } from './_mt-snow';
 import { EquipmentRegistry } from './EquipmentRegistry';
 import { WheelDatePicker } from '@/components/ui/WheelDatePicker';
@@ -84,14 +85,14 @@ function FreqEditor({
       <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{es ? 'Cada' : 'Every'}</span>
       <input
         value={count} onChange={(e) => onCount(e.target.value)} type="number" min={1}
-        style={{ width: 92, height: 44, textAlign: 'center', borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: T.ink, outline: 'none' }}
+        style={{ width: 92, height: 44, textAlign: 'center', borderRadius: 12, border: '1px solid rgba(31,35,28,0.14)', background: '#FFFFFF', fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: T.ink, outline: 'none' }}
       />
-      <div style={{ display: 'inline-flex', gap: 2, padding: 4, borderRadius: 12, border: `1px solid ${T.rule}`, background: T.bg }}>
+      <div style={{ display: 'inline-flex', gap: 2, padding: 3, borderRadius: 999, background: 'rgba(31,35,28,0.05)' }}>
         {UNITS.map((u) => {
           const on = unit === u.value;
           return (
             <button key={u.value} type="button" onClick={() => onUnit(u.value)}
-              style={{ border: 'none', background: on ? T.paper : 'transparent', boxShadow: on ? '0 1px 2px rgba(31,35,28,0.12)' : 'none', cursor: 'pointer', padding: '8px 16px', borderRadius: 9, fontFamily: FONT_SANS, fontSize: 14, fontWeight: on ? 600 : 500, color: on ? T.ink : T.ink2 }}>
+              style={{ border: 'none', background: on ? '#1F231C' : 'transparent', cursor: 'pointer', padding: '8px 16px', borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: on ? 600 : 500, color: on ? '#FFFFFF' : T.ink2, transition: 'background .2s, color .2s' }}>
               {es ? u.es : u.en}
             </button>
           );
@@ -158,7 +159,7 @@ function NewTaskModal({
         <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'Para configurar por primera vez' : 'For backfilling on first setup'}>
           <WheelDatePicker value={last} onChange={setLast} lang={es ? 'es' : 'en'} />
         </Field>
-        <div style={{ background: T.sageDim, border: '1px solid rgba(104,131,114,0.22)', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ background: 'rgba(158,183,166,0.14)', border: '1px solid rgba(92,122,96,0.25)', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Caps size={10} c={T.sageDeep} weight={600}>{es ? 'Calculado' : 'Auto-calculated'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink }}>
             {es ? 'Próxima: ' : 'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue) : '—'}</strong>
@@ -310,7 +311,7 @@ export function PreventiveTab() {
   }
 
   return (
-    <div style={{ padding: '28px 48px 64px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={es ? 'Preventivo · programado' : 'Preventive · scheduled'}
         lead={overdueCount > 0 ? `${overdueCount} ${es ? 'vencidas' : 'overdue'}` : (es ? 'Todo al día' : 'All on track')}
@@ -324,8 +325,8 @@ export function PreventiveTab() {
       />
 
       {tasks.length === 0 ? (
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 26, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}</span>
+        <div style={{ background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center', boxShadow: CX_CARD_SHADOW }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 21, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}</span>
           <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
             {es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
           </p>
@@ -344,8 +345,8 @@ export function PreventiveTab() {
                   return (
                     <BoardCard key={t.id} accent={meta.color} onClick={() => setSelId(t.id)}>
                       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-                        <span style={{ fontFamily: FONT_SERIF, fontSize: 21, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 400 }}>{t.name}</span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 11.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du, es)}</span>
+                        <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.25, fontWeight: 600 }}>{t.name}</span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du, es)}</span>
                       </div>
                       <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays, es)}</span>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>

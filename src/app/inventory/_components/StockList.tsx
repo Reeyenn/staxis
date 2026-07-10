@@ -5,6 +5,7 @@ import {
   T,
   fonts,
   statusColor,
+  statusText,
   statusTint,
   inBucket,
   type StockStatus,
@@ -113,12 +114,12 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
                     ? <PingDot color={c} size={10} />
                     : <StatusDot s={col.status} size={10} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 700, color: c }}>
+                    <div style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 700, color: statusText[col.status] }}>
                       {col.label}
                     </div>
                     <Caps size={8.5} color={T.dim}>{col.sub}</Caps>
                   </div>
-                  <Serif size={24} color={c}>
+                  <Serif size={24} color={statusText[col.status]}>
                     <TickNum>{colItems.length}</TickNum>
                   </Serif>
                 </div>
@@ -145,7 +146,6 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
                           fontFamily: fonts.sans,
                           fontSize: 12.5,
                           color: T.dim,
-                          fontStyle: 'italic',
                         }}
                       >
                         {tx.nothingHere}
@@ -193,7 +193,7 @@ function NoItemsPanel({ lang, onAdd }: { lang: Lang; onAdd?: () => void }) {
         gap: 12,
       }}
     >
-      <Serif size={24} style={{ fontStyle: 'italic' }}>{tx.noItemsYet}</Serif>
+      <Serif size={24}>{tx.noItemsYet}</Serif>
       <p
         style={{
           margin: 0,
@@ -246,8 +246,8 @@ function NotCountedSection({
             type="button"
             onClick={onCount}
             style={{
-              border: 'none', borderRadius: 8, padding: '7px 12px', cursor: 'pointer',
-              background: T.ink, color: T.bg, fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
+              border: 'none', borderRadius: 999, padding: '7px 14px', cursor: 'pointer',
+              background: T.brand, color: '#fff', fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
               flexShrink: 0,
             }}
           >
@@ -256,7 +256,7 @@ function NotCountedSection({
         )}
       </div>
       {dayOne && (
-        <div style={{ padding: '0 6px 12px', fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, fontStyle: 'italic' }}>
+        <div style={{ padding: '0 6px 12px', fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
           {tx.notCountedHint}
         </div>
       )}

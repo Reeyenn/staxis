@@ -225,13 +225,12 @@ function KPI({
         <div>
           <div
             style={{
-              fontFamily: fonts.serif,
+              fontFamily: fonts.sans,
               fontSize: 42,
               color: T.ink,
-              letterSpacing: '-0.03em',
+              letterSpacing: '-0.02em',
               lineHeight: 1,
-              fontWeight: 400,
-              fontStyle: 'italic',
+              fontWeight: 600,
             }}
           >
             {value}
@@ -280,15 +279,15 @@ function MonthlyChart({ ytd, loading, rp, lang }: { ytd: YtdRow[]; loading: bool
           <Caps>{rp.monthlyTrend}</Caps>
           <h3
             style={{
-              fontFamily: fonts.serif,
+              fontFamily: fonts.sans,
               fontSize: 20,
               color: T.ink,
               margin: '2px 0 0',
               letterSpacing: '-0.02em',
-              fontWeight: 400,
+              fontWeight: 600,
             }}
           >
-            <span style={{ fontStyle: 'italic' }}>{rp.spendAndShrinkage}</span>
+            <span>{rp.spendAndShrinkage}</span>
             <span style={{ color: T.ink3 }}>{rp.lastNMonths(data.length)}</span>
           </h3>
         </div>
@@ -324,7 +323,6 @@ function MonthlyChart({ ytd, loading, rp, lang }: { ytd: YtdRow[]; loading: bool
             fontFamily: fonts.sans,
             fontSize: 13,
             color: T.ink3,
-            fontStyle: 'italic',
           }}
         >
           {loading ? rp.loading : rp.notEnoughHistory}

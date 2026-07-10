@@ -367,10 +367,11 @@ export function ReorderPanel({
               borderRadius: 14,
               padding: '48px 24px',
               textAlign: 'center',
-              fontFamily: fonts.serif,
+              fontFamily: fonts.sans,
               fontSize: 22,
+              fontWeight: 600,
+              letterSpacing: '-0.02em',
               color: T.ink2,
-              fontStyle: 'italic',
             }}
           >
             {TT.nothingToReorder}
@@ -501,12 +502,11 @@ function BudgetMeter({
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <span
           style={{
-            fontFamily: fonts.serif,
+            fontFamily: fonts.sans,
             fontSize: 22,
             color: T.ink,
             letterSpacing: '-0.02em',
-            fontWeight: 400,
-            fontStyle: 'italic',
+            fontWeight: 600,
             lineHeight: 1,
           }}
         >
@@ -704,9 +704,9 @@ function ReorderRow({
             border: 'none',
             background: 'transparent',
             outline: 'none',
-            fontFamily: fonts.serif,
+            fontFamily: fonts.sans,
             fontSize: 15,
-            fontStyle: 'italic',
+            fontWeight: 600,
             color: T.ink,
           }}
         />
@@ -759,12 +759,11 @@ function ReorderRow({
           row layout is unchanged; only the dollar amount is withheld. */}
       <span
         style={{
-          fontFamily: fonts.serif,
+          fontFamily: fonts.sans,
           fontSize: 17,
           color: T.ink,
           letterSpacing: '-0.02em',
-          fontWeight: 400,
-          fontStyle: 'italic',
+          fontWeight: 600,
           textAlign: 'right',
         }}
       >

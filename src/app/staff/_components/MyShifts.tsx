@@ -84,8 +84,8 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
 
   return (
     <div style={{
-      background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
-      padding: '28px 48px 56px',
+      background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
+      padding: '28px 48px 130px',
     }}>
       <style>{`
         .my-shifts-week-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
@@ -105,10 +105,10 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
           <div>
             <Caps>{propName}</Caps>
             <h1 style={{
-              fontFamily: fonts.serif, fontSize: 42, color: T.ink,
-              margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.05, fontWeight: 400,
+              fontFamily: fonts.sans, fontSize: 26, color: T.ink,
+              margin: '4px 0 0', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 600,
             }}>
-              <span style={{ fontStyle: 'italic' }}>{greeting}</span>
+              <span>{greeting}</span>
             </h1>
           </div>
           <HoursCard hrs={myHrs} cap={cap} shifts={myShiftCount} tone={meDept.tone}/>
@@ -121,8 +121,8 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
           <div>
             <Caps size={9}>My schedule</Caps>
             <div style={{
-              fontFamily: fonts.serif, fontSize: 22, fontStyle: 'italic',
-              color: T.ink, letterSpacing: '-0.02em', marginTop: 3, lineHeight: 1.1,
+              fontFamily: fonts.sans, fontSize: 16, fontWeight: 600,
+              color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
             }}>Week at a glance</div>
           </div>
           <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.06em' }}>
@@ -139,9 +139,10 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
             const isPast = d.past;
             return (
               <div key={d.key} style={{
-                background: isToday ? T.ink : T.paper,
+                background: isToday ? T.brand : T.paper,
                 color: isToday ? T.bg : T.ink,
-                border: `1px solid ${isToday ? T.ink : T.rule}`, borderRadius: 14,
+                border: `1px solid ${isToday ? T.brand : T.rule}`, borderRadius: 14,
+                boxShadow: isToday ? '0 8px 18px -8px rgba(62,92,72,0.55)' : T.cardShadow,
                 padding: '12px 12px 14px',
                 display: 'flex', flexDirection: 'column', gap: 10,
                 opacity: isPast ? 0.55 : 1,
@@ -153,7 +154,8 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
                       color: isToday ? 'rgba(255,255,255,0.55)' : T.ink3,
                     }}>{d.label.toUpperCase()}</div>
                     <div style={{
-                      fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic', lineHeight: 1, marginTop: 1,
+                      fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em',
+                      lineHeight: 1, marginTop: 1,
                       color: isToday ? T.bg : T.ink,
                     }}>{d.dayNum}</div>
                   </div>
@@ -173,8 +175,8 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
                     border: `1px solid ${isToday ? 'rgba(255,255,255,0.20)' : meDept.tone + '33'}`,
                   }}>
                     <div style={{
-                      fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic',
-                      color: isToday ? T.bg : T.ink, letterSpacing: '-0.01em', lineHeight: 1.1,
+                      fontFamily: fonts.mono, fontSize: 12.5, fontWeight: 600,
+                      color: isToday ? T.bg : T.ink, letterSpacing: '0', lineHeight: 1.2,
                     }}>{cell.kind === 'shift' ? fmtRange(cell.shift.startTime, cell.shift.endTime) : ''}</div>
                     <div style={{
                       fontFamily: fonts.sans, fontSize: 11,
@@ -185,7 +187,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
                   <div style={{
                     padding: '7px 10px', borderRadius: 8,
                     border: `1px dashed ${isToday ? 'rgba(255,255,255,0.22)' : T.rule}`,
-                    fontFamily: fonts.serif, fontSize: 13, fontStyle: 'italic',
+                    fontFamily: fonts.mono, fontSize: 10.5,
                     color: isToday ? 'rgba(255,255,255,0.6)' : T.ink3, textAlign: 'center',
                   }}>Day off</div>
                 )}
@@ -229,14 +231,15 @@ function HoursCard({
     <div style={{
       minWidth: 260, padding: '14px 18px',
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
+      boxShadow: T.cardShadow,
     }}>
       <Caps size={9}>This week</Caps>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4, gap: 12 }}>
         <span style={{
-          fontFamily: fonts.serif, fontSize: 38, color: T.ink,
-          fontStyle: 'italic', letterSpacing: '-0.03em', lineHeight: 1,
+          fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, color: T.ink,
+          letterSpacing: '-0.02em', lineHeight: 1,
         }}>
-          {hrs}<span style={{ fontFamily: fonts.sans, fontSize: 13, fontStyle: 'normal', color: T.ink3, fontWeight: 500 }}>h</span>
+          {hrs}<span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink3, fontWeight: 500 }}>h</span>
         </span>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, fontWeight: 500 }}>
@@ -291,6 +294,7 @@ function OpenShiftsCard({
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+      boxShadow: T.cardShadow,
       overflow: 'hidden', display: 'flex', flexDirection: 'column',
     }}>
       <div style={{
@@ -300,24 +304,24 @@ function OpenShiftsCard({
         <div>
           <Caps size={9}>Pick up</Caps>
           <div style={{
-            fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic',
-            color: T.ink, letterSpacing: '-0.02em', marginTop: 3, lineHeight: 1.1,
+            fontFamily: fonts.sans, fontSize: 14.5, fontWeight: 600,
+            color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
           }}>Open shifts</div>
         </div>
         <span style={{
           fontFamily: fonts.mono, fontSize: 9.5,
-          color: shifts.length > 0 ? '#A04A2C' : T.ink3,
+          color: shifts.length > 0 ? '#B85C3D' : T.ink3,
           letterSpacing: '0.06em', fontWeight: 700,
-          background: shifts.length > 0 ? 'rgba(160,74,44,0.10)' : 'rgba(31,35,28,0.04)',
-          border: `1px solid ${shifts.length > 0 ? 'rgba(160,74,44,0.28)' : T.rule}`,
+          background: shifts.length > 0 ? 'rgba(184,92,61,0.10)' : 'rgba(31,35,28,0.05)',
+          border: `1px solid ${shifts.length > 0 ? 'rgba(184,92,61,0.28)' : T.rule}`,
           padding: '3px 9px', borderRadius: 999,
         }}>{shifts.length} AVAILABLE</span>
       </div>
       {shifts.length === 0 ? (
         <div style={{
           padding: '22px 18px', textAlign: 'center', flex: 1,
-          fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic',
-          color: T.ink3, letterSpacing: '-0.01em',
+          fontFamily: fonts.sans, fontSize: 13,
+          color: T.ink3, letterSpacing: '0',
         }}>No open shifts in {myDept} this week.</div>
       ) : (
         <div>
@@ -329,17 +333,17 @@ function OpenShiftsCard({
             }}>
               <div style={{
                 width: 46, flexShrink: 0, textAlign: 'center', padding: '5px 0', borderRadius: 10,
-                background: 'rgba(160,74,44,0.06)', border: '1px dashed rgba(160,74,44,0.45)',
+                background: 'rgba(184,92,61,0.06)', border: '1px dashed rgba(184,92,61,0.45)',
               }}>
-                <div style={{ fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#A04A2C' }}>
+                <div style={{ fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#B85C3D' }}>
                   {dateLabelFromYmd(s.shiftDate).slice(0,3).toUpperCase()}
                 </div>
-                <div style={{ fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic', lineHeight: 1, marginTop: 1, color: '#A04A2C' }}>
+                <div style={{ fontFamily: fonts.sans, fontSize: 16, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, marginTop: 1, color: '#B85C3D' }}>
                   {Number(s.shiftDate.slice(8,10))}
                 </div>
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.01em' }}>
+                <div style={{ fontFamily: fonts.mono, fontSize: 12.5, fontWeight: 600, color: T.ink, letterSpacing: '0' }}>
                   {fmtRange(s.startTime, s.endTime)}
                 </div>
                 <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink2, marginTop: 3 }}>
@@ -351,7 +355,7 @@ function OpenShiftsCard({
                 disabled={busyId !== null}
                 style={{
                   padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
-                  background: T.ink, color: T.bg, border: `1px solid ${T.ink}`,
+                  background: T.brand, color: '#FFFFFF', border: `1px solid ${T.brand}`,
                   fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap',
                   opacity: busyId === s.id ? 0.5 : 1,
                 }}
@@ -360,8 +364,8 @@ function OpenShiftsCard({
           ))}
           {errorMsg && (
             <div role="alert" style={{
-              padding: '10px 16px', fontSize: 12, color: '#A04A2C',
-              background: 'rgba(160,74,44,0.08)',
+              padding: '10px 16px', fontSize: 12, color: '#B85C3D',
+              background: 'rgba(184,92,61,0.08)',
             }}>{errorMsg}</div>
           )}
         </div>
@@ -383,6 +387,7 @@ function TimeOffCard({
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+      boxShadow: T.cardShadow,
       overflow: 'hidden', display: 'flex', flexDirection: 'column',
     }}>
       <div style={{
@@ -392,8 +397,8 @@ function TimeOffCard({
         <div>
           <Caps size={9}>Time off</Caps>
           <div style={{
-            fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic',
-            color: T.ink, letterSpacing: '-0.02em', marginTop: 3, lineHeight: 1.1,
+            fontFamily: fonts.sans, fontSize: 14.5, fontWeight: 600,
+            color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
           }}>Your requests</div>
         </div>
         <Btn variant="primary" size="sm" onClick={onAddRequest}>+ Request</Btn>
@@ -401,8 +406,8 @@ function TimeOffCard({
       {requests.length === 0 ? (
         <div style={{
           padding: '22px 18px', textAlign: 'center', flex: 1,
-          fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic',
-          color: T.ink3, letterSpacing: '-0.01em',
+          fontFamily: fonts.sans, fontSize: 13,
+          color: T.ink3, letterSpacing: '0',
         }}>No active requests.</div>
       ) : (
         <div>
@@ -416,8 +421,8 @@ function TimeOffCard({
 function TorRow({ r }: { r: TimeOffRequest }) {
   const palette: Record<string, { fg: string; bg: string; br: string; label: string; icon: string }> = {
     pending:  { fg: '#8C6A33', bg: 'rgba(201,150,68,0.14)', br: 'rgba(140,106,51,0.32)', label: 'Pending',  icon: '⏱' },
-    approved: { fg: '#3F5A43', bg: 'rgba(92,122,96,0.12)',  br: 'rgba(92,122,96,0.30)',  label: 'Approved', icon: '✓' },
-    denied:   { fg: '#A04A2C', bg: 'rgba(160,74,44,0.10)',  br: 'rgba(160,74,44,0.30)',  label: 'Denied',   icon: '✕' },
+    approved: { fg: '#356B4C', bg: 'rgba(53,107,76,0.10)',  br: 'rgba(53,107,76,0.30)',  label: 'Approved', icon: '✓' },
+    denied:   { fg: '#B85C3D', bg: 'rgba(184,92,61,0.10)',  br: 'rgba(184,92,61,0.30)',  label: 'Denied',   icon: '✕' },
     cancelled:{ fg: T.ink3,    bg: 'transparent',           br: T.rule,                  label: 'Cancelled',icon: '·' },
   };
   const p = palette[r.status];
@@ -430,12 +435,12 @@ function TorRow({ r }: { r: TimeOffRequest }) {
         width: 32, height: 32, flexShrink: 0, borderRadius: 10,
         background: p.bg, color: p.fg,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic',
+        fontFamily: fonts.sans, fontSize: 14, fontWeight: 600,
         border: `1px solid ${p.br}`,
       }}>{p.icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: fonts.serif, fontSize: 15, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.01em' }}>
+          <span style={{ fontFamily: fonts.mono, fontSize: 12, fontWeight: 600, color: T.ink, letterSpacing: '0' }}>
             {dateLabelFromYmd(r.requestDate)}
           </span>
           <span style={{
@@ -450,7 +455,7 @@ function TorRow({ r }: { r: TimeOffRequest }) {
           </div>
         )}
         {r.denyReason && r.status === 'denied' && (
-          <div style={{ fontFamily: fonts.sans, fontSize: 11, color: '#A04A2C', marginTop: 2 }}>
+          <div style={{ fontFamily: fonts.sans, fontSize: 11, color: '#B85C3D', marginTop: 2 }}>
             Reason: {r.denyReason}
           </div>
         )}
@@ -496,13 +501,13 @@ function RequestTimeOffModal({
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
     }}>
       <div onClick={e => e.stopPropagation()} style={{
-        background: T.paper, borderRadius: 22, padding: '24px 26px',
+        background: T.paper, borderRadius: 18, padding: '24px 26px',
         maxWidth: 420, width: '100%',
-        boxShadow: '0 24px 60px -8px rgba(31,35,28,0.20), 0 0 0 1px rgba(31,35,28,0.04)',
+        boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24), 0 0 0 1px rgba(31,35,28,0.04)',
       }}>
         <h2 style={{
-          margin: 0, fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic',
-          color: T.ink, letterSpacing: '-0.02em', fontWeight: 400,
+          margin: 0, fontFamily: fonts.sans, fontSize: 18,
+          color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
         }}>Request time off</h2>
         <p style={{ margin: '8px 0 16px', fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5 }}>
           Your manager will see this in the schedule grid and approve or deny.
@@ -529,9 +534,9 @@ function RequestTimeOffModal({
           </div>
           {errorMsg && (
             <div role="alert" style={{
-              padding: '10px 14px', background: 'rgba(160,74,44,0.08)',
-              border: '1px solid rgba(160,74,44,0.25)', borderRadius: 12,
-              color: '#A04A2C', fontFamily: fonts.sans, fontSize: 13,
+              padding: '10px 14px', background: 'rgba(184,92,61,0.08)',
+              border: '1px solid rgba(184,92,61,0.25)', borderRadius: 12,
+              color: '#B85C3D', fontFamily: fonts.sans, fontSize: 13,
             }}>{errorMsg}</div>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
@@ -552,9 +557,9 @@ function NotLinkedState({
 }: { displayName: string; propertyName: string }) {
   return (
     <div style={{
-      background: T.bg, color: T.ink, fontFamily: fonts.sans,
+      background: 'transparent', color: T.ink, fontFamily: fonts.sans,
       minHeight: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: '64px 24px',
+      padding: '64px 24px 130px',
     }}>
       <div style={{ maxWidth: 480, textAlign: 'center' }}>
         <div style={{ display: 'inline-flex', marginBottom: 18 }}>
@@ -562,10 +567,10 @@ function NotLinkedState({
         </div>
         <Caps>{propertyName}</Caps>
         <h1 style={{
-          fontFamily: fonts.serif, fontSize: 32, color: T.ink,
-          margin: '8px 0 0', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 400,
+          fontFamily: fonts.sans, fontSize: 26, color: T.ink,
+          margin: '8px 0 0', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 600,
         }}>
-          <span style={{ fontStyle: 'italic' }}>Hi, {displayName}.</span>
+          <span>Hi, {displayName}.</span>
         </h1>
         <p style={{
           margin: '14px auto 0', maxWidth: 380,
@@ -627,7 +632,8 @@ function MyRecognitionCard({ hotelId, lang }: { hotelId: string; lang: 'en' | 'e
 
   return (
     <div style={{
-      marginTop: 24, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, overflow: 'hidden',
+      marginTop: 24, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+      boxShadow: T.cardShadow, overflow: 'hidden',
     }}>
       <div style={{
         padding: '14px 18px', borderBottom: `1px solid ${T.rule}`,
@@ -636,8 +642,8 @@ function MyRecognitionCard({ hotelId, lang }: { hotelId: string; lang: 'en' | 'e
         <div>
           <Caps size={9}>{lang === 'es' ? 'Reconocimiento' : 'Recognition'}</Caps>
           <div style={{
-            fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic',
-            color: T.ink, letterSpacing: '-0.02em', marginTop: 3, lineHeight: 1.1,
+            fontFamily: fonts.sans, fontSize: 14.5, fontWeight: 600,
+            color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
           }}>{lang === 'es' ? 'Para ti ✨' : 'For you ✨'}</div>
         </div>
         <span style={{
@@ -671,8 +677,8 @@ function MyRecognitionCard({ hotelId, lang }: { hotelId: string; lang: 'en' | 'e
                 )}
               </div>
               <div style={{
-                fontFamily: fonts.serif, fontSize: 16, fontStyle: 'italic', color: T.ink,
-                lineHeight: 1.45, wordBreak: 'break-word',
+                fontFamily: fonts.sans, fontSize: 13.5, color: T.ink,
+                lineHeight: 1.5, wordBreak: 'break-word',
               }}>“{k.message}”</div>
             </div>
           );

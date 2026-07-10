@@ -11,13 +11,100 @@
 import React, { useEffect, useRef } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card,
+  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card,
 } from '@/app/housekeeping/_components/_snow';
 
 // Re-export the shared Snow primitives so the maintenance tabs have a single
-// import source (tokens + Caps/Pill/Btn/Card live in housekeeping/_snow).
-export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card };
+// import source (tokens + Caps/Card live in housekeeping/_snow). Pill and Btn
+// are defined locally below with the Concourse skin — mono badge pills and
+// sage primary buttons — so the maintenance section reads native to the shell.
+export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card };
 export type Priority = 'urgent' | 'normal' | 'low';
+
+// ── Concourse motion + card tokens (mirror concourse-css.tsx) ──────────────
+export const CX_SPRING = 'cubic-bezier(.22,1,.36,1)';
+export const CX_CARD_SHADOW = '0 6px 16px -14px rgba(31,42,32,0.35)';
+export const CX_CARD_SHADOW_HOVER = '0 18px 36px -20px rgba(62,92,72,0.5)';
+export const CX_CARD_BORDER_HOVER = 'rgba(92,122,96,0.45)';
+
+// ── Pill — Concourse badge: Geist Mono 10px/600 uppercase on a toned wash ──
+type PillTone = 'neutral' | 'sage' | 'warm' | 'caramel' | 'red' | 'purple' | 'ink';
+
+export function Pill({
+  children, tone = 'neutral', style = {},
+}: {
+  children: React.ReactNode; tone?: PillTone; style?: React.CSSProperties;
+}) {
+  const palette = {
+    neutral: { bg: 'rgba(31,35,28,0.06)',   fg: '#5C625C' },
+    sage:    { bg: 'rgba(53,107,76,0.10)',  fg: '#356B4C' },
+    warm:    { bg: 'rgba(184,92,61,0.10)',  fg: '#B85C3D' },
+    caramel: { bg: 'rgba(201,150,68,0.14)', fg: '#8C6A33' },
+    red:     { bg: 'rgba(184,92,61,0.10)',  fg: '#B85C3D' },
+    purple:  { bg: 'rgba(31,35,28,0.06)',   fg: '#5C625C' },
+    ink:     { bg: '#1F231C',               fg: '#FFFFFF' },
+  }[tone];
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      padding: '3px 9px', borderRadius: 999, height: 22,
+      background: palette.bg, color: palette.fg,
+      fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600,
+      letterSpacing: '0.06em', textTransform: 'uppercase',
+      whiteSpace: 'nowrap', ...style,
+    }}>{children}</span>
+  );
+}
+
+// ── Btn — Concourse pill button: sage primary, hairline secondary ──────────
+type BtnVariant = 'primary' | 'ghost' | 'sage' | 'paper';
+type BtnSize = 'sm' | 'md' | 'lg';
+
+export function Btn({
+  variant = 'ghost', size = 'md', children, onClick, disabled, style = {}, type, title, ariaLabel,
+}: {
+  variant?: BtnVariant; size?: BtnSize;
+  children: React.ReactNode;
+  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  disabled?: boolean;
+  style?: React.CSSProperties;
+  type?: 'button' | 'submit' | 'reset';
+  title?: string;
+  ariaLabel?: string;
+}) {
+  const sizes = {
+    sm: { h: 28, px: 12, fs: 11.5 },
+    md: { h: 36, px: 16, fs: 12.5 },
+    lg: { h: 44, px: 22, fs: 13.5 },
+  }[size];
+  const variants = {
+    primary: { bg: '#3E5C48',                fg: '#FFFFFF', br: 'transparent' },
+    ghost:   { bg: 'transparent',            fg: '#5C625C', br: 'rgba(31,35,28,0.14)' },
+    sage:    { bg: 'rgba(92,122,96,0.14)',   fg: '#356B4C', br: 'rgba(92,122,96,0.30)' },
+    paper:   { bg: '#FFFFFF',                fg: T.ink,     br: T.rule },
+  }[variant];
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      type={type ?? 'button'}
+      title={title}
+      aria-label={ariaLabel}
+      style={{
+        height: sizes.h, padding: `0 ${sizes.px}px`, borderRadius: 999,
+        background: variants.bg, color: variants.fg,
+        border: `1px solid ${variants.br}`,
+        fontFamily: FONT_SANS, fontSize: sizes.fs, fontWeight: 600,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        whiteSpace: 'nowrap', flexShrink: 0,
+        transition: `background .3s ${CX_SPRING}, color .3s ${CX_SPRING}, border-color .3s ${CX_SPRING}`,
+        ...style,
+      }}
+    >{children}</button>
+  );
+}
 
 // ── Priority colors ────────────────────────────────────────────────────────
 export const prioColor: Record<Priority, string> = {
@@ -51,8 +138,9 @@ export function PrioPill({ p, style = {} }: { p: Priority; style?: React.CSSProp
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
       padding: '3px 10px 3px 8px', borderRadius: 999, height: 22,
-      background: `${c}14`, color: c, border: `1px solid ${c}33`,
-      fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600,
+      background: `${c}1A`, color: c,
+      fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600,
+      letterSpacing: '0.06em', textTransform: 'uppercase',
       whiteSpace: 'nowrap', ...style,
     }}>
       <PrioDot p={p} size={6}/>
@@ -65,7 +153,10 @@ export function PrioPill({ p, style = {} }: { p: Priority; style?: React.CSSProp
 // Deterministic color from a name: the same person always lands on the same
 // tone (mirrors staffTone in housekeeping/_snow). Callers can still override
 // with an explicit `tone`.
-const AVATAR_TONES = ['#B8775E', '#688372', '#7B6A97', '#8C6A33', '#5E7A8C', '#6A8C70'];
+// Concourse retint: avatar tones drawn from the Concourse hues (rust / sage
+// accent / brand sage / warn text / deep ok / secondary ink) — all on palette,
+// all dark enough for white initials. Mirrors STAFF_TONES in housekeeping/_snow.
+const AVATAR_TONES = ['#B85C3D', '#5C7A60', '#3E5C48', '#8C6A33', '#356B4C', '#5C625C'];
 export function toneFor(name: string): string {
   let h = 0;
   for (const ch of (name || '')) h = (h * 31 + ch.charCodeAt(0)) | 0;
@@ -127,7 +218,7 @@ export function Modal({
       padding: '48px 24px', overflow: 'auto',
     }}>
       <div ref={ref} onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: width, background: T.paper, borderRadius: 20,
+        width: '100%', maxWidth: width, background: '#FFFFFF', borderRadius: 18,
         border: `1px solid ${T.rule}`,
         boxShadow: '0 24px 60px rgba(31,35,28,0.18)',
         display: 'flex', flexDirection: 'column',
@@ -138,7 +229,7 @@ export function Modal({
         }}>
           <div style={{ minWidth: 0 }}>
             {title && (
-              <h2 style={{ fontFamily: FONT_SERIF, fontSize: 26, color: T.ink, margin: 0, letterSpacing: '-0.02em', fontWeight: 400, lineHeight: 1.2 }}>
+              <h2 style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, margin: 0, letterSpacing: '-0.02em', fontWeight: 600, lineHeight: 1.25 }}>
                 {title}
               </h2>
             )}
@@ -159,7 +250,7 @@ export function Modal({
           <div style={{
             padding: '18px 26px', borderTop: `1px solid ${T.rule}`,
             display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8,
-            flexWrap: 'wrap', background: T.bg, borderBottomLeftRadius: 20, borderBottomRightRadius: 20,
+            flexWrap: 'wrap', background: 'rgba(31,35,28,0.025)', borderBottomLeftRadius: 18, borderBottomRightRadius: 18,
           }}>{footer}</div>
         )}
       </div>
@@ -177,10 +268,10 @@ export function Field({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, ...style }}>
       <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 500 }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 9.5, color: T.ink2, letterSpacing: '0.14em', textTransform: 'uppercase', fontWeight: 600 }}>
           {label}{required && <span style={{ color: T.warm, marginLeft: 4 }}>*</span>}
         </span>
-        {hint && <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, fontStyle: 'italic' }}>{hint}</span>}
+        {hint && <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3 }}>{hint}</span>}
       </span>
       {children}
     </div>
@@ -203,7 +294,7 @@ export function TextInput({
       placeholder={placeholder}
       style={{
         height: 40, padding: '0 14px', borderRadius: 10,
-        background: T.bg, border: `1px solid ${T.rule}`,
+        background: '#FFFFFF', border: '1px solid rgba(31,35,28,0.14)',
         fontFamily: FONT_SANS, fontSize: 14, color: T.ink, width: '100%',
         boxSizing: 'border-box', outline: 'none',
       }}
@@ -226,7 +317,7 @@ export function TextArea({
       rows={rows}
       style={{
         padding: '10px 14px', borderRadius: 10,
-        background: T.bg, border: `1px solid ${T.rule}`,
+        background: '#FFFFFF', border: '1px solid rgba(31,35,28,0.14)',
         fontFamily: FONT_SANS, fontSize: 14, color: T.ink, width: '100%',
         boxSizing: 'border-box', outline: 'none', resize: 'vertical',
         lineHeight: 1.5,
@@ -254,13 +345,14 @@ export function ChipChoose<V extends string>({
             type="button"
             onClick={() => onChange(opt.value)}
             style={{
-              padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
-              background: active ? T.ink : 'transparent',
-              color: active ? T.bg : T.ink,
-              border: `1px solid ${active ? T.ink : T.rule}`,
-              fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+              padding: '8px 14px', borderRadius: 999, cursor: 'pointer',
+              background: active ? '#3E5C48' : 'transparent',
+              color: active ? '#FFFFFF' : T.ink2,
+              border: `1px solid ${active ? '#3E5C48' : 'rgba(31,35,28,0.14)'}`,
+              fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: active ? 600 : 500,
               display: 'inline-flex', alignItems: 'center', gap: 8,
               whiteSpace: 'nowrap',
+              transition: `background .3s ${CX_SPRING}, color .3s ${CX_SPRING}, border-color .3s ${CX_SPRING}`,
             }}
           >
             {render ? render(opt, active) : opt.label}
@@ -405,12 +497,12 @@ export function PageHead({
       marginBottom: 20, gap: 24, flexWrap: 'wrap',
     }}>
       <div>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.16em', textTransform: 'uppercase', fontWeight: 500 }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 9.5, color: T.ink3, letterSpacing: '0.14em', textTransform: 'uppercase', fontWeight: 600 }}>
           {eyebrow}
         </span>
-        <h1 style={{ fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400 }}>
-          <span style={{ fontStyle: 'italic' }}>{lead}</span>
-          {rest && <span style={{ color: T.ink3 }}> · {rest}</span>}
+        <h1 style={{ fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: '5px 0 0', letterSpacing: '-0.02em', lineHeight: 1.25, fontWeight: 600 }}>
+          <span>{lead}</span>
+          {rest && <span style={{ color: T.ink3, fontWeight: 500 }}> · {rest}</span>}
         </h1>
       </div>
       {actions && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
@@ -432,15 +524,15 @@ export function BoardColumn({
     <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 2px 11px', borderBottom: `2px solid ${color}`, marginBottom: 12 }}>
         <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>
           {label}
         </span>
-        <span style={{ marginLeft: 'auto', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color, lineHeight: 1 }}>{count}</span>
+        <span style={{ marginLeft: 'auto', fontFamily: FONT_SANS, fontWeight: 600, fontSize: 20, color, lineHeight: 1, letterSpacing: '-0.02em' }}>{count}</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
         {hasItems
           ? children
-          : <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 16, color: T.ink3, padding: '6px 2px' }}>{empty || 'Nothing here.'}</span>}
+          : <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3, padding: '6px 2px' }}>{empty || 'Nothing here.'}</span>}
       </div>
     </div>
   );
@@ -464,14 +556,15 @@ export function BoardCard({
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
-      onMouseEnter={onClick ? (e) => { e.currentTarget.style.borderColor = 'rgba(31,35,28,0.18)'; e.currentTarget.style.transform = 'translateY(-1px)'; } : undefined}
-      onMouseLeave={onClick ? (e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; } : undefined}
+      onMouseEnter={onClick ? (e) => { e.currentTarget.style.borderColor = CX_CARD_BORDER_HOVER; e.currentTarget.style.transform = 'translateY(-5px)'; e.currentTarget.style.boxShadow = CX_CARD_SHADOW_HOVER; } : undefined}
+      onMouseLeave={onClick ? (e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = CX_CARD_SHADOW; } : undefined}
       style={{
         textAlign: 'left', cursor: onClick ? 'pointer' : 'default',
-        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
+        background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 14,
         padding: '14px 16px 13px 19px', display: 'flex', flexDirection: 'column', gap: 9,
         width: '100%', position: 'relative', overflow: 'hidden',
-        transition: 'border-color 0.14s, transform 0.14s',
+        boxShadow: CX_CARD_SHADOW,
+        transition: `border-color .55s ${CX_SPRING}, transform .55s ${CX_SPRING}, box-shadow .55s ${CX_SPRING}`,
       }}
     >
       <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: accent }} />
@@ -508,9 +601,9 @@ export class MaintenanceErrorBoundary extends React.Component<
   render() {
     if (this.state.err) {
       return (
-        <div style={{ minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.bg, fontFamily: FONT_SANS, padding: 24 }}>
-          <div style={{ maxWidth: 420, textAlign: 'center', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '32px 28px' }}>
-            <div style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, fontStyle: 'italic' }}>Something hiccuped.</div>
+        <div style={{ minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', fontFamily: FONT_SANS, padding: 24 }}>
+          <div style={{ maxWidth: 420, textAlign: 'center', background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '32px 28px', boxShadow: CX_CARD_SHADOW }}>
+            <div style={{ fontFamily: FONT_SANS, fontSize: 21, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>Something hiccuped.</div>
             <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, lineHeight: 1.5, margin: '10px 0 18px' }}>
               The page hit a snag — your data is safe. Reload to pick back up.
             </p>
@@ -561,9 +654,10 @@ export function MTSubTabBar({
                 fontFamily: FONT_SANS, fontSize: 14,
                 fontWeight: active ? 600 : 500,
                 color: active ? T.ink : T.ink2,
-                borderBottom: active ? `1.5px solid ${T.ink}` : '1.5px solid transparent',
+                borderBottom: active ? '1.5px solid #3E5C48' : '1.5px solid transparent',
                 marginBottom: -1,
                 whiteSpace: 'nowrap',
+                transition: `color .3s ${CX_SPRING}, border-color .3s ${CX_SPRING}`,
               }}
             >{t.label}</button>
           );

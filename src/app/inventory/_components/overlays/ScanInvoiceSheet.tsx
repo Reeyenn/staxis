@@ -697,10 +697,10 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                 borderRadius: 14,
                 padding: '40px 24px',
                 textAlign: 'center',
-                background: 'repeating-linear-gradient(135deg, rgba(24,22,17,0.03) 0 10px, transparent 10px 20px)',
+                background: 'repeating-linear-gradient(135deg, rgba(31,35,28,0.03) 0 10px, transparent 10px 20px)',
               }}
             >
-              <div style={{ fontFamily: fonts.serif, fontSize: 24, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.02em' }}>
+              <div style={{ fontFamily: fonts.sans, fontSize: 24, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
                 {ss.dropInvoicePhoto}
               </div>
               <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, margin: '8px 0 0' }}>
@@ -755,7 +755,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                           height: 24,
                           borderRadius: 12,
                           border: 'none',
-                          background: 'rgba(24,22,17,0.72)',
+                          background: 'rgba(31,35,28,0.72)',
                           color: '#FFFFFF',
                           fontFamily: fonts.sans,
                           fontSize: 15,

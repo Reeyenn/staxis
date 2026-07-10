@@ -12,8 +12,10 @@
 // headline; "Right now" ops tiles + a "Needs attention" card; a
 // month-to-date footer.
 //
-// Kept from the live app per Reeyen: the page background (#F8F8F5) and
-// the global top nav (AppLayout). The ring + "Right now" + "Needs
+// Restyled for the Concourse shell: transparent root over the app-wide
+// radial wash, Geist display type (no serif/italic), Concourse ink/sage/
+// amber/rust palette. Kept from the live app: the global nav (AppLayout).
+// The ring + "Right now" + "Needs
 // attention" are wired to live Supabase data. The chart series is the
 // same deterministic seam as before (see today-series.ts) — every range
 // + Play works today and turns fully real once daily history is stored.
@@ -57,35 +59,35 @@ import {
   type TodayMetricKey, type HistRow, type SeriesPoint,
 } from '@/lib/dashboard/today-series';
 
-// ─── palette (design colors, on our kept #F8F8F5 background) ──────────
+// ─── palette (Concourse tokens, on the app-wide radial wash) ──────────
 const C = {
-  paper:  '#FFFFFF',   // white — every other page renders a white surface
-  paper2: '#F1F2F4',   // subtle light-gray fill for the active KPI / pill (shows on white)
+  paper:  '#FFFFFF',   // white — chart marker fills / card surfaces
+  paper2: 'rgba(158,183,166,.16)', // sage wash fill for the active KPI cell
   card:   '#FFFFFF',
-  ink:    '#20251F',
-  ink2:   '#4A5249',
+  ink:    '#1F231C',
+  ink2:   '#5C625C',
   ink3:   '#8A9187',
-  ink4:   '#B4B9AE',
+  ink4:   '#A6ABA6',
   green:  '#356B4C',
-  greenL: '#5C8E6F',
-  sage:   '#9DB8A6',
-  rust:   '#BC5E37',
-  rustD:  '#9A4A29',
-  rustBg: '#F4E2D6',
-  gold:   '#C09A3C',
-  line:   'rgba(32,37,31,0.10)',
-  line2:  'rgba(32,37,31,0.16)',
+  greenL: '#5C7A60',
+  sage:   '#9EB7A6',
+  rust:   '#B85C3D',
+  rustD:  '#B85C3D',
+  rustBg: 'rgba(184,92,61,.10)',
+  gold:   '#C99644',
+  line:   'rgba(31,35,28,0.08)',
+  line2:  'rgba(31,35,28,0.14)',
 } as const;
 
-const SERIF = 'var(--font-fraunces), Georgia, "Times New Roman", serif';
 const SANS  = 'var(--font-geist), system-ui, -apple-system, sans-serif';
 const MONO  = 'var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace';
+const SPRING = 'cubic-bezier(.22,1,.36,1)';
 
 type RingKey = 'occupied' | 'departing' | 'arriving' | 'clean' | 'dirty' | 'inprog' | 'ooo' | 'none';
 
 const RING: Record<RingKey, string> = {
-  occupied: '#356B4C', departing: '#C79A3C', arriving: '#6FA384',
-  clean: '#CBDBCF', dirty: '#C2704E', inprog: '#9DB8A6', ooo: '#B4B9AE', none: '#E2E5DE',
+  occupied: '#356B4C', departing: '#C99644', arriving: '#5C7A60',
+  clean: 'rgba(158,183,166,.45)', dirty: '#B85C3D', inprog: '#9EB7A6', ooo: '#A6ABA6', none: 'rgba(31,35,28,.10)',
 };
 const STATUS_EN: Record<RingKey, string> = {
   occupied: 'Occupied', departing: 'Departing', arriving: 'Arriving soon',
@@ -102,8 +104,8 @@ const STATUS_ES: Record<RingKey, string> = {
 type RingTick = { idx: number; num: string; status: RingKey };
 
 const LABEL: React.CSSProperties = {
-  fontFamily: SANS, textTransform: 'uppercase', letterSpacing: '0.14em',
-  fontWeight: 600, fontSize: 11, color: C.ink3,
+  fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.14em',
+  fontWeight: 600, fontSize: 9.5, color: C.ink4,
 };
 
 // ─── tween a row of numbers smoothly toward target (scrub / playback) ──
@@ -193,7 +195,7 @@ const RoomRing = React.memo(function RoomRing({ rooms, onHover, hovered }: {
             x2={cx + Math.cos(a) * ro} y2={cy + Math.sin(a) * ro}
             stroke={RING[r.status]} strokeWidth={isH ? 9 : 6} strokeLinecap="round"
             onMouseEnter={() => onHover(r)} onMouseLeave={() => onHover(null)}
-            style={{ cursor: 'pointer', transition: 'stroke-width .12s' }} />
+            style={{ cursor: 'pointer', transition: `stroke-width .3s ${SPRING}` }} />
         );
       })}
     </svg>
@@ -242,7 +244,7 @@ const MetricChart = React.memo(function MetricChart({ series, color, onHover, ma
     p.style.strokeDasharray = String(L);
     p.style.strokeDashoffset = String(L);
     requestAnimationFrame(() => {
-      p.style.transition = 'stroke-dashoffset .9s cubic-bezier(.4,0,.1,1)';
+      p.style.transition = `stroke-dashoffset .9s ${SPRING}`;
       p.style.strokeDashoffset = '0';
     });
     // Fallback: rAF is throttled in hidden/background tabs, which would
@@ -297,7 +299,7 @@ function OpsTile({ label, value, sub, tone }: { label: string; value: React.Reac
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ ...LABEL, marginBottom: 8 }}>{label}</div>
-      <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 34, lineHeight: 1, color: tone || C.ink, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 34, lineHeight: 1, letterSpacing: '-0.02em', color: tone || C.ink, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
       <div style={{ fontSize: 12, color: C.ink3, marginTop: 4 }}>{sub}</div>
     </div>
   );
@@ -706,12 +708,12 @@ export default function DashboardPage() {
   const pill = (on: boolean): React.CSSProperties => ({
     padding: '6px 12px', borderRadius: 999, border: `1px solid ${C.line2}`, cursor: 'pointer',
     fontFamily: SANS, fontSize: 12, fontWeight: 600,
-    background: on ? C.ink : 'transparent', color: on ? C.paper2 : C.ink2, transition: 'all .15s',
+    background: on ? C.ink : 'transparent', color: on ? '#fff' : C.ink2, transition: `all .3s ${SPRING}`,
   });
 
   return (
     <AppLayout>
-      <div className="stx-today" style={{ width: '100%', minHeight: '100vh', background: 'transparent', fontFamily: SANS, color: C.ink, padding: 'clamp(16px, 2vw, 32px) clamp(16px, 3vw, 48px)' }}>
+      <div className="stx-today" style={{ width: '100%', minHeight: '100vh', background: 'transparent', fontFamily: SANS, color: C.ink, padding: 'clamp(16px, 2vw, 32px) clamp(16px, 3vw, 48px) 130px' }}>
         <style>{`
           .stx-today .stx-hero { display:grid; grid-template-columns:320px 1fr; gap:48px; align-items:center; }
           .stx-today .stx-kpis { display:grid; grid-template-columns:repeat(5,1fr); border-top:1px solid ${C.line}; border-bottom:1px solid ${C.line}; }
@@ -734,7 +736,7 @@ export default function DashboardPage() {
 
           {/* date (Reports lives in Settings → Reports) */}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
-            <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink2, textTransform: 'capitalize' }}>{dateLong}</span>
+            <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 26, letterSpacing: '-0.02em', color: C.ink, textTransform: 'capitalize' }}>{dateLong}</span>
           </div>
 
           {/* hero: ring + chart */}
@@ -743,7 +745,7 @@ export default function DashboardPage() {
               <RoomRing rooms={ringRooms} onHover={setRoom} hovered={room} />
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
                 <div style={{ ...LABEL, fontSize: 10 }}>{center.label}</div>
-                <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: room ? (room.num ? 50 : 28) : 60, color: center.color, lineHeight: 1.05, margin: '6px 0 8px', textAlign: 'center', padding: '0 18px' }}>{center.big}</div>
+                <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: room ? (room.num ? 50 : 28) : 60, letterSpacing: '-0.02em', color: center.color, lineHeight: 1.05, margin: '6px 0 8px', textAlign: 'center', padding: '0 18px' }}>{center.big}</div>
                 <div style={{ fontSize: 14, fontWeight: 500, color: C.ink2, whiteSpace: 'nowrap' }}>{center.sub}</div>
               </div>
             </div>
@@ -755,7 +757,7 @@ export default function DashboardPage() {
                     <div style={{ ...LABEL, marginBottom: 6 }}>{def.label} · {RG.full}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <button onClick={togglePlay} title={playing ? (ES ? 'Pausar' : 'Pause') : (ES ? 'Reproducir' : 'Play through ' + RG.full)}
-                        style={{ width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer', flexShrink: 0, background: playing ? C.rust : def.color, color: '#fff', display: 'grid', placeItems: 'center', transition: 'background .15s' }}>
+                        style={{ width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer', flexShrink: 0, background: playing ? C.rust : def.color, color: '#fff', display: 'grid', placeItems: 'center', transition: `background .3s ${SPRING}` }}>
                         {playing
                           ? <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.6" height="12" rx="1" /><rect x="9.4" y="2" width="3.6" height="12" rx="1" /></svg>
                           : <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z" /></svg>}
@@ -777,7 +779,7 @@ export default function DashboardPage() {
                   textAlign: 'center', gap: 10, border: `1px dashed ${C.line2}`, borderRadius: 16, padding: '24px',
                 }}>
                   <div style={{ ...LABEL }}>{ES ? 'Aún sin historial' : 'No history yet'}</div>
-                  <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink2, maxWidth: 460, lineHeight: 1.3 }}>
+                  <div style={{ fontFamily: SANS, fontWeight: 500, fontSize: 16, color: C.ink2, maxWidth: 460, lineHeight: 1.5 }}>
                     {ES
                       ? 'Tus tendencias de ocupación e ingresos aparecerán aquí a medida que se acumule el historial diario de tu hotel.'
                       : 'Your occupancy and revenue trends will appear here as your hotel’s daily history builds up.'}
@@ -807,13 +809,13 @@ export default function DashboardPage() {
               const val = mdef.fmt === 'pct' ? Math.round(live[k.key]) + '%' : fmtMoney(live[k.key]);
               return (
                 <div key={k.key} onClick={() => { setMetric(k.key); setRoom(null); }} title={`${ES ? 'Graficar' : 'Chart'} ${k.label}`}
-                  style={{ padding: '20px 22px', borderLeft: i ? `1px solid ${C.line}` : 'none', cursor: 'pointer', background: active ? C.paper2 : 'transparent', boxShadow: active ? `inset 0 3px 0 ${mdef.color}` : 'none', transition: 'background .15s' }}>
+                  style={{ padding: '20px 22px', borderLeft: i ? `1px solid ${C.line}` : 'none', cursor: 'pointer', background: active ? C.paper2 : 'transparent', boxShadow: active ? `inset 0 3px 0 ${mdef.color}` : 'none', transition: `background .3s ${SPRING}` }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, minHeight: 14 }}>
                     <span style={LABEL}>{k.label}</span>
-                    {active && <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: C.green }}><span style={{ width: 6, height: 6, borderRadius: 3, background: C.green }} />{ES ? 'EN GRÁFICO' : 'ON CHART'}</span>}
+                    {active && <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: MONO, fontSize: 10, fontWeight: 600, letterSpacing: '.08em', color: C.green }}><span style={{ width: 6, height: 6, borderRadius: 3, background: C.green }} />{ES ? 'EN GRÁFICO' : 'ON CHART'}</span>}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-                    <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 'clamp(32px, 3vw, 46px)', lineHeight: .95, color: k.tone, fontVariantNumeric: 'tabular-nums' }}>{val}</span>
+                    <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 'clamp(32px, 3vw, 46px)', lineHeight: .95, letterSpacing: '-0.02em', color: k.tone, fontVariantNumeric: 'tabular-nums' }}>{val}</span>
                     {!scrubbing && (
                       <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                         <Delta v={kpiDelta(k.key)} />
@@ -872,14 +874,14 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div style={{ background: attention.length ? C.rustBg : '#E7EFE7', borderRadius: 16, padding: 22 }}>
+            <div style={{ background: attention.length ? C.rustBg : 'rgba(158,183,166,.16)', borderRadius: 16, padding: 22 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <span style={{ ...LABEL, color: attention.length ? C.rustD : C.green }}>{ES ? 'Necesita atención' : 'Needs attention'}</span>
                 <span style={{ background: attention.length ? C.rust : C.green, color: '#fff', borderRadius: 999, minWidth: 24, height: 24, padding: '0 7px', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700 }}>{attnTotal}</span>
               </div>
               {attention.length ? attention.map((a, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 0', borderTop: i ? '1px solid rgba(188,94,55,.2)' : 'none' }}>
-                  <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 22, color: C.rust, minWidth: 22 }}>{a.n}</span>
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 0', borderTop: i ? '1px solid rgba(184,92,61,.2)' : 'none' }}>
+                  <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 22, letterSpacing: '-0.02em', color: C.rust, minWidth: 22 }}>{a.n}</span>
                   <span style={{ fontSize: 13, color: C.rustD }}>{a.text}</span>
                 </div>
               )) : (
@@ -891,7 +893,7 @@ export default function DashboardPage() {
           {/* month to date — synthetic totals; demo property only (no fabricated totals) */}
           {showFinancials && mtd && (
             <section className="stx-mtd" style={{ borderTop: `1px solid ${C.line}`, paddingTop: 22 }}>
-              <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: C.ink2, width: 200, flexShrink: 0, textTransform: 'capitalize' }}>
+              <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 16, letterSpacing: '-0.02em', color: C.ink2, width: 200, flexShrink: 0, textTransform: 'capitalize' }}>
                 {ES ? `${monthFull}, hasta hoy` : `${monthFull}, month to date`}
               </span>
               {([
@@ -904,7 +906,7 @@ export default function DashboardPage() {
               ] as [string, string, string][]).map(m => (
                 <div key={m[0]} style={{ flex: 1, minWidth: 110, paddingLeft: 22, borderLeft: `1px solid ${C.line}` }}>
                   <div style={{ ...LABEL, marginBottom: 6 }}>{m[0]}</div>
-                  <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 26, color: m[2], fontVariantNumeric: 'tabular-nums' }}>{m[1]}</div>
+                  <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 23, letterSpacing: '-0.02em', color: m[2], fontVariantNumeric: 'tabular-nums' }}>{m[1]}</div>
                 </div>
               ))}
             </section>

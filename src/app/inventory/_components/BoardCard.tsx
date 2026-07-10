@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { T, fonts, statusColor, catGlyph } from './tokens';
+import { T, fonts, statusText, catGlyph } from './tokens';
 import { Thumb } from './ItemThumb';
 import { StockBar } from './StockBar';
 import { Serif } from './Serif';
@@ -42,7 +42,7 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
   const [flipped, setFlipped] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const uncounted = it.uncounted;
-  const c = uncounted ? T.dim : statusColor[it.status];
+  const c = uncounted ? T.dim : statusText[it.status];
   const flip = () =>
     Motion.flip(ref.current, () => setFlipped((f) => !f), { axis: 'y', d1: 145, d2: 215 });
 
@@ -54,7 +54,7 @@ export function BoardCard({ lang, it, onEdit, onCount, onReorder }: BoardCardPro
         style={{
           background: T.bg,
           border: `1px solid ${T.rule}`,
-          borderRadius: 12,
+          borderRadius: 14,
           padding: 12,
           transformStyle: 'preserve-3d',
           minHeight: 96,
@@ -198,7 +198,7 @@ function CardAct({
       style={{
         flex: 1,
         padding: '7px 4px',
-        borderRadius: 7,
+        borderRadius: 999,
         cursor: 'pointer',
         background: tone === 'terra' ? T.terra : T.inkWash,
         color: tone === 'terra' ? '#fff' : T.ink,

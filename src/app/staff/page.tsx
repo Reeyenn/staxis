@@ -94,7 +94,7 @@ function DemoSwitchableView() {
   }, [previewStaffId]);
 
   return (
-    <div style={{ background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
+    <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
       <DemoViewSwitch
         mode={mode}
         onMode={setMode}
@@ -173,7 +173,7 @@ function DemoViewSwitch({
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>previewing as</span>
           {roster.length === 0 ? (
-            <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink3, fontStyle: 'italic' }}>
+            <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink3 }}>
               no staff on this property
             </span>
           ) : (
@@ -219,7 +219,7 @@ function ManagerView() {
   }, [tab]);
 
   return (
-    <div style={{ background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
+    <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
       <SubTabBar tab={tab} onTab={setTab}/>
       {tab === 'schedule'    && <UnifiedSchedule onOpenDirectory={() => setTab('directory')}/>}
       {tab === 'directory'   && <ManagerDirectory/>}

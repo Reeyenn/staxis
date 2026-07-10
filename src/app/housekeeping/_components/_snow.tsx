@@ -43,15 +43,20 @@ export const T = {
   caramelDeep:'#8C6A33',
   warm:       'var(--snow-warm)',
   warmDim:    'rgba(184,92,61,0.10)',
-  red:        '#A04A2C',
-  redDim:     'rgba(160,74,44,0.10)',
-  purple:     '#7B6A97',
-  purpleDim:  'rgba(123,106,151,0.10)',
+  // Concourse retint: "red" (critical) sits on the same rust hue as warm but
+  // with a stronger wash so severity still reads; "purple" (inspection) maps
+  // onto the deep-ok green — inspection = verified-good in this language.
+  red:        '#B85C3D',
+  redDim:     'rgba(184,92,61,0.18)',
+  purple:     '#356B4C',
+  purpleDim:  'rgba(53,107,76,0.10)',
 } as const;
 
 export const FONT_SANS  = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
 export const FONT_MONO  = "var(--font-geist-mono), ui-monospace, monospace";
-export const FONT_SERIF = "var(--font-instrument-serif), 'Times New Roman', Georgia, serif";
+// Concourse retint: display type is Geist everywhere — the serif slot now
+// resolves to the sans stack so every legacy FONT_SERIF usage renders Geist.
+export const FONT_SERIF = FONT_SANS;
 
 // ───────────────────────────────────────────────────────────────────────
 // ChevronMark — locked logo SVG. Reused by Header.tsx; duplicated here
@@ -109,11 +114,11 @@ export function Pill({
 }) {
   const palette = {
     neutral: { bg: 'transparent',                     fg: T.ink2,        br: T.rule },
-    sage:    { bg: T.sageDim,                         fg: T.sageDeep,    br: 'rgba(104,131,114,0.25)' },
-    warm:    { bg: T.warmDim,                         fg: T.warm,        br: 'rgba(184,119,94,0.25)' },
-    caramel: { bg: 'rgba(215,176,126,0.14)',          fg: T.caramelDeep, br: 'rgba(140,106,51,0.25)' },
-    red:     { bg: T.redDim,                          fg: T.red,         br: 'rgba(160,74,44,0.25)' },
-    purple:  { bg: T.purpleDim,                       fg: T.purple,      br: 'rgba(123,106,151,0.25)' },
+    sage:    { bg: T.sageDim,                         fg: T.sageDeep,    br: 'rgba(92,122,96,0.25)' },
+    warm:    { bg: T.warmDim,                         fg: T.warm,        br: 'rgba(184,92,61,0.25)' },
+    caramel: { bg: 'rgba(201,150,68,0.14)',           fg: T.caramelDeep, br: 'rgba(140,106,51,0.25)' },
+    red:     { bg: T.redDim,                          fg: T.red,         br: 'rgba(184,92,61,0.35)' },
+    purple:  { bg: T.purpleDim,                       fg: T.purple,      br: 'rgba(53,107,76,0.25)' },
     ink:     { bg: T.ink,                             fg: T.bg,          br: T.ink },
   }[tone];
   return (
@@ -155,7 +160,7 @@ export function Btn({
   const variants = {
     primary: { bg: T.ink,         fg: T.bg,        br: 'transparent' },
     ghost:   { bg: 'transparent', fg: T.ink,       br: T.rule },
-    sage:    { bg: T.sageDim,     fg: T.sageDeep,  br: 'rgba(104,131,114,0.3)' },
+    sage:    { bg: T.sageDim,     fg: T.sageDeep,  br: 'rgba(92,122,96,0.3)' },
     paper:   { bg: T.paper,       fg: T.ink,       br: T.rule },
   }[variant];
   return (
@@ -191,6 +196,7 @@ export function Card({
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+      boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
       padding, ...style,
     }}>{children}</div>
   );
@@ -201,7 +207,10 @@ export function Card({
 // for housekeeper avatars across the housekeeping tabs.
 // ───────────────────────────────────────────────────────────────────────
 
-const STAFF_TONES = ['#B8775E', '#688372', '#7B6A97', '#8C6A33', '#5E7A8C', '#6A8C70'];
+// Concourse retint: avatar tones drawn from the Concourse brand hues (rust /
+// sage accent / brand sage / warn text / deep ok / secondary ink) — all dark
+// enough for white initials, all on palette.
+const STAFF_TONES = ['#B85C3D', '#5C7A60', '#3E5C48', '#8C6A33', '#356B4C', '#5C625C'];
 
 export function staffTone(staff: Pick<StaffMember, 'id'>): string {
   // Stable hash → palette index. Same id always lands on the same color
@@ -255,13 +264,16 @@ const STATUS_LABEL_ES: Record<string, string> = {
 };
 
 function tileTone(s: string) {
+  // Concourse retint: dirty=rust, cleaning=amber, clean=sage accent,
+  // inspected=deep ok on a sage wash (so the two greens can't be confused),
+  // vacant/blocked on the muted hairline wash.
   const map: Record<string, { bg: string; stroke: string; label: string; bar: string }> = {
     d: { bg: '#FFFFFF', stroke: T.warm,        label: T.warm,        bar: T.warm },
     p: { bg: '#FFFFFF', stroke: T.caramelDeep, label: T.caramelDeep, bar: T.caramelDeep },
     c: { bg: '#FFFFFF', stroke: T.sageDeep,    label: T.sageDeep,    bar: T.sageDeep },
-    i: { bg: '#FFFFFF', stroke: T.purple,      label: T.purple,      bar: T.purple },
-    v: { bg: '#FBFAF6', stroke: T.rule,        label: T.ink3,        bar: 'transparent' },
-    b: { bg: '#FBFAF6', stroke: T.ink3,        label: T.ink,         bar: T.ink },
+    i: { bg: 'rgba(158,183,166,0.14)', stroke: T.purple, label: T.purple, bar: T.purple },
+    v: { bg: 'rgba(31,35,28,0.03)', stroke: T.rule, label: T.ink3,   bar: 'transparent' },
+    b: { bg: 'rgba(31,35,28,0.03)', stroke: T.ink3, label: T.ink,    bar: T.ink },
   };
   return map[s] || map.v;
 }
@@ -340,8 +352,8 @@ export function RoomTileBase({
         {/* top: room number + type icon */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingLeft: 5 }}>
           <span style={{
-            fontFamily: FONT_SERIF, fontSize: 22, color: tone.label,
-            lineHeight: 0.9, fontWeight: 400, letterSpacing: '-0.02em',
+            fontFamily: FONT_SANS, fontSize: 20, color: tone.label,
+            lineHeight: 0.9, fontWeight: 600, letterSpacing: '-0.02em',
           }}>{r.number}</span>
           <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3 }}>
             {TYPE_ICON[r.type] || ''}

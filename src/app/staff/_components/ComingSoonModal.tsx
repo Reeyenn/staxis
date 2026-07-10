@@ -96,16 +96,16 @@ export function ComingSoonModal({
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          background: T.paper, borderRadius: 22,
+          background: T.paper, borderRadius: 18,
           padding: '28px 30px 24px',
           maxWidth: 420, width: '100%',
-          boxShadow: '0 24px 60px -8px rgba(31,35,28,0.20), 0 0 0 1px rgba(31,35,28,0.04)',
+          boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24), 0 0 0 1px rgba(31,35,28,0.04)',
         }}
       >
         <h2 style={{
           margin: 0,
-          fontFamily: fonts.serif, fontSize: 26, fontStyle: 'italic',
-          color: T.ink, letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 400,
+          fontFamily: fonts.sans, fontSize: 18,
+          color: T.ink, letterSpacing: '-0.02em', lineHeight: 1.25, fontWeight: 600,
         }}>{title}</h2>
         <p style={{
           margin: '14px 0 22px',

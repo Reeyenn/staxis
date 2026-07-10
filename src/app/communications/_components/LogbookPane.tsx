@@ -162,7 +162,7 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
   const curDept = catDept(category);
 
   return (
-    <div style={{ marginTop: 16, border: `1px solid ${tint(T.forest, .35)}`, borderRadius: 13, background: T.bg, padding: '14px 16px', boxShadow: '0 8px 28px rgba(24,22,17,.07)' }}>
+    <div style={{ marginTop: 16, border: `1px solid ${tint(T.forest, .35)}`, borderRadius: 13, background: T.bg, padding: '14px 16px', boxShadow: '0 8px 28px rgba(31,35,28,.07)' }}>
       <input ref={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={L('Recap title — e.g. “Night shift handoff”', 'Título — p. ej. “Resumen turno de noche”')}
         style={{ width: '100%', border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 16, fontWeight: 700, color: T.ink, padding: '2px 0 8px' }} />
       <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder={L('What happened this shift? Anything the next team should know.', '¿Qué pasó en este turno? Lo que el próximo equipo debe saber.')}

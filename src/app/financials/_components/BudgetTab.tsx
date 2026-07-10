@@ -17,7 +17,7 @@ import {
   type BudgetVsActual,
   type Department,
 } from '@/lib/financials/shared';
-import { apiGet, apiSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS, FONT_MONO, FONT_SERIF } from './fin-ui';
+import { apiGet, apiSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS } from './fin-ui';
 import { BudgetStatCard, BigMoney, Eyebrow, deptColor } from './fin-board';
 import { ft, deptLabel } from './fin-i18n';
 
@@ -142,19 +142,19 @@ export function BudgetTab({
         <div>
           <Eyebrow>{S.budget}</Eyebrow>
           <div style={{ marginTop: 3 }}>
-            <BigMoney cents={budgeted} size={30} />
+            <BigMoney cents={budgeted} size={23} />
           </div>
         </div>
         <div>
           <Eyebrow>{S.actual}</Eyebrow>
           <div style={{ marginTop: 3 }}>
-            <BigMoney cents={spent} size={30} />
+            <BigMoney cents={spent} size={23} />
           </div>
         </div>
         <div>
           <Eyebrow>{left >= 0 ? S.onTrack : S.overBudget}</Eyebrow>
           <div style={{ marginTop: 3 }}>
-            <BigMoney cents={Math.abs(left)} size={30} color={left >= 0 ? T.sageDeep : T.warm} />
+            <BigMoney cents={Math.abs(left)} size={23} color={left >= 0 ? T.sageDeep : T.warm} />
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 20 }} />
@@ -225,7 +225,7 @@ export function BudgetTab({
             ))}
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', borderTop: `1px solid ${T.ruleSoft}`, marginTop: 6, paddingTop: 14 }}>
               <Eyebrow>{S.totalMonthly}</Eyebrow>
-              <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 24, color: T.ink, fontWeight: 500 }}>{formatCents(draftTotal, { showCents: false })}</span>
+              <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{formatCents(draftTotal, { showCents: false })}</span>
             </div>
           </div>
         </Modal>

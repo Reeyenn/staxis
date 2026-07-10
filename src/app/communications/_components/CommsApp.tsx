@@ -266,7 +266,7 @@ function SidebarSection({ label, onAdd, tip }: { label: string; onAdd: () => voi
           style={{ width: 17, height: 17, borderRadius: 5, border: 'none', background: show ? T.paper : 'transparent', color: show ? T.ink : T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: show ? 1 : 0.65 }}>
           <Plus size={13} />
         </button>
-        {show && <span style={{ position: 'absolute', left: 0, top: '100%', marginTop: 5, whiteSpace: 'nowrap', zIndex: 50, pointerEvents: 'none', background: T.ink, color: '#fff', fontFamily: SANS, fontSize: 11.5, fontWeight: 500, padding: '5px 9px', borderRadius: 7, boxShadow: '0 6px 18px rgba(24,22,17,.22)' }}>{tip}</span>}
+        {show && <span style={{ position: 'absolute', left: 0, top: '100%', marginTop: 5, whiteSpace: 'nowrap', zIndex: 50, pointerEvents: 'none', background: T.ink, color: '#fff', fontFamily: SANS, fontSize: 11.5, fontWeight: 500, padding: '5px 9px', borderRadius: 7, boxShadow: '0 6px 18px rgba(31,35,28,.22)' }}>{tip}</span>}
       </span>
     </div>
   );

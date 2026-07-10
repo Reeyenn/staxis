@@ -30,23 +30,25 @@ const CSS = `
 }
 
 /* Board cards: paper lift on hover, and the flip hint only shows when the
-   pointer is over the card (keeps the resting board quiet). */
+   pointer is over the card (keeps the resting board quiet). Concourse card
+   physics: sage-tinted lift on the .22,1,.36,1 spring. */
 .inv-card {
-  transition: transform .28s ${EASE.glide}, box-shadow .28s ${EASE.glide}, border-color .28s ease;
+  box-shadow: 0 6px 16px -14px rgba(31,42,32,0.35);
+  transition: transform .55s cubic-bezier(.22,1,.36,1), box-shadow .55s cubic-bezier(.22,1,.36,1), border-color .55s cubic-bezier(.22,1,.36,1);
 }
 .inv-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 28px -14px rgba(24,22,17,0.22);
-  border-color: rgba(24,22,17,0.22) !important;
+  transform: translateY(-5px);
+  box-shadow: 0 18px 36px -20px rgba(62,92,72,0.5);
+  border-color: rgba(92,122,96,0.45) !important;
 }
-.inv-flip-hint { opacity: 0; transition: opacity .2s ease, transform .28s ${EASE.glide}; }
+.inv-flip-hint { opacity: 0; transition: opacity .3s cubic-bezier(.22,1,.36,1), transform .3s cubic-bezier(.22,1,.36,1); }
 .inv-card:hover .inv-flip-hint { opacity: 1; transform: rotate(90deg); }
 
-/* Rail buttons: ink accent bar slides in on hover; the arrow nudges. */
+/* Rail buttons: sage accent bar slides in on hover; the arrow nudges. */
 .inv-rail-btn { transition: background .18s ease, border-color .18s ease; position: relative; }
 .inv-rail-btn::before {
   content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 2.5px;
-  border-radius: 3px; background: ${T.ink}; opacity: 0;
+  border-radius: 3px; background: ${T.brand}; opacity: 0;
   transform: scaleY(0.3); transition: opacity .2s ease, transform .25s ${EASE.glide};
 }
 .inv-rail-plain:hover { background: ${T.inkWash}; }
@@ -54,9 +56,9 @@ const CSS = `
 .inv-arrow { display: inline-block; transition: transform .25s ${EASE.glide}; }
 .inv-rail-btn:hover .inv-arrow { transform: translateX(3px); }
 
-/* Search field: soft ink focus ring. */
+/* Search field: soft sage focus ring. */
 .inv-search { transition: border-color .2s ease, box-shadow .2s ease; }
-.inv-search:focus { border-color: ${T.ink} !important; box-shadow: 0 0 0 3px ${T.inkWash}; }
+.inv-search:focus { border-color: rgba(92,122,96,0.45) !important; box-shadow: 0 0 0 3px rgba(158,183,166,0.25); }
 
 /* Segmented control text swap. */
 .inv-seg-btn { transition: color .22s ease; }

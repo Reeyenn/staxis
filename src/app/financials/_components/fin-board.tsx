@@ -5,17 +5,17 @@
 //
 // These are VISUAL ONLY: every component takes display props (already-formatted
 // labels, colors, click handlers) so the three tabs keep all the data fetching,
-// i18n, and money math. Tokens come from the locked Snow palette (via the
-// maintenance re-export) so Financials stays pixel-locked to the rest of the
-// cockpit — same fonts, same ink/sage/warm, same dark-mode behaviour.
+// i18n, and money math. Tokens come from the Concourse contract (via fin-ui) so
+// Financials sits natively in the new shell — Geist UI, Geist Mono data,
+// sage/amber/rust accents, hairline cards on the app-wide wash.
 //
 // Money rule still holds: everything in/out is integer cents; formatCents is the
-// one formatter. Big display numbers render serif-italic (the design's voice);
+// one formatter. Big display numbers render Geist 600 (the Concourse voice);
 // transactional figures stay mono (tabular-nums).
 // ════════════════════════════════════════════════════════════════════════════
 
 import React, { useRef, useState } from 'react';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF } from '@/app/maintenance/_components/_mt-snow';
+import { T, FONT_SANS, FONT_MONO, FONT_SERIF, SPRING, CARD_SHADOW, CARD_SHADOW_HOVER } from './fin-ui';
 import { formatCents, formatCentsCompact, type Department } from '@/lib/financials/shared';
 
 export { T, FONT_SANS, FONT_MONO, FONT_SERIF };
@@ -25,27 +25,28 @@ const COLUMN_BG = 'rgba(31,35,28,0.022)';
 const METER_TRACK = 'rgba(31,35,28,0.06)';
 
 // ── Department accent colors ────────────────────────────────────────────────
-// Muted tones on the Snow family. F&B = gold and Maintenance = terracotta echo
-// the design handoff; the rest are distinct, low-chroma hues that read as a set.
+// All drawn from the Concourse palette (ink / sage family / amber / rust) so
+// the board reads as one system; former off-palette hues (teal, muted blue,
+// purple, slate) map to their nearest Concourse tone.
 export const DEPT_COLOR: Record<Department, string> = {
   rooms: T.ink,
   housekeeping: T.sageDeep,
   maintenance: T.warm,
-  front_desk: '#3389A0', // teal
+  front_desk: T.sageBrand, // was teal
   breakfast: T.caramelDeep, // gold (F&B)
-  utilities: '#5E7A8C', // muted blue
-  sales_marketing: T.purple,
-  admin_general: '#7A7466', // slate
+  utilities: T.sage, // was muted blue
+  sales_marketing: T.caramel, // was purple
+  admin_general: T.ink2, // was slate
   other: T.ink3,
 };
 export function deptColor(d: Department): string {
   return DEPT_COLOR[d] ?? T.ink3;
 }
 
-// ── Big serif-italic money (summary tiles + budget remaining + capex cost) ──
+// ── Big display money, Geist 600 (summary tiles + budget remaining + capex) ─
 export function BigMoney({
   cents,
-  size = 27,
+  size = 23,
   color,
   compact = false,
   showCents = false,
@@ -60,10 +61,9 @@ export function BigMoney({
   return (
     <span
       style={{
-        fontFamily: FONT_SERIF,
-        fontStyle: 'italic',
+        fontFamily: FONT_SANS,
         fontSize: size,
-        fontWeight: 500,
+        fontWeight: 600,
         color: color ?? T.ink,
         letterSpacing: '-0.02em',
         lineHeight: 1.05,
@@ -80,10 +80,10 @@ export function Eyebrow({ children, color, style = {} }: { children: React.React
     <span
       style={{
         fontFamily: FONT_MONO,
-        fontSize: 10,
-        letterSpacing: '0.13em',
+        fontSize: 9.5,
+        letterSpacing: '0.14em',
         textTransform: 'uppercase',
-        color: color ?? T.ink2,
+        color: color ?? T.faint,
         fontWeight: 500,
         ...style,
       }}
@@ -101,8 +101,8 @@ export function SummaryTile({ label, sub, children }: { label: string; sub?: str
         flex: '1 1 170px',
         background: T.paper,
         border: `1px solid ${T.rule}`,
-        borderRadius: 12,
-        padding: '12px 15px',
+        borderRadius: 14,
+        padding: '14px 18px',
       }}
     >
       <Eyebrow>
@@ -116,19 +116,20 @@ export function SummaryTile({ label, sub, children }: { label: string; sub?: str
 
 // ── Expense source chip (only the two real sources exist in the ledger) ─────
 export function ExpenseSourceTag({ label, tone }: { label: string; tone: 'scan' | 'manual' }) {
-  const c = tone === 'scan' ? T.sageDeep : T.ink3;
+  const c = tone === 'scan' ? T.sageDeep : T.ink2;
+  const bg = tone === 'scan' ? 'rgba(53,107,76,0.10)' : 'rgba(31,35,28,0.06)';
   return (
     <span
       style={{
         fontFamily: FONT_MONO,
-        fontSize: 9.5,
-        letterSpacing: '0.1em',
+        fontSize: 10,
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase',
         fontWeight: 600,
         color: c,
-        border: `1px solid ${c}`,
-        borderRadius: 4,
-        padding: '1px 5px',
-        opacity: 0.9,
+        background: bg,
+        borderRadius: 999,
+        padding: '3px 8px',
         whiteSpace: 'nowrap',
       }}
     >
@@ -169,11 +170,11 @@ export function FinColumn({
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 }}>
         <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, fontWeight: 700, color: T.ink, flex: 1, minWidth: 0 }}>{name}</span>
+        <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, fontWeight: 600, color: T.ink, flex: 1, minWidth: 0 }}>{name}</span>
         <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{count}</span>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 15, color: T.ink, fontWeight: 700 }}>{formatCents(spentCents, { showCents: false })}</span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 15, color: T.ink, fontWeight: 600 }}>{formatCents(spentCents, { showCents: false })}</span>
         {hasBudget && (
           <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: over ? T.warm : T.ink3 }}>/ {formatCents(budgetCents, { showCents: false })}</span>
         )}
@@ -194,9 +195,9 @@ export function FinColumn({
 const cardShell: React.CSSProperties = {
   background: T.paper,
   border: `1px solid ${T.rule}`,
-  borderRadius: 10,
+  borderRadius: 14,
   padding: '11px 12px',
-  boxShadow: '0 1px 2px rgba(31,35,28,0.04)',
+  boxShadow: CARD_SHADOW,
   boxSizing: 'border-box',
   overflow: 'hidden',
 };
@@ -264,7 +265,7 @@ export function FlipExpenseCard({
           ...cardShell,
           minHeight: 84,
           cursor: 'pointer',
-          transition: 'transform 0.22s ease',
+          transition: `transform 0.3s ${SPRING}`,
           transform: `perspective(1000px) rotateY(${deg}deg)`,
         }}
       >
@@ -321,8 +322,8 @@ function miniBtn(color: string): React.CSSProperties {
     color,
     background: 'transparent',
     border: `1px solid ${color}55`,
-    borderRadius: 7,
-    padding: '3px 9px',
+    borderRadius: 999,
+    padding: '3px 10px',
     cursor: 'pointer',
   };
 }
@@ -355,20 +356,21 @@ export function BudgetStatCard({
 }) {
   const statusColor = noBudget ? T.ink3 : over ? T.warm : color;
   return (
-    <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 17px', boxShadow: '0 1px 2px rgba(31,35,28,0.04)' }}>
+    <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 17px', boxShadow: CARD_SHADOW }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_SANS, fontSize: 14.5, fontWeight: 700, color: T.ink, flex: 1, minWidth: 0 }}>{name}</span>
+        <span style={{ fontFamily: FONT_SANS, fontSize: 14.5, fontWeight: 600, color: T.ink, flex: 1, minWidth: 0 }}>{name}</span>
         <span
           style={{
             fontFamily: FONT_MONO,
             fontSize: 10,
             fontWeight: 600,
             letterSpacing: '0.06em',
+            textTransform: 'uppercase',
             color: statusColor,
-            border: `1px solid ${statusColor}`,
-            borderRadius: 5,
-            padding: '2px 6px',
+            background: `${statusColor}1A`,
+            borderRadius: 999,
+            padding: '3px 8px',
             whiteSpace: 'nowrap',
           }}
         >
@@ -378,7 +380,7 @@ export function BudgetStatCard({
       <div style={{ marginTop: 16 }}>
         <div style={{ fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink3 }}>{captionLabel}</div>
         <div style={{ marginTop: 2 }}>
-          <BigMoney cents={Math.abs(remainingCents)} size={32} color={statusColor} />
+          <BigMoney cents={Math.abs(remainingCents)} size={26} color={statusColor} />
         </div>
       </div>
       <div style={{ height: 6, background: METER_TRACK, borderRadius: 3, overflow: 'hidden', marginTop: 14 }}>
@@ -421,12 +423,16 @@ export function CapexCard({
     <button
       onClick={onOpen}
       onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = 'rgba(31,35,28,0.18)';
-        e.currentTarget.style.transform = 'translateY(-1px)';
+        e.currentTarget.style.borderColor = 'rgba(92,122,96,0.45)';
+        e.currentTarget.style.borderLeftColor = accent;
+        e.currentTarget.style.transform = 'translateY(-5px)';
+        e.currentTarget.style.boxShadow = CARD_SHADOW_HOVER;
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.borderColor = T.rule;
+        e.currentTarget.style.borderLeftColor = accent;
         e.currentTarget.style.transform = 'translateY(0)';
+        e.currentTarget.style.boxShadow = CARD_SHADOW;
       }}
       style={{
         textAlign: 'left',
@@ -434,18 +440,18 @@ export function CapexCard({
         background: T.paper,
         border: `1px solid ${T.rule}`,
         borderLeft: `3px solid ${accent}`,
-        borderRadius: 10,
+        borderRadius: 14,
         padding: '12px 13px',
         marginBottom: 8,
         cursor: 'pointer',
-        transition: 'border-color 0.14s, transform 0.14s',
-        boxShadow: '0 1px 2px rgba(31,35,28,0.04)',
+        transition: `border-color 0.55s ${SPRING}, transform 0.55s ${SPRING}, box-shadow 0.55s ${SPRING}`,
+        boxShadow: CARD_SHADOW,
       }}
     >
-      <div style={{ fontFamily: FONT_SERIF, fontSize: 16, color: T.ink, fontWeight: 500, lineHeight: 1.2 }}>{name}</div>
+      <div style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, fontWeight: 600, lineHeight: 1.25 }}>{name}</div>
       {metaLabel && <div style={{ fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink3, marginTop: 3 }}>{metaLabel}</div>}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginTop: 10, flexWrap: 'wrap' }}>
-        <BigMoney cents={spentCents} size={22} color={T.ink} />
+        <BigMoney cents={spentCents} size={20} color={T.ink} />
         <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3 }}>
           {spentLabel} · {estimateLabel} {formatCents(estimateCents, { showCents: false })}
         </span>

@@ -17,27 +17,27 @@ import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import type { WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 
 const C = {
-  ink: '#15191A',
-  ink2: '#586056',
-  ink3: '#9CA29C',
-  rule: 'rgba(15,20,17,0.07)',
-  terracotta: '#C2562E',
+  ink: '#1F231C',
+  ink2: '#5C625C',
+  ink3: '#A6ABA6',
+  rule: 'rgba(31,35,28,0.06)',
+  terracotta: '#B85C3D',
 } as const;
 
-const FONT_SERIF = 'var(--font-fraunces), Georgia, serif';
+const FONT_SANS = 'var(--font-geist), system-ui, -apple-system, sans-serif';
 const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
 
 const LABEL: React.CSSProperties = {
-  fontFamily: FONT_MONO, fontSize: 10, letterSpacing: '0.18em',
+  fontFamily: FONT_MONO, fontSize: 9.5, letterSpacing: '0.14em',
   textTransform: 'uppercase', color: C.ink3, fontWeight: 600,
 };
 
 const SRC: Record<WorklistSourceType, { en: string; es: string; color: string }> = {
-  task:       { en: 'To-do', es: 'Tarea', color: '#586056' },
-  complaint:  { en: 'Complaint', es: 'Queja', color: '#C2562E' },
-  workorder:  { en: 'Work order', es: 'Orden', color: '#C99A2E' },
-  inspection: { en: 'Inspection', es: 'Inspección', color: '#3C9C68' },
-  pm:         { en: 'Preventive', es: 'Preventivo', color: '#3389A0' },
+  task:       { en: 'To-do', es: 'Tarea', color: '#5C625C' },
+  complaint:  { en: 'Complaint', es: 'Queja', color: '#B85C3D' },
+  workorder:  { en: 'Work order', es: 'Orden', color: '#C99644' },
+  inspection: { en: 'Inspection', es: 'Inspección', color: '#5C7A60' },
+  pm:         { en: 'Preventive', es: 'Preventivo', color: '#3E5C48' },
 };
 
 export function WorklistCard() {
@@ -81,8 +81,8 @@ export function WorklistCard() {
 
   return (
     <div style={{
-      background: 'rgba(255,255,255,0.78)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
-      border: '1px solid rgba(255,255,255,0.75)', borderRadius: 16, padding: '18px 20px',
+      background: '#FFFFFF', border: '1px solid rgba(31,35,28,0.08)', borderRadius: 16,
+      boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)', padding: '18px 20px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div style={LABEL}>{es ? 'Pendientes' : 'Open items'}</div>
@@ -91,9 +91,9 @@ export function WorklistCard() {
         </Link>
       </div>
 
-      <div style={{ marginTop: 8, fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color: C.ink, lineHeight: 1.2 }}>
+      <div style={{ marginTop: 8, fontFamily: FONT_SANS, fontWeight: 600, fontSize: 22, letterSpacing: '-0.02em', color: C.ink, lineHeight: 1.2 }}>
         {list.length} {es ? (list.length === 1 ? 'pendiente' : 'pendientes') : (list.length === 1 ? 'open item' : 'open items')}
-        {overdue > 0 && <span style={{ fontSize: 14, fontStyle: 'normal', color: C.terracotta, fontFamily: FONT_MONO, marginLeft: 10 }}>{overdue} {es ? 'vencidas' : 'overdue'}</span>}
+        {overdue > 0 && <span style={{ fontSize: 14, fontWeight: 600, color: C.terracotta, fontFamily: FONT_MONO, marginLeft: 10, letterSpacing: 0 }}>{overdue} {es ? 'vencidas' : 'overdue'}</span>}
       </div>
 
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>

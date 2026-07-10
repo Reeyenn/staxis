@@ -16,7 +16,7 @@
  */
 
 import React, { useState } from 'react';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF, HousekeeperDot } from './_snow';
+import { T, FONT_SANS, FONT_MONO, HousekeeperDot } from './_snow';
 import {
   type BoardTask, type BoardHk, type Language,
   chipKind, fmtMinutes,
@@ -204,7 +204,7 @@ export function ScheduleTimeline({
                         }}
                       >
                         <span style={{
-                          fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13, color,
+                          fontFamily: FONT_MONO, fontWeight: 600, fontSize: 11.5, color,
                           lineHeight: 1, whiteSpace: 'nowrap',
                         }}>{t.room_number}</span>
                       </button>

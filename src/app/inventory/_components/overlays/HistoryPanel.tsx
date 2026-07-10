@@ -139,10 +139,11 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
             style={{
               padding: '40px 0',
               textAlign: 'center',
-              fontFamily: fonts.serif,
+              fontFamily: fonts.sans,
               fontSize: 22,
+              fontWeight: 600,
+              letterSpacing: '-0.02em',
               color: T.ink3,
-              fontStyle: 'italic',
             }}
           >
             {hp.noHistory}
@@ -164,11 +165,10 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
               >
                 <span
                   style={{
-                    fontFamily: fonts.serif,
+                    fontFamily: fonts.sans,
                     fontSize: 16,
                     color: T.ink,
-                    fontStyle: 'italic',
-                    fontWeight: 400,
+                    fontWeight: 600,
                     letterSpacing: '-0.01em',
                   }}
                 >

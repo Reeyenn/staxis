@@ -26,18 +26,18 @@ interface KnowsData {
 }
 
 const C = {
-  ink: '#15191A',
-  ink2: '#586056',
-  ink3: '#9CA29C',
+  ink: '#1F231C',
+  ink2: '#5C625C',
+  ink3: '#A6ABA6',
 } as const;
 
-const FONT_SERIF = 'var(--font-fraunces), Georgia, serif';
+const FONT_SANS = 'var(--font-geist), system-ui, -apple-system, sans-serif';
 const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
 
 const LABEL: React.CSSProperties = {
   fontFamily: FONT_MONO,
-  fontSize: 9,
-  letterSpacing: '0.16em',
+  fontSize: 9.5,
+  letterSpacing: '0.14em',
   textTransform: 'uppercase',
   color: C.ink3,
   fontWeight: 600,
@@ -87,11 +87,10 @@ export function WhatStaxisKnowsCard() {
   return (
     <div
       style={{
-        background: 'rgba(255,255,255,0.78)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255,255,255,0.75)',
+        background: '#FFFFFF',
+        border: '1px solid rgba(31,35,28,0.08)',
         borderRadius: 14,
+        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
         padding: '12px 14px',
         maxWidth: 440,
       }}
@@ -102,7 +101,7 @@ export function WhatStaxisKnowsCard() {
       <div style={{ marginTop: 9, display: 'flex', gap: 20 }}>
         {tiles.map((t) => (
           <div key={t[0]}>
-            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontWeight: 500, fontSize: 20, lineHeight: 1, color: C.ink, fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 20, letterSpacing: '-0.02em', lineHeight: 1, color: C.ink, fontVariantNumeric: 'tabular-nums' }}>
               {t[1]}
             </div>
             <div style={{ ...LABEL, fontSize: 8.5, marginTop: 4 }}>{t[0]}</div>

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { fonts, statusColor, statusTint, type StockStatus } from './tokens';
+import { fonts, statusColor, statusText, statusTint, type StockStatus } from './tokens';
 import { statusLabelFor, type Lang } from './inv-i18n';
 
 export function StatusDot({
@@ -55,12 +55,12 @@ export function StatusPill({
         padding: '2px 9px 2px 7px',
         borderRadius: 999,
         background: filled ? c : statusTint[s],
-        color: filled ? '#fff' : c,
+        color: filled ? '#fff' : statusText[s],
         border: filled ? 'none' : `1px solid ${c}33`,
         fontFamily: fonts.mono,
-        fontSize: 9.5,
+        fontSize: 10,
         fontWeight: 600,
-        letterSpacing: '0.1em',
+        letterSpacing: '0.06em',
         textTransform: 'uppercase',
         whiteSpace: 'nowrap',
         ...style,

@@ -3,9 +3,9 @@
 import React from 'react';
 import { fonts, T } from './tokens';
 
-// Big italic serif readout (Newsreader). All numbers / headlines / big values
-// in the Triage design use this — weight 400, italic, letter-spacing −0.02em,
-// line-height 1.
+// Big display readout — Concourse type system: Geist 600, normal style,
+// letter-spacing −0.02em, line-height 1. (Kept the legacy `Serif` name so all
+// numbers / headlines / big values restyle without a call-site change.)
 export function Serif({
   children,
   size = 32,
@@ -20,9 +20,9 @@ export function Serif({
   return (
     <span
       style={{
-        fontFamily: fonts.serif,
-        fontStyle: 'italic',
-        fontWeight: 400,
+        fontFamily: fonts.sans,
+        fontStyle: 'normal',
+        fontWeight: 600,
         fontSize: size,
         color,
         letterSpacing: '-0.02em',

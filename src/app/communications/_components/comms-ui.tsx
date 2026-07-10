@@ -12,19 +12,19 @@ import type { CommsDept } from '@/lib/comms/types';
 export const T = {
   bg: '#FFFFFF',
   paper: '#FBFAF7',
-  ink: '#181611',
-  dim: '#928C7F',
-  hair: 'rgba(24,22,17,.12)',
-  hairSoft: 'rgba(24,22,17,.06)',
-  hairer: 'rgba(24,22,17,.20)',
-  forest: '#3C9C68',
-  forestDeep: '#2F7A51',
-  forestTint: 'rgba(60,156,104,.12)',
-  forestTint2: 'rgba(60,156,104,.20)',
-  terracotta: '#C2562E',
-  gold: '#C99A2E',
-  teal: '#3389A0',
-  tealDeep: '#2A6E84',
+  ink: '#1F231C',
+  dim: '#8A9187',
+  hair: 'rgba(31,35,28,.11)',
+  hairSoft: 'rgba(31,35,28,.05)',
+  hairer: 'rgba(31,35,28,.20)',
+  forest: '#5C7A60',
+  forestDeep: '#356B4C',
+  forestTint: 'rgba(158,183,166,.16)',
+  forestTint2: 'rgba(158,183,166,.25)',
+  terracotta: '#B85C3D',
+  gold: '#C99644',
+  teal: '#4B8C9E',
+  tealDeep: '#366F82',
 } as const;
 
 export const SANS = 'var(--font-hanken), system-ui, -apple-system, sans-serif';
@@ -236,7 +236,7 @@ export function Tip({ text, children, width = 240 }: { text: string; children: R
     <span style={{ position: 'relative', display: 'inline-flex' }} onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
       {children}
       {show && (
-        <span style={{ position: 'absolute', left: 0, top: '100%', marginTop: 7, zIndex: 60, width, background: T.ink, color: '#fff', fontFamily: SANS, fontSize: 11.5, fontWeight: 500, lineHeight: 1.5, padding: '9px 11px', borderRadius: 9, boxShadow: '0 10px 28px rgba(24,22,17,.24)', pointerEvents: 'none' }}>
+        <span style={{ position: 'absolute', left: 0, top: '100%', marginTop: 7, zIndex: 60, width, background: T.ink, color: '#fff', fontFamily: SANS, fontSize: 11.5, fontWeight: 500, lineHeight: 1.5, padding: '9px 11px', borderRadius: 9, boxShadow: '0 10px 28px rgba(31,35,28,.24)', pointerEvents: 'none' }}>
           {text}
         </span>
       )}

@@ -23,7 +23,7 @@ export function SubTabBar({
   return (
     <div style={{
       padding: '18px 48px 0',
-      background: T.bg,
+      background: 'transparent',
       borderBottom: `1px solid ${T.rule}`,
     }}>
       <div style={{ display: 'flex', gap: 28 }}>
@@ -40,10 +40,11 @@ export function SubTabBar({
                 fontWeight: active ? 600 : 500,
                 color: active ? T.ink : T.ink2,
                 borderBottom: active
-                  ? `1.5px solid ${T.ink}`
+                  ? '1.5px solid #3E5C48'
                   : '1.5px solid transparent',
                 marginBottom: -1,
                 whiteSpace: 'nowrap',
+                transition: 'color .3s cubic-bezier(.22,1,.36,1)',
               }}
             >{t.label}</button>
           );

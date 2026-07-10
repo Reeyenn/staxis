@@ -43,7 +43,7 @@ import {
   defaultShiftDate, addDays, formatDisplayDate, formatPulledAt,
 } from './_shared';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn, HousekeeperDot,
+  T, FONT_SANS, FONT_MONO, Caps, Btn, HousekeeperDot,
 } from './_snow';
 import { CalloutBanner } from './CalloutBanner';
 import {
@@ -371,7 +371,7 @@ export function ScheduleTab() {
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div style={{
-      padding: '24px 48px 48px', background: 'transparent', color: T.ink,
+      padding: '24px 48px 130px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       <CalloutBanner shiftDate={shiftDate} />
@@ -425,10 +425,10 @@ export function ScheduleTab() {
             return lang === 'es' ? 'Horario' : 'Schedule';
           })()}</Caps>
           <h1 style={{
-            fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0',
-            letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400,
+            fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: '4px 0 0',
+            letterSpacing: '-0.02em', lineHeight: 1.25, fontWeight: 600,
           }}>
-            <span style={{ fontStyle: 'italic' }}>{formatDisplayDate(shiftDate, lang).split(',')[0]}</span>
+            <span>{formatDisplayDate(shiftDate, lang).split(',')[0]}</span>
             <span> · {formatDisplayDate(shiftDate, lang).split(',').slice(1).join(',').trim()}</span>
           </h1>
         </div>
@@ -496,8 +496,8 @@ export function ScheduleTab() {
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 58 }}>
               <Caps size={9}>{n.l}</Caps>
               <span style={{
-                fontFamily: FONT_SERIF, fontSize: 28, color: n.loaded ? (n.tone || T.ink) : T.ink3,
-                lineHeight: 1, letterSpacing: '-0.02em', fontWeight: 400, whiteSpace: 'nowrap',
+                fontFamily: FONT_SANS, fontSize: 23, color: n.loaded ? (n.tone || T.ink) : T.ink3,
+                lineHeight: 1, letterSpacing: '-0.02em', fontWeight: 600, whiteSpace: 'nowrap',
               }}>{n.loaded && n.v != null ? n.v : '—'}</span>
             </div>
           ))}
@@ -658,18 +658,18 @@ export function ScheduleTab() {
         <div
           onClick={() => { if (!settingsSaving) setShowSettings(false); }}
           style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998,
+            position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.4)', zIndex: 9998,
             display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
           }}
         >
           <div onClick={(e) => e.stopPropagation()} style={{
             background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
             padding: '20px 24px', maxWidth: 480, width: '100%', maxHeight: '85vh', overflow: 'auto',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
+            boxShadow: '0 20px 60px rgba(31,42,32,0.20)',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
-                <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Tiempos de limpieza' : 'Cleaning-time settings'}</span>
+              <h2 style={{ fontFamily: FONT_SANS, fontSize: 18, margin: 0, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>
+                <span>{lang === 'es' ? 'Tiempos de limpieza' : 'Cleaning-time settings'}</span>
               </h2>
               <button onClick={() => setShowSettings(false)} disabled={settingsSaving} aria-label="Close" style={{
                 background: 'transparent', border: 'none', cursor: settingsSaving ? 'default' : 'pointer',
@@ -771,7 +771,7 @@ function RoomDetailDrawer({
   })();
   return (
     <div onClick={onClose} role="dialog" aria-modal="true" style={{
-      position: 'fixed', inset: 0, background: 'rgba(24,22,17,0.32)',
+      position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.32)',
       display: 'flex', justifyContent: 'flex-end', zIndex: 9999,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
@@ -781,7 +781,7 @@ function RoomDetailDrawer({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <Caps>{lang === 'es' ? 'Detalle del cuarto' : 'Room detail'}</Caps>
-            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 40, color: T.ink, lineHeight: 1 }}>{task.room_number}</div>
+            <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 32, color: T.ink, lineHeight: 1, letterSpacing: '-0.02em' }}>{task.room_number}</div>
           </div>
           <Btn variant="ghost" size="sm" onClick={onClose}>{lang === 'es' ? 'Cerrar' : 'Close'}</Btn>
         </div>
@@ -863,16 +863,16 @@ function PriorityModal({
   );
   return (
     <div onClick={onClose} role="dialog" aria-modal="true" style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998,
+      position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.4)', zIndex: 9998,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
         background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '20px 24px',
-        maxWidth: 480, width: '100%', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+        maxWidth: 480, width: '100%', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(31,42,32,0.2)',
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
-            <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Prioridad del personal' : 'Staff priority'}</span>
+          <h2 style={{ fontFamily: FONT_SANS, fontSize: 18, margin: 0, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>
+            <span>{lang === 'es' ? 'Prioridad del personal' : 'Staff priority'}</span>
           </h2>
           <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 20, color: T.ink3, padding: '0 6px' }}>×</button>
         </div>

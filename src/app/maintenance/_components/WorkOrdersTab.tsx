@@ -19,10 +19,11 @@ import {
 } from '@/lib/db';
 import type { WorkOrder, WorkOrderPriority } from '@/types';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Avatar, Modal, Field, TextInput, TextArea, ChipChoose,
   StorageImage, PageHead, displayLoc, fmtDateShort, fmtSubmittedAt,
   prioColor, prioLabel,
+  CX_SPRING, CX_CARD_SHADOW, CX_CARD_SHADOW_HOVER, CX_CARD_BORDER_HOVER,
 } from './_mt-snow';
 import { EquipmentPicker } from './EquipmentPicker';
 
@@ -41,9 +42,14 @@ function roleLabel(role: string | undefined, es: boolean): string {
   return es ? 'Personal' : 'Staff';
 }
 
-// Lane colors: the three priority colors + purple for the professional lane.
+// Professional lane tone — Concourse "muted" slate (the outside-contractor
+// lane is neutral, not a severity), replacing the old off-palette purple.
+const PRO = '#5C625C';
+const PRO_DIM = 'rgba(31,35,28,0.06)';
+
+// Lane colors: the three priority colors + muted slate for the professional lane.
 const LANE_COLOR: Record<Placement, string> = {
-  low: prioColor.low, normal: prioColor.normal, urgent: prioColor.urgent, professional: T.purple,
+  low: prioColor.low, normal: prioColor.normal, urgent: prioColor.urgent, professional: PRO,
 };
 
 const reduceMotion = () =>
@@ -51,14 +57,14 @@ const reduceMotion = () =>
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-// ── purple "pro" pill ──────────────────────────────────────────────────────
+// ── muted "pro" pill ───────────────────────────────────────────────────────
 function ProPill({ w, es }: { w: WorkOrder; es: boolean }) {
   if (hasContractor(w)) {
     return (
       <span style={{
         display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999, height: 22,
-        background: T.purpleDim, color: T.purple, border: '1px solid rgba(123,106,151,0.3)',
-        fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+        background: PRO_DIM, color: PRO,
+        fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap',
       }}>☎ {w.proTrade || w.proCompany}</span>
     );
   }
@@ -66,8 +72,8 @@ function ProPill({ w, es }: { w: WorkOrder; es: boolean }) {
     return (
       <span style={{
         display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999, height: 22,
-        background: 'transparent', color: T.purple, border: '1px dashed rgba(123,106,151,0.5)',
-        fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+        background: 'transparent', color: PRO, border: '1px dashed rgba(31,35,28,0.3)',
+        fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap',
       }}>{es ? 'Necesita un profesional' : 'Needs a professional'}</span>
     );
   }
@@ -87,7 +93,7 @@ function OpenCard({
     if (!isEnter || played.current || !ref.current || reduceMotion()) return;
     played.current = true;
     const card = ref.current;
-    const accent = (w.needsPro || hasContractor(w)) ? T.purple : prioColor[w.priority];
+    const accent = (w.needsPro || hasContractor(w)) ? PRO : prioColor[w.priority];
     card.animate(
       [{ transform: 'translateY(-10px)', opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }],
       { duration: 380, easing: 'cubic-bezier(0.22,1,0.36,1)' },
@@ -117,17 +123,18 @@ function OpenCard({
       ref={ref}
       data-wo-id={w.id}
       onClick={() => onOpen(w)}
-      onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(31,35,28,0.18)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = CX_CARD_BORDER_HOVER; e.currentTarget.style.transform = 'translateY(-5px)'; e.currentTarget.style.boxShadow = CX_CARD_SHADOW_HOVER; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = CX_CARD_SHADOW; }}
       style={{
-        textAlign: 'left', cursor: 'pointer', background: T.paper, border: `1px solid ${T.rule}`,
+        textAlign: 'left', cursor: 'pointer', background: '#FFFFFF', border: `1px solid ${T.rule}`,
         borderRadius: 14, padding: '14px 16px 13px 19px', display: 'flex', flexDirection: 'column', gap: 9,
-        width: '100%', position: 'relative', overflow: 'hidden', transition: 'border-color 0.14s, transform 0.14s',
+        width: '100%', position: 'relative', overflow: 'hidden', boxShadow: CX_CARD_SHADOW,
+        transition: `border-color .55s ${CX_SPRING}, transform .55s ${CX_SPRING}, box-shadow .55s ${CX_SPRING}`,
       }}
     >
       <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: prioColor[w.priority] }} />
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 400 }}>
+        <span style={{ fontFamily: FONT_SANS, fontSize: 15.5, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>
           {displayLoc(w.location, es)}
         </span>
         <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.06em', flexShrink: 0 }}>
@@ -163,12 +170,12 @@ function Lane({
     <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 2px 11px', borderBottom: `2px solid ${color}`, marginBottom: 12 }}>
         <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>{label}</span>
-        <span style={{ marginLeft: 'auto', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22, color, lineHeight: 1 }}>{items.length}</span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>{label}</span>
+        <span style={{ marginLeft: 'auto', fontFamily: FONT_SANS, fontWeight: 600, fontSize: 20, color, lineHeight: 1, letterSpacing: '-0.02em' }}>{items.length}</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
         {items.length === 0
-          ? <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 16, color: T.ink3, padding: '6px 2px' }}>{es ? 'Nada aquí.' : 'Nothing here.'}</span>
+          ? <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3, padding: '6px 2px' }}>{es ? 'Nada aquí.' : 'Nothing here.'}</span>
           : items.map((w) => <OpenCard key={w.id} w={w} onOpen={onOpen} isEnter={w.id === enterId} es={es} />)}
       </div>
     </div>
@@ -219,7 +226,7 @@ function DropPhoto({
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
       onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); take(e.dataTransfer.files?.[0]); }}
-      style={{ cursor: 'pointer', borderRadius: 12, border: `1.5px dashed ${drag ? T.sageDeep : 'rgba(31,35,28,0.18)'}`, background: drag ? T.sageDim : T.bg, padding: '22px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, textAlign: 'center', transition: 'background 0.14s, border-color 0.14s' }}
+      style={{ cursor: 'pointer', borderRadius: 12, border: `1.5px dashed ${drag ? T.sageDeep : 'rgba(31,35,28,0.18)'}`, background: drag ? T.sageDim : 'rgba(31,35,28,0.03)', padding: '22px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, textAlign: 'center', transition: `background .3s ${CX_SPRING}, border-color .3s ${CX_SPRING}` }}
     >
       <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={drag ? T.sageDeep : T.ink3} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="11" r="2" /><path d="M3 17l5-4 4 3 3-2 6 5" /></svg>
       <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, fontWeight: 500 }}>{es ? 'Agregar foto' : 'Add a photo'}</span>
@@ -327,7 +334,7 @@ function SubmitModal({
         <Field label={es ? 'Foto' : 'Photo'} hint={es ? 'Ayuda a quien lo arregla a saber qué encontrará.' : "Helps the fixer know what they're walking into."}>
           <DropPhoto value={photo} onChange={setPhoto} es={es} />
         </Field>
-        <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <Avatar name={user?.displayName || 'You'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>
@@ -366,9 +373,9 @@ function ContractorPanel({
   };
 
   return (
-    <div style={{ background: T.purpleDim, border: '1px solid rgba(123,106,151,0.28)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ background: PRO_DIM, border: '1px solid rgba(31,35,28,0.14)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <Caps size={10} c={T.purple} weight={600}>☎ {es ? 'Profesional' : 'Professional'}{w.proTrade ? ` · ${w.proTrade}` : ''}</Caps>
+        <Caps size={10} c={PRO} weight={600}>☎ {es ? 'Profesional' : 'Professional'}{w.proTrade ? ` · ${w.proTrade}` : ''}</Caps>
         {w.proCalledAt && <Caps size={10} c={T.ink3}>{fmtSubmittedAt(w.proCalledAt)}</Caps>}
       </div>
       {!hasContractor(w) && (
@@ -443,7 +450,7 @@ function DetailModal({
 
         <div>
           <Caps>{es ? '¿Qué pasa?' : "What's wrong"}</Caps>
-          <p style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, margin: '8px 0 0', lineHeight: 1.35, fontWeight: 400 }}>{w.description}</p>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 16, color: T.ink, margin: '8px 0 0', lineHeight: 1.5, fontWeight: 500 }}>{w.description}</p>
         </div>
 
         <Field label={es ? 'Foto' : 'Photo'} hint={w.submitterPhotoPath ? undefined : (es ? 'Tómala o arrastra una — opcional.' : 'Snap or drag one in — optional.')}>
@@ -456,7 +463,7 @@ function DetailModal({
           <ContractorPanel w={w} es={es} onSave={(args) => onSaveContractor(w.id, args)} />
         )}
 
-        <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <Avatar name={w.submittedByName || '?'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.submittedByName || (es ? 'Desconocido' : 'Unknown')}</span>
@@ -466,7 +473,7 @@ function DetailModal({
 
         <div style={{ padding: '18px 0 0', borderTop: `1px solid ${T.rule}` }}>
           <Caps>{es ? 'Cuando termines' : "When you're done"}</Caps>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px', fontStyle: 'italic' }}>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px' }}>
             {es ? 'Opcional. El tú del futuro agradecerá la nota.' : 'Optional. Future-you will thank present-you for the note.'}
           </p>
           <TextArea value={note} onChange={setNote} placeholder={es ? 'ej. "Cambié el filtro, la unidad es vieja, pronto necesitará reemplazo"' : 'e.g. "Replaced filter, unit is old, will need full replacement soon"'} rows={2} />
@@ -488,7 +495,7 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
       footer={<Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>}
     >
       {done.length === 0 ? (
-        <p style={{ fontFamily: FONT_SERIF, fontSize: 20, color: T.ink3, fontStyle: 'italic', margin: '8px 0', textAlign: 'center' }}>
+        <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink3, margin: '8px 0', textAlign: 'center' }}>
           {es ? 'Nada cerrado aún.' : 'Nothing closed yet.'}
         </p>
       ) : (
@@ -503,7 +510,7 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
           {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => (
             <div key={w.id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <span style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink, fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 400 }}>{displayLoc(w.location, es)}</span>
+                <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>{displayLoc(w.location, es)}</span>
                 <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{w.id.slice(0, 8)}</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
@@ -664,7 +671,7 @@ export function WorkOrdersTab() {
   ];
 
   return (
-    <div style={{ padding: '28px 48px 64px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={es ? 'Órdenes de trabajo · hoy' : 'Work orders · today'}
         lead={`${open.length} ${es ? 'abiertas' : 'open'}`}
@@ -676,8 +683,8 @@ export function WorkOrdersTab() {
       />
 
       {open.length === 0 ? (
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Todo al día.' : 'All caught up.'}</span>
+        <div style={{ background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center', boxShadow: CX_CARD_SHADOW }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 21, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{es ? 'Todo al día.' : 'All caught up.'}</span>
           <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>{es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}</p>
           <Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
         </div>

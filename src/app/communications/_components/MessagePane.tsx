@@ -251,7 +251,7 @@ function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread, onReac
 
       {/* hover toolbar */}
       {hover && (
-        <div style={{ position: 'absolute', top: -12, right: 16, display: 'flex', gap: 1, background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 8, boxShadow: '0 4px 14px rgba(24,22,17,.1)', padding: 2 }}>
+        <div style={{ position: 'absolute', top: -12, right: 16, display: 'flex', gap: 1, background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 8, boxShadow: '0 4px 14px rgba(31,35,28,.1)', padding: 2 }}>
           <button style={hoverTool} title={L('Acknowledge', 'Confirmar')} onClick={() => onReactToggle(m)}><Check size={16} color={m.ackedByMe ? deptColorDark(T.forest) : T.dim} /></button>
           {conversation.kind !== 'dm' && <button style={hoverTool} title={L('Reply in thread', 'Responder en hilo')} onClick={() => onOpenThread(m)}><Reply size={16} /></button>}
           <button style={hoverTool} title={m.pinned ? L('Unpin', 'Quitar fijado') : L('Pin', 'Fijar')} onClick={() => onPinToggle(m)}><Pin size={15} color={m.pinned ? deptColorDark(T.forest) : T.dim} /></button>

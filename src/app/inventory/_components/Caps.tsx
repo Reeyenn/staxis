@@ -4,7 +4,7 @@ import React from 'react';
 import { fonts, T } from './tokens';
 
 // Uppercase mono caps eyebrow used above every section title.
-// Matches HK.Caps in hk-shared.jsx (Geist Mono 10px tracking 0.16em).
+// Concourse eyebrow spec: Geist Mono 9.5px, tracking 0.14em, faint ink.
 
 interface CapsProps extends React.HTMLAttributes<HTMLSpanElement> {
   size?: number;
@@ -15,8 +15,8 @@ interface CapsProps extends React.HTMLAttributes<HTMLSpanElement> {
 
 export function Caps({
   children,
-  size = 10,
-  tracking = '0.16em',
+  size = 9.5,
+  tracking = '0.14em',
   color,
   weight = 500,
   style,
@@ -31,7 +31,7 @@ export function Caps({
         fontWeight: weight,
         letterSpacing: tracking,
         textTransform: 'uppercase',
-        color: color ?? T.ink3,
+        color: color ?? T.faint,
         ...style,
       }}
     >

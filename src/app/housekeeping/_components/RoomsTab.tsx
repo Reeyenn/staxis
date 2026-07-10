@@ -25,13 +25,15 @@ import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, WorkOrder } from '@/types';
 import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
-import { FONT_SANS, FONT_MONO, FONT_SERIF } from './_snow';
+import { FONT_SANS, FONT_MONO } from './_snow';
 
-// Exact Ledger design tokens from the handoff.
+// Ledger design tokens, retinted onto the Concourse palette (2026-07):
+// ink/dim/faint = Concourse ink scale, dirty = rust, cleaning = amber,
+// clean = deep-ok green with the sage accent as its dot fill.
 const LED = {
-  ink: '#181611', dim: '#928C7F', line: 'rgba(24,22,17,.12)', card: '#FFFFFF',
-  dirty: '#C2562E', cleaning: '#A37C28', cleaningFill: '#C99A2E',
-  clean: '#2F7A4E', cleanFill: '#3C9C68',
+  ink: '#1F231C', dim: '#8A9187', faint: '#A6ABA6', line: 'rgba(31,35,28,.11)', card: '#FFFFFF',
+  dirty: '#B85C3D', cleaning: '#8C6A33', cleaningFill: '#C99644',
+  clean: '#356B4C', cleanFill: '#5C7A60',
 } as const;
 
 // The board shows three states; fold inspected (and anything unexpected) into clean.
@@ -87,9 +89,9 @@ function LedgerCard({ room, hasWO, lang, onFlip, neutral = false }: {
     }
     el.style.transformStyle = 'preserve-3d';
     el.animate([
-      { transform: 'perspective(760px) rotateY(0deg)', boxShadow: '0 4px 12px rgba(24,22,17,.06)' },
-      { transform: 'perspective(760px) rotateY(-90deg) scale(1.06)', boxShadow: '0 18px 34px rgba(24,22,17,.22)', offset: 0.5 },
-      { transform: 'perspective(760px) rotateY(0deg)', boxShadow: '0 4px 12px rgba(24,22,17,.06)' },
+      { transform: 'perspective(760px) rotateY(0deg)', boxShadow: '0 4px 12px rgba(31,42,32,.06)' },
+      { transform: 'perspective(760px) rotateY(-90deg) scale(1.06)', boxShadow: '0 18px 34px rgba(31,42,32,.22)', offset: 0.5 },
+      { transform: 'perspective(760px) rotateY(0deg)', boxShadow: '0 4px 12px rgba(31,42,32,.06)' },
     ], { duration: 540, easing: 'cubic-bezier(.34,1.3,.4,1)' });
     // Flip the data (and thus the card's face) at the edge-on midpoint.
     window.setTimeout(onFlip, 255);
@@ -287,27 +289,27 @@ export function RoomsTab() {
     );
   }
 
-  const capLabel: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: LED.dim };
+  const capLabel: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 9.5, letterSpacing: '.14em', textTransform: 'uppercase', color: LED.faint };
 
   return (
     <div className="rooms-ledger" style={{ background: 'transparent', color: LED.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <style>{`
-        .rooms-ledger .lgr-wrap { width:100%; padding:26px 36px 90px; }
+        .rooms-ledger .lgr-wrap { width:100%; padding:26px 36px 130px; }
         .rooms-ledger .lgr-head { display:grid; grid-template-columns:1fr auto 1fr; align-items:baseline; gap:24px; margin:0 0 8px; }
         .rooms-ledger .lgr-stats { justify-self:center; display:flex; gap:26px; }
         @media (max-width:680px){ .rooms-ledger .lgr-head { grid-template-columns:1fr; } .rooms-ledger .lgr-stats { justify-self:start; } }
         .rooms-ledger .lgr-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(94px, 1fr)); }
-        .rooms-ledger .lgr-card { position:relative; height:66px; border-radius:9px; background:#FFFFFF; border:1px solid ${LED.line}; cursor:pointer; overflow:visible; display:flex; flex-direction:column; justify-content:space-between; padding:9px 10px 9px 13px; transition:transform .25s cubic-bezier(.34,1.56,.5,1), box-shadow .25s; -webkit-tap-highlight-color:transparent; }
-        .rooms-ledger .lgr-card:hover { transform:translateY(-3px); box-shadow:0 10px 24px rgba(24,22,17,.10); }
-        .rooms-ledger .lgr-bar { position:absolute; left:0; top:0; bottom:0; width:4px; border-radius:9px 0 0 9px; }
+        .rooms-ledger .lgr-card { position:relative; height:66px; border-radius:14px; background:#FFFFFF; border:1px solid rgba(31,35,28,.08); box-shadow:0 6px 16px -14px rgba(31,42,32,.35); cursor:pointer; overflow:visible; display:flex; flex-direction:column; justify-content:space-between; padding:9px 10px 9px 13px; transition:transform .55s cubic-bezier(.22,1,.36,1), box-shadow .55s cubic-bezier(.22,1,.36,1), border-color .55s cubic-bezier(.22,1,.36,1); -webkit-tap-highlight-color:transparent; }
+        .rooms-ledger .lgr-card:hover { transform:translateY(-5px); box-shadow:0 18px 36px -20px rgba(62,92,72,.5); border-color:rgba(92,122,96,.45); }
+        .rooms-ledger .lgr-bar { position:absolute; left:0; top:0; bottom:0; width:4px; border-radius:14px 0 0 14px; }
         .rooms-ledger .lgr-top { display:flex; align-items:flex-start; justify-content:space-between; }
         .rooms-ledger .lgr-num { font-family:${FONT_MONO}; font-weight:600; font-size:19px; letter-spacing:-.02em; line-height:1; }
         .rooms-ledger .lgr-glyph { font-size:13px; color:${LED.dim}; }
         .rooms-ledger .lgr-bot { display:flex; align-items:center; }
         .rooms-ledger .lgr-st { display:inline-flex; align-items:center; gap:5px; font-family:${FONT_MONO}; font-size:8.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
         .rooms-ledger .lgr-st i { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
-        .rooms-ledger .lgr-wo { position:absolute; top:-7px; right:-7px; width:19px; height:19px; border-radius:50%; background:${LED.dirty}; color:#fff; font-weight:800; font-size:11px; display:flex; align-items:center; justify-content:center; z-index:6; box-shadow:0 2px 7px rgba(194,86,46,.45); border:2px solid #fff; }
-        @media (max-width:600px){ .rooms-ledger .lgr-wrap { padding:18px 16px 80px; } .rooms-ledger .lgr-grid { grid-template-columns:repeat(auto-fill, minmax(80px, 1fr)); gap:8px; } }
+        .rooms-ledger .lgr-wo { position:absolute; top:-7px; right:-7px; width:19px; height:19px; border-radius:50%; background:${LED.dirty}; color:#fff; font-weight:800; font-size:11px; display:flex; align-items:center; justify-content:center; z-index:6; box-shadow:0 2px 7px rgba(184,92,61,.45); border:2px solid #fff; }
+        @media (max-width:600px){ .rooms-ledger .lgr-wrap { padding:18px 16px 130px; } .rooms-ledger .lgr-grid { grid-template-columns:repeat(auto-fill, minmax(80px, 1fr)); gap:8px; } }
         @media (prefers-reduced-motion: reduce){ .rooms-ledger .lgr-card { transition:none; } }
       `}</style>
 
@@ -363,8 +365,8 @@ export function RoomsTab() {
         {/* header: title (left) + summary counts (centered) */}
         <div className="lgr-head">
           <div>
-            <div style={{ fontFamily: FONT_SERIF, fontSize: 38, fontWeight: 400, lineHeight: 1, color: LED.ink }}>
-              <i style={{ color: LED.dirty }}>{counts.dirty}</i>{lang === 'es' ? ' cuartos por limpiar' : ' rooms to turn'}
+            <div style={{ fontFamily: FONT_SANS, fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1, color: LED.ink }}>
+              <i style={{ color: LED.dirty, fontStyle: 'normal' }}>{counts.dirty}</i>{lang === 'es' ? ' cuartos por limpiar' : ' rooms to turn'}
             </div>
           </div>
           <div className="lgr-stats">
@@ -374,7 +376,7 @@ export function RoomsTab() {
               { v: `${donePct}%`,         l: lang === 'es' ? 'Listo' : 'Done',  c: LED.ink },
             ].map(s => (
               <div key={s.l} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <b style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 28, lineHeight: 1, color: s.c, fontWeight: 400 }}>{s.v}</b>
+                <b style={{ fontFamily: FONT_SANS, fontSize: 23, lineHeight: 1, color: s.c, fontWeight: 600, letterSpacing: '-0.02em' }}>{s.v}</b>
                 <span style={{ ...capLabel, marginTop: 4 }}>{s.l}</span>
               </div>
             ))}
@@ -399,7 +401,7 @@ export function RoomsTab() {
         {floorGroups.map(({ floor, rooms: fr }) => (
           <div key={floor} style={{ marginBottom: 26 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 13 }}>
-              <b style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 23, fontWeight: 400, color: LED.ink }}>{lang === 'es' ? 'Piso' : 'Floor'} {floor}</b>
+              <b style={{ fontFamily: FONT_SANS, fontSize: 17, fontWeight: 600, letterSpacing: '-0.02em', color: LED.ink }}>{lang === 'es' ? 'Piso' : 'Floor'} {floor}</b>
               <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: '.18em', textTransform: 'uppercase', color: LED.dim }}>{fr.length} {lang === 'es' ? 'cuartos' : 'rooms'}</span>
             </div>
             <div className="lgr-grid">
@@ -412,7 +414,7 @@ export function RoomsTab() {
       </div>
 
       {toast && (
-        <div style={{ position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 70, background: LED.ink, color: '#fff', padding: '11px 18px', borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, boxShadow: '0 10px 30px rgba(24,22,17,.28)' }}>{toast}</div>
+        <div style={{ position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 70, background: LED.ink, color: '#fff', padding: '11px 18px', borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, boxShadow: '0 10px 30px rgba(31,42,32,.28)' }}>{toast}</div>
       )}
     </div>
   );

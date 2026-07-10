@@ -47,8 +47,8 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
   const out = (e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = 'transparent');
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,.22)', zIndex: 70, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 84 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: '92%', maxHeight: '70%', background: T.bg, borderRadius: 14, border: `1px solid ${T.hair}`, boxShadow: '0 24px 64px rgba(24,22,17,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.22)', zIndex: 70, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 84 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: '92%', maxHeight: '70%', background: T.bg, borderRadius: 14, border: `1px solid ${T.hair}`, boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '13px 16px', borderBottom: `1px solid ${T.hairSoft}` }}>
           <span style={{ color: T.dim, display: 'flex' }}><Search size={18} /></span>
           <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder={L('Search messages, channels and people…', 'Buscar mensajes, canales y personas…')}
@@ -119,8 +119,8 @@ export function CatchUp({ pid, conversations, L, onJump, onClose }: {
   };
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,.2)', zIndex: 70, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 76 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 424, maxWidth: '92%', background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 14, boxShadow: '0 18px 50px rgba(24,22,17,.16)', overflow: 'hidden' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.2)', zIndex: 70, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 76 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 424, maxWidth: '92%', background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 14, boxShadow: '0 18px 50px rgba(31,35,28,.16)', overflow: 'hidden' }}>
         <div style={{ padding: '15px 18px 12px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: T.forest, marginBottom: 5 }}><Sparkles size={15} /><MonoLabel color={T.forest}>{L('Catch up', 'Ponerme al día')}</MonoLabel></div>
@@ -163,8 +163,8 @@ export function NewMessageModal({ staff, L, onPick, onClose }: { staff: StaffLit
   const [q, setQ] = React.useState('');
   const filtered = staff.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,.3)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(24,22,17,.2)' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.3)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.2)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hair}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{L('New message', 'Nuevo mensaje')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
@@ -319,8 +319,8 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
   };
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,.3)', zIndex: 71, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '94%', maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(24,22,17,.22)' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.3)', zIndex: 71, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '94%', maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.22)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15 }}>{isPriority ? L('Set priority', 'Definir prioridad') : L('Assign to', 'Asignar a')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
@@ -452,8 +452,8 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
   const curDept = (DEPT_OPTIONS.find((d) => d.key === dept)?.dept ?? 'management');
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,.3)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 460, maxWidth: '94%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(24,22,17,.22)', display: 'flex', flexDirection: 'column' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.3)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 460, maxWidth: '94%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '15px 18px 12px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: T.ink }}>{L('New to-do', 'Nueva tarea')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>

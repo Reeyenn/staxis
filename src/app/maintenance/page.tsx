@@ -66,11 +66,11 @@ export default function MaintenancePage() {
       <AppLayout>
         <div style={{
           minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: T.bg, fontFamily: FONT_SANS,
+          background: 'transparent', fontFamily: FONT_SANS,
         }}>
           <div className="animate-spin" style={{
             width: 28, height: 28,
-            border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
+            border: `2px solid ${T.rule}`, borderTopColor: '#3E5C48', borderRadius: '50%',
           }} />
         </div>
       </AppLayout>

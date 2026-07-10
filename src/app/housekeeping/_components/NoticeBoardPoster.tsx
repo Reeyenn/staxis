@@ -133,18 +133,20 @@ export function NoticeBoardPoster() {
     <section
       style={{
         background: '#FFFFFF',
-        border: '1px solid #E5E7EB',
+        border: '1px solid rgba(31,35,28,.08)',
         borderRadius: 16,
+        boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)',
         padding: '16px 18px',
         marginBottom: 16,
         display: 'flex',
         flexDirection: 'column',
         gap: 12,
+        fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <Megaphone size={18} color="#2563EB" />
-        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#0F172A' }}>
+        <Megaphone size={18} color="#3E5C48" />
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', color: '#1F231C' }}>
           {t('hkNoticePostTitle', lang)}
         </h3>
       </div>
@@ -158,8 +160,8 @@ export function NoticeBoardPoster() {
         style={{
           width: '100%',
           padding: 12,
-          border: '1.5px solid #D1D5DB',
-          borderRadius: 10,
+          border: '1px solid rgba(31,35,28,.14)',
+          borderRadius: 12,
           fontSize: 14,
           fontFamily: 'inherit',
           resize: 'vertical',
@@ -174,7 +176,7 @@ export function NoticeBoardPoster() {
             alignItems: 'center',
             gap: 6,
             fontSize: 13,
-            color: '#374151',
+            color: '#5C625C',
             cursor: 'pointer',
           }}
         >
@@ -183,11 +185,11 @@ export function NoticeBoardPoster() {
             checked={pinned}
             onChange={(e) => setPinned(e.target.checked)}
           />
-          <Pin size={13} color="#B45309" />
+          <Pin size={13} color="#8C6A33" />
           {t('hkNoticePostPin', lang)}
         </label>
 
-        <span style={{ fontSize: 12, color: '#6B7280' }}>
+        <span style={{ fontSize: 12, color: '#5C625C' }}>
           {t('hkNoticePostExpires', lang)}:
         </span>
         <select
@@ -195,10 +197,11 @@ export function NoticeBoardPoster() {
           onChange={(e) => setExpiryKey(e.target.value as typeof expiryKey)}
           style={{
             padding: '6px 10px',
-            border: '1px solid #D1D5DB',
-            borderRadius: 8,
+            border: '1px solid rgba(31,35,28,.14)',
+            borderRadius: 999,
             fontSize: 13,
             fontFamily: 'inherit',
+            color: '#5C625C',
             background: 'white',
           }}
         >
@@ -215,12 +218,12 @@ export function NoticeBoardPoster() {
           style={{
             marginLeft: 'auto',
             padding: '8px 16px',
-            background: !bodyEn.trim() || posting ? '#D1D5DB' : '#2563EB',
+            background: !bodyEn.trim() || posting ? 'rgba(62,92,72,.35)' : '#3E5C48',
             color: 'white',
             border: 'none',
-            borderRadius: 8,
-            fontSize: 14,
-            fontWeight: 700,
+            borderRadius: 999,
+            fontSize: 12.5,
+            fontWeight: 600,
             cursor: !bodyEn.trim() || posting ? 'not-allowed' : 'pointer',
           }}
         >
@@ -232,7 +235,7 @@ export function NoticeBoardPoster() {
         <div
           style={{
             marginTop: 4,
-            borderTop: '1px solid #E5E7EB',
+            borderTop: '1px solid rgba(31,35,28,.08)',
             paddingTop: 12,
             display: 'flex',
             flexDirection: 'column',
@@ -247,16 +250,16 @@ export function NoticeBoardPoster() {
                 alignItems: 'flex-start',
                 gap: 8,
                 padding: '8px 10px',
-                background: n.pinned ? '#FFFBEB' : '#F9FAFB',
-                border: `1px solid ${n.pinned ? '#FCD34D' : '#E5E7EB'}`,
-                borderRadius: 8,
+                background: n.pinned ? 'rgba(201,150,68,.14)' : 'rgba(31,35,28,.03)',
+                border: `1px solid ${n.pinned ? 'rgba(201,150,68,.45)' : 'rgba(31,35,28,.08)'}`,
+                borderRadius: 10,
               }}
             >
-              {n.pinned && <Pin size={12} color="#B45309" style={{ marginTop: 3 }} />}
-              <div style={{ flex: 1, fontSize: 13, color: '#374151', lineHeight: 1.4 }}>
+              {n.pinned && <Pin size={12} color="#8C6A33" style={{ marginTop: 3 }} />}
+              <div style={{ flex: 1, fontSize: 13, color: '#1F231C', lineHeight: 1.4 }}>
                 {n.body_en}
                 {n.expires_at && (
-                  <span style={{ marginLeft: 8, fontSize: 11, color: '#9CA3AF' }}>
+                  <span style={{ marginLeft: 8, fontSize: 11, color: '#8A9187' }}>
                     ({new Date(n.expires_at).toLocaleString()})
                   </span>
                 )}
@@ -277,7 +280,7 @@ export function NoticeBoardPoster() {
                   opacity: 0.5,
                 }}
               >
-                <Trash2 size={14} color="#9CA3AF" />
+                <Trash2 size={14} color="#8A9187" />
               </button>
             </div>
           ))}
@@ -291,7 +294,7 @@ export function NoticeBoardPoster() {
             bottom: 24,
             left: '50%',
             transform: 'translateX(-50%)',
-            background: '#0F172A',
+            background: '#1F231C',
             color: 'white',
             padding: '10px 16px',
             borderRadius: 999,

@@ -200,7 +200,7 @@ export function OrderingSettingsPanel({
     return (
       <div style={{ flex: 1, background: T.paper, border: `1.5px solid ${active ? statusColor.good : T.rule}`, borderRadius: 14, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontFamily: fonts.serif, fontSize: 20, fontStyle: 'italic', color: T.ink }}>{label}</span>
+          <span style={{ fontFamily: fonts.sans, fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{label}</span>
           {active && <span style={{ fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: statusColor.good, fontWeight: 700 }}>{tt.current}</span>}
         </div>
         <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5, margin: 0, flex: 1 }}>{desc}</p>

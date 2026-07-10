@@ -21,7 +21,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card, HousekeeperDot } from './_snow';
+import { T, FONT_SANS, FONT_MONO, Caps, Pill, Btn, Card, HousekeeperDot } from './_snow';
 
 type Language = 'en' | 'es';
 
@@ -334,7 +334,7 @@ export function AutoAssignBoard({
       }}>
         <div style={{ flex: 1, minWidth: 260 }}>
           <div style={{
-            fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, letterSpacing: '-0.01em',
+            fontFamily: FONT_SANS, fontSize: 18, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em',
           }}>{STR.title(lang)}</div>
           <div style={{
             fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, marginTop: 4,
@@ -650,7 +650,7 @@ function TaskTile({
       aria-label={`Room ${task.room_number} ${task.cleaning_type}`}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 18, fontWeight: 400, color: T.ink, letterSpacing: '-0.01em' }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 15, fontWeight: 600, color: T.ink, letterSpacing: '-0.01em' }}>
           {task.room_number}
         </span>
         <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, fontWeight: 600 }}>
@@ -714,7 +714,7 @@ function TaskDetailPanel({
           <div>
             <Caps>{STR.taskDetails(lang)}</Caps>
             <div style={{
-              fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, marginTop: 4, letterSpacing: '-0.02em',
+              fontFamily: FONT_SANS, fontSize: 24, fontWeight: 600, color: T.ink, marginTop: 4, letterSpacing: '-0.02em',
             }}>{task.room_number}</div>
           </div>
           <Btn size="sm" onClick={onClose}>{STR.close(lang)}</Btn>

@@ -44,7 +44,7 @@ import {
   type LayoutTaskInput,
   type LayoutTaskOutput,
 } from '@/lib/timeline-layout';
-import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card, HousekeeperDot } from './_snow';
+import { T, FONT_SANS, FONT_MONO, Caps, Pill, Btn, Card, HousekeeperDot } from './_snow';
 
 type Language = 'en' | 'es';
 
@@ -165,27 +165,27 @@ function typeStyle(cleaningType: string, lang: Language): TypeStyle {
     case 'deep':
       return {
         fill: 'rgba(92,122,96,0.22)',
-        border: '#3F5D49',
-        ink: '#3F5D49',
+        border: '#3E5C48',
+        ink: '#3E5C48',
         label: en ? 'DEEP' : 'PROFUNDA',
       };
     case 'inspection_only':
       return {
-        fill: 'rgba(123,106,151,0.16)',
+        fill: 'rgba(158,183,166,0.25)',
         border: T.purple,
         ink: T.purple,
         label: en ? 'INSPECTION' : 'INSPEC',
       };
     case 'room_check':
       return {
-        fill: '#F7F5EE',
+        fill: 'rgba(31,35,28,0.04)',
         border: T.ink3,
         ink: T.ink2,
         label: en ? 'CHECK' : 'REVISIÓN',
       };
     case 'no_clean':
       return {
-        fill: '#F7F5EE',
+        fill: 'rgba(31,35,28,0.04)',
         border: T.ruleSoft,
         ink: T.ink3,
         label: en ? 'NO CLEAN' : 'NO LIMP',
@@ -479,7 +479,7 @@ export function TimelineView({
       }}>
         <div style={{ flex: 1, minWidth: 260 }}>
           <div style={{
-            fontFamily: FONT_SERIF, fontSize: 22, color: T.ink, letterSpacing: '-0.01em',
+            fontFamily: FONT_SANS, fontSize: 18, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em',
           }}>{STR.title(lang)}</div>
           <div style={{
             fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, marginTop: 4,
@@ -718,7 +718,7 @@ function TimelineCard({
     || layout.status === 'correction_complete';
   const isInProgress = layout.status === 'in_progress';
   const isLocked = isCompleted || isInProgress || layout.status === 'inspection_pending';
-  const cardBg = isCompleted ? '#FBFAF6' : style.fill;
+  const cardBg = isCompleted ? 'rgba(31,35,28,0.03)' : style.fill;
   const cardOpacity = isCompleted ? 0.55 : 1;
   const outline = layout.is_behind
     ? `2px solid ${T.warm}`
@@ -775,7 +775,7 @@ function TimelineCard({
         display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 4,
       }}>
         <span style={{
-          fontFamily: FONT_SERIF, fontSize: 15, fontWeight: 400,
+          fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
           color: style.ink, letterSpacing: '-0.01em',
           textDecoration: isCompleted ? 'line-through' : 'none',
         }}>{task.room_number}</span>
@@ -914,7 +914,7 @@ function TaskDetailPanel({
           <div>
             <Caps>{STR.taskDetails(lang)}</Caps>
             <div style={{
-              fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, marginTop: 4, letterSpacing: '-0.02em',
+              fontFamily: FONT_SANS, fontSize: 24, fontWeight: 600, color: T.ink, marginTop: 4, letterSpacing: '-0.02em',
             }}>{task.room_number}</div>
           </div>
           <Btn size="sm" onClick={onClose}>{STR.close(lang)}</Btn>

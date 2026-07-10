@@ -11,8 +11,8 @@ import type { ConfirmationStatus, StaffMember } from '@/types';
 // avoid storing this on the row (current schema doesn't have a column for
 // it); deterministic hashing keeps the UI consistent across reloads.
 const AVATAR_TONES = [
-  '#B8775E', '#688372', '#7B6A97', '#8C6A33', '#5E7A8C',
-  '#6A8C70', '#3A5670', '#4A6B85', '#5A8099', '#B85C3D', '#A04A2C',
+  '#B85C3D', '#5C7A60', '#5C625C', '#8C6A33', '#8A9187',
+  '#3E5C48', '#356B4C', '#1F231C', '#C99644', '#B85C3D', '#5C7A60',
 ] as const;
 
 function hashStr(s: string): number {
@@ -99,7 +99,7 @@ export function SMTag({ size = 10, compact = false }: { size?: number; compact?:
   return (
     <span style={{
       fontFamily: fonts.mono, fontSize: size, fontWeight: 600,
-      color: T.ink, background: '#F0E9D9',
+      color: T.ink, background: '#FBE3B8',
       border: '1px solid rgba(31,35,28,0.18)',
       padding: '1px 6px', borderRadius: 999, letterSpacing: '0.06em',
       display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -118,7 +118,7 @@ export function HoursBar({
 }) {
   const pct = Math.min(1, max > 0 ? hrs / max : 0);
   const near = max > 0 && hrs >= max - 4;
-  const color = near ? '#A04A2C' : '#5C7A60';
+  const color = near ? '#B85C3D' : '#5C7A60';
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
       <span style={{
@@ -132,7 +132,7 @@ export function HoursBar({
       </span>
       <span style={{
         fontFamily: fonts.mono, fontSize: 11, fontWeight: 600,
-        color: near ? '#A04A2C' : T.ink2, whiteSpace: 'nowrap',
+        color: near ? '#B85C3D' : T.ink2, whiteSpace: 'nowrap',
       }}>{hrs}<span style={{ color: T.ink3 }}>/{max}h</span></span>
     </span>
   );
@@ -143,7 +143,7 @@ export const confColor: Record<ConfirmationStatus, string> = {
   confirmed: '#5C7A60',
   sent:      '#C99644',
   pending:   '#C99644',
-  declined:  '#A04A2C',
+  declined:  '#B85C3D',
 };
 
 export const confLabel: Record<ConfirmationStatus, string> = {
@@ -163,7 +163,7 @@ export function ConfDot({ status, size = 8 }: { status: ConfirmationStatus; size
   );
 }
 
-// ── PageHeader — big serif title + meta row (manager pages) ───────────────
+// ── PageHeader — page title + meta row (manager pages) ────────────────────
 export function PageHeader({
   title, eyebrow, sub, right,
 }: {
@@ -180,10 +180,10 @@ export function PageHeader({
       <div>
         {eyebrow && <Caps>{eyebrow}</Caps>}
         <h1 style={{
-          fontFamily: fonts.serif, fontSize: 36, color: T.ink,
-          margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.1, fontWeight: 400,
+          fontFamily: fonts.sans, fontSize: 26, color: T.ink,
+          margin: '4px 0 0', letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 600,
         }}>
-          <span style={{ fontStyle: 'italic' }}>{title}</span>
+          <span>{title}</span>
         </h1>
         {sub && (
           <div style={{

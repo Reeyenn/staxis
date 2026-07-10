@@ -73,7 +73,7 @@ export function FilterBar({
           display: 'inline-flex',
           position: 'relative',
           border: `1px solid ${T.rule}`,
-          borderRadius: 10,
+          borderRadius: 999,
           padding: 3,
           background: T.bg,
         }}
@@ -88,7 +88,7 @@ export function FilterBar({
               left: ind.left,
               width: ind.width,
               background: T.ink,
-              borderRadius: 8,
+              borderRadius: 999,
               transition: `left .32s ${EASE.glide}, width .32s ${EASE.glide}`,
             }}
           />
@@ -110,7 +110,7 @@ export function FilterBar({
                 background: 'transparent',
                 color: active ? T.bg : T.ink2,
                 border: 'none',
-                borderRadius: 8,
+                borderRadius: 999,
                 fontFamily: fonts.sans,
                 fontSize: 12.5,
                 fontWeight: active ? 600 : 500,
@@ -145,8 +145,8 @@ export function FilterBar({
           flex: 1,
           minWidth: 140,
           height: 38,
-          padding: '0 13px',
-          borderRadius: 9,
+          padding: '0 16px',
+          borderRadius: 999,
           background: T.bg,
           border: `1px solid ${T.rule}`,
           fontFamily: fonts.sans,

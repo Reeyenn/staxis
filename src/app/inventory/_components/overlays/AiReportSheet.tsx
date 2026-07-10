@@ -242,7 +242,7 @@ function TrustLine({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
     <div style={{ maxWidth: 760, margin: '0 auto', textAlign: 'center', paddingTop: 6 }}>
       {/* the number */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 10, marginBottom: 20 }}>
-        <Serif size={44} style={{ fontStyle: 'italic', lineHeight: 1 }}>{pct}%</Serif>
+        <Serif size={44} style={{ lineHeight: 1 }}>{pct}%</Serif>
         <span style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink2 }}>{ai.heroCaption}</span>
       </div>
 
@@ -277,7 +277,7 @@ function TrustLine({ ai, items }: { ai: AiStrings; items: ReportItem[] }) {
             <line x1={3} y1={1} x2={3} y2={19} stroke={statusColor.good} strokeWidth={2} strokeLinecap="round" />
             <path d="M4.5 2 L14 4.8 L4.5 7.6 Z" fill={statusColor.good} />
           </svg>
-          <Serif size={19} style={{ fontStyle: 'italic', color: statusColor.good, lineHeight: 1 }}>
+          <Serif size={19} style={{ color: statusColor.good, lineHeight: 1 }}>
             {ai.heroGoalPct}
           </Serif>
           <Caps size={7.5} color={statusColor.good}>{ai.heroGoal}</Caps>
@@ -340,7 +340,7 @@ function ItemTile({ ai, it }: { ai: AiStrings; it: ReportItem }) {
           {it.itemName}
         </span>
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-          <Serif size={19} style={{ fontStyle: 'italic' }}>{usage}</Serif>
+          <Serif size={19}>{usage}</Serif>
           <span style={{ fontFamily: fonts.mono, fontSize: 9.5, color: T.ink3 }}>{ai.perDayShort}</span>
         </span>
         <span style={{ fontFamily: fonts.sans, fontSize: 11, color: grade ? grade.color : T.ink3 }}>
@@ -370,7 +370,7 @@ function ProgressRing({ pct, color, trusted }: { pct: number; color: string; tru
         <text
           x={29} y={33}
           textAnchor="middle"
-          style={{ font: `italic 400 13px ${fonts.serif}`, fill: T.ink2 }}
+          style={{ font: `600 13px ${fonts.sans}`, fill: T.ink2 }}
         >
           {Math.round(pct * 100)}%
         </text>
@@ -466,7 +466,7 @@ function IconWithCaption({ icon, caption, accent }: { icon: React.ReactNode; cap
 
 function BigGlyph({ children }: { children: React.ReactNode }) {
   return (
-    <span style={{ fontFamily: fonts.serif, fontStyle: 'italic', fontSize: 26, color: T.ink3, transform: 'translateY(-14px)' }}>
+    <span style={{ fontFamily: fonts.sans, fontWeight: 600, fontSize: 26, color: T.ink3, transform: 'translateY(-14px)' }}>
       {children}
     </span>
   );
@@ -495,7 +495,7 @@ function AccuracyCurve({ ai }: { ai: AiStrings }) {
     <svg viewBox="0 0 560 268" style={{ width: '100%', height: 'auto', display: 'block' }} aria-hidden>
       {/* the 85–90% goal band */}
       <rect x={0} y={30} width={560} height={22} rx={4} fill={`${statusColor.good}18`} />
-      <text x={10} y={46} textAnchor="start" style={{ font: `italic 400 14px ${fonts.serif}`, fill: statusColor.good }}>
+      <text x={10} y={46} textAnchor="start" style={{ font: `600 14px ${fonts.sans}`, fill: statusColor.good }}>
         {ai.g3Band}
       </text>
       {/* the learning curve — starts at 0% on the axis */}
@@ -652,7 +652,7 @@ function EmptyState({ ai }: { ai: AiStrings }) {
         gap: 12,
       }}
     >
-      <Serif size={24} style={{ fontStyle: 'italic' }}>{ai.emptyTitle}</Serif>
+      <Serif size={24}>{ai.emptyTitle}</Serif>
       <p
         style={{
           margin: 0,

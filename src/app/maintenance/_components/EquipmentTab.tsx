@@ -17,9 +17,10 @@ import { useLang } from '@/contexts/LanguageContext';
 import { subscribeToInventory, addInventoryItem, updateInventoryItem } from '@/lib/db';
 import type { InventoryItem } from '@/types';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Modal, Field, TextInput,
   PageHead, BoardColumn, BoardCard, CenteredBoard,
+  CX_CARD_SHADOW,
 } from './_mt-snow';
 
 type Status = 'out' | 'low' | 'ok';
@@ -140,14 +141,14 @@ function ItemModal({
           <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
           <Caps size={11} tracking="0.06em">{es ? 'Reordenar en' : 'Reorder at'} {part.reorderAt} {part.unit}</Caps>
         </div>
-        <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '18px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 12, padding: '18px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div>
             <Caps size={10}>{es ? 'Disponibles' : 'On hand'}</Caps>
-            <div style={{ fontFamily: FONT_SERIF, fontSize: 40, color: T.ink, fontStyle: 'italic', lineHeight: 1, marginTop: 4 }}>
-              {draft} <span style={{ fontStyle: 'normal', fontSize: 16, color: T.ink3 }}>{part.unit}</span>
+            <div style={{ fontFamily: FONT_SANS, fontSize: 34, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, marginTop: 4 }}>
+              {draft} <span style={{ fontWeight: 400, fontSize: 15, color: T.ink3, letterSpacing: 0 }}>{part.unit}</span>
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${T.rule}`, borderRadius: 999, height: 44, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', border: '1px solid rgba(31,35,28,0.14)', borderRadius: 999, height: 44, overflow: 'hidden', background: '#FFFFFF' }}>
             <button onClick={() => step(-1)} aria-label="−" style={{ width: 44, height: '100%', border: 'none', background: 'transparent', cursor: 'pointer', color: T.ink2, fontSize: 20, fontFamily: FONT_SANS }}>−</button>
             <span style={{ width: 1, height: '100%', background: T.rule }} />
             <button onClick={() => step(1)} aria-label="＋" style={{ width: 44, height: '100%', border: 'none', background: 'transparent', cursor: 'pointer', color: T.ink2, fontSize: 20, fontFamily: FONT_SANS }}>＋</button>
@@ -215,7 +216,7 @@ export function EquipmentTab() {
       : (es ? 'Bien surtido' : 'Fully stocked');
 
   return (
-    <div style={{ padding: '28px 48px 64px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={es ? 'Equipo · almacén' : 'Equipment · storeroom'}
         lead={lead}
@@ -225,7 +226,7 @@ export function EquipmentTab() {
 
       {parts.length === 0 ? (
         <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 26, color: T.ink, fontStyle: 'italic', fontWeight: 400 }}>{es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}</span>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}</span>
           <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
             {es ? 'Agrega filtros, focos, piezas — lo que guardes para reparaciones.' : 'Add filters, bulbs, parts — anything you keep on hand for repairs.'}
           </p>

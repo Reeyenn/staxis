@@ -377,14 +377,14 @@ export function ManagerDirectory() {
 
   return (
     <div style={{
-      background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
-      padding: '24px 48px 48px',
+      background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
+      padding: '24px 48px 130px',
     }}>
       <style>{`
         .staff-dir-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: flex-start; }
         @media (max-width: 900px) { .staff-dir-grid { grid-template-columns: 1fr; } }
-        .staff-dir-row { cursor: pointer; transition: background 0.15s; }
-        .staff-dir-row:hover { background: rgba(31,35,28,0.02); }
+        .staff-dir-row { cursor: pointer; transition: background 0.3s cubic-bezier(.22,1,.36,1); }
+        .staff-dir-row:hover { background: rgba(31,35,28,0.04); }
       `}</style>
 
       <PageHeader
@@ -408,9 +408,9 @@ export function ManagerDirectory() {
           border: '1px solid rgba(140,106,51,0.32)',
           borderRadius: 12,
           display: 'flex', alignItems: 'flex-start', gap: 10,
-          fontFamily: fonts.sans, fontSize: 13, color: '#6F5328', lineHeight: 1.45,
+          fontFamily: fonts.sans, fontSize: 13, color: '#8C6A33', lineHeight: 1.45,
         }}>
-          <strong style={{ color: '#5C4220' }}>
+          <strong style={{ color: '#8C6A33' }}>
             {lang === 'es' ? 'Sin Responsable de Horarios.' : 'No Scheduling Manager set.'}
           </strong>{' '}
           {lang === 'es'
@@ -426,7 +426,7 @@ export function ManagerDirectory() {
         {[
           { eyebrow: 'Roster',   big: total,   sub: 'people on the books',     accent: '#5C7A60' },
           { eyebrow: 'On shift', big: onShift, sub: 'clocked in right now',    accent: '#C99644' },
-          { eyebrow: 'Near OT',  big: nearOT,  sub: 'within 4h of weekly cap', accent: nearOT > 0 ? '#A04A2C' : T.ink3 },
+          { eyebrow: 'Near OT',  big: nearOT,  sub: 'within 4h of weekly cap', accent: nearOT > 0 ? '#B85C3D' : T.ink3 },
         ].map((s, i) => (
           <div key={i} style={{
             background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
@@ -440,8 +440,8 @@ export function ManagerDirectory() {
               display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12,
             }}>
               <span style={{
-                fontFamily: fonts.serif, fontSize: 32, color: T.ink,
-                letterSpacing: '-0.03em', lineHeight: 1, fontStyle: 'italic',
+                fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, color: T.ink,
+                letterSpacing: '-0.02em', lineHeight: 1,
               }}>{s.big}</span>
               <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2, textAlign: 'right' }}>{s.sub}</span>
             </div>
@@ -455,7 +455,8 @@ export function ManagerDirectory() {
           const m = deptMeta[g.dept];
           return (
             <div key={g.dept} style={{
-              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, overflow: 'hidden',
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+              boxShadow: T.cardShadow, overflow: 'hidden',
             }}>
               <div style={{
                 padding: '16px 18px 12px', borderBottom: `1px solid ${T.rule}`,
@@ -534,7 +535,7 @@ export function ManagerDirectory() {
 
 // ── Directory row ────────────────────────────────────────────────────────
 function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void }) {
-  const ring = member.scheduledToday ? '#5C7A60' : null;
+  const ring = member.scheduledToday ? '#5C7A60' : null; // sage accent = on shift
   return (
     <div
       className="staff-dir-row"
@@ -611,10 +612,10 @@ function StaffEditModal({
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          background: T.paper, borderRadius: 22,
+          background: T.paper, borderRadius: 18,
           width: '100%', maxWidth: 480, maxHeight: '88vh', overflowY: 'auto',
           padding: '24px 26px',
-          boxShadow: '0 24px 60px -8px rgba(31,35,28,0.20), 0 0 0 1px rgba(31,35,28,0.04)',
+          boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24), 0 0 0 1px rgba(31,35,28,0.04)',
         }}
       >
         <div style={{
@@ -622,8 +623,8 @@ function StaffEditModal({
           marginBottom: 18,
         }}>
           <h2 style={{
-            margin: 0, fontFamily: fonts.serif, fontSize: 22, fontStyle: 'italic',
-            color: T.ink, letterSpacing: '-0.02em', fontWeight: 400,
+            margin: 0, fontFamily: fonts.sans, fontSize: 18,
+            color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
           }}>
             {editMember ? editMember.name : (lang === 'es' ? 'Nuevo personal' : 'New staff member')}
           </h2>
@@ -656,11 +657,12 @@ function StaffEditModal({
                     onClick={() => setForm(f => ({ ...f, department: d }))}
                     style={{
                       padding: '6px 13px', borderRadius: 999,
-                      border: sel ? `1px solid ${T.ink}` : `1px solid ${T.rule}`,
-                      background: sel ? T.ink : 'transparent',
-                      color: sel ? T.bg : T.ink2,
+                      border: sel ? `1px solid ${T.brand}` : `1px solid ${T.rule}`,
+                      background: sel ? T.brand : 'transparent',
+                      color: sel ? '#FFFFFF' : T.ink2,
                       fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
                       cursor: 'pointer',
+                      transition: 'all .3s cubic-bezier(.22,1,.36,1)',
                     }}
                   >{deptMeta[d].label}</button>
                 );
@@ -829,9 +831,9 @@ function StaffEditModal({
           {saveError && (
             <div role="alert" style={{
               padding: '10px 14px',
-              background: 'rgba(160,74,44,0.08)',
-              border: '1px solid rgba(160,74,44,0.25)',
-              borderRadius: 12, color: '#A04A2C',
+              background: 'rgba(184,92,61,0.08)',
+              border: '1px solid rgba(184,92,61,0.25)',
+              borderRadius: 12, color: '#B85C3D',
               fontFamily: fonts.sans, fontSize: 13, lineHeight: 1.4,
             }}>{saveError}</div>
           )}
@@ -840,7 +842,7 @@ function StaffEditModal({
           <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
             {onDelete && (
               <Btn variant="ghost" size="md" onClick={onDelete}
-                style={{ color: '#A04A2C', borderColor: 'rgba(160,74,44,0.25)' }}>
+                style={{ color: '#B85C3D', borderColor: 'rgba(184,92,61,0.25)' }}>
                 {lang === 'es' ? 'Eliminar' : 'Delete'}
               </Btn>
             )}
@@ -923,14 +925,14 @@ function SchedulingManagerSwapModal({
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          background: T.paper, borderRadius: 22,
+          background: T.paper, borderRadius: 18,
           padding: '24px 26px', maxWidth: 440, width: '100%',
-          boxShadow: '0 24px 60px -8px rgba(31,35,28,0.20)',
+          boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24)',
         }}
       >
         <h2 style={{
-          margin: 0, fontFamily: fonts.serif, fontSize: 22, fontStyle: 'italic',
-          color: T.ink, letterSpacing: '-0.02em', fontWeight: 400,
+          margin: 0, fontFamily: fonts.sans, fontSize: 18,
+          color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
         }}>
           {lang === 'es' ? '¿Cambiar responsable de horarios?' : 'Switch Scheduling Manager?'}
         </h2>

@@ -25,19 +25,19 @@ interface LogEntry {
 }
 
 const C = {
-  ink: '#15191A',
-  ink2: '#586056',
-  ink3: '#9CA29C',
-  rule: 'rgba(15,20,17,0.07)',
-  green: '#2F7A51',
+  ink: '#1F231C',
+  ink2: '#5C625C',
+  ink3: '#A6ABA6',
+  rule: 'rgba(31,35,28,0.06)',
+  green: '#356B4C',
 } as const;
 
 const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
 
 const LABEL: React.CSSProperties = {
   fontFamily: FONT_MONO,
-  fontSize: 10,
-  letterSpacing: '0.18em',
+  fontSize: 9.5,
+  letterSpacing: '0.14em',
   textTransform: 'uppercase',
   color: C.ink3,
   fontWeight: 600,
@@ -91,11 +91,10 @@ export function LogBookCard() {
   return (
     <div
       style={{
-        background: 'rgba(255,255,255,0.78)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255,255,255,0.75)',
+        background: '#FFFFFF',
+        border: '1px solid rgba(31,35,28,0.08)',
         borderRadius: 16,
+        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
         padding: '18px 20px',
       }}
     >

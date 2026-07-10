@@ -369,7 +369,7 @@ function SpendView({
         <>
           <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 18px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
             <span style={{ fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: T.ink3 }}>{tt.total}</span>
-            <span style={{ fontFamily: fonts.serif, fontSize: 30, fontStyle: 'italic', color: T.ink }}>{fmtMoney(rollup.totalCents / 100)}</span>
+            <span style={{ fontFamily: fonts.sans, fontSize: 30, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{fmtMoney(rollup.totalCents / 100)}</span>
           </div>
           <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 18px' }}>
             {breakdown(tt.byProperty, rollup.byProperty)}
@@ -385,7 +385,7 @@ function SpendView({
 function tabStyle(active: boolean): React.CSSProperties {
   return {
     padding: '6px 14px',
-    borderRadius: 8,
+    borderRadius: 999,
     cursor: 'pointer',
     background: active ? T.ink : 'transparent',
     color: active ? T.bg : T.ink2,
@@ -446,7 +446,7 @@ function OrderCard({
         <span style={{ fontFamily: fonts.mono, fontSize: 13, fontWeight: 700, color: T.ink }}>{po.poNumber}</span>
         <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>{po.vendorName || '—'}</span>
         <span style={{ flex: 1 }} />
-        <span style={{ fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic', color: T.ink }}>{fmtMoney(po.subtotalCents / 100)}</span>
+        <span style={{ fontFamily: fonts.sans, fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{fmtMoney(po.subtotalCents / 100)}</span>
       </div>
       <div style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.04em' }}>
         {po.lines.length} {tt.lines}
@@ -516,10 +516,11 @@ const emptyBox: React.CSSProperties = {
   borderRadius: 14,
   padding: '48px 24px',
   textAlign: 'center',
-  fontFamily: fonts.serif,
+  fontFamily: fonts.sans,
   fontSize: 20,
+  fontWeight: 600,
+  letterSpacing: '-0.02em',
   color: T.ink2,
-  fontStyle: 'italic',
 };
 
 function banner(color: string): React.CSSProperties {

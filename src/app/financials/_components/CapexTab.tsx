@@ -48,7 +48,7 @@ function statusColor(s: CapexStatus): string {
 }
 
 // Column grouping colors (each card still carries its own real-status accent).
-const COL_COLOR = { pending: '#3389A0', active: T.caramelDeep, closed: T.sageDeep };
+const COL_COLOR = { pending: T.sageBrand, active: T.caramelDeep, closed: T.sageDeep };
 
 interface ForecastMonth {
   month: string;
@@ -178,7 +178,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         {/* View switcher */}
-        <div style={{ display: 'flex', gap: 3, padding: 3, borderRadius: 9, border: `1px solid ${T.rule}`, background: T.bg }}>
+        <div style={{ display: 'flex', gap: 3, padding: 3, borderRadius: 999, background: 'rgba(31,35,28,0.05)' }}>
           {views.map((v) => {
             const on = view === v.key;
             return (
@@ -187,14 +187,16 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
                 onClick={() => setView(v.key)}
                 style={{
                   padding: '6px 13px',
-                  borderRadius: 6,
-                  fontFamily: FONT_SANS,
-                  fontSize: 12.5,
+                  borderRadius: 999,
+                  fontFamily: FONT_MONO,
+                  fontSize: 10.5,
                   fontWeight: 600,
+                  letterSpacing: '0.05em',
                   background: on ? T.ink : 'transparent',
-                  color: on ? T.bg : T.ink3,
+                  color: on ? '#fff' : T.ink3,
                   border: 'none',
                   cursor: 'pointer',
+                  transition: 'all 0.2s',
                 }}
               >
                 {v.label}
@@ -221,10 +223,10 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
                   <span style={statNum}>{projects.length}</span>
                 </StatStrip>
                 <StatStrip label={S.totalEstimated}>
-                  <BigMoney cents={totalEstimated} size={28} />
+                  <BigMoney cents={totalEstimated} size={23} />
                 </StatStrip>
                 <StatStrip label={S.totalSpent}>
-                  <BigMoney cents={totalSpent} size={28} />
+                  <BigMoney cents={totalSpent} size={23} />
                 </StatStrip>
                 <StatStrip label={S.emergency}>
                   <span style={{ ...statNum, color: emergency > 0 ? T.warm : T.ink }}>{emergency}</span>
@@ -237,13 +239,13 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
                   <div key={col.key} style={{ flex: '1 1 0', minWidth: 270, maxWidth: 420, background: 'rgba(31,35,28,0.022)', borderRadius: 12, padding: 12, border: `1px solid ${T.ruleSoft}` }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
                       <span style={{ width: 9, height: 9, borderRadius: '50%', background: COL_COLOR[col.key], flexShrink: 0 }} />
-                      <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 700, color: T.ink, flex: 1 }}>{col.label}</span>
+                      <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: T.ink, flex: 1 }}>{col.label}</span>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{col.items.length}</span>
                       {col.addable && (
                         <button
                           onClick={() => setRequestForm(blankRequest())}
                           title={S.newRequest}
-                          style={{ width: 22, height: 22, borderRadius: 6, border: `1px solid ${T.rule}`, display: 'grid', placeItems: 'center', color: T.ink2, background: T.bg, cursor: 'pointer', fontSize: 14, lineHeight: 1 }}
+                          style={{ width: 22, height: 22, borderRadius: 999, border: `1px solid ${T.ruleInput}`, display: 'grid', placeItems: 'center', color: T.ink2, background: T.bg, cursor: 'pointer', fontSize: 14, lineHeight: 1 }}
                         >
                           +
                         </button>
@@ -253,12 +255,12 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
                       col.addable ? (
                         <button
                           onClick={() => setRequestForm(blankRequest())}
-                          style={{ width: '100%', padding: '14px 0', borderRadius: 10, border: `1px dashed ${T.rule}`, color: T.ink3, fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: 600, background: 'transparent', cursor: 'pointer' }}
+                          style={{ width: '100%', padding: '14px 0', borderRadius: 12, border: `1px dashed ${T.ruleInput}`, color: T.ink3, fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: 600, background: 'transparent', cursor: 'pointer' }}
                         >
                           + {S.newRequest}
                         </button>
                       ) : (
-                        <span style={{ fontFamily: FONT_SANS, fontStyle: 'italic', fontSize: 13, color: T.ink3, padding: '4px 2px', display: 'block' }}>{col.empty}</span>
+                        <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3, padding: '4px 2px', display: 'block' }}>{col.empty}</span>
                       )
                     ) : (
                       col.items.map((p) => {
@@ -373,7 +375,7 @@ function RollupView({ lang }: { lang: Lang }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <Card>
-        <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>{S.acrossProperties}</div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 9.5, color: T.faint, letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 10 }}>{S.acrossProperties}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 16 }}>
           <StatStrip label={S.totalRequests}><span style={statNum}>{data.totals.projects}</span></StatStrip>
           <StatStrip label={S.capPending}><span style={statNum}>{data.totals.pending}</span></StatStrip>
@@ -689,7 +691,7 @@ function DetailModal({
 
         {/* Quote & estimate */}
         <Section title={S.binderQuote}>
-          <Card style={{ background: T.bg }}>
+          <Card style={{ background: 'rgba(31,35,28,0.03)', boxShadow: 'none' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
               <Money cents={spent} size={22} color={over != null && over > 0 ? T.warm : T.ink} />
               <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3 }}>
@@ -713,7 +715,7 @@ function DetailModal({
                 {project.decidedAt ? ` · ${project.decidedAt.slice(0, 10)}` : ''}
               </div>
             )}
-            {project.decisionNotes && <div style={{ fontStyle: 'italic' }}>“{project.decisionNotes}”</div>}
+            {project.decisionNotes && <div style={{ color: T.ink2 }}>“{project.decisionNotes}”</div>}
             {!project.submittedByName && !project.approvedByName && <span style={{ color: T.ink3 }}>—</span>}
           </div>
         </Section>
@@ -788,12 +790,12 @@ function monthName(m: string, lang: Lang): string {
   return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
-const statNum: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 24, fontWeight: 600, color: T.ink };
+const statNum: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 23, fontWeight: 600, color: T.ink };
 const selStyle: React.CSSProperties = {
-  height: 40, padding: '0 12px', borderRadius: 10, background: T.bg, border: `1px solid ${T.rule}`,
+  height: 40, padding: '0 12px', borderRadius: 10, background: T.bg, border: `1px solid ${T.ruleInput}`,
   fontFamily: FONT_SANS, fontSize: 14, color: T.ink, width: '100%', boxSizing: 'border-box', outline: 'none', cursor: 'pointer',
 };
 const dateStyle: React.CSSProperties = {
-  height: 40, padding: '0 12px', borderRadius: 10, background: T.bg, border: `1px solid ${T.rule}`,
+  height: 40, padding: '0 12px', borderRadius: 10, background: T.bg, border: `1px solid ${T.ruleInput}`,
   fontFamily: FONT_SANS, fontSize: 14, color: T.ink, width: '100%', boxSizing: 'border-box', outline: 'none',
 };
