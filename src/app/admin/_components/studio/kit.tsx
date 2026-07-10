@@ -246,7 +246,7 @@ export function Btn({
   };
   const onMouseDown = (e: React.MouseEvent) => { if (!disabled) pulse(e.currentTarget as HTMLElement, { scale: 0.96, dur: 200 }); };
   if (href && !disabled) {
-    return <a href={href} style={css} title={title} aria-label={ariaLabel} onMouseDown={onMouseDown}>{children}</a>;
+    return <a href={href} style={css} title={title} aria-label={ariaLabel} onMouseDown={onMouseDown} onClick={onClick}>{children}</a>;
   }
   return (
     <button type={type ?? 'button'} onClick={onClick} disabled={disabled} title={title} aria-label={ariaLabel} onMouseDown={onMouseDown} style={css}>

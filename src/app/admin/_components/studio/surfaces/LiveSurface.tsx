@@ -559,6 +559,15 @@ function MapCard({ h, onOpen, onAssign, onSections, onDelete }: { h: EnrichedRow
             >
               Sections
             </Btn>
+            <Btn
+              size="sm"
+              variant="ghost"
+              href={`/admin/properties/${h.id}`}
+              onClick={(e) => e.stopPropagation()}
+              style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}
+            >
+              Property page
+            </Btn>
             {sectionsOff > 0 && (
               <Pill tone="terracotta" style={{ fontSize: 9, padding: '2px 6px' }}>{sectionsOff} off</Pill>
             )}
