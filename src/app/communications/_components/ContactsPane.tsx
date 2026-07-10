@@ -17,20 +17,15 @@ import React from 'react';
 import {
   Plus, Pencil, Trash2, Phone, Mail, MapPin, Clock, ChevronLeft, Loader2,
 } from 'lucide-react';
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
+import { apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
 import type { KnowledgeContactDTO, ContactCategory, LocalCategory } from '@/lib/knowledge/types';
 import { CONTACT_CATEGORIES, LOCAL_CATEGORIES, KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 import type { L as LType } from './comms-types-fe';
+import { useCommsResource } from './comms-data';
 import { T, SERIF, MonoLabel } from './comms-ui';
+// Snow content styling (shared with the Knowledge hub) — see comms-snow.tsx.
+import { SANS, card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle } from './comms-snow';
 
-// ── Snow content styling (moved verbatim from KnowledgePane) ─────────────────
-const SANS = 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif';
-const card: React.CSSProperties = { border: '1px solid var(--snow-rule)', borderRadius: 12, background: 'var(--snow-bg)' };
-const primaryBtn: React.CSSProperties = { background: 'var(--snow-sage-deep)', color: '#fff', border: 'none', borderRadius: 9, padding: '8px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: SANS, display: 'inline-flex', alignItems: 'center', gap: 6 };
-const ghostBtn: React.CSSProperties = { background: 'transparent', color: 'var(--snow-ink2)', border: '1px solid var(--snow-rule)', borderRadius: 9, padding: '7px 12px', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, display: 'inline-flex', alignItems: 'center', gap: 5 };
-const iconBtn: React.CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 7, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--snow-ink2)' };
-const inputStyle: React.CSSProperties = { width: '100%', border: '1px solid var(--snow-rule)', borderRadius: 9, padding: '9px 11px', fontFamily: SANS, fontSize: 14, outline: 'none', background: 'var(--snow-bg)', color: 'var(--snow-ink)', boxSizing: 'border-box' };
-const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 4, display: 'block' };
 const subLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 6 };
 
 const CONTACT_CAT_LABEL: Record<ContactCategory, { en: string; es: string }> = {
@@ -67,20 +62,16 @@ function localLabel(v: string | null, L: LType): string {
 // CONTACTS mode (self-fetching: list ⇄ editor)
 // ═══════════════════════════════════════════════════════════════════════════
 export function ContactsMode({ pid, isManager, L }: { pid: string; isManager: boolean; L: LType }) {
-  const [items, setItems] = React.useState<KnowledgeContactDTO[] | null>(null);
   const [editing, setEditing] = React.useState<null | 'new' | KnowledgeContactDTO>(null);
 
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ contacts: KnowledgeContactDTO[] }>(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setItems(r.data.contacts);
-    else setItems([]);
-  }, [pid]);
-  React.useEffect(() => { void load(); }, [load]);
+  const { data, loading, reload } = useCommsResource<{ contacts: KnowledgeContactDTO[] }>(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}`);
+  // null = still loading (spinner); a failed fetch shows the empty state.
+  const items = data?.contacts ?? (loading ? null : []);
 
   const remove = async (c: KnowledgeContactDTO) => {
     if (!window.confirm(L(`Delete "${c.name}"?`, `¿Eliminar "${c.name}"?`))) return;
     await apiDelete(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(c.id)}`);
-    await load();
+    await reload();
   };
 
   // Group by category for display (null → "Other"); the 'local' group is then
@@ -99,7 +90,7 @@ export function ContactsMode({ pid, isManager, L }: { pid: string; isManager: bo
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '26px 28px 60px', fontFamily: SANS, color: 'var(--snow-ink)' }}>
         {editing ? (
-          <ContactEditor pid={pid} L={L} contact={editing === 'new' ? null : editing} onDone={async () => { setEditing(null); await load(); }} onCancel={() => setEditing(null)} />
+          <ContactEditor pid={pid} L={L} contact={editing === 'new' ? null : editing} onDone={async () => { setEditing(null); await reload(); }} onCancel={() => setEditing(null)} />
         ) : (
           <>
             {/* Header — mirrors LogbookPane's serif title + count */}

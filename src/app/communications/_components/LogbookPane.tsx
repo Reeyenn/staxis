@@ -9,9 +9,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
 import { Plus, X, ArrowLeft, Loader2, MessageSquare, ChevronDown, Send } from 'lucide-react';
-import { apiGet, apiPost } from '@/lib/comms/client';
+import { apiPost } from '@/lib/comms/client';
 import type { LogEntryDTO, LogReplyDTO, CommsDept } from '@/lib/comms/types';
 import type { L } from './comms-types-fe';
+import { useCommsResource } from './comms-data';
 import {
   T, SANS, SERIF, MONO, deptColor, deptColorDark, tint, Avatar, MonoLabel, DeptDot,
   fmtClock, fmtDayLabel, dayKey,
@@ -40,22 +41,15 @@ function catLabel(category: string | null | undefined, L: L): string {
 // LOG BOOK mode (self-fetching: list ⇄ detail)
 // ─────────────────────────────────────────────────────────────────────────────
 export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L: L }) {
-  const [entries, setEntries] = React.useState<LogEntryDTO[]>([]);
-  const [loaded, setLoaded] = React.useState(false);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [adding, setAdding] = React.useState(false);
 
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ entries: LogEntryDTO[] }>(`/api/comms/logbook?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setEntries(r.data.entries);
-    setLoaded(true);
-  }, [pid]);
-
-  React.useEffect(() => { void load(); }, [load]);
-  React.useEffect(() => {
-    const iv = setInterval(() => { if (!document.hidden) void load(); }, 8000);
-    return () => clearInterval(iv);
-  }, [load]);
+  const { data, loading, reload: load } = useCommsResource<{ entries: LogEntryDTO[] }>(
+    `/api/comms/logbook?pid=${encodeURIComponent(pid)}`,
+    { pollMs: 8000, keepDataOnError: true },
+  );
+  const entries = React.useMemo(() => data?.entries ?? [], [data]);
+  const loaded = !loading;
 
   const selected = selectedId ? entries.find((e) => e.id === selectedId) ?? null : null;
 
@@ -194,21 +188,15 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
 function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
   pid: string; entry: LogEntryDTO; meName: string; L: L; onBack: () => void; onReplied: () => void;
 }) {
-  const [replies, setReplies] = React.useState<LogReplyDTO[]>([]);
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const dept = catDept(entry.category);
 
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ replies: LogReplyDTO[] }>(`/api/comms/logbook/replies?pid=${encodeURIComponent(pid)}&entryId=${encodeURIComponent(entry.id)}`);
-    if (r.ok && r.data) setReplies(r.data.replies);
-  }, [pid, entry.id]);
-
-  React.useEffect(() => { void load(); }, [load]);
-  React.useEffect(() => {
-    const iv = setInterval(() => { if (!document.hidden) void load(); }, 8000);
-    return () => clearInterval(iv);
-  }, [load]);
+  const { data, reload: load } = useCommsResource<{ replies: LogReplyDTO[] }>(
+    `/api/comms/logbook/replies?pid=${encodeURIComponent(pid)}&entryId=${encodeURIComponent(entry.id)}`,
+    { pollMs: 8000, keepDataOnError: true },
+  );
+  const replies = data?.replies ?? [];
 
   const send = async () => {
     const t = text.trim(); if (!t || busy) return;

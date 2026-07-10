@@ -182,3 +182,33 @@ export function Tip({ text, children, width = 240 }: { text: string; children: R
 
 // ── Shared button styles ────────────────────────────────────────────────────
 export const paneIcon: React.CSSProperties = { width: 32, height: 32, borderRadius: 7, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
+
+// ── Overlay scaffold ─────────────────────────────────────────────────────────
+// The five comms popups share this exact skeleton: fixed inset scrim that
+// closes on click, centered (or top-aligned) card that stops propagation, no
+// entrance/exit animation, no body-scroll lock, Escape only where a modal had
+// it. Deliberately NOT the shared Modal (F6): its center variant hard-codes
+// scrim alignment/padding ('32px 24px', alignItems center), closes on
+// mousedown instead of click, and its card has no knobs for the comms cards'
+// flex-column / overflow-hidden / %-of-scrim heights — none of which survive
+// byte-identical there.
+export function CommsOverlay({ onClose, scrim, zIndex = 70, align = 'center', paddingTop, padding, escToClose = false, cardStyle, children }: {
+  onClose: () => void; scrim: string; zIndex?: number; align?: 'center' | 'top'; paddingTop?: number; padding?: number;
+  escToClose?: boolean; cardStyle: React.CSSProperties; children: React.ReactNode;
+}) {
+  React.useEffect(() => {
+    if (!escToClose) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [escToClose, onClose]);
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: scrim, zIndex, display: 'flex',
+      alignItems: align === 'top' ? 'flex-start' : 'center', justifyContent: 'center',
+      ...(paddingTop !== undefined ? { paddingTop } : {}), ...(padding !== undefined ? { padding } : {}),
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={cardStyle}>{children}</div>
+    </div>
+  );
+}

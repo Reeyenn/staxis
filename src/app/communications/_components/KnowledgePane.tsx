@@ -23,6 +23,8 @@ import type {
   KnowledgeSection, KnowledgeVisibility, ExtractionStatus, Dept,
 } from '@/lib/knowledge/types';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
+import { useCommsResource } from './comms-data';
+import { SANS, card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, Empty } from './comms-snow';
 
 type LFn = (en: string, es: string) => string;
 
@@ -70,15 +72,7 @@ function accessToPayload(a: AccessVal): { visibility: KnowledgeVisibility; visib
   return { visibility: 'dept', visibleDept: a };
 }
 
-const SANS = 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif';
-
-// ── shared styles ─────────────────────────────────────────────────────────
-const card: React.CSSProperties = { border: '1px solid var(--snow-rule)', borderRadius: 12, background: 'var(--snow-bg)' };
-const primaryBtn: React.CSSProperties = { background: 'var(--snow-sage-deep)', color: '#fff', border: 'none', borderRadius: 9, padding: '8px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: SANS, display: 'inline-flex', alignItems: 'center', gap: 6 };
-const ghostBtn: React.CSSProperties = { background: 'transparent', color: 'var(--snow-ink2)', border: '1px solid var(--snow-rule)', borderRadius: 9, padding: '7px 12px', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, display: 'inline-flex', alignItems: 'center', gap: 5 };
-const iconBtn: React.CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 7, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--snow-ink2)' };
-const inputStyle: React.CSSProperties = { width: '100%', border: '1px solid var(--snow-rule)', borderRadius: 9, padding: '9px 11px', fontFamily: SANS, fontSize: 14, outline: 'none', background: 'var(--snow-bg)', color: 'var(--snow-ink)', boxSizing: 'border-box' };
-const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 4, display: 'block' };
+// Shared Snow styles live in comms-snow.tsx; `chip` is only used here.
 const chip: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: 'var(--snow-sage-deep)', background: 'var(--snow-sage-dim)', borderRadius: 999, padding: '2px 8px' };
 
 const SECTIONS: { key: KnowledgeSection; icon: React.ReactNode; en: string; es: string }[] = [
@@ -128,12 +122,6 @@ export function KnowledgePane({ pid, isManager, L }: { pid: string; isManager: b
 
 // ── small shared bits ────────────────────────────────────────────────────────
 
-function Loading({ L }: { L: LFn }) {
-  return <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--snow-ink3)', fontSize: 13, padding: 20 }}><Loader2 size={15} className="spin" /> {L('Loading…', 'Cargando…')}</div>;
-}
-function Empty({ text }: { text: string }) {
-  return <div style={{ color: 'var(--snow-ink3)', fontSize: 13.5, padding: '28px 8px', textAlign: 'center' }}>{text}</div>;
-}
 function SectionHeader({ title, action }: { title: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -146,26 +134,22 @@ function SectionHeader({ title, action }: { title: React.ReactNode; action?: Rea
 // ════════════════════════════════ SOPs ════════════════════════════════════
 
 function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
-  const [items, setItems] = React.useState<KnowledgeArticleDTO[] | null>(null);
   const [selected, setSelected] = React.useState<KnowledgeArticleDTO | null>(null);
   const [editing, setEditing] = React.useState<null | 'new' | KnowledgeArticleDTO>(null);
 
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ articles: KnowledgeArticleDTO[] }>(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setItems(r.data.articles);
-    else setItems([]);
-  }, [pid]);
-  React.useEffect(() => { void load(); }, [load]);
+  const { data, loading, reload } = useCommsResource<{ articles: KnowledgeArticleDTO[] }>(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}`);
+  // null = still loading (spinner); a failed fetch shows the empty state.
+  const items = data?.articles ?? (loading ? null : []);
 
   const remove = async (a: KnowledgeArticleDTO) => {
     if (!window.confirm(L(`Delete "${a.title}"?`, `¿Eliminar "${a.title}"?`))) return;
     await apiDelete(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(a.id)}`);
     setSelected(null);
-    await load();
+    await reload();
   };
 
   if (editing) {
-    return <SopEditor pid={pid} L={L} article={editing === 'new' ? null : editing} onDone={async () => { setEditing(null); await load(); }} onCancel={() => setEditing(null)} />;
+    return <SopEditor pid={pid} L={L} article={editing === 'new' ? null : editing} onDone={async () => { setEditing(null); await reload(); }} onCancel={() => setEditing(null)} />;
   }
 
   if (selected) {
@@ -287,8 +271,6 @@ function SopEditor({ pid, article, L, onDone, onCancel }: { pid: string; article
 const ACCEPT_DOCS = '.pdf,.txt,.md,.markdown,.csv,.doc,.docx,.jpg,.jpeg,.png,.webp';
 
 function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
-  const [items, setItems] = React.useState<KnowledgeDocumentDTO[] | null>(null);
-  const [folders, setFolders] = React.useState<KnowledgeFolderDTO[]>([]);
   const [currentFolderId, setCurrentFolderId] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -299,25 +281,36 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
   const [editingDocId, setEditingDocId] = React.useState<string | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
-  const load = React.useCallback(async () => {
-    const [docsR, foldersR] = await Promise.all([
-      apiGet<{ documents: KnowledgeDocumentDTO[] }>(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}`),
-      apiGet<{ folders: KnowledgeFolderDTO[] }>(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}`),
-    ]);
-    setItems(docsR.ok && docsR.data ? docsR.data.documents : []);
-    setFolders(foldersR.ok && foldersR.data ? foldersR.data.folders : []);
-  }, [pid]);
-  React.useEffect(() => { void load(); }, [load]);
+  // Docs + folders land together; either half failing falls back to [] on its
+  // own (never an error state), exactly like the old paired setStates.
+  const { data, reload } = useCommsResource<{ documents: KnowledgeDocumentDTO[]; folders: KnowledgeFolderDTO[] }>({
+    key: pid,
+    fetch: async () => {
+      const [docsR, foldersR] = await Promise.all([
+        apiGet<{ documents: KnowledgeDocumentDTO[] }>(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}`),
+        apiGet<{ folders: KnowledgeFolderDTO[] }>(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}`),
+      ]);
+      return {
+        data: {
+          documents: docsR.ok && docsR.data ? docsR.data.documents : [],
+          folders: foldersR.ok && foldersR.data ? foldersR.data.folders : [],
+        },
+      };
+    },
+  });
+  const items = data ? data.documents : null;
+  const folders = data?.folders ?? [];
 
   // Auto-refresh while any document is still being read/embedded (the upload
   // route processes in the background), so "Processing…" flips to "Searchable"
-  // without a manual reload. Stops once nothing is pending/processing.
+  // without a manual reload. Stops once nothing is pending/processing. A
+  // one-shot timeout chain (not pollMs): it must fire even in a hidden tab.
   React.useEffect(() => {
     const anyProcessing = (items ?? []).some((d) => d.extractionStatus === 'pending' || d.extractionStatus === 'processing');
     if (!anyProcessing) return;
-    const t = setTimeout(() => { void load(); }, 4000);
+    const t = setTimeout(() => { void reload(); }, 4000);
     return () => clearTimeout(t);
-  }, [items, load]);
+  }, [items, reload]);
 
   // Uploads land in the folder you're viewing; at the root, the upload-target picker.
   const targetFolderId = currentFolderId ?? uploadFolderId;
@@ -339,7 +332,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       const access = accessToPayload(uploadAccess);
       const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size, visibility: access.visibility, visibleDept: access.visibleDept, folderId: targetFolderId });
       if (!reg.ok) { setError(reg.error || L('Could not save the document.', 'No se pudo guardar el documento.')); return; }
-      await load();
+      await reload();
     } finally {
       setBusy(false);
     }
@@ -348,7 +341,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
   const removeDoc = async (d: KnowledgeDocumentDTO) => {
     if (!window.confirm(L(`Delete "${d.title}"?`, `¿Eliminar "${d.title}"?`))) return;
     await apiDelete(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(d.id)}`);
-    await load();
+    await reload();
   };
 
   const addFolder = async () => {
@@ -357,7 +350,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
     const r = await apiPost('/api/knowledge/folders', { pid, name });
     if (!r.ok) { setError(r.error || L('Could not create the folder.', 'No se pudo crear la carpeta.')); return; }
     setNewFolderName(''); setAddingFolder(false);
-    await load();
+    await reload();
   };
 
   const renameFolder = async (f: KnowledgeFolderDTO) => {
@@ -366,14 +359,14 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
     const trimmed = name.trim();
     if (!trimmed || trimmed === f.name) return;
     await apiPatch('/api/knowledge/folders', { pid, id: f.id, name: trimmed });
-    await load();
+    await reload();
   };
 
   const removeFolder = async (f: KnowledgeFolderDTO) => {
     if (!window.confirm(L('Delete this folder? The files inside are kept — they just move out of the folder.', '¿Eliminar esta carpeta? Los archivos se conservan — solo salen de la carpeta.'))) return;
     await apiDelete(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(f.id)}`);
     if (currentFolderId === f.id) setCurrentFolderId(null);
-    await load();
+    await reload();
   };
 
   const currentFolder = folders.find((f) => f.id === currentFolderId) ?? null;
@@ -402,7 +395,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       editingId={editingDocId}
       onEdit={(id) => setEditingDocId(id)}
       onRemove={removeDoc}
-      onChanged={async () => { setEditingDocId(null); await load(); }}
+      onChanged={async () => { setEditingDocId(null); await reload(); }}
       emptyText={emptyText}
     />
   );
