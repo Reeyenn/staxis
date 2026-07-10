@@ -11,7 +11,7 @@
  *              Never touches the global default (selectChecklist still resolves
  *              the per-property one first at inspection-start).
  *   DELETE ?propertyId=UUID&checklistId=UUID
- *            → reset to the Staxis default by deleting the per-property checklist.
+ *            → delete the per-property checklist (then EMPTY — no global fallback as of 0305).
  *
  * Auth: manager/owner/admin + property access on EVERY method (gateChecklistAccess).
  * Service-role only — inspection_checklist* tables are deny-all to the browser.

@@ -421,7 +421,7 @@ function CleaningEditor({ pid, lang, properties }: {
         </Btn>
         {data?.isOverride && (
           <Btn variant="ghost" size="md" onClick={() => setConfirmReset(true)} disabled={saving || loading}>
-            <RotateCcw size={14} /> {lang === 'es' ? 'Restablecer al valor de Staxis' : 'Reset to Staxis default'}
+            <RotateCcw size={14} /> {lang === 'es' ? 'Eliminar esta lista' : 'Delete this checklist'}
           </Btn>
         )}
       </div>
@@ -439,11 +439,11 @@ function CleaningEditor({ pid, lang, properties }: {
       {confirmReset && (
         <ConfirmModal
           lang={lang}
-          title={lang === 'es' ? 'Restablecer al valor de Staxis' : 'Reset to Staxis default'}
+          title={lang === 'es' ? 'Eliminar esta lista' : 'Delete this checklist'}
           message={lang === 'es'
-            ? `Esto eliminará tu versión personalizada de la lista “${CLEANING_TYPE_LABEL[type].es}” y volverá al valor predeterminado de Staxis.`
-            : `This deletes your customized “${CLEANING_TYPE_LABEL[type].en}” checklist and falls back to the Staxis default.`}
-          confirmLabel={lang === 'es' ? 'Restablecer' : 'Reset'}
+            ? `Esto eliminará la lista “${CLEANING_TYPE_LABEL[type].es}” de esta propiedad de forma permanente. Quedará vacía hasta que crees una nueva desde cero.`
+            : `This permanently deletes the “${CLEANING_TYPE_LABEL[type].en}” checklist for this property. It will be empty until you build a new one from scratch.`}
+          confirmLabel={lang === 'es' ? 'Eliminar' : 'Delete'}
           onConfirm={() => void reset()}
           onCancel={() => setConfirmReset(false)}
         />
@@ -690,7 +690,7 @@ function InspectionEditor({ pid, lang, properties }: {
         </Btn>
         {data?.isOverride && (
           <Btn variant="ghost" size="md" onClick={() => setConfirmReset(true)} disabled={saving || loading}>
-            <RotateCcw size={14} /> {lang === 'es' ? 'Restablecer al valor de Staxis' : 'Reset to Staxis default'}
+            <RotateCcw size={14} /> {lang === 'es' ? 'Eliminar esta lista' : 'Delete this checklist'}
           </Btn>
         )}
       </div>
@@ -708,11 +708,11 @@ function InspectionEditor({ pid, lang, properties }: {
       {confirmReset && (
         <ConfirmModal
           lang={lang}
-          title={lang === 'es' ? 'Restablecer al valor de Staxis' : 'Reset to Staxis default'}
+          title={lang === 'es' ? 'Eliminar esta lista' : 'Delete this checklist'}
           message={lang === 'es'
-            ? 'Esto eliminará la lista de inspección personalizada de esta propiedad y volverá al valor predeterminado de Staxis.'
-            : 'This deletes this property’s customized inspection checklist and falls back to the Staxis default.'}
-          confirmLabel={lang === 'es' ? 'Restablecer' : 'Reset'}
+            ? 'Esto eliminará la lista de inspección de esta propiedad de forma permanente. Quedará vacía hasta que crees una nueva desde cero.'
+            : 'This permanently deletes this property’s inspection checklist. It will be empty until you build a new one from scratch.'}
+          confirmLabel={lang === 'es' ? 'Eliminar' : 'Delete'}
           onConfirm={() => void reset()}
           onCancel={() => setConfirmReset(false)}
         />

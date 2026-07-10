@@ -9,7 +9,7 @@
  *            → create/update the PER-PROPERTY override and replace its items.
  *              Never touches the global default.
  *   DELETE ?propertyId=UUID&cleaningType=departure
- *            → reset to the Staxis default by deleting the per-property override.
+ *            → delete the per-property override (the checklist is then EMPTY — no global fallback as of 0305).
  *
  * Auth: manager/owner/admin + property access on EVERY method (gateChecklistAccess).
  * Service-role only — the cleaning_checklist_* tables are deny-all to the
