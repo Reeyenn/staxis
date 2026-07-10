@@ -48,7 +48,8 @@ export default function PropertySelectorPage() {
     }
     setActivePropertyId(p.id);
     sessionStorage.setItem('hotelops-session-selected', '1');
-    router.replace('/dashboard');
+    // Concourse shell: land on the hub, not a specific section.
+    router.replace('/home');
   };
 
   // Auto-select when exactly 1 property

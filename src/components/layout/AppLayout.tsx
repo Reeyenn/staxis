@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { usePathname } from 'next/navigation';
-import { Header } from './Header';
+import { usePathname, useRouter } from 'next/navigation';
+import { ConcourseBar } from '@/components/concourse/ConcourseBar';
+import { CxIcon } from '@/components/concourse/icons';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
@@ -34,6 +35,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
      the Header stays mounted so the user can navigate to an enabled section,
      and redirecting would loop if Staxis (or every section) were off. */
   const pathname = usePathname();
+  const router = useRouter();
   const currentSection = sectionForPath(pathname);
   const sectionOff = Boolean(
     activeProperty &&
@@ -68,8 +70,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <VoicePanelProvider>
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
-      <Header />
+    <div style={{
+      minHeight: '100vh', display: 'flex', flexDirection: 'column',
+      // Concourse shell — the soft top-lit page wash every screen sits on.
+      background: 'radial-gradient(ellipse 1000px 500px at 50% 0%, #FFFFFF 0%, #F5F7F4 100%)',
+    }}>
+      <ConcourseBar />
       <ActivityTracker />
       <GlobalAutoTranslate />
 
@@ -99,12 +105,22 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
-      <main style={{
+      <main className="cx-swap" style={{
         flex: 1,
         width: '100%',
         maxWidth: '1920px',
         margin: '0 auto',
       }}>
+        {/* Concourse chrome — a Home pill on every screen except the hub
+            itself, so non-technical staff always have one obvious way back. */}
+        {pathname !== '/home' && (
+          <div style={{ padding: '14px clamp(16px, 3vw, 48px) 0' }}>
+            <button type="button" className="cx-homebtn" onClick={() => router.push('/home')}>
+              <CxIcon name="back" size={13} />
+              {lang === 'es' ? 'Inicio' : 'Home'}
+            </button>
+          </div>
+        )}
         {sectionOff ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',

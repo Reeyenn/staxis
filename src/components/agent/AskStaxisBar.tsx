@@ -18,9 +18,11 @@
 // can't express, without colliding with the app's global CSS.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useVoicePanel } from './VoicePanelContext';
 import { useAgentChat } from './useAgentChat';
@@ -29,13 +31,18 @@ import type { DisplayMessage } from './MessageList';
 
 type ChatState = 'empty' | 'active' | 'collapsed';
 
-const PLACEHOLDER = 'Ask Staxis anything about the property…';
-const LISTENING_PLACEHOLDER = 'Listening… speak and it appears here';
-const SUGGESTIONS = [
-  'What needs my attention?',
-  "Who's behind on rooms?",
-  'Should I raise rates?',
-];
+const PLACEHOLDER = {
+  en: 'Ask Staxis anything about the property…',
+  es: 'Pregúntale a Staxis lo que sea del hotel…',
+};
+const LISTENING_PLACEHOLDER = {
+  en: 'Listening… speak and it appears here',
+  es: 'Escuchando… habla y aparece aquí',
+};
+const SUGGESTIONS = {
+  en: ['What needs my attention?', "Who's behind on rooms?", 'Should I raise rates?'],
+  es: ['¿Qué necesita mi atención?', '¿Quién va atrasado con las habitaciones?', '¿Debería subir tarifas?'],
+};
 
 // Minimal shape of the Web Speech API we touch — it isn't in the standard DOM
 // lib types and is `webkit`-prefixed in Chrome/Safari.
@@ -53,6 +60,8 @@ interface SpeechRecognitionLike {
 export function AskStaxisBar() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const { lang } = useLang();
+  const pathname = usePathname();
   const voicePanel = useVoicePanel();
 
   const [input, setInput] = useState('');
@@ -237,6 +246,18 @@ export function AskStaxisBar() {
   // Stop any live dictation if the bar unmounts.
   useEffect(() => () => { try { recognitionRef.current?.stop(); } catch { /* noop */ } }, []);
 
+  // The Concourse hub's hero Ask bar hands its input here over a window
+  // event, so there is exactly ONE conversation brain (history, approvals,
+  // streaming) no matter which surface the user typed into.
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const text = (e as CustomEvent).detail?.text;
+      if (typeof text === 'string' && text.trim()) submit(text);
+    };
+    window.addEventListener('staxis:ask', onAsk);
+    return () => window.removeEventListener('staxis:ask', onAsk);
+  }, [submit]);
+
   const dockClass = useMemo(() => [
     'asx-dock',
     idle && 'asx-idle',
@@ -249,8 +270,10 @@ export function AskStaxisBar() {
   if (!user || !activePropertyId || !voicePanel) return null;
 
   // Keep mounted (chat state persists) but hide while the voice overlay is up,
-  // so the two bottom-center surfaces never stack.
-  const hidden = voicePanel.voiceModeOpen;
+  // so the two bottom-center surfaces never stack. On the Concourse hub the
+  // hero Ask bar IS the idle surface — the docked capsule only appears there
+  // once a conversation is actually going.
+  const hidden = voicePanel.voiceModeOpen || (pathname === '/home' && idle && messages.length === 0);
 
   // Typing dots show whenever we're streaming but the latest visible content
   // isn't the assistant's reply yet (initial latency or a tool call in flight).
@@ -319,7 +342,7 @@ export function AskStaxisBar() {
         {/* Suggestion chips (before the first message) */}
         {chatState === 'empty' && (
           <div className="asx-chips">
-            {SUGGESTIONS.map((s) => (
+            {SUGGESTIONS[lang].map((s) => (
               <button key={s} type="button" className="asx-chip" onClick={() => submit(s)}>
                 {s}
               </button>
@@ -370,7 +393,7 @@ export function AskStaxisBar() {
               ref={inputRef}
               className="asx-input"
               value={input}
-              placeholder={dictating ? LISTENING_PLACEHOLDER : PLACEHOLDER}
+              placeholder={dictating ? LISTENING_PLACEHOLDER[lang] : PLACEHOLDER[lang]}
               aria-label="Ask Staxis"
               onChange={(e) => { setInput(e.target.value); setHistoryOpen(false); }}
               onFocus={() => { setFocused(true); setHistoryOpen(false); if (chatState === 'collapsed') reopen(); }}
@@ -394,9 +417,12 @@ export function AskStaxisBar() {
               <span className="asx-tip">Speak and it types for you</span>
               <Mic />
             </button>
-            <button type="button" className="asx-ico asx-call" onClick={startCall} aria-label="Call Staxis">
-              <span className="asx-tip">Talk to Staxis like a phone call</span>
+            <button type="button" className="asx-call" onClick={startCall} aria-label="Call Staxis">
+              <span className="asx-tip">
+                {lang === 'es' ? 'Habla con Staxis como una llamada' : 'Talk to Staxis like a phone call'}
+              </span>
               <Phone />
+              {lang === 'es' ? 'Hablar' : 'Talk'}
             </button>
 
             <button type="button" className="asx-send" onClick={() => submit(input)} aria-label="Send" title="Send">
@@ -482,7 +508,7 @@ const ASX_CSS = `
 .asx-dock{position:fixed;left:50%;bottom:max(22px,env(safe-area-inset-bottom,22px));transform:translateX(-50%);
   z-index:60;width:min(540px,calc(100vw - 24px));display:flex;flex-direction:column;
   transition:width .28s cubic-bezier(.33,1,.68,1);
-  --asx-accent:#2563EB;--asx-frost:12px;
+  --asx-accent:#3E5C48;--asx-frost:12px;
   --asx-ink:var(--snow-ink,#1F231C);--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .asx-dock,.asx-dock *{box-sizing:border-box;}
@@ -497,13 +523,16 @@ const ASX_CSS = `
 .asx-scrim.asx-scrim-on{opacity:.38;}     /* gentle wash the moment the bar wakes */
 .asx-scrim.asx-scrim-chat{opacity:1;}     /* much deeper once a conversation is going */
 
-/* idle: the whole dock shrinks to a 44px spark pill — keeps clicks passing
-   through behind it AND lets a normal hover on the pill wake it back open. */
-.asx-dock.asx-idle{width:44px;}
-.asx-dock.asx-idle .asx-glass{height:44px;overflow:hidden;opacity:.82;cursor:pointer;}
-.asx-dock.asx-idle .asx-barrow{padding:0;gap:0;justify-content:center;align-items:center;height:44px;}
-.asx-dock.asx-idle .asx-barrow > :not(.asx-sp){display:none;}
-.asx-dock.asx-idle .asx-sp{font-size:16px;margin:0;}
+/* idle: the docked capsule stays visible and breathes — the Concourse glow
+   (soft sage halo swelling and warming slightly gold). 520px like the hub's
+   hero bar at smaller scale, per the handoff. */
+@keyframes asx-breathe{
+  0%,100%{box-shadow:0 0 0 0 rgba(158,183,166,.55),0 0 28px rgba(158,183,166,.5);}
+  50%{box-shadow:0 0 0 14px rgba(158,183,166,0),0 0 46px rgba(201,150,68,.45);}
+}
+@keyframes asx-sparkspin{0%,100%{transform:rotate(0) scale(1);}50%{transform:rotate(12deg) scale(1.12);}}
+.asx-dock.asx-idle{width:min(520px,calc(100vw - 24px));}
+.asx-dock.asx-idle .asx-glass{cursor:text;animation:asx-breathe 4.2s ease-in-out infinite;}
 .asx-dock.asx-idle .asx-closerow,.asx-dock.asx-idle .asx-resume{display:none;}
 .asx-dock.asx-idle .asx-chips{display:none;}
 .asx-dock.asx-hist .asx-chips,.asx-dock.asx-hist .asx-closerow,.asx-dock.asx-hist .asx-resume{display:none;}
@@ -571,12 +600,13 @@ const ASX_CSS = `
 @keyframes asx-barin{from{transform:translateY(16px)}to{transform:none}}
 .asx-glass{position:relative;border-radius:999px;overflow:visible;width:100%;
   animation:asx-barin .42s cubic-bezier(.33,1,.68,1);transition:opacity .28s ease;
-  background:rgba(255,255,255,.78);
+  background:rgba(255,255,255,.9);
   backdrop-filter:blur(var(--asx-frost,12px));-webkit-backdrop-filter:blur(var(--asx-frost,12px));
-  border:1px solid rgba(20,24,20,.08);
+  border:1px solid rgba(92,122,96,.25);
   box-shadow:0 1px 0 rgba(255,255,255,.8) inset,0 8px 26px -16px rgba(20,30,20,.3);}
 .asx-barrow{position:relative;z-index:2;display:flex;align-items:center;gap:9px;padding:7px 7px 7px 16px;}
-.asx-sp{color:var(--asx-accent);font-size:14px;flex-shrink:0;filter:drop-shadow(0 1px 1px rgba(255,255,255,.7));line-height:1;}
+.asx-sp{color:#5C7A60;font-size:14px;flex-shrink:0;filter:drop-shadow(0 1px 1px rgba(255,255,255,.7));line-height:1;
+  animation:asx-sparkspin 3.5s ease-in-out infinite;}
 .asx-input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:13.5px;color:var(--asx-ink);font-family:inherit;}
 .asx-input::placeholder{color:var(--asx-ink3);}
 
@@ -589,8 +619,15 @@ const ASX_CSS = `
   pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 8px 20px -8px rgba(0,0,0,.4);z-index:6;font-family:inherit;}
 .asx-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#1A1F1B;}
 .asx-ico:hover .asx-tip{opacity:1;}
-.asx-ico.asx-call{background:var(--asx-accent);color:#fff;}
-.asx-ico.asx-call:hover{background:var(--asx-accent);color:#fff;filter:brightness(1.08);}
+/* Talk — the labeled voice pill from the Concourse handoff (push-to-talk
+   entry point → the real ElevenLabs voice surface). */
+.asx-call{position:relative;height:30px;padding:0 14px;border-radius:999px;border:none;background:var(--asx-accent);
+  color:#fff;cursor:pointer;flex-shrink:0;display:inline-flex;align-items:center;gap:6px;
+  font-size:12px;font-weight:600;font-family:inherit;transition:filter .15s;}
+.asx-call:hover{filter:brightness(1.08);}
+.asx-call:hover .asx-tip{opacity:1;}
+.asx-call svg{width:13px;height:13px;}
+.asx-dock.asx-has-text .asx-call{display:none;}
 .asx-ico.asx-dict.asx-listening{background:var(--asx-accent);color:#fff;animation:asx-micpulse 1.4s ease-in-out infinite;}
 @keyframes asx-micpulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--asx-accent) 45%,transparent)}60%{box-shadow:0 0 0 8px transparent}}
 .asx-dock.asx-has-text .asx-ico{display:none;}
@@ -620,5 +657,6 @@ const ASX_CSS = `
    drop the LOOPING/decorative animations, per the Ask Staxis handoff. */
 @media (prefers-reduced-motion: reduce){
   .asx-typing i,.asx-ico.asx-dict.asx-listening{animation:none;}
+  .asx-dock.asx-idle .asx-glass,.asx-sp{animation:none;}
 }
 `;
