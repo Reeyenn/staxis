@@ -110,6 +110,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         width: '100%',
         maxWidth: '1920px',
         margin: '0 auto',
+        // Flex column so full-bleed workspace pages (Communications) can
+        // `flex: 1` to exactly fill the space under the floating bar instead
+        // of hardcoding viewport math against the old 64px header.
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
       }}>
         {/* Concourse chrome — a Home pill on every screen except the hub
             itself, so non-technical staff always have one obvious way back. */}

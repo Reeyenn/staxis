@@ -143,7 +143,8 @@ export function CommsApp() {
 
   if (!mounted) {
     // Stable neutral shell for SSR + first client render (pid unknown yet).
-    return <div style={{ height: 'calc(100vh - 64px)', background: T.bg }} />;
+    // Same card frame as the real workspace so hydration doesn't flash.
+    return <div style={{ flex: 1, minHeight: 0, background: T.bg, borderRadius: 18, border: '1px solid rgba(31,35,28,.08)' }} />;
   }
   if (!pid) {
     return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{L('Select a property to use Communications.', 'Selecciona una propiedad para usar Comunicaciones.')}</div>;
@@ -168,7 +169,10 @@ export function CommsApp() {
     : null;
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 64px)', fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative' }}>
+    // Concourse shell: the workspace flexes to fill the space under the
+    // floating pill bar as a rounded card (was `calc(100vh - 64px)` against
+    // the old solid header — that left a top seam + bottom overflow).
+    <div style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
       {/* ── Sidebar ── */}
       <aside style={{ width: 272, background: T.bg, borderRight: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
         <div style={{ padding: '14px 14px 10px', borderBottom: `1px solid ${T.hairSoft}` }}>
