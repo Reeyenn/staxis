@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail, KeyRound, Copy, Link2 } from 'lucide-react';
+import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail, KeyRound, Copy } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { captureException } from '@/lib/sentry';
 
@@ -735,7 +735,7 @@ export default function AccountsPage() {
 
             {/* Password */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={labelStyle}>{editingId ? t('password', lang) : t('password', lang)}</label>
+              <label style={labelStyle}>{t('password', lang)}</label>
               <input
                 type="password"
                 value={form.password}
@@ -1080,11 +1080,10 @@ function signupLinkFor(code: string): string {
 //   2. A toast pill slides up at the bottom of the viewport saying
 //      "Copied to clipboard" — mounted via React portal so it isn't
 //      trapped inside a modal's containing block.
-function CopyButton({ value, label, small, linkIcon }: {
+function CopyButton({ value, label, small }: {
   value: string;
   label: string;
   small?: boolean;
-  linkIcon?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const handleClick = async () => {
@@ -1099,7 +1098,7 @@ function CopyButton({ value, label, small, linkIcon }: {
       alert(label + ': ' + value);
     }
   };
-  const Icon = copied ? Check : (linkIcon ? Link2 : Copy);
+  const Icon = copied ? Check : Copy;
   const iconSize = small ? 14 : 15;
   return (
     <>

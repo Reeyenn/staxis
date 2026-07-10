@@ -104,19 +104,10 @@ const STRINGS = {
     reorder: 'Reorder',
     edit: 'Edit',
     flipBack: 'Flip back',
-    // ── Empty catalog (zero items — StockList panel; noItemsYet reused below) ──
+    // ── Empty catalog (zero items — StockList panel) ──
     noItemsBody: 'Add your first item to start tracking stock.',
-    // ── HeroStats ──
-    itemsHaveEnough: 'items have enough', // "{n} of {m} items have enough"
     noItemsYet: 'No items yet',
-    whatEverythingsWorth: "What everything's worth today",
-    lastCounted: 'Last counted',
-    by: 'by',
     team: 'team',
-    today: 'today',
-    yesterday: 'yesterday',
-    daysAgo: 'days ago', // "{n} days ago"
-    noCountYet: 'No count yet',
   },
   es: {
     // ── Shell ──
@@ -172,19 +163,10 @@ const STRINGS = {
     reorder: 'Pedir',
     edit: 'Editar',
     flipBack: 'Voltear',
-    // ── Empty catalog (zero items — StockList panel; noItemsYet reused below) ──
+    // ── Empty catalog (zero items — StockList panel) ──
     noItemsBody: 'Agrega tu primer artículo para empezar a controlar el stock.',
-    // ── HeroStats ──
-    itemsHaveEnough: 'artículos con suficiente',
     noItemsYet: 'Aún no hay artículos',
-    whatEverythingsWorth: 'Lo que todo vale hoy',
-    lastCounted: 'Último conteo',
-    by: 'por',
     team: 'equipo',
-    today: 'hoy',
-    yesterday: 'ayer',
-    daysAgo: 'días atrás',
-    noCountYet: 'Sin conteo aún',
   },
 };
 

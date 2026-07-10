@@ -7,9 +7,7 @@
 //   T          — palette tokens (color values bound to CSS vars)
 //   FONT_*     — font-family stacks
 //   Caps/Pill/Btn/Card — primitives reused by all four tabs
-//   ChevronMark — true-black logo SVG
 //   HousekeeperDot — colored avatar circle (re-skinned `HKInitials`)
-//   RoomTile  — design's 76×82 floor-track tile
 //
 // Why a separate file from _shared.tsx: _shared.tsx is the historical
 // helper junk-drawer (TABS, snapshotToShiftRooms, autoSelectEligible,
@@ -19,8 +17,7 @@
 'use client';
 
 import React from 'react';
-import { NotebookPen } from 'lucide-react';
-import type { StaffMember, Room } from '@/types';
+import type { StaffMember } from '@/types';
 
 // ───────────────────────────────────────────────────────────────────────
 // Palette tokens — bound to the --snow-* CSS vars defined in globals.css
@@ -52,26 +49,6 @@ export const T = {
 export const FONT_SANS  = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
 export const FONT_MONO  = "var(--font-geist-mono), ui-monospace, monospace";
 export const FONT_SERIF = "var(--font-instrument-serif), 'Times New Roman', Georgia, serif";
-
-// ───────────────────────────────────────────────────────────────────────
-// ChevronMark — locked logo SVG. Reused by Header.tsx; duplicated here
-// so the housekeeping tabs don't need to import the layout chrome.
-// ───────────────────────────────────────────────────────────────────────
-
-export function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
-      <path
-        d="M18 28 L26 20 M18 38 L38 18 M28 38 L38 28 M28 48 L46 30"
-        stroke={color}
-        strokeWidth={4.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
 
 // ───────────────────────────────────────────────────────────────────────
 // Caps — the design's tiny mono-uppercase label (10px, 0.16em tracking).
@@ -235,169 +212,3 @@ export function HousekeeperDot({
   );
 }
 
-// ───────────────────────────────────────────────────────────────────────
-// RoomTile — design's 76×82 tile for the floor-tracks layout.
-// Status palette mirrors hk-rooms.jsx tileTone():
-//   d (dirty)     → warm
-//   p (cleaning)  → caramel deep, with subtle ring
-//   c (ready)     → sage deep
-//   i (inspected) → purple
-//   v (vacant)    → muted, no left bar
-//   b (blocked)   → muted with ink bar
-// ───────────────────────────────────────────────────────────────────────
-
-const STATUS_LABEL: Record<string, string> = {
-  d: 'Dirty', p: 'Cleaning', c: 'Clean', i: 'Inspected', v: 'Vacant', b: 'Blocked',
-};
-
-const STATUS_LABEL_ES: Record<string, string> = {
-  d: 'Sucia', p: 'Limpiando', c: 'Limpia', i: 'Inspeccionada', v: 'Vacía', b: 'Bloqueada',
-};
-
-function tileTone(s: string) {
-  const map: Record<string, { bg: string; stroke: string; label: string; bar: string }> = {
-    d: { bg: '#FFFFFF', stroke: T.warm,        label: T.warm,        bar: T.warm },
-    p: { bg: '#FFFFFF', stroke: T.caramelDeep, label: T.caramelDeep, bar: T.caramelDeep },
-    c: { bg: '#FFFFFF', stroke: T.sageDeep,    label: T.sageDeep,    bar: T.sageDeep },
-    i: { bg: '#FFFFFF', stroke: T.purple,      label: T.purple,      bar: T.purple },
-    v: { bg: '#FBFAF6', stroke: T.rule,        label: T.ink3,        bar: 'transparent' },
-    b: { bg: '#FBFAF6', stroke: T.ink3,        label: T.ink,         bar: T.ink },
-  };
-  return map[s] || map.v;
-}
-
-const TYPE_ICON: Record<string, string> = {
-  checkout: '↗', stayover: '◐', arrival: '★', vacant: '·', blocked: '⊘',
-};
-
-// Map our internal Room to the design's compact letter-status code.
-function statusLetter(r: Room): 'd' | 'p' | 'c' | 'i' | 'v' | 'b' {
-  if (r.status === 'in_progress') return 'p';
-  if (r.status === 'clean')       return 'c';
-  if (r.status === 'inspected')   return 'i';
-  if (r.status === 'dirty')       return 'd';
-  // RoomType bleeds through here when a row exists but no status — fall
-  // back so vacant/blocked rooms render as the muted tile.
-  if (r.type === 'vacant')        return 'v';
-  return 'd';
-}
-
-export function RoomTileBase({
-  r, hasWorkOrder, lang, onClick, onNote,
-}: {
-  r: Room;
-  hasWorkOrder?: boolean;
-  lang: 'en' | 'es';
-  onClick?: () => void;
-  /** When provided, renders a small note button in the bottom-right corner. */
-  onNote?: () => void;
-}) {
-  const s = statusLetter(r);
-  const tone = tileTone(s);
-  const label = (lang === 'es' ? STATUS_LABEL_ES : STATUS_LABEL)[s];
-  const noteLabel = lang === 'es' ? 'Agregar nota' : 'Add note';
-  // Safely coerce startedAt — Supabase returns ISO strings, but legacy
-  // Firestore-style rows may still come through with a `.toDate()` method.
-  // Inlined so this file stays free of _shared.tsx imports.
-  const startedMs = (() => {
-    const ts: unknown = r.startedAt;
-    if (!ts) return null;
-    if (ts instanceof Date) return ts.getTime();
-    if (typeof ts === 'object' && 'toDate' in ts && typeof (ts as { toDate?: unknown }).toDate === 'function') {
-      return (ts as { toDate: () => Date }).toDate().getTime();
-    }
-    if (typeof ts === 'string' || typeof ts === 'number') {
-      const d = new Date(ts);
-      return isNaN(d.getTime()) ? null : d.getTime();
-    }
-    return null;
-  })();
-  const elapsed = startedMs && !r.completedAt
-    ? Math.max(0, Math.round((Date.now() - startedMs) / 60000))
-    : null;
-  const overTime = elapsed != null && elapsed > 30;
-
-  return (
-    <div style={{ position: 'relative', width: 76, height: 82, flexShrink: 0 }}>
-      <button
-        onClick={onClick}
-        style={{
-          position: 'relative', width: '100%', height: '100%',
-          background: tone.bg, border: `1px solid ${tone.stroke}`, borderRadius: 10,
-          padding: '8px 9px', cursor: onClick ? 'pointer' : 'default',
-          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-          textAlign: 'left',
-          boxShadow: s === 'p' ? '0 0 0 2px rgba(140,106,51,0.18)' : 'none',
-        }}
-        aria-label={`Room ${r.number} — ${label}`}
-      >
-        {/* left status bar */}
-        <span style={{
-          position: 'absolute', left: 0, top: 6, bottom: 6,
-          width: 2.5, borderRadius: 2, background: tone.bar,
-        }} />
-
-        {/* top: room number + type icon */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingLeft: 5 }}>
-          <span style={{
-            fontFamily: FONT_SERIF, fontSize: 22, color: tone.label,
-            lineHeight: 0.9, fontWeight: 400, letterSpacing: '-0.02em',
-          }}>{r.number}</span>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3 }}>
-            {TYPE_ICON[r.type] || ''}
-          </span>
-        </div>
-
-        {/* bottom: status + elapsed/owner. paddingRight (when a note button is
-            present) keeps the elapsed badge clear of the corner note button. */}
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          paddingLeft: 5, paddingRight: onNote ? 14 : 0, gap: 4,
-        }}>
-          <span style={{
-            fontFamily: FONT_MONO, fontSize: 8, color: tone.label,
-            letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600,
-          }}>{label}</span>
-          {s === 'p' && elapsed != null && (
-            <span style={{
-              fontFamily: FONT_MONO, fontSize: 9, fontWeight: 600,
-              color: overTime ? T.warm : T.caramelDeep,
-            }}>{elapsed}m{overTime ? '!' : ''}</span>
-          )}
-        </div>
-
-        {/* flags */}
-        {hasWorkOrder && (
-          <span style={{
-            position: 'absolute', top: -4, right: -4,
-            width: 12, height: 12, borderRadius: '50%',
-            background: T.warm, color: '#fff',
-            fontFamily: FONT_SANS, fontSize: 8, fontWeight: 700,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>!</span>
-        )}
-      </button>
-
-      {/* Note button — bottom-right corner. Sits OUTSIDE the status <button>
-          (sibling, not nested) so we never put a button inside a button.
-          Tapping it opens the parent's note popup for this room. */}
-      {onNote && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onNote(); }}
-          title={noteLabel}
-          aria-label={`${noteLabel} — ${r.number}`}
-          style={{
-            position: 'absolute', right: -5, bottom: -5, zIndex: 2,
-            width: 21, height: 21, borderRadius: 7,
-            background: T.bg, border: `1px solid ${tone.stroke}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', padding: 0,
-            boxShadow: '0 1px 3px rgba(31,35,28,0.14)',
-          }}
-        >
-          <NotebookPen size={11} color={tone.label} />
-        </button>
-      )}
-    </div>
-  );
-}

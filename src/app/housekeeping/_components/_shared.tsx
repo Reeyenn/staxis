@@ -13,9 +13,6 @@
 
 'use client';
 
-import type { PlanSnapshot } from '@/lib/db';
-import type { Room, RoomType, RoomPriority, RoomStatus } from '@/types';
-
 // ─── Date helpers ────────────────────────────────────────────────────────
 
 /** Add `n` days to a YYYY-MM-DD string and return a new YYYY-MM-DD. */
@@ -57,38 +54,4 @@ export function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
   return dt.toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
     weekday: 'long', month: 'short', day: 'numeric',
   });
-}
-
-// ─── PlanSnapshot → Room[] ──────────────────────────────────────────────
-
-/**
- * Derive synthetic Room[] from a planSnapshot (CSV data).
- * This is the ONLY source the Schedule tab reads from — no rooms-collection dependency.
- *   - C/O stayType → checkout
- *   - OCC + Stay stayType → stayover
- *   - everything else → skipped (arrivals, vacants, OOO don't need HK assignment)
- */
-export function snapshotToShiftRooms(snap: PlanSnapshot | null, pid: string): Room[] {
-  if (!snap?.rooms) return [];
-  const out: Room[] = [];
-  for (const r of snap.rooms) {
-    let type: RoomType | null = null;
-    if (r.stayType === 'C/O') type = 'checkout';
-    else if (r.stayType === 'Stay') type = 'stayover';
-    if (!type) continue;
-    out.push({
-      id: `${snap.date}_${r.number}`,
-      number: r.number,
-      type,
-      priority: 'standard' as RoomPriority,
-      status: 'dirty' as RoomStatus,
-      date: snap.date,
-      propertyId: pid,
-      assignedTo: r.housekeeper ?? undefined,
-      // Carry the stayover cycle day through so the UI can label S1 vs S2
-      // (light vs full clean) on both the unassigned pool and crew tiles.
-      stayoverDay: typeof r.stayoverDay === 'number' ? r.stayoverDay : undefined,
-    });
-  }
-  return out;
 }

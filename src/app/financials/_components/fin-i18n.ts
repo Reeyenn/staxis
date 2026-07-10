@@ -92,7 +92,6 @@ const STRINGS = {
     // shell
     title: 'Financials',
     tagline: 'Your books, filled in for you.',
-    restricted: 'Financials are available to owners and managers only.',
     tabCheckbook: 'Checkbook',
     tabBudget: 'Budget',
     tabCapex: 'CapEx',
@@ -103,7 +102,6 @@ const STRINGS = {
     margin: 'Margin',
     costPerRoom: 'Cost / occupied room',
     pctOfRevenue: 'Expenses % of revenue',
-    occRoomNights: 'Occupied room-nights',
     noRevenueYet: 'No PMS revenue yet',
     fromPms: 'from the PMS',
     revenueComingSoon: 'Revenue auto-flows from the PMS once it reports financials.',
@@ -228,7 +226,6 @@ const STRINGS = {
   es: {
     title: 'Finanzas',
     tagline: 'Tus cuentas, llenadas por ti.',
-    restricted: 'Las finanzas están disponibles solo para dueños y gerentes.',
     tabCheckbook: 'Libro de gastos',
     tabBudget: 'Presupuesto',
     tabCapex: 'Proyectos',
@@ -238,7 +235,6 @@ const STRINGS = {
     margin: 'Margen',
     costPerRoom: 'Costo / hab. ocupada',
     pctOfRevenue: 'Gastos % de ingresos',
-    occRoomNights: 'Noches-habitación ocupadas',
     noRevenueYet: 'Sin ingresos del PMS aún',
     fromPms: 'del PMS',
     revenueComingSoon: 'Los ingresos llegan del PMS cuando reporte finanzas.',

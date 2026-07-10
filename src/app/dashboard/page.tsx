@@ -37,11 +37,9 @@ import { CalendarCard } from './_components/CalendarCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
-  subscribeToDashboardNumbers,
   subscribeToComplaints,
   fetchComplianceSummary,
   subscribeLostFoundCounts,
-  type DashboardNumbers,
   type LostFoundCounts,
 } from '@/lib/db';
 import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
@@ -350,7 +348,6 @@ export default function DashboardPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [counts, setCounts] = useState<TodayPropertyCounts | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [lostFound, setLostFound] = useState<LostFoundCounts | null>(null);
@@ -379,7 +376,6 @@ export default function DashboardPage() {
     if (!user || !activePropertyId || !maintenanceEnabled) return;
     return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
   }, [user, activePropertyId, maintenanceEnabled]);
-  useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
   useEffect(() => {
     if (!user || !activePropertyId || !communicationsEnabled) return;
     return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
@@ -441,23 +437,22 @@ export default function DashboardPage() {
     [rooms, roomStatusLearning],
   );
 
-  // Tile values. The legacy anon snapshot read (dashboardNums) is kept as
-  // the no-feed-status fallback only; with live feed status the numbers
-  // come from the server-derived block (pms_* is deny-all-browser).
+  // Tile values. With live feed status the numbers come from the
+  // server-derived block (pms_* is deny-all-browser).
   const inHouse: React.ReactNode = !fsLive
-    ? (counts?.in_house ?? dashboardNums?.inHouse ?? 0)
+    ? (counts?.in_house ?? 0)
     : inHouseState === 'ok'
       ? (feedStatus.derived?.snapshotInHouse ?? counts?.in_house ?? 0)
       : '—';
   const arrivals: React.ReactNode = !fsLive
-    ? (dashboardNums?.arrivals ?? 0)
+    ? 0
     : arrivalsState !== 'ok'
       ? '—'
       : feedStatus.feeds.dashboardCounts === 'live'
         ? (feedStatus.derived?.snapshotArrivalsRemaining ?? '—')
         : (feedStatus.derived?.arrivalsToday ?? '—');
   const departures: React.ReactNode = !fsLive
-    ? (counts?.checkouts ?? dashboardNums?.departures ?? 0)
+    ? (counts?.checkouts ?? 0)
     : departuresState !== 'ok'
       ? '—'
       : feedStatus.feeds.departures === 'live'

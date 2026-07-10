@@ -2,21 +2,21 @@
 // the modal / form pieces shared by the WorkOrders and Preventive tabs.
 //
 // Reuses the housekeeping `_snow.tsx` tokens (palette + fonts + Btn / Pill /
-// Caps / Card) so the Maintenance tab stays visually locked to the rest of
-// the app. The extras here are: priority dot/pill, person avatar, modal
-// shell, form fields, chip chooser, photo placeholder, relative-time helper.
+// Caps) so the Maintenance tab stays visually locked to the rest of
+// the app. The extras here are: priority colors/labels, person avatar, modal
+// shell, form fields, chip chooser, date helpers.
 
 'use client';
 
 import React, { useEffect, useRef } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import {
-  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card,
+  T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn,
 } from '@/app/housekeeping/_components/_snow';
 
 // Re-export the shared Snow primitives so the maintenance tabs have a single
-// import source (tokens + Caps/Pill/Btn/Card live in housekeeping/_snow).
-export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn, Card };
+// import source (tokens + Caps/Pill/Btn live in housekeeping/_snow).
+export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, Btn };
 export type Priority = 'urgent' | 'normal' | 'low';
 
 // ── Priority colors ────────────────────────────────────────────────────────
@@ -30,36 +30,6 @@ export const prioLabel: Record<Priority, string> = {
   normal: 'Normal',
   low:    'Low',
 };
-export const prioOrder: Priority[] = ['urgent', 'normal', 'low'];
-
-export function PrioDot({ p, size = 10, ring = false, style = {} }: {
-  p: Priority; size?: number; ring?: boolean; style?: React.CSSProperties;
-}) {
-  const c = prioColor[p];
-  return (
-    <span style={{
-      display: 'inline-block', width: size, height: size, borderRadius: '50%',
-      background: c, boxShadow: ring ? `0 0 0 3px ${c}22` : 'none',
-      flexShrink: 0, ...style,
-    }}/>
-  );
-}
-
-export function PrioPill({ p, style = {} }: { p: Priority; style?: React.CSSProperties }) {
-  const c = prioColor[p];
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6,
-      padding: '3px 10px 3px 8px', borderRadius: 999, height: 22,
-      background: `${c}14`, color: c, border: `1px solid ${c}33`,
-      fontFamily: FONT_SANS, fontSize: 11, fontWeight: 600,
-      whiteSpace: 'nowrap', ...style,
-    }}>
-      <PrioDot p={p} size={6}/>
-      {prioLabel[p]}
-    </span>
-  );
-}
 
 // ── Avatar — initials in a tinted circle ──────────────────────────────────
 // Deterministic color from a name: the same person always lands on the same
@@ -271,79 +241,7 @@ export function ChipChoose<V extends string>({
   );
 }
 
-// ── Photo slot — file-picker masquerading as the design's striped tile ────
-// Mirrors hk-shared.jsx PhotoSlot: tap to open a hidden <input type="file">.
-// Caller stores the File and a preview URL; passes them back on submit.
-export function PhotoSlot({
-  file, onFileChange, label = 'Photo (optional)', height = 140,
-}: {
-  file: File | null;
-  onFileChange: (f: File | null) => void;
-  label?: string;
-  height?: number;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const attached = !!file;
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          if (attached) onFileChange(null);
-          else inputRef.current?.click();
-        }}
-        style={{
-          width: '100%', height, borderRadius: 12, cursor: 'pointer',
-          background: attached
-            ? 'repeating-linear-gradient(135deg, rgba(104,131,114,0.10) 0 10px, rgba(104,131,114,0.04) 10px 20px)'
-            : 'repeating-linear-gradient(135deg, rgba(31,35,28,0.04) 0 10px, transparent 10px 20px)',
-          border: `1px dashed ${attached ? 'rgba(92,122,96,0.4)' : T.rule}`,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          gap: 6, fontFamily: FONT_MONO, fontSize: 11,
-          color: attached ? T.sageDeep : T.ink3,
-          letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 500,
-        }}
-      >
-        <span style={{ fontSize: 20, color: attached ? T.sageDeep : T.ink2, letterSpacing: 0 }}>
-          {attached ? '✓' : '+'}
-        </span>
-        {attached
-          ? `Photo attached · ${file.name.length > 24 ? file.name.slice(0, 22) + '…' : file.name} · tap to remove`
-          : label}
-        {!attached && (
-          <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, textTransform: 'none', letterSpacing: 0 }}>
-            Tap to take or upload
-          </span>
-        )}
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        style={{ display: 'none' }}
-        onChange={e => {
-          const f = e.target.files?.[0] ?? null;
-          onFileChange(f);
-          // Reset input so picking the same file twice still fires onChange.
-          if (e.target) e.target.value = '';
-        }}
-      />
-    </>
-  );
-}
-
 // ── Date helpers ──────────────────────────────────────────────────────────
-// Relative-time string from "days from today" (negative = overdue).
-export function relTime(days: number): string {
-  if (days === 0)  return 'today';
-  if (days < 0)    return `${-days}d overdue`;
-  if (days === 1)  return 'tomorrow';
-  if (days <= 7)   return `in ${days}d`;
-  if (days <= 60)  return `in ${Math.round(days / 7)}w`;
-  return `in ${Math.round(days / 30)}mo`;
-}
-
 export function fmtDate(d: Date): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }

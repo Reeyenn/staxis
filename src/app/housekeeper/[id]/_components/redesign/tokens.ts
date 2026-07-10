@@ -79,24 +79,6 @@ export const bigBtn: CSSProperties = {
   touchAction: 'manipulation',
 };
 
-// Footer control (Lunch / Report sick).
-export const ctrlBtn: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 8,
-  padding: 13,
-  borderRadius: 14,
-  background: 'white',
-  border: `1px solid ${TOK.border}`,
-  fontSize: 14,
-  fontWeight: 700,
-  color: TOK.ink,
-  cursor: 'pointer',
-  WebkitTapHighlightColor: 'transparent',
-  touchAction: 'manipulation',
-};
-
 // Fallback compact-checklist task labels by cleaning type, used only when
 // the real per-type checklist template hasn't loaded yet. Mirrors the
 // handoff prototype so the expanded card never looks empty.

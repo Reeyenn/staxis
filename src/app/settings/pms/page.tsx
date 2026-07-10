@@ -13,7 +13,7 @@ import { t } from '@/lib/translations';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { parsePmsJobStatusResponse, parsePmsOnboardResult } from '@/lib/api-validate';
 import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
-import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, ChevronDown, Loader2 } from 'lucide-react';
+import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 
 // PMS dropdown options come from the registry (src/lib/pms/registry.ts).
@@ -24,13 +24,6 @@ const PMS_SYSTEMS = PMS_DROPDOWN_OPTIONS.map((d) => ({
   label: `${d.label}${d.hint ? ` (${d.hint})` : ''}`,
   defaultLoginUrl: d.defaultLoginUrl,
 }));
-
-const SYNC_STATUS = {
-  idle: null,
-  testing: 'testing',
-  success: 'success',
-  error: 'error',
-} as const;
 
 export default function PMSPage() {
   const { user } = useAuth();

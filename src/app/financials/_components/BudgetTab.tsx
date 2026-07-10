@@ -17,7 +17,7 @@ import {
   type BudgetVsActual,
   type Department,
 } from '@/lib/financials/shared';
-import { apiGet, apiSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS, FONT_MONO, FONT_SERIF } from './fin-ui';
+import { apiGet, apiSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS, FONT_SERIF } from './fin-ui';
 import { BudgetStatCard, BigMoney, Eyebrow, deptColor } from './fin-board';
 import { ft, deptLabel } from './fin-i18n';
 
@@ -33,7 +33,6 @@ interface ForecastRow {
   message: string;
 }
 interface AnomalyRow {
-  department: Department | null;
   message: string;
 }
 
