@@ -5,6 +5,7 @@ import { Zap, X, Clock } from 'lucide-react';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { t } from '@/lib/translations';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 
 /**
  * RushButton — front-desk clerk taps this on a room tile to ask the
@@ -33,12 +34,8 @@ export function RushButton({ roomNumber, isAlreadyRush, onChange }: Props) {
   const { activePropertyId } = useProperty();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 3000);
-  };
+  // Shared toast primitive (F7) — 3s dark pill, bottom-center.
+  const { toasts, show: showToast } = useToast({ durationMs: 3000, max: 1 });
 
   const handlePick = async (due: '15min' | '30min' | '1hr') => {
     if (!activePropertyId || submitting) return;
@@ -226,24 +223,19 @@ export function RushButton({ roomNumber, isAlreadyRush, onChange }: Props) {
         </div>
       )}
 
-      {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 24,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: '#0F172A',
-            color: 'white',
-            padding: '10px 16px',
-            borderRadius: 999,
-            fontSize: 13,
-            zIndex: 250,
-          }}
-        >
-          {toast}
-        </div>
-      )}
+      <ToastHost
+        toasts={toasts}
+        position="bottom"
+        offset="24px"
+        zIndex={250}
+        toastStyle={{
+          background: '#0F172A',
+          color: 'white',
+          padding: '10px 16px',
+          borderRadius: 999,
+          fontSize: 13,
+        }}
+      />
     </>
   );
 }

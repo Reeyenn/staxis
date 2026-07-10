@@ -21,6 +21,7 @@ import {
   COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES,
   isOverdue, isCallbackDue, isOpenStatus,
 } from '@/lib/complaints-shared';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 
 /* ── palette (matches front-desk/page.tsx) ── */
 const INK = '#1b1c19', INK2 = '#757684', NAVY = '#364262', TEAL = '#006565', RED = '#ba1a1a', GOLD = '#B8853A';
@@ -81,7 +82,8 @@ export function ComplaintsTab() {
   const [catFilter, setCatFilter] = useState<ComplaintCategory | 'all'>('all');
   const [showNew, setShowNew] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  // Shared toast primitive (F7) — 2.6s teal pill, top-center.
+  const { toasts, show } = useToast({ durationMs: 2600, max: 1 });
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -93,7 +95,7 @@ export function ComplaintsTab() {
     return subscribeToStaff(user.uid, activePropertyId, setStaff);
   }, [user, activePropertyId]);
 
-  const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2600); };
+  const flash = (m: string) => { show(m); };
 
   const now = new Date(); // render-time clock, used only in list-row badges (JSX)
   const callbacksDue = useMemo(() => {
@@ -262,13 +264,16 @@ export function ComplaintsTab() {
         />
       )}
 
-      {toast && (
-        <div style={{
-          position: 'fixed', top: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 1100,
+      <ToastHost
+        toasts={toasts}
+        position="top"
+        offset="24px"
+        zIndex={1100}
+        toastStyle={{
           padding: '14px 24px', borderRadius: 9999, background: TEAL, color: '#fff',
           fontWeight: 600, fontSize: 14, fontFamily: SANS, boxShadow: '0 12px 32px rgba(0,101,101,0.25)',
-        }}>{toast}</div>
-      )}
+        }}
+      />
     </div>
   );
 
