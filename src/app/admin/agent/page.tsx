@@ -128,7 +128,7 @@ export default function AdminAgentPage() {
         padding: '32px 24px 80px',
         fontFamily: FONT_SANS,
         color: C.ink,
-        background: C.bg,
+        background: 'transparent',
         minHeight: '100vh',
       }}>
         {/* Header */}

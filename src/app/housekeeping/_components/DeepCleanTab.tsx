@@ -326,7 +326,7 @@ export function DeepCleanTab() {
   if (!loaded) {
     return (
       <div style={{
-        padding: '24px 48px 48px', background: T.bg, color: T.ink,
+        padding: '24px 48px 48px', background: 'transparent', color: T.ink,
         fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexDirection: 'column', gap: 12,
@@ -344,7 +344,7 @@ export function DeepCleanTab() {
 
   return (
     <div style={{
-      padding: '24px 48px 48px', background: T.bg, color: T.ink,
+      padding: '24px 48px 48px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       {/* Two-column board collapses to one column on narrow windows. Scoped

@@ -371,7 +371,7 @@ export function ScheduleTab() {
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div style={{
-      padding: '24px 48px 48px', background: T.bg, color: T.ink,
+      padding: '24px 48px 48px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       <CalloutBanner shiftDate={shiftDate} />

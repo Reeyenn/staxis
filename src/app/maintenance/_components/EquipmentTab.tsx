@@ -215,7 +215,7 @@ export function EquipmentTab() {
       : (es ? 'Bien surtido' : 'Fully stocked');
 
   return (
-    <div style={{ padding: '28px 48px 64px', background: T.bg, color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div style={{ padding: '28px 48px 64px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={es ? 'Equipo · almacén' : 'Equipment · storeroom'}
         lead={lead}

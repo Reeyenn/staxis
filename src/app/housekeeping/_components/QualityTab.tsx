@@ -583,7 +583,7 @@ export function QualityTab() {
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div style={{
-      padding: '24px 48px 64px', background: T.bg, color: T.ink,
+      padding: '24px 48px 64px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
       {toast && <Toast text={toast} onDismiss={() => setToast(null)} />}

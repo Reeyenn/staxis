@@ -137,7 +137,7 @@ export function ComplaintsTab() {
   const detail = detailId ? complaints.find((c) => c.id === detailId) ?? null : null;
 
   return (
-    <div style={{ minHeight: 'calc(100dvh - 130px)', background: '#fbf9f4' }}>
+    <div style={{ minHeight: 'calc(100dvh - 130px)', background: 'transparent' }}>
       <div style={{ padding: '24px 28px 120px', maxWidth: 1200, margin: '0 auto' }}>
 
         {/* Header */}

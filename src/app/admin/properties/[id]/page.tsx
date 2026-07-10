@@ -165,7 +165,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
     <AppLayout>
       <div style={{
         padding: '24px 48px 48px', maxWidth: 1400, margin: '0 auto',
-        background: T.bg, minHeight: 'calc(100vh - 64px)',
+        background: 'transparent', minHeight: 'calc(100vh - 64px)',
         fontFamily: FONT_SANS,
       }}>
 

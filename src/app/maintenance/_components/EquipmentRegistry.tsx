@@ -578,7 +578,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   }, [list, q, lang]);
 
   return (
-    <div style={{ padding: '24px 48px 48px', background: T.bg, color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div style={{ padding: '24px 48px 48px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       {/* header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18, gap: 24, flexWrap: 'wrap' }}>
         <div>

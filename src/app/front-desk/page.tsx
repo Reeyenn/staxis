@@ -352,7 +352,7 @@ export default function FrontDeskPage() {
       )}
 
       {tab === 'rooms' && (
-      <div style={{ minHeight: '100dvh', background: '#fbf9f4' }}>
+      <div style={{ minHeight: '100dvh', background: 'transparent' }}>
 
         {/* ── Stitch Hero Section ── */}
         <div style={{ padding: '28px 28px 0', maxWidth: '1200px', margin: '0 auto' }}>

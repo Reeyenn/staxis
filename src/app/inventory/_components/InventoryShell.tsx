@@ -337,7 +337,7 @@ export function InventoryShell() {
       ref={pageRef}
       style={{
         padding: '12px 30px 48px',
-        background: T.bg,
+        background: 'transparent',
         color: T.ink,
         fontFamily: fonts.sans,
         minHeight: 'calc(100dvh - 90px)',

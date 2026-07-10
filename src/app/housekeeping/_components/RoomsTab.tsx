@@ -281,7 +281,7 @@ export function RoomsTab() {
 
   if (loading) {
     return (
-      <div style={{ padding: '40px 36px', background: LED.card, color: LED.dim, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+      <div style={{ padding: '40px 36px', background: 'transparent', color: LED.dim, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
         {lang === 'es' ? 'Cargando cuartos…' : 'Loading rooms…'}
       </div>
     );
@@ -290,7 +290,7 @@ export function RoomsTab() {
   const capLabel: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: LED.dim };
 
   return (
-    <div className="rooms-ledger" style={{ background: LED.card, color: LED.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div className="rooms-ledger" style={{ background: 'transparent', color: LED.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <style>{`
         .rooms-ledger .lgr-wrap { width:100%; padding:26px 36px 90px; }
         .rooms-ledger .lgr-head { display:grid; grid-template-columns:1fr auto 1fr; align-items:baseline; gap:24px; margin:0 0 8px; }
