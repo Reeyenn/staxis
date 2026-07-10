@@ -7,7 +7,7 @@
 
 import React, { useRef, useState } from 'react';
 import { resizeImageForVision } from '@/lib/image-resize';
-import { apiSend, Btn, T, FONT_SANS } from './fin-ui';
+import { finSend, Btn, T, FONT_SANS } from './fin-ui';
 
 export interface InvoiceDraft {
   vendor: string | null;
@@ -53,12 +53,12 @@ export function ScanButton({
     try {
       const resized = await resizeImageForVision(file);
       const endpoint = mode === 'invoice' ? '/api/financials/scan-invoice' : '/api/financials/scan-quote';
-      const res = await apiSend<{ draft: unknown; anomalyWarning?: string | null }>(endpoint, 'POST', {
+      const res = await finSend<{ draft: unknown; anomalyWarning?: string | null }>(endpoint, 'POST', {
         pid,
         imageBase64: resized.base64,
         mediaType: resized.mediaType,
       });
-      if (!res.ok || !res.data) {
+      if (!res.data) {
         setError(failLabel);
         return;
       }

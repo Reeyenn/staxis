@@ -8,8 +8,9 @@
 // /api/financials/budgets + /api/financials/forecast; budgets save through the
 // upsert endpoint. Money is integer cents.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Modal } from '@/app/maintenance/_components/_mt-snow';
+import { useApiResource, useApiAction } from '@/lib/hooks/use-api-resource';
 import {
   DEPARTMENTS,
   formatCents,
@@ -17,7 +18,7 @@ import {
   type BudgetVsActual,
   type Department,
 } from '@/lib/financials/shared';
-import { apiGet, apiSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS, FONT_SERIF } from './fin-ui';
+import { finSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS, FONT_SERIF } from './fin-ui';
 import { BudgetStatCard, BigMoney, Eyebrow, deptColor } from './fin-board';
 import { ft, deptLabel } from './fin-i18n';
 
@@ -48,37 +49,24 @@ export function BudgetTab({
   onChanged: () => void;
 }) {
   const S = ft(lang);
-  const [rows, setRows] = useState<BudgetVsActual[]>([]);
-  const [forecasts, setForecasts] = useState<ForecastRow[]>([]);
-  const [anomalies, setAnomalies] = useState<AnomalyRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errored, setErrored] = useState(false);
+  // Mutation/retry counter — rides the URLs as a fragment (never sent over
+  // HTTP) so a refetch replays the full "Loading…" flash like the old load().
+  const [nonce, setNonce] = useState(0);
 
   const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErrored(false);
-    const [b, f] = await Promise.all([
-      apiGet<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}`),
-      apiGet<{ forecasts: ForecastRow[]; anomalies: AnomalyRow[] }>(`/api/financials/forecast?pid=${pid}&month=${month}`),
-    ]);
-    if (!b.ok || !b.data) {
-      setErrored(true);
-      setLoading(false);
-      return;
-    }
-    setRows(b.data.budgets);
-    setForecasts(f.ok && f.data ? f.data.forecasts : []);
-    setAnomalies(f.ok && f.data ? f.data.anomalies : []);
-    setLoading(false);
-  }, [pid, month]);
+  const bud = useApiResource<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}#${nonce}`);
+  // Forecast is best-effort: a failed read renders the grid without alerts /
+  // projections (same as the old load(), which only errored on budgets).
+  const fcRes = useApiResource<{ forecasts: ForecastRow[]; anomalies: AnomalyRow[] }>(`/api/financials/forecast?pid=${pid}&month=${month}#${nonce}`);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const loading = bud.loading || fcRes.loading;
+  const rows = bud.data?.budgets ?? [];
+  const forecasts = fcRes.data?.forecasts ?? [];
+  const anomalies = fcRes.data?.anomalies ?? [];
+
+  const reloadAll = () => setNonce((n) => n + 1);
 
   const startEdit = () => {
     const d: Record<string, string> = {};
@@ -87,8 +75,16 @@ export function BudgetTab({
     setEditing(true);
   };
 
+  // One action = the whole save (only the changed departments are upserted,
+  // sequentially, exactly like before; individual failures stay silent).
+  const saveAction = useApiAction(async (changed: Array<{ department: Department; cents: number }>) => {
+    for (const c of changed) {
+      await finSend('/api/financials/budgets', 'POST', { pid, department: c.department, month, budgetCents: c.cents });
+    }
+    return { data: true as const };
+  });
+
   const saveBudgets = async () => {
-    setSaving(true);
     const byDept = new Map(rows.map((r) => [r.department, r.budgetCents]));
     const changed: Array<{ department: Department; cents: number }> = [];
     for (const dept of DEPARTMENTS) {
@@ -96,19 +92,16 @@ export function BudgetTab({
       const cents = raw.trim() === '' ? 0 : parseDollarsToCents(raw) ?? 0;
       if (cents !== (byDept.get(dept) ?? 0)) changed.push({ department: dept, cents });
     }
-    for (const c of changed) {
-      await apiSend('/api/financials/budgets', 'POST', { pid, department: c.department, month, budgetCents: c.cents });
-    }
-    setSaving(false);
+    await saveAction.run(changed);
     setEditing(false);
-    await load();
+    reloadAll();
     onChanged();
   };
 
   const trending = forecasts.filter((f) => f.trendingOver);
 
   if (loading) return <Notice text={S.loading} />;
-  if (errored) return <Notice text={S.errorLoading} onRetry={() => void load()} />;
+  if (bud.error != null) return <Notice text={S.errorLoading} onRetry={reloadAll} />;
 
   const budgeted = rows.reduce((a, r) => a + r.budgetCents, 0);
   const spent = rows.reduce((a, r) => a + r.actualCents, 0);
@@ -206,8 +199,8 @@ export function BudgetTab({
               <Btn variant="ghost" onClick={() => setEditing(false)}>
                 {S.cancel}
               </Btn>
-              <Btn onClick={() => void saveBudgets()} disabled={saving}>
-                {saving ? S.saving : S.saveBudgets}
+              <Btn onClick={() => void saveBudgets()} disabled={saveAction.saving}>
+                {saveAction.saving ? S.saving : S.saveBudgets}
               </Btn>
             </>
           }

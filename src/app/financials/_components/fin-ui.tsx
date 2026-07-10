@@ -8,6 +8,8 @@
 import React from 'react';
 import { T, FONT_SANS, FONT_MONO, FONT_SERIF } from '@/app/maintenance/_components/_mt-snow';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
+import { EmptyState } from '@/app/_components/ui/EmptyState';
 import { formatCents, type BudgetStatus } from '@/lib/financials/shared';
 
 export { T, FONT_SANS, FONT_MONO, FONT_SERIF };
@@ -19,54 +21,34 @@ export const STATUS_COLOR: Record<BudgetStatus, string> = {
   none: T.ink3,
 };
 
-// ── API envelope helpers (unwrap { ok, data, error } from fetchWithAuth) ────
-export interface ApiResult<T> {
-  ok: boolean;
-  status: number;
-  data: T | null;
-  error: string | null;
-  code: string | null;
-}
-
-async function unwrap<T>(res: Response): Promise<ApiResult<T>> {
-  let body: Record<string, unknown> = {};
+// ── API helpers ─────────────────────────────────────────────────────────────
+// Imperative envelope calls (F2's readEnvelope) for one-off reads/writes.
+// Interval-free page reads use useApiResource directly; these never throw
+// (network / session errors become an error result — no financials surface
+// renders the message text, only "could not save/load" strings).
+export async function finGet<T>(url: string): Promise<EnvelopeResult<T>> {
   try {
-    body = (await res.json()) as Record<string, unknown>;
-  } catch {
-    /* non-JSON */
-  }
-  return {
-    ok: res.ok && body.ok === true,
-    status: res.status,
-    data: (body.data as T) ?? null,
-    error: (body.error as string) ?? (res.ok ? null : `HTTP ${res.status}`),
-    code: (body.code as string) ?? null,
-  };
-}
-
-export async function apiGet<T>(url: string): Promise<ApiResult<T>> {
-  try {
-    const res = await fetchWithAuth(url);
-    return unwrap<T>(res);
+    return await readEnvelope<T>(await fetchWithAuth(url));
   } catch (e) {
-    return { ok: false, status: 0, data: null, error: e instanceof Error ? e.message : 'network', code: 'network' };
+    return { error: e instanceof Error && e.message ? e.message : 'network' };
   }
 }
 
-export async function apiSend<T>(
+export async function finSend<T = unknown>(
   url: string,
   method: 'POST' | 'PATCH' | 'DELETE',
   body: unknown,
-): Promise<ApiResult<T>> {
+): Promise<EnvelopeResult<T>> {
   try {
-    const res = await fetchWithAuth(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return unwrap<T>(res);
+    return await readEnvelope<T>(
+      await fetchWithAuth(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
   } catch (e) {
-    return { ok: false, status: 0, data: null, error: e instanceof Error ? e.message : 'network', code: 'network' };
+    return { error: e instanceof Error && e.message ? e.message : 'network' };
   }
 }
 
@@ -246,20 +228,17 @@ export function Card({ children, style = {} }: { children: React.ReactNode; styl
 }
 
 // ── Empty / error state ──────────────────────────────────────────────────
+// Financials-themed shared EmptyState (F11). Same signature as the old local
+// Notice; the click-anywhere-to-retry affordance rides EmptyState's container
+// onClick, and the exact prior visuals come in via theme props.
 export function Notice({ text, onRetry }: { text: string; onRetry?: () => void }) {
   return (
-    <div
+    <EmptyState
+      body={text}
       onClick={onRetry}
-      style={{
-        padding: '40px 20px',
-        textAlign: 'center',
-        fontFamily: FONT_SANS,
-        fontSize: 14,
-        color: T.ink2,
-        cursor: onRetry ? 'pointer' : 'default',
-      }}
-    >
-      {text}
-    </div>
+      color={T.ink2}
+      fontFamily={FONT_SANS}
+      style={{ cursor: onRetry ? 'pointer' : 'default' }}
+    />
   );
 }
