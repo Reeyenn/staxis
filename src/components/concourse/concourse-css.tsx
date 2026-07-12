@@ -46,17 +46,30 @@ const CX_CSS = `
   border:none;background:transparent;flex-shrink:0;padding:0;}
 .cx-logo:hover{background:rgba(31,35,28,.05);}
 .cx-divider{width:1px;height:20px;background:rgba(31,35,28,.09);flex-shrink:0;}
-.cx-pill{display:flex;align-items:center;gap:7px;height:36px;padding:0 9px;border-radius:999px;
+.cx-pill{display:flex;align-items:center;height:36px;padding:0 9px;border-radius:999px;
   border:none;background:transparent;cursor:pointer;color:#5C625C;white-space:nowrap;flex-shrink:0;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;
   transition:all .3s ${SPRING};}
-.cx-pill:hover{background:rgba(31,35,28,.06);}
-.cx-pill .cx-lab{display:none;font-size:12px;font-weight:600;}
+/* Label slides open on hover (and stays open on the active page). */
+.cx-pill .cx-lab{display:inline-block;max-width:0;opacity:0;overflow:hidden;margin-left:0;
+  font-size:12px;font-weight:600;
+  transition:max-width .3s ${SPRING},opacity .25s ease,margin-left .3s ${SPRING};}
 .cx-pill.cx-active{padding:0 13px;background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
-.cx-pill.cx-active .cx-lab{display:inline;}
+.cx-pill.cx-active .cx-lab{max-width:160px;opacity:1;margin-left:7px;}
+/* Hover takeover: the hovered pill gets the full green pull-out… */
+.cx-pill:hover{padding:0 13px;background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
+.cx-pill:hover .cx-lab{max-width:160px;opacity:1;margin-left:7px;}
+/* …and the page you're actually ON hands the spotlight over: its label
+   retracts and the solid green drops to a quiet sage wash — still clearly
+   marked as "you are here" while another pill is being previewed. */
+.cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover){
+  padding:0 9px;background:rgba(158,183,166,.3);color:#3E5C48;box-shadow:none;}
+.cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover) .cx-lab{
+  max-width:0;opacity:0;margin-left:0;}
 .cx-badge{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:8.5px;font-weight:700;
-  color:#fff;background:#B85C3D;border-radius:999px;padding:1.5px 6px;line-height:1.4;}
-.cx-pill.cx-active .cx-badge{color:#3E5C48;background:#FBE3B8;}
+  color:#fff;background:#B85C3D;border-radius:999px;padding:1.5px 6px;line-height:1.4;margin-left:7px;}
+.cx-pill.cx-active .cx-badge,.cx-pill:hover .cx-badge{color:#3E5C48;background:#FBE3B8;}
+.cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover) .cx-badge{color:#fff;background:#B85C3D;}
 .cx-seg{display:flex;background:rgba(31,35,28,.05);border-radius:999px;padding:2.5px;flex-shrink:0;}
 .cx-seg button{height:26px;padding:0 12px;border:none;border-radius:999px;cursor:pointer;
   font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10.5px;font-weight:600;
