@@ -33,6 +33,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { useFeedStatus } from '@/lib/use-feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import {
   subscribeToPlanSnapshot,
   subscribeToDashboardByDate,
@@ -42,6 +43,7 @@ import type { PlanSnapshot, DashboardNumbers } from '@/lib/db';
 import {
   defaultShiftDate, addDays, formatDisplayDate, formatPulledAt,
 } from './_shared';
+import { PmsConnPendingStrip, PmsConnPausedStrip } from './_hk-shared';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn, HousekeeperDot,
 } from './_snow';
@@ -63,6 +65,33 @@ interface BoardData {
 
 const PRIORITY_RANK: Record<string, number> = { priority: 0, normal: 1, excluded: 2 };
 
+// Bottom-center sage pill — the tab's prior hand-rolled toast, now rendered
+// through the shared F7 ToastHost.
+const SCHEDULE_TOAST_STYLE: React.CSSProperties = {
+  padding: '12px 18px',
+  background: T.sageDim, color: T.sageDeep,
+  border: '1px solid rgba(104,131,114,0.3)', borderRadius: 999,
+  fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+};
+
+// Shared POST-and-check for the board mutation handlers: the six /api calls
+// all fire a JSON POST, parse the envelope, and throw on a non-ok result so
+// each handler's catch can roll back + toast. Verbatim extraction of the
+// duplicated block — same request shape, same error message.
+async function postJson<T = unknown>(
+  url: string,
+  payload: unknown,
+): Promise<{ ok: boolean; data?: T; error?: string }> {
+  const res = await fetchWithAuth(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T; error?: string };
+  if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+  return body as { ok: boolean; data?: T; error?: string };
+}
+
 export function ScheduleTab() {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, refreshProperty } = useProperty();
@@ -74,8 +103,7 @@ export function ScheduleTab() {
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
 
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { toasts, show } = useToast({ durationMs: 4000, max: 1 });
 
   const [view, setView] = useState<ScheduleView>('board');
   useEffect(() => {
@@ -129,11 +157,8 @@ export function ScheduleTab() {
   const stripCountsLive = fsLive && !connPending && feedStatus.feeds.dashboardCounts === 'live';
 
   const flashToast = useCallback((msg: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(msg);
-    toastTimer.current = setTimeout(() => setToast(null), 4000);
-  }, []);
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+    show(msg);
+  }, [show]);
 
   // Dashboard pull (In House / Arrivals / Departures).
   useEffect(() => {
@@ -223,12 +248,7 @@ export function ScheduleTab() {
     if (prev === toHkId) return;
     patchAssignee(taskId, toHkId);
     try {
-      const res = await fetchWithAuth('/api/housekeeping/reassign', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, taskId, toHousekeeperId: toHkId }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await postJson('/api/housekeeping/reassign', { propertyId: pid, taskId, toHousekeeperId: toHkId });
       await refreshBoard();
     } catch (e) {
       patchAssignee(taskId, prev);
@@ -241,12 +261,7 @@ export function ScheduleTab() {
     if (prev === null) return;
     patchAssignee(taskId, null);
     try {
-      const res = await fetchWithAuth('/api/housekeeping/reset-assignments', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate, taskId }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await postJson('/api/housekeeping/reset-assignments', { propertyId: pid, date: shiftDate, taskId });
       await refreshBoard();
     } catch (e) {
       patchAssignee(taskId, prev);
@@ -258,12 +273,7 @@ export function ScheduleTab() {
     if (!pid || busy) return;
     setBusy('auto');
     try {
-      const res = await fetchWithAuth('/api/housekeeping/auto-assign', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      const body = await postJson<{ assigned?: number }>('/api/housekeeping/auto-assign', { propertyId: pid, date: shiftDate });
       const n = body.data?.assigned ?? 0;
       await refreshBoard();
       flashToast(
@@ -292,12 +302,7 @@ export function ScheduleTab() {
     )) return;
     setBusy('reset');
     try {
-      const res = await fetchWithAuth('/api/housekeeping/reset-assignments', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await postJson('/api/housekeeping/reset-assignments', { propertyId: pid, date: shiftDate });
       await refreshBoard();
       flashToast(lang === 'es' ? 'Asignaciones reiniciadas' : 'Assignments reset');
     } catch (e) {
@@ -331,16 +336,11 @@ export function ScheduleTab() {
     )) return;
     setBusy('send');
     try {
-      const res = await fetchWithAuth('/api/send-shift-confirmations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pid, shiftDate,
-          baseUrl: window.location.origin,
-          staff: recipients,
-        }),
+      await postJson('/api/send-shift-confirmations', {
+        pid, shiftDate,
+        baseUrl: window.location.origin,
+        staff: recipients,
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       flashToast(lang === 'es' ? `Enlaces enviados a ${recipients.length}` : `Sent links to ${recipients.length}`);
     } catch (e) {
       flashToast((lang === 'es' ? 'Error al enviar: ' : 'Send failed: ') + (e instanceof Error ? e.message : String(e)));
@@ -356,12 +356,7 @@ export function ScheduleTab() {
       return { ...d, housekeepers: d.housekeepers.map(h => h.id === staffId ? { ...h, schedule_priority: priority } : h) };
     });
     try {
-      const res = await fetchWithAuth('/api/housekeeping/staff-priority', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, staffId, priority }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      await postJson('/api/housekeeping/staff-priority', { propertyId: pid, staffId, priority });
     } catch {
       flashToast(lang === 'es' ? 'Error al guardar prioridad' : 'Priority save failed');
       await refreshBoard();
@@ -378,28 +373,15 @@ export function ScheduleTab() {
 
       {/* feat/cua-partial-promotion — honesty strips. One banner at a
           time: pending > paused > feed-level. */}
-      {connPending && (
-        <div style={{ marginBottom: 16 }}>
-          <FeedLearningBanner
-            variant="strip"
-            title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
-            text={lang === 'es'
-              ? 'Los datos del horario aparecerán cuando termine la primera sincronización.'
-              : 'Schedule data will appear once the first sync lands.'}
-          />
-        </div>
-      )}
-      {!connPending && connPaused && (
-        <div style={{ marginBottom: 16 }}>
-          <FeedLearningBanner
-            variant="strip"
-            title={lang === 'es' ? 'Conexión con el PMS en pausa.' : 'PMS connection paused.'}
-            text={lang === 'es'
-              ? 'Los datos pueden estar desactualizados hasta que se reanude.'
-              : 'Data may be out of date until it resumes.'}
-          />
-        </div>
-      )}
+      <PmsConnPendingStrip
+        show={connPending}
+        marginBottom={16}
+        lang={lang}
+        text={lang === 'es'
+          ? 'Los datos del horario aparecerán cuando termine la primera sincronización.'
+          : 'Schedule data will appear once the first sync lands.'}
+      />
+      <PmsConnPausedStrip show={!connPending && connPaused} marginBottom={16} lang={lang} />
       {!connPending && !connPaused && reservationsLearning && (
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
@@ -619,15 +601,7 @@ export function ScheduleTab() {
       )}
 
       {/* TOAST */}
-      {toast && (
-        <div style={{
-          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 70, padding: '12px 18px',
-          background: T.sageDim, color: T.sageDeep,
-          border: '1px solid rgba(104,131,114,0.3)', borderRadius: 999,
-          fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        }}>{toast}</div>
-      )}
+      <ToastHost toasts={toasts} position="bottom" offset="24px" zIndex={70} toastStyle={SCHEDULE_TOAST_STYLE} />
 
       {/* DETAIL DRAWER */}
       {openTask && typeof document !== 'undefined' && createPortal(

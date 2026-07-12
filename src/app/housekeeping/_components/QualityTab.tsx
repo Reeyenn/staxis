@@ -13,14 +13,10 @@
 //   • Drawer     — full inspection checklist (per-item severity, notes,
 //                  photo-on-fail, overall note) → pass / send-for-re-clean.
 //
-// No functionality from either source tab was dropped:
-//   Inspections → queue poll (15s), filters, start/complete/cancel,
-//     4-state severity (pass/minor/major/critical), per-item note + photo
-//     upload + requiresPhotoOnFail guard, overall note, stats, history.
-//   Performance → live realtime (Today) + ranged history, active-staff
-//     leaderboard (min 3 rooms) with pace badges, provisional crew pills,
-//     weighted cleaning-efficiency card, flagged keep/discard (30s poll),
-//     and the real CSV export (NOT a toast).
+// This file is the ORCHESTRATOR: state, polling, the /api routes, and the two
+// derived columns. The presentational halves live in QualityInspections.tsx
+// (left) and QualityPerformance.tsx (right); shared pure helpers/types are in
+// quality-shared.ts. The split is mechanical — no behavior changed.
 //
 // Data layers are untouched — same /api/housekeeping/inspections/* routes
 // and the same cleaning-events db helpers (Migration 0012).
@@ -33,6 +29,8 @@ import { useTodayStr } from '@/lib/use-today-str';
 import { useFeedStatus } from '@/lib/use-feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { parseLocalDate } from '@/lib/format-date';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { format, subDays } from 'date-fns';
 import {
   getCleaningEventsForRange,
@@ -45,113 +43,33 @@ import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, Card, HousekeeperDot,
 } from './_snow';
+import {
+  tr, toIso,
+  UUID_RE, VIEW_DAYS, LEADERBOARD_MIN_ROOMS,
+  type ViewMode, type ItemDraft, type StaffStats,
+} from './quality-shared';
+import {
+  StatBand, FilterPill, QueueRow, HistoryCard, InspectDrawer,
+} from './QualityInspections';
+import { Leaderboard, EfficiencyCard } from './QualityPerformance';
 import type { StaffMember } from '@/types';
 import type {
   Inspection,
   InspectionChecklist,
-  InspectionChecklistItem,
   InspectionFailedItem,
   InspectionHistoryEntry,
-  InspectionItemSeverity,
   InspectionQueueRoom,
   InspectionStats,
 } from '@/types/inspections';
 
-// ─── Shared types ──────────────────────────────────────────────────────────
-
-type SeverityValue = InspectionItemSeverity | 'pass' | null;
-
-interface ItemDraft {
-  state: SeverityValue;
-  note: string;
-  photoUrl: string | null;
-  photoPath: string | null;
-  uploading: boolean;
-}
-
-type ViewMode = 'live' | '7d' | '30d' | '3mo' | '1yr';
-const VIEW_DAYS: Record<ViewMode, number> = { live: 1, '7d': 7, '30d': 30, '3mo': 90, '1yr': 365 };
-const LEADERBOARD_MIN_ROOMS = 3;
-
-// Plan-v4 PMS rooms carry a synthetic composite id ("YYYY-MM-DD:roomNumber",
-// see pms-rooms-server.composeRoomId), not a UUID. The inspections /start
-// route validates roomId as a UUID and 400s on anything else, so only forward
-// it when it's a real UUID — the flow otherwise keys on roomNumber, and the
-// inspection row stores roomId=null harmlessly.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-interface StaffStats {
-  staffId: string;
-  name: string;
-  total: number;
-  avgMins: number;
-  avgCheckout: number | null;
-  avgS1: number | null;
-  avgS2: number | null;
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function tr(lang: 'en' | 'es', en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
-// Decimal-minute format ("21.4m") — matches the design typography.
-function fmtDec(mins: number | null | undefined): string {
-  if (mins == null || !isFinite(mins)) return '—';
-  return `${mins.toFixed(1)}m`;
-}
-
-// Parse YYYY-MM-DD as a *local* midnight (avoids the UTC "off by one day"
-// bug that would render today's flagged cleans as yesterday west of UTC).
-function parseLocalDate(ymd: string | null | undefined): Date | null {
-  if (!ymd) return null;
-  const parts = ymd.split('-').map(Number);
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return null;
-  return new Date(parts[0], parts[1] - 1, parts[2]);
-}
-
-// Coerces startedAt/completedAt for the CSV export. The CleaningEvent type
-// narrows to Date in TS, but Supabase row mappers occasionally forward an
-// ISO string (legacy rows that bypass the mapper); .toISOString() on a
-// string throws mid-export, so accept both (+ Firestore .toDate()).
-function toIso(v: unknown): string {
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === 'string') {
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? '' : d.toISOString();
-  }
-  if (typeof v === 'object' && v !== null && 'toDate' in v && typeof (v as { toDate?: unknown }).toDate === 'function') {
-    return (v as { toDate: () => Date }).toDate().toISOString();
-  }
-  return '';
-}
-
-// "12m" / "3h" / "2d" relative label from an ISO timestamp.
-function relAgo(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!isFinite(ms)) return null;
-  const min = Math.round(ms / 60000);
-  if (min < 1) return null; // → caller renders "just now"
-  if (min < 60) return `${min}m`;
-  const h = Math.round(min / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.round(h / 24)}d`;
-}
-
-function categoryLabel(cat: string, lang: 'en' | 'es'): string {
-  const map: Record<string, [string, string]> = {
-    bathroom: ['Bathroom', 'Baño'],
-    bedroom:  ['Bedroom', 'Dormitorio'],
-    living:   ['Living', 'Sala'],
-    kitchen:  ['Kitchen', 'Cocina'],
-    welcome:  ['Welcome', 'Recepción'],
-    other:    ['Other', 'Otro'],
-  };
-  const pair = map[cat] ?? [cat, cat];
-  return lang === 'es' ? pair[1] : pair[0];
-}
+// Bottom-center pill matching the tab's prior hand-rolled Toast (sage tone,
+// 3.2s auto-dismiss). Rendered through the shared F7 ToastHost.
+const TOAST_STYLE: React.CSSProperties = {
+  background: T.sageDim, color: T.sageDeep, border: `1px solid rgba(92,122,96,0.3)`,
+  padding: '11px 18px', borderRadius: 999,
+  fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+  boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -172,6 +90,11 @@ export function QualityTab() {
   const [queue, setQueue] = useState<InspectionQueueRoom[]>([]);
   const [filter, setFilter] = useState<'all' | 'pending_inspection' | 'pending_recheck'>('all');
   const [queueLoading, setQueueLoading] = useState(true);
+  // True when the last queue fetch failed. Distinguishes a genuinely-empty
+  // queue ("every room inspected") from a queue that never loaded — without
+  // it a failed fetch renders the reassuring empty state and managers skip
+  // inspections that are actually pending.
+  const [queueError, setQueueError] = useState(false);
   const [active, setActive] = useState<{
     inspection: Inspection;
     checklist: InspectionChecklist;
@@ -181,7 +104,7 @@ export function QualityTab() {
   const [submitting, setSubmitting] = useState(false);
   const [stats, setStats] = useState<InspectionStats | null>(null);
   const [history, setHistory] = useState<InspectionHistoryEntry[]>([]);
-  const [toast, setToast] = useState<string | null>(null);
+  const { toasts, show } = useToast({ durationMs: 3200, max: 1 });
 
   // ── Performance state ──────────────────────────────────────────────────
   const [view, setView] = useState<ViewMode>('7d');
@@ -200,9 +123,12 @@ export function QualityTab() {
       const json = await res.json().catch(() => null);
       if (res.ok && json?.ok && Array.isArray(json.data)) {
         setQueue(json.data as InspectionQueueRoom[]);
+        setQueueError(false);
+      } else {
+        setQueueError(true);
       }
     } catch {
-      // ignore — submit path surfaces real failures
+      setQueueError(true);
     } finally {
       setQueueLoading(false);
     }
@@ -382,7 +308,7 @@ export function QualityTab() {
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(tr(lang, 'Could not start inspection', 'No se pudo iniciar la inspección'));
+        show(tr(lang, 'Could not start inspection', 'No se pudo iniciar la inspección'));
         return;
       }
       const inspection = json.data.inspection as Inspection;
@@ -393,9 +319,9 @@ export function QualityTab() {
       }
       setActive({ inspection, checklist, drafts, notes: '' });
     } catch {
-      setToast(tr(lang, 'Network error', 'Error de red'));
+      show(tr(lang, 'Network error', 'Error de red'));
     }
-  }, [activePropertyId, lang]);
+  }, [activePropertyId, lang, show]);
 
   const handleSubmit = useCallback(async (result: 'pass' | 'fail') => {
     if (!active || submitting) return;
@@ -428,7 +354,7 @@ export function QualityTab() {
         for (const f of failedItems) {
           const item = active.checklist.items.find((i) => i.id === f.itemId);
           if (item?.requiresPhotoOnFail && !f.photoUrl) {
-            setToast(tr(lang,
+            show(tr(lang,
               `${item.label} requires a photo before submitting`,
               `${item.label} requiere foto antes de enviar`));
             setSubmitting(false);
@@ -452,22 +378,26 @@ export function QualityTab() {
       );
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(tr(lang,
+        show(tr(lang,
           json?.error ?? 'Could not complete inspection',
           json?.error ?? 'No se pudo completar la inspección'));
         return;
       }
-      setToast(result === 'pass'
+      show(result === 'pass'
         ? tr(lang, 'Inspection passed — room ready', 'Inspección aprobada — habitación lista')
         : tr(lang, 'Inspection failed — re-clean requested', 'Inspección reprobada — solicitada re-limpieza'));
       setActive(null);
       void refreshQueue();
       void refreshStats();
       void refreshHistory();
+    } catch {
+      // Network failure — surface it so the manager knows the inspection
+      // was NOT recorded (drawer stays open to retry). Mirrors handleStart.
+      show(tr(lang, 'Network error — inspection not saved', 'Error de red — inspección no guardada'));
     } finally {
       setSubmitting(false);
     }
-  }, [active, submitting, lang, refreshQueue, refreshStats, refreshHistory]);
+  }, [active, submitting, lang, show, refreshQueue, refreshStats, refreshHistory]);
 
   const handleCancel = useCallback(async () => {
     if (!active) return;
@@ -512,14 +442,14 @@ export function QualityTab() {
           uploading: false,
         });
       } else {
-        setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
+        show(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
         updateDraft(itemId, { uploading: false });
       }
     } catch {
-      setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
+      show(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
       updateDraft(itemId, { uploading: false });
     }
-  }, [active, lang, updateDraft]);
+  }, [active, lang, show, updateDraft]);
 
   // ── Performance handlers ───────────────────────────────────────────────
   const handleDecide = useCallback(async (eventId: string, decision: 'approved' | 'rejected') => {
@@ -531,16 +461,16 @@ export function QualityTab() {
       // Also patch events so the leaderboard / efficiency (which filter for
       // recorded|approved) reflect the decision without a full re-fetch.
       setEvents((prev) => prev.map((e) => (e.id === eventId ? { ...e, status: decision } : e)));
-      setToast(decision === 'approved'
+      show(decision === 'approved'
         ? tr(lang, 'Kept — counts toward averages', 'Mantenida — cuenta en los promedios')
         : tr(lang, 'Discarded from averages', 'Descartada de los promedios'));
     } catch (err) {
       console.error('[QualityTab] decide failed:', err);
-      setToast(tr(lang, 'Could not save decision', 'No se pudo guardar la decisión'));
+      show(tr(lang, 'Could not save decision', 'No se pudo guardar la decisión'));
     } finally {
       setReviewingId(null);
     }
-  }, [user, activePropertyId, lang]);
+  }, [user, activePropertyId, lang, show]);
 
   const handleExport = useCallback(() => {
     if (events.length === 0) return;
@@ -564,8 +494,8 @@ export function QualityTab() {
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click();
     document.body.removeChild(a); URL.revokeObjectURL(url);
-    setToast(tr(lang, 'Report exported', 'Reporte exportado'));
-  }, [events, view, today, lang]);
+    show(tr(lang, 'Report exported', 'Reporte exportado'));
+  }, [events, view, today, lang, show]);
 
   const staffShape = (s: { staffId: string; name: string }): Pick<StaffMember, 'id' | 'name'> => ({
     id: s.staffId, name: s.name,
@@ -586,7 +516,7 @@ export function QualityTab() {
       padding: '24px 48px 64px', background: T.bg, color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
-      {toast && <Toast text={toast} onDismiss={() => setToast(null)} />}
+      <ToastHost toasts={toasts} position="bottom" offset="24px" zIndex={1200} ariaLive="polite" toastStyle={TOAST_STYLE} />
 
       {/* HEADER */}
       <div style={{
@@ -674,6 +604,18 @@ export function QualityTab() {
             {queueLoading ? (
               <div style={{ padding: 16, color: T.ink3, fontFamily: FONT_SANS, fontSize: 13 }}>
                 {tr(lang, 'Loading…', 'Cargando…')}
+              </div>
+            ) : queueError && queue.length === 0 ? (
+              <div style={{
+                textAlign: 'center', color: T.warm, fontStyle: 'italic',
+                fontFamily: FONT_SERIF, fontSize: 16, padding: '24px 12px 20px',
+                border: `1px solid ${T.ruleSoft}`, borderRadius: 12,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+              }}>
+                <span>{tr(lang, 'Couldn’t load the inspection queue.', 'No se pudo cargar la cola de inspección.')}</span>
+                <Btn variant="paper" size="sm" onClick={() => void refreshQueue()}>
+                  {tr(lang, 'Retry', 'Reintentar')}
+                </Btn>
               </div>
             ) : visibleQueue.length === 0 ? (
               <div style={{
@@ -819,511 +761,5 @@ export function QualityTab() {
         />
       )}
     </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// SUB-COMPONENTS
-// ══════════════════════════════════════════════════════════════════════════════
-
-function StatBand({ stats, lang }: { stats: InspectionStats | null; lang: 'en' | 'es' }) {
-  const pct = (x: number) => `${Math.round(x * 100)}%`;
-  const cardBase: React.CSSProperties = {
-    border: `1px solid ${T.rule}`, borderRadius: 16, padding: '15px 18px',
-    display: 'flex', flexDirection: 'column', gap: 7, background: T.paper,
-  };
-  const valStyle: React.CSSProperties = {
-    fontFamily: FONT_SERIF, fontSize: 40, lineHeight: 0.9, color: T.ink,
-    letterSpacing: '-0.02em', fontWeight: 400,
-  };
-  const reClean = stats?.reCleanRatePct ?? 0;
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 18 }}>
-      {/* Pass rate today — hero */}
-      <div style={{
-        ...cardBase,
-        background: 'linear-gradient(135deg, rgba(92,122,96,0.10), rgba(92,122,96,0.02))',
-        borderColor: 'rgba(92,122,96,0.22)',
-      }}>
-        <Caps>{tr(lang, 'Pass rate · today', 'Aprobación · hoy')}</Caps>
-        <span style={{ ...valStyle, color: T.sageDeep }}>{stats ? pct(stats.todayPassRate) : '—'}</span>
-        <div style={{ height: 6, background: T.ruleSoft, borderRadius: 999, overflow: 'hidden' }}>
-          <span style={{ display: 'block', height: '100%', width: stats ? pct(stats.todayPassRate) : '0%', background: T.sage, borderRadius: 999 }} />
-        </div>
-      </div>
-      {/* Pass rate 7d */}
-      <div style={cardBase}>
-        <Caps>{tr(lang, 'Pass rate · 7d', 'Aprobación · 7d')}</Caps>
-        <span style={valStyle}>{stats ? pct(stats.weekPassRate) : '—'}</span>
-        <Caps c={T.ink3} size={11} tracking="0">{tr(lang, 'trailing week', 'semana previa')}</Caps>
-      </div>
-      {/* Re-clean rate */}
-      <div style={cardBase}>
-        <Caps>{tr(lang, 'Re-clean rate', 'Tasa re-limpieza')}</Caps>
-        <span style={{ ...valStyle, color: reClean > 12 ? T.warm : T.ink }}>
-          {stats ? reClean.toFixed(0) : '—'}<small style={{ fontSize: 18, color: T.ink2 }}>%</small>
-        </span>
-        <Caps c={T.ink3} size={11} tracking="0">{tr(lang, 'sent back', 'devueltas')}</Caps>
-      </div>
-      {/* Avg inspection */}
-      <div style={cardBase}>
-        <Caps>{tr(lang, 'Avg inspection', 'Inspección prom.')}</Caps>
-        <span style={valStyle}>{stats ? fmtDec(stats.avgInspectionDurationSec / 60) : '—'}</span>
-        <Caps c={T.ink3} size={11} tracking="0">{tr(lang, 'per room', 'por habitación')}</Caps>
-      </div>
-    </div>
-  );
-}
-
-function FilterPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        height: 26, padding: '0 12px', borderRadius: 999,
-        background: active ? T.ink : 'transparent',
-        color: active ? T.bg : T.ink2,
-        border: `1px solid ${active ? T.ink : T.rule}`,
-        fontFamily: FONT_SANS, fontSize: 11, fontWeight: 500, cursor: 'pointer',
-      }}
-    >{label}</button>
-  );
-}
-
-function QueueRow({ row, lang, onInspect }: { row: InspectionQueueRoom; lang: 'en' | 'es'; onInspect: () => void }) {
-  const recheck = row.reason === 'pending_recheck';
-  const ago = relAgo(row.completedAt);
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 12,
-      padding: '11px 13px', border: `1px solid ${T.rule}`, borderRadius: 12, background: T.paper,
-    }}>
-      <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 24, color: T.ink, lineHeight: 1, minWidth: 46, letterSpacing: '-0.02em' }}>
-        {row.roomNumber}
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-          <Pill tone={recheck ? 'warm' : 'sage'}>
-            {recheck ? tr(lang, 'Re-check', 'Reinspección') : tr(lang, 'Pending', 'Pendiente')}
-          </Pill>
-          {row.priorFailCount > 0 && (
-            <Pill tone="red">{row.priorFailCount} {tr(lang, 'fail', 'fallo')}</Pill>
-          )}
-        </div>
-        <div style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {row.housekeeperName ?? tr(lang, 'Unassigned', 'Sin asignar')}
-          {' · '}
-          {ago ? tr(lang, `cleaned ${ago} ago`, `limpiada hace ${ago}`) : tr(lang, 'just cleaned', 'recién limpiada')}
-        </div>
-      </div>
-      <Btn variant="primary" size="sm" onClick={onInspect}>
-        {tr(lang, 'Inspect', 'Inspeccionar')} →
-      </Btn>
-    </div>
-  );
-}
-
-function HistoryCard({ rows, lang }: { rows: InspectionHistoryEntry[]; lang: 'en' | 'es' }) {
-  return (
-    <Card padding="18px 22px 14px">
-      <Caps style={{ marginBottom: 10, display: 'block' }}>{tr(lang, 'Recent inspections', 'Inspecciones recientes')}</Caps>
-      {rows.length === 0 ? (
-        <div style={{ color: T.ink3, fontFamily: FONT_SANS, fontSize: 12 }}>
-          {tr(lang, 'Nothing yet.', 'Nada por ahora.')}
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {rows.slice(0, 6).map((r) => {
-            const ago = relAgo(r.completedAt);
-            return (
-              <div key={r.id} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '8px 0', borderTop: `1px solid ${T.ruleSoft}`,
-              }}>
-                <div style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink, minWidth: 0 }}>
-                  <span style={{ fontWeight: 600 }}>{r.roomNumber}</span>
-                  {r.inspectorName && <span style={{ color: T.ink3 }}> · {r.inspectorName.split(' ')[0]}</span>}
-                  <span style={{ color: T.ink3 }}> · {ago ? tr(lang, `${ago} ago`, `hace ${ago}`) : tr(lang, 'just now', 'recién')}</span>
-                </div>
-                <Pill tone={r.result === 'pass' ? 'sage' : r.escalated ? 'red' : 'caramel'}>
-                  {r.result === 'pass' ? tr(lang, 'Pass', 'Aprob.') : tr(lang, 'Fail', 'Falló')}
-                  {r.failedItemCount > 0 && ` · ${r.failedItemCount}`}
-                </Pill>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function Leaderboard({
-  rows, loading, lang, paceFor, staffShape,
-}: {
-  rows: StaffStats[];
-  loading: boolean;
-  lang: 'en' | 'es';
-  paceFor: (s: StaffStats) => 'fast' | 'on' | 'slow';
-  staffShape: (s: { staffId: string; name: string }) => Pick<StaffMember, 'id' | 'name'>;
-}) {
-  const cols = '24px 1fr 44px 58px 84px';
-  return (
-    <div>
-      <div style={{
-        display: 'grid', gridTemplateColumns: cols, gap: 10, alignItems: 'center',
-        padding: '10px 0', borderBottom: `1px solid ${T.ruleSoft}`,
-      }}>
-        <Caps size={9}>#</Caps>
-        <Caps size={9}>{tr(lang, 'Crew', 'Limpiadora')}</Caps>
-        <Caps size={9}>{tr(lang, 'Rooms', 'Cuartos')}</Caps>
-        <Caps size={9}>{tr(lang, 'Avg', 'Tiempo')}</Caps>
-        <Caps size={9}>{tr(lang, 'Pace', 'Ritmo')}</Caps>
-      </div>
-      {loading && (
-        <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, padding: '18px 0' }}>
-          {tr(lang, 'Loading…', 'Cargando…')}
-        </p>
-      )}
-      {!loading && rows.length === 0 && (
-        <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, padding: '18px 0', fontStyle: 'italic' }}>
-          {tr(lang, 'Not enough data in this period yet.', 'Sin datos suficientes en este período.')}
-        </p>
-      )}
-      {rows.map((r, i) => {
-        const pace = paceFor(r);
-        return (
-          <div key={r.staffId} style={{
-            display: 'grid', gridTemplateColumns: cols, gap: 10, alignItems: 'center',
-            padding: '11px 0', borderTop: `1px solid ${T.ruleSoft}`,
-          }}>
-            <span style={{
-              fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 22,
-              color: i < 3 ? T.ink : T.ink3, lineHeight: 1, letterSpacing: '-0.02em',
-            }}>{i + 1}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
-              <HousekeeperDot staff={staffShape(r)} size={30} />
-              <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}</span>
-            </div>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink }}>{r.total}</span>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink, fontWeight: 600 }}>{fmtDec(r.avgMins)}</span>
-            <span>
-              {pace === 'fast' && <Pill tone="sage">↑ {tr(lang, 'Fast', 'Rápido')}</Pill>}
-              {pace === 'slow' && <Pill tone="warm">↓ {tr(lang, 'Slow', 'Lento')}</Pill>}
-              {pace === 'on' && <Pill tone="neutral">· {tr(lang, 'On pace', 'En ritmo')}</Pill>}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function EfficiencyCard({
-  typeAvgs, eligibleCount, lang,
-}: {
-  typeAvgs: {
-    overall: number | null; checkout: number | null; s1: number | null; s2: number | null;
-    shareCheckout: number; shareS1: number; shareS2: number;
-  };
-  eligibleCount: number;
-  lang: 'en' | 'es';
-}) {
-  const rows = [
-    { l: tr(lang, 'Checkout', 'Salida'),       sub: tr(lang, 'full turnover', 'cambio total'), v: typeAvgs.checkout, tone: T.warm,        share: typeAvgs.shareCheckout },
-    { l: tr(lang, 'Stay · light', 'Estadía · 1'), sub: tr(lang, 'day 1', 'día 1'),             v: typeAvgs.s1,       tone: T.sageDeep,    share: typeAvgs.shareS1 },
-    { l: tr(lang, 'Stay · full', 'Estadía · 2'),  sub: tr(lang, 'day 2+', 'día 2+'),           v: typeAvgs.s2,       tone: T.caramelDeep, share: typeAvgs.shareS2 },
-  ];
-  return (
-    <Card padding="20px 22px">
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-        marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${T.rule}`,
-      }}>
-        <Caps>{tr(lang, 'Cleaning efficiency', 'Eficiencia de limpieza')}</Caps>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>
-          {eligibleCount} {tr(lang, 'cleans', 'limpiezas')}
-        </span>
-      </div>
-      {/* Overall hero */}
-      <div style={{ paddingBottom: 12, borderBottom: `1px solid ${T.ruleSoft}` }}>
-        <Caps size={9}>{tr(lang, 'Overall avg', 'Promedio general')}</Caps>
-        <div style={{ marginTop: 6 }}>
-          <span style={{ fontFamily: FONT_SERIF, fontSize: 40, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400 }}>
-            {typeAvgs.overall != null ? (
-              <>
-                <span style={{ fontStyle: 'italic' }}>{typeAvgs.overall.toFixed(1)}</span>
-                <span style={{ fontSize: 20, color: T.ink2, fontStyle: 'italic' }}>m</span>
-              </>
-            ) : '—'}
-          </span>
-        </div>
-      </div>
-      {/* Per-type */}
-      {rows.map((e, i) => (
-        <div key={e.l} style={{ padding: '12px 0', borderBottom: i < rows.length - 1 ? `1px solid ${T.ruleSoft}` : 'none' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-              <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{e.l}</span>
-              <Caps size={9} tracking="0.06em">{e.sub}</Caps>
-            </div>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 24, color: e.tone, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 400 }}>
-              {e.v != null ? (
-                <>
-                  <span style={{ fontStyle: 'italic' }}>{e.v.toFixed(1)}</span>
-                  <span style={{ fontSize: 13, color: T.ink2, fontStyle: 'italic' }}>m</span>
-                </>
-              ) : '—'}
-            </span>
-          </div>
-          <div style={{ height: 5, background: T.ruleSoft, borderRadius: 999, overflow: 'hidden' }}>
-            <span style={{ display: 'block', height: '100%', width: `${Math.round(e.share * 100)}%`, background: e.tone, borderRadius: 999 }} />
-          </div>
-          <Caps size={9} tracking="0.06em" style={{ marginTop: 4, display: 'inline-block' }}>
-            {Math.round(e.share * 100)}% {tr(lang, 'of cleans', 'de limpiezas')}
-          </Caps>
-        </div>
-      ))}
-    </Card>
-  );
-}
-
-// ─── Inspection drawer ───────────────────────────────────────────────────────
-
-function InspectDrawer({
-  active, submitting, lang, onClose, onState, onNote, onUpload, onNotes, onSubmit,
-}: {
-  active: { inspection: Inspection; checklist: InspectionChecklist; drafts: Map<string, ItemDraft>; notes: string };
-  submitting: boolean;
-  lang: 'en' | 'es';
-  onClose: () => void;
-  onState: (id: string, st: SeverityValue) => void;
-  onNote: (id: string, n: string) => void;
-  onUpload: (id: string, file: File) => void;
-  onNotes: (n: string) => void;
-  onSubmit: (r: 'pass' | 'fail') => void;
-}) {
-  // Escape closes (and cancels) the drawer.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const byCategory = useMemo(() => {
-    const m = new Map<string, InspectionChecklistItem[]>();
-    for (const it of active.checklist.items) {
-      const arr = m.get(it.category) ?? [];
-      arr.push(it);
-      m.set(it.category, arr);
-    }
-    return m;
-  }, [active.checklist.items]);
-
-  const allDecided = active.checklist.items.every((it) => active.drafts.get(it.id)?.state != null);
-  const anyFail = active.checklist.items.some((it) => {
-    const st = active.drafts.get(it.id)?.state;
-    return st === 'minor' || st === 'major' || st === 'critical';
-  });
-
-  return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(24,22,17,0.34)', zIndex: 1000, display: 'flex' }}
-    >
-      <div style={{
-        marginLeft: 'auto', width: 'min(460px, 96vw)', height: '100%', background: T.paper,
-        padding: '22px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16,
-      }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <Caps>{tr(lang, 'Inspect room', 'Inspeccionar habitación')}</Caps>
-            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 40, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, margin: '2px 0 4px' }}>
-              {active.inspection.roomNumber}
-            </div>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
-              {active.checklist.name} · {active.checklist.items.length} {tr(lang, 'checks', 'puntos')}
-            </span>
-          </div>
-          <Btn variant="ghost" size="sm" onClick={onClose}>{tr(lang, 'Close', 'Cerrar')}</Btn>
-        </div>
-
-        {/* Checklist */}
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {Array.from(byCategory.entries()).map(([category, items]) => (
-            <div key={category}>
-              <Caps style={{ display: 'block', margin: '12px 0 8px' }}>{categoryLabel(category, lang)}</Caps>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {items.map((item) => (
-                  <ChecklistRow
-                    key={item.id}
-                    item={item}
-                    draft={active.drafts.get(item.id) ?? { state: null, note: '', photoUrl: null, photoPath: null, uploading: false }}
-                    lang={lang}
-                    onState={(st) => onState(item.id, st)}
-                    onNote={(n) => onNote(item.id, n)}
-                    onFile={(f) => onUpload(item.id, f)}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Overall note */}
-        <textarea
-          placeholder={tr(lang, 'Optional note to housekeeper / manager', 'Nota opcional para la limpieza / gerente')}
-          value={active.notes}
-          onChange={(e) => onNotes(e.target.value)}
-          rows={2}
-          style={{
-            width: '100%', boxSizing: 'border-box', padding: '10px 12px', borderRadius: 12,
-            border: `1px solid ${T.rule}`, fontFamily: FONT_SANS, fontSize: 13, color: T.ink, resize: 'vertical',
-          }}
-        />
-
-        {/* Sticky submit bar */}
-        <div style={{
-          position: 'sticky', bottom: 0, background: T.paper, paddingTop: 10,
-          borderTop: `1px solid ${T.rule}`, display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center',
-        }}>
-          {!allDecided && (
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
-              {tr(lang, 'Mark every check to submit', 'Marca cada punto para enviar')}
-            </span>
-          )}
-          {allDecided && !anyFail && (
-            <Btn variant="sage" size="lg" onClick={() => onSubmit('pass')} disabled={submitting}>
-              {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass — room ready', '✓ Aprobar — lista')}
-            </Btn>
-          )}
-          {allDecided && anyFail && (
-            <Btn variant="primary" size="lg" onClick={() => onSubmit('fail')} disabled={submitting} style={{ background: T.warm, borderColor: T.warm }}>
-              {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, 'Send for re-clean →', 'Enviar a re-limpieza →')}
-            </Btn>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ChecklistRow({
-  item, draft, lang, onState, onNote, onFile,
-}: {
-  item: InspectionChecklistItem;
-  draft: ItemDraft;
-  lang: 'en' | 'es';
-  onState: (st: SeverityValue) => void;
-  onNote: (n: string) => void;
-  onFile: (f: File) => void;
-}) {
-  const label = lang === 'es' && item.labelEs ? item.labelEs : item.label;
-  const isFail = draft.state === 'minor' || draft.state === 'major' || draft.state === 'critical';
-  const isCritical = draft.state === 'critical';
-  return (
-    <div style={{
-      border: `1px solid ${isFail ? (isCritical ? 'rgba(160,74,44,0.35)' : 'rgba(184,92,61,0.35)') : T.rule}`,
-      borderRadius: 12, padding: '11px 13px',
-      background: isFail ? (isCritical ? T.redDim : T.warmDim) : T.paper,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink }}>
-          {label}
-          {item.requiresPhotoOnFail && (
-            <span style={{ marginLeft: 6, color: T.warm, fontSize: 9, fontFamily: FONT_MONO }}>
-              {tr(lang, 'PHOTO', 'FOTO')}
-            </span>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 4 }}>
-          <SevButton label={tr(lang, 'Pass', 'Aprob.')} active={draft.state === 'pass'} tone="sage" onClick={() => onState('pass')} />
-          <SevButton label={tr(lang, 'Minor', 'Menor')} active={draft.state === 'minor'} tone="warm" onClick={() => onState('minor')} />
-          <SevButton label={tr(lang, 'Major', 'Mayor')} active={draft.state === 'major'} tone="warm" onClick={() => onState('major')} />
-          <SevButton label={tr(lang, 'Critical', 'Crítico')} active={draft.state === 'critical'} tone="red" onClick={() => onState('critical')} />
-        </div>
-      </div>
-      {isFail && (
-        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <input
-            type="text"
-            placeholder={tr(lang, 'Note (what to fix)', 'Nota (qué corregir)')}
-            value={draft.note}
-            onChange={(e) => onNote(e.target.value)}
-            style={{
-              width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 10,
-              border: `1px solid ${T.rule}`, background: T.paper, fontFamily: FONT_SANS, fontSize: 12, color: T.ink,
-            }}
-          />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <label style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 999,
-              border: `1px solid ${T.rule}`, background: T.paper, fontFamily: FONT_SANS, fontSize: 12, color: T.ink, cursor: 'pointer',
-            }}>
-              {draft.uploading
-                ? tr(lang, 'Uploading…', 'Subiendo…')
-                : draft.photoUrl
-                  ? tr(lang, 'Replace photo', 'Cambiar foto')
-                  : tr(lang, 'Add photo', 'Agregar foto')}
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                style={{ display: 'none' }}
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }}
-              />
-            </label>
-            {draft.photoUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={draft.photoUrl} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover', border: `1px solid ${T.rule}` }} />
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SevButton({
-  label, active, tone, onClick,
-}: {
-  label: string; active: boolean; tone: 'sage' | 'warm' | 'red'; onClick: () => void;
-}) {
-  const palette = {
-    sage: { bg: T.sageDim, fg: T.sageDeep },
-    warm: { bg: T.warmDim, fg: T.warm },
-    red:  { bg: T.redDim,  fg: T.red },
-  }[tone];
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        height: 26, padding: '0 9px', borderRadius: 999,
-        background: active ? palette.bg : 'transparent',
-        color: active ? palette.fg : T.ink3,
-        border: `1px solid ${active ? palette.fg : T.rule}`,
-        fontFamily: FONT_SANS, fontSize: 11, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap',
-      }}
-    >{label}</button>
-  );
-}
-
-function Toast({ text, onDismiss }: { text: string; onDismiss: () => void }) {
-  useEffect(() => {
-    const id = window.setTimeout(onDismiss, 3200);
-    return () => window.clearTimeout(id);
-  }, [onDismiss]);
-  return (
-    <div
-      role="status"
-      style={{
-        position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-        zIndex: 1200, maxWidth: 'calc(100vw - 24px)',
-        background: T.sageDim, color: T.sageDeep, border: `1px solid rgba(92,122,96,0.3)`,
-        padding: '11px 18px', borderRadius: 999,
-        fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
-      }}
-    >{text}</div>
   );
 }

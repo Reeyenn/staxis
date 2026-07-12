@@ -20,7 +20,7 @@
 // channel on deep_clean_records, so a 60s timer + visibility refresh stands
 // in — without it a completed deep clean wouldn't surface until remount.
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -30,11 +30,24 @@ import {
   assignRoomDeepClean,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
+import { parseLocalDate } from '@/lib/format-date';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import type { DeepCleanConfig, DeepCleanRecord } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn,
 } from './_snow';
+
+// Bottom-center toast tones matching the tab's prior hand-rolled pill: sage
+// for success, warm for an init/save failure. Portaled through F7 ToastHost.
+const DC_TOAST_BASE: React.CSSProperties = {
+  padding: '12px 18px', borderRadius: 999,
+  fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+};
+const DC_TOAST_TONES: Record<string, React.CSSProperties> = {
+  success: { background: T.sageDim, color: T.sageDeep, border: `1px solid rgba(104,131,114,0.3)` },
+  error:   { background: T.warmDim, color: T.warm,     border: `1px solid rgba(184,92,61,0.3)` },
+};
 
 type RowStatus = 'fresh' | 'due-soon' | 'overdue' | 'never';
 
@@ -83,9 +96,12 @@ export function DeepCleanTab() {
   const es = lang === 'es';
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
+  // True when the config fetch itself failed (distinct from a genuine
+  // no-config-yet null). Saving cadence does a full-row upsert that would
+  // reset minutesPerRoom/targetPerWeek to defaults, so a failed load must
+  // block the save rather than overwrite real settings with guesses.
+  const [configError, setConfigError] = useState(false);
   const [records, setRecords] = useState<Record<string, DeepCleanRecord>>({});
-  const [toast, setToast] = useState<string | null>(null);
-  const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [showCadence, setShowCadence] = useState(false);
   // Default cadence 90 days — matches the historical production default for
   // properties that haven't explicitly configured one.
@@ -94,7 +110,7 @@ export function DeepCleanTab() {
   // `loaded` flips true after the first records-fetch resolves so the empty
   // list doesn't flash "Nothing overdue" while the request is still in flight.
   const [loaded, setLoaded] = useState(false);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { toasts, show } = useToast({ durationMs: 3000, max: 1 });
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
@@ -105,16 +121,6 @@ export function DeepCleanTab() {
   // for downstream useMemos).
   // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: midnight rollover trigger
   const today = useMemo(() => new Date(), [todayStrReactive]);
-
-  // Parse a YYYY-MM-DD string as a *local* date (midnight in the user's zone)
-  // instead of UTC midnight, so "May 12" labels and days-since math agree for
-  // a manager in CDT (new Date('2026-05-12') would parse as UTC → May 11 19:00).
-  const parseLocalDate = (ymd: string | null | undefined): Date | null => {
-    if (!ymd) return null;
-    const parts = ymd.split('-').map(Number);
-    if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null;
-    return new Date(parts[0], parts[1] - 1, parts[2]);
-  };
 
   const allRoomNumbers = useMemo(() => {
     const inv = activeProperty?.roomInventory ?? [];
@@ -141,15 +147,12 @@ export function DeepCleanTab() {
     } catch (err) {
       console.error('[DeepCleanTab] records fetch failed:', err);
       if (!opts?.silent) {
-        setToastKind('error');
-        setToast(es ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        toastTimer.current = setTimeout(() => setToast(null), 3500);
+        show(es ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data', { tone: 'error', durationMs: 3500 });
       }
     } finally {
       setLoaded(true);
     }
-  }, [uid, pid, es]);
+  }, [uid, pid, es, show]);
 
   // Load config + records on mount / property-change. Resets local state
   // immediately when uid/pid changes so a slow response from the previous
@@ -159,15 +162,20 @@ export function DeepCleanTab() {
     setLoaded(false);
     setRecords({});
     setConfigState(null);
+    setConfigError(false);
     let cancelled = false;
     getDeepCleanConfig(uid, pid).then(c => {
       if (cancelled) return;
       setConfigState(c);
+      setConfigError(false);
       if (c?.frequencyDays) setCadenceDraft(c.frequencyDays);
     }).catch(err => {
-      // Config failure is recoverable (we fall back to defaults). Don't toast —
-      // the records-fetch toast already signals if the DB is down.
+      // Config failed to load. Don't toast — the records-fetch toast already
+      // signals if the DB is down — but flag it so a cadence save can't
+      // upsert defaults over the property's real (unloaded) settings.
+      if (cancelled) return;
       console.error('[DeepCleanTab] config fetch failed:', err);
+      setConfigError(true);
     });
     void refreshRecords();
     return () => { cancelled = true; };
@@ -189,13 +197,8 @@ export function DeepCleanTab() {
     };
   }, [refreshRecords]);
 
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
-
   const flashToast = (msg: string, kind: 'success' | 'error' = 'success') => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToastKind(kind);
-    setToast(msg);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    show(msg, { tone: kind });
   };
 
   const parDays = config?.frequencyDays ?? 90;
@@ -302,6 +305,17 @@ export function DeepCleanTab() {
 
   const handleSaveCadence = async () => {
     if (!uid || !pid) return;
+    // Block the save when the current config never loaded — setDeepCleanConfig
+    // upserts every column, so saving here would overwrite minutesPerRoom /
+    // targetPerWeek with defaults the manager never saw.
+    if (configError) {
+      flashToast(
+        es ? 'No se pudo cargar la configuración actual — recarga antes de guardar'
+           : 'Couldn’t load current settings — reload before saving',
+        'error',
+      );
+      return;
+    }
     setSavingCadence(true);
     try {
       const next: DeepCleanConfig = {
@@ -568,11 +582,18 @@ export function DeepCleanTab() {
                 {es ? 'días' : 'days'}
               </span>
             </div>
+            {configError && (
+              <p style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.warm, margin: 0 }}>
+                {es
+                  ? 'No se pudieron cargar los ajustes actuales. Recarga la página antes de guardar para no sobrescribirlos.'
+                  : 'Couldn’t load the current settings. Reload the page before saving so they aren’t overwritten.'}
+              </p>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Btn variant="ghost" size="sm" onClick={() => setShowCadence(false)}>
                 {es ? 'Cancelar' : 'Cancel'}
               </Btn>
-              <Btn variant="primary" size="sm" onClick={handleSaveCadence} disabled={savingCadence}>
+              <Btn variant="primary" size="sm" onClick={handleSaveCadence} disabled={savingCadence || configError}>
                 {savingCadence ? (es ? 'Guardando…' : 'Saving…') : (es ? 'Guardar' : 'Save')}
               </Btn>
             </div>
@@ -581,18 +602,18 @@ export function DeepCleanTab() {
         document.body,
       )}
 
-      {/* TOAST — portaled to <body> for the same reason as the modal; color
-          flips by toastKind so an init failure surfaces in the warm tone
+      {/* TOAST — portaled to <body> for the same reason as the modal; the
+          tone flips by kind so an init failure surfaces in the warm tone
           instead of looking like a successful action. */}
-      {toast && typeof document !== 'undefined' && createPortal(
-        <div style={{
-          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 9999, padding: '12px 18px',
-          background: toastKind === 'error' ? T.warmDim : T.sageDim,
-          color:      toastKind === 'error' ? T.warm     : T.sageDeep,
-          border: `1px solid ${toastKind === 'error' ? 'rgba(184,92,61,0.3)' : 'rgba(104,131,114,0.3)'}`,
-          borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        }}>{toast}</div>,
+      {typeof document !== 'undefined' && createPortal(
+        <ToastHost
+          toasts={toasts}
+          position="bottom"
+          offset="24px"
+          zIndex={9999}
+          toastStyle={DC_TOAST_BASE}
+          toneStyles={DC_TOAST_TONES}
+        />,
         document.body,
       )}
     </div>

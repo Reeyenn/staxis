@@ -25,6 +25,8 @@ import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, WorkOrder } from '@/types';
 import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
+import { PmsConnPendingStrip, PmsConnPausedStrip } from './_hk-shared';
 import { FONT_SANS, FONT_MONO, FONT_SERIF } from './_snow';
 
 // Exact Ledger design tokens from the handoff.
@@ -33,6 +35,13 @@ const LED = {
   dirty: '#C2562E', cleaning: '#A37C28', cleaningFill: '#C99A2E',
   clean: '#2F7A4E', cleanFill: '#3C9C68',
 } as const;
+
+// Ink pill, bottom-center — the board's prior hand-rolled save-failure toast,
+// now rendered through the shared F7 ToastHost.
+const ROOMS_TOAST_STYLE: React.CSSProperties = {
+  background: LED.ink, color: '#fff', padding: '11px 18px', borderRadius: 999,
+  fontFamily: FONT_SANS, fontSize: 13, boxShadow: '0 10px 30px rgba(24,22,17,.28)',
+};
 
 // The board shows three states; fold inspected (and anything unexpected) into clean.
 type Board = 'dirty' | 'cleaning' | 'clean';
@@ -131,7 +140,7 @@ export function RoomsTab() {
   // id swap). The board polls every 6s, so we flip instantly here, fire the
   // write in the background, and clear once a poll confirms (or after 15s).
   const [pending, setPending] = useState<Map<string, { status: RoomStatus; at: number }>>(() => new Map());
-  const [toast, setToast] = useState<string | null>(null);
+  const { toasts, show } = useToast({ durationMs: 2800, max: 1 });
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -260,8 +269,7 @@ export function RoomsTab() {
       }
     } catch {
       setPending(prev => { const next = new Map(prev); next.delete(room.number); return next; });
-      setToast(lang === 'es' ? 'No se pudo guardar — intenta de nuevo' : "Couldn't save — try again");
-      window.setTimeout(() => setToast(null), 2800);
+      show(lang === 'es' ? 'No se pudo guardar — intenta de nuevo' : "Couldn't save — try again");
     }
   };
 
@@ -314,28 +322,15 @@ export function RoomsTab() {
       <div className="lgr-wrap">
         {/* feat/cua-partial-promotion — honesty strips. One banner at a
             time: pending > paused > feed-level. */}
-        {connPending && (
-          <div style={{ marginBottom: 18 }}>
-            <FeedLearningBanner
-              variant="strip"
-              title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
-              text={lang === 'es'
-                ? 'Los datos de habitaciones en vivo aparecerán cuando termine la primera sincronización.'
-                : 'Live room data will appear once the first sync lands.'}
-            />
-          </div>
-        )}
-        {!connPending && connPaused && (
-          <div style={{ marginBottom: 18 }}>
-            <FeedLearningBanner
-              variant="strip"
-              title={lang === 'es' ? 'Conexión con el PMS en pausa.' : 'PMS connection paused.'}
-              text={lang === 'es'
-                ? 'Los datos pueden estar desactualizados hasta que se reanude.'
-                : 'Data may be out of date until it resumes.'}
-            />
-          </div>
-        )}
+        <PmsConnPendingStrip
+          show={connPending}
+          marginBottom={18}
+          lang={lang}
+          text={lang === 'es'
+            ? 'Los datos de habitaciones en vivo aparecerán cuando termine la primera sincronización.'
+            : 'Live room data will appear once the first sync lands.'}
+        />
+        <PmsConnPausedStrip show={!connPending && connPaused} marginBottom={18} lang={lang} />
         {!connPending && !connPaused && (roomStatusLearning || roomListSyncing || workOrdersLearning) && (
           <div style={{ marginBottom: 18 }}>
             <FeedLearningBanner
@@ -411,9 +406,7 @@ export function RoomsTab() {
         ))}
       </div>
 
-      {toast && (
-        <div style={{ position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 70, background: LED.ink, color: '#fff', padding: '11px 18px', borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, boxShadow: '0 10px 30px rgba(24,22,17,.28)' }}>{toast}</div>
-      )}
+      <ToastHost toasts={toasts} position="bottom" offset="28px" zIndex={70} toastStyle={ROOMS_TOAST_STYLE} />
     </div>
   );
 }
