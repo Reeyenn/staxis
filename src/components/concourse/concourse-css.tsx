@@ -59,13 +59,13 @@ const CX_CSS = `
 /* Hover takeover: the hovered pill gets the full green pull-out… */
 .cx-pill:hover{padding:0 13px;background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
 .cx-pill:hover .cx-lab{max-width:160px;opacity:1;margin-left:7px;}
-/* …and the page you're actually ON hands the spotlight over: its label
-   retracts and the solid green drops to a quiet sage wash — still clearly
-   marked as "you are here" while another pill is being previewed. */
+/* …and the page you're actually ON hands the spotlight over: it fades to a
+   quiet sage wash. Its label deliberately STAYS OPEN — collapsing it changed
+   the bar's width mid-hover, which slid every pill under the cursor and made
+   hover flicker (the root cause of the "glitchy gap" bug). Color-only
+   changes keep the bar geometry rock-steady. */
 .cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover){
-  padding:0 9px;background:rgba(158,183,166,.3);color:#3E5C48;box-shadow:none;}
-.cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover) .cx-lab{
-  max-width:0;opacity:0;margin-left:0;}
+  background:rgba(158,183,166,.3);color:#3E5C48;box-shadow:none;}
 .cx-badge{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:8.5px;font-weight:700;
   color:#fff;background:#B85C3D;border-radius:999px;padding:1.5px 6px;line-height:1.4;margin-left:7px;}
 .cx-pill.cx-active .cx-badge,.cx-pill:hover .cx-badge{color:#3E5C48;background:#FBE3B8;}
