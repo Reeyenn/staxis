@@ -146,6 +146,14 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   const serverDayMapRef = useRef(serverDayMap);
   serverDayMapRef.current = serverDayMap;
   const pendingSaves = useRef(new Map<string, number>());
+  // Outstanding 8s reconcile-failsafe timers (see saveDays). Tracked so a
+  // property switch or unmount can cancel them — otherwise a stale timer
+  // fires clearOverrides on already-reset state.
+  const failsafeTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // Bumped on every property switch. A saveDays call whose POST resolves
+  // AFTER the switch must not arm a fresh failsafe timer (the cleanup below
+  // already ran), or it would wipe the NEW property's optimistic edits 8s in.
+  const saveGeneration = useRef(0);
   const gestureActive = useRef(false);
   const undoStack = useRef<DayEntry[][]>([]);
   const [undoCount, setUndoCount] = useState(0);
@@ -158,6 +166,15 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
     gestureActive.current = false;
     undoStack.current = [];
     setUndoCount(0);
+    saveGeneration.current += 1;
+    // Cancel any in-flight reconcile-failsafe timers from the prior property
+    // (runs on propertyId change and on unmount). Copy the ref into a local
+    // so the cleanup reads a stable value — the Set identity never changes.
+    const timers = failsafeTimers.current;
+    return () => {
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+    };
   }, [propertyId]);
 
   /** Current truth for a day: local overlay if present, else server. */
@@ -205,6 +222,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   // across upcoming weeks, undo of one) go out as sequential week chunks.
   const saveDays = useCallback(async (entries: DayEntry[]): Promise<FillResult> => {
     if (!propertyId) throw new Error('No property selected');
+    const genAtStart = saveGeneration.current;
     for (const e of entries) {
       pendingSaves.current.set(e.date, (pendingSaves.current.get(e.date) ?? 0) + 1);
     }
@@ -243,14 +261,19 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
       // truth as soon as the refetch lands instead of pinning our version.
       if ((data.skippedTimeOff ?? 0) > 0 || (data.skippedUnknown ?? 0) > 0) {
         clearOverrides(entries.map(e => e.date));
-      } else {
+      } else if (saveGeneration.current === genAtStart) {
         // Failsafe: never leave an override pinned forever if the refetch
         // and the override disagree for reasons we didn't anticipate.
+        // Skipped when the property changed mid-flight — this save's dates
+        // belong to the OLD property, and clearing them 8s from now would
+        // wipe the new property's fresh optimistic edits instead.
         const dates = entries.map(e => e.date);
-        setTimeout(() => {
+        const handle = setTimeout(() => {
+          failsafeTimers.current.delete(handle);
           const stillPending = dates.some(d => (pendingSaves.current.get(d) ?? 0) > 0);
           if (!stillPending && !gestureActive.current) clearOverrides(dates);
         }, 8000);
+        failsafeTimers.current.add(handle);
       }
       return data;
     } catch (e) {

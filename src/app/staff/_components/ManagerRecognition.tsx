@@ -18,6 +18,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import type { StaffMember } from '@/types';
 import { T, fonts, Btn, Caps, Card, asDeptKey, deptMeta } from './_tokens';
 import { StaffAvatar, PageHeader } from './_people';
+import { inputStyle } from './_fields';
 
 type Lang = 'en' | 'es';
 
@@ -343,9 +344,3 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-const inputStyle: React.CSSProperties = {
-  width: '100%', boxSizing: 'border-box',
-  padding: '10px 14px', borderRadius: 12, border: `1px solid ${T.rule}`,
-  background: T.paper, fontFamily: fonts.sans, fontSize: 13, color: T.ink,
-  outline: 'none',
-};

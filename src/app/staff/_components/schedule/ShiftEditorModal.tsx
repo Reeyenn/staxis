@@ -9,6 +9,7 @@ import React, { useEffect, useState } from 'react';
 import { toMin, toHHMM, fmtMinRange, type BoardShift } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from '../_tokens';
 import { Avatar } from '../_people';
+import { modalInputStyle as inputStyle } from '../_fields';
 
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
 
@@ -47,12 +48,6 @@ export function ShiftEditorModal({
       return;
     }
     onSave({ startMin: s, endMin: e, note: note.trim() ? note.trim().slice(0, 300) : null });
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%', boxSizing: 'border-box',
-    padding: '9px 12px', borderRadius: 10, border: `1px solid ${T.rule}`,
-    background: T.paper, fontFamily: fonts.sans, fontSize: 13, color: T.ink, outline: 'none',
   };
 
   return (

@@ -9,343 +9,31 @@
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
-import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/db';
-import { fetchWithAuth } from '@/lib/api-fetch';
-import { canManageTeam } from '@/lib/roles';
+import React, { useMemo } from 'react';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import type { StaffMember, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from './_tokens';
 import { StaffAvatar, SeniorTag, SMTag, HoursBar, PageHeader } from './_people';
-
-// ── Form types ────────────────────────────────────────────────────────────
-interface StaffFormData {
-  name: string;
-  phone?: string;
-  language: 'en' | 'es';
-  department: StaffDepartment;
-  isSenior: boolean;
-  hourlyWage?: number;
-  maxWeeklyHours: number;
-  maxDaysPerWeek: number;
-  vacationDates: string;
-  isActive: boolean;
-  isSchedulingManager: boolean;
-}
-
-const EMPTY_FORM: StaffFormData = {
-  name: '', language: 'es', department: 'housekeeping',
-  isSenior: false, maxWeeklyHours: 40, maxDaysPerWeek: 5,
-  vacationDates: '', isActive: true, isSchedulingManager: false,
-};
-
-// Team-member shape returned by GET /api/auth/team (with our new staffId field).
-interface TeamMember {
-  accountId: string;
-  username: string;
-  displayName: string;
-  email: string;
-  role: string;
-  staffId: string | null;
-}
+import { inputStyle, Field } from './_fields';
+import { useStaffDirectory, type StaffFormData, type TeamMember } from './useStaffDirectory';
 
 const DEPT_ORDER: ('housekeeping' | 'front_desk' | 'maintenance')[] = [
   'housekeeping', 'front_desk', 'maintenance',
 ];
 
 export function ManagerDirectory() {
-  const { user } = useAuth();
-  const { activePropertyId, staff, refreshStaff } = useProperty();
-  const { lang } = useLang();
-
-  const uid = user?.uid ?? '';
-  const pid = activePropertyId ?? '';
-  // Wages are payroll-private and management-only. ManagerDirectory is only
-  // mounted for managers (see /staff/page.tsx), but we still gate the wage
-  // column + the wage fetch on the role so payroll can never render or be
-  // requested for a non-manager if this component is ever reused.
-  const isManager = !!user && canManageTeam(user.role);
-
-  /* ── Modal state ── */
-  const [showModal, setShowModal] = useState(false);
-  const [editMember, setEditMember] = useState<StaffMember | null>(null);
-  const [form, setForm] = useState<StaffFormData>(EMPTY_FORM);
-  const [linkedAccountId, setLinkedAccountId] = useState<string | null>(null);
-  const [originalLinkedAccountId, setOriginalLinkedAccountId] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [swapConfirm, setSwapConfirm] = useState<
-    { currentManagerId: string; currentManagerName: string; newName: string } | null
-  >(null);
-  const [team, setTeam] = useState<TeamMember[]>([]);
-  // staffId → hourly wage. Fetched from the management-gated service-role
-  // route (GET /api/staff/wages) — wages are deliberately NOT part of the
-  // anon `staff` payload from useProperty(), so member.hourlyWage is always
-  // undefined now and we read wages from this map instead.
-  const [wages, setWages] = useState<Record<string, number | null>>({});
-  // Did the user actually edit the wage field this modal session? Wage writes
-  // fire ONLY when true — so a save can never clear a wage just because the
-  // modal opened before GET /api/staff/wages resolved (the field starts blank,
-  // and an untouched blank must not overwrite a real wage).
-  const [wageTouched, setWageTouched] = useState(false);
-
-  // Load the wage map when the directory mounts (managers only). Refreshed
-  // locally after each successful wage write in performSave().
-  useEffect(() => {
-    if (!isManager || !pid) return;
-    let active = true;
-    fetchWithAuth(`/api/staff/wages?propertyId=${pid}`)
-      .then(r => (r.ok ? r.json() : null))
-      .then((body: { data?: { wages?: Record<string, number | null> } } | null) => {
-        if (active) setWages(body?.data?.wages ?? {});
-      })
-      .catch(err => console.error('[ManagerDirectory] wages fetch failed', err));
-    return () => { active = false; };
-  }, [isManager, pid]);
-
-  // Keep an open edit modal's wage field in sync with the async wages map
-  // until the user types into it. Without this, opening a member before the
-  // wages GET resolves would show a blank wage even though they have one; the
-  // wageTouched gate then means an untouched field never writes, so a save
-  // can't clear a wage just because of this load race.
-  useEffect(() => {
-    if (!showModal || !editMember || wageTouched) return;
-    const loaded = wages[editMember.id] ?? undefined;
-    setForm(f => (f.hourlyWage === loaded ? f : { ...f, hourlyWage: loaded }));
-  }, [wages, showModal, editMember, wageTouched]);
-
-  // Fetch team list once per modal open (so newly-added staff see the latest
-  // accounts list without a full page reload).
-  useEffect(() => {
-    if (!showModal || !pid) return;
-    let active = true;
-    fetchWithAuth(`/api/auth/team?hotelId=${pid}`)
-      .then(r => r.ok ? r.json() : null)
-      .then((body: { data?: { team?: TeamMember[] } } | null) => {
-        if (!active) return;
-        const list = body?.data?.team ?? [];
-        setTeam(list);
-      })
-      .catch(err => {
-        console.error('[ManagerDirectory] team list failed', err);
-      });
-    return () => { active = false; };
-  }, [showModal, pid]);
-
-  const closeModal = () => {
-    setShowModal(false);
-    setSaving(false);
-    setSaveError(null);
-    setLinkedAccountId(null);
-    setOriginalLinkedAccountId(null);
-  };
-
-  /* ── Open handlers ── */
-  const openAdd = (dept: StaffDepartment = 'housekeeping') => {
-    setEditMember(null);
-    setForm({ ...EMPTY_FORM, department: dept });
-    setWageTouched(false);
-    setLinkedAccountId(null);
-    setOriginalLinkedAccountId(null);
-    setSaveError(null);
-    setSaving(false);
-    setShowModal(true);
-  };
-
-  const openEdit = (member: StaffMember) => {
-    setEditMember(member);
-    setForm({
-      name: member.name,
-      phone: member.phone,
-      language: member.language,
-      department: asDeptKey(member.department) as StaffDepartment,
-      isSenior: member.isSenior,
-      // member.hourlyWage no longer arrives over the anon client — read the
-      // wage from the management-only map fetched above.
-      hourlyWage: wages[member.id] ?? undefined,
-      maxWeeklyHours: member.maxWeeklyHours,
-      maxDaysPerWeek: member.maxDaysPerWeek ?? 5,
-      vacationDates: (member.vacationDates ?? []).join('\n'),
-      isActive: member.isActive ?? true,
-      isSchedulingManager: member.isSchedulingManager === true,
-    });
-    setWageTouched(false);
-    // linkedAccountId is set once the team list arrives — we look up the
-    // account whose staff_id matches this member.id.
-    setLinkedAccountId(null);
-    setOriginalLinkedAccountId(null);
-    setSaveError(null);
-    setSaving(false);
-    setShowModal(true);
-  };
-
-  // Once the team list arrives, fill in linkedAccountId from whichever
-  // account (if any) is currently pointing at this staff row.
-  useEffect(() => {
-    if (!editMember || team.length === 0) return;
-    const linked = team.find(t => t.staffId === editMember.id);
-    const id = linked?.accountId ?? null;
-    setLinkedAccountId(id);
-    setOriginalLinkedAccountId(id);
-  }, [editMember, team]);
-
-  /* ── Save flow ── */
-  const performSave = async () => {
-    if (!uid || !pid || !form.name.trim()) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const vacationDates = form.vacationDates
-        .split('\n').map(s => s.trim())
-        .filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
-      const data = {
-        name: form.name.trim(),
-        phone: form.phone?.trim() ?? '',
-        language: form.language,
-        department: form.department,
-        isSenior: form.isSenior,
-        // hourlyWage is intentionally NOT written here — it would travel over
-        // the anon client. It's persisted separately through the management-
-        // gated PUT /api/staff/wages below.
-        maxWeeklyHours: form.maxWeeklyHours,
-        maxDaysPerWeek: form.maxDaysPerWeek,
-        vacationDates,
-        isActive: form.isActive,
-        isSchedulingManager: form.isSchedulingManager,
-      };
-
-      // Hard 15s timeout on the staff write — see notes in the legacy
-      // /staff/page.tsx about why this matters (Supabase auth-lock wedge).
-      let savedStaffId: string | null = editMember?.id ?? null;
-      const writePromise: Promise<unknown> = editMember
-        ? updateStaffMember(uid, pid, editMember.id, data)
-        : addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 })
-            .then((newId: string | void) => { if (typeof newId === 'string') savedStaffId = newId; });
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(
-          () => reject(new Error('Save timed out after 15s. Check your connection and try again.')),
-          15000,
-        );
-      });
-      try { await Promise.race([writePromise, timeoutPromise]); }
-      finally { if (timeoutId) clearTimeout(timeoutId); }
-
-      // ── Account link writes ────────────────────────────────────────────
-      // Two cases:
-      //   1. User picked/changed a linked login → PUT staffId on that account.
-      //   2. User removed a previously-linked login → PUT staffId=null on
-      //      the prior account.
-      //
-      // For new staff records, savedStaffId comes from addStaffMember's
-      // return. For existing, it's the editMember.id we passed in.
-      if (savedStaffId && originalLinkedAccountId !== linkedAccountId) {
-        // Detach old account if it was set.
-        if (originalLinkedAccountId && originalLinkedAccountId !== linkedAccountId) {
-          await fetchWithAuth('/api/auth/team', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              hotelId: pid, accountId: originalLinkedAccountId, staffId: null,
-            }),
-          }).catch(err => console.warn('[ManagerDirectory] unlink old account failed', err));
-        }
-        // Attach new account.
-        if (linkedAccountId) {
-          const linkRes = await fetchWithAuth('/api/auth/team', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              hotelId: pid, accountId: linkedAccountId, staffId: savedStaffId,
-            }),
-          });
-          if (!linkRes.ok) {
-            const body = await linkRes.json().catch(() => ({}));
-            throw new Error(body?.error || 'Failed to link login to staff record');
-          }
-        }
-      }
-
-      // ── Wage write (managers only, service-role) ──────────────────────────
-      // Persist the wage through the management-gated route. NEVER through the
-      // staff write above — that uses the anon client, which has no column-
-      // level protection on hourly_wage. Fire ONLY when the manager actually
-      // edited the wage field (wageTouched): an untouched field — including
-      // one left blank because the wages map hadn't loaded when the modal
-      // opened — must never overwrite the stored wage. A touched-then-cleared
-      // field sends null, which is an explicit clear.
-      if (isManager && savedStaffId && wageTouched) {
-        const desiredWage = form.hourlyWage ?? null;
-        const wageRes = await fetchWithAuth('/api/staff/wages', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, hourlyWage: desiredWage }),
-        });
-        if (!wageRes.ok) {
-          const body = await wageRes.json().catch(() => ({}));
-          throw new Error(body?.error || 'Failed to save wage');
-        }
-        const sid = savedStaffId;
-        setWages(w => ({ ...w, [sid]: desiredWage }));
-      }
-
-      try { await refreshStaff(); } catch (err) { console.warn('[ManagerDirectory] refresh failed', err); }
-      closeModal();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[ManagerDirectory] save failed:', err);
-      setSaveError(msg || 'Save failed. Please try again.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!uid || !pid || !form.name.trim()) return;
-    // Scheduling Manager swap guard.
-    if (form.isSchedulingManager) {
-      const currentManager = staff.find(
-        s => s.isSchedulingManager === true && s.id !== editMember?.id,
-      );
-      if (currentManager) {
-        setSwapConfirm({
-          currentManagerId: currentManager.id,
-          currentManagerName: currentManager.name,
-          newName: form.name.trim(),
-        });
-        return;
-      }
-    }
-    await performSave();
-  };
-
-  const confirmSchedulingManagerSwap = async () => {
-    if (!uid || !pid || !swapConfirm) return;
-    setSaving(true);
-    try {
-      await updateStaffMember(uid, pid, swapConfirm.currentManagerId, { isSchedulingManager: false });
-    } catch (err) {
-      console.error('[ManagerDirectory] clear previous SM failed', err);
-      setSaving(false);
-      setSwapConfirm(null);
-      return;
-    }
-    setSwapConfirm(null);
-    setSaving(false);
-    await performSave();
-  };
-
-  const handleDelete = (member: StaffMember) => {
-    const msg = lang === 'es' ? `¿Eliminar a ${member.name}?` : `Delete ${member.name}?`;
-    if (!window.confirm(msg)) return;
-    if (uid && pid) {
-      deleteStaffMember(uid, pid, member.id)
-        .catch(err => console.error('[ManagerDirectory] delete failed:', err));
-    }
-  };
+  const {
+    lang, isManager, staff,
+    showModal, editMember,
+    form, setForm,
+    saving, saveError,
+    swapConfirm, setSwapConfirm,
+    linkedAccountId, setLinkedAccountId,
+    linkableAccounts,
+    openAdd, openEdit, closeModal,
+    handleSave, handleDelete, confirmSchedulingManagerSwap,
+    markWageTouched,
+  } = useStaffDirectory();
 
   /* ── Derived ── */
   const total   = staff.length;
@@ -361,13 +49,6 @@ export function ManagerDirectory() {
       });
     return { dept, list };
   }), [staff]);
-
-  // Accounts available to link: those without a staff_id, plus whichever
-  // account is currently linked to this staff member (so the picker still
-  // shows it after an open).
-  const linkableAccounts = useMemo(() => {
-    return team.filter(t => t.staffId === null || t.accountId === originalLinkedAccountId);
-  }, [team, originalLinkedAccountId]);
 
   /* ── Missing scheduling manager warning ── */
   const hasSchedulingManager = useMemo(
@@ -424,9 +105,9 @@ export function ManagerDirectory() {
         display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 16,
       }}>
         {[
-          { eyebrow: 'Roster',   big: total,   sub: 'people on the books',     accent: '#5C7A60' },
-          { eyebrow: 'On shift', big: onShift, sub: 'clocked in right now',    accent: '#C99644' },
-          { eyebrow: 'Near OT',  big: nearOT,  sub: 'within 4h of weekly cap', accent: nearOT > 0 ? '#A04A2C' : T.ink3 },
+          { eyebrow: lang === 'es' ? 'Plantilla' : 'Roster',        big: total,   sub: lang === 'es' ? 'personas en plantilla'  : 'people on the books',     accent: '#5C7A60' },
+          { eyebrow: lang === 'es' ? 'En turno' : 'On shift',       big: onShift, sub: lang === 'es' ? 'en turno ahora mismo'   : 'clocked in right now',    accent: '#C99644' },
+          { eyebrow: lang === 'es' ? 'Casi horas extra' : 'Near OT', big: nearOT,  sub: lang === 'es' ? 'a 4h del límite semanal' : 'within 4h of weekly cap', accent: nearOT > 0 ? '#A04A2C' : T.ink3 },
         ].map((s, i) => (
           <div key={i} style={{
             background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
@@ -476,10 +157,10 @@ export function ManagerDirectory() {
                   <div style={{
                     padding: '20px 18px', fontFamily: fonts.sans, fontSize: 12.5,
                     color: T.ink3, textAlign: 'center',
-                  }}>No one yet.</div>
+                  }}>{lang === 'es' ? 'Nadie aún.' : 'No one yet.'}</div>
                 ) : (
                   g.list.map(s => (
-                    <DirRow key={s.id} member={s} onClick={() => openEdit(s)}/>
+                    <DirRow key={s.id} member={s} lang={lang} onClick={() => openEdit(s)}/>
                   ))
                 )}
               </div>
@@ -492,7 +173,7 @@ export function ManagerDirectory() {
                   color: T.ink3, cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                 }}
-              >+ Add to {m.label.toLowerCase()}</button>
+              >{lang === 'es' ? `+ Agregar a ${m.label.toLowerCase()}` : `+ Add to ${m.label.toLowerCase()}`}</button>
             </div>
           );
         })}
@@ -513,7 +194,7 @@ export function ManagerDirectory() {
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
           showWage={isManager}
-          markWageTouched={() => setWageTouched(true)}
+          markWageTouched={markWageTouched}
           lang={lang}
         />
       )}
@@ -533,7 +214,7 @@ export function ManagerDirectory() {
 }
 
 // ── Directory row ────────────────────────────────────────────────────────
-function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void }) {
+function DirRow({ member, lang, onClick }: { member: StaffMember; lang: 'en' | 'es'; onClick: () => void }) {
   const ring = member.scheduledToday ? '#5C7A60' : null;
   return (
     <div
@@ -558,7 +239,7 @@ function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
           <span style={{
             fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3,
-          }}>{member.phone ? formatPhone(member.phone) : 'No phone'}</span>
+          }}>{member.phone ? formatPhone(member.phone) : (lang === 'es' ? 'Sin teléfono' : 'No phone')}</span>
           <span style={{ fontSize: 10, color: T.ink3 }}>·</span>
           <span style={{
             fontFamily: fonts.mono, fontSize: 11, color: T.ink3,
@@ -862,40 +543,6 @@ function StaffEditModal({
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-const inputStyle: React.CSSProperties = {
-  width: '100%', boxSizing: 'border-box',
-  padding: '10px 14px',
-  borderRadius: 12, border: `1px solid ${T.rule}`,
-  background: T.paper,
-  fontFamily: fonts.sans, fontSize: 13, color: T.ink,
-  outline: 'none',
-};
-
-function Field({
-  label, hint, children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <label style={{
-        display: 'block', fontFamily: fonts.mono, fontSize: 10, fontWeight: 600,
-        color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase',
-        marginBottom: 6,
-      }}>{label}</label>
-      {children}
-      {hint && (
-        <p style={{
-          margin: '6px 0 0', fontFamily: fonts.sans, fontSize: 11.5,
-          color: T.ink3, lineHeight: 1.4,
-        }}>{hint}</p>
-      )}
     </div>
   );
 }

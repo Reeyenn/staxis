@@ -262,7 +262,7 @@ export function FillModal({
                               onClick={() => okDay && setPreview(d)}
                               disabled={!okDay}
                               title={okDay
-                                ? (es ? `Ver quién estuvo el ${d.dowFull} ${d.dayNum}` : `See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
+                                ? (es ? `Ver quién estuvo el ${d.dowFull} ${d.dayNum} ${d.mon}` : `See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
                                 : (es ? 'Aún no es historial' : 'Not history yet')}
                               style={{
                                 flex: 1, cursor: okDay ? 'pointer' : 'not-allowed', opacity: okDay ? 1 : 0.35,
