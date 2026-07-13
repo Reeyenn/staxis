@@ -43,8 +43,12 @@ export function ConcourseBarView({
     <div className="cx-barwrap">
       <CxStyle />
       <div className="cx-bar">
-        <button type="button" className="cx-logo" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
-          <CxLogo />
+        {/* Logo is a pill like the rest: same green hover pull-out, word = "Home". */}
+        <button type="button" className="cx-pill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
+          <CxLogo size={19} color="currentColor" />
+          <span className="cx-labw" aria-hidden>
+            <span className="cx-lab">{homeLabel}</span>
+          </span>
         </button>
         <span className="cx-divider" aria-hidden />
         {items.map((it) => (
@@ -58,7 +62,9 @@ export function ConcourseBarView({
             aria-current={it.active ? 'page' : undefined}
           >
             <CxIcon name={it.key as never} size={16} />
-            <span className="cx-lab">{it.label}</span>
+            {/* Grid wrapper: 0fr→1fr animates open to the label's natural
+                width — smoother than a max-width guess (no end-of-track snap). */}
+            <span className="cx-labw"><span className="cx-lab">{it.label}</span></span>
             {typeof it.badge === 'number' && it.badge > 0 && (
               <span className="cx-badge">{it.badge}</span>
             )}

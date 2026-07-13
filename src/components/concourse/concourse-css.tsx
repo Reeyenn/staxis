@@ -25,8 +25,8 @@ const CX_CSS = `
 .cx-font{font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 
 @keyframes cx-breathe{
-  0%,100%{box-shadow:0 0 0 0 rgba(158,183,166,.55),0 0 28px rgba(158,183,166,.5);}
-  50%{box-shadow:0 0 0 14px rgba(158,183,166,0),0 0 46px rgba(201,150,68,.45);}
+  0%,100%{box-shadow:0 0 0 0 rgba(158,183,166,.26),0 0 12px rgba(158,183,166,.2);}
+  50%{box-shadow:0 0 0 6px rgba(158,183,166,0),0 0 20px rgba(201,150,68,.14);}
 }
 @keyframes cx-sparkspin{0%,100%{transform:rotate(0) scale(1);}50%{transform:rotate(12deg) scale(1.12);}}
 @keyframes cx-blinkdot{0%,100%{opacity:1;}50%{opacity:.15;}}
@@ -37,7 +37,7 @@ const CX_CSS = `
 .cx-barwrap{display:flex;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
 .cx-barwrap::-webkit-scrollbar{display:none;}
-.cx-bar{display:flex;align-items:center;gap:8px;margin:0 auto;flex-shrink:0;
+.cx-bar{display:flex;align-items:center;gap:3px;margin:0 auto;flex-shrink:0;
   background:rgba(255,255,255,.85);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   border:1px solid rgba(255,255,255,.95);border-radius:999px;padding:7px 9px;
   box-shadow:0 18px 44px -24px rgba(31,42,32,.4);}
@@ -45,27 +45,38 @@ const CX_CSS = `
 .cx-logo{display:grid;place-items:center;width:36px;height:36px;border-radius:999px;cursor:pointer;
   border:none;background:transparent;flex-shrink:0;padding:0;}
 .cx-logo:hover{background:rgba(31,35,28,.05);}
-.cx-divider{width:1px;height:20px;background:rgba(31,35,28,.09);flex-shrink:0;}
+.cx-divider{width:1px;height:20px;background:rgba(31,35,28,.09);flex-shrink:0;margin:0 5px;}
 .cx-pill{display:flex;align-items:center;height:36px;padding:0 9px;border-radius:999px;
   border:none;background:transparent;cursor:pointer;color:#5C625C;white-space:nowrap;flex-shrink:0;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;
-  transition:all .3s ${SPRING};}
-/* Label slides open on hover (and stays open on the active page). */
-.cx-pill .cx-lab{display:inline-block;max-width:0;opacity:0;overflow:hidden;margin-left:0;
-  font-size:12px;font-weight:600;
-  transition:max-width .3s ${SPRING},opacity .25s ease,margin-left .3s ${SPRING};}
-.cx-pill.cx-active{padding:0 13px;background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
-.cx-pill.cx-active .cx-lab{max-width:160px;opacity:1;margin-left:7px;}
-/* Hover takeover: the hovered pill gets the full green pull-out… */
-.cx-pill:hover{padding:0 13px;background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
-.cx-pill:hover .cx-lab{max-width:160px;opacity:1;margin-left:7px;}
-/* …and the page you're actually ON hands the spotlight over: it fades to a
-   quiet sage wash. Its label deliberately STAYS OPEN — collapsing it changed
-   the bar's width mid-hover, which slid every pill under the cursor and made
-   hover flicker (the root cause of the "glitchy gap" bug). Color-only
-   changes keep the bar geometry rock-steady. */
+  /* leave = soft release: slower fade, tiny linger so a sweep leaves a gentle
+     trail instead of hard on/off flashing */
+  transition:background .45s ease .05s,color .45s ease .05s,box-shadow .45s ease .05s;}
+/* Label opens on hover (and stays open on the active page).
+   The 0fr→1fr grid trick animates to the label's NATURAL width — no
+   max-width dead zone, so the motion has no end-of-track snap. */
+.cx-pill .cx-labw{display:grid;grid-template-columns:0fr;opacity:0;
+  transition:grid-template-columns .5s ${SPRING} .05s,opacity .32s ease .05s;}
+.cx-pill .cx-lab{min-width:0;overflow:hidden;white-space:nowrap;display:block;
+  padding:0 4px 0 7px;font-size:12px;font-weight:600;}
+.cx-pill.cx-active{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
+.cx-pill.cx-active .cx-labw{grid-template-columns:1fr;opacity:1;}
+/* Hover takeover — instant open. Pills sit edge-to-edge (bar gap 3px) so
+   moving along the bar hands hover from pill to pill with no dead zone. */
+.cx-pill:hover{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);
+  transition:background .16s ease,color .16s ease,box-shadow .25s ease;}
+.cx-pill:hover .cx-labw{grid-template-columns:1fr;opacity:1;
+  transition:grid-template-columns .26s ${SPRING},opacity .16s ease;}
+/* …and the page you're actually ON hands over: it fades to a quiet sage
+   wash and its word slides closed at the same soft pace the hovered word
+   opens — a width-neutral handoff, so the bar itself doesn't balloon wider
+   while you preview other tabs. (Safe now that gaps are 3px and release is
+   slow+delayed; the original flicker came from instant display switches
+   across 8px dead zones.) */
 .cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover){
   background:rgba(158,183,166,.3);color:#3E5C48;box-shadow:none;}
+.cx-bar:has(.cx-pill:not(.cx-active):hover) .cx-pill.cx-active:not(:hover) .cx-labw{
+  grid-template-columns:0fr;opacity:0;}
 .cx-badge{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:8.5px;font-weight:700;
   color:#fff;background:#B85C3D;border-radius:999px;padding:1.5px 6px;line-height:1.4;margin-left:7px;}
 .cx-pill.cx-active .cx-badge,.cx-pill:hover .cx-badge{color:#3E5C48;background:#FBE3B8;}
