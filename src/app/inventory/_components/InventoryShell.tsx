@@ -83,12 +83,19 @@ export function InventoryShell() {
   const L = invLang(lang);
   const tx = t(L);
   const can = useCan();
-  const canManage = !!user && can('manage_inventory_orders');
+  // Latch the signed-in user through token-refresh blips — Supabase
+  // transiently nulls the session mid-refresh, and reacting to that unmounted
+  // subscriptions and flickered capability-gated UI. A real sign-out
+  // navigates to /signin, so the latch only ever bridges sub-second churn.
+  const lastUserRef = React.useRef(user);
+  if (user) lastUserRef.current = user;
+  const stableUser = user ?? lastUserRef.current;
+  const canManage = !!stableUser && can('manage_inventory_orders');
   // Money capability — gates every budget/spend surface (sidebar spend strip,
   // Reports + Budgets panels, the reorder budget meters) AND the budget/spend
   // data fetch below, so the figures never reach a line-staff browser. Stock
   // counts + low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.)
-  const canViewFinancials = !!user && can('view_financials');
+  const canViewFinancials = !!stableUser && can('view_financials');
 
   // ── Core data state ────────────────────────────────────────────────
   // No ML state here on purpose. The manual inventory tab never fetches ML
@@ -123,7 +130,7 @@ export function InventoryShell() {
   // auth-state re-fire), and an object dep would tear down + resubscribe on
   // every rebuild, replaying the board's entrance each time (the "inventory
   // reloads five times" bug). Same identity-primitive rule PropertyContext uses.
-  const uid = user?.uid ?? null;
+  const uid = stableUser?.uid ?? null;
   useEffect(() => {
     if (!uid || !activePropertyId) return;
     setItemsLoaded(false);
@@ -300,18 +307,18 @@ export function InventoryShell() {
   }, []);
 
   const refreshData = useCallback(async () => {
-    if (!user || !activePropertyId) return;
+    if (!uid || !activePropertyId) return;
     try {
       const monthStart = startOfMonth(new Date());
       const monthEnd = startOfMonth(addMonths(new Date(), 1));
       const [ct, od, bd, spend, occ, avg] = await Promise.all([
-        listInventoryCounts(user.uid, activePropertyId, 200),
-        listInventoryOrders(user.uid, activePropertyId, 200),
+        listInventoryCounts(uid, activePropertyId, 200),
+        listInventoryOrders(uid, activePropertyId, 200),
         canViewFinancials
-          ? listInventoryBudgets(user.uid, activePropertyId)
+          ? listInventoryBudgets(uid, activePropertyId)
           : Promise.resolve([] as InventoryBudget[]),
         canViewFinancials
-          ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
+          ? monthToDateSpendByCategory(uid, activePropertyId, monthStart, monthEnd)
           : Promise.resolve({} as Record<string, number>),
         fetchOccupancyBundle(activePropertyId, daysAgo(14)),
         fetchDailyAverages(activePropertyId, 14),
@@ -325,16 +332,25 @@ export function InventoryShell() {
     } catch (err) {
       console.error('[inventory] refresh failed', err);
     }
-  }, [user, activePropertyId, canViewFinancials]);
+  }, [uid, activePropertyId, canViewFinancials]);
 
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
-  // cascade. Keyed on readiness (not mount) — on a hard page load the shell
-  // shows the loading branch first, and the cascade must fire when the real
-  // page appears. The board itself animates via FLIP in StockList.
-  const ready = !!user && !!activePropertyId && itemsLoaded && bundleLoaded;
-  const pageRef = useRiseIn<HTMLDivElement>([ready], { step: 75, dist: 16 });
+  // cascade — ONCE. `revealed` is a one-way latch: it flips true when the
+  // initial data is in (or after a 3.5s failsafe so a single failed fetch can
+  // never strand the page on "loading"), and never flips back. Auth-token
+  // refreshes transiently null the user; without the latch each blip
+  // unmounted the whole board back to the loading branch and replayed the
+  // entrance — the "UI pops up over and over" bug.
+  const dataReady = !!stableUser && !!activePropertyId && itemsLoaded && bundleLoaded;
+  const [revealed, setRevealed] = useState(false);
+  useEffect(() => { if (dataReady) setRevealed(true); }, [dataReady]);
+  useEffect(() => {
+    const failsafe = setTimeout(() => setRevealed(true), 3500);
+    return () => clearTimeout(failsafe);
+  }, []);
+  const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
 
-  if (!ready) {
+  if (!revealed) {
     return (
       <div
         style={{
