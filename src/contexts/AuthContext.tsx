@@ -195,8 +195,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return;
       // Synchronous bookkeeping is fine here; only DEFER the supabase calls.
-      if (event === 'SIGNED_OUT' || !session?.user) {
+      if (event === 'SIGNED_OUT') {
         setUser(null);
+        return;
+      }
+      if (!session?.user) {
+        // Missing session on a NON-signout event (TOKEN_REFRESHED mid-flight,
+        // INITIAL_SESSION for a signed-out visitor). For a visitor, user is
+        // already null; for a signed-in user this is a sub-second refresh
+        // blip — nulling here rippled a fake "signed out" through every
+        // context and remounted half the app. A genuinely dead session still
+        // signs out via SIGNED_OUT or api-fetch's terminal-401 policy.
         return;
       }
       const uid = session.user.id;
