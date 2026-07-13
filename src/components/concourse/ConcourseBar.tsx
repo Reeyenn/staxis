@@ -24,6 +24,12 @@ import { SECTION_LIST } from '@/lib/sections/registry';
 import { ConcourseBarView, type BarItem } from './ConcourseBarView';
 import { SAMPLE_DECISIONS, QUEUE_COUNT_EVENT } from './sample-decisions';
 
+// Session-wide guard: the bar remounts on every route (each page renders its
+// own AppLayout), and an unguarded prefetch effect re-fired the whole batch
+// on every mount/re-render — ~25 concurrent server renders racing the page's
+// own data load. Prefetch must run ONCE per browser session, on idle.
+let PREFETCHED_THIS_SESSION = false;
+
 export function ConcourseBar() {
   const { user, signOut } = useAuth();
   const { properties, activeProperty, setActivePropertyId } = useProperty();
@@ -45,17 +51,24 @@ export function ConcourseBar() {
     setMenuOpen((v) => !v);
   };
 
-  // Navigation feel: (1) prefetch every section's route payload as soon as
-  // the bar mounts, so a pill click is a warm client transition instead of a
-  // cold ~1s server round-trip; (2) light the clicked pill green immediately
+  // Navigation feel: (1) prefetch every section's route payload once per
+  // session, 2.5s after the bar settles — warm pill clicks WITHOUT racing the
+  // current page's own data load; (2) light the clicked pill green immediately
   // (optimistic active) instead of waiting for the new pathname to arrive.
   const [pendingHref, setPendingHref] = React.useState<string | null>(null);
   React.useEffect(() => { setPendingHref(null); }, [pathname]);
+  const roleRef = React.useRef(user?.role);
+  roleRef.current = user?.role ?? roleRef.current;
   React.useEffect(() => {
-    const hrefs = [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
-    if (user?.role === 'admin') hrefs.push('/admin/properties');
-    hrefs.forEach((h) => router.prefetch(h));
-  }, [router, user?.role]);
+    if (PREFETCHED_THIS_SESSION) return;
+    const idle = window.setTimeout(() => {
+      PREFETCHED_THIS_SESSION = true;
+      const hrefs = [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
+      if (roleRef.current === 'admin') hrefs.push('/admin/properties');
+      hrefs.forEach((h) => router.prefetch(h));
+    }, 2500);
+    return () => window.clearTimeout(idle);
+  }, [router]);
   const go = (href: string) => { setPendingHref(href); router.push(href); };
 
   // Pending-decision badge on the Staxis pill. Seeded from the sample queue
