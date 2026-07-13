@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // /demo/concourse — login-free preview of the Concourse shell on sample data.
 //
-// Same pattern as /demo/feed: no auth, no AppLayout, no Supabase — the
+// Login-free showcase: no auth, no AppLayout, no Supabase — the
 // middleware whitelists /demo/ so anyone with the link can click through the
 // full shell: pill bar, hub with the glowing Ask bar + live-looking tiles,
 // section pages, the Staxis approval queue, and EN/ES. Renders the SAME

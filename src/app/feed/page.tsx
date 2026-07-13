@@ -3,8 +3,8 @@
 // ════════════════════════════════════════════════════════════════════
 // Staxis · the AI approval queue (Concourse shell).
 // Decision cards with Approve / Adjust / Deny / Snooze — the section
-// the pill-bar badge points at. The previous editorial feed experience
-// lives on in _FeedExperience.tsx (still rendered by /demo/feed).
+// the pill-bar badge points at. (The pre-Concourse editorial feed and
+// its /demo/feed showcase were deleted 2026-07-13 as retired design.)
 // ════════════════════════════════════════════════════════════════════
 
 export const dynamic = 'force-dynamic';
