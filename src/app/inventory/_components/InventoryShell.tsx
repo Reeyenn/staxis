@@ -33,7 +33,7 @@ import { StatusDot } from './StatusPill';
 import { Sidebar, type SidebarAction } from './Sidebar';
 import { FilterBar } from './FilterBar';
 import { StockList } from './StockList';
-import { useRiseIn, markEntrancePlayed } from './motion';
+import { useRiseIn } from './motion';
 import { InvFx, HealthRing, CountUp, PingDot } from './fx';
 import { toDisplayItem } from './adapter';
 import { fmtMoney } from './format';
@@ -344,13 +344,6 @@ export function InventoryShell() {
   const dataReady = !!stableUser && !!activePropertyId && itemsLoaded && bundleLoaded;
   const [revealed, setRevealed] = useState(false);
   useEffect(() => { if (dataReady) setRevealed(true); }, [dataReady]);
-  // After the first reveal of the sitting, retire the entrance choreography —
-  // future visits to this tab render settled (see motion.ts ENTRANCE_DONE).
-  useEffect(() => {
-    if (!revealed) return;
-    const t = setTimeout(markEntrancePlayed, 900);
-    return () => clearTimeout(t);
-  }, [revealed]);
   useEffect(() => {
     const failsafe = setTimeout(() => setRevealed(true), 3500);
     return () => clearTimeout(failsafe);

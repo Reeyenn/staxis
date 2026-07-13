@@ -14,15 +14,13 @@ import { useEffect, useLayoutEffect, useRef, useState, type DependencyList } fro
 // loading branch can be server-rendered — never call useLayoutEffect there).
 const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-// ── One grand entrance per sitting ────────────────────────────────────────
-// Module state survives client-side navigation (and resets on a hard reload),
-// so the full choreography — rise-in cascade, FLIP newcomer stagger, count-up
-// tallies — plays the FIRST time the page is opened. Returning to the tab
-// renders everything already settled and instant. Replaying the entrance on
-// every visit read as "the same boxes pop up over and over" (Reeyen, 2026-07-13).
-let ENTRANCE_DONE = false;
-export function entrancePlayed(): boolean { return ENTRANCE_DONE; }
-export function markEntrancePlayed(): void { ENTRANCE_DONE = true; }
+// ── No entrance choreography ──────────────────────────────────────────────
+// Load-time cascades (rise-in stagger, FLIP first-population stagger,
+// count-up-from-zero) are permanently retired: on both hard loads and tab
+// switches the page renders already settled. Motion remains only for things
+// the user does mid-session — filter/search reorders glide (FLIP), newly
+// added cards rise in, live value changes tween. The load-time version read
+// as a glitch ("weird animation ... boxes pop up over again"), Reeyen 2026-07-13.
 
 // Shared easing vocabulary — "paper physics": quick departure, soft settle.
 export const EASE = {
@@ -110,13 +108,10 @@ export function useRiseIn<T extends HTMLElement>(
   opts?: { step?: number; dist?: number },
 ) {
   const ref = useRef<T | null>(null);
-  useEffect(() => {
-    if (!ref.current) return;
-    if (ENTRANCE_DONE) return; // repeat visit — render settled, no cascade
-    const kids = ref.current.querySelectorAll('[data-rise]');
-    if (kids.length) Motion.riseIn(kids, opts);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  // Entrance retired — [data-rise] elements render at rest. The hook (and the
+  // data-rise markers) stay so a future design pass can re-enable motion in
+  // one place. `deps`/`opts` are accepted and ignored.
+  void deps; void opts;
   return ref;
 }
 
@@ -147,8 +142,8 @@ export function useFlipList<T extends HTMLElement>() {
       const r = k.getBoundingClientRect();
       next.set(id, new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height));
     });
-    // First population of the board: cascade only on the sitting's first
-    // visit. (Cards added later mid-session still individually rise in.)
+    // First population of the board always renders settled — no stagger.
+    // (Cards added later mid-session still individually rise in.)
     const initialPopulation = prev.size === 0;
     let enterIndex = 0;
     kids.forEach((k) => {
@@ -156,7 +151,7 @@ export function useFlipList<T extends HTMLElement>() {
       if (!id) return;
       const a = prev.get(id);
       const b = next.get(id)!;
-      if (initialPopulation && ENTRANCE_DONE) return;
+      if (initialPopulation) return;
       if (a) {
         const dx = a.left - b.left;
         const dy = a.top - b.top;
@@ -195,11 +190,10 @@ export function useFlipList<T extends HTMLElement>() {
 // column counts. Animates from the previously shown value (0 on first mount,
 // so the page-load moment counts everything up from zero). Ease-out cubic.
 export function useCountUp(target: number, duration = 850): number {
-  // Repeat visits skip the from-zero tally — numbers land already settled.
-  const initial = ENTRANCE_DONE ? target : 0;
-  const [value, setValue] = useState(initial);
-  const fromRef = useRef(initial);
-  const shownRef = useRef(initial);
+  // Numbers land already settled on mount; only later live changes tween.
+  const [value, setValue] = useState(target);
+  const fromRef = useRef(target);
+  const shownRef = useRef(target);
 
   useEffect(() => {
     if (!Number.isFinite(target)) return;

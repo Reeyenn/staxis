@@ -98,11 +98,10 @@ const CSS = `
   }
 }
 
-/* Masthead hairline that draws itself across on load. Reveal animations all
-   animate FROM hidden TO the element's natural (visible) state, so if CSS
-   animations are ever suppressed the content is simply there, never missing. */
+/* Masthead hairline: load-time draw retired with the rest of the entrance
+   choreography — it renders complete. (Keyframes kept for future reuse.) */
 @keyframes inv-rule-draw { from { transform: scaleX(0); } }
-.inv-rule-draw { transform-origin: left center; animation: inv-rule-draw .9s ${EASE.settle} backwards; animation-delay: .15s; }
+.inv-rule-draw { transform-origin: left center; }
 
 /* All-clear check draw. */
 @keyframes inv-check-draw { from { stroke-dashoffset: 1; } }
