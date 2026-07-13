@@ -45,6 +45,19 @@ export function ConcourseBar() {
     setMenuOpen((v) => !v);
   };
 
+  // Navigation feel: (1) prefetch every section's route payload as soon as
+  // the bar mounts, so a pill click is a warm client transition instead of a
+  // cold ~1s server round-trip; (2) light the clicked pill green immediately
+  // (optimistic active) instead of waiting for the new pathname to arrive.
+  const [pendingHref, setPendingHref] = React.useState<string | null>(null);
+  React.useEffect(() => { setPendingHref(null); }, [pathname]);
+  React.useEffect(() => {
+    const hrefs = [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
+    if (user?.role === 'admin') hrefs.push('/admin/properties');
+    hrefs.forEach((h) => router.prefetch(h));
+  }, [router, user?.role]);
+  const go = (href: string) => { setPendingHref(href); router.push(href); };
+
   // Pending-decision badge on the Staxis pill. Seeded from the sample queue
   // (same Phase-1 footing as the queue page) and kept in sync while the user
   // approves/dismisses on /feed via the queue's broadcast event.
@@ -70,9 +83,11 @@ export function ConcourseBar() {
     .map((m) => ({
       key: m.key,
       label: lang === 'es' ? m.label_es : m.label_en,
-      active: pathname === m.navHref || pathname.startsWith(m.navHref + '/'),
+      active: pendingHref
+        ? pendingHref === m.navHref
+        : pathname === m.navHref || pathname.startsWith(m.navHref + '/'),
       badge: m.key === 'staxis' ? pendingCount : undefined,
-      onClick: () => router.push(m.navHref),
+      onClick: () => go(m.navHref),
     }));
 
   // Admin is owner-only and not a per-hotel section — its own pill, far side.
@@ -80,8 +95,8 @@ export function ConcourseBar() {
     items.push({
       key: 'admin',
       label: lang === 'es' ? 'Admin.' : 'Admin',
-      active: pathname.startsWith('/admin'),
-      onClick: () => router.push('/admin/properties'),
+      active: pendingHref ? pendingHref === '/admin/properties' : pathname.startsWith('/admin'),
+      onClick: () => go('/admin/properties'),
     });
   }
 
@@ -160,8 +175,8 @@ export function ConcourseBar() {
     <ConcourseBarView
       items={items}
       gearActive={pathname.startsWith('/settings')}
-      onGear={() => router.push('/settings')}
-      onLogo={() => router.push('/home')}
+      onGear={() => go('/settings')}
+      onLogo={() => go('/home')}
       homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
       settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
       avatar={avatar}

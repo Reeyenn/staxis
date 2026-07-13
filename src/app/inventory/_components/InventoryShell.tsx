@@ -110,12 +110,21 @@ export function InventoryShell() {
   const [overlay, setOverlay] = useState<OverlayKey>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [orderingMode, setOrderingMode] = useState<OrderingMode>('simple');
+  // Initial-load gate: the page reveals ONCE, after both the first items
+  // snapshot AND the stats bundle have landed. Without this, the 3-4 fetch
+  // waves each reshuffled/re-animated the freshly-mounted board — the
+  // "everything reloads five times" bug.
+  const [itemsLoaded, setItemsLoaded] = useState(false);
+  const [bundleLoaded, setBundleLoaded] = useState(false);
 
   // ── Subscribe + fetch when property loads ──────────────────────────
   useEffect(() => {
     if (!user || !activePropertyId) return;
+    setItemsLoaded(false);
+    setBundleLoaded(false);
     const unsub = subscribeToInventory(user.uid, activePropertyId, (snap) => {
       setItems(snap);
+      setItemsLoaded(true);
     });
     return () => unsub();
   }, [user, activePropertyId]);
@@ -155,6 +164,8 @@ export function InventoryShell() {
         setSpendByCat(spend as Record<string, number>);
       } catch (err) {
         console.error('[inventory] data load failed', err);
+      } finally {
+        if (!cancelled) setBundleLoaded(true);
       }
     })();
 
@@ -314,7 +325,7 @@ export function InventoryShell() {
   // cascade. Keyed on readiness (not mount) — on a hard page load the shell
   // shows the loading branch first, and the cascade must fire when the real
   // page appears. The board itself animates via FLIP in StockList.
-  const ready = !!user && !!activePropertyId;
+  const ready = !!user && !!activePropertyId && itemsLoaded && bundleLoaded;
   const pageRef = useRiseIn<HTMLDivElement>([ready], { step: 75, dist: 16 });
 
   if (!ready) {
