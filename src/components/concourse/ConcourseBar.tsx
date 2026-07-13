@@ -12,6 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -32,6 +33,17 @@ export function ConcourseBar() {
   const pathname = usePathname();
   const enabled = useEnabledSections();
   const [menuOpen, setMenuOpen] = React.useState(false);
+  // The bar wrap is a horizontal scroll container (mobile), which clips
+  // anything hanging below it — so the menu is portaled to <body> at a
+  // fixed position measured from the avatar button. The bar is sticky, so
+  // the measured rect stays put while the menu is open.
+  const avatarWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = React.useState<{ top: number; right: number } | null>(null);
+  const toggleMenu = () => {
+    const r = avatarWrapRef.current?.getBoundingClientRect();
+    if (r) setMenuPos({ top: r.bottom + 10, right: Math.max(8, window.innerWidth - r.right) });
+    setMenuOpen((v) => !v);
+  };
 
   // Pending-decision badge on the Staxis pill. Seeded from the sample queue
   // (same Phase-1 footing as the queue page) and kept in sync while the user
@@ -76,20 +88,20 @@ export function ConcourseBar() {
   const initial = (user?.displayName?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase();
 
   const avatar = user ? (
-    <div style={{ position: 'relative', flexShrink: 0 }}>
+    <div ref={avatarWrapRef} style={{ position: 'relative', flexShrink: 0 }}>
       <button
         type="button"
         className="cx-avatarbtn"
-        onClick={() => setMenuOpen((v) => !v)}
+        onClick={toggleMenu}
         aria-label={lang === 'es' ? 'Menú de usuario' : 'User menu'}
         aria-expanded={menuOpen}
       >
         {initial}
       </button>
-      {menuOpen && (
+      {menuOpen && menuPos && createPortal(
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 48 }} onClick={() => setMenuOpen(false)} />
-          <div className="cx-menu">
+          <div className="cx-menu" style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, zIndex: 50 }}>
             <div className="cx-menu-head">
               <div className="cx-menu-name">{user.displayName ?? 'User'}</div>
               <div className="cx-menu-role">
@@ -138,7 +150,8 @@ export function ConcourseBar() {
               {t('signOut', lang)}
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   ) : undefined;
