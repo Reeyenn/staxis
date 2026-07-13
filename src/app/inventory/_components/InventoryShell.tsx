@@ -118,19 +118,25 @@ export function InventoryShell() {
   const [bundleLoaded, setBundleLoaded] = useState(false);
 
   // ── Subscribe + fetch when property loads ──────────────────────────
+  // Both mount effects depend on the user's stable uid, NOT the user object —
+  // AuthContext can rebuild the object during a hard load (token refresh /
+  // auth-state re-fire), and an object dep would tear down + resubscribe on
+  // every rebuild, replaying the board's entrance each time (the "inventory
+  // reloads five times" bug). Same identity-primitive rule PropertyContext uses.
+  const uid = user?.uid ?? null;
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!uid || !activePropertyId) return;
     setItemsLoaded(false);
     setBundleLoaded(false);
-    const unsub = subscribeToInventory(user.uid, activePropertyId, (snap) => {
+    const unsub = subscribeToInventory(uid, activePropertyId, (snap) => {
       setItems(snap);
       setItemsLoaded(true);
     });
     return () => unsub();
-  }, [user, activePropertyId]);
+  }, [uid, activePropertyId]);
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!uid || !activePropertyId) return;
     let cancelled = false;
 
     void (async () => {
@@ -144,15 +150,15 @@ export function InventoryShell() {
           await Promise.all([
             fetchOccupancyBundle(activePropertyId, daysAgo(14)),
             fetchDailyAverages(activePropertyId, 14),
-            listInventoryCounts(user.uid, activePropertyId, 200),
-            listInventoryOrders(user.uid, activePropertyId, 200),
+            listInventoryCounts(uid, activePropertyId, 200),
+            listInventoryOrders(uid, activePropertyId, 200),
             // Budget + spend are money — only fetch them for the money capability
             // so the dollar figures never reach a line-staff browser.
             canViewFinancials
-              ? listInventoryBudgets(user.uid, activePropertyId)
+              ? listInventoryBudgets(uid, activePropertyId)
               : Promise.resolve([] as InventoryBudget[]),
             canViewFinancials
-              ? monthToDateSpendByCategory(user.uid, activePropertyId, monthStart, monthEnd)
+              ? monthToDateSpendByCategory(uid, activePropertyId, monthStart, monthEnd)
               : Promise.resolve({} as Record<string, number>),
           ]);
         if (cancelled) return;
@@ -172,7 +178,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [user, activePropertyId, canViewFinancials]);
+  }, [uid, activePropertyId, canViewFinancials]);
 
   // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
   useEffect(() => {
